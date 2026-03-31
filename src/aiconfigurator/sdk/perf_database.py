@@ -1166,12 +1166,15 @@ def load_context_dsa_module_data(dsa_file: str):
     Load context DSA data.
 
     Dict structure:
-        data[architecture][gemm_quant_mode][fmha_quant_mode][kv_cache_quant_mode][num_heads][s][b]
+        data[fmha_quant_mode][kv_cache_quant_mode][gemm_quant_mode][architecture][num_heads][s][b]
 
-    ``architecture`` comes from the HF config ``architectures[0]``
-    (e.g. "DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM") and distinguishes
-    models with different structural dims.
-    Legacy CSV rows without an ``architecture`` column default to "DeepseekV32ForCausalLM".
+    Quant modes are the outermost keys so that ``_enum_key_names`` can
+    directly extract supported FMHAQuantMode names (aligned with
+    ``_context_attention_data``).  ``architecture`` (e.g.
+    "DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM") selects the
+    model-specific structural dimensions from ``DSA_MODEL_DIMS``.
+    Legacy CSV rows without an ``architecture`` column default to
+    "DeepseekV32ForCausalLM".
     """
     if not os.path.exists(dsa_file):
         logger.debug(f"DSA context data file {dsa_file} not found.")
@@ -1202,7 +1205,7 @@ def load_context_dsa_module_data(dsa_file: str):
         fmha_mode = common.FMHAQuantMode[_normalize_dtype_key(row["mla_dtype"])]
         kv_dtype = common.KVCacheQuantMode[_normalize_dtype_key(row["kv_cache_dtype"])]
 
-        dsa_data[arch][gemm_mode][fmha_mode][kv_dtype][num_heads][s][b] = {
+        dsa_data[fmha_mode][kv_dtype][gemm_mode][arch][num_heads][s][b] = {
             "latency": latency,
             "power": power,
             "energy": energy,
@@ -1216,12 +1219,14 @@ def load_generation_dsa_module_data(dsa_file: str):
     Load generation DSA data.
 
     Dict structure:
-        data[architecture][gemm_quant_mode][kv_cache_quant_mode][num_heads][b][s]
+        data[kv_cache_quant_mode][gemm_quant_mode][architecture][num_heads][b][s]
 
-    ``architecture`` comes from the HF config ``architectures[0]``
-    (e.g. "DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM") and distinguishes
-    models with different structural dims.
-    Legacy CSV rows without an ``architecture`` column default to "DeepseekV32ForCausalLM".
+    Quant modes are the outermost keys so that ``_enum_key_names`` can
+    directly extract supported KVCacheQuantMode names (aligned with
+    ``_generation_attention_data``).  ``architecture`` selects the
+    model-specific structural dimensions from ``DSA_MODEL_DIMS``.
+    Legacy CSV rows without an ``architecture`` column default to
+    "DeepseekV32ForCausalLM".
     """
     if not os.path.exists(dsa_file):
         logger.debug(f"DSA generation data file {dsa_file} not found.")
@@ -1249,7 +1254,7 @@ def load_generation_dsa_module_data(dsa_file: str):
         gemm_mode = common.GEMMQuantMode[_normalize_dtype_key(row["gemm_type"])]
         kv_dtype = common.KVCacheQuantMode[_normalize_dtype_key(row["kv_cache_dtype"])]
 
-        dsa_data[arch][gemm_mode][kv_dtype][num_heads][b][s] = {
+        dsa_data[kv_dtype][gemm_mode][arch][num_heads][b][s] = {
             "latency": latency,
             "power": power,
             "energy": energy,
@@ -2535,13 +2540,13 @@ class PerfDatabase:
                 )
 
         # DSA (DeepSeek Sparse Attention) data interpolation
-        # Dict structure: data[architecture][gemm_mode][fmha_mode][kv_dtype][num_heads][s][b]
+        # Dict structure: data[fmha_mode][kv_dtype][gemm_mode][arch][num_heads][s][b]
         if getattr(self, "_context_dsa_module_data", None) is not None:
-            for arch in self._context_dsa_module_data:
-                for gemm_mode in self._context_dsa_module_data[arch]:
-                    for fmha_mode in self._context_dsa_module_data[arch][gemm_mode]:
-                        for kv_cache_dtype in self._context_dsa_module_data[arch][gemm_mode][fmha_mode]:
-                            data_dict = self._context_dsa_module_data[arch][gemm_mode][fmha_mode][kv_cache_dtype]
+            for fmha_mode in self._context_dsa_module_data:
+                for kv_cache_dtype in self._context_dsa_module_data[fmha_mode]:
+                    for gemm_mode in self._context_dsa_module_data[fmha_mode][kv_cache_dtype]:
+                        for arch in self._context_dsa_module_data[fmha_mode][kv_cache_dtype][gemm_mode]:
+                            data_dict = self._context_dsa_module_data[fmha_mode][kv_cache_dtype][gemm_mode][arch]
                             num_heads_list = list(data_dict.keys())
                             target_x_list = num_heads_list
                             target_y_list = (
@@ -2560,12 +2565,12 @@ class PerfDatabase:
                                 target_z_list=target_z_list,
                             )
 
-        # Dict structure: data[architecture][gemm_mode][kv_dtype][num_heads][b][s]
+        # Dict structure: data[kv_dtype][gemm_mode][arch][num_heads][b][s]
         if getattr(self, "_generation_dsa_module_data", None) is not None:
-            for arch in self._generation_dsa_module_data:
-                for gemm_mode in self._generation_dsa_module_data[arch]:
-                    for kv_cache_dtype in self._generation_dsa_module_data[arch][gemm_mode]:
-                        data_dict = self._generation_dsa_module_data[arch][gemm_mode][kv_cache_dtype]
+            for kv_cache_dtype in self._generation_dsa_module_data:
+                for gemm_mode in self._generation_dsa_module_data[kv_cache_dtype]:
+                    for arch in self._generation_dsa_module_data[kv_cache_dtype][gemm_mode]:
+                        data_dict = self._generation_dsa_module_data[kv_cache_dtype][gemm_mode][arch]
                         tp_list = list(data_dict.keys())
                         target_x_list = tp_list
                         target_y_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 384, 512, 1024, 2048, 8192]
@@ -2643,6 +2648,8 @@ class PerfDatabase:
                 "generation_attention": _enum_key_names(getattr(self, "_generation_attention_data", None)),
                 "context_mla": _enum_key_names(getattr(self, "_context_mla_data", None)),
                 "generation_mla": _enum_key_names(getattr(self, "_generation_mla_data", None)),
+                "dsa_context_module": _enum_key_names(getattr(self, "_context_dsa_module_data", None)),
+                "dsa_generation_module": _enum_key_names(getattr(self, "_generation_dsa_module_data", None)),
                 "mla_bmm": _enum_key_names(getattr(self, "_mla_bmm_data", None)),
                 "nccl": _enum_key_names(getattr(self, "_nccl_data", None)),
                 "moe": _enum_key_names(getattr(self, "_moe_data", None)),
@@ -2658,6 +2665,8 @@ class PerfDatabase:
                 "generation_attention": _enum_key_names(getattr(self, "_generation_attention_data", None)),
                 "context_mla": _enum_key_names(getattr(self, "_context_mla_data", None)),
                 "generation_mla": _enum_key_names(getattr(self, "_generation_mla_data", None)),
+                "dsa_context_module": _enum_key_names(getattr(self, "_context_dsa_module_data", None)),
+                "dsa_generation_module": _enum_key_names(getattr(self, "_generation_dsa_module_data", None)),
                 "mla_bmm": _enum_key_names(getattr(self, "_mla_bmm_data", None)),
                 "nccl": _enum_key_names(getattr(self, "_nccl_data", None)),
                 "moe": _enum_key_names(getattr(self, "_moe_data", None)),
@@ -2666,16 +2675,18 @@ class PerfDatabase:
             gemm_modes = self.supported_quant_mode.get("gemm", []) or []
             if common.GEMMQuantMode.fp8.name in gemm_modes and common.GEMMQuantMode.fp8_static.name not in gemm_modes:
                 gemm_modes.append(common.GEMMQuantMode.fp8_static.name)
-        elif self.backend == "vllm":  # TODO: deepseek
+        elif self.backend == "vllm":
             self.supported_quant_mode = {
                 "gemm": _enum_key_names(getattr(self, "_gemm_data", None)),
                 "context_attention": _enum_key_names(getattr(self, "_context_attention_data", None)),
                 "generation_attention": _enum_key_names(getattr(self, "_generation_attention_data", None)),
-                "nccl": _enum_key_names(getattr(self, "_nccl_data", None)),
                 "context_mla": [],
                 "generation_mla": [],
+                "dsa_context_module": _enum_key_names(getattr(self, "_context_dsa_module_data", None)),
+                "dsa_generation_module": _enum_key_names(getattr(self, "_generation_dsa_module_data", None)),
                 "mla_bmm": [],
                 "moe": _enum_key_names(getattr(self, "_moe_data", None)),
+                "nccl": _enum_key_names(getattr(self, "_nccl_data", None)),
             }
 
     def is_inter_node(self, num_gpus: int) -> bool:
@@ -5764,12 +5775,8 @@ class PerfDatabase:
 
         Raises:
             ValueError: If op_name is not valid
-            PerfDataNotAvailableError: If backend version not in ["1.2.0rc6"]
+            PerfDataNotAvailableError: If alltoall perf data is unavailable for this version
         """
-        if self.version not in ["1.2.0rc6"]:
-            raise PerfDataNotAvailableError(
-                f"TRT-LLM alltoall query requires backend version 1.2.0rc6, got '{self.version}'"
-            )
 
         def get_sol(
             num_tokens: int,
@@ -5897,6 +5904,11 @@ class PerfDatabase:
 
         # SILICON or HYBRID mode - use database
         def get_silicon():
+            if not getattr(self, "_trtllm_alltoall_data", None):
+                raise PerfDataNotAvailableError(
+                    f"TRT-LLM alltoall perf data not available for version '{self.version}'. "
+                    "Use HYBRID or EMPIRICAL database mode."
+                )
             self._trtllm_alltoall_data.raise_if_not_loaded()
             kernel_data = self._trtllm_alltoall_data[kernel_source]
             alltoall_dict = kernel_data[op_name][table_quant_mode][node_num][hidden_size][topk][num_experts][
@@ -6133,7 +6145,7 @@ class PerfDatabase:
                         f"Context DSA module perf data not loaded for system='{self.system}', "
                         f"backend='{self.backend}', version='{self.version}'."
                     )
-                dsa_dict = dsa_module_data[architecture][gemm_quant_mode][fmha_quant_mode][kvcache_quant_mode]
+                dsa_dict = dsa_module_data[fmha_quant_mode][kvcache_quant_mode][gemm_quant_mode][architecture]
                 full_s = s + prefix
                 result = self._interp_3d(num_heads, full_s, b, dsa_dict, "cubic")
                 latency = result["latency"]
@@ -6296,7 +6308,7 @@ class PerfDatabase:
                         f"Generation DSA module perf data not loaded for system='{self.system}', "
                         f"backend='{self.backend}', version='{self.version}'."
                     )
-                dsa_dict = dsa_module_data[architecture][gemm_quant_mode][kv_cache_dtype]
+                dsa_dict = dsa_module_data[kv_cache_dtype][gemm_quant_mode][architecture]
                 result = self._interp_3d(num_heads, b, s, dsa_dict, "cubic")
                 latency = result["latency"]
                 energy = result.get("energy", 0.0)
