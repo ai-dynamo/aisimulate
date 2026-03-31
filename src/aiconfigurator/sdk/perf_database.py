@@ -1133,19 +1133,55 @@ def _normalize_dtype_key(raw: str) -> str:
     return "float16" if raw == "bfloat16" else raw
 
 
+DSA_MODEL_DIMS: dict[str, dict] = {
+    "DeepseekV32ForCausalLM": {
+        "hidden_size": 7168,
+        "q_lora_rank": 1536,
+        "kv_lora_rank": 512,
+        "qk_nope_head_dim": 128,
+        "qk_rope_head_dim": 64,
+        "v_head_dim": 128,
+        "index_topk": 2048,
+        "index_head_dim": 128,
+        "index_n_heads": 64,
+    },
+    "GlmMoeDsaForCausalLM": {
+        "hidden_size": 6144,
+        "q_lora_rank": 2048,
+        "kv_lora_rank": 512,
+        "qk_nope_head_dim": 192,
+        "qk_rope_head_dim": 64,
+        "v_head_dim": 256,
+        "index_topk": 2048,
+        "index_head_dim": 128,
+        "index_n_heads": 32,
+    },
+}
+
+DEFAULT_DSA_ARCHITECTURE = "DeepseekV32ForCausalLM"
+
+
 def load_context_dsa_module_data(dsa_file: str):
     """
-    Load context DSA data. Produces the SAME dict structure as load_context_mla_data
-    so that the same interpolation and query infrastructure can be reused.
+    Load context DSA data.
 
-    Dict structure: data[fmha_quant_mode][kv_cache_quant_mode][num_heads][s][b]
-    (mirrors context MLA exactly)
+    Dict structure:
+        data[architecture][gemm_quant_mode][fmha_quant_mode][kv_cache_quant_mode][num_heads][s][b]
+
+    ``architecture`` comes from the HF config ``architectures[0]``
+    (e.g. "DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM") and distinguishes
+    models with different structural dims.
+    Legacy CSV rows without an ``architecture`` column default to "DeepseekV32ForCausalLM".
     """
     if not os.path.exists(dsa_file):
         logger.debug(f"DSA context data file {dsa_file} not found.")
         return None
 
-    dsa_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict()))))
+    dsa_data = defaultdict(
+        lambda: defaultdict(
+            lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict()))))
+        )
+    )
 
     with open(dsa_file, encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -1161,32 +1197,39 @@ def load_context_dsa_module_data(dsa_file: str):
         power = float(row.get("power", 0.0)) if has_power else 0.0
         energy = power * latency
 
-        entry = {"latency": latency, "power": power, "energy": energy}
-
-        quant_mode = common.FMHAQuantMode[_normalize_dtype_key(row["mla_dtype"])]
+        arch = row.get("architecture", DEFAULT_DSA_ARCHITECTURE)
+        gemm_mode = common.GEMMQuantMode[_normalize_dtype_key(row["gemm_type"])]
+        fmha_mode = common.FMHAQuantMode[_normalize_dtype_key(row["mla_dtype"])]
         kv_dtype = common.KVCacheQuantMode[_normalize_dtype_key(row["kv_cache_dtype"])]
-        try:
-            dsa_data[quant_mode][kv_dtype][num_heads][s][b]
-        except KeyError:
-            dsa_data[quant_mode][kv_dtype][num_heads][s][b] = entry
+
+        dsa_data[arch][gemm_mode][fmha_mode][kv_dtype][num_heads][s][b] = {
+            "latency": latency,
+            "power": power,
+            "energy": energy,
+        }
 
     return dsa_data
 
 
 def load_generation_dsa_module_data(dsa_file: str):
     """
-    Load generation DSA data. Produces the SAME dict structure as load_generation_mla_data
-    so that the same interpolation and query infrastructure can be reused.
+    Load generation DSA data.
 
-    Dict structure: data[kv_cache_quant_mode][num_heads][b][s]
-    (mirrors generation MLA exactly)
+    Dict structure:
+        data[architecture][gemm_quant_mode][kv_cache_quant_mode][num_heads][b][s]
+
+    ``architecture`` comes from the HF config ``architectures[0]``
+    (e.g. "DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM") and distinguishes
+    models with different structural dims.
+    Legacy CSV rows without an ``architecture`` column default to "DeepseekV32ForCausalLM".
     """
     if not os.path.exists(dsa_file):
         logger.debug(f"DSA generation data file {dsa_file} not found.")
         return None
 
-    # Same 4-level defaultdict as MLA — leaf is defaultdict() so try/except KeyError works
-    dsa_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict())))
+    dsa_data = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict()))))
+    )
 
     with open(dsa_file, encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -1197,22 +1240,20 @@ def load_generation_dsa_module_data(dsa_file: str):
     for row in rows:
         num_heads = int(row["num_heads"])
         b = int(row["batch_size"])
-        isl = int(row["isl"])
-        step = int(row["step"])
+        s = int(row["isl"]) + int(row["step"])
         latency = float(row["latency"])
         power = float(row.get("power", 0.0)) if has_power else 0.0
         energy = power * latency
 
-        # s = isl + step (same as MLA generation: total kv_cache position)
-        s = isl + step
-
-        entry = {"latency": latency, "power": power, "energy": energy}
-
+        arch = row.get("architecture", DEFAULT_DSA_ARCHITECTURE)
+        gemm_mode = common.GEMMQuantMode[_normalize_dtype_key(row["gemm_type"])]
         kv_dtype = common.KVCacheQuantMode[_normalize_dtype_key(row["kv_cache_dtype"])]
-        try:
-            dsa_data[kv_dtype][num_heads][b][s]
-        except KeyError:
-            dsa_data[kv_dtype][num_heads][b][s] = entry
+
+        dsa_data[arch][gemm_mode][kv_dtype][num_heads][b][s] = {
+            "latency": latency,
+            "power": power,
+            "energy": energy,
+        }
 
     return dsa_data
 
@@ -2075,6 +2116,11 @@ class PerfDatabase:
             self._wideep_deepep_normal_data = _load_op_data(PerfDataFilename.wideep_deepep_normal)
             self._wideep_deepep_ll_data = _load_op_data(PerfDataFilename.wideep_deepep_ll)
 
+        # DSA module-level attention data (DeepSeek Sparse Attention)
+        # Uses same dict structure as MLA so interpolation/query can be reused
+        self._context_dsa_module_data = _load_op_data(PerfDataFilename.dsa_context_module)
+        self._generation_dsa_module_data = _load_op_data(PerfDataFilename.dsa_generation_module)
+
         # TensorRT-LLM wideep path
         if backend == "trtllm":
             self._wideep_moe_compute_data = _load_op_data(PerfDataFilename.wideep_moe_compute)
@@ -2489,64 +2535,69 @@ class PerfDatabase:
                 )
 
         # DSA (DeepSeek Sparse Attention) data interpolation
-        # Uses EXACT same pattern as MLA since dict structure is identical
+        # Dict structure: data[architecture][gemm_mode][fmha_mode][kv_dtype][num_heads][s][b]
         if getattr(self, "_context_dsa_module_data", None) is not None:
-            for quant_mode in self._context_dsa_module_data:
-                for kv_cache_dtype in self._context_dsa_module_data[quant_mode]:
-                    num_heads_list = list(self._context_dsa_module_data[quant_mode][kv_cache_dtype].keys())
-                    data_dict = self._context_dsa_module_data[quant_mode][kv_cache_dtype]
-                    target_x_list = num_heads_list
-                    target_y_list = (
-                        [1, 16, 32, 64, 128, 256, 512, 1024, 2048]
-                        + [4096 + i * 2048 for i in range(14)]
-                        + [32768 + 16384 * i for i in range(6)]
-                        + [131072 + 32768 * i for i in range(12)]
-                        + [524288 + 65536 * i for i in range(9)]
-                    )
-                    target_z_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 384, 512, 1024, 2048]
+            for arch in self._context_dsa_module_data:
+                for gemm_mode in self._context_dsa_module_data[arch]:
+                    for fmha_mode in self._context_dsa_module_data[arch][gemm_mode]:
+                        for kv_cache_dtype in self._context_dsa_module_data[arch][gemm_mode][fmha_mode]:
+                            data_dict = self._context_dsa_module_data[arch][gemm_mode][fmha_mode][kv_cache_dtype]
+                            num_heads_list = list(data_dict.keys())
+                            target_x_list = num_heads_list
+                            target_y_list = (
+                                [1, 16, 32, 64, 128, 256, 512, 1024, 2048]
+                                + [4096 + i * 2048 for i in range(14)]
+                                + [32768 + 16384 * i for i in range(6)]
+                                + [131072 + 32768 * i for i in range(12)]
+                                + [524288 + 65536 * i for i in range(9)]
+                            )
+                            target_z_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 384, 512, 1024, 2048]
 
-                    self._extrapolate_data_grid(
-                        data_dict=data_dict,
-                        target_x_list=target_x_list,
-                        target_y_list=target_y_list,
-                        target_z_list=target_z_list,
-                    )
+                            self._extrapolate_data_grid(
+                                data_dict=data_dict,
+                                target_x_list=target_x_list,
+                                target_y_list=target_y_list,
+                                target_z_list=target_z_list,
+                            )
 
+        # Dict structure: data[architecture][gemm_mode][kv_dtype][num_heads][b][s]
         if getattr(self, "_generation_dsa_module_data", None) is not None:
-            for kv_cache_dtype in self._generation_dsa_module_data:
-                tp_list = list(self._generation_dsa_module_data[kv_cache_dtype].keys())
-                data_dict = self._generation_dsa_module_data[kv_cache_dtype]
-                target_x_list = tp_list
-                target_y_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 384, 512, 1024, 2048, 8192]
-                target_z_list = [
-                    1,
-                    2,
-                    4,
-                    8,
-                    16,
-                    32,
-                    64,
-                    128,
-                    256,
-                    512,
-                    1024,
-                    2048,
-                    4096,
-                    8192,
-                    16384,
-                    32768,
-                    65536,
-                    131072,
-                    262144,
-                    2097152 * 8,
-                ]
+            for arch in self._generation_dsa_module_data:
+                for gemm_mode in self._generation_dsa_module_data[arch]:
+                    for kv_cache_dtype in self._generation_dsa_module_data[arch][gemm_mode]:
+                        data_dict = self._generation_dsa_module_data[arch][gemm_mode][kv_cache_dtype]
+                        tp_list = list(data_dict.keys())
+                        target_x_list = tp_list
+                        target_y_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 384, 512, 1024, 2048, 8192]
+                        target_z_list = [
+                            1,
+                            2,
+                            4,
+                            8,
+                            16,
+                            32,
+                            64,
+                            128,
+                            256,
+                            512,
+                            1024,
+                            2048,
+                            4096,
+                            8192,
+                            16384,
+                            32768,
+                            65536,
+                            131072,
+                            262144,
+                            2097152 * 8,
+                        ]
 
-                self._extrapolate_data_grid(
-                    data_dict=data_dict,
-                    target_x_list=target_x_list,
-                    target_y_list=target_y_list,
-                    target_z_list=target_z_list,
-                )
+                        self._extrapolate_data_grid(
+                            data_dict=data_dict,
+                            target_x_list=target_x_list,
+                            target_y_list=target_y_list,
+                            target_z_list=target_z_list,
+                        )
 
         # post-correction
         self._correct_data()
@@ -3358,6 +3409,20 @@ class PerfDatabase:
                 e.args = (exception_msg,)
             raise
 
+    def _get_quant_tc_flops(self, quant_mode) -> float:
+        """Resolve actual tensor-core FLOPS for a given quant mode.
+
+        Maps the quant mode's compute factor (1/2/4) to the corresponding
+        ``*_tc_flops`` entry in the system GPU spec.  Falls back to
+        ``float16_tc_flops * compute_factor`` when the spec entry is missing.
+        """
+        compute_to_flops_key = {1: "float16_tc_flops", 2: "fp8_tc_flops", 4: "fp4_tc_flops"}
+        gpu = self.system_spec["gpu"]
+        key = compute_to_flops_key.get(quant_mode.value.compute)
+        if key is not None and key in gpu:
+            return gpu[key]
+        return gpu["float16_tc_flops"] * quant_mode.value.compute
+
     @staticmethod
     def _normalize_gemm_quant_mode_for_table(quant_mode: common.GEMMQuantMode) -> common.GEMMQuantMode:
         """
@@ -3404,7 +3469,8 @@ class PerfDatabase:
             """
             Get the sol time, sol math and sol mem
             """
-            sol_math = 2 * m * n * k / (self.system_spec["gpu"]["float16_tc_flops"] * quant_mode.value.compute) * 1000
+            tc_flops = self._get_quant_tc_flops(quant_mode)
+            sol_math = 2 * m * n * k / tc_flops * 1000
             sol_mem = quant_mode.value.memory * (m * n + m * k + n * k) / self.system_spec["gpu"]["mem_bw"] * 1000
             sol_time = max(sol_math, sol_mem)
             return sol_time, sol_math, sol_mem
@@ -5891,12 +5957,14 @@ class PerfDatabase:
         num_heads: int,
         kvcache_quant_mode: common.KVCacheQuantMode,
         fmha_quant_mode: common.FMHAQuantMode,
+        gemm_quant_mode: common.GEMMQuantMode = common.GEMMQuantMode.float16,
         database_mode: common.DatabaseMode | None = None,
         *,
         prefix: int = 0,
-        index_n_heads: int = 64,
-        index_head_dim: int = 128,
-        index_topk: int = 2048,
+        architecture: str = DEFAULT_DSA_ARCHITECTURE,
+        index_n_heads: int | None = None,
+        index_head_dim: int | None = None,
+        index_topk: int | None = None,
     ) -> PerformanceResult | tuple[float, float, float]:
         """
         Query context DSA module-level latency and energy.
@@ -5912,21 +5980,27 @@ class PerfDatabase:
             fmha_quant_mode: FMHA quantization mode
             database_mode: Database mode (SILICON, EMPIRICAL, SOL, HYBRID)
             prefix: Prefix length in KV cache
-            index_n_heads: Number of heads in the indexer
-            index_head_dim: Head dim in the indexer
-            index_topk: Top-k selected by the indexer
+            architecture: HF architecture string (e.g. "DeepseekV32ForCausalLM")
+            index_n_heads: Number of heads in the indexer (default from DSA_MODEL_DIMS)
+            index_head_dim: Head dim in the indexer (default from DSA_MODEL_DIMS)
+            index_topk: Top-k selected by the indexer (default from DSA_MODEL_DIMS)
 
         Returns:
             PerformanceResult or (sol_time, sol_math, sol_mem) for SOL_FULL
         """
-        # DeepSeek-V3.2 DSA structural dims.
-        # FIXME: should use model config to get the structural dims.
-        hidden_size = 7168
-        q_lora = 1536
-        kv_lora = 512
-        qk_nope = 128
-        qk_rope = 64
-        v_dim = 128
+        dims = DSA_MODEL_DIMS.get(architecture, DSA_MODEL_DIMS[DEFAULT_DSA_ARCHITECTURE])
+        hidden_size = dims["hidden_size"]
+        q_lora = dims["q_lora_rank"]
+        kv_lora = dims["kv_lora_rank"]
+        qk_nope = dims["qk_nope_head_dim"]
+        qk_rope = dims["qk_rope_head_dim"]
+        v_dim = dims["v_head_dim"]
+        if index_n_heads is None:
+            index_n_heads = dims["index_n_heads"]
+        if index_head_dim is None:
+            index_head_dim = dims["index_head_dim"]
+        if index_topk is None:
+            index_topk = dims["index_topk"]
         qk_head_dim = qk_nope + qk_rope
         attn_head_dim = kv_lora + qk_rope
 
@@ -5940,34 +6014,46 @@ class PerfDatabase:
         ) -> tuple[float, float, float]:
             """
             SOL estimate for the full DSA context attention block.
-            Decomposes into: GEMMs (compute-bound) + sparse attention (compute or memory-bound).
+
+            Ops are split into two groups with different throughput/memory:
+              - GEMM group (linear projections + absorption BMMs): gemm_quant_mode
+              - Attention group (indexer logits + sparse MLA): fmha_quant_mode
             """
             full_s = s + prefix
             tokens = b * s
 
-            # --- Compute (FLOPs) ---
-            # 1. kv_a_proj: [tokens, hidden_size] x [hidden_size, q_lora+kv_lora+qk_rope+index_head_dim]
+            # ── Compute (FLOPs) ─────────────────────────────────────────
             proj_out = q_lora + kv_lora + qk_rope + index_head_dim
-            gemm_kva_ops = 2 * tokens * hidden_size * proj_out
 
+            # GEMM group — throughput governed by gemm_quant_mode
+            # 1. kv_a_proj: [tokens, hidden_size] x [hidden_size, q_lora+kv_lora+qk_rope+index_head_dim]
             # 2. q_b_proj: [tokens, q_lora] x [q_lora, num_heads * qk_head_dim]
-            gemm_qb_ops = 2 * tokens * q_lora * (num_heads * qk_head_dim)
-
             # 3. Indexer wq_b: [tokens, q_lora] x [q_lora, index_n_heads * index_head_dim]
-            gemm_wqb_ops = 2 * tokens * q_lora * (index_n_heads * index_head_dim)
-
             # 4. Indexer weights_proj: [tokens, hidden_size] x [hidden_size, index_n_heads]
-            gemm_wp_ops = 2 * tokens * hidden_size * index_n_heads
+            # 5. o_proj: [tokens, num_heads*v_dim] x [num_heads*v_dim, hidden_size]
+            # 6. BMM pre (q_nope absorption): num_heads x [tokens, qk_nope] x [kv_lora, qk_nope]
+            # 7. BMM post (V projection): num_heads x [tokens, kv_lora] x [v_dim, kv_lora]
+            gemm_group_ops = (
+                2 * tokens * hidden_size * proj_out
+                + 2 * tokens * q_lora * (num_heads * qk_head_dim)
+                + 2 * tokens * q_lora * (index_n_heads * index_head_dim)
+                + 2 * tokens * hidden_size * index_n_heads
+                + 2 * tokens * (num_heads * v_dim) * hidden_size
+                + 2 * num_heads * tokens * qk_nope * kv_lora
+                + 2 * num_heads * tokens * kv_lora * v_dim
+            )
 
-            # 5. Indexer FP8 MQA logits: Q[tokens, index_n_heads, head_dim] x K[full_s, head_dim]
-            #    One optimization is to skip logits+topk when kv_len <= topk (skip_indexer optimization).
+            # Indexer logits group — always FP8 (hardcoded in both vLLM and TRT-LLM)
+            # 8. Indexer FP8 MQA logits: Q[tokens, index_n_heads, head_dim] x K[full_s, head_dim]
+            #    TRT-LLM skips logits+topk when kv_len <= topk (skip_indexer optimization).
             #    wq_b and weights_proj GEMMs still run regardless.
             if full_s <= index_topk:
                 indexer_logits_ops = 0
             else:
                 indexer_logits_ops = 2 * tokens * index_n_heads * index_head_dim * full_s
 
-            # 6. Sparse MLA attention: only selected top-k over full KV cache.
+            # Sparse MLA attention group — throughput governed by fmha_quant_mode
+            # 9. Sparse MLA attention: only selected top-k over full KV cache.
             #    QK^T uses attn_head_dim (kv_lora+qk_rope=576), V aggregation uses kv_lora (512).
             effective_kv = min(full_s, index_topk)
             # Exact KV pair count: sum_{i=0..s-1} min(prefix+i+1, topk)
@@ -5984,44 +6070,35 @@ class PerfDatabase:
                 total_kv_pairs = ramp_pairs + sat_pairs
             sparse_attn_ops = 2 * num_heads * (attn_head_dim + kv_lora) * total_kv_pairs
 
-            # 7. BMM pre (q_nope absorption): num_heads x [tokens, qk_nope] x [kv_lora, qk_nope]
-            bmm_pre_ops = 2 * num_heads * tokens * qk_nope * kv_lora
+            # ── Memory (bytes) ──────────────────────────────────────────
+            # GEMM weights — size governed by gemm_quant_mode.memory
+            gemm_weight_bytes = (
+                hidden_size * proj_out  # kv_a_proj
+                + q_lora * num_heads * qk_head_dim  # q_b_proj
+                + q_lora * index_n_heads * index_head_dim  # wq_b
+                + hidden_size * index_n_heads  # weights_proj
+                + num_heads * v_dim * hidden_size  # o_proj
+            ) * gemm_quant_mode.value.memory
 
-            # 8. BMM post (V projection): num_heads x [tokens, kv_lora] x [v_dim, kv_lora]
-            bmm_post_ops = 2 * num_heads * tokens * kv_lora * v_dim
-
-            # 9. o_proj: [tokens, num_heads*v_dim] x [num_heads*v_dim, hidden_size]
-            gemm_oproj_ops = 2 * tokens * (num_heads * v_dim) * hidden_size
-
-            total_ops = (
-                gemm_kva_ops
-                + gemm_qb_ops
-                + gemm_wqb_ops
-                + gemm_wp_ops
-                + indexer_logits_ops
-                + sparse_attn_ops
-                + bmm_pre_ops
-                + bmm_post_ops
-                + gemm_oproj_ops
-            )
-
-            # --- Memory (bytes) ---
-            # Dominant terms: KV cache reads for sparse attention + GEMM weight reads
-            dtype_bytes = fmha_quant_mode.value.memory
+            # KV cache reads for sparse attention
             kv_cache_bytes = b * num_heads * effective_kv * attn_head_dim * kvcache_quant_mode.value.memory
-            # Indexer K cache read is skipped when kv_len <= topk (skip_indexer)
-            indexer_cache_bytes = 0 if full_s <= index_topk else b * index_n_heads * full_s * index_head_dim
-            q_io_bytes = tokens * num_heads * qk_head_dim * dtype_bytes * 2  # read + write
-            weight_bytes = (
-                hidden_size * proj_out
-                + q_lora * num_heads * qk_head_dim
-                + q_lora * index_n_heads * index_head_dim
-                + hidden_size * index_n_heads
-                + num_heads * v_dim * hidden_size
-            ) * dtype_bytes
-            total_mem = kv_cache_bytes + indexer_cache_bytes + q_io_bytes + weight_bytes
+            # Indexer K cache read (MQA: 1 shared K head, FP8 with per-128 scales).
+            # Per-token bytes: head_dim (FP8) + ceil(head_dim/128)*4 (scales).
+            indexer_entry_bytes = index_head_dim + (index_head_dim + 127) // 128 * 4
+            indexer_cache_bytes = 0 if full_s <= index_topk else b * full_s * indexer_entry_bytes
+            # Q activations read + write
+            q_io_bytes = tokens * num_heads * qk_head_dim * fmha_quant_mode.value.memory * 2
 
-            sol_math = total_ops / self.system_spec["gpu"]["float16_tc_flops"] * 1000 / fmha_quant_mode.value.compute
+            total_mem = gemm_weight_bytes + kv_cache_bytes + indexer_cache_bytes + q_io_bytes
+
+            # ── SOL ─────────────────────────────────────────────────────
+            gemm_flops = self._get_quant_tc_flops(gemm_quant_mode)
+            indexer_fp8_flops = self._get_quant_tc_flops(common.FMHAQuantMode.fp8)
+            attn_flops = self._get_quant_tc_flops(fmha_quant_mode)
+
+            sol_math = (
+                gemm_group_ops / gemm_flops + indexer_logits_ops / indexer_fp8_flops + sparse_attn_ops / attn_flops
+            ) * 1000
             sol_mem = total_mem / self.system_spec["gpu"]["mem_bw"] * 1000
             sol_time = max(sol_math, sol_mem)
             return sol_time, sol_math, sol_mem
@@ -6056,7 +6133,7 @@ class PerfDatabase:
                         f"Context DSA module perf data not loaded for system='{self.system}', "
                         f"backend='{self.backend}', version='{self.version}'."
                     )
-                dsa_dict = dsa_module_data[fmha_quant_mode][kvcache_quant_mode]
+                dsa_dict = dsa_module_data[architecture][gemm_quant_mode][fmha_quant_mode][kvcache_quant_mode]
                 full_s = s + prefix
                 result = self._interp_3d(num_heads, full_s, b, dsa_dict, "cubic")
                 latency = result["latency"]
@@ -6091,11 +6168,13 @@ class PerfDatabase:
         s: int,
         num_heads: int,
         kv_cache_dtype: common.KVCacheQuantMode,
+        gemm_quant_mode: common.GEMMQuantMode = common.GEMMQuantMode.float16,
         database_mode: common.DatabaseMode | None = None,
         *,
-        index_n_heads: int = 64,
-        index_head_dim: int = 128,
-        index_topk: int = 2048,
+        architecture: str = DEFAULT_DSA_ARCHITECTURE,
+        index_n_heads: int | None = None,
+        index_head_dim: int | None = None,
+        index_topk: int | None = None,
     ) -> PerformanceResult | tuple[float, float, float]:
         """
         Query generation DSA module-level latency and energy.
@@ -6110,71 +6189,86 @@ class PerfDatabase:
             index_head_dim: Head dim in the indexer
             index_topk: Top-k selected by the indexer
         """
-        # FIXME: should use model config to get the structural dims.
-        hidden_size = 7168
-        q_lora = 1536
-        kv_lora = 512
-        qk_nope = 128
-        qk_rope = 64
-        v_dim = 128
+        dims = DSA_MODEL_DIMS.get(architecture, DSA_MODEL_DIMS[DEFAULT_DSA_ARCHITECTURE])
+        hidden_size = dims["hidden_size"]
+        q_lora = dims["q_lora_rank"]
+        kv_lora = dims["kv_lora_rank"]
+        qk_nope = dims["qk_nope_head_dim"]
+        qk_rope = dims["qk_rope_head_dim"]
+        v_dim = dims["v_head_dim"]
+        if index_n_heads is None:
+            index_n_heads = dims["index_n_heads"]
+        if index_head_dim is None:
+            index_head_dim = dims["index_head_dim"]
+        if index_topk is None:
+            index_topk = dims["index_topk"]
         qk_head_dim = qk_nope + qk_rope
         attn_head_dim = kv_lora + qk_rope
 
         def get_sol(
             b: int, s: int, num_heads: int, kv_cache_dtype: common.KVCacheQuantMode
         ) -> tuple[float, float, float]:
-            """SOL estimate for generation DSA module (1 token per request)."""
-            if kv_cache_dtype == common.KVCacheQuantMode.fp8:
-                quant_mode_gen = common.FMHAQuantMode.fp8
-            else:
-                quant_mode_gen = common.FMHAQuantMode.float16
+            """SOL estimate for generation DSA module (1 token per request).
 
-            tokens = b  # generation: 1 token per request
+            Ops split into GEMM group (gemm_quant_mode) and attention group
+            (fmha derived from kv_cache_dtype).
+            """
+            fmha_mode = common.FMHAQuantMode.float16
+
+            tokens = b
             proj_out = q_lora + kv_lora + qk_rope + index_head_dim
             effective_kv = min(s, index_topk)
 
-            # --- Compute (FLOPs) ---
-            # GEMMs: small M (=b), dominated by weight loading
+            # ── GEMM group — throughput governed by gemm_quant_mode ─────
             # 1. kv_a_proj: [tokens, hidden_size] x [hidden_size, q_lora+kv_lora+qk_rope+index_head_dim]
-            # 2. q_b_proj:  [tokens, q_lora] x [q_lora, num_heads * qk_head_dim]
+            # 2. q_b_proj: [tokens, q_lora] x [q_lora, num_heads * qk_head_dim]
             # 3. Indexer wq_b: [tokens, q_lora] x [q_lora, index_n_heads * index_head_dim]
             # 4. Indexer weights_proj: [tokens, hidden_size] x [hidden_size, index_n_heads]
             # 5. o_proj: [tokens, num_heads*v_dim] x [num_heads*v_dim, hidden_size]
-            gemm_ops = (
+            # 6. BMM pre (q_nope absorption) + BMM post (V projection)
+            gemm_group_ops = (
                 2 * tokens * hidden_size * proj_out
                 + 2 * tokens * q_lora * num_heads * qk_head_dim
                 + 2 * tokens * q_lora * index_n_heads * index_head_dim
                 + 2 * tokens * hidden_size * index_n_heads
                 + 2 * tokens * num_heads * v_dim * hidden_size
+                + 2 * num_heads * tokens * qk_nope * kv_lora
+                + 2 * num_heads * tokens * kv_lora * v_dim
             )
-            # 6. Indexer: paged MQA logits over full KV cache.
-            #    Unlike context phase, generation uses paged MQA kernels that
-            #    dispatch uniformly across the batch, so the indexer always runs.
-            indexer_ops = 2 * tokens * index_n_heads * index_head_dim * s
-            # 7. Sparse attention: only top-k tokens
-            #    QK^T uses attn_head_dim (kv_lora+qk_rope=576), V aggregation uses kv_lora (512)
-            sparse_ops = 2 * tokens * num_heads * (attn_head_dim + kv_lora) * effective_kv
-            # 8. BMM pre (q_nope absorption) + BMM post (V projection)
-            bmm_ops = 2 * num_heads * tokens * qk_nope * kv_lora + 2 * num_heads * tokens * kv_lora * v_dim
-            total_ops = gemm_ops + indexer_ops + sparse_ops + bmm_ops
 
-            # --- Memory (bytes) ---
-            dtype_bytes = quant_mode_gen.value.memory
-            # Indexer K cache read: always read full KV cache (paged, FP8)
-            indexer_cache_bytes = b * s * index_head_dim
+            # Indexer logits — always FP8 (hardcoded in both vLLM and TRT-LLM)
+            # 7. Indexer: paged FP8 MQA logits over full KV cache
+            indexer_logits_ops = 2 * tokens * index_n_heads * index_head_dim * s
+
+            # Sparse MLA attention — throughput governed by fmha_mode
+            # 8. Sparse attention: only top-k tokens
+            #    QK^T uses attn_head_dim (kv_lora+qk_rope=576), V aggregation uses kv_lora (512)
+            sparse_attn_ops = 2 * tokens * num_heads * (attn_head_dim + kv_lora) * effective_kv
+
+            # ── Memory (bytes) ──────────────────────────────────────────
+            # GEMM weights (read once) — size governed by gemm_quant_mode.memory
+            gemm_weight_bytes = (
+                hidden_size * proj_out  # kv_a_proj
+                + q_lora * num_heads * qk_head_dim  # q_b_proj
+                + q_lora * index_n_heads * index_head_dim  # wq_b
+                + hidden_size * index_n_heads  # weights_proj
+                + num_heads * v_dim * hidden_size  # o_proj
+            ) * gemm_quant_mode.value.memory
+            # Indexer K cache read: full s (paged, MQA 1 head, FP8 with per-128 scales)
+            indexer_entry_bytes = index_head_dim + (index_head_dim + 127) // 128 * 4
+            indexer_cache_bytes = b * s * indexer_entry_bytes
             # MLA KV cache read: only top-k tokens
             kv_cache_bytes = b * effective_kv * attn_head_dim * kv_cache_dtype.value.memory
-            # GEMM weights (read once)
-            weight_bytes = (
-                hidden_size * proj_out
-                + q_lora * num_heads * qk_head_dim
-                + q_lora * index_n_heads * index_head_dim
-                + hidden_size * index_n_heads
-                + num_heads * v_dim * hidden_size
-            ) * dtype_bytes
-            total_mem = indexer_cache_bytes + kv_cache_bytes + weight_bytes
+            total_mem = gemm_weight_bytes + indexer_cache_bytes + kv_cache_bytes
 
-            sol_math = total_ops / self.system_spec["gpu"]["float16_tc_flops"] * 1000 / quant_mode_gen.value.compute
+            # ── SOL ─────────────────────────────────────────────────────
+            gemm_flops = self._get_quant_tc_flops(gemm_quant_mode)
+            indexer_fp8_flops = self._get_quant_tc_flops(common.FMHAQuantMode.fp8)
+            attn_flops = self._get_quant_tc_flops(fmha_mode)
+
+            sol_math = (
+                gemm_group_ops / gemm_flops + indexer_logits_ops / indexer_fp8_flops + sparse_attn_ops / attn_flops
+            ) * 1000
             sol_mem = total_mem / self.system_spec["gpu"]["mem_bw"] * 1000
             sol_time = max(sol_math, sol_mem)
             return sol_time, sol_math, sol_mem
@@ -6202,7 +6296,7 @@ class PerfDatabase:
                         f"Generation DSA module perf data not loaded for system='{self.system}', "
                         f"backend='{self.backend}', version='{self.version}'."
                     )
-                dsa_dict = dsa_module_data[kv_cache_dtype]
+                dsa_dict = dsa_module_data[architecture][gemm_quant_mode][kv_cache_dtype]
                 result = self._interp_3d(num_heads, b, s, dsa_dict, "cubic")
                 latency = result["latency"]
                 energy = result.get("energy", 0.0)
