@@ -31,6 +31,8 @@ def agg_pareto(
     model_config: config.ModelConfig,
     parallel_config_list: list[list[int]],
     enable_chunked_prefill: bool = False,
+    free_gpu_memory_fraction: float | None = None,
+    max_seq_len: int | None = None,
 ) -> pd.DataFrame:
     """
     Find Pareto front for agg.
@@ -56,6 +58,7 @@ def agg_pareto(
     results_df = pd.DataFrame(columns=ColumnsAgg)
     exceptions = []
     all_configs_oom = True
+    all_kv_cache_oom = True
     for parallel_config in parallel_config_list:
         tp_size, pp_size, dp_size, moe_tp_size, moe_ep_size = parallel_config
         logger.debug(
@@ -115,9 +118,13 @@ def agg_pareto(
                     max_batch_size=512,
                     ctx_stride=512,
                     enable_chunked_prefill=enable_chunked_prefill,
+                    free_gpu_memory_fraction=free_gpu_memory_fraction,
+                    max_seq_len=max_seq_len,
                 )
                 if not summary.check_oom():
                     all_configs_oom = False
+                if not summary.check_kv_cache_oom():
+                    all_kv_cache_oom = False
                 result_df = summary.get_summary_df()
                 if len(result_df) == 0:
                     logger.debug(
@@ -157,6 +164,12 @@ def agg_pareto(
                 "No results found: the model does not fit in GPU memory for any parallel "
                 "configuration. Try increasing --total-gpus, using a quantized model, or "
                 "using a system with more VRAM per GPU."
+            )
+        if all_kv_cache_oom:
+            raise RuntimeError(
+                "No results found: the requested batch size exceeds KV cache capacity for all "
+                "parallel configurations. Try reducing --batch-size, increasing "
+                "--free-gpu-memory-fraction, or using a system with more VRAM per GPU."
             )
         raise RuntimeError(
             "No results found for any parallel configuration. No configuration satisfied the "

@@ -16,6 +16,22 @@ from aiconfigurator.sdk.perf_database import PerfDatabase
 
 logger = logging.getLogger(__name__)
 
+# Fraction of available KV cache memory assumed to be reserved by TRT-LLM
+# for internal block-allocator overhead.  Applied in production to make the
+# KV OOM check conservative; set to 0 in tests to validate the raw formula.
+KV_CACHE_MEMORY_RESERVED_FRACTION: float = 0.015
+
+# Acceptable formula error relative to real TRT-LLM benchmark measurements.
+# Used as the %-based tolerance band in KV cache capacity tests.
+KV_CACHE_MEMORY_TOLERANCE: float = 0.02
+
+# Default fraction of free GPU memory that TRT-LLM allocates for KV cache.
+TRTLLM_DEFAULT_FREE_GPU_MEMORY_FRACTION: float = 0.9
+
+# Default max_num_tokens for TRT-LLM engine builds (BuildConfig.max_num_tokens).
+# Determines activation memory pre-allocated at engine build time.
+TRTLLM_DEFAULT_MAX_NUM_TOKENS: int = 8192
+
 
 class TRTLLMBackend(BaseBackend):
     """
@@ -26,7 +42,15 @@ class TRTLLMBackend(BaseBackend):
         self,
     ):
         super().__init__()
-        self._agg_cache = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict())))
+        # Cache key: [isl][osl][batch_size][ctx_tokens]
+        #            [max_seq_len][max_num_tokens][free_gpu_memory_fraction]
+        self._agg_cache = defaultdict(
+            lambda: defaultdict(
+                lambda: defaultdict(
+                    lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict())))
+                )
+            )
+        )
         self.name = common.BackendName.trtllm
 
     def run_agg(
@@ -45,8 +69,25 @@ class TRTLLMBackend(BaseBackend):
         assert ctx_tokens is not None, "ctx_tokens is required"
         balance_score = isl * b / ctx_tokens / osl
 
+        # Resolve KV cache parameters from kwargs (TRTLLM defaults apply).
+        # Use `if x is None` instead of kwargs.get default so that an explicit
+        # None passed by the Python API still falls back to the constant.
+        # max_seq_len must be resolved before the cache lookup to avoid None and
+        # isl+osl landing in separate cache buckets for identical configurations.
+        max_seq_len = kwargs.get("max_seq_len")
+        if max_seq_len is None:
+            max_seq_len = isl + osl
+        free_gpu_memory_fraction = kwargs.get("free_gpu_memory_fraction")
+        if free_gpu_memory_fraction is None:
+            free_gpu_memory_fraction = TRTLLM_DEFAULT_FREE_GPU_MEMORY_FRACTION
+        # max_num_tokens controls activation memory (batch-level budget, BuildConfig.max_num_tokens).
+        # This is distinct from max_seq_len, which controls per-slot KV cache pre-allocation.
+        max_num_tokens = kwargs.get("max_num_tokens")
+        if max_num_tokens is None:
+            max_num_tokens = TRTLLM_DEFAULT_MAX_NUM_TOKENS
+
         try:
-            summary = self._agg_cache[isl][osl][b][ctx_tokens]
+            summary = self._agg_cache[isl][osl][b][ctx_tokens][max_seq_len][max_num_tokens][free_gpu_memory_fraction]
         except KeyError:
             # we would like to calculate num_mix_steps and num_genonly_steps based on
             # isl, osl, b, ctx_tokens within osl steps, need to finish all the ctx tokens
@@ -305,7 +346,20 @@ class TRTLLMBackend(BaseBackend):
                 num_tokens = num_gen_requests + ctx_tokens
             else:
                 num_tokens = ctx_tokens
-            memory = self._get_memory_usage(model, database, b, 1, isl, osl, num_tokens, prefix=prefix)
+
+            # Compute memory reflecting what TRT-LLM actually allocates:
+            # activations sized by max_num_tokens, kvcache sized by max_seq_len.
+            memory = self._get_memory_usage(
+                model,
+                database,
+                b,
+                1,
+                isl,
+                osl,
+                num_tokens=max_num_tokens,
+                prefix=prefix,
+                max_seq_len=max_seq_len,
+            )
             tp = model.config.tp_size
             pp = model.config.pp_size
             dp = model.config.attention_dp_size
@@ -369,7 +423,13 @@ class TRTLLMBackend(BaseBackend):
             }
             result = pd.DataFrame([result_dict], columns=common.ColumnsAgg).round(3)
             summary = InferenceSummary(RuntimeConfig(isl=isl, osl=osl))
-            summary.set_memory_and_check_oom(memory, database.system_spec["gpu"]["mem_capacity"])
+            summary.set_memory_and_check_oom(
+                memory,
+                database.system_spec["gpu"]["mem_capacity"],
+                free_gpu_memory_fraction=free_gpu_memory_fraction,
+                kv_cache_reserved_fraction=KV_CACHE_MEMORY_RESERVED_FRACTION,
+                kv_cache_tolerance=KV_CACHE_MEMORY_TOLERANCE,
+            )
             summary.set_summary_df(result)
             summary.set_result_dict(result_dict)
 
@@ -383,7 +443,7 @@ class TRTLLMBackend(BaseBackend):
             summary.set_per_ops_data(per_ops_data)
 
             # caching
-            self._agg_cache[isl][osl][b][ctx_tokens] = summary
+            self._agg_cache[isl][osl][b][ctx_tokens][max_seq_len][max_num_tokens][free_gpu_memory_fraction] = summary
 
         return summary
 
@@ -402,6 +462,11 @@ class TRTLLMBackend(BaseBackend):
             ctx_stride: the stride of ctx tokens to test, it will impact the time to run the test.
             enable_chunked_prefill: whether to enable chunked prefill, it will impact the time to
                 run the test while have little impact on the result. Default off.
+            free_gpu_memory_fraction: fraction of free GPU memory allocated for KV cache.
+                When set, batch sizes that would exceed KV cache capacity are filtered out.
+                Defaults to ``TRTLLM_DEFAULT_FREE_GPU_MEMORY_FRACTION`` (0.9).
+            max_seq_len: per-slot KV cache pre-allocation budget (tokens per sequence).
+                Defaults to ``isl + osl`` when not provided.
 
         Returns:
             A summary of the best agg result under constraints.
@@ -415,6 +480,14 @@ class TRTLLMBackend(BaseBackend):
         max_batch_size = kwargs.get("max_batch_size", 512)
         ctx_stride = kwargs.get("ctx_stride", 512)
         enable_chunked_prefill = kwargs.get("enable_chunked_prefill", False)
+        # max_seq_len controls per-slot KV cache pre-allocation (isl+osl is the natural workload bound).
+        # This is distinct from max_num_tokens, which controls batch-level activation memory.
+        max_seq_len = kwargs.get("max_seq_len")
+        if max_seq_len is None:
+            max_seq_len = isl + osl
+        free_gpu_memory_fraction = kwargs.get("free_gpu_memory_fraction")
+        if free_gpu_memory_fraction is None:
+            free_gpu_memory_fraction = TRTLLM_DEFAULT_FREE_GPU_MEMORY_FRACTION
 
         # when b is larger than 1024, the result is not good as the data collection is not enough
         # to cover this.
@@ -473,9 +546,11 @@ class TRTLLMBackend(BaseBackend):
                         seq_imbalance_correction_scale=runtime_config.seq_imbalance_correction_scale,
                     ),
                     ctx_tokens=ctx_tokens,
+                    max_seq_len=max_seq_len,
+                    free_gpu_memory_fraction=free_gpu_memory_fraction,
                 )
 
-                if summary.check_oom():
+                if summary.check_oom() or summary.check_kv_cache_oom():
                     break  # larger ctx tokens will cause oom
                 all_oom = False
                 result_dict = summary.get_result_dict()
@@ -504,6 +579,7 @@ class TRTLLMBackend(BaseBackend):
         osl: int,
         num_tokens: int = 0,
         prefix: int = 0,
+        max_seq_len: int | None = None,
     ) -> dict[str, float]:
         """
         Get the memory usage of the backend.
@@ -571,11 +647,8 @@ class TRTLLMBackend(BaseBackend):
             num_kv_heads_per_gpu = (model._num_kv_heads + model.config.tp_size - 1) // model.config.tp_size
             kvcache_per_token = num_kv_heads_per_gpu * model._head_size * model._num_layers * 2
         # should not be divided by pp_size as you need to hold all kvcache for stages.
-        kvcache = (
-            (batch_size * isl + batch_size * beam_width * osl)
-            * model.config.kvcache_quant_mode.value.memory
-            * kvcache_per_token
-        )
+        seq_tokens = max_seq_len if max_seq_len is not None else isl + beam_width * osl
+        kvcache = batch_size * seq_tokens * model.config.kvcache_quant_mode.value.memory * kvcache_per_token
         # if 'DEEPSEEK' in model.model_path or 'MOE' in model.model_path:
         #    kvcache = kvcache * model.config.attention_dp_size # this is incorrect. tp will
         #    duplicate the kvcache while attn_dp will not.

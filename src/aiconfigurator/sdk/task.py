@@ -63,6 +63,8 @@ class TaskContext:
     enable_wideep: bool
     enable_chunked_prefill: bool
     total_gpus: int | None
+    free_gpu_memory_fraction: float | None = None
+    max_seq_len: int | None = None
     profiles: list[str] = field(default_factory=list)
     yaml_patch: dict = field(default_factory=dict)
     yaml_mode: Literal["patch", "replace"] = "patch"
@@ -356,6 +358,8 @@ class TaskConfigFactory:
             },
             "enable_wideep": ctx.enable_wideep,
             "enable_chunked_prefill": ctx.enable_chunked_prefill,
+            "free_gpu_memory_fraction": ctx.free_gpu_memory_fraction,
+            "max_seq_len": ctx.max_seq_len,
             "enable_eplb": False,
             "moe_backend": None,  # sglang wideep only
             "attention_backend": "flashinfer",  # sglang wideep only
@@ -635,6 +639,8 @@ class TaskConfig:
         profiles: list[str] | None = None,
         yaml_config: dict | None = None,
         database_mode: str | None = None,
+        free_gpu_memory_fraction: float | None = None,
+        max_seq_len: int | None = None,
     ) -> None:
         """
         Initialize a TaskConfig object.
@@ -710,6 +716,8 @@ class TaskConfig:
             profiles=effective_profiles,
             yaml_patch=yaml_patch,
             yaml_mode=yaml_mode,
+            free_gpu_memory_fraction=free_gpu_memory_fraction,
+            max_seq_len=max_seq_len,
         )
 
         self.config, applied_layers = TaskConfigFactory.create(ctx)
@@ -724,6 +732,8 @@ class TaskConfig:
         self.enable_wideep = enable_wideep
         self.enable_eplb = enable_eplb
         self.total_gpus = total_gpus
+        self.free_gpu_memory_fraction = free_gpu_memory_fraction
+        self.max_seq_len = max_seq_len
         self.yaml_mode = yaml_mode
         self.yaml_patch = yaml_patch
         self.profiles = list(effective_profiles)
@@ -1137,6 +1147,8 @@ class TaskRunner:
 
         logger.info("Task %s: Running agg pareto", task_config.task_name)
         enable_chunked_prefill = getattr(task_config, "enable_chunked_prefill", False)
+        free_gpu_memory_fraction = task_config.free_gpu_memory_fraction
+        max_seq_len = task_config.max_seq_len
         result_df = pa.agg_pareto(
             model_path=task_config.model_path,
             runtime_config=runtime_config,
@@ -1145,6 +1157,8 @@ class TaskRunner:
             model_config=model_config,
             parallel_config_list=parallel_config_list,
             enable_chunked_prefill=enable_chunked_prefill,
+            free_gpu_memory_fraction=free_gpu_memory_fraction,
+            max_seq_len=max_seq_len,
         )
         return {
             "pareto_df": result_df,

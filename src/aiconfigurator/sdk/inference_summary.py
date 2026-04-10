@@ -29,8 +29,11 @@ class InferenceSummary:
         - power: watts (W) - derived from energy/latency
 
     Methods:
-        set_memory_and_check_oom: set memory and check oom
+        set_memory_and_check_oom: set memory and check oom (+ optional kv cache budget check)
         set_oom: set oom
+        check_oom: check oom
+        set_kv_cache_oom: set kv cache oom
+        check_kv_cache_oom: check kv cache oom
         set_context_latency_dict: set context latency dict
         set_generation_latency_dict: set generation latency dict
         get_context_latency_dict: get context latency dict
@@ -39,7 +42,6 @@ class InferenceSummary:
         set_generation_energy_wms_dict: set generation energy dict
         get_context_energy_wms_dict: get context energy dict
         get_generation_energy_wms_dict: get generation energy dict
-        check_oom: check oom
         get_static_info: get static info for static mode print
         set_summary_df: set summary dataframe
         get_summary_df: get summary dataframe
@@ -58,6 +60,7 @@ class InferenceSummary:
         self._context_energy_wms_dict = {}  # RENAMED from _context_power_dict, W·ms
         self._generation_energy_wms_dict = {}  # RENAMED from _generation_power_dict, W·ms
         self._is_oom = None
+        self._is_kv_cache_oom = False
 
         # NEW: Store computed power averages
         self._context_power_avg = 0.0
@@ -73,12 +76,63 @@ class InferenceSummary:
         # per-ops latency breakdown (populated by run_agg or run_disagg)
         self._per_ops_data: dict | None = None
 
-    def set_memory_and_check_oom(self, memory_dict: dict, mem_capacity: int) -> None:
+    def set_memory_and_check_oom(
+        self,
+        memory_dict: dict,
+        mem_capacity: int,
+        free_gpu_memory_fraction: float | None = None,
+        kv_cache_reserved_fraction: float = 0.0,
+        kv_cache_tolerance: float = 0.0,
+    ) -> None:
         """
         Set memory and check oom.
+
+        *memory_dict* should reflect the actual runtime memory layout
+        (e.g. kvcache computed with ``max_seq_len``, activations with
+        ``max_num_tokens``).
+
+        When *free_gpu_memory_fraction* is not ``None``, also performs the
+        KV cache budget check using the same *memory_dict*.
         """
         self._memory = memory_dict
         self._is_oom = self._memory["total"] >= (mem_capacity / (1 << 30))
+        self._is_kv_cache_oom = False
+        if free_gpu_memory_fraction is not None:
+            self._check_and_set_kv_cache_oom(
+                mem_capacity,
+                free_gpu_memory_fraction,
+                kv_cache_reserved_fraction,
+                kv_cache_tolerance,
+            )
+
+    def _check_and_set_kv_cache_oom(
+        self,
+        mem_capacity: int,
+        free_gpu_memory_fraction: float,
+        kv_cache_reserved_fraction: float,
+        kv_cache_tolerance: float,
+    ) -> None:
+        """Check whether the KV cache exceeds the fraction-based memory budget.
+
+        Uses ``self._memory`` (set by :meth:`set_memory_and_check_oom`).
+
+        Equivalent to the inflation formula
+        ``kv / (frac*(1-res)*(1-tol)) + non_kv >= capacity`` rewritten as
+        ``kv > (capacity - non_kv) * frac * (1-res) * (1-tol)``.
+        """
+        self._is_kv_cache_oom = False
+        if self._is_oom:
+            return
+        mem_cap_gib = mem_capacity / (1 << 30)
+        kv_gib = self._memory.get("kvcache", 0.0)
+        non_kv_gib = self._memory["total"] - kv_gib
+        kv_budget = (
+            (mem_cap_gib - non_kv_gib)
+            * free_gpu_memory_fraction
+            * (1 - kv_cache_reserved_fraction)
+            * (1 - kv_cache_tolerance)
+        )
+        self._is_kv_cache_oom = kv_gib > kv_budget
 
     def set_oom(self, is_oom: bool) -> None:
         """
@@ -210,11 +264,37 @@ class InferenceSummary:
 
     def check_oom(self) -> bool:
         """
-        Check oom.
+        Check if total memory usage exceeds GPU capacity.
+
+        Returns True when ``weights + activations + kvcache + overhead >=
+        gpu_capacity``.  This is the *absolute* capacity check.
+
+        A separate :meth:`check_kv_cache_oom` exists for the *relative*
+        budget check, i.e. whether the KV cache portion alone exceeds the
+        ``free_gpu_memory_fraction``-based budget that the serving runtime
+        reserves for KV cache.
         """
         if self._is_oom is None:
             logger.warning("WARNING: memory status is not set")
         return self._is_oom
+
+    def set_kv_cache_oom(self, is_kv_cache_oom: bool) -> None:
+        """
+        Set kv cache oom.
+        """
+        self._is_kv_cache_oom = is_kv_cache_oom
+
+    def check_kv_cache_oom(self) -> bool:
+        """
+        Check kv cache oom.
+        """
+        return self._is_kv_cache_oom
+
+    def get_memory(self) -> dict:
+        """
+        Get memory breakdown dict (keys: total, weights, activations, kvcache, nccl, others).
+        """
+        return self._memory
 
     def get_static_info(self) -> tuple[str, str, str, str]:
         """
