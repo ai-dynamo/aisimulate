@@ -4,12 +4,12 @@
 //! End-to-end embedded round-trip.
 //!
 //! Drives the full Rust → Python → Rust embedded build path through both the
-//! preferred [`aisimulate_core::AicEngineBuilder`] and the flat
-//! [`aisimulate_core::build_aic_engine`] compatibility adapter. Each
+//! preferred [`aiconfigurator_core::AicEngineBuilder`] and the flat
+//! [`aiconfigurator_core::build_aic_engine`] compatibility adapter. Each
 //! crosses into Python once to run
 //! `aiconfigurator_core.sdk.engine.compile_engine`, gets bincoded `EngineSpec`
 //! bytes back, loads the matching perf database, and returns an
-//! [`aisimulate_core::AicEngine`]. The test asserts both paths agree and
+//! [`aiconfigurator_core::AicEngine`]. The test asserts both paths agree and
 //! that the **pure-Rust hot path** produces finite, positive latencies.
 //!
 //! ## Why this proves the Mocker hot path is PyO3-free
@@ -28,7 +28,7 @@
 //! and imports `aiconfigurator_core.sdk.engine`, which itself imports the
 //! maturin-built `aiconfigurator_core` extension. The test therefore needs
 //! `aiconfigurator_core` installed into the interpreter
-//! (`uv run maturin develop -m crates/aisimulate-core/Cargo.toml --release`).
+//! (`uv run maturin develop -m aic-core/rust/aiconfigurator-core/Cargo.toml --release`).
 //!
 //! The embedded interpreter (the framework libpython the test binary links) is
 //! NOT the uv venv, so it does not see the venv's installed core package or the
@@ -37,10 +37,10 @@
 //! (relative paths do not resolve under cargo's test cwd):
 //! ```text
 //! AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1 \
-//!   PYTHONPATH="$PWD/python/aisimulate-core/src:$PWD/.venv/lib/python3.12/site-packages" \
-//!   cargo test -p aisimulate-core --test embedded_round_trip -- --nocapture
+//!   PYTHONPATH="$PWD/aic-core/src:$PWD/.venv/lib/python3.13/site-packages" \
+//!   cargo test -p aiconfigurator-core --test embedded_round_trip -- --nocapture
 //! ```
-//! (run after `uv run maturin develop -m crates/aisimulate-core/Cargo.toml
+//! (run after `uv run maturin develop -m aic-core/rust/aiconfigurator-core/Cargo.toml
 //! --release`, from the repo root; adjust the venv python version if needed).
 //!
 //! ## Honest skip vs. enforced run
@@ -86,7 +86,7 @@ fn embedded_builder_and_compatibility_adapter_match() {
             !required,
             "embedded_round_trip: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but \
              `aiconfigurator_core.sdk.engine` is not importable — run after \
-             `maturin develop` with PYTHONPATH including python/aisimulate-core/src, the venv \
+             `maturin develop` with PYTHONPATH including aic-core/src, the venv \
              site-packages."
         );
         eprintln!(

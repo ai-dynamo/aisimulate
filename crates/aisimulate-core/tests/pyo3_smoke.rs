@@ -3,7 +3,7 @@
 
 //! Rust -> Python embedding smoke test.
 //!
-//! Proves that `aisimulate-core` links libpython and can start a Python
+//! Proves that `aiconfigurator-core` links libpython and can start a Python
 //! interpreter via PyO3's `auto-initialize`. This is the linkage that
 //! `build_aic_engine` relies on. It does NOT import the
 //! `aiconfigurator_core` extension itself (that `.so` is not on `sys.path`

@@ -12,6 +12,6 @@ __all__ = _compat_sdk.__all__
 # Search the AISimulate shim directory first, then fall back to the migrated
 # implementation tree for non-public/internal modules during the compatibility
 # window.
-__path__ = [*__path__, *_compat_sdk.__path__]
+__path__ = [*globals()["__path__"], *_compat_sdk.__path__]
 __getattr__ = _compat_sdk.__getattr__
 __dir__ = _compat_sdk.__dir__

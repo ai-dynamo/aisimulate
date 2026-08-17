@@ -18,6 +18,7 @@ def test_new_and_compatibility_namespaces_export_the_same_native_types() -> None
         aisimulate_core.RustForwardPassPerfModel
         is aiconfigurator_core.RustForwardPassPerfModel
     )
+    assert aisimulate_core.__version__ == importlib.metadata.version("aisimulate-core")
 
 
 def test_public_sdk_facade_and_explicit_modules_are_available() -> None:
@@ -26,7 +27,10 @@ def test_public_sdk_facade_and_explicit_modules_are_available() -> None:
     compatibility_errors = importlib.import_module("aiconfigurator_core.sdk.errors")
 
     assert "compile_engine" in sdk.__all__
-    assert errors.PerfDataNotAvailableError is compatibility_errors.PerfDataNotAvailableError
+    assert (
+        errors.PerfDataNotAvailableError
+        is compatibility_errors.PerfDataNotAvailableError
+    )
 
 
 def test_core_has_no_dynamo_install_dependency() -> None:

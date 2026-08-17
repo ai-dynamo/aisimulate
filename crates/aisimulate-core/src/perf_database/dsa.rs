@@ -44,6 +44,7 @@ use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
 use crate::common::system_spec::SystemSpec;
 use crate::config::{PerfDbSources, PerfSource};
+use crate::operators::base::SolComponents;
 use crate::perf_database::parquet_loader::PerfReader;
 
 pub struct DsaTable {
@@ -700,7 +701,7 @@ fn indexer_cache_entry_bytes(index_head_dim: i64) -> i64 {
 /// attention group (fmha_quant) whose exact KV pair count is
 /// `sum_{i=0..s-1} min(prefix+i+1, index_topk)`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn dsa_context_sol_ms(
+pub(crate) fn dsa_context_sol(
     spec: &SystemSpec,
     dims: &DsaDims,
     index_topk: i64,
@@ -713,7 +714,7 @@ pub(crate) fn dsa_context_sol_ms(
     num_heads: i64,
     skip_indexer: bool,
     flops: DsaSolFlops,
-) -> f64 {
+) -> SolComponents {
     let (hidden, q_lora, kv_lora) = (dims.hidden_size, dims.q_lora_rank, dims.kv_lora_rank);
     let (inh, ihd) = (dims.index_n_heads, dims.index_head_dim);
     let qk_head_dim = dims.qk_nope_head_dim + dims.qk_rope_head_dim;
@@ -796,14 +797,47 @@ pub(crate) fn dsa_context_sol_ms(
         + sparse_attn_ops as f64 / attn_flops)
         * 1000.0;
     let sol_mem = total_mem / spec.gpu.mem_bw * 1000.0;
-    sol_math.max(sol_mem)
+    SolComponents::new(sol_math, sol_mem)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dsa_context_sol_ms(
+    spec: &SystemSpec,
+    dims: &DsaDims,
+    index_topk: i64,
+    kv_quant: KvCacheQuantMode,
+    fmha_quant: FmhaQuantMode,
+    gemm_quant: GemmQuantMode,
+    b: i64,
+    s: i64,
+    prefix: i64,
+    num_heads: i64,
+    skip_indexer: bool,
+    flops: DsaSolFlops,
+) -> f64 {
+    dsa_context_sol(
+        spec,
+        dims,
+        index_topk,
+        kv_quant,
+        fmha_quant,
+        gemm_quant,
+        b,
+        s,
+        prefix,
+        num_heads,
+        skip_indexer,
+        flops,
+    )
+    .time_ms()
 }
 
 /// Generation DSA analytic roofline. Verbatim port of Python
 /// `GenerationDSAModule._query_generation_dsa_module_table::get_sol`
 /// (1 token per request; the attention group is hardcoded bfloat16 in
 /// Python — `fmha_mode = FMHAQuantMode.bfloat16` — so no fmha arg here).
-pub(crate) fn dsa_generation_sol_ms(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dsa_generation_sol(
     spec: &SystemSpec,
     dims: &DsaDims,
     kv_quant: KvCacheQuantMode,
@@ -812,7 +846,7 @@ pub(crate) fn dsa_generation_sol_ms(
     s: i64,
     num_heads: i64,
     flops: DsaSolFlops,
-) -> f64 {
+) -> SolComponents {
     let (b, s, num_heads) = (b as i128, s as i128, num_heads as i128);
     let (hidden, q_lora, kv_lora) = (
         dims.hidden_size as i128,
@@ -869,7 +903,21 @@ pub(crate) fn dsa_generation_sol_ms(
         + sparse_attn_ops as f64 / attn_flops)
         * 1000.0;
     let sol_mem = total_mem / spec.gpu.mem_bw * 1000.0;
-    sol_math.max(sol_mem)
+    SolComponents::new(sol_math, sol_mem)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dsa_generation_sol_ms(
+    spec: &SystemSpec,
+    dims: &DsaDims,
+    kv_quant: KvCacheQuantMode,
+    gemm_quant: GemmQuantMode,
+    b: i64,
+    s: i64,
+    num_heads: i64,
+    flops: DsaSolFlops,
+) -> f64 {
+    dsa_generation_sol(spec, dims, kv_quant, gemm_quant, b, s, num_heads, flops).time_ms()
 }
 
 /// Load a DSA module table from an ordered, priority-sorted source list, with
@@ -1392,10 +1440,10 @@ mod tests {
         approx_rel(q(3, 1024, 0, 128, dsv32), 3.0913);
         // interior prefix blend on the GLM step axis (0 < 64 < 128)
         approx_rel(q(1, 128, 64, 16, glm), 1.2492999999999999);
-        // seq util-hold beyond the 32768 frontier (validates the context SOL)
-        approx_rel(q(1, 65536, 0, 128, dsv32), 89.56218926395842);
-        // prefix util-hold beyond the 128 step frontier
-        approx_rel(q(1, 2048, 4096, 128, dsv32), 3.2580009866421995);
+        // seq tapered util-hold beyond the 32768 frontier (validates the context SOL)
+        approx_rel(q(1, 65536, 0, 128, dsv32), 93.51797494885695);
+        // prefix tapered util-hold beyond the 128 step frontier
+        approx_rel(q(1, 2048, 4096, 128, dsv32), 3.270467722991338);
     }
 
     // ------------------------------------------------------------------
@@ -1636,8 +1684,8 @@ mod tests {
         approx_rel(q(16, 3000), 0.261390380859375);
         // interior batch blend (16 < 24 < 32)
         approx_rel(q(24, 4097), 0.27545);
-        // seq util-hold beyond the frontier (validates the decode SOL)
-        approx_rel(q(16, 300000), 0.5461828075504237);
+        // seq tapered util-hold beyond the frontier (validates the decode SOL)
+        approx_rel(q(16, 300000), 0.5491372293318538);
     }
 
     /// Write one synthetic DSA module parquet with the collector's column set

@@ -1,0 +1,169 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name = "aisimulate"
+version = "0.12.0"
+authors = [
+    { name = "NVIDIA Inc.", email = "sw-dl-dynamo@nvidia.com" },
+]
+description = "AISimulate: GPU-free inference simulation and deployment configuration"
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Information Technology",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+keywords = [
+    "decode",
+    "distributed",
+    "dynamo",
+    "gpu",
+    "inference",
+    "llm",
+    "nvidia",
+    "prefill",
+]
+
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+
+requires-python = ">=3.11,<3.14"
+
+dependencies = [
+    "aisimulate-core==0.12.0",
+    "jinja2>=3.1.0",
+    "packaging>=20.0",
+    "matplotlib>=3.9.4",
+    "numpy>=2.1,<3",
+    "pandas>=2.2.3",
+    "plotext>=5.3.2",
+    "plotly>=6.0.1",
+    "prettytable>=3.16.0",
+    "pydantic>=2.5",
+    "pyarrow>=15.0.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.0.0",
+    "bokeh",
+    "nvidia-ml-py",
+    "munch>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "uv",
+    "ruff==0.14.1",
+    "pre-commit==4.3.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.26.0",
+    "pytest-cov>=6.1.1",
+    "pytest-md-report==0.8.0",
+    "pytest-mock>=3.14.0",
+    "pytest-split>=0.10.0",
+    "pytest-timeout>=2.3.1",
+    "pytest-xdist==3.8.0",
+    "prometheus-api-client==0.6.0",
+    "import-ipynb==0.2",
+    "jsonschema>=4.23",
+]
+service = [
+    "fastapi>=0.115.12",
+    "orjson>=3.10.16",
+    "uvicorn>=0.34.2"
+]
+
+[project.urls]
+GitHub = "https://github.com/ai-dynamo/aisimulate"
+Repository = "https://github.com/ai-dynamo/aisimulate.git"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+# The AISimulate command intentionally delegates to the proven AIC command
+# surface during the 0.12 compatibility window. The replacement
+# predict/recommend CLI must pass the tracked parity gate before this target
+# changes.
+aisimulate = "aisimulate.main:main"
+aiconfigurator = "aiconfigurator.main:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.package-data]
+"aiconfigurator.cli" = ["*.yaml", "exps/*.yaml"]
+"aiconfigurator.generator" = ["config/**/*.yaml", "config/backend_templates/**/*.j2", "rule_plugin/**/*.rule", "facts/**/*.yaml", "environment/*.yaml"]
+"aiconfigurator.sdk.config_adapter" = ["schemas/*.json"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["aisimulate*", "aiconfigurator", "aiconfigurator.cli*", "aiconfigurator.generator*", "aiconfigurator.sdk*"]
+exclude = ["aiconfigurator_core*"]
+
+[tool.uv.sources]
+aisimulate-core = { path = "../aisimulate-core", editable = true }
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = [
+    "YTT",  # flake8-2020: check for misuse of sys.version
+    "B",  # flake8-bugbear: find likely bugs and design problems
+    "A",  # flake8-builtins: check for shadowing of Python builtins
+    "C4",  # flake8-comprehensions: check for unnecessary/slow comprehensions
+    "T10",  # flake8-debugger: check for debugger imports/calls
+    "SIM",  # flake8-simplify: suggest simplifications to code
+    "I",  # isort: check import sorting
+    "C90",  # mccabe: check cyclomatic complexity
+    "E",  # pycodestyle errors: PEP 8 error codes
+    "W",  # pycodestyle warnings: PEP 8 warning codes
+    "F",  # Pyflakes: check for various Python errors
+    "PGH",  # pygrep-hooks: miscellaneous lints via regex patterns
+    "UP",  # pyupgrade: check for outdated Python syntax
+    "RUF",  # Ruff-specific rules: additional lints unique to Ruff
+    "TRY",  # tryceratops: check for exception handling anti-patterns
+    "N",  # pep8-naming: enforce PEP 8 naming conventions
+    # "ERA001", # TODO: enable checking for commented-out code
+    # "ANN", # TODO: enable checking for type annotations
+]
+ignore = [
+    "A005",  # module shadows builtin name
+    "E731",  # do not assign lambda, use def
+    "RUF005",  # unpack instead of concatenation
+    "C901",  # function is too complex
+    "C408",  # unnecessary dict call, use literal
+    "B007",  # unused loop control variable
+    "SIM105",  # use contextlib.suppress instead of try-except-pass
+    "E402",  # module level import not at top of file
+    "E722",  # bare except
+    "C401",  # unnecessary generator for set/dict
+    "TRY003",  # avoid specifying long messages outside exception class
+    "TRY300",  # consider moving statement to else block
+    "TRY301",  # abstract raise to inner function
+    "SIM108",  # use ternary operator instead of if-else
+    "B006",  # mutable default argument
+    "RUF015",  # prefer next(iter()) over list/tuple indexing
+    "N812",  # lowercase imported as non-lowercase
+    "PGH003",  # use specific rule codes for type ignore/noqa
+    "RUF059",  # unpacked variable is never used
+    "UP007",  # require using X | Y for type annotations
+    "UP045", # require using X | None for type annotations
+    "B019", # forbid using functools.cache on class methods
+    "B023", # Function definition does not bind loop variable
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["aisimulate", "aisimulate_core", "aiconfigurator", "aiconfigurator_core", "utils", "helper"]

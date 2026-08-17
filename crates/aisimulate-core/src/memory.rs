@@ -233,7 +233,7 @@ pub fn estimate_kv_cache(
 /// Cross into Python once to compute the complete estimate.
 ///
 /// Mirrors the `build_aic_engine` → `compile_engine` forwarder shape: `with_gil
-/// → import aiconfigurator_core.sdk.memory → call estimate_kv_cache(...) → extract
+/// → import aiconfigurator.sdk.memory → call estimate_kv_cache(...) → extract
 /// the returned dict`. `tolerance_fraction` is forwarded; the Python fn applies
 /// the tolerance and returns `tolerance_adjusted` in the dict.
 fn fetch_python_estimate(
@@ -253,7 +253,7 @@ fn fetch_python_estimate(
     let (fraction_kind, fraction_value) = req.kv_cache_memory_fraction.to_wire();
 
     Python::with_gil(|py| -> PyResult<KvCacheEstimate> {
-        let engine_mod = py.import("aiconfigurator_core.sdk.memory")?;
+        let engine_mod = py.import("aiconfigurator.sdk.memory")?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("backend_version", engine.backend_version.as_deref())?;
         kwargs.set_item("max_num_tokens", req.max_num_tokens)?;

@@ -4,10 +4,10 @@
 //! End-to-end KV-cache capacity round-trip.
 //!
 //! Drives the full Rust → Python → Rust capacity path: calls the top-level
-//! [`aisimulate_core::estimate_kv_cache`] (the **pure forwarder** the Dynamo
+//! [`aiconfigurator_core::estimate_kv_cache`] (the **pure forwarder** the Dynamo
 //! Mocker uses) for a real fixture model. That crosses into Python once to run
 //! `aiconfigurator.sdk.memory.estimate_kv_cache` (which owns the budget math AND
-//! the tolerance margin) and rebuilds a [`aisimulate_core::KvCacheEstimate`]
+//! the tolerance margin) and rebuilds a [`aiconfigurator_core::KvCacheEstimate`]
 //! from the returned dict.
 //!
 //! ## Why this test exists
@@ -26,11 +26,11 @@
 //! import `aiconfigurator.sdk.memory` (which imports the maturin-built
 //! `aiconfigurator_core`), plus the perf DB (LFS) for the native SystemSpec
 //! capacity. Run after
-//! `uv run maturin develop -m crates/aisimulate-core/Cargo.toml --release`:
+//! `uv run maturin develop -m aic-core/rust/aiconfigurator-core/Cargo.toml --release`:
 //! ```text
 //! AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1 \
-//!   PYTHONPATH="$PWD/python/aisimulate-core/src:$PWD/.venv/lib/python3.12/site-packages" \
-//!   cargo test -p aisimulate-core --test memory_round_trip -- --nocapture
+//!   PYTHONPATH="$PWD/aic-core/src:$PWD/.venv/lib/python3.13/site-packages:$PWD/src" \
+//!   cargo test -p aiconfigurator-core --test memory_round_trip -- --nocapture
 //! ```
 //!
 //! ## Honest skip vs. enforced run
@@ -85,6 +85,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
             systems_path: None,
             backend: BackendKind::Trtllm,
             backend_version: Some("1.3.0rc10".to_string()),
+            forward_model: None,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 1,
@@ -127,7 +128,7 @@ fn memory_round_trip_forwards_tolerance_and_parses_adjusted() {
             !required,
             "memory_round_trip: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but \
              `aiconfigurator.sdk.memory` is not importable — run after \
-             `maturin develop` with PYTHONPATH including python/aisimulate-core/src, the venv \
+             `maturin develop` with PYTHONPATH including aic-core/src, the venv \
              site-packages, and src."
         );
         eprintln!(

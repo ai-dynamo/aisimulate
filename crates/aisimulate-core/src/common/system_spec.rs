@@ -183,7 +183,7 @@ mod tests {
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
     fn systems_root() -> PathBuf {
-        // CARGO_MANIFEST_DIR points at crates/aisimulate-core; the systems
+        // CARGO_MANIFEST_DIR points at aic-core/rust/aiconfigurator-core; the systems
         // dir is two levels up.
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")

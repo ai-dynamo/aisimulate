@@ -107,7 +107,7 @@ job (`.github/workflows/build-test.yml`):
 ```bash
 (cd aic-core && ../.venv/bin/maturin develop --release)  # build the current Rust core
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
-  uv run python crates/aisimulate-core/parity_tests/benchmark_engine_step.py \
+  uv run python aic-core/rust/aiconfigurator-core/parity_tests/benchmark_engine_step.py \
   --warmup 10 --iterations 50 --json
 ```
 

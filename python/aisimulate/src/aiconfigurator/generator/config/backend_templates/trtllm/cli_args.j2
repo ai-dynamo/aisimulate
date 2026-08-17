@@ -1,0 +1,38 @@
+{%- set args = [] -%}
+
+{#- Direct CLI args: only flags accepted by dynamo.trtllm argparser -#}
+
+{%- if tensor_parallel_size is defined and tensor_parallel_size > 0 -%}
+  {%- set _ = args.append('--tensor-parallel-size ' + tensor_parallel_size|string) -%}
+{%- endif -%}
+
+{%- if pipeline_parallel_size is defined and pipeline_parallel_size > 0 -%}
+  {%- set _ = args.append('--pipeline-parallel-size ' + pipeline_parallel_size|string) -%}
+{%- endif -%}
+
+{%- if moe_expert_parallel_size is defined and moe_expert_parallel_size is not none and moe_expert_parallel_size > 0 -%}
+  {%- set _ = args.append('--expert-parallel-size ' + moe_expert_parallel_size|string) -%}
+{%- endif -%}
+
+{%- if enable_attention_dp is defined and enable_attention_dp -%}
+  {%- set _ = args.append('--enable-attention-dp') -%}
+{%- endif -%}
+
+{%- if max_batch_size is defined -%}
+  {%- set _ = args.append('--max-batch-size ' + max_batch_size|string) -%}
+{%- endif -%}
+
+{%- if max_num_tokens is defined -%}
+  {%- set _ = args.append('--max-num-tokens ' + max_num_tokens|string) -%}
+{%- endif -%}
+
+{%- if max_seq_len is defined -%}
+  {%- set _ = args.append('--max-seq-len ' + max_seq_len|string) -%}
+{%- endif -%}
+
+{%- if kv_cache_free_gpu_memory_fraction is defined -%}
+  {%- set _ = args.append('--free-gpu-memory-fraction ' + kv_cache_free_gpu_memory_fraction|string) -%}
+{%- endif -%}
+
+{#- Output the args -#}
+{{ args | join(' ') }}

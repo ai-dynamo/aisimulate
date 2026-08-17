@@ -1,0 +1,142 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Flat V2 task schema: one key per Task field, no mode/config/worker_config nesting.
+# `exps` lists which experiments to run (in order); each other top-level key is an experiment.
+
+exps:
+- exp_disagg_wideep
+- exp_disagg_non_wideep
+exp_disagg_wideep:
+  isl: 1000
+  serving_mode: disagg
+  total_gpus: 512
+  tpot: 40.0
+  ttft: 1000.0
+  osl: 100
+  nextn: 1
+  nextn_accepted: 0.85
+  attention_backend: flashinfer
+  prefill_model_path: deepseek-ai/DeepSeek-V3
+  prefill_backend_name: sglang
+  prefill_enable_eplb: true
+  decode_model_path: deepseek-ai/DeepSeek-V3
+  decode_backend_name: sglang
+  decode_enable_eplb: true
+  prefill_system_name: h200_sxm
+  decode_system_name: h200_sxm
+  prefill_gemm_quant_mode: fp8_block
+  prefill_moe_quant_mode: fp8_block
+  prefill_kvcache_quant_mode: fp8
+  prefill_fmha_quant_mode: fp8_block
+  prefill_comm_quant_mode: half
+  prefill_num_gpu_candidates:
+  - 8
+  - 16
+  - 32
+  - 64
+  prefill_tp_candidates:
+  - 1
+  prefill_pp_candidates:
+  - 1
+  prefill_dp_candidates:
+  - 8
+  - 16
+  - 32
+  - 64
+  prefill_moe_tp_candidates:
+  - 1
+  prefill_moe_ep_candidates:
+  - 8
+  - 16
+  - 32
+  - 64
+  decode_gemm_quant_mode: fp8_block
+  decode_moe_quant_mode: fp8_block
+  decode_kvcache_quant_mode: fp8
+  decode_fmha_quant_mode: fp8_block
+  decode_comm_quant_mode: half
+  decode_num_gpu_candidates:
+  - 8
+  - 16
+  - 32
+  - 64
+  decode_tp_candidates:
+  - 1
+  decode_pp_candidates:
+  - 1
+  decode_dp_candidates:
+  - 8
+  - 16
+  - 32
+  - 64
+  decode_moe_tp_candidates:
+  - 1
+  decode_moe_ep_candidates:
+  - 8
+  - 16
+  - 32
+  - 64
+  max_gpu_per_replica: 512
+  prefill_max_batch_size: 1
+  decode_max_batch_size: 128
+  prefill_latency_correction: 1.1
+  decode_latency_correction: 1.08
+exp_disagg_non_wideep:
+  isl: 1000
+  serving_mode: disagg
+  total_gpus: 512
+  tpot: 40.0
+  ttft: 1000.0
+  osl: 100
+  nextn: 1
+  nextn_accepted: 0.85
+  prefill_model_path: deepseek-ai/DeepSeek-V3
+  prefill_backend_name: sglang
+  decode_model_path: deepseek-ai/DeepSeek-V3
+  decode_backend_name: sglang
+  prefill_system_name: h200_sxm
+  decode_system_name: h200_sxm
+  prefill_gemm_quant_mode: fp8_block
+  prefill_moe_quant_mode: fp8_block
+  prefill_kvcache_quant_mode: fp8
+  prefill_fmha_quant_mode: bfloat16
+  prefill_comm_quant_mode: half
+  prefill_num_gpu_candidates:
+  - 8
+  prefill_tp_candidates:
+  - 1
+  - 8
+  prefill_pp_candidates:
+  - 1
+  prefill_dp_candidates:
+  - 1
+  - 8
+  prefill_moe_tp_candidates:
+  - 8
+  prefill_moe_ep_candidates:
+  - 1
+  decode_gemm_quant_mode: fp8_block
+  decode_moe_quant_mode: fp8_block
+  decode_kvcache_quant_mode: fp8
+  decode_fmha_quant_mode: bfloat16
+  decode_comm_quant_mode: half
+  decode_num_gpu_candidates:
+  - 8
+  decode_tp_candidates:
+  - 1
+  - 8
+  decode_pp_candidates:
+  - 1
+  decode_dp_candidates:
+  - 1
+  - 8
+  decode_moe_tp_candidates:
+  - 8
+  decode_moe_ep_candidates:
+  - 1
+  max_gpu_per_replica: 128
+  prefill_max_batch_size: 1
+  decode_max_batch_size: 128
+  prefill_latency_correction: 1.1
+  decode_latency_correction: 1.08

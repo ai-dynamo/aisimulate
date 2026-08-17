@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Flat V2 task schema: one key per Task field, no mode/config/worker_config nesting.
+# `exps` lists which experiments to run (in order); each other top-level key is an experiment.
+
+exps:
+- exp_h200_h200
+- exp_b200_h200
+exp_h200_h200:
+  isl: 4000
+  serving_mode: disagg
+  total_gpus: 16
+  tpot: 50.0
+  ttft: 300.0
+  osl: 500
+  prefill_model_path: Qwen/Qwen3-32B-FP8
+  prefill_backend_name: trtllm
+  decode_model_path: Qwen/Qwen3-32B-FP8
+  decode_backend_name: trtllm
+  prefill_system_name: h200_sxm
+  decode_system_name: h200_sxm
+exp_b200_h200:
+  isl: 4000
+  serving_mode: disagg
+  total_gpus: 16
+  tpot: 50.0
+  ttft: 300.0
+  osl: 500
+  prefill_model_path: Qwen/Qwen3-32B-FP8
+  prefill_backend_name: trtllm
+  decode_model_path: Qwen/Qwen3-32B-FP8
+  decode_backend_name: trtllm
+  prefill_system_name: b200_sxm
+  decode_system_name: h200_sxm
+  prefill_gemm_quant_mode: nvfp4
+  prefill_moe_quant_mode: nvfp4

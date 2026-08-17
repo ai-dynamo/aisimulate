@@ -238,7 +238,7 @@ Task spec  →  sweep loop  →  Predictor strategy  →  backend.run_static
 
 <p>Two Rust hooks already exist:</p>
 <ul>
-  <li><code>crates/aisimulate-core/</code> — a ctypes-backed sidecar for
+  <li><code>aic-core/rust/aiconfigurator-core/</code> — a ctypes-backed sidecar for
     Dynamo Mocker. Receives a model identity via JSON; internally
     <em>re-derives</em> the op list from name + parallel sizes.</li>
   <li><code>sdk/rust_engine_step.py</code> — Python wrapper for the above.</li>
@@ -252,7 +252,7 @@ Task spec  →  sweep loop  →  Predictor strategy  →  backend.run_static
     <tr><td>Python GIL serializes sweep evaluation</td>
         <td>Sweep with ~2,250 points takes ~0.6s; mostly DB look-ups + DataFrame ops on a single core.</td></tr>
     <tr><td>Model knowledge duplicated in Python and Rust</td>
-        <td><code>aisimulate-core/model.rs</code> (~350 lines) re-derives the op list. Every new Python model needs a parallel Rust update.</td></tr>
+        <td><code>aiconfigurator-core/model.rs</code> (~350 lines) re-derives the op list. Every new Python model needs a parallel Rust update.</td></tr>
     <tr><td>External Rust callers (Mocker) must round-trip through Python for build</td>
         <td>JSON ↔ struct conversion every per-point call; coupled to Python interpreter lifecycle.</td></tr>
     <tr><td>DataFrame-heavy hot loop</td>
@@ -402,9 +402,9 @@ points.par_iter().for_each(|p| {
 
 <h3 id="poc-build">3.3 Build / run</h3>
 
-<pre><code># one-time
+<pre><code># one-time (Python 3.13 validation environment)
 brew install rust
-python3.12 -m venv .venv &amp;&amp; source .venv/bin/activate
+python3.13 -m venv .venv &amp;&amp; source .venv/bin/activate
 pip install maturin pyarrow pytest
 
 # build PyO3 extension into the venv
@@ -562,7 +562,7 @@ layout. Extending: one new struct per op, ~50–200 lines each.</p>
   </li>
   <li>
     <strong>Production wheels</strong>: maturin CI for
-    macOS / Linux / Windows × Python 3.10–3.12. <code>uv add aic_step</code>-friendly.
+    macOS / Linux / Windows × Python 3.11–3.13. <code>uv add aic_step</code>-friendly.
   </li>
 </ol>
 

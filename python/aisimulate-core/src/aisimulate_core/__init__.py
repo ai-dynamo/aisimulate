@@ -8,6 +8,8 @@ the AIC 0.12.0 compatibility window. New consumers should import this module or
 ``aisimulate_core.sdk``.
 """
 
+from importlib.metadata import version
+
 from aiconfigurator_core import (
     AicEngine,
     RustForwardPassPerfModel,
@@ -15,7 +17,10 @@ from aiconfigurator_core import (
     engine_spec_bincode_from_json,
 )
 
+__version__ = version("aisimulate-core")
+
 __all__ = [
+    "__version__",
     "AicEngine",
     "RustForwardPassPerfModel",
     "_build_smoke",

@@ -36,7 +36,8 @@ use pyo3::types::PyType;
 
 use crate::common::error::AicError;
 use crate::engine::runtime::{
-    Engine, PerOpValue, RuntimeConfig, StaticMode, StaticResult, DEFAULT_STATIC_STRIDE,
+    Engine, PerOpSolValue, PerOpValue, RuntimeConfig, StaticMode, StaticResult,
+    DEFAULT_STATIC_STRIDE,
 };
 use crate::{BackendKind, DataType, EngineConfig, ENGINE_CONFIG_SCHEMA_VERSION};
 
@@ -49,7 +50,7 @@ fn _build_smoke() -> u32 {
 
 /// Cached handles to the canonical SDK exception classes
 /// (`aiconfigurator_core.sdk.errors` — the CORE namespace: the standalone
-/// aisimulate-core wheel intentionally ships without the upper
+/// aiconfigurator-core wheel intentionally ships without the upper
 /// `aiconfigurator` package, whose errors module is a pure alias of the core
 /// one anyway). Filled lazily on first use so importing the
 /// extension never imports the sdk (the sdk imports aiconfigurator_core — an
@@ -168,7 +169,7 @@ fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
         || {
             PyValueError::new_err(
                 "could not resolve systems path: pass systems_path, set \
-             AICONFIGURATOR_SYSTEMS_PATH, install aisimulate-core, or run \
+             AICONFIGURATOR_SYSTEMS_PATH, install aiconfigurator-core, or run \
              from an AIC checkout",
             )
         },
@@ -616,6 +617,41 @@ impl AicEngine {
         })
         .map_err(aic_to_py)
     }
+
+    /// `evaluate_ops_json` under the SOL_FULL view: every op is forced onto
+    /// its analytic SOL branch and the roofline decomposition is kept.
+    /// Returns ``(name, sol_time_ms, sol_math_ms, sol_mem_ms)`` tuples
+    /// (NAME-FOLDED, ``+=`` on all three) — the compiled-engine replacement
+    /// for Python's per-call ``query_*(..., database_mode=SOL_FULL)``
+    /// triples. Raises for op families whose SOL path does not export its
+    /// decomposition yet.
+    #[pyo3(signature = (ops_json, is_context, batch_size, s, prefix=0, imbalance_correction_scale=1.0, x=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_ops_sol_json(
+        &self,
+        py: Python<'_>,
+        ops_json: &str,
+        is_context: bool,
+        batch_size: u32,
+        s: u32,
+        prefix: u32,
+        imbalance_correction_scale: f64,
+        x: Option<u32>,
+    ) -> PyResult<Vec<PerOpSolValue>> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner.evaluate_ops_sol_json(
+                ops_json,
+                is_context,
+                batch_size,
+                s,
+                prefix,
+                imbalance_correction_scale,
+                x,
+            )
+        })
+        .map_err(aic_to_py)
+    }
 }
 
 /// Convert a JSON-encoded [`EngineSpec`] into bincode bytes (Python → Rust
@@ -657,6 +693,7 @@ struct EngineBuildRequest {
     nextn: u32,
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
+    forward_model: Option<String>,
 }
 
 /// Ergonomic builder for the Rust -> Python -> Rust compiled-engine entry point.
@@ -697,8 +734,16 @@ impl AicEngineBuilder {
                 nextn: 0,
                 kv_block_size: None,
                 systems_path: None,
+                forward_model: None,
             },
         }
+    }
+
+    /// Forward-pass modeling mode (`"op_level"` | `"fpm"`); unset keeps
+    /// Python's default (op_level).
+    pub fn forward_model(mut self, forward_model: &str) -> Self {
+        self.request.forward_model = Some(forward_model.to_owned());
+        self
     }
 
     /// Select a specific backend version.
@@ -895,6 +940,7 @@ pub fn build_aic_engine(
         nextn,
         kv_block_size,
         systems_path: systems_path.map(str::to_owned),
+        forward_model: None,
     })
 }
 
@@ -933,6 +979,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("kvcache_quant_mode", request.kvcache_quant_mode.as_deref())?;
         kwargs.set_item("fmha_quant_mode", request.fmha_quant_mode.as_deref())?;
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
+        kwargs.set_item("forward_model", request.forward_model.as_deref())?;
         kwargs.set_item("nextn", request.nextn)?;
         kwargs.set_item("kv_block_size", request.kv_block_size)?;
         kwargs.set_item("systems_path", systems_root_str)?;
@@ -1000,6 +1047,7 @@ pub(crate) fn compile_engine_to_engine(
         nextn,
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
+        forward_model: config.forward_model.clone(),
     })
 }
 
@@ -1256,6 +1304,7 @@ mod tests {
                 scale_num_tokens: 0,
                 low_precision_input: false,
                 seq_split: 1,
+                below_grid_sol: false,
             }),
             Op::ContextAttention(ContextAttentionOp {
                 name: "context_attention".into(),
@@ -1303,6 +1352,7 @@ mod tests {
             systems_path: None,
             backend: BackendKind::Vllm,
             backend_version: Some("0.19.0".to_string()),
+            forward_model: None,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,

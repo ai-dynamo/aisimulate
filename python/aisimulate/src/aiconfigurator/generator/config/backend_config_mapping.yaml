@@ -1,0 +1,228 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+parameters:
+# Parallelism
+- param_key: tensor_parallel_size
+  vllm: tensor-parallel-size
+  sglang: tensor-parallel-size
+  trtllm: tensor-parallel-size
+
+- param_key: pipeline_parallel_size
+  vllm: pipeline-parallel-size
+  sglang: pipeline-parallel-size
+  trtllm: pipeline-parallel-size
+
+- param_key: enable_attention_dp
+  vllm: null
+  sglang: enable-dp-attention
+  trtllm: enable-attention-dp
+
+- param_key: data_parallel_size
+  vllm: data-parallel-size
+  sglang: data-parallel-size
+  trtllm: null
+
+- param_key: enable_expert_parallel
+  vllm: enable-expert-parallel
+  sglang: null
+  trtllm: null
+
+- param_key: moe_expert_parallel_size
+  vllm: null
+  sglang: expert-parallel-size
+  trtllm: expert-parallel-size
+
+- param_key: moe_tensor_parallel_size
+  vllm: null
+  # https://github.com/sgl-project/sglang/issues/8530
+  # SGLang: expert MoE TP is folded into tensor-parallel-size (see sglang.rule). Do not map to
+  # --moe-dense-tp-size (dense sublayers only; SGLang allows 1 or None).
+  sglang: null
+  trtllm: null
+
+# Vision encoder parallelism (VL models).
+# Guard: SGLang's --mm-enable-dp-encoder only exists >= 0.5.10.
+- param_key: enable_encoder_dp
+  vllm:
+    key: mm-encoder-tp-mode
+    value: '"data" if enable_encoder_dp else "weights"'
+  sglang: mm-enable-dp-encoder
+  trtllm: null
+
+# KV Cache
+- param_key: kv_cache_dtype
+  # Guard: vLLM doesn't accept "bfloat16" as a literal kv-cache-dtype -> map to "auto".
+  vllm:
+    key: kv-cache-dtype
+    value: '"auto" if kv_cache_dtype == "bfloat16" else kv_cache_dtype'
+  # Guard: SGLang interprets "bfloat16" literally -> "auto"; and accepts "fp8_e4m3" not "fp8".
+  sglang:
+    key: kv-cache-dtype
+    value: '"auto" if kv_cache_dtype == "bfloat16" else ("fp8_e4m3" if kv_cache_dtype == "fp8" else kv_cache_dtype)'
+  # Guard: TRT-LLM emits kv-dtype only in extra_engine_args.yaml (not cli_args), so the
+  # mapping transform can't reach it. Translation stays in trtllm.rule (float16/bfloat16 -> auto).
+  trtllm: kv_cache_dtype
+
+- param_key: kv_cache_free_gpu_memory_fraction
+  vllm: gpu-memory-utilization
+  sglang: mem-fraction-static
+  trtllm: kv_cache_free_gpu_memory_fraction
+
+- param_key: kv_cache_max_tokens
+  vllm: null
+  sglang: max-total-tokens
+  trtllm: kv_cache_max_tokens
+
+- param_key: tokens_per_block
+  vllm: block-size
+  sglang: page-size
+  trtllm: tokens_per_block
+
+- param_key: disable_prefix_cache
+  vllm: no-enable-prefix-caching
+  sglang: disable-radix-cache
+  trtllm: disable_prefix_cache
+
+- param_key: cache_transceiver_max_tokens_in_buffer
+  vllm: null
+  sglang: null
+  trtllm: cache_transceiver_max_tokens_in_buffer
+
+# Cuda Graph
+- param_key: disable_cuda_graph
+  vllm: enforce-eager
+  sglang: disable-cuda-graph
+  trtllm: null
+
+- param_key: cuda_graph_batch_sizes
+  vllm: cudagraph-capture-sizes
+  sglang: cuda-graph-bs
+  trtllm: null
+
+- param_key: cuda_graph_enable_padding
+  vllm: null
+  sglang:
+    key: disable-cuda-graph-padding
+    value: "not cuda_graph_enable_padding"
+  trtllm: null
+
+- param_key: cuda_graph_max_batch_size
+  vllm: null
+  sglang: cuda-graph-max-bs
+  trtllm: null
+
+# lengths
+- param_key: max_batch_size
+  vllm: max-num-seqs
+  sglang: max-running-requests
+  trtllm: max_batch_size
+
+- param_key: enable_chunked_prefill
+  vllm: enable-chunked-prefill
+  sglang: 
+    key: chunked-prefill-size
+    value: "max_num_tokens if max_num_tokens else -1"
+  trtllm: enable_chunked_prefill
+
+- param_key: max_prefill_tokens
+  vllm: null
+  sglang: max-prefill-tokens
+  trtllm: null
+
+- param_key: enable_mixed_chunk
+  vllm: null
+  sglang: enable-mixed-chunk
+  trtllm: null
+
+- param_key: max_num_tokens
+  vllm: max-num-batched-tokens
+  sglang: null
+  trtllm: max_num_tokens
+
+- param_key: max_seq_len
+  vllm: max-model-len
+  sglang: context-length
+  trtllm: max_seq_len
+
+# backend
+- param_key: moe_backend
+  vllm: null
+  sglang: moe-runner-backend
+  trtllm: null
+
+- param_key: moe_all2all_backend
+  vllm: all2all-backend
+  sglang: moe-a2a-backend
+  trtllm: null
+
+- param_key: kv_transfer_backend
+  vllm: null
+  sglang: disaggregation-transfer-backend
+  trtllm: null
+
+# No mapping-level default: the port is emitted only when explicitly set; the
+# dynamo sglang runtime treats bootstrap_port as optional (defaults internally).
+- param_key: disaggregation_bootstrap_port
+  vllm: null
+  sglang: disaggregation-bootstrap-port
+  trtllm: null
+
+- param_key: attention_backend
+  vllm: null
+  sglang: attention-backend
+  trtllm: null
+
+- param_key: elastic_ep_backend
+  vllm: null
+  sglang: elastic-ep-backend
+  trtllm: null
+
+# speculative decoding
+- param_key: speculative_decoding_type
+  vllm: speculative_config.method
+  sglang: speculative-algorithm
+  trtllm: null
+
+- param_key: num_nextn_predict_layers
+  vllm: speculative_config.num_speculative_tokens
+  sglang: speculative-num-steps
+  trtllm: null
+
+# SGLang requires the full (num-steps, eagle-topk, num-draft-tokens) triple when
+# num-steps is set explicitly (auto-derivation only runs when it is None).
+- param_key: speculative_eagle_topk
+  vllm: null
+  sglang: speculative-eagle-topk
+  trtllm: null
+
+- param_key: speculative_num_draft_tokens
+  vllm: null
+  sglang: speculative-num-draft-tokens
+  trtllm: null
+
+# Others
+- param_key: disable_overlap_scheduler
+  vllm: null
+  sglang: disable-overlap-schedule
+  trtllm: disable_overlap_scheduler
+
+- param_key: moe_load_balancer
+  vllm: null
+  sglang: load-balance-method
+  trtllm: null
+
+- param_key: skip_tokenizer_init
+  vllm: skip-tokenizer-init
+  sglang:
+    key: skip-tokenizer-init
+    value: "skip_tokenizer_init"
+    default: "true"
+  trtllm: skip_tokenizer_init
+
+# No mapping-level default: emitted only when set explicitly or injected by the
+# model-default facts layer (per-model), not universally forced to "true".
+- param_key: trust_remote_code
+  vllm: trust-remote-code
+  sglang: trust-remote-code
+  trtllm: trust_remote_code

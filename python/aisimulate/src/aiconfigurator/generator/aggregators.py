@@ -1,0 +1,323 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import os
+from collections.abc import Iterable
+from typing import Any, Optional
+
+import yaml
+
+from .rendering import apply_defaults, get_param_keys
+from .utils import DEFAULT_BACKEND, coerce_bool, coerce_int, normalize_backend
+
+
+def _entry_allows_backend(entry: dict[str, Any], backend: str) -> bool:
+    allowed = entry.get("backends")
+    if not allowed:
+        return True
+    if isinstance(allowed, str):
+        allowed_set = {allowed.strip().lower()}
+    elif isinstance(allowed, Iterable):
+        allowed_set = {str(item).strip().lower() for item in allowed if item is not None}
+    else:
+        allowed_set = set()
+    return not allowed_set or backend in allowed_set
+
+
+def collect_generator_params(
+    service: dict[str, Any],
+    k8s: dict[str, Any],
+    prefill_params: Optional[dict[str, Any]] = None,
+    decode_params: Optional[dict[str, Any]] = None,
+    agg_params: Optional[dict[str, Any]] = None,
+    prefill_workers: int = 1,
+    decode_workers: int = 1,
+    agg_workers: int = 1,
+    num_gpus_per_node: int = 8,
+    sla: Optional[dict[str, Any]] = None,
+    dyn_config: Optional[dict[str, Any]] = None,
+    bench: Optional[dict[str, Any]] = None,
+    sflow: Optional[dict[str, Any]] = None,
+    backend: Optional[str] = None,
+    generator_dynamo_version: Optional[str] = None,
+    encode_params: Optional[dict[str, Any]] = None,
+    encode_workers: Optional[int] = None,
+) -> dict[str, Any]:
+    prefill_params = prefill_params or {}
+    decode_params = decode_params or {}
+    agg_params = agg_params or {}
+    sflow = sflow or {}
+    backend_key = normalize_backend(backend, DEFAULT_BACKEND)
+    base_ctx = {
+        "ServiceConfig": dict(service),
+        "K8sConfig": dict(k8s),
+        "DynConfig": dict(dyn_config or {}),
+        "SlaConfig": dict(sla or {}),
+        "BenchConfig": dict(bench or {}),
+        "SflowConfig": dict(sflow or {}),
+    }
+    if generator_dynamo_version:
+        base_ctx["generator_dynamo_version"] = generator_dynamo_version
+    service = apply_defaults("ServiceConfig", service, backend=backend_key, extra_context=base_ctx)
+    base_ctx["ServiceConfig"] = dict(service)
+    k8s = apply_defaults("K8sConfig", k8s, backend=backend_key, extra_context=base_ctx)
+    base_ctx["K8sConfig"] = dict(k8s)
+    dyn_cfg = apply_defaults("DynConfig", dyn_config or {}, backend=backend_key, extra_context=base_ctx)
+    base_ctx["DynConfig"] = dict(dyn_cfg)
+    bench_cfg = apply_defaults("BenchConfig", bench or {}, backend=backend_key, extra_context=base_ctx)
+    base_ctx["BenchConfig"] = dict(bench_cfg)
+    sflow_cfg = apply_defaults("SflowConfig", sflow or {}, backend=backend_key, extra_context=base_ctx)
+
+    mode_value = dyn_cfg.get("mode") or "disagg"
+    enable_router = coerce_bool(dyn_cfg.get("enable_router"))
+    mode_tag = "agg" if mode_value == "agg" else "disagg"
+    name_prefix = k8s.get("name_prefix") or "dynamo"
+    name = f"{name_prefix}-{mode_tag}{('-router' if enable_router else '')}"
+    use_engine_cm = k8s.get("k8s_engine_mode", "inline") == "configmap"
+    # PVC config: new unified names with backward compat fallbacks
+    _pvc_name_raw = k8s.get("k8s_pvc_name") or k8s.get("k8s_model_cache")
+    k8s_pvc_name = _pvc_name_raw.strip() if isinstance(_pvc_name_raw, str) else ""
+
+    _pvc_mount_raw = k8s.get("k8s_pvc_mount_path")
+    k8s_pvc_mount_path = (
+        _pvc_mount_raw.strip()
+        if isinstance(_pvc_mount_raw, str) and _pvc_mount_raw.strip()
+        else "/workspace/model_cache"
+    )
+
+    _model_in_pvc_raw = k8s.get("k8s_model_path_in_pvc") or k8s.get("k8s_pvc_model_path")
+    k8s_model_path_in_pvc = _model_in_pvc_raw.strip(" /") if isinstance(_model_in_pvc_raw, str) else ""
+
+    # Compute the full model path: {mount}/{path_in_pvc}
+    k8s_full_model_path = (
+        f"{k8s_pvc_mount_path}/{k8s_model_path_in_pvc}".rstrip("/")
+        if k8s_model_path_in_pvc
+        else k8s_pvc_mount_path
+        if k8s_pvc_name
+        else ""
+    )
+
+    # k8s_hf_home: explicit user value takes priority, otherwise use computed path
+    _explicit_hf_home = k8s.get("k8s_hf_home")
+    k8s_hf_home_value = (
+        _explicit_hf_home.strip()
+        if isinstance(_explicit_hf_home, str) and _explicit_hf_home.strip()
+        else k8s_full_model_path
+    )
+
+    workers_dict = {
+        "prefill_workers": int(prefill_workers),
+        "decode_workers": int(decode_workers),
+        "agg_workers": int(agg_workers),
+        "prefill_gpus_per_worker": coerce_int(prefill_params.get("gpus_per_worker")),
+        "decode_gpus_per_worker": coerce_int(decode_params.get("gpus_per_worker")),
+        "agg_gpus_per_worker": coerce_int(agg_params.get("gpus_per_worker")),
+    }
+    service_payload = dict(service)
+    service_payload.update(
+        {
+            "model_path": service.get("model_path") or service.get("served_model_path"),
+            "served_model_path": service.get("served_model_path"),
+            "head_node_ip": service.get("head_node_ip"),
+            "port": coerce_int(service.get("port")),
+            "include_frontend": coerce_bool(service.get("include_frontend")),
+        }
+    )
+    k8s_payload = dict(k8s)
+    k8s_payload.update(
+        {
+            "name_prefix": name_prefix,
+            "name": name,
+            "k8s_namespace": k8s.get("k8s_namespace"),
+            "k8s_image": k8s.get("k8s_image"),
+            "k8s_image_pull_secret": k8s.get("k8s_image_pull_secret"),
+            "k8s_etcd_endpoints": k8s.get("k8s_etcd_endpoints"),
+            "k8s_engine_mode": k8s.get("k8s_engine_mode"),
+            "use_engine_cm": use_engine_cm,
+            "k8s_pvc_name": k8s_pvc_name,
+            "k8s_pvc_mount_path": k8s_pvc_mount_path,
+            "k8s_model_path_in_pvc": k8s_model_path_in_pvc,
+            # Backward compat aliases for Jinja2 templates
+            "k8s_model_cache": k8s_pvc_name,
+            "k8s_hf_home": k8s_hf_home_value,
+            "prefill_engine_args": "/workspace/engine_configs/prefill_config.yaml",
+            "decode_engine_args": "/workspace/engine_configs/decode_config.yaml",
+            "agg_engine_args": "/workspace/engine_configs/agg_config.yaml",
+        }
+    )
+    # Optional multimodal encode worker (EPD). Added only when provided so a
+    # request without it produces a byte-identical params dict.
+    role_params = {
+        "prefill": prefill_params,
+        "decode": decode_params,
+        "agg": agg_params,
+    }
+    if encode_params:
+        role_params["encode"] = encode_params
+        workers_dict["encode_workers"] = int(encode_workers if encode_workers is not None else 1)
+        workers_dict["encode_gpus_per_worker"] = coerce_int(encode_params.get("gpus_per_worker"))
+
+    result = {
+        "ServiceConfig": service_payload,
+        "K8sConfig": k8s_payload,
+        "DynConfig": dict(dyn_cfg),
+        "WorkerConfig": workers_dict,
+        "SlaConfig": sla or {},
+        "BenchConfig": bench_cfg,
+        "SflowConfig": dict(sflow_cfg),
+        "NodeConfig": {"num_gpus_per_node": int(num_gpus_per_node)},
+        "params": role_params,
+    }
+    if generator_dynamo_version:
+        result["generator_dynamo_version"] = generator_dynamo_version
+    return result
+
+
+def generate_config_from_yaml(
+    yaml_path: str,
+    backend: Optional[str] = None,
+    schema_path: Optional[str] = None,
+) -> dict[str, Any]:
+    with open(yaml_path) as f:
+        cfg = yaml.safe_load(f) or {}
+    return generate_config_from_input_dict(cfg, schema_path=schema_path, backend=backend)
+
+
+def _get_by_path(src: dict[str, Any], path: str) -> Any:
+    cur = src
+    for p in path.split("."):
+        if not isinstance(cur, dict) or p not in cur:
+            return None
+        cur = cur[p]
+    return cur
+
+
+def _set_by_path(dst: dict[str, Any], path: str, value: Any) -> None:
+    parts = path.split(".")
+    cur = dst
+    for p in parts[:-1]:
+        if p not in cur or not isinstance(cur[p], dict):
+            cur[p] = {}
+        cur = cur[p]
+    cur[parts[-1]] = value
+
+
+def generate_config_from_input_dict(
+    input_params: dict[str, Any],
+    schema_path: Optional[str] = None,
+    backend: Optional[str] = None,
+) -> dict[str, Any]:
+    current_dir = os.path.dirname(__file__)
+    if not schema_path:
+        schema_path = os.path.join(current_dir, "config", "deployment_config.yaml")
+    with open(schema_path) as f:
+        schema = yaml.safe_load(f)
+    if schema is None:
+        inputs = []
+    elif isinstance(schema, list):
+        inputs = schema
+    else:
+        inputs = schema.get("inputs", [])
+    target: dict[str, Any] = {}
+    backend_key = normalize_backend(backend, DEFAULT_BACKEND)
+    for entry in inputs:
+        key = entry.get("key")
+        required = bool(entry.get("required", False))
+        val = None
+        if key:
+            parts = key.split(".")
+            val = _get_by_path(input_params, parts[0])
+            if isinstance(val, dict):
+                for p in parts[1:]:
+                    val = val.get(p) if isinstance(val, dict) else None
+        if not _entry_allows_backend(entry, backend_key):
+            continue
+        if val is None and required:
+            raise ValueError(f"Missing required input: {key}")
+        if val is not None and key:
+            parts = key.split(".")
+            group = parts[0]
+            rest = parts[1:]
+            if group == "ServiceConfig":
+                dest = ".".join(["ServiceConfig"] + rest)
+            elif group == "K8sConfig":
+                dest = ".".join(["K8sConfig"] + rest)
+            elif group == "Workers":
+                if len(rest) >= 2:
+                    role = rest[0]
+                    dest = ".".join(["params", role] + rest[1:])
+                else:
+                    dest = None
+            elif group in {"WorkerCounts", "WorkerConfig"}:
+                dest = ".".join(["WorkerConfig"] + rest)
+            elif group == "SlaConfig":
+                dest = ".".join(["SlaConfig"] + rest)
+            elif group == "BenchConfig":
+                dest = ".".join(["BenchConfig"] + rest)
+            elif group == "SflowConfig":
+                dest = ".".join(["SflowConfig"] + rest)
+            elif group == "ModelConfig":
+                dest = ".".join(["ModelConfig"] + rest)
+            elif group == "DynConfig":
+                dest = ".".join(["DynConfig"] + rest)
+            elif group == "NodeConfig":
+                dest = ".".join(["NodeConfig"] + rest)
+            else:
+                dest = None
+            if dest:
+                _set_by_path(target, dest, val)
+            elif group == "generator_dynamo_version":
+                target["generator_dynamo_version"] = val
+    target.setdefault("ServiceConfig", {})
+    target.setdefault("K8sConfig", {})
+    target.setdefault("WorkerConfig", {})
+    target.setdefault("params", {})
+    target.setdefault("SlaConfig", {})
+    target.setdefault("BenchConfig", {})
+    target.setdefault("SflowConfig", {})
+    target.setdefault("DynConfig", {})
+    target.setdefault("NodeConfig", {})
+    try:
+        default_mapping = os.path.join(os.path.dirname(__file__), "config", "backend_config_mapping.yaml")
+        allowed_keys = set(get_param_keys(default_mapping))
+    except Exception:
+        allowed_keys = set()
+    workers_in = input_params.get("Workers", {}) or {}
+    for role in ("prefill", "decode", "agg", "encode"):
+        role_in = workers_in.get(role, {}) or {}
+        if isinstance(role_in, dict):
+            # User passthrough fields are not mapped params, so they must
+            # survive the allowed-keys filter to reach their target renderer.
+            filtered = {
+                k: v
+                for k, v in role_in.items()
+                if (not allowed_keys or k in allowed_keys or k in {"extra_engine_args", "extra_cli_args"})
+            }
+            if filtered:
+                for k, v in filtered.items():
+                    _set_by_path(target, f"params.{role}.{k}", v)
+    params = collect_generator_params(
+        service=target.get("ServiceConfig", {}),
+        k8s=target.get("K8sConfig", {}),
+        prefill_params=target.get("params", {}).get("prefill"),
+        decode_params=target.get("params", {}).get("decode"),
+        agg_params=target.get("params", {}).get("agg"),
+        prefill_workers=int(target.get("WorkerConfig", {}).get("prefill_workers", 1)),
+        decode_workers=int(target.get("WorkerConfig", {}).get("decode_workers", 1)),
+        agg_workers=int(target.get("WorkerConfig", {}).get("agg_workers", 1)),
+        num_gpus_per_node=int(target.get("NodeConfig", {}).get("num_gpus_per_node", 8)),
+        sla=target.get("SlaConfig", {}),
+        bench=target.get("BenchConfig", {}),
+        sflow=target.get("SflowConfig", {}),
+        dyn_config=target.get("DynConfig", {}),
+        backend=backend_key,
+        generator_dynamo_version=target.get("generator_dynamo_version"),
+        encode_params=target.get("params", {}).get("encode"),
+        encode_workers=target.get("WorkerConfig", {}).get("encode_workers"),
+    )
+    if target.get("ModelConfig"):
+        params["ModelConfig"] = target.get("ModelConfig", {})
+    rule_name = input_params.get("rule")
+    if rule_name:
+        params["rule"] = rule_name
+    return params

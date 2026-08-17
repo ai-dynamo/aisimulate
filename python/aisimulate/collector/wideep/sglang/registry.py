@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""WideEP collector registry for SGLang.
+
+These ops require the WideEP/SGLang runtime declared in
+``collector/framework_manifest.yaml``. They stay out of the stock SGLang
+registry so normal SGLang collection does not accidentally use a special image.
+"""
+
+from collector.registry_types import OpEntry, PerfFile
+
+REGISTRY: list[OpEntry] = [
+    OpEntry(
+        op="moe_ep",
+        module="collector.wideep.sglang.collect_deepep_moe",
+        get_func="get_moe_ep_test_cases",
+        run_func="run_moe_ep",
+        perf_filename=PerfFile.MOE_EXPERT_COMPUTE,
+    ),
+    OpEntry(
+        op="deepep_ll",
+        module="collector.wideep.sglang.collect_deepep_ll",
+        get_func="get_deepep_ll_test_cases",
+        run_func="run_deepep_ll_fullnode",
+        perf_filename=PerfFile.WIDEEP_DEEPEP_LL,
+    ),
+    OpEntry(
+        op="deepep_normal",
+        module="collector.wideep.sglang.collect_deepep_normal",
+        get_func="get_deepep_normal_test_cases",
+        run_func="run_deepep_normal_fullnode",
+        perf_filename=PerfFile.WIDEEP_DEEPEP_NORMAL,
+    ),
+]
