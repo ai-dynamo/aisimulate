@@ -190,6 +190,8 @@ class Workload(BaseModel):
     num_request_ratio: float | None = (
         None  # request count multiplier for concrete concurrency or request_rate
     )
+    random_range_ratio: float = 1.0
+    random_seed: int = 0
     shared_prefix_ratio: float = 0.0  # cache-locality / prefix sharing
     num_prefix_groups: int = 0
     turns_per_session: int = 1  # multi-turn sessions
@@ -274,6 +276,10 @@ class Workload(BaseModel):
         )
         if self.trace_path is not None:
             set_syn = [n for n in synthetic_only if getattr(self, n) is not None]
+            if self.random_range_ratio != 1.0:
+                set_syn.append("random_range_ratio")
+            if self.random_seed != 0:
+                set_syn.append("random_seed")
             if set_syn:
                 raise ValueError(
                     f"trace workload (trace_path set) must not set synthetic fields {set_syn}"
@@ -334,6 +340,29 @@ class Workload(BaseModel):
             v = getattr(self, name)
             if v is not None and v <= 0:
                 raise ValueError(f"{name} must be positive, got {v}")
+        if (
+            not math.isfinite(self.random_range_ratio)
+            or self.random_range_ratio <= 0.0
+            or self.random_range_ratio > 1.0
+        ):
+            raise ValueError(
+                "random_range_ratio must be finite and in (0.0, 1.0], got "
+                f"{self.random_range_ratio!r}"
+            )
+        if (
+            isinstance(self.random_seed, bool)
+            or self.random_seed < 0
+            or self.random_seed > 0xFFFF_FFFF_FFFF_FFFF
+        ):
+            raise ValueError(
+                "random_seed must be an unsigned 64-bit integer, got "
+                f"{self.random_seed!r}"
+            )
+        if self.random_range_ratio != 1.0 and self.turns_per_session != 1:
+            raise ValueError(
+                "random_range_ratio currently only supports single-turn "
+                "synthetic workloads"
+            )
         return self
 
 

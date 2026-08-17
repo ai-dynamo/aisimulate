@@ -43,6 +43,22 @@ def add_base_replay_arguments(parser: argparse.ArgumentParser) -> None:
         help="fixed open-loop interval between synthetic requests in milliseconds",
     )
     parser.add_argument("--arrival-seed", type=int, default=42)
+    parser.add_argument(
+        "--random-range-ratio",
+        type=float,
+        default=1.0,
+        help=(
+            "uniformly sample synthetic input and output lengths from "
+            "[int(ratio * configured_length), configured_length]; default 1.0 "
+            "keeps lengths fixed; currently supports single-turn workloads only"
+        ),
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=0,
+        help="seed for synthetic input/output length sampling",
+    )
     parser.add_argument("--turns-per-session", type=int, default=1)
     parser.add_argument("--shared-prefix-ratio", type=float, default=0.0)
     parser.add_argument("--num-prefix-groups", type=int, default=0)
