@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AI Simulate
+# AISimulate
 
 > [!WARNING]
 > **Experimental.** AI Simulate and Sweeper are intended for evaluation and feedback, not production
@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
 > without a standard deprecation period. They provide no SLA, accuracy, or configuration-optimality
 > guarantees.
 
-AI Simulate is a standalone Python distribution in the Dynamo repository. Its engine-only replay
+AI Simulate is a standalone Python distribution in the AISimulate repository. Its engine-only replay
 CLI and `aisimulate.sweeper` package evaluate serializable replay specifications without depending
 on `ai-dynamo`.
 
@@ -25,7 +25,7 @@ engine, topology, traffic, replay-mode, SLA, and output arguments; Dynamo adds i
 They share option names and the base `ReplaySpec` schema; the selected runtime validates each
 `--*-engine-args` JSON payload, which can therefore contain runtime-specific fields.
 For configuration search, call `Sweeper(runner_factory=...).run(config)` or start from an example
-under `aisimulate/examples/sweeper`.
+under `examples/sweeper`.
 
 For example, run one engine-only synthetic replay with fixed timing:
 
@@ -43,16 +43,14 @@ Install AI Simulate by itself for engine-only development:
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install -e ./aisimulate
+uv pip install -e .
 ```
 
-The `dynamo-planner` image builds and installs AI Simulate from the same source revision as Dynamo.
-The AI Simulate wheel is an image-local artifact, not a standalone release artifact. For Dynamo
-feature development from a source checkout, also install `ai-dynamo` and the Planner requirements:
+For Dynamo feature development, install `ai-dynamo` separately. Its optional
+Router and Planner adapters consume the released `aisimulate` artifact:
 
 ```bash
-uv pip install --no-deps -e .
-uv pip install -r container/deps/requirements.planner.txt
+uv pip install aisimulate ai-dynamo
 ```
 
 The `ai-dynamo` wheel registers the `dynamo.planner` and `dynamo.router` Sweeper provider entry
@@ -78,4 +76,18 @@ KVBM sweep fields have been removed and have no adapter migration.
 
 Read the canonical [Sweeper documentation](docs/sweeper/overview.md) for its configuration,
 search-space, and replay behavior. Backend-neutral and Dynamo integration examples live under
-[`aisimulate/examples/sweeper`](examples/sweeper/README.md).
+[`examples/sweeper`](examples/sweeper/README.md).
+
+## Development
+
+The Rust workspace and Python wheel build directly from this repository:
+
+```bash
+cargo test --workspace
+python -m maturin develop --release
+python -m pytest
+```
+
+The package source was migrated with its filtered Dynamo ancestry. See
+[the migration notes](docs/migration.md) for the source boundary and history
+contract.

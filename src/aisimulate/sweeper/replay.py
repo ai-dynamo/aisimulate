@@ -171,22 +171,18 @@ class Runner(Protocol):
         spec: ReplaySpec,
         *,
         output_requirements: ReplayOutputRequirements | None = None,
-    ) -> ReplayReport:
-        ...
+    ) -> ReplayReport: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 @runtime_checkable
 class RunnerFactory(Protocol):
     """Serializable factory used to create one reusable Runner per worker."""
 
-    def capabilities(self) -> RunnerCapabilities:
-        ...
+    def capabilities(self) -> RunnerCapabilities: ...
 
-    def create(self, worker_id: int) -> Runner:
-        ...
+    def create(self, worker_id: int) -> Runner: ...
 
 
 def _jsonable(value: Any) -> JSONValue:

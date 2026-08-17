@@ -19,8 +19,8 @@ The backend-neutral example injects a deterministic replay runner and does not i
 another application framework:
 
 ```bash
-python aisimulate/examples/sweeper/run_sweep.py \
-  --config aisimulate/examples/sweeper/sweep.yaml
+python examples/sweeper/run_sweep.py \
+  --config examples/sweeper/sweep.yaml
 ```
 
 ## Run the Dynamo Integration Example
@@ -46,8 +46,8 @@ wheel remains inside that image and is not published as a standalone release art
 Run the general search example with the explicit Dynamo runner:
 
 ```bash
-python aisimulate/examples/sweeper/tools/run_sweep.py \
-  --config aisimulate/examples/sweeper/configs/smart_sweep.yaml
+python examples/sweeper/tools/run_sweep.py \
+  --config examples/sweeper/configs/smart_sweep.yaml
 ```
 
 To use another replay implementation, pass its `RunnerFactory` to the `Sweeper` constructor.
@@ -60,14 +60,14 @@ Update `workload.trace_path` before running a trace-backed configuration.
 Generate a Mooncake-format trace whose request rate follows a sine wave:
 
 ```bash
-python aisimulate/examples/sweeper/tools/gen_sine_trace.py \
+python examples/sweeper/tools/gen_sine_trace.py \
   --out /tmp/sweeper-sine-trace.jsonl
 ```
 
 Compare Planner load predictors on that trace:
 
 ```bash
-python aisimulate/examples/sweeper/tools/run_load_predictor_sweep.py \
+python examples/sweeper/tools/run_load_predictor_sweep.py \
   --trace /tmp/sweeper-sine-trace.jsonl \
   --policies throughput_180_5 throughput_600_5
 ```

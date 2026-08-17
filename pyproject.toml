@@ -52,8 +52,8 @@ test = [
 ]
 
 [project.urls]
-Repository = "https://github.com/ai-dynamo/dynamo.git"
-Documentation = "https://github.com/ai-dynamo/dynamo/tree/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental"
+Repository = "https://github.com/ai-dynamo/aisimulate.git"
+Documentation = "https://github.com/ai-dynamo/aisimulate/tree/main/docs/sweeper"
 
 [tool.maturin]
 exclude = ["**/__pycache__/**", "**/*.pyc"]

@@ -13,8 +13,8 @@ From a source checkout, install AI Simulate and run its neutral example:
 
 ```bash
 python -m pip install -e ./aisimulate
-python aisimulate/examples/sweeper/run_sweep.py \
-  --config aisimulate/examples/sweeper/sweep.yaml
+python examples/sweeper/run_sweep.py \
+  --config examples/sweeper/sweep.yaml
 ```
 
 The example runner returns deterministic metrics so you can inspect orchestration without importing

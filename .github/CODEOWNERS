@@ -1,0 +1,6 @@
+# Standalone package, Sweeper, and public API ownership.
+* @ai-dynamo/dynamo-planner-codeowners
+
+# Generalized engine, scheduler, cache, and deterministic replay ownership.
+/crates/core/src/engine/ @ai-dynamo/dynamo-performance-codeowners @ai-dynamo/dynamo-planner-codeowners
+/crates/core/src/replay/ @ai-dynamo/dynamo-performance-codeowners @ai-dynamo/dynamo-planner-codeowners

@@ -21,17 +21,25 @@ pytestmark = pytest.mark.timeout(30)
 
 
 def _source_checkout_roots() -> tuple[Path, Path]:
-    """Return the AISimulate and repository roots for source-only contracts."""
+    """Return the package and repository roots for source-only contracts."""
     aisimulate_root = Path(__file__).resolve().parents[2]
-    repo_root = aisimulate_root.parent
+    repo_root = aisimulate_root
     source_tree_markers = (
         aisimulate_root / "pyproject.toml",
         aisimulate_root / "crates/core/Cargo.toml",
         repo_root / "Cargo.toml",
     )
     if not all(path.is_file() for path in source_tree_markers):
-        pytest.skip("requires the Dynamo source checkout, not only the installed wheel")
+        pytest.skip("requires the AISimulate source checkout, not only the wheel")
     return aisimulate_root, repo_root
+
+
+def _ai_dynamo_distribution_or_skip():
+    """Return optional Dynamo metadata when cross-repository CI installs it."""
+    try:
+        return importlib.metadata.distribution("ai-dynamo")
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip("cross-repository Dynamo contract runs in integration CI")
 
 
 def test_aisimulate_distribution_publishes_aisimulate_sweeper_package():
@@ -65,7 +73,7 @@ def test_aisimulate_has_no_console_script():
 
 
 def test_ai_dynamo_has_no_aisimulate_extra():
-    distribution = importlib.metadata.distribution("ai-dynamo")
+    distribution = _ai_dynamo_distribution_or_skip()
 
     extras = set(distribution.metadata.get_all("Provides-Extra", []))
     assert {"sweeper", "simulate", "simulation"}.isdisjoint(extras)
@@ -102,7 +110,7 @@ def test_importing_sweeper_does_not_import_dynamo():
 
 
 def test_ai_dynamo_registers_optional_sweeper_providers():
-    distribution = importlib.metadata.distribution("ai-dynamo")
+    distribution = _ai_dynamo_distribution_or_skip()
     entry_points = {
         entry_point.name: entry_point.value
         for entry_point in distribution.entry_points
@@ -132,37 +140,8 @@ def test_aisimulate_source_versions_are_synchronized():
     )
 
 
-def test_runtime_wheel_context_covers_every_root_workspace_member():
-    _, repo_root = _source_checkout_roots()
-    workspace = tomllib.loads((repo_root / "Cargo.toml").read_text())
-    wheel_builder = (
-        repo_root / "container/templates/wheel_builder.Dockerfile"
-    ).read_text()
-
-    runtime_stage = wheel_builder.split(
-        "FROM wheel_builder_base AS runtime_wheel_builder", 1
-    )[1]
-    shared_context = runtime_stage.split("# AI Simulate is", 1)[0]
-    copied_roots = {
-        source.rstrip("/")
-        for line in shared_context.splitlines()
-        if line.startswith("COPY ")
-        for source in line.split()[1:-1]
-        if source.endswith("/") and not source.startswith("--from=")
-    }
-
-    missing = [
-        member
-        for member in workspace["workspace"]["members"]
-        if not any(
-            member == copied_root or member.startswith(f"{copied_root}/")
-            for copied_root in copied_roots
-        )
-    ]
-    assert not missing, f"Runtime wheel context omits workspace members: {missing}"
-
-
 def test_profiler_does_not_publish_or_reexport_sweeper():
+    _ai_dynamo_distribution_or_skip()
     assert importlib.util.find_spec("dynamo.profiler.sweeper") is None
     subprocess.run(
         [

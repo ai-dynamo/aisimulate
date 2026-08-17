@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dynamo scheduling markers for the migrated Sweeper test suite."""
+"""Scheduling markers for the standalone Sweeper test suite."""
 
 from pathlib import Path
 
