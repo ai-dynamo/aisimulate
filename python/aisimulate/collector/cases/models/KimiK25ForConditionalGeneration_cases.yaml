@@ -1,0 +1,176 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: KimiK25ForConditionalGeneration
+model_path: moonshotai/Kimi-K2.5
+model_paths:
+  - moonshotai/Kimi-K2-Instruct
+  - moonshotai/Kimi-K2.5
+  - nvidia/Kimi-K2.5-NVFP4
+include_base: true
+base_ops:
+  - gemm
+model_specific_base_ops:
+  moonshotai/Kimi-K2.5:
+    vllm:
+      - encoder_attention
+    # TRT-LLM 1.3.0rc20 natively serves the full K2.5 VLM including the
+    # MoonViT3d tower (modeling_kimi_k25.py: 27-layer encoder,
+    # vt_hidden_size=1152 / vt_num_attention_heads=16 -> head_dim 72,
+    # matching the encoder_attention profile below).
+    trtllm:
+      - encoder_attention
+  nvidia/Kimi-K2.5-NVFP4:
+    vllm:
+      - encoder_attention
+    trtllm:
+      - encoder_attention
+description: >
+  Kimi-K2.5 hybrid MLA/MoE model-centric collection plan.
+
+model_case_values:
+  encoder_attention:
+    - id: kimi_k25_moonvit_encoder_attention
+      model_path: moonshotai/Kimi-K2.5
+      model_aliases:
+        - nvidia/Kimi-K2.5-NVFP4
+      num_attention_heads: 16
+      head_dim: 72
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
+  moe:
+    - model_path: moonshotai/Kimi-K2-Instruct
+      hidden_size: 7168
+      inter_size: 2048
+      topk: 8
+      num_experts: 384
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.827
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        fp8_block: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
+      wideep: true
+      framework_quantization:
+        sglang:
+          allowed_modes: [fp8_block]
+        trtllm:
+          allowed_modes: [fp8_block]
+        vllm:
+          allowed_modes: [fp8_block]
+    - model_path: moonshotai/Kimi-K2.5
+      hidden_size: 7168
+      inter_size: 2048
+      topk: 8
+      num_experts: 384
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.827
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        int4_wo: {90: marlin}
+      wideep: true
+      framework_quantization:
+        sglang:
+          allowed_modes: [int4_wo]
+        trtllm:
+          allowed_modes: [int4_wo]
+        vllm:
+          allowed_modes: [int4_wo]
+    - model_path: nvidia/Kimi-K2.5-NVFP4
+      hidden_size: 7168
+      inter_size: 2048
+      topk: 8
+      num_experts: 384
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.827
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      wideep: true
+      framework_quantization:
+        sglang:
+          allowed_modes: [nvfp4]
+        trtllm:
+          allowed_modes: [nvfp4]
+        vllm:
+          allowed_modes: [nvfp4]
+  mla:
+    - model_path: moonshotai/Kimi-K2.5
+      model_aliases:
+        - moonshotai/Kimi-K2-Instruct
+        - nvidia/Kimi-K2.5-NVFP4
+      # The current SGLang/TRT-LLM AIC MLA consumer queries the historical
+      # DeepSeek-compatible 128-head table. vLLM uses the framework-native
+      # MLA module collector described by mla_module below.
+      num_heads: 128
+      q_lora_rank: 1536
+      kv_lora_rank: 512
+      qk_nope_head_dim: 128
+      qk_rope_head_dim: 64
+      v_head_dim: 128
+    # n=64 contributes local-head=1 in full collection and local-head=8 in the
+    # targeted TP<=8 plan. The getters deduplicate the overlap with n=128.
+    - model_path: moonshotai/Kimi-K2.5
+      model_aliases:
+        - moonshotai/Kimi-K2-Instruct
+        - nvidia/Kimi-K2.5-NVFP4
+      num_heads: 64
+      q_lora_rank: 1536
+      kv_lora_rank: 512
+      qk_nope_head_dim: 128
+      qk_rope_head_dim: 64
+      v_head_dim: 128
+
+framework_specific_model_case_values:
+  vllm:
+    mla_module:
+      - model_path: moonshotai/Kimi-K2-Instruct
+        attention_type: mla
+        architecture: DeepseekV3ForCausalLM
+        native_num_heads: 64
+      - model_paths:
+          - moonshotai/Kimi-K2.5
+          - nvidia/Kimi-K2.5-NVFP4
+        attention_type: mla
+        architecture: KimiK25ForConditionalGeneration
+        native_num_heads: 64
+
+all_frameworks_op_cases:
+  moe:
+    cases: all
+
+framework_specific_op_cases:
+  vllm:
+    mla_context_module:
+      cases: all
+    mla_generation_module:
+      cases: all
+  trtllm:
+    mla_context:
+      cases: all
+    mla_generation:
+      cases: all
+    mla_bmm_gen_pre:
+      cases: all
+    mla_bmm_gen_post:
+      cases: all
+    moe_ep:
+      cases: all
+  sglang:
+    mla_context:
+      cases: all
+    mla_generation:
+      cases: all
+    mla_bmm_gen_pre:
+      cases: all
+    mla_bmm_gen_post:
+      cases: all

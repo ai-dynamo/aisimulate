@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""MiniMax Sparse Attention (MSA) op: per-op SOL coverage through the query shim.
+
+The cross-op (XOP) DSA-to-MSA utilization transfer this file also used to pin
+(policy gating + xop provenance tagging via the ``_dsa_context_util`` seam)
+retired to the compiled engine with #1357 PR-5; transfer-ladder behaviour is
+anchored by the frozen parity goldens and
+tests/cross_package/test_query_shim_baseline.py."""
+
+import pytest
+
+from aiconfigurator.sdk import common
+
+pytestmark = pytest.mark.unit
+
+
+def _ctx_msa():
+    from aiconfigurator.sdk.operations.msa import ContextMSAModule
+
+    # M3-like per-GPU shape: 8 q / 1 kv heads, head_dim 128, v 128, top-16 blocks * 128.
+    return ContextMSAModule(
+        "msa",
+        1.0,
+        num_heads=8,
+        num_kv_heads=1,
+        hidden_size=4096,
+        head_dim=128,
+        v_head_dim=128,
+        index_n_heads=4,
+        index_head_dim=128,
+        index_topk=2048,
+        block_size=128,
+        kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+        fmha_quant_mode=common.FMHAQuantMode.fp8,
+        gemm_quant_mode=common.GEMMQuantMode.fp8_block,
+    )
+
+
+def test_msa_sol_scales_with_workload():
+    """SOL mode computes the three-group MSA SOL (gemm + fp8 indexer + sparse attn). Assert it
+    RESPONDS to the workload rather than returning a constant: more new tokens (s) add work, and
+    a longer cached prefix adds indexer/attention work (full_s > index_topk). Runs on a real
+    shipped database: ``op.query`` is a deprecation shim routed through the compiled engine's
+    probe, which loads its tables from disk (the synthetic fixture is invisible to it)."""
+    from aiconfigurator.sdk.perf_database import get_database_view
+
+    db = get_database_view("b200_sxm", "sglang", "0.5.14", database_mode="SOL")
+    assert db is not None, "b200_sxm/sglang/0.5.14 data missing"
+    op = _ctx_msa()
+    small = float(op.query(db, batch_size=8, s=512, prefix=0))
+    large = float(op.query(db, batch_size=8, s=2048, prefix=0))
+    with_prefix = float(op.query(db, batch_size=8, s=2048, prefix=2048))
+    assert 0 < small < large  # scales with new-token count
+    assert with_prefix > large  # cached prefix adds indexer work beyond index_topk

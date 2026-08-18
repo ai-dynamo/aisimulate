@@ -5,27 +5,58 @@ SPDX-License-Identifier: Apache-2.0
 
 # AISimulate
 
+AISimulate is the standalone home for GPU-free inference simulation and
+deployment configuration. Neither AISimulate wheel declares Dynamo as an
+installation dependency. Dynamo-owned Router, Planner, runtime, transport,
+and live-Mocker integrations consume AISimulate through optional adapters.
+
+Starting with 0.12.0, this repository owns the complete AIConfigurator product
+surface—not only its native core. The full AIC application, CLI, generator,
+SDK, Collector, tests, documentation, and development tooling are preserved
+under `python/aisimulate/`. The native estimator remains independently
+consumable from Python and Rust.
+
 > [!WARNING]
-> **Experimental.** AI Simulate and Sweeper are intended for evaluation and feedback, not production
-> capacity planning. Their APIs, configuration schemas, search behavior, and output may change
-> without a standard deprecation period. They provide no SLA, accuracy, or configuration-optimality
-> guarantees.
+> Replay and Sweeper are experimental surfaces intended for evaluation and
+> feedback, not production capacity planning. Their APIs, schemas, search
+> behavior, and output may change without a standard deprecation period.
 
-AI Simulate is a standalone Python distribution in the AISimulate repository. Its engine-only replay
-CLI and `aisimulate.sweeper` package evaluate serializable replay specifications without depending
-on `ai-dynamo`.
+## Release artifacts
 
-Sweeper accepts a replay `RunnerFactory` through its Python API. Optional feature adapters own
-their search spaces and runtime hooks. An engine-only sweep can use a Dynamo-free replay runner;
-a sweep configured with Dynamo Planner or Router adapters uses Dynamo's runner composition.
+This repository produces exactly three release artifacts:
 
-For an engine-only single replay run, use `python -m aisimulate.replay`. For a replay with Dynamo
-Router, Planner, or online adapters, use `python -m dynamo.replay`. Both commands share the
-engine, topology, traffic, replay-mode, SLA, and output arguments; Dynamo adds its adapter options.
-They share option names and the base `ReplaySpec` schema; the selected runtime validates each
-`--*-engine-args` JSON payload, which can therefore contain runtime-specific fields.
-For configuration search, call `Sweeper(runner_factory=...).run(config)` or start from an example
-under `examples/sweeper`.
+1. `aisimulate` Python wheel — the complete application, CLI, Replay, and Sweeper;
+2. `aisimulate-core` Python wheel — the estimator SDK, native extension,
+   model metadata, and performance data;
+3. `aisimulate-core` Rust crate — the native estimator and simulation core for
+   Rust consumers.
+
+It does **not** publish an `aiconfigurator` wheel or an `aiconfigurator-core`
+wheel/crate. The legacy Python import namespaces and the `aiconfigurator`
+console command remain compatibility surfaces inside the two AISimulate
+wheels for the 0.12 transition.
+
+## CLI transition
+
+The `aisimulate` wheel installs both compatibility commands:
+
+```bash
+aisimulate cli generate --model-path Qwen/Qwen3-32B-FP8 --total-gpus 8 --system h200_sxm
+aiconfigurator cli generate --model-path Qwen/Qwen3-32B-FP8 --total-gpus 8 --system h200_sxm
+```
+
+Both currently execute the complete, proven AIC CLI. The newer
+`predict`/`recommend` design must satisfy the tracked AIC-to-AISimulate parity
+matrix, product requirements, and approved exceptions before it replaces this
+delegation.
+
+For an engine-only replay, use `python -m aisimulate.replay`. Dynamo Router,
+Planner, or online adapters remain available through `python -m dynamo.replay`
+when `ai-dynamo` is installed separately. Both commands share the engine,
+topology, traffic, replay-mode, SLA, and output arguments; Dynamo adds its
+adapter options. For configuration search, call
+`Sweeper(runner_factory=...).run(config)` or start from an example under
+[`examples/sweeper`](examples/sweeper/README.md).
 
 For example, run one engine-only synthetic replay with fixed timing:
 
@@ -38,7 +69,7 @@ python -m aisimulate.replay \
   --replay-concurrency 4
 ```
 
-Install AI Simulate by itself for engine-only development:
+Install AISimulate by itself for engine-only development:
 
 ```bash
 uv venv .venv
@@ -80,16 +111,42 @@ search-space, and replay behavior. Backend-neutral and Dynamo integration exampl
 guide](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental/sweeper-experimental/dynamo-integration.md),
 including the Dynamo development environment and adapter contracts.
 
-## Development
+## Repository layout
 
-The Rust workspace and Python wheel build directly from this repository:
+```text
+crates/
+  aisimulate-core/      migrated AIC estimator and native PyO3 extension
+  core/                 generalized Mocker engine and deterministic Replayer
+  python/               Python binding for the Replay runtime
+  tests/public-api/     external-consumer compile contract
+python/
+  aisimulate/           complete AIC application and compatibility CLI
+  aisimulate-core/      Python estimator SDK, metadata, and performance data
+src/aisimulate/         standalone Replay and Sweeper Python source
+docs/
+  artifact-contract.md  three-artifact release boundary
+  core-api.md           public core API and compatibility contract
+  migration.md          AIC and Dynamo source/history mapping
+scripts/
+  build_release_artifacts.py
+```
+
+## Development
 
 ```bash
 cargo test --workspace
-python -m maturin develop --release
 python -m pytest
 ```
 
-The package source was migrated with its filtered Dynamo ancestry. See
-[the migration notes](docs/migration.md) for the source boundary and history
-contract.
+Read the canonical [Sweeper documentation](docs/sweeper/overview.md) for its
+configuration, search-space, and replay behavior. For focused AIC development
+instructions, see [`python/aisimulate/README.md`](python/aisimulate/README.md)
+and [`docs/core-api.md`](docs/core-api.md).
+
+## Source provenance
+
+The branch retains both imported histories: the path-filtered AIC core ancestry
+and the path-filtered Dynamo ancestry for the former `aisimulate/` directory.
+The complete AIC upper application is a snapshot from AIConfigurator `main`
+commit `13b5cf2697876692b0a52098266c81162add11fc`. See
+[`docs/migration.md`](docs/migration.md) for the complete mapping.

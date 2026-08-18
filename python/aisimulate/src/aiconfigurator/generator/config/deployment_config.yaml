@@ -1,0 +1,317 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+inputs:
+  # Optional per-backend controls:
+  # - "backends": restricts an entry to the listed backend names.
+  # - "backend_defaults": overrides "default" per backend (e.g. trtllm, vllm, sglang).  
+  # SlaConfig
+  - key: SlaConfig.isl
+    required: false
+  - key: SlaConfig.osl
+    required: false
+
+  # ServiceConfig
+  - key: ServiceConfig.model_path
+    required: true
+    default: ""
+  - key: ServiceConfig.hf_token
+    required: false
+    default: ""
+  - key: ServiceConfig.served_model_name
+    required: true
+    default: "ServiceConfig.model_name or ServiceConfig.served_model_path or ServiceConfig.model_path"
+  - key: ServiceConfig.model_name
+    required: false
+    default: "ServiceConfig.served_model_name"
+  # Referenced by served_model_name / BenchConfig default expressions and set by
+  # the SDK bridge; declared here so every key used in the schema is declared.
+  # No default: when absent the `... or model_path` fallbacks apply (unchanged).
+  - key: ServiceConfig.served_model_path
+    required: false
+  - key: ServiceConfig.head_node_ip
+    required: false
+    default: "0.0.0.0"
+  - key: ServiceConfig.port
+    required: false
+    default: 8000
+  - key: ServiceConfig.include_frontend
+    required: false
+    default: true
+  - key: ServiceConfig.dyn_vllm_kv_event_port
+    required: false
+    default: 20081
+    backends: ["vllm"]
+  - key: ServiceConfig.vllm_nixl_side_channel_port
+    required: false
+    default: 20097
+    backends: ["vllm"]
+  - key: ServiceConfig.sglang_kv_event_port
+    required: false
+    default: 5557
+    backends: ["sglang"]
+
+  # Generator-level defaults
+  - key: generator_dynamo_version
+    required: false
+    default: ""
+
+  # DynConfig
+  - key: DynConfig.mode
+    required: false
+    default: "disagg"
+  - key: DynConfig.enable_router
+    required: false
+    default: false
+  - key: DynConfig.router_mode
+    required: false
+  - key: DynConfig.router_config
+    required: false
+  - key: DynConfig.planner_config
+    required: false
+  - key: DynConfig.kvbm_config
+    required: false
+
+  # K8sConfig
+  - key: K8sConfig.name_prefix
+    required: false
+    default: "dynamo"
+  - key: K8sConfig.k8s_namespace
+    required: false
+    default: "dynamo"
+  - key: K8sConfig.k8s_image
+    required: false
+    default: &default_trtllm_image '"nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:" ~ generator_dynamo_version'
+    backend_defaults:
+      trtllm: *default_trtllm_image
+      vllm: '"nvcr.io/nvidia/ai-dynamo/vllm-runtime:" ~ generator_dynamo_version'
+      sglang: '"nvcr.io/nvidia/ai-dynamo/sglang-runtime:" ~ generator_dynamo_version'
+  - key: K8sConfig.k8s_planner_image
+    required: false
+    default: ""
+  - key: K8sConfig.k8s_image_pull_secret
+    required: false
+    default: ""
+  - key: K8sConfig.transport
+    required: false
+    default: "nvlink"
+  - key: K8sConfig.k8s_engine_mode
+    required: false
+    default: "inline"
+    backends: ["trtllm"]
+  - key: K8sConfig.k8s_pvc_name
+    required: false
+    default: ""
+  - key: K8sConfig.k8s_model_path_in_pvc
+    required: false
+    default: ""
+  - key: K8sConfig.k8s_pvc_mount_path
+    required: false
+    default: "/workspace/model_cache"
+  # Backward compat aliases (old names still accepted)
+  - key: K8sConfig.k8s_model_cache
+    required: false
+    default: ""
+  - key: K8sConfig.k8s_etcd_endpoints
+    required: false
+    default: ""
+  - key: K8sConfig.k8s_hf_home
+    required: false
+    default: ""
+  # User passthrough (optional; absent -> no effect, output unchanged).
+  # extra_env: env entries appended to each worker's main container.
+  # *_extra_pod_spec: dicts deep-merged into the worker/frontend extraPodSpec
+  # (user values win) -- e.g. nodeSelector, tolerations, affinity.
+  - key: K8sConfig.extra_env
+    required: false
+  - key: K8sConfig.worker_extra_pod_spec
+    required: false
+  - key: K8sConfig.frontend_extra_pod_spec
+    required: false
+  # FPM-only resource-workload controls. Other deployment targets ignore them.
+  - key: K8sConfig.fpm_shared_memory_size
+    required: false
+  - key: K8sConfig.fpm_resource_labels
+    required: false
+  # Multi-node FPM resource orchestrator. "lws" preserves the historical
+  # output; "grove" emits a PodCliqueSet. Single-node FPM always emits a Pod.
+  - key: K8sConfig.fpm_orchestrator
+    required: false
+    # Defaults are Jinja-evaluated: the inner quotes make this the string
+    # "lws" rather than an undefined bare identifier (config_schema rule).
+    default: '"lws"'
+
+  # Worker config
+  - key: WorkerConfig.prefill_workers
+    required: false
+    default: 1
+  - key: WorkerConfig.decode_workers
+    required: false
+    default: 1
+  - key: WorkerConfig.agg_workers
+    required: false
+    default: 1
+  # Multimodal EPD encode worker count (optional; absent -> no encode worker).
+  - key: WorkerConfig.encode_workers
+    required: false
+
+  # Runtime additions
+  - key: ModelConfig.is_moe
+    required: false
+    default: false
+  - key: ModelConfig.nextn
+    required: false
+    default: 0
+  - key: ModelConfig.prefix
+    required: false
+    default: 0
+
+  # NodeConfig
+  - key: NodeConfig.num_gpus_per_node
+    required: false
+    default: 8
+
+  # SflowConfig
+  - key: SflowConfig.slurm_account
+    required: false
+    default: "YOUR_ACCOUNT"
+  - key: SflowConfig.slurm_partition
+    required: false
+    default: "YOUR_PARTITION"
+  - key: SflowConfig.slurm_timelimit
+    required: false
+    default: 120
+  - key: SflowConfig.aiperf_image
+    required: false
+    default: "python:3.12-slim"
+  - key: SflowConfig.extra_frontend_args
+    required: false
+    default: ""
+  - key: SflowConfig.dynamo_image
+    required: false
+    default: ""
+  - key: SflowConfig.variable_profile
+    required: false
+    default: "expanded"
+
+  # BenchConfig
+  - key: BenchConfig.name
+    required: false
+    default: "('dynamo-' ~ DynConfig.mode ~ '-benchmark')"
+  - key: BenchConfig.image
+    required: false
+    default: "python:3.12-slim"
+  - key: BenchConfig.profile_start_timeout
+    required: false
+    default: 400
+  - key: BenchConfig.endpoint_type
+    required: false
+    default: "'chat'"
+  - key: BenchConfig.endpoint_url
+    required: false
+    default: "('http://dynamo-' ~ DynConfig.mode ~ '-frontend.' ~ K8sConfig.k8s_namespace ~ '.svc.cluster.local:8000')"
+  - key: BenchConfig.model
+    required: false
+    default: "ServiceConfig.served_model_name or ServiceConfig.model_name or ServiceConfig.served_model_path or ServiceConfig.model_path"
+  - key: BenchConfig.tokenizer
+    required: false
+    default: "ServiceConfig.model_path or ServiceConfig.served_model_path or BenchConfig.model"
+  - key: BenchConfig.isl
+    required: false
+    default: "SlaConfig.isl"
+  - key: BenchConfig.osl
+    required: false
+    default: "SlaConfig.osl"
+  - key: BenchConfig.isl_stddev
+    required: false
+    default: 0
+  - key: BenchConfig.osl_stddev
+    required: false
+    default: 0
+  - key: BenchConfig.prefix
+    required: false
+  - key: BenchConfig.prefix_prompt_pool_size
+    required: false
+    default: 1
+  - key: BenchConfig.concurrency
+    required: false
+    default: "[1, 2, 4, 8, 32, 64, 128, 256]"
+  - key: BenchConfig.estimated_concurrency
+    required: false
+  - key: BenchConfig.num_requests
+    required: false
+    default: "BenchConfig.concurrency | map('multiply', 50) | list"
+  - key: BenchConfig.ui
+    required: false
+    default: "'simple'"
+  # Multimodal-image / EPD benchmark options (vision-language deployments).
+  # image_batch_size default 0 = disabled; absent value -> image args omitted.
+  - key: BenchConfig.image_batch_size
+    required: false
+    default: 0
+  - key: BenchConfig.image_width_mean
+    required: false
+  - key: BenchConfig.image_width_stddev
+    required: false
+  - key: BenchConfig.image_height_mean
+    required: false
+  - key: BenchConfig.image_height_stddev
+    required: false
+  - key: BenchConfig.image_format
+    required: false
+  - key: BenchConfig.image_source
+    required: false
+  - key: BenchConfig.input_file
+    required: false
+  - key: BenchConfig.custom_dataset_type
+    required: false
+
+  # LlmdConfig - llm-d specific configuration
+  - key: LlmdConfig.hf_token_secret
+    required: false
+    default: ""
+  - key: LlmdConfig.vllm_image
+    required: false
+    default: "vllm/vllm-openai:latest"
+  - key: LlmdConfig.sglang_image
+    required: false
+    default: "lmsysorg/sglang:latest"
+  - key: LlmdConfig.model_cache_size
+    required: false
+    default: "100Gi"
+  - key: LlmdConfig.model_mount_path
+    required: false
+    default: "/model-cache"
+  - key: LlmdConfig.routing_proxy_enabled
+    required: false
+    default: true
+  - key: LlmdConfig.routing_proxy_image
+    required: false
+    default: "ghcr.io/llm-d/llm-d-routing-sidecar:latest"
+  - key: LlmdConfig.routing_connector
+    required: false
+    default: "nixlv2"
+  - key: LlmdConfig.log_level
+    required: false
+    default: "info"
+  - key: LlmdConfig.multinode
+    required: false
+    default: false
+  - key: LlmdConfig.monitoring_enabled
+    required: false
+    default: false
+  - key: LlmdConfig.accelerator_type
+    required: false
+    default: "nvidia"
+  - key: LlmdConfig.xpu_rdma_enabled
+    required: false
+    default: false
+  - key: LlmdConfig.xpu_kv_buffer_device
+    required: false
+    default: "cpu"
+  - key: LlmdConfig.kustomize_base_path
+    required: false
+    default: ""
+  - key: LlmdConfig.kustomize_name_prefix
+    required: false
+    default: ""

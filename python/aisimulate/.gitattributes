@@ -1,0 +1,4 @@
+aic-core/src/aiconfigurator_core/systems/**/*.txt filter=lfs diff=lfs merge=lfs -text
+aic-core/src/aiconfigurator_core/systems/**/INCOMPLETE.txt -filter -diff -merge text
+aic-core/src/aiconfigurator_core/systems/**/*.parquet diff=parquet -text
+ATTRIBUTIONS.md filter=lfs diff=lfs merge=lfs -text

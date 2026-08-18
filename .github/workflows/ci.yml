@@ -22,7 +22,18 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace
 
-  wheel:
+  aic-core-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path crates/aisimulate-core/Cargo.toml
+      - run: cargo test --manifest-path crates/tests/public-api/Cargo.toml
+
+  standalone-wheel:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,3 +46,57 @@ jobs:
         with:
           name: aisimulate-wheel
           path: dist/*.whl
+
+  core-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install maturin pytest
+      - run: python -m maturin develop --release
+        working-directory: python/aisimulate-core
+      - run: python -m pytest python/aisimulate-core/tests
+
+  application-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install maturin pytest
+      - run: python -m maturin develop --release
+        working-directory: python/aisimulate-core
+      - run: python -m pip install --editable ./python/aisimulate
+      - run: >-
+          python -m pytest -q
+          python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py
+          python/aisimulate/tests/cross_package/test_core_version_contract.py
+      - run: python -m aisimulate version
+      - run: aiconfigurator version
+
+  release-artifact-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python -m pip install build maturin
+      - run: python scripts/build_release_artifacts.py --check-only
+      - run: python scripts/build_release_artifacts.py --output-dir dist
+      - run: python -m venv release-smoke
+      - run: >-
+          release-smoke/bin/python -m pip install
+          dist/aisimulate_core-*.whl
+          dist/aisimulate-*.whl
+      - run: release-smoke/bin/python -m pip check
+      - run: >-
+          release-smoke/bin/python -c
+          "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core;
+          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.12.0'"
+      - run: release-smoke/bin/aisimulate version
+      - run: release-smoke/bin/aiconfigurator version

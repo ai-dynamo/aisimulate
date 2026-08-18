@@ -1,0 +1,168 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""DeepSeek-V4 module tests: data loading, op weight accounting, and model
+memory estimation.
+
+The attention/mHC SOL formulas and the silicon interpolation ladder that used
+to be tested here (``_deepseek_v4_attention_sol``, kNN past-frontier holds,
+prefix-resolved table reads, rank-local head-bucket resolution) retired to the
+compiled engine with #1357 PR-5; that behaviour is anchored by
+``tests/cross_package/test_query_shim_baseline.py`` and the frozen parity
+goldens.
+"""
+
+import pytest
+
+from aiconfigurator.sdk import common, config
+from aiconfigurator.sdk import operations as ops
+from aiconfigurator.sdk.backends.sglang_backend import SGLANGBackend
+from aiconfigurator.sdk.models import get_model
+from aiconfigurator.sdk.perf_database import load_mhc_module_data
+
+pytestmark = pytest.mark.unit
+
+
+def _write_mhc_perf(path, rows: list[str]) -> str:
+    header = "framework,version,device,op_name,kernel_source,architecture,num_tokens,hc_mult,hidden_size,latency"
+    path.write_text(header + "\n" + "\n".join(rows) + "\n")
+    return str(path)
+
+
+def test_mhc_module_loader_returns_none_for_missing_file(tmp_path):
+    assert load_mhc_module_data(str(tmp_path / "mhc_module_perf.txt")) is None
+
+
+def test_mhc_loader_keys_by_op_hc_mult_hidden_size_num_tokens(tmp_path):
+    path = _write_mhc_perf(
+        tmp_path / "mhc_module_perf.txt",
+        [
+            "VLLM,test,H20,pre,mhc,DeepseekV4ForCausalLM,512,4,4096,1.5",
+            "VLLM,test,H20,pre,mhc,DeepseekV4ForCausalLM,512,4,7168,2.5",
+        ],
+    )
+    data = load_mhc_module_data(path)
+
+    # data[op][hc_mult][hidden_size][num_tokens] — hidden_size distinguishes rows.
+    assert set(data.keys()) == {"pre"}
+    assert set(data["pre"][4].keys()) == {4096, 7168}
+    assert data["pre"][4][4096][512]["latency"] == pytest.approx(1.5)
+    assert data["pre"][4][7168][512]["latency"] == pytest.approx(2.5)
+    assert data["pre"][4][7168][512]["power"] == pytest.approx(0.0)
+
+
+def test_mhc_weight_memory_uses_quant_mode():
+    bf16_op = ops.DeepSeekV4MHCModule(
+        "mhc",
+        1,
+        "pre",
+        7168,
+        4,
+        20,
+        common.GEMMQuantMode.bfloat16,
+    )
+    fp8_op = ops.DeepSeekV4MHCModule(
+        "mhc",
+        1,
+        "pre",
+        7168,
+        4,
+        20,
+        common.GEMMQuantMode.fp8_block,
+    )
+    assert fp8_op.get_weights() == pytest.approx(bf16_op.get_weights() / 2)
+
+
+def test_deepseek_v4_per_op_sol_queries_run_end_to_end():
+    """Every DSV4 op must answer a per-op SOL query through the per-call
+    ``op.query()`` surface (now a deprecation shim routed through the compiled
+    engine's model-less probe). The probe engine loads perf tables from disk,
+    so this runs on a real shipped database rather than the synthetic-stuffed
+    fixture (whose in-memory tables the engine cannot see)."""
+    from aiconfigurator.sdk.perf_database import get_database_view
+
+    # b200_sxm/sglang/0.5.14 ships the full DSV4 table set (csa modules, mhc),
+    # which the probe engine loads eagerly per op family even under SOL.
+    db = get_database_view("b200_sxm", "sglang", "0.5.14", database_mode="SOL")
+    model_config = config.ModelConfig(
+        tp_size=1,
+        moe_tp_size=1,
+        moe_ep_size=1,
+        nextn=1,
+        overwrite_num_layers=2,
+    )
+    model = get_model("sgl-project/DeepSeek-V4-Flash-FP8", model_config, backend_name="sglang")
+
+    context_total = sum(
+        float(op.query(db, x=128, batch_size=1, beam_width=1, s=128, prefix=0)) for op in model.context_ops
+    )
+    generation_total = sum(float(op.query(db, x=2, batch_size=2, beam_width=1, s=129)) for op in model.generation_ops)
+    assert context_total > 0
+    assert generation_total > 0
+
+
+def test_sglang_deepseek_v4_pro_moe_workspace_uses_residual_hidden_size(mutable_comprehensive_perf_db):
+    db = mutable_comprehensive_perf_db
+    db.system_spec["gpu"]["mem_capacity"] = 198674743296  # GB200 189471 MiB
+    db.system_spec["misc"]["nccl_mem"] = {1: 0, 2: 358612992, 4: 411041792, 8: 411041792}
+    db.system_spec["misc"]["other_mem"] = 3758096384
+
+    model_config = config.ModelConfig(
+        tp_size=1,
+        pp_size=1,
+        attention_dp_size=8,
+        moe_tp_size=1,
+        moe_ep_size=8,
+        gemm_quant_mode=common.GEMMQuantMode.fp8_block,
+        moe_quant_mode=common.MoEQuantMode.w4a8_mxfp4_mxfp8,
+        kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+        comm_quant_mode=common.CommQuantMode.half,
+        moe_backend="megamoe",
+        nextn=0,
+    )
+    model = get_model("deepseek-ai/DeepSeek-V4-Pro", model_config, backend_name="sglang")
+
+    memory = SGLANGBackend()._get_memory_usage(
+        model,
+        db,
+        batch_size=1,
+        beam_width=1,
+        isl=8192,
+        osl=1024,
+    )
+
+    num_tokens = 8192
+    attention_width = model._num_heads * model._head_size
+    residual_width = model._hidden_size
+    assert model.activation_hidden_size == residual_width
+    assert attention_width > residual_width
+
+    tp_activation_factor = 28
+    attention_workspace = 2 * num_tokens * attention_width * tp_activation_factor
+    moe_scale_workspace = (
+        num_tokens
+        * residual_width
+        * model.config.attention_dp_size
+        * model._num_experts
+        * model._topk
+        / model.config.moe_ep_size
+        / 128
+        * 4
+    )
+    expected_activation_gib = (attention_workspace + moe_scale_workspace) * 1.15 / (1 << 30)
+
+    assert memory["activations"] == pytest.approx(expected_activation_gib)
+
+    old_moe_scale_workspace = (
+        num_tokens
+        * attention_width
+        * model.config.attention_dp_size
+        * model._num_experts
+        * model._topk
+        / model.config.moe_ep_size
+        / 128
+        * 4
+    )
+    old_activation_gib = (attention_workspace + old_moe_scale_workspace) * 1.15 / (1 << 30)
+    assert memory["activations"] < old_activation_gib

@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance: legacy
+runtime:
+  framework: sglang
+  version: 0.5.14
+tables:
+  mla_bmm_perf:
+    # 2026-08-02: appended 424 rows for the Kimi-K3 96-head-family shards
+    # (96/48/24/12, both dtypes) after the base-grid extension; existing
+    # 128-family rows untouched (keys disjoint). Stock 0.5.14, 8x B200,
+    # zero failures.
+    status: complete

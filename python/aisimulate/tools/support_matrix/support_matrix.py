@@ -1,0 +1,1200 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Support matrix generation and validation utilities.
+
+This module provides the SupportMatrix class for generating and validating
+the model/system/backend/version support matrix for AIConfigurator.
+"""
+
+import csv
+import json
+import logging
+import multiprocessing
+import os
+import shlex
+import traceback
+from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
+from itertools import groupby
+from pathlib import Path
+
+import pandas as pd
+from packaging.version import Version
+from tqdm import tqdm
+
+from aiconfigurator.generator.naive import _estimate_model_weight_bytes
+from aiconfigurator.sdk import common, perf_database
+from aiconfigurator.sdk import config as sdk_config
+from aiconfigurator.sdk.models import _get_model_info
+from aiconfigurator.sdk.models.helpers import _apply_model_quant_defaults
+from aiconfigurator.sdk.operations.util_empirical import PROVENANCE_ORDER, capture_provenance, worst_provenance
+from aiconfigurator.sdk.task_v2 import Task
+
+logger = logging.getLogger(__name__)
+
+STATUS_PASS = "PASS"
+STATUS_HYBRID_PASS = "HYBRID_PASS"
+STATUS_FAIL = "FAIL"
+STATUS_HW_INCOMPATIBLE = "HW_INCOMPATIBLE"
+STATUS_FRAMEWORK_INCOMPATIBLE = "FRAMEWORK_INCOMPATIBLE"
+VALID_STATUSES = frozenset(
+    {STATUS_PASS, STATUS_HYBRID_PASS, STATUS_FAIL, STATUS_HW_INCOMPATIBLE, STATUS_FRAMEWORK_INCOMPATIBLE}
+)
+VALID_PROVENANCE_SOURCES = frozenset(PROVENANCE_ORDER)
+SUPPORT_MATRIX_BASE_HEADER = [
+    "HuggingFaceID",
+    "Architecture",
+    "System",
+    "Backend",
+    "Version",
+    "Mode",
+    "Status",
+    "ErrMsg",
+]
+# "Source" = data provenance of PASS/HYBRID_PASS (silicon, or the worst empirical
+# transfer tier that fired: empirical/xshape/xquant/xprofile/xop). Empty otherwise.
+SUPPORT_MATRIX_HEADER = SUPPORT_MATRIX_BASE_HEADER + ["Command", "Source"]
+_BYTES_PER_PARAM = 2
+_FP8_QUANT_MODE_NAMES = frozenset({"fp8", "fp8_static", "fp8_block", "w4afp8"})
+_NATIVE_FP4_QUANT_MODE_NAMES = frozenset({"nvfp4"})
+_FP8_SOFTWARE_FALLBACK_SYSTEMS = frozenset({"b60"})
+_DSV4_VLLM_NATIVE_W4A8_MIN_VERSION = Version("0.24.0")
+
+
+def _combination_sort_key(combo: tuple[str, str, str, str]) -> tuple[tuple[int, str], str, str, str]:
+    model, system, backend, version = combo
+    return common.get_support_matrix_system_sort_key(system), backend, version, model
+
+
+def _combination_group_key(combo: tuple[str, str, str, str]) -> tuple[str, str, str]:
+    _model, system, backend, version = combo
+    return system, backend, version
+
+
+@dataclass(frozen=True)
+class TestConstraints:
+    total_gpus: int
+    isl: int
+    osl: int
+    prefix: int
+    ttft: float
+    tpot: float
+
+
+@dataclass(frozen=True)
+class HardwareIncompatibility:
+    missing_datatypes: tuple[str, ...]
+    reason: str
+
+
+def _support_matrix_row_command(
+    *,
+    model: str,
+    system: str,
+    backend: str,
+    version: str,
+    database_mode: str = "SILICON",
+    transfer_policy: str | None = None,
+    constraints: TestConstraints | None = None,
+) -> str:
+    """Return the repo-local CLI command that checks this model/system/backend path."""
+    if constraints is None:
+        constraints = _get_test_constraints(model)
+    parts = [
+        "uv",
+        "run",
+        "aiconfigurator",
+        "cli",
+        "default",
+        "--model-path",
+        model,
+        "--total-gpus",
+        str(constraints.total_gpus),
+        "--system",
+        system,
+        "--backend",
+        backend,
+        "--backend-version",
+        version,
+        "--database-mode",
+        database_mode,
+        "--isl",
+        str(constraints.isl),
+        "--osl",
+        str(constraints.osl),
+        "--prefix",
+        str(constraints.prefix),
+        "--ttft",
+        str(constraints.ttft),
+        "--tpot",
+        str(constraints.tpot),
+        "--top-n",
+        "1",
+        "--no-color",
+        # Mirror the executed path: the matrix pins the compiled engine, so
+        # the replay command must too.
+        "--engine-step-backend",
+        "rust",
+    ]
+    if transfer_policy:
+        parts.extend(["--transfer-policy", transfer_policy])
+    return " ".join(shlex.quote(str(part)) for part in parts)
+
+
+# Tiered constraints by model size (parameter count)
+_SMALL = TestConstraints(total_gpus=4, isl=256, osl=256, prefix=128, ttft=1500.0, tpot=50.0)
+_MEDIUM = TestConstraints(total_gpus=32, isl=256, osl=256, prefix=128, ttft=2000.0, tpot=50.0)
+_LARGE = TestConstraints(total_gpus=128, isl=256, osl=256, prefix=128, ttft=2000000.0, tpot=50000.0)
+
+_SIZE_TIERS: list[tuple[float, TestConstraints]] = [
+    (10e9, _SMALL),  # < 10B params
+    (100e9, _MEDIUM),  # 10B - 100B params
+]
+_DEFAULT_TIER = _LARGE  # > 100B params
+
+
+def _get_test_constraints(model_path: str) -> TestConstraints:
+    """Return the appropriate test constraints based on estimated model size."""
+    weight_bytes = _estimate_model_weight_bytes(model_path)
+    num_params = weight_bytes / _BYTES_PER_PARAM
+    for threshold, constraints in _SIZE_TIERS:
+        if num_params < threshold:
+            logger.info(
+                "Model %s: ~%.1fB params → %s",
+                model_path,
+                num_params / 1e9,
+                constraints,
+            )
+            return constraints
+    logger.info(
+        "Model %s: ~%.1fB params → %s",
+        model_path,
+        num_params / 1e9,
+        _DEFAULT_TIER,
+    )
+    return _DEFAULT_TIER
+
+
+def _is_known_framework_incompatible_gap(
+    *,
+    model: str,
+    system: str,
+    system_spec: dict,
+    backend: str,
+    version: str,
+    error_message: str | None,
+) -> bool:
+    """Return True for deterministic framework/data gaps that should not stay plain FAIL."""
+    if not error_message:
+        return False
+
+    normalized = error_message.lower()
+
+    # MiMo-V2-Flash uses head_dim=192 attention, which the TRT-LLM kernel cannot run
+    # on Hopper/Blackwell (SM90/SM100): illegal-memory-access / cublas / OOM, so the
+    # attention data can't be collected on those GPUs. It collects fine on Ada (l40s,
+    # SM89) and on sglang/vllm. Treat MiMo+trtllm failures on the SM90+ datacenter GPUs
+    # as a framework gap; leave l40s (works) and a100 (Ampere, hardware-limited) alone.
+    if (
+        model == "XiaomiMiMo/MiMo-V2-Flash"
+        and backend == common.BackendName.trtllm.value
+        and system not in {"l40s", "a100_sxm"}
+        and (
+            "failed to query context attention data" in normalized
+            or "illegal memory access" in normalized
+            or "illegal-memory-access" in normalized
+            or "cublas" in normalized
+            or "out of memory" in normalized
+            or "cuda oom" in normalized
+        )
+    ):
+        return True
+
+    # vLLM has no consumable path for the native DeepSeek-V4
+    # w4a8_mxfp4_mxfp8 MoE label before 0.24.0 or outside the SM100
+    # capability family. On supported combinations, either error is a
+    # data-path regression and must remain FAIL rather than being rescued by
+    # HYBRID. Keep this expectation capability- and minimum-version-based so
+    # future database versions fail closed if their native data regresses.
+    parsed_version = common.parse_support_matrix_version(version)
+    sm_version = (system_spec.get("gpu") or {}).get("sm_version")
+    native_dsv4_w4a8_expected = (
+        parsed_version is not None
+        and parsed_version >= _DSV4_VLLM_NATIVE_W4A8_MIN_VERSION
+        and sm_version is not None
+        and 100 <= sm_version < 110
+    )
+    if (
+        backend == common.BackendName.vllm.value
+        and "DeepSeek-V4" in model
+        and not native_dsv4_w4a8_expected
+        and (
+            "unsupported moe quant mode 'w4a8_mxfp4_mxfp8'" in normalized
+            or "deepseek-v4 mhc module data not loaded" in normalized
+        )
+    ):
+        return True
+
+    if "unsupported gemm quant mode 'fp8_static'" in normalized:
+        return True
+
+    if system == "rtx_pro_6000_server":
+        if (
+            "rtx_pro_6000_server/nccl/" in normalized
+            or "failed to query context attention data" in normalized
+            or "failed to query moe data" in normalized
+        ):
+            return True
+        if backend == common.BackendName.sglang.value and version == "0.5.10":
+            return (
+                "unsupported gemm quant mode 'fp8_block'" in normalized
+                or "unsupported moe quant mode 'nvfp4'" in normalized
+                or (
+                    model in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
+                    and "unsupported moe quant mode 'w4a16_mxfp4'" in normalized
+                )
+                or "dsa_context_module_perf.txt" in normalized
+            )
+        if backend == common.BackendName.trtllm.value and version == "1.3.0rc10":
+            return (
+                "unsupported moe quant mode 'fp8_block'" in normalized
+                or ("DeepSeek-V4" in model and "unsupported moe quant mode 'w4a8_mxfp4_mxfp8'" in normalized)
+                or (
+                    model in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
+                    and "unsupported moe quant mode 'w4a16_mxfp4'" in normalized
+                )
+                or (model == "moonshotai/Kimi-K2.5" and "unsupported moe quant mode 'int4_wo'" in normalized)
+                or "dsa_context_module_perf.txt" in normalized
+            )
+        if backend == common.BackendName.vllm.value and version == "0.19.0":
+            return "unsupported moe quant mode 'nvfp4'" in normalized or "dsa_context_module_perf.txt" in normalized
+
+    return (
+        model == "moonshotai/Kimi-K2.5"
+        and system == "b200_sxm"
+        and backend == common.BackendName.trtllm.value
+        and version == "1.3.0rc10"
+        and "unsupported moe quant mode 'int4_wo'" in normalized
+    )
+
+
+def _is_known_hw_incompatible_gap(
+    *,
+    system: str,
+    error_message: str | None,
+) -> bool:
+    """Return True for deterministic runtime errors caused by GPU capability gaps."""
+    if not error_message:
+        return False
+
+    normalized = error_message.lower()
+    return system == "l40s" and (
+        "unsupported gemm quant mode 'fp8_block'" in normalized
+        or "unsupported moe quant mode 'fp8_block'" in normalized
+        or "unsupported moe quant mode 'w4a16_mxfp4'" in normalized
+        or "unsupported moe quant mode 'w4a8_mxfp4_mxfp8'" in normalized
+        or "unsupported context_attention quant mode 'fp8'" in normalized
+        or "unsupported generation_attention quant mode 'fp8'" in normalized
+        or "ampere/ada cards only supports fp16 and bf16 data type" in normalized
+        or "dsa_context_module_perf.parquet" in normalized
+        or "dsa_generation_module_perf.parquet" in normalized
+        or "quant_mode=<gemmquantmode.fp8_block" in normalized
+        or "quant_mode=<moequantmode.fp8_block" in normalized
+        or "quant_mode=<moequantmode.w4a16_mxfp4" in normalized
+        or "quant_mode=<moequantmode.w4a8_mxfp4_mxfp8" in normalized
+    )
+
+
+def _enum_name(value: object | None) -> str | None:
+    if value is None:
+        return None
+    return value.name if hasattr(value, "name") else str(value)
+
+
+def _format_datatype_list(datatypes: tuple[str, ...]) -> str:
+    if len(datatypes) == 1:
+        return datatypes[0]
+    return ", ".join(datatypes[:-1]) + f" or {datatypes[-1]}"
+
+
+def _gpu_label(system: str, system_spec: dict) -> str:
+    sm_version = (system_spec.get("gpu") or {}).get("sm_version")
+    if sm_version is None:
+        return system
+    return f"{system} (SM{sm_version})"
+
+
+def _gpu_supports_datatype(system: str, system_spec: dict, datatype: str) -> bool:
+    gpu_spec = system_spec.get("gpu") or {}
+    sm_version = gpu_spec.get("sm_version")
+    if datatype == "FP8":
+        # Intel Arc Pro B60 can run FP8 PyTorch/vLLM model paths by converting
+        # FP8 to BF16. Do not model it as native FP8 throughput in b60.yaml.
+        if system.lower() in _FP8_SOFTWARE_FALLBACK_SYSTEMS:
+            return True
+        return "fp8_tc_flops" in gpu_spec or (sm_version is not None and sm_version >= 89)
+    if datatype == "FP4":
+        return "fp4_tc_flops" in gpu_spec or (sm_version is not None and sm_version >= 100)
+    return True
+
+
+def _required_datatypes_for_model(model: str, backend: str) -> tuple[str, ...]:
+    """Infer hardware datatypes required by a model's quantization metadata."""
+    model_info = dict(_get_model_info(model))
+    raw_config = model_info.get("raw_config", {}) or {}
+    architecture = model_info["architecture"]
+    model_config = sdk_config.ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1)
+    _apply_model_quant_defaults(model_config, raw_config, architecture, backend)
+
+    quant_mode_names = {
+        _enum_name(model_config.gemm_quant_mode),
+        _enum_name(model_config.moe_quant_mode),
+        _enum_name(model_config.kvcache_quant_mode),
+        _enum_name(model_config.fmha_quant_mode),
+    }
+    quant_mode_names.discard(None)
+
+    raw_quant_algo = str(raw_config.get("quant_algo") or "").lower()
+    raw_kv_cache_algo = str(raw_config.get("kv_cache_quant_algo") or "").lower()
+    expert_dtype = str(raw_config.get("expert_dtype") or "").lower()
+
+    required: set[str] = set()
+    if quant_mode_names & _NATIVE_FP4_QUANT_MODE_NAMES or raw_quant_algo == "nvfp4" or expert_dtype == "fp4":
+        required.add("FP4")
+    if quant_mode_names & _FP8_QUANT_MODE_NAMES or raw_quant_algo in {"fp8", "fp8_block"}:
+        required.add("FP8")
+    if raw_kv_cache_algo == "fp8":
+        required.add("FP8")
+
+    # Keep FP4 first so FP4 model failures on older GPUs read as FP4 incompatibility
+    # even when the model also uses FP8 scales or KV cache.
+    return tuple(datatype for datatype in ("FP4", "FP8") if datatype in required)
+
+
+def get_hardware_incompatibility(
+    *,
+    model: str,
+    system: str,
+    backend: str,
+    system_spec: dict,
+) -> HardwareIncompatibility | None:
+    """Return a deterministic hardware/model datatype incompatibility, if any."""
+    model_info = dict(_get_model_info(model))
+    gpu_spec = system_spec.get("gpu") or {}
+    sm_version = gpu_spec.get("sm_version")
+    if (
+        backend == common.BackendName.sglang.value
+        and model_info["architecture"] in {"DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM"}
+        and sm_version is not None
+        and sm_version < 90
+    ):
+        return HardwareIncompatibility(
+            missing_datatypes=(),
+            reason=(
+                f"{_gpu_label(system, system_spec)} does not support SGLang DSA/NSA module collectors "
+                f"required by {model}; SGLang DSA/NSA module collectors require SM90+."
+            ),
+        )
+
+    required_datatypes = _required_datatypes_for_model(model, backend)
+    missing = tuple(dt for dt in required_datatypes if not _gpu_supports_datatype(system, system_spec, dt))
+    if not missing:
+        return None
+
+    datatype_text = _format_datatype_list(missing)
+    return HardwareIncompatibility(
+        missing_datatypes=missing,
+        reason=f"{_gpu_label(system, system_spec)} does not support {datatype_text} required by {model}",
+    )
+
+
+def _format_exception_for_csv(error_message: str | None) -> str | None:
+    if not error_message:
+        return None
+    cwd = os.getcwd() + os.sep
+    return error_message.replace(cwd, "").replace("\n", "\\n")
+
+
+# Per-process SupportMatrix instance for ProcessPoolExecutor workers.
+# Set in the parent before forking; children inherit via copy-on-write.
+# We explicitly use a "fork" mp context (see _run_parallel_combinations) so
+# this works on macOS too, where the default start method is "spawn".
+_worker_matrix: "SupportMatrix | None" = None
+_worker_modes_to_test: tuple[str, ...] | None = None
+
+_fork_ctx = multiprocessing.get_context("fork")
+
+
+def _process_combination_worker(
+    combo: tuple[str, str, str, str],
+) -> list[tuple[str, str, str, str, str, str, str, str | None, str]]:
+    """
+    Run a single combination in a worker process. Uses the process-local SupportMatrix.
+    Must be a module-level function for pickling by ProcessPoolExecutor.
+    """
+    assert _worker_matrix is not None
+    model, system, backend, version = combo
+    status_dict, error_dict, command_dict, provenance_dict = _worker_matrix.run_single_test(
+        model=model,
+        system=system,
+        backend=backend,
+        version=version,
+        modes_to_test=_worker_modes_to_test,
+        include_commands=True,
+    )
+    architecture = _worker_matrix.get_architecture(model)
+    return [
+        (
+            model,
+            architecture,
+            system,
+            backend,
+            version,
+            mode,
+            status_dict[mode],
+            error_dict[mode],
+            command_dict[mode],
+            provenance_dict.get(mode, ""),
+        )
+        for mode in status_dict
+    ]
+
+
+class SupportMatrix:
+    """
+    Helper to generate and validate the model/system/backend/version support matrix.
+    """
+
+    def __init__(self):
+        logger.info("Loading models...")
+        self.models: set[str] = self.get_models()
+        logger.info("Found %d models", len(self.models))
+        # database structure: {system: {backend: [version]}}
+        logger.info("Discovering perf databases...")
+        self.databases: dict[str, dict[str, list[str]]] = self.load_databases()
+        logger.info("Discovered perf databases for %d systems", len(self.databases))
+
+    def get_models(self):
+        """Get the curated model roster used by default matrix generation."""
+        return set[str](common.SupportMatrixHFModels)
+
+    def get_architecture(self, huggingface_id: str) -> str:
+        """Get the HuggingFace architecture for a model."""
+        return _get_model_info(huggingface_id)["architecture"]
+
+    def get_systems(self):
+        return set(common.SupportedSystems)
+
+    def get_backends(self):
+        return set(x.value for x in common.BackendName)
+
+    def load_databases(self):
+        return perf_database.get_supported_databases()
+
+    def __get_hardware_and_backend_combinations(self) -> list[tuple[str, str, str]]:
+        """
+        Iterate over all combinations of hardware, and inference backend, version.
+        """
+        for hardware in common.sort_support_matrix_systems(self.get_systems()):
+            hardware_databases = self.databases.get(hardware, {})
+            for backend in sorted(self.get_backends()):
+                for version in sorted(hardware_databases.get(backend, [])):
+                    yield hardware, backend, version
+
+    def __get_model_and_hardware_and_backend_combinations(self) -> list[tuple[str, str, str, str]]:
+        """
+        Iterate over all combinations of models, hardware, and inference backend, version.
+        """
+        for hardware, backend, version in self.__get_hardware_and_backend_combinations():
+            for model in self.models:
+                yield model, hardware, backend, version
+
+    def generate_combinations(self):
+        """
+        Generate all combinations of models, hardware, and inference backend, version.
+        """
+        combinations = sorted(self.__get_model_and_hardware_and_backend_combinations(), key=_combination_sort_key)
+        return combinations
+
+    @staticmethod
+    def _create_task(
+        *,
+        mode: str,
+        model: str,
+        system: str,
+        backend: str,
+        version: str,
+        constraints: TestConstraints,
+        database_mode: str | None = None,
+    ) -> Task:
+        # ``database_mode`` is supplied per-pass by run_single_test's silicon-first /
+        # hybrid-rescue two-pass ("SILICON" then "HYBRID"); the env is only a fallback
+        # default for any direct caller.
+        resolved_mode = database_mode or os.environ.get("AIC_SM_DATABASE_MODE", "SILICON")
+        common_kwargs = {
+            "total_gpus": constraints.total_gpus,
+            "isl": constraints.isl,
+            "osl": constraints.osl,
+            "prefix": constraints.prefix,
+            "ttft": constraints.ttft,
+            "tpot": constraints.tpot,
+            # Hardcoded (not a parameter): the config value outranks the ambient
+            # AICONFIGURATOR_ENGINE_STEP_BACKEND env var, so PASS/FAIL cannot
+            # become host-dependent (an unknown ambient value would raise in
+            # should_use_rust_engine_step).
+            "engine_step_backend": "rust",
+            "database_mode": resolved_mode,
+            # Optional fine-grained HYBRID transfer policy for coverage experiments
+            # (e.g. AIC_SM_TRANSFERS="off" or "xshape,xquant"). None -> all kinds on.
+            "transfer_policy": os.environ.get("AIC_SM_TRANSFERS") or None,
+        }
+        if mode == "disagg":
+            # v2 disagg forbids shared top-level worker fields; fan out to both roles.
+            return Task(
+                serving_mode="disagg",
+                prefill_model_path=model,
+                decode_model_path=model,
+                prefill_system_name=system,
+                decode_system_name=system,
+                prefill_backend_name=backend,
+                decode_backend_name=backend,
+                prefill_backend_version=version,
+                decode_backend_version=version,
+                **common_kwargs,
+            )
+        return Task(
+            serving_mode="agg",
+            model_path=model,
+            system_name=system,
+            backend_name=backend,
+            backend_version=version,
+            **common_kwargs,
+        )
+
+    @staticmethod
+    def _run_mode(
+        *,
+        mode: str,
+        model: str,
+        system: str,
+        backend: str,
+        version: str,
+        constraints: TestConstraints,
+        database_mode: str | None = None,
+    ) -> pd.DataFrame | None:
+        task = SupportMatrix._create_task(
+            mode=mode,
+            model=model,
+            system=system,
+            backend=backend,
+            version=version,
+            constraints=constraints,
+            database_mode=database_mode,
+        )
+        pareto_df = task.run()
+        if pareto_df is None:
+            raise RuntimeError("Task returned no result")
+        return pareto_df
+
+    @staticmethod
+    def run_single_test(
+        model: str,
+        system: str,
+        backend: str,
+        version: str,
+        *,
+        system_spec: dict | None = None,
+        modes_to_test: tuple[str, ...] | list[str] | None = None,
+        include_commands: bool = False,
+    ) -> tuple[dict[str, str], dict[str, str | None]] | tuple[dict[str, str], dict[str, str | None], dict[str, str]]:
+        """
+        Run a single configuration test for both agg and disagg modes.
+
+        Args:
+            model: Model name
+            system: System/hardware name
+            backend: Backend name
+            version: Backend version
+            system_spec: Optional system spec to avoid reloading the database for hardware preflight.
+
+        Returns:
+            Tuple of (dict with statuses, dict with error messages).
+            Status values are PASS, HYBRID_PASS, FAIL, HW_INCOMPATIBLE, or
+            FRAMEWORK_INCOMPATIBLE. PASS is reserved for a SILICON success;
+            HYBRID_PASS means SILICON failed but the HYBRID retry succeeded.
+            Both dicts have keys "agg" and "disagg".
+        """
+        if modes_to_test is None:
+            modes_to_test = ("agg", "disagg")
+        else:
+            modes_to_test = tuple(modes_to_test)
+            unsupported_modes = set(modes_to_test) - {"agg", "disagg"}
+            if unsupported_modes:
+                raise ValueError(f"Unsupported support-matrix mode(s): {sorted(unsupported_modes)}")
+        constraints = _get_test_constraints(model)
+        statuses: dict[str, str] = {}
+        error_messages = {}
+        provenance: dict[str, str] = dict.fromkeys(modes_to_test, "")
+        transfer_policy = os.environ.get("AIC_SM_TRANSFERS") or None
+        commands = {
+            mode: _support_matrix_row_command(
+                model=model,
+                system=system,
+                backend=backend,
+                version=version,
+                database_mode="SILICON",
+                transfer_policy=transfer_policy,
+                constraints=constraints,
+            )
+            for mode in modes_to_test
+        }
+
+        if system_spec is None:
+            database = perf_database.get_database(system, backend, version)
+            system_spec = database.system_spec if database is not None else None
+
+        if system_spec is not None:
+            try:
+                incompatibility = get_hardware_incompatibility(
+                    model=model,
+                    system=system,
+                    backend=backend,
+                    system_spec=system_spec,
+                )
+            except Exception:
+                logger.exception("Hardware compatibility preflight failed for %s on %s/%s", model, system, backend)
+                raise
+            if incompatibility is not None:
+                reason = _format_exception_for_csv(incompatibility.reason)
+                statuses = dict.fromkeys(modes_to_test, STATUS_HW_INCOMPATIBLE)
+                error_messages = dict.fromkeys(modes_to_test, reason)
+                if include_commands:
+                    return statuses, error_messages, commands, provenance
+                return statuses, error_messages
+
+        # By default the matrix runs SILICON first (including declared shared-layer
+        # collected rows) and re-runs only structured data gaps (plus explicitly known
+        # framework/data gaps) in HYBRID. A successful rescue is recorded as
+        # HYBRID_PASS, never PASS, so SDK consumers cannot mistake estimability for
+        # measured-silicon support.
+        # Set AIC_SM_ALLOW_HYBRID to a falsey value (0/false/no/off) for a pure-silicon matrix.
+        allow_hybrid = os.environ.get("AIC_SM_ALLOW_HYBRID", "1").strip().lower() not in ("0", "false", "no", "off")
+
+        def _attempt(mode: str, db_mode: str | None) -> tuple[str, str | None, str, bool]:
+            """Return status, error, source tier, and whether HYBRID may rescue it."""
+            try:
+                # capture_provenance spans task.run() (the contextvar propagates down the
+                # call stack), so we learn the worst empirical transfer tier that fired.
+                with capture_provenance() as prov_tags:
+                    pareto_df = SupportMatrix._run_mode(
+                        mode=mode,
+                        model=model,
+                        system=system,
+                        backend=backend,
+                        version=version,
+                        constraints=constraints,
+                        database_mode=db_mode,
+                    )
+                # pareto_frontier_df is non-empty iff pareto_df is, so we only check pareto_df.
+                if pareto_df is None or pareto_df.empty:
+                    raise RuntimeError("Configuration returned no results, failed to catch traceback")
+
+                tier = worst_provenance(prov_tags)
+                if db_mode == "SILICON" and tier != "silicon":
+                    raise RuntimeError(
+                        "SILICON support run emitted empirical provenance "
+                        f"{tier!r}; PASS is reserved for collected silicon data."
+                    )
+                return STATUS_PASS, None, tier, False
+            except Exception as e:
+                raw_error = traceback.format_exc()
+                logger.warning(
+                    "Configuration failed: %s, %s, %s, %s, mode=%s - Error: %s",
+                    model,
+                    system,
+                    backend,
+                    version,
+                    mode,
+                    str(e),
+                )
+                if _is_known_hw_incompatible_gap(system=system, error_message=raw_error):
+                    return STATUS_HW_INCOMPATIBLE, raw_error, "", False
+                framework_gap = _is_known_framework_incompatible_gap(
+                    model=model,
+                    system=system,
+                    system_spec=system_spec,
+                    backend=backend,
+                    version=version,
+                    error_message=raw_error,
+                )
+                if framework_gap:
+                    # Some known framework gaps (for example Kimi INT4_WO on TRT-LLM)
+                    # are not SILICON-capable but are still estimable in HYBRID.
+                    return STATUS_FRAMEWORK_INCOMPATIBLE, raw_error, "", True
+                return STATUS_FAIL, raw_error, "", perf_database.has_perf_data_not_available_cause(e)
+            finally:
+                perf_database.clear_database_runtime_caches(system, backend, version)
+
+        for mode in modes_to_test:
+            status, raw_error, tier, rescuable = _attempt(mode, "SILICON")
+            # Programming errors and hardware incompatibilities must fail loudly instead
+            # of being hidden by a successful second implementation path.
+            if allow_hybrid and rescuable:
+                h_status, _h_error, h_tier, _ = _attempt(mode, "HYBRID")
+                if h_status == STATUS_PASS:
+                    status, raw_error = STATUS_HYBRID_PASS, None
+                    tier = h_tier if h_tier and h_tier != "silicon" else "empirical"
+                    commands[mode] = _support_matrix_row_command(
+                        model=model,
+                        system=system,
+                        backend=backend,
+                        version=version,
+                        database_mode="HYBRID",
+                        transfer_policy=transfer_policy,
+                        constraints=constraints,
+                    )
+
+            statuses[mode] = status
+            error_messages[mode] = _format_exception_for_csv(raw_error)
+            provenance[mode] = tier if status in {STATUS_PASS, STATUS_HYBRID_PASS} else ""
+
+        if include_commands:
+            return statuses, error_messages, commands, provenance
+        return statuses, error_messages
+
+    def _run_parallel_combinations(
+        self,
+        combinations: list[tuple[str, str, str, str]],
+        *,
+        max_workers: int,
+        pbar: tqdm,
+    ) -> tuple[list[tuple[str, str, str, str, str, str, str, str | None, str]], set[tuple[str, str, str, str]]]:
+        group_results: list[tuple[str, str, str, str, str, str, str, str | None, str]] = []
+        retry_combos: set[tuple[str, str, str, str]] = set()
+        processed_futures = set()
+
+        with ProcessPoolExecutor(
+            max_workers=min(max_workers, len(combinations)),
+            mp_context=_fork_ctx,
+        ) as executor:
+            futures = {executor.submit(_process_combination_worker, combo): combo for combo in combinations}
+            for future in as_completed(futures):
+                combo = futures[future]
+                model, system, backend, version = combo
+                try:
+                    group_results.extend(future.result())
+                    processed_futures.add(future)
+                    pbar.update(1)
+                except BrokenExecutor:
+                    logger.warning(
+                        "Process pool broken while running %s/%s/%s/%s. "
+                        "A worker was likely killed (OOM). "
+                        "Queuing this and remaining group combos for sequential retry.",
+                        model,
+                        system,
+                        backend,
+                        version,
+                    )
+                    unprocessed_futures = [remaining for remaining in futures if remaining not in processed_futures]
+                    for remaining in unprocessed_futures:
+                        remaining.cancel()
+                        retry_combos.add(futures[remaining])
+                    pbar.update(len(unprocessed_futures))
+                    break
+                except Exception:
+                    logger.exception(
+                        "Unexpected error retrieving result for %s/%s/%s/%s",
+                        model,
+                        system,
+                        backend,
+                        version,
+                    )
+                    retry_combos.add(combo)
+                    processed_futures.add(future)
+                    pbar.update(1)
+
+        return group_results, retry_combos
+
+    def test_support_matrix(
+        self,
+        max_workers: int | None = None,
+        *,
+        combinations: list[tuple[str, str, str, str]] | None = None,
+        modes_to_test: tuple[str, ...] | list[str] | None = None,
+    ) -> list[tuple[str, str, str, str, str, str, str, str | None, str]]:
+        """
+        Test whether each combination is supported by AIC.
+        Tests both agg and disagg modes for each combination and captures error messages.
+
+        Runs in two phases:
+        1. Parallel execution with one ProcessPoolExecutor per (system, backend, version).
+        2. Sequential single-process retry of every combination that failed in phase 1
+           (including combos that never ran due to a broken process pool).
+
+        Args:
+            max_workers: Maximum number of worker processes for parallel execution.
+                         Defaults to None, which uses os.cpu_count() or 1.
+
+        Returns:
+            List of tuples (huggingface_id, architecture, system, backend, version, mode, status, err_msg, command).
+            Returns separate entries for each requested mode.
+        """
+        # Print configuration
+        print("\n" + "=" * 80)
+        print("AIConfigurator Support Matrix Test")
+        print("=" * 80)
+        print("Testing requested support-matrix modes for selected combinations")
+        print("Tiered constraints by model size:")
+        print(
+            f"  <10B:      GPUs={_SMALL.total_gpus}, ISL={_SMALL.isl}, OSL={_SMALL.osl}, "
+            f"PREFIX={_SMALL.prefix}, TTFT={_SMALL.ttft}ms, TPOT={_SMALL.tpot}ms"
+        )
+        print(
+            f"  10B-100B:  GPUs={_MEDIUM.total_gpus}, ISL={_MEDIUM.isl}, OSL={_MEDIUM.osl}, "
+            f"PREFIX={_MEDIUM.prefix}, TTFT={_MEDIUM.ttft}ms, TPOT={_MEDIUM.tpot}ms"
+        )
+        print(
+            f"  >100B:     GPUs={_LARGE.total_gpus}, ISL={_LARGE.isl}, OSL={_LARGE.osl}, "
+            f"PREFIX={_LARGE.prefix}, TTFT={_LARGE.ttft}ms, TPOT={_LARGE.tpot}ms"
+        )
+        if max_workers is None:
+            max_workers = os.cpu_count() or 1
+        print(f"Max workers: {max_workers}")
+        print("=" * 80 + "\n")
+
+        if modes_to_test is None:
+            modes_to_test = ("agg", "disagg")
+        else:
+            modes_to_test = tuple(modes_to_test)
+        combinations = (
+            self.generate_combinations() if combinations is None else sorted(combinations, key=_combination_sort_key)
+        )
+        print(f"Total combinations to test: {len(combinations)}")
+        print(f"Modes: {', '.join(modes_to_test)}")
+        results: list[tuple[str, str, str, str, str, str, str, str | None, str]] = []
+        retry_combos: set[tuple[str, str, str, str]] = set()
+
+        global _worker_matrix, _worker_modes_to_test
+        _worker_matrix = self
+        _worker_modes_to_test = tuple(modes_to_test)
+
+        # -- Phase 1: parallel execution, one short-lived pool per database group --
+        with tqdm(total=len(combinations), desc="Phase 1: parallel testing", unit="config") as pbar:
+            for (system, backend, version), group_iter in groupby(combinations, key=_combination_group_key):
+                group_combinations = list(group_iter)
+                tqdm.write(
+                    f"Phase 1 group: {system}/{backend}/{version} ({len(group_combinations)} model combination(s))"
+                )
+                try:
+                    group_results, group_retry_combos = self._run_parallel_combinations(
+                        group_combinations,
+                        max_workers=max_workers,
+                        pbar=pbar,
+                    )
+                    results.extend(group_results)
+                    retry_combos.update(group_retry_combos)
+                finally:
+                    perf_database.unload_database(system, backend, version)
+
+        # Also collect combos whose Phase 1 results had any failure
+        for model, _arch, system, backend, version, _mode, status, _err, _command, _source in results:
+            if status == STATUS_FAIL:
+                retry_combos.add((model, system, backend, version))
+
+        # -- Phase 2: sequential single-process retry of all failures --
+        if retry_combos:
+            results = [r for r in results if (r[0], r[2], r[3], r[4]) not in retry_combos]
+
+            print(f"\n{'=' * 80}")
+            print(f"Phase 2: retrying {len(retry_combos)} failed combination(s) sequentially")
+            print(f"{'=' * 80}\n")
+
+            sorted_retry_combos = sorted(retry_combos, key=_combination_sort_key)
+            with tqdm(total=len(sorted_retry_combos), desc="Phase 2: sequential retry", unit="config") as pbar:
+                for (system, backend, version), group_iter in groupby(sorted_retry_combos, key=_combination_group_key):
+                    try:
+                        for combo in group_iter:
+                            model, system, backend, version = combo
+                            try:
+                                status_dict, error_dict, command_dict, provenance_dict = self.run_single_test(
+                                    model=model,
+                                    system=system,
+                                    backend=backend,
+                                    version=version,
+                                    modes_to_test=modes_to_test,
+                                    include_commands=True,
+                                )
+                                architecture = self.get_architecture(model)
+                                for mode in status_dict:
+                                    results.append(
+                                        (
+                                            model,
+                                            architecture,
+                                            system,
+                                            backend,
+                                            version,
+                                            mode,
+                                            status_dict[mode],
+                                            error_dict[mode],
+                                            command_dict[mode],
+                                            provenance_dict.get(mode, ""),
+                                        )
+                                    )
+                            except Exception:
+                                logger.exception(
+                                    "Sequential retry also failed for %s/%s/%s/%s",
+                                    model,
+                                    system,
+                                    backend,
+                                    version,
+                                )
+                                architecture = self.get_architecture(model)
+                                for mode in modes_to_test:
+                                    command = _support_matrix_row_command(
+                                        model=model,
+                                        system=system,
+                                        backend=backend,
+                                        version=version,
+                                    )
+                                    results.append(
+                                        (
+                                            model,
+                                            architecture,
+                                            system,
+                                            backend,
+                                            version,
+                                            mode,
+                                            STATUS_FAIL,
+                                            traceback.format_exc().replace("\n", "\\n"),
+                                            command,
+                                            "",
+                                        )
+                                    )
+                            finally:
+                                pbar.update(1)
+                    finally:
+                        perf_database.unload_database(system, backend, version)
+
+        # Sort results by (huggingface_id, architecture, system, backend, version, mode)
+        results.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4], x[5]))
+
+        # Print results summary
+        self._print_results_summary(results)
+
+        return results
+
+    def _print_results_summary(self, results: list[tuple[str, str, str, str, str, str, str, str | None, str]]) -> None:
+        """Print summary of test results."""
+        total_tests = len(results)
+        silicon_passed = sum(1 for r in results if r[6] == STATUS_PASS)
+        hybrid_passed = sum(1 for r in results if r[6] == STATUS_HYBRID_PASS)
+        failed = sum(1 for r in results if r[6] == STATUS_FAIL)
+        hw_incompatible = sum(1 for r in results if r[6] == STATUS_HW_INCOMPATIBLE)
+        framework_incompatible = sum(1 for r in results if r[6] == STATUS_FRAMEWORK_INCOMPATIBLE)
+
+        print("\n" + "=" * 80)
+        print("Test Results Summary")
+        print("=" * 80)
+        print(f"Total configurations tested: {total_tests}")
+        print(f"✓ Silicon supported: {silicon_passed} ({100 * silicon_passed / total_tests:.1f}%)")
+        print(f"≈ Hybrid estimable: {hybrid_passed} ({100 * hybrid_passed / total_tests:.1f}%)")
+        print(f"✗ Failed: {failed} ({100 * failed / total_tests:.1f}%)")
+        print(f"⚪ Hardware incompatible: {hw_incompatible} ({100 * hw_incompatible / total_tests:.1f}%)")
+        print(
+            f"⚪ Framework incompatible: {framework_incompatible} ({100 * framework_incompatible / total_tests:.1f}%)"
+        )
+        print("=" * 80)
+
+        # Group results by status
+        silicon_passed_configs = []
+        hybrid_passed_configs = []
+        failed_configs = []
+        hw_incompatible_configs = []
+        framework_incompatible_configs = []
+
+        source_by_config: dict[tuple, str] = {}
+        for huggingface_id, architecture, system, backend, version, mode, status, _err, _command, source in results:
+            config = (huggingface_id, architecture, system, backend, version, mode)
+            if status == STATUS_PASS:
+                silicon_passed_configs.append(config)
+                source_by_config[config] = source or "silicon"
+            elif status == STATUS_HYBRID_PASS:
+                hybrid_passed_configs.append(config)
+                source_by_config[config] = source or "empirical"
+            elif status == STATUS_FAIL:
+                failed_configs.append(config)
+            elif status == STATUS_HW_INCOMPATIBLE:
+                hw_incompatible_configs.append(config)
+            elif status == STATUS_FRAMEWORK_INCOMPATIBLE:
+                framework_incompatible_configs.append(config)
+
+        if silicon_passed_configs:
+            print(f"\n✓ Silicon-Supported Configurations ({len(silicon_passed_configs)}):")
+            for huggingface_id, architecture, system, backend, version, mode in sorted(silicon_passed_configs):
+                print(f"  • {huggingface_id} ({architecture}) on {system} with {backend} v{version} ({mode})")
+
+        if hybrid_passed_configs:
+            print(f"\n≈ Hybrid-Estimable Configurations ({len(hybrid_passed_configs)}):")
+            for huggingface_id, architecture, system, backend, version, mode in sorted(hybrid_passed_configs):
+                src = source_by_config.get((huggingface_id, architecture, system, backend, version, mode), "empirical")
+                print(
+                    f"  • {huggingface_id} ({architecture}) on {system} with {backend} "
+                    f"v{version} ({mode}) [hybrid:{src}]"
+                )
+
+        # Print failed configurations
+        if failed_configs:
+            print(f"\n✗ Failed Configurations ({len(failed_configs)}):")
+            for huggingface_id, architecture, system, backend, version, mode in sorted(failed_configs):
+                print(f"  • {huggingface_id} ({architecture}) on {system} with {backend} v{version} ({mode})")
+
+        if hw_incompatible_configs:
+            print(f"\n⚪ Hardware-Incompatible Configurations ({len(hw_incompatible_configs)}):")
+            for huggingface_id, architecture, system, backend, version, mode in sorted(hw_incompatible_configs):
+                print(f"  • {huggingface_id} ({architecture}) on {system} with {backend} v{version} ({mode})")
+
+        if framework_incompatible_configs:
+            print(f"\n⚪ Framework-Incompatible Configurations ({len(framework_incompatible_configs)}):")
+            for huggingface_id, architecture, system, backend, version, mode in sorted(framework_incompatible_configs):
+                print(f"  • {huggingface_id} ({architecture}) on {system} with {backend} v{version} ({mode})")
+
+    def save_results_to_csv(self, results: list[tuple[str, ...]], output_file: str) -> None:
+        """
+        Save test results to split CSV files, one per system.
+
+        Passing a path ending in ``.csv`` preserves the legacy single-file output
+        for ad hoc comparisons.
+
+        Args:
+            results: List of tuples
+                (huggingface_id, architecture, system, backend, version, mode, status, err_msg, command)
+            output_file: Path to the output directory, or a legacy output CSV file
+        """
+        output_path = Path(output_file)
+
+        def _row_values(row: tuple[str, ...]) -> tuple[str, str, str, str, str, str, str, str, str, str]:
+            source = ""
+            legacy_row = len(row) in {8, 9}
+            if len(row) == 10:
+                huggingface_id, architecture, system, backend, version, mode, status, err_msg, command, source = row
+            elif len(row) == 9:
+                huggingface_id, architecture, system, backend, version, mode, status, err_msg, command = row
+            elif len(row) == 8:
+                huggingface_id, architecture, system, backend, version, mode, status, err_msg = row
+                command = _support_matrix_row_command(
+                    model=huggingface_id,
+                    system=system,
+                    backend=backend,
+                    version=version,
+                    constraints=_DEFAULT_TIER,
+                )
+            else:
+                raise ValueError(f"Invalid support-matrix result row length: {len(row)}")
+
+            if legacy_row:
+                if status == STATUS_PASS:
+                    # Legacy 8/9-column matrices predate Source. PASS meant a
+                    # successful SILICON run, so preserve that meaning when
+                    # upgrading the row to the current 10-column schema.
+                    source = "silicon"
+                elif status == STATUS_HYBRID_PASS:
+                    raise ValueError(
+                        "Legacy HYBRID_PASS rows cannot be upgraded without an explicit empirical Source; "
+                        "provide a 10-column row."
+                    )
+                else:
+                    source = ""
+            elif status == STATUS_PASS and source != "silicon":
+                raise ValueError("PASS support-matrix rows must use Source='silicon'")
+            elif status == STATUS_HYBRID_PASS and source not in VALID_PROVENANCE_SOURCES - {"silicon"}:
+                raise ValueError("HYBRID_PASS support-matrix rows require an empirical transfer Source")
+            elif status not in {STATUS_PASS, STATUS_HYBRID_PASS} and source:
+                raise ValueError(f"Non-pass support-matrix status {status} must not include Source={source!r}")
+
+            return (
+                huggingface_id,
+                architecture,
+                system,
+                backend,
+                version,
+                mode,
+                status,
+                err_msg or "",
+                command,
+                source or "",
+            )
+
+        if output_path.suffix == ".csv":
+            with open(output_path, "w", newline="") as f:
+                writer = csv.writer(f, lineterminator="\n")
+                writer.writerow(SUPPORT_MATRIX_HEADER)
+                for row in results:
+                    huggingface_id, architecture, system, backend, version, mode, status, err_msg, command, source = (
+                        _row_values(row)
+                    )
+                    if status not in VALID_STATUSES:
+                        raise ValueError(f"Invalid support-matrix status: {status}")
+                    writer.writerow(
+                        [huggingface_id, architecture, system, backend, version, mode, status, err_msg, command, source]
+                    )
+            print(f"\nResults saved to: {output_file}")
+            return
+
+        output_path.mkdir(parents=True, exist_ok=True)
+        for stale_csv in output_path.glob("*.csv"):
+            stale_csv.unlink()
+
+        sorted_results = sorted(
+            (_row_values(row) for row in results),
+            key=lambda x: (common.get_support_matrix_system_sort_key(x[2]), x[0], x[1], x[3], x[4], x[5]),
+        )
+        # _row_values rows are now 10-wide (… command, source)
+        grouped_results = {
+            system: list(system_results) for system, system_results in groupby(sorted_results, key=lambda x: x[2])
+        }
+
+        manifest = {"files": []}
+        for system, system_results in grouped_results.items():
+            csv_path = output_path / f"{system}.csv"
+            manifest["files"].append(csv_path.name)
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f, lineterminator="\n")
+                writer.writerow(SUPPORT_MATRIX_HEADER)
+                for (
+                    huggingface_id,
+                    architecture,
+                    system,
+                    backend,
+                    version,
+                    mode,
+                    status,
+                    err_msg,
+                    command,
+                    source,
+                ) in system_results:
+                    if status not in VALID_STATUSES:
+                        raise ValueError(f"Invalid support-matrix status: {status}")
+                    writer.writerow(
+                        [
+                            huggingface_id,
+                            architecture,
+                            system,
+                            backend,
+                            version,
+                            mode,
+                            status,
+                            err_msg,
+                            command,
+                            source,
+                        ]
+                    )
+
+        with open(output_path / "index.json", "w") as f:
+            json.dump(manifest, f, indent=2)
+            f.write("\n")
+
+        print(f"\nResults saved to: {output_file}")
+        print(f"Split support matrix files: {len(manifest['files'])}")

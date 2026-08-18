@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Flat V2 task schema: one key per Task field, no mode/config/worker_config nesting.
+# `exps` lists which experiments to run (in order); each other top-level key is an experiment.
+
+exps:
+- exp_silicon
+- exp_hybrid
+- exp_empirical
+exp_silicon:
+  isl: 4000
+  serving_mode: agg
+  total_gpus: 8
+  tpot: 30.0
+  ttft: 1000.0
+  osl: 1000
+  database_mode: SILICON
+  model_path: Qwen/Qwen3-32B-FP8
+  system_name: h200_sxm
+  backend_name: trtllm
+exp_hybrid:
+  isl: 4000
+  serving_mode: agg
+  total_gpus: 8
+  tpot: 30.0
+  ttft: 1000.0
+  osl: 1000
+  database_mode: HYBRID
+  model_path: Qwen/Qwen3-32B-FP8
+  system_name: h200_sxm
+  backend_name: trtllm
+exp_empirical:
+  isl: 4000
+  serving_mode: agg
+  total_gpus: 8
+  tpot: 30.0
+  ttft: 1000.0
+  osl: 1000
+  database_mode: EMPIRICAL
+  model_path: Qwen/Qwen3-32B-FP8
+  system_name: h200_sxm
+  backend_name: trtllm

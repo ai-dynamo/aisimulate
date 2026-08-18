@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: MiMoForCausalLM
+model_path: XiaomiMiMo/MiMo-7B-Base
+model_paths:
+  - XiaomiMiMo/MiMo-7B-Base
+include_base: true
+description: >
+  MiMo dense-family model-centric collection plan.
+
+model_case_values:
+  attention:
+    - id: mimo_7b_attention
+      model_path: XiaomiMiMo/MiMo-7B-Base
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      head_dim: 128
+      # The cached model config sets use_sliding_window=false, and the AIC
+      # LLAMA model therefore queries the full-attention (window=0) table.
+      window_size: 0
+      tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
