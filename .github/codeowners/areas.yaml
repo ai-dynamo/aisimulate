@@ -1,0 +1,131 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+meta:
+  catch_all: maintainers
+
+teams:
+  maintainers: "@ai-dynamo/access-aisimulate-maintain"
+  forward_pass_engine: "@ai-dynamo/aisimulate-forward-pass-engine-codeowners"
+  sweeper: "@ai-dynamo/aisimulate-sweeper-codeowners"
+  replay: "@ai-dynamo/aisimulate-replay-codeowners"
+  mocker: "@ai-dynamo/aisimulate-mocker-codeowners"
+  infra: "@ai-dynamo/aisimulate-infra-codeowners"
+  devops: "@ai-dynamo/devops"
+
+# Rules use GitHub's last-match-wins semantics. Keep broader directory rules
+# before their narrower overrides.
+rules:
+  - section: fallback
+    pattern: "*"
+    owners: [maintainers]
+
+  - section: maintainers
+    pattern: /LICENSE
+    owners: [maintainers]
+  - section: maintainers
+    pattern: /README.md
+    owners: [maintainers]
+  - section: maintainers
+    pattern: /docs/migration.md
+    owners: [maintainers]
+  - section: maintainers
+    pattern: /src/aisimulate/__init__.py
+    owners: [maintainers]
+  - section: maintainers
+    pattern: /tests/conftest.py
+    owners: [maintainers]
+
+  - section: forward-pass engine
+    pattern: /src/aisimulate/aic.py
+    owners: [forward_pass_engine, maintainers]
+  - section: forward-pass engine
+    pattern: /tests/test_aic.py
+    owners: [forward_pass_engine, maintainers]
+
+  - section: sweeper
+    pattern: /src/aisimulate/sweeper/
+    owners: [sweeper, maintainers]
+  - section: sweeper
+    pattern: /docs/sweeper/
+    owners: [sweeper, maintainers]
+  - section: sweeper
+    pattern: /examples/sweeper/
+    owners: [sweeper, maintainers]
+  - section: sweeper
+    pattern: /tests/sweeper/
+    owners: [sweeper, maintainers]
+
+  - section: replay
+    pattern: /crates/core/src/replay/
+    owners: [replay, maintainers]
+  - section: replay
+    pattern: /src/aisimulate/replay/
+    owners: [replay, maintainers]
+  - section: replay
+    pattern: /src/aisimulate/runner.py
+    owners: [replay, maintainers]
+  - section: replay
+    pattern: /src/aisimulate/traffic.py
+    owners: [replay, maintainers]
+  - section: replay
+    pattern: /tests/test_replay_cli.py
+    owners: [replay, maintainers]
+  - section: replay
+    pattern: /tests/test_runner.py
+    owners: [replay, maintainers]
+  - section: replay
+    pattern: /tests/test_traffic.py
+    owners: [replay, maintainers]
+
+  - section: mocker
+    pattern: /crates/core/src/engine/
+    owners: [mocker, maintainers]
+  - section: mocker and forward-pass engine
+    pattern: /crates/core/src/engine/timing.rs
+    owners: [mocker, forward_pass_engine, maintainers]
+
+  - section: shared native contracts
+    pattern: /crates/core/Cargo.toml
+    owners: [mocker, replay, infra, maintainers]
+  - section: shared native contracts
+    pattern: /crates/core/README.md
+    owners: [mocker, replay, maintainers]
+  - section: shared native contracts
+    pattern: /crates/core/src/lib.rs
+    owners: [mocker, replay, maintainers]
+  - section: shared native contracts
+    pattern: /crates/core/tests/
+    owners: [mocker, replay, maintainers]
+  - section: shared native contracts
+    pattern: /crates/python/src/
+    owners: [mocker, replay, forward_pass_engine, maintainers]
+  - section: shared native contracts
+    pattern: /crates/python/Cargo.toml
+    owners: [infra, maintainers]
+
+  - section: infrastructure
+    pattern: /.github/
+    owners: [infra]
+  - section: infrastructure
+    pattern: /.gitignore
+    owners: [infra]
+  - section: infrastructure
+    pattern: /Cargo.lock
+    owners: [infra, maintainers]
+  - section: infrastructure
+    pattern: /Cargo.toml
+    owners: [infra, maintainers]
+  - section: infrastructure
+    pattern: /pyproject.toml
+    owners: [infra, maintainers]
+
+  - section: ownership policy
+    pattern: /.github/codeowners/
+    owners: [devops]
+  - section: ownership policy
+    pattern: /.github/workflows/codeowners.yml
+    owners: [devops]
+  - section: ownership policy
+    pattern: /CODEOWNERS
+    owners: [devops]

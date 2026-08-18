@@ -1,0 +1,33 @@
+name: CODEOWNERS
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  codeowners:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml==6.0.3 pytest==8.4.2
+      - name: Validate generated policy and full-tree coverage
+        run: |
+          python .github/codeowners/codeowners.py \
+            --policy .github/codeowners/areas.yaml \
+            --out CODEOWNERS \
+            --repo . \
+            --check \
+            --validate
+      - name: Test ownership routing
+        run: |
+          python -m pytest -c /dev/null .github/codeowners/test_*.py -q \
+            -p no:cacheprovider
