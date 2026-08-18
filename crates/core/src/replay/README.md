@@ -19,8 +19,9 @@ placement/scaling boundary used by Dynamo adapters.
 
 The public entrypoint is `Replayer<C>`, where `C: ReplayComposition` supplies
 placement and optional scaling policies. `RoundRobinComposition` is built in;
-Dynamo constructs Router/Planner policies in `lib/mocker` and injects them
-through the same contract. The dependency points only toward this crate.
+Dynamo constructs Router/Planner policies in its
+[`lib/mocker`](https://github.com/ai-dynamo/dynamo/tree/main/lib/mocker) tree and injects them through
+the same contract. The dependency points only toward this crate.
 
 `Replayer::run` selects one of two topology runtimes:
 
