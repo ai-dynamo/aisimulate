@@ -1,0 +1,123 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Shared data types for collector registries."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class PerfFile(str, Enum):
+    """Canonical output filenames for collector operations.
+
+    Inherits from ``str`` so values pass directly to ``open()`` / ``log_perf()``
+    without ``.value``.
+    """
+
+    def __str__(self) -> str:
+        """
+        Override behavior of str(x) and f"{x}" to return
+        the perf filename instead of the enum name like "PerfFile.GEMM".
+        """
+        return self.value
+
+    GEMM = "gemm_perf.txt"
+    CONTEXT_ATTENTION = "context_attention_perf.txt"
+    GENERATION_ATTENTION = "generation_attention_perf.txt"
+    ENCODER_ATTENTION = "encoder_attention_perf.txt"
+    MOE = "moe_perf.txt"
+    CONTEXT_MLA = "context_mla_perf.txt"
+    GENERATION_MLA = "generation_mla_perf.txt"
+    MLA_BMM = "mla_bmm_perf.txt"
+    GDN = "gdn_perf.txt"
+    KDA = "kda_perf.txt"
+    MAMBA2 = "mamba2_perf.txt"
+    COMPUTESCALE = "computescale_perf.txt"
+    WIDEEP_CONTEXT_MLA = "wideep_context_mla_perf.txt"
+    WIDEEP_GENERATION_MLA = "wideep_generation_mla_perf.txt"
+    WIDEEP_CONTEXT_MOE = "wideep_context_moe_perf.txt"
+    WIDEEP_GENERATION_MOE = "wideep_generation_moe_perf.txt"
+    WIDEEP_DEEPEP_LL = "wideep_deepep_ll_perf.txt"
+    WIDEEP_DEEPEP_NORMAL = "wideep_deepep_normal_perf.txt"
+    # Model-agnostic large-scale EP tables (unified schema): a2a dispatch/combine
+    # communication and expert-parallel MoE compute. Consumer loaders live in
+    # aiconfigurator_core.sdk.operations.moe_comm (shipped with PR 1).
+    MOE_A2A = "moe_a2a_perf.txt"
+    MOE_EXPERT_COMPUTE = "moe_expert_compute_perf.txt"
+    MLA_CONTEXT_MODULE = "mla_context_module_perf.txt"
+    MLA_GENERATION_MODULE = "mla_generation_module_perf.txt"
+    DSA_CONTEXT_MODULE = "dsa_context_module_perf.txt"
+    DSA_GENERATION_MODULE = "dsa_generation_module_perf.txt"
+    # GLM-5.2 shares one topk index across `index_topk_freq` layers: only 1
+    # layer per group computes the indexer (mqa+topk+index-K store), the rest
+    # reuse it (skip_indexer). These files capture the skip-layer cost so the
+    # modeler can amortize: per_layer = (1/freq)*full + (1-1/freq)*skip.
+    DSA_CONTEXT_MODULE_SKIP_INDEXER = "dsa_context_module_skip_indexer_perf.txt"
+    DSA_GENERATION_MODULE_SKIP_INDEXER = "dsa_generation_module_skip_indexer_perf.txt"
+    MHC_MODULE = "mhc_module_perf.txt"
+    # DeepSeek-V4 module-level data — one OpEntry per (attn_kind, mode) pair,
+    # mirroring the existing aic_dev "1 OpEntry = 1 file" convention.
+    DSV4_CSA_CONTEXT_MODULE = "dsv4_csa_context_module_perf.txt"
+    DSV4_HCA_CONTEXT_MODULE = "dsv4_hca_context_module_perf.txt"
+    DSV4_CSA_GENERATION_MODULE = "dsv4_csa_generation_module_perf.txt"
+    DSV4_HCA_GENERATION_MODULE = "dsv4_hca_generation_module_perf.txt"
+    # DeepSeek-V4 sparse-kernel data — bench-collected (paged_mqa_logits +
+    # hca_attn + csa_attn), each 1:1 with its owning CSA/HCA module rows.
+    DSV4_PAGED_MQA_LOGITS_MODULE = "dsv4_paged_mqa_logits_module_perf.txt"
+    DSV4_HCA_ATTN_MODULE = "dsv4_hca_attn_module_perf.txt"
+    DSV4_CSA_ATTN_MODULE = "dsv4_csa_attn_module_perf.txt"
+    # DeepSeek-V4 CSA topk_512 degenerate-vs-representative DELTA calibration.
+    # SGLang 0.5.14 rows qualify flat/top_last by the executed v1/v2 variant.
+    DSV4_CSA_TOPK_CALIB = "dsv4_csa_topk_calib_perf.txt"
+    GLM5_MQA_LOGITS_MODULE = "glm5_mqa_logits_module_perf.txt"
+    GLM5_TOPK_MODULE = "glm5_topk_module_perf.txt"
+    GLM5_DSA_ATTN_MODULE = "glm5_dsa_attn_module_perf.txt"
+    DSV4_MEGAMOE_MODULE = "dsv4_megamoe_module_perf.txt"
+    NCCL = "nccl_perf.txt"
+    CUSTOM_ALLREDUCE = "custom_allreduce_perf.txt"
+    TRTLLM_ALLTOALL = "trtllm_alltoall_perf.txt"
+
+
+@dataclass(frozen=True, slots=True)
+class VersionRoute:
+    """A (min_version, module_path) pair for version-based module routing.
+
+    ``min_version`` is a PEP 440 version string. The resolver picks the first
+    ``VersionRoute`` whose ``min_version`` is <= the runtime version (entries
+    must be listed in descending order).
+    """
+
+    min_version: str
+    module: str
+
+
+@dataclass(frozen=True, slots=True)
+class OpEntry:
+    """One operation in a collector registry.
+
+    Exactly one of ``module`` (unversioned) or ``versions`` (versioned) must be
+    provided.  This invariant is validated at construction time.
+    """
+
+    op: str
+    get_func: str
+    run_func: str
+    perf_filename: str
+    module: str | None = None
+    versions: tuple[VersionRoute, ...] = field(default_factory=tuple)
+    # Maturity markers.  An unverified collector's real risk is not a crash
+    # but silently wrong data (successfully benchmarking the wrong kernel
+    # path), so collect.py skips it with an explicit summary entry instead of
+    # running it.  Remove the marker in the PR that debugs the collector.
+    #   unverified=True        — not debugged on this backend at all
+    #   unverified_sms=(120,)  — debugged elsewhere, not validated on these SMs
+    unverified: bool = False
+    unverified_sms: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.module and not self.versions:
+            raise ValueError(f"OpEntry '{self.op}': must specify 'module' or 'versions'")
+        if self.module and self.versions:
+            raise ValueError(f"OpEntry '{self.op}': cannot specify both 'module' and 'versions'")

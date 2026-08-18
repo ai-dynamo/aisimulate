@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build platform wheels
+
+on:
+  push:
+    branches:
+      - main
+      - "release/*"
+
+concurrency:
+  group: platform-wheels-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build wheels (${{ matrix.platform_name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform_name: manylinux_2_28_x86_64
+            runner: prod-aiconfigurator-default-amd64-v1
+            build_method: docker
+            python_architecture: x64
+            platform: linux/amd64
+            wheel_base: quay.io/pypa/manylinux_2_28_x86_64
+            upload_upper: true
+          - platform_name: manylinux_2_28_aarch64
+            runner: prod-aiconfigurator-default-arm64-v1
+            build_method: docker
+            python_architecture: arm64
+            platform: linux/arm64
+            wheel_base: quay.io/pypa/manylinux_2_28_aarch64
+            upload_upper: false
+          - platform_name: macosx_arm64
+            runner: prod-aiconfigurator-default-macos-arm64-v1
+            build_method: native-macos
+            python_architecture: arm64
+            platform: ""
+            wheel_base: ""
+            upload_upper: false
+
+    steps:
+      - name: Verify macOS runner prerequisites
+        if: matrix.build_method == 'native-macos'
+        shell: bash
+        run: |
+          test "$(uname -m)" = "arm64"
+          sw_vers
+          xcode-select --print-path
+          git lfs version
+          rustup --version
+          test -d /Users/runner/hostedtoolcache
+          test -w /Users/runner/hostedtoolcache
+
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          lfs: true
+
+      - name: Build and verify wheel set
+        uses: ./.github/actions/build-platform-wheel
+        with:
+          build_method: ${{ matrix.build_method }}
+          python_architecture: ${{ matrix.python_architecture }}
+          platform: ${{ matrix.platform }}
+          wheel_base: ${{ matrix.wheel_base }}
+
+      - name: Report disabled post-merge Artifactory staging
+        if: >-
+          matrix.upload_upper &&
+          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) &&
+          vars.PLATFORM_WHEEL_STAGING_ENABLED != 'true'
+        shell: bash
+        run: |
+          echo "::notice title=Post-merge Artifactory staging disabled::Set PLATFORM_WHEEL_STAGING_ENABLED=true when post-merge publication is ready."
+          {
+            echo "### Post-merge Artifactory staging"
+            echo
+            echo '- Status: skipped because `PLATFORM_WHEEL_STAGING_ENABLED` is not `true`.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Stage post-merge wheels in Artifactory
+        if: >-
+          vars.PLATFORM_WHEEL_STAGING_ENABLED == 'true' &&
+          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: post-merge/${{ github.sha }}/${{ github.run_id }}/${{ github.run_attempt }}
+          UPLOAD_UPPER: ${{ matrix.upload_upper }}
+        shell: bash
+        run: bash tools/stage_wheels_in_artifactory.sh
+
+  finalize-post-merge:
+    name: Finalize post-merge wheel set
+    needs: build
+    if: >-
+      success() &&
+      vars.PLATFORM_WHEEL_STAGING_ENABLED == 'true' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+    runs-on: prod-aiconfigurator-default-amd64-v1
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout finalizer source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: tools/finalize_wheels_in_artifactory.py
+          sparse-checkout-cone-mode: false
+
+      - name: Mark the validated matrix complete
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_PYPI_REPO_NAME: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_SUBPATH: post-merge/${{ github.sha }}/${{ github.run_id }}/${{ github.run_attempt }}
+        shell: bash
+        run: python tools/finalize_wheels_in_artifactory.py

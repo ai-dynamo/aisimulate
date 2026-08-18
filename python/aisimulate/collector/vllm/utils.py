@@ -1,0 +1,594 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Modifications copyright (C) 2025 NVIDIA CORPORATION & AFFILIATES.
+
+# Modified from https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
+
+"""Shared vLLM 0.24.0 collector test-harness utilities."""
+
+import functools
+import os
+from contextlib import ExitStack
+from dataclasses import dataclass
+from functools import wraps
+from typing import Optional, Union
+
+import torch
+from vllm import _custom_ops as ops
+from vllm.config import (
+    CacheConfig,
+    CompilationConfig,
+    DeviceConfig,
+    LoadConfig,
+    ModelConfig,
+    ParallelConfig,
+    SchedulerConfig,
+    VllmConfig,
+    set_current_vllm_config,
+)
+from vllm.config.model import ModelDType
+from vllm.distributed import init_distributed_environment
+from vllm.distributed.parallel_state import ensure_model_parallel_initialized
+from vllm.utils.math_utils import cdiv
+from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE, kv_cache_dtype_str_to_dtype
+from vllm.v1.attention.backends.registry import AttentionBackendEnum
+from vllm.v1.attention.backends.utils import CommonAttentionMetadata
+from vllm.v1.kv_cache_interface import FullAttentionSpec, SlidingWindowSpec, get_kv_quant_mode
+
+
+class MockAttentionLayer:
+    """A mock attention layer for testing."""
+
+    def __init__(self, device: torch.device):
+        self._q_scale = torch.tensor(1.0, device=device)
+        self._k_scale = torch.tensor(1.0, device=device)
+        self._v_scale = torch.tensor(1.0, device=device)
+        # Add float versions for flashinfer
+        self._q_scale_float = 1.0
+        self._k_scale_float = 1.0
+        self._v_scale_float = 1.0
+
+
+@dataclass
+class BatchSpec:
+    """Specification for a batch configuration (workload shape only)."""
+
+    seq_lens: list[int]
+    query_lens: list[int]
+
+    name: str = "unnamed"
+
+    @property
+    def batch_size(self):
+        return len(self.seq_lens)
+
+    def __post_init__(self):
+        assert len(self.seq_lens) == len(self.query_lens)
+
+    def compute_num_tokens(self):
+        return sum(self.query_lens)
+
+
+def create_common_attn_metadata(
+    batch_spec: BatchSpec,
+    block_size: int,
+    device: torch.device,
+    max_block_idx: int = 1000,
+    arange_block_indices: bool = False,
+) -> CommonAttentionMetadata:
+    """Create CommonAttentionMetadata from a BatchSpec and ModelParams."""
+    # Create query start locations
+    query_start_loc = torch.zeros(batch_spec.batch_size + 1, dtype=torch.int32, device=device)
+    query_start_loc[1:] = torch.tensor(batch_spec.query_lens, dtype=torch.int32, device=device).cumsum(0)
+    query_start_loc_cpu = query_start_loc.cpu()
+    num_tokens = batch_spec.compute_num_tokens()
+
+    # Create sequence lengths
+    seq_lens = torch.tensor(batch_spec.seq_lens, dtype=torch.int32, device=device)
+    seq_lens_cpu = seq_lens.cpu()
+    max_seq_len = int(seq_lens_cpu.max())
+
+    # Create computed tokens (context length for each sequence)
+    context_lens = [batch_spec.seq_lens[i] - batch_spec.query_lens[i] for i in range(batch_spec.batch_size)]
+    num_computed_tokens_cpu = torch.tensor(context_lens, dtype=torch.int32)
+
+    # Create block table and slot mapping
+    max_blocks = (max(batch_spec.seq_lens) + block_size - 1) // block_size
+    if arange_block_indices:
+        num_blocks = batch_spec.batch_size * max_blocks
+        block_table_tensor = torch.arange(num_blocks, dtype=torch.int32, device=device).view(
+            batch_spec.batch_size, max_blocks
+        )
+        slot_mapping = torch.arange(num_tokens, dtype=torch.int64, device=device).view(num_tokens)
+    else:
+        block_table_tensor = torch.randint(
+            0, max_block_idx, (batch_spec.batch_size, max_blocks), dtype=torch.int32, device=device
+        )
+        slot_mapping = torch.randint(0, max_block_idx, (num_tokens,), dtype=torch.int64, device=device)
+
+    # Calculate max query length
+    max_query_len = max(batch_spec.query_lens)
+
+    return CommonAttentionMetadata(
+        query_start_loc=query_start_loc,
+        query_start_loc_cpu=query_start_loc_cpu,
+        seq_lens=seq_lens,
+        seq_lens_cpu_upper_bound=seq_lens_cpu,
+        _seq_lens_cpu=seq_lens_cpu,
+        _num_computed_tokens_cpu=num_computed_tokens_cpu,
+        num_reqs=batch_spec.batch_size,
+        num_actual_tokens=num_tokens,
+        max_query_len=max_query_len,
+        max_seq_len=max_seq_len,
+        block_table_tensor=block_table_tensor,
+        slot_mapping=slot_mapping,
+        causal=True,
+    )
+
+
+def get_attention_backend(backend_name: AttentionBackendEnum):
+    """Return vLLM 0.24.0 metadata-builder and implementation classes."""
+    backend_class = backend_name.get_class()
+    return backend_class.get_builder_cls(), backend_class.get_impl_cls()
+
+
+def create_standard_kv_cache_spec(
+    vllm_config: VllmConfig, use_fp8_kv_cache: bool = False
+) -> FullAttentionSpec | SlidingWindowSpec:
+    """Create the KV-cache spec used by vLLM's production attention layer."""
+    spec_kwargs = dict(
+        block_size=vllm_config.cache_config.block_size,
+        num_kv_heads=vllm_config.model_config.get_num_kv_heads(vllm_config.parallel_config),
+        head_size=vllm_config.model_config.get_head_size(),
+        head_size_v=vllm_config.model_config.get_head_size(),
+        dtype=kv_cache_dtype_str_to_dtype(vllm_config.cache_config.cache_dtype, vllm_config.model_config),
+        kv_quant_mode=get_kv_quant_mode(vllm_config.cache_config.cache_dtype),
+    )
+    sliding_window = vllm_config.model_config.get_sliding_window()
+    if sliding_window is not None:
+        return SlidingWindowSpec(sliding_window=sliding_window, **spec_kwargs)
+    return FullAttentionSpec(**spec_kwargs)
+
+
+def create_vllm_config(
+    model_name: str = "meta-llama/Meta-Llama-3-8B",
+    tensor_parallel_size: int = 1,
+    distributed_executor_backend: str | None = None,
+    max_model_len: int = 1024,
+    dtype: Union[ModelDType, torch.dtype] = "auto",
+    num_gpu_blocks: int = 1000,
+    block_size: int = 16,
+    max_num_seqs: int = 256,
+    max_num_batched_tokens: int = 8192,
+    enable_chunked_prefill: bool = True,
+    add_mock_model_methods: bool = True,
+    hf_config_override: dict | None = None,
+    use_fp8_kv_cache: bool = False,
+    trust_remote_code: bool = False,
+    sliding_window: int | None = None,
+    head_dim: int | None = None,
+    num_heads: int | None = None,
+    num_kv_heads: int | None = None,
+) -> VllmConfig:
+    """Create a VllmConfig for testing with reasonable defaults."""
+
+    model_config = ModelConfig(
+        model=model_name,
+        tokenizer=model_name,
+        trust_remote_code=trust_remote_code,
+        dtype=dtype,
+        seed=0,
+        max_model_len=max_model_len,
+    )
+
+    cache_config = CacheConfig(
+        block_size=block_size,
+        cache_dtype="fp8" if use_fp8_kv_cache else "auto",
+    )
+    # Set cache blocks for testing
+    #   (these may be set during initialization normally)
+    cache_config.num_gpu_blocks = num_gpu_blocks
+    cache_config.num_cpu_blocks = 0
+
+    parallel_kwargs: dict[str, object] = {"tensor_parallel_size": tensor_parallel_size}
+    if distributed_executor_backend is not None:
+        parallel_kwargs["distributed_executor_backend"] = distributed_executor_backend
+    parallel_config = ParallelConfig(**parallel_kwargs)
+
+    scheduler_config = SchedulerConfig(
+        max_num_seqs=max_num_seqs,
+        max_num_batched_tokens=max_num_batched_tokens,
+        enable_chunked_prefill=enable_chunked_prefill,
+        max_model_len=model_config.max_model_len,
+        is_encoder_decoder=model_config.is_encoder_decoder,
+    )
+
+    device_config = DeviceConfig()
+    load_config = LoadConfig()
+    compilation_config = CompilationConfig()
+    # Module-level benchmarks run eagerly (no torch.compile), so without this
+    # every CustomOp (rotary, activations, ...) falls back to its native
+    # decomposed implementation — a batch-independent per-call overhead the
+    # serving engine does not pay (inductor fuses these under compilation).
+    # Enable the CUDA custom ops so eager module forwards match engine
+    # execution. See enable_engine_fused_ops() for the IR-op counterpart.
+    compilation_config.custom_ops = ["all"]
+
+    if add_mock_model_methods:
+        # Add mock methods to satisfy backends that need them
+        # This is a workaround because tests don't build full, real models,
+        # but some backends expect to query the model for layer-specific
+        # parameters
+        import types
+
+        model_config.get_num_layers = types.MethodType(lambda self: 1, model_config)
+        _sw = sliding_window
+        model_config.get_sliding_window_for_layer = types.MethodType(lambda self, i: _sw, model_config)
+        model_config.get_logits_soft_cap_for_layer = types.MethodType(lambda self, i: 0.0, model_config)
+        model_config.get_sm_scale_for_layer = types.MethodType(
+            lambda self, i: 1.0 / model_config.get_head_size() ** 0.5, model_config
+        )
+
+    if sliding_window is not None:
+        model_config.hf_text_config.sliding_window = sliding_window
+
+    if hf_config_override:
+        model_config.hf_config.update(hf_config_override)
+    if head_dim is not None:
+        model_config.hf_config.head_dim = head_dim
+        model_config.model_arch_config.head_size = head_dim
+    # ModelConfig.model_arch_config is built once in __init__, so keep its
+    # cached head counts aligned with the fake HF config used by this harness.
+    arch_cfg = model_config.model_arch_config
+    if num_heads is not None:
+        model_config.hf_config.num_attention_heads = num_heads
+        arch_cfg.total_num_attention_heads = num_heads
+    if num_kv_heads is not None:
+        model_config.hf_config.num_key_value_heads = num_kv_heads
+        arch_cfg.total_num_kv_heads = num_kv_heads
+
+    return VllmConfig(
+        model_config=model_config,
+        cache_config=cache_config,
+        parallel_config=parallel_config,
+        scheduler_config=scheduler_config,
+        device_config=device_config,
+        load_config=load_config,
+        compilation_config=compilation_config,
+    )
+
+
+def create_dummy_kv_cache(
+    block_size: int, num_kv_heads: int, head_size: int, dtype: torch.dtype, device: torch.device, num_blocks: int = 100
+) -> torch.Tensor:
+    """Create a dummy KV cache tensor for testing."""
+    kv_cache = torch.randn(
+        num_blocks,
+        2,  # K and V
+        block_size,
+        num_kv_heads,
+        head_size,
+        dtype=dtype,
+        device=device,
+    )
+    return kv_cache
+
+
+def convert_dtype_to_torch(dtype):
+    """Convert ModelDType to torch.dtype."""
+    if isinstance(dtype, str):
+        if dtype == "auto":
+            return torch.bfloat16  # Default dtype for testing
+        elif dtype in STR_DTYPE_TO_TORCH_DTYPE:
+            return STR_DTYPE_TO_TORCH_DTYPE[dtype]
+        else:
+            raise TypeError(f"Unknown dtype: {dtype}")
+    elif isinstance(dtype, torch.dtype):
+        return dtype
+    else:
+        raise TypeError(f"Unknown dtype: {dtype}")
+
+
+def create_and_prepopulate_kv_cache_mla(
+    kv_c_contexts: list[torch.Tensor],
+    k_pe_contexts: list[torch.Tensor],
+    block_size: int,
+    head_size: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    num_blocks: int,
+    common_attn_metadata: CommonAttentionMetadata,
+    randomize_blocks: bool = True,
+    kv_cache_dtype: Optional[str] = None,
+    scale: Union[float, torch.Tensor] = 1.0,
+) -> torch.Tensor:
+    """Create and prepopulate an MLA KV cache with context data.
+
+    Args:
+        kv_c_contexts: List of latent KV context tensors for each sequence
+        k_pe_contexts: List of key positional embedding context tensors
+                       for each sequence
+        block_size: Size of each block
+        head_size: Size of each head (latent dimension)
+        dtype: Data type for the cache
+        device: Device to create the cache on
+        num_blocks: Total number of blocks in the cache
+        common_attn_metadata: Common attention metadata
+        randomize_blocks: Whether to randomly permute blocks
+                          or use sequential order
+        kv_cache_dtype: Optional kv cache dtype string. When set to
+                        "fp8_ds_mla" the cache is populated using the
+                        fp8 DeepSeek MLA layout via concat_and_cache_mla.
+        scale: Scaling factor forwarded to concat_and_cache_mla when the
+               fp8 cache layout is requested.
+
+    Returns:
+        MLA KV cache tensor
+    """
+    batch_size = len(kv_c_contexts)
+    seq_lens = common_attn_metadata.seq_lens_cpu
+    query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
+    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    block_table = common_attn_metadata.block_table_tensor
+    slot_mapping = common_attn_metadata.slot_mapping
+
+    cache_dtype_str = kv_cache_dtype or "auto"
+    use_fp8_ds_mla = cache_dtype_str == "fp8_ds_mla"
+    scale_tensor = scale if isinstance(scale, torch.Tensor) else torch.tensor(scale, dtype=torch.float32, device=device)
+    scale_tensor = scale_tensor.to(device=device, dtype=torch.float32)
+
+    if use_fp8_ds_mla:
+        if not kv_c_contexts:
+            raise ValueError("kv_c_contexts cannot be empty when using fp8_ds_mla cache dtype")
+        kv_lora_rank = kv_c_contexts[0].shape[-1]
+        rope_dim = k_pe_contexts[0].shape[-1]
+        entry_size = kv_lora_rank + 4 * 4 + 2 * rope_dim
+        kv_cache = torch.zeros(num_blocks, block_size, entry_size, dtype=torch.uint8, device=device)
+    else:
+        # Create MLA KV cache: (num_blocks, block_size, head_size)
+        kv_cache = torch.empty(num_blocks, block_size, head_size, dtype=dtype, device=device)
+
+    # Populate the cache with the context tokens
+    # Start from block_id=1 since block_id=0 is considered the null block
+    start_block_idx = 1
+    for i in range(batch_size):
+        kv_c_context, k_pe_context = kv_c_contexts[i], k_pe_contexts[i]
+        context_len = kv_c_context.shape[0]
+        if context_len == 0:
+            start_block_idx += cdiv(int(seq_lens[i]), block_size)
+            continue
+
+        start = start_block_idx * block_size
+
+        # This is the production MLAAttentionImpl cache writer. Standard FP8
+        # cache storage is uint8, so direct tensor assignment would perform an
+        # integer cast instead of writing encoded FP8 bytes.
+        slots = torch.arange(context_len, device=device, dtype=torch.long) + start
+        ops.concat_and_cache_mla(
+            kv_c_context,
+            k_pe_context.squeeze(1),
+            kv_cache,
+            slots,
+            kv_cache_dtype=cache_dtype_str,
+            scale=scale_tensor,
+        )
+
+        # Stay block aligned and allocate enough blocks for the new tokens
+        start_block_idx += cdiv(int(seq_lens[i]), block_size)
+
+    blocks_end = start_block_idx
+
+    # Permute the context blocks (excluding block 0 which is null). Avoid an
+    # identity advanced-index copy when the caller requests sequential blocks;
+    # that copy can temporarily duplicate tens of GiB for long MLA sequences.
+    if randomize_blocks:
+        perm = torch.randperm(blocks_end - 1) + 1  # Random permutation starting from block 1
+        inv_perm = torch.zeros(blocks_end, dtype=torch.long, device=device)
+        inv_perm[1:] = torch.argsort(perm) + 1  # Add 1 to account for starting from block 1
+        kv_cache[1:blocks_end, ...] = kv_cache[perm, ...]
+    else:
+        inv_perm = torch.arange(blocks_end, dtype=torch.long, device=device)
+
+    # Construct the right block table
+    # Start from block_id=1 since block_id=0 is considered the null block
+    start_block_idx = 1
+    for i in range(batch_size):
+        num_blocks_for_seq = cdiv(int(seq_lens[i]), block_size)
+        start = start_block_idx
+        end = start + num_blocks_for_seq
+        block_table[i, :num_blocks_for_seq] = inv_perm[start:end]
+        start_block_idx += num_blocks_for_seq
+
+        # Create a realistic slot mapping that corresponds to the block table
+    for i in range(batch_size):
+        token_offsets = torch.arange(int(query_lens[i])) + int(context_lens[i])
+        block_indices = token_offsets // block_size
+        token_inter_block_offsets = token_offsets % block_size
+        start = common_attn_metadata.query_start_loc_cpu[i]
+        end = common_attn_metadata.query_start_loc_cpu[i + 1]
+        slot_mapping[start:end] = block_table[i, block_indices] * block_size + token_inter_block_offsets.to(device)
+
+    return kv_cache
+
+
+def create_kv_cache_and_block_mappings(
+    block_size: int,
+    num_kv_heads: int,
+    head_size: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    num_blocks: int,
+    common_attn_metadata: CommonAttentionMetadata,
+    randomize_blocks: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Create an empty KV cache and its history/query block mappings.
+
+    Args:
+        block_size: Size of each block
+        num_kv_heads: Number of KV heads
+        head_size: Size of each head
+        dtype: Data type for the cache
+        device: Device to create the cache on
+        num_blocks: Total number of blocks in the cache
+        common_attn_metadata: Attention metadata whose mappings are populated
+        randomize_blocks: Whether to randomly permute blocks
+                          or use sequential order
+
+    Returns:
+        Tuple of the empty KV cache and flattened history slot mapping
+    """
+    batch_size = common_attn_metadata.num_reqs
+    seq_lens = common_attn_metadata.seq_lens_cpu
+    query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
+    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    block_table = common_attn_metadata.block_table_tensor
+    slot_mapping = common_attn_metadata.slot_mapping
+
+    # Create KV cache
+    kv_cache = torch.empty(2, num_blocks, block_size, num_kv_heads, head_size, dtype=dtype, device=device)
+
+    # Reserve enough block IDs for each full runtime sequence. Block 0 is the
+    # null block, so usable IDs start at 1.
+    start_block_idx = 1
+    for i in range(batch_size):
+        start_block_idx += cdiv(int(seq_lens[i]), block_size)
+
+    blocks_end = start_block_idx
+
+    # Randomize physical block IDs without copying the still-empty cache.
+    if randomize_blocks:
+        perm = torch.randperm(blocks_end - 1, device=device) + 1
+        inv_perm = torch.zeros(blocks_end, dtype=torch.long, device=device)
+        inv_perm[1:] = torch.argsort(perm) + 1
+    else:
+        inv_perm = torch.arange(blocks_end, dtype=torch.long, device=device)
+
+    # Construct the right block table
+    # Start from block_id=1 since block_id=0 is considered the null block
+    start_block_idx = 1
+    for i in range(batch_size):
+        num_blocks_for_seq = cdiv(int(seq_lens[i]), block_size)
+        start = start_block_idx
+        end = start + num_blocks_for_seq
+        block_table[i, :num_blocks_for_seq] = inv_perm[start:end]
+        start_block_idx += num_blocks_for_seq
+
+    # Create realistic query and history slot mappings from the same table.
+    history_slot_mappings = []
+    for i in range(batch_size):
+        token_offsets = torch.arange(int(query_lens[i]), dtype=torch.long, device=device) + int(context_lens[i])
+        block_indices = token_offsets // block_size
+        token_inter_block_offsets = token_offsets % block_size
+        start = common_attn_metadata.query_start_loc_cpu[i]
+        end = common_attn_metadata.query_start_loc_cpu[i + 1]
+        query_block_ids = block_table[i, block_indices].to(torch.long)
+        slot_mapping[start:end] = query_block_ids * block_size + token_inter_block_offsets
+
+        context_len = int(context_lens[i])
+        if context_len > 0:
+            history_offsets = torch.arange(context_len, dtype=torch.long, device=device)
+            history_block_ids = block_table[i, history_offsets // block_size].to(torch.long)
+            history_slot_mappings.append(history_block_ids * block_size + history_offsets % block_size)
+
+    if history_slot_mappings:
+        history_slot_mapping = torch.cat(history_slot_mappings)
+    else:
+        history_slot_mapping = torch.empty(0, dtype=torch.long, device=device)
+
+    return kv_cache, history_slot_mapping
+
+
+@functools.cache  # only run once per process
+def enable_engine_fused_ops() -> None:
+    """Route IR ops to the fused CUDA kernels a serving worker would run.
+
+    Module-level collectors execute vLLM modeling code eagerly, and no IR-op
+    priority is ever installed outside a real worker, so ``rms_norm`` /
+    ``fused_add_rms_norm`` dispatch to their *native* implementations — an
+    eager ``mean/pow/rsqrt/mul`` kernel chain costing tens of µs per call
+    ("Priority not set for op rms_norm, using native implementation" in every
+    collector log). A serving engine never pays this: under its default
+    compilation config inductor fuses the native implementation into single
+    triton kernels (torch.compile), and in eager/piecewise regions it runs
+    the ``vllm_c`` CUDA kernels. The unfused chain inflates small/medium-batch
+    module latencies by ~25-35% (measured on B200, MLA generation module,
+    heads64/kv8192/fp8: bs1 109.5→78.6 µs, bs16 143.7→95.2 µs, bs64
+    198.6→147.9 µs after this change, matching in-engine per-layer cost
+    within ~10%; see ai-dynamo/aiconfigurator#1396).
+
+    Why not ``torch.compile`` + CUDA graph instead? Outside a serving worker
+    every norm path — including ``forward_native`` — routes through the IR
+    torch custom op (``_ENABLE_TORCH_WRAP = True`` module default,
+    vllm/ir/op.py:50 @0.22.0), which is opaque to dynamo/inductor: compiling
+    through it fuses nothing (B200/vLLM 0.22 glue microbench, CUDA-graph
+    replay with kernel listing: native-eager 74.1 us, compile-through-wrap
+    64.6 us with the aten mean/pow/rsqrt chain intact; vllm_c-eager 21.0 us).
+    The engine escapes this two ways: worker init applies
+    ``ir_enable_torch_wrap`` (v1/worker/worker_base.py:94), and under
+    VLLM_COMPILE+inductor the wrapped op nodes are fused by vLLM's custom
+    lowerings into neighboring GEMMs (serving-trace kernel
+    ``triton_red_fused_..._fused_qkv_a_proj_rms_norm``); wrap-off is the
+    documented way to let dynamo trace the impl inline
+    (config/compilation.py:492-498 @0.22.0). Replicating that here —
+    ``vllm.ir.set_default_torch_wrap(False)`` + ``torch.compile`` — does
+    fuse fully (glue 8.0 us, module 87.7 us/layer) but OVERSHOOTS the
+    engine, whose fused glue is not free (norm+quant fused kernels, paged
+    rope): at the bs16 reference point the engine costs 107 us/layer,
+    vllm_c-eager 95-97 us (-10%), wrap-off-compile 87.7 us (-18%), the
+    native chain +37%. vllm_c-eager is therefore the closer surrogate and
+    needs no per-shape compile during sweeps. Installs it as the
+    process-lifetime default: ``IrOp.set_priority`` is a scoped context
+    manager, ``set_default`` is the permanent API (vllm/ir/op.py @0.24.0).
+
+    Raises on vLLM builds without the IR-op registry or the ``vllm_c``
+    provider — a silent fallback to the native chain would benchmark a kernel
+    path serving never runs and poison the database.
+    """
+    # Imports stay function-scoped on purpose: kernel-level collectors that
+    # never touch this helper must keep importing utils on vLLM builds
+    # without the IR-op registry; module-level benchmarks fail HERE, loudly.
+    import vllm.ir.ops as ir_ops
+    import vllm.kernels.vllm_c  # noqa: F401 — import registers the 'vllm_c' impls
+
+    ir_ops.rms_norm.set_default(["vllm_c"])
+    ir_ops.fused_add_rms_norm.set_default(["vllm_c"])
+    # Assert the provider that will actually run (collector dispatch rule:
+    # persisted rows must describe the invocation that executed). set_default
+    # validates support, but verify the resolved priority explicitly so a
+    # future dispatch change cannot silently fall back to the native chain.
+    for op in (ir_ops.rms_norm, ir_ops.fused_add_rms_norm):
+        selected = [impl.provider for impl in op._priority_impls]
+        if selected[:1] != ["vllm_c"]:
+            raise RuntimeError(f"fused-op dispatch for {op.name} resolved to {selected}, expected vllm_c first")
+
+
+@functools.cache  # only run once per process
+def setup_distributed(device):
+    # Each process needs to use a different port.
+    device_idx = torch.device(device).index
+    port = 8889 + device_idx
+    print(device, device_idx, port)
+
+    os.environ["RANK"] = "0"
+    os.environ["WORLD_SIZE"] = "1"
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = str(port)
+    init_distributed_environment()
+    with set_current_vllm_config(VllmConfig()):
+        ensure_model_parallel_initialized(1, 1)
+
+
+def with_exit_stack(func):
+    """
+    Decorator that creates an ExitStack, passes it as the first argument
+    to the function, and closes it when the function returns.
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # The wrapper handles the safety indentation for you
+        with ExitStack() as stack:
+            # We inject 'stack' as the first argument to your function
+            return func(stack, *args, **kwargs)
+
+    return wrapper

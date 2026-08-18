@@ -1,0 +1,136 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Declarative registry mapping ops to collector modules.
+
+TRT-LLM collectors target the current manifest runtime. Each module file still
+declares its precise ``__compat__`` constraint, which is validated at runtime.
+"""
+
+from collector.registry_types import OpEntry, PerfFile
+
+REGISTRY: list[OpEntry] = [
+    OpEntry(
+        op="gemm",
+        module="collector.trtllm.collect_gemm",
+        get_func="get_gemm_test_cases",
+        run_func="run_gemm",
+        perf_filename=PerfFile.GEMM,
+    ),
+    OpEntry(
+        op="compute_scale",
+        module="collector.trtllm.collect_computescale",
+        get_func="get_computescale_test_cases",
+        run_func="run_computescale",
+        perf_filename=PerfFile.COMPUTESCALE,
+    ),
+    OpEntry(
+        op="mla_context",
+        module="collector.trtllm.collect_mla",
+        get_func="get_context_mla_test_cases",
+        run_func="run_mla",
+        perf_filename=PerfFile.CONTEXT_MLA,
+    ),
+    OpEntry(
+        op="mla_generation",
+        module="collector.trtllm.collect_mla",
+        get_func="get_generation_mla_test_cases",
+        run_func="run_mla",
+        perf_filename=PerfFile.GENERATION_MLA,
+    ),
+    OpEntry(
+        op="attention_context",
+        module="collector.trtllm.collect_attn",
+        get_func="get_context_attention_test_cases",
+        run_func="run_attention_torch",
+        perf_filename=PerfFile.CONTEXT_ATTENTION,
+    ),
+    OpEntry(
+        op="attention_generation",
+        module="collector.trtllm.collect_attn",
+        get_func="get_generation_attention_test_cases",
+        run_func="run_attention_torch",
+        perf_filename=PerfFile.GENERATION_ATTENTION,
+    ),
+    OpEntry(
+        op="encoder_attention",
+        module="collector.trtllm.collect_attn_encoder",
+        get_func="get_encoder_attention_test_cases",
+        run_func="run_encoder_attention_torch",
+        perf_filename=PerfFile.ENCODER_ATTENTION,
+    ),
+    OpEntry(
+        op="mla_bmm_gen_pre",
+        module="collector.trtllm.collect_mla_bmm",
+        get_func="get_mla_gen_pre_test_cases",
+        run_func="run_mla_gen_pre",
+        perf_filename=PerfFile.MLA_BMM,
+    ),
+    OpEntry(
+        op="mla_bmm_gen_post",
+        module="collector.trtllm.collect_mla_bmm",
+        get_func="get_mla_gen_post_test_cases",
+        run_func="run_mla_gen_post",
+        perf_filename=PerfFile.MLA_BMM,
+    ),
+    OpEntry(
+        op="moe",
+        module="collector.trtllm.collect_moe",
+        get_func="get_moe_test_cases",
+        run_func="run_moe_torch",
+        perf_filename=PerfFile.MOE,
+    ),
+    OpEntry(
+        op="mamba2",
+        module="collector.trtllm.collect_mamba2",
+        get_func="get_mamba2_test_cases",
+        run_func="run_mamba2_torch",
+        perf_filename=PerfFile.MAMBA2,
+    ),
+    OpEntry(
+        op="gdn",
+        module="collector.trtllm.collect_gdn",
+        get_func="get_gdn_test_cases",
+        run_func="run_gdn_torch",
+        perf_filename=PerfFile.GDN,
+    ),
+    OpEntry(
+        op="mla_context_module",
+        module="collector.trtllm.collect_mla_module",
+        get_func="get_mla_context_module_test_cases",
+        run_func="run_mla_module_worker",
+        perf_filename=PerfFile.MLA_CONTEXT_MODULE,
+        # fp8-KV MLA module combos are hardware-validated on SM90/100/103/120
+        # (see collect_mla_module._get_precision_combos); SM121 has never run
+        # them on hardware — cases are queued there and this marker records
+        # the maturity gap (layer_permissions.md registry markers).
+        unverified_sms=(121,),
+    ),
+    OpEntry(
+        op="mla_generation_module",
+        module="collector.trtllm.collect_mla_module",
+        get_func="get_mla_generation_module_test_cases",
+        run_func="run_mla_module_worker",
+        perf_filename=PerfFile.MLA_GENERATION_MODULE,
+        # fp8-KV MLA module combos are hardware-validated on SM90/100/103/120
+        # (see collect_mla_module._get_precision_combos); SM121 has never run
+        # them on hardware — cases are queued there and this marker records
+        # the maturity gap (layer_permissions.md registry markers).
+        unverified_sms=(121,),
+    ),
+    OpEntry(
+        op="dsa_context_module",
+        module="collector.trtllm.collect_mla_module",
+        get_func="get_dsa_context_module_test_cases",
+        run_func="run_mla_module_worker",
+        perf_filename=PerfFile.DSA_CONTEXT_MODULE,
+    ),
+    OpEntry(
+        op="dsa_generation_module",
+        module="collector.trtllm.collect_mla_module",
+        get_func="get_dsa_generation_module_test_cases",
+        run_func="run_mla_module_worker",
+        perf_filename=PerfFile.DSA_GENERATION_MODULE,
+    ),
+]

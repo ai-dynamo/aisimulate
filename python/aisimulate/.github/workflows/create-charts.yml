@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Create Sanity Check Charts
+
+# Runs on every PR (including forks) and produces an artifact bundle
+# containing the rendered charts plus the comment body. A separate
+# workflow (comment-charts.yml) consumes the artifact via workflow_run
+# and posts the PR comment with a token that has pull-requests:write —
+# something this workflow cannot have when triggered by a fork PR.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'aic-core/src/aiconfigurator_core/systems/**'
+      - '!aic-core/src/aiconfigurator_core/systems/data/b60/**'
+
+jobs:
+  create-charts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # Need full history to detect changes
+          lfs: true
+
+      - name: Git LFS Pull
+        run: git lfs pull
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./aic-core
+          pip install -e ".[dev]"
+          # Ensure import_ipynb is available
+          pip install import-ipynb
+
+      - name: Create charts
+        id: create-charts
+        run: |
+          BASE_REF="${{ github.event.pull_request.base.ref }}"
+          python tools/sanity_check/create_charts.py --base-ref origin/${BASE_REF} --head-ref HEAD --output-dir charts_output --output-md-file comment.md
+        continue-on-error: true
+
+      - name: Save PR number for downstream comment workflow
+        if: steps.create-charts.outcome == 'success'
+        run: echo "${{ github.event.pull_request.number }}" > pr-number.txt
+
+      - name: Upload chart artifact bundle
+        if: steps.create-charts.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sanity-check-charts
+          path: |
+            charts_output/*.png
+            comment.md
+            pr-number.txt
+          retention-days: 30

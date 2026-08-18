@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: DeepseekV32ForCausalLM
+model_path: deepseek-ai/DeepSeek-V3.2
+model_paths:
+  - deepseek-ai/DeepSeek-V3.2
+  - nvidia/DeepSeek-V3.2-NVFP4
+include_base: true
+base_ops:
+  - gemm
+description: >
+  DeepSeek-V3.2 DSA model-centric collection plan. DSA module data is
+  framework-specific; its shared expert shape reuses the DeepSeek-V3 physical
+  MoE profile and this plan adds only the common GEMM recipe.
+
+model_case_values:
+  mla_module:
+    - model_path: deepseek-ai/DeepSeek-V3.2
+      attention_type: dsa
+      native_num_heads: 128
+
+all_frameworks_op_cases:
+  moe:
+    cases: all
+
+framework_specific_op_cases:
+  trtllm:
+    dsa_context_module:
+      cases: all
+    dsa_generation_module:
+      cases: all
+    moe_ep:
+      cases: all
+  vllm:
+    dsa_context_module:
+      cases: all
+    dsa_generation_module:
+      cases: all
+  sglang:
+    dsa_context_module:
+      cases: all
+    dsa_generation_module:
+      cases: all

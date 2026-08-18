@@ -1,0 +1,348 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: DeepseekV4ForCausalLM
+model_path: sgl-project/DeepSeek-V4-Flash-FP8
+model_paths:
+  - deepseek-ai/DeepSeek-V4-Flash
+  - deepseek-ai/DeepSeek-V4-Pro
+  - sgl-project/DeepSeek-V4-Flash-FP8
+  - sgl-project/DeepSeek-V4-Pro-FP8
+include_base: true
+base_ops:
+  - gemm
+description: >
+  DeepSeek-V4 model-centric collection plan. DSV4 attention and sparse kernel
+  cases use the upstream DeepSeek-V4 op names and can target any listed V4
+  model path; shared mHC and MoE cases cover the V4 family.
+
+model_case_values:
+  moe:
+    - model_path: deepseek-ai/DeepSeek-V4-Flash
+      hidden_size: 4096
+      inter_size: 2048
+      topk: 6
+      num_experts: 256
+      sglang_moe_swiglu_limit: 10.0
+      sglang_moe_scoring_func: sqrtsoftplus
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 1.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_backends:
+        w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4}
+      wideep: true
+      framework_quantization:
+        sglang:
+          allowed_modes:
+            - w4a8_mxfp4_mxfp8
+        trtllm:
+          allowed_modes:
+            - w4a8_mxfp4_mxfp8
+        vllm:
+          # Native-FP4 serving path: DeepseekV4FP8Config -> Mxfp4MoEMethod ->
+          # trtllm-gen MXFP4xMXFP8 on the SM100 family (see the base moe_vllm
+          # w4a8_mxfp4_mxfp8 entry for the dispatch citations). The label is
+          # SM-gated there (min_sm 100 / max_sm_exclusive 110), so SM90 —
+          # where vLLM 0.24.0 serves this artifact as Marlin W4A16 — never
+          # collects under it; Hopper stays an observed gap in the failure
+          # log rather than a mislabeled row.
+          allowed_modes:
+            - w4a8_mxfp4_mxfp8
+    - model_path: sgl-project/DeepSeek-V4-Flash-FP8
+      hidden_size: 4096
+      inter_size: 2048
+      topk: 6
+      num_experts: 256
+      sglang_moe_swiglu_limit: 10.0
+      sglang_moe_scoring_func: sqrtsoftplus
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 1.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      wideep: true
+      framework_quantization:
+        sglang:
+          allowed_modes:
+            - fp8_block
+        trtllm:
+          allowed_modes:
+            - fp8_block
+        vllm:
+          # The artifact config omits expert_dtype and vLLM defaults it to
+          # FP4, but vLLM 0.24's DeepSeek-V4 quant config has a native
+          # fp8-expert branch — serving works with the documented override
+          # `--hf-overrides '{"expert_dtype": "fp8"}'` (models/deepseek_v4/
+          # quant_config.py @0.24.0). The benchmark constructs Fp8Config from
+          # the label with synthetic weights, matching that serving path.
+          allowed_modes:
+            - fp8_block
+    - model_path: deepseek-ai/DeepSeek-V4-Pro
+      hidden_size: 7168
+      inter_size: 3072
+      topk: 6
+      num_experts: 384
+      sglang_moe_swiglu_limit: 10.0
+      sglang_moe_scoring_func: sqrtsoftplus
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_backends:
+        w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4}
+      wideep: true
+      framework_quantization:
+        sglang:
+          # Owner decision (2026-07-05): do not collect the native-FP4 Pro
+          # artifact as w4a16_mxfp4. The shared SM90 w4a16 backend map is
+          # triton (GPT-OSS truth), under which SGLang 0.5.14 constructs plain
+          # Fp8MoEMethod for is_fp4_experts and every case fails closed;
+          # SM100/103 production scheduling uses the w4a8 TRTLLM-gen path
+          # kept below. To restore support, re-add w4a16_mxfp4 here and pin
+          # sglang_moe_backends w4a16_mxfp4 {90: flashinfer_mxfp4} (the native
+          # cutlass mixed-input path, FlashInfer #3084).
+          allowed_modes:
+            - w4a8_mxfp4_mxfp8
+        trtllm:
+          allowed_modes:
+            - w4a8_mxfp4_mxfp8
+        vllm:
+          # See the native Flash note above (same SM100-gated trtllm-gen path).
+          allowed_modes:
+            - w4a8_mxfp4_mxfp8
+    - model_path: sgl-project/DeepSeek-V4-Pro-FP8
+      hidden_size: 7168
+      inter_size: 3072
+      topk: 6
+      num_experts: 384
+      sglang_moe_swiglu_limit: 10.0
+      sglang_moe_scoring_func: sqrtsoftplus
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      wideep: true
+      framework_quantization:
+        sglang:
+          allowed_modes:
+            - fp8_block
+        trtllm:
+          allowed_modes:
+            - fp8_block
+        vllm:
+          # See the Flash converted-artifact note above (same expert_dtype
+          # omission; same `--hf-overrides` serving path).
+          allowed_modes:
+            - fp8_block
+  mhc:
+    - model_paths:
+        - deepseek-ai/DeepSeek-V4-Flash
+        - sgl-project/DeepSeek-V4-Flash-FP8
+      hidden_size: 4096
+      hc_mult: 4
+    - model_paths:
+        - deepseek-ai/DeepSeek-V4-Pro
+        - sgl-project/DeepSeek-V4-Pro-FP8
+      hidden_size: 7168
+      hc_mult: 4
+  dsv4:
+    # Module tables key [native][local] since #1423/#1431, so full/raw plans
+    # collect Flash and Pro together (distinct native head counts cannot
+    # collide). Artifacts stay uniform (sgl-project FP8 builds, matching every
+    # shipped module table) because the persisted module key carries no
+    # artifact dimension — one artifact per geometry per plan; Blackwell
+    # platform-native collection uses targeted deepseek-ai/* runs. The first
+    # entry is the canonical artifact (manual-CLI default model).
+    # Default calib collection stays on the canonical artifact via
+    # calib_model_paths (cost policy); targeted runs may collect any supported
+    # model's calibration — consumers key the DELTA per native geometry (#1460).
+    default_model_paths:
+      - sgl-project/DeepSeek-V4-Flash-FP8
+      - sgl-project/DeepSeek-V4-Pro-FP8
+    calib_model_paths:
+      - sgl-project/DeepSeek-V4-Flash-FP8
+    supported_model_paths:
+      - deepseek-ai/DeepSeek-V4-Flash
+      - deepseek-ai/DeepSeek-V4-Pro
+      - sgl-project/DeepSeek-V4-Flash-FP8
+      - sgl-project/DeepSeek-V4-Pro-FP8
+    attention_kinds:
+      - csa
+      - hca
+    module_batch_sizes:
+      - 1
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+    module_sequence_lengths:
+      - 1
+      - 4
+      - 8
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+      - 1536
+      - 2048
+      - 3072
+      - 4096
+      - 6144
+      - 8192
+      - 10240
+      - 12288
+      - 16384
+      - 32768
+      - 65536
+      - 131072
+      - 262144
+      - 524288
+      - 1048575
+    module_past_kv_lengths:
+      - 0
+      - 1
+      - 4
+      - 8
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+      - 1536
+      - 2048
+      - 3072
+      - 4096
+      - 6144
+      - 8192
+      - 10000
+      - 10240
+      - 12288
+      - 16384
+      - 32768
+      - 65536
+      - 131072
+      - 262144
+      - 524288
+      - 1000000
+      - 1048575
+    module_tp_sizes:
+      - 1
+      - 2
+      - 4
+      - 8
+    sparse_batch_sizes:
+      - 1
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+    sparse_input_lengths:
+      - 1
+      - 4
+      - 8
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+      - 1536
+      - 2048
+      - 3072
+      - 4096
+      - 6144
+      - 8192
+    sparse_past_kv_lengths:
+      - 0
+      - 1
+      - 4
+      - 8
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+      - 1536
+      - 2048
+      - 3072
+      - 4096
+      - 6144
+      - 8192
+      - 10240
+      - 12288
+      - 16384
+      - 32768
+      - 65536
+      - 131072
+      - 262144
+      - 524288
+      - 1048575
+    sparse_chunk_prefill_size: 8192
+    sparse_max_full_sequence_length: 1048576
+    sparse_tp_sizes:
+      hca_attn:
+        - 1
+      paged_mqa_logits:
+        - 1
+
+all_frameworks_op_cases:
+  moe:
+    cases: all
+
+framework_specific_op_cases:
+  sglang:
+    dsv4_csa_context_module:
+      cases: all
+    dsv4_hca_context_module:
+      cases: all
+    dsv4_csa_generation_module:
+      cases: all
+    dsv4_hca_generation_module:
+      cases: all
+    # topK DELTA calibration: one case per model. The worker reads the
+    # already-collected dsv4_csa_*_module_perf.txt in the output dir and benches
+    # exactly those (prefix, isl, batch_size) shapes, so it must run AFTER the
+    # CSA module ops (guaranteed by registry order: topk_calib is registered
+    # after the csa module entries).
+    dsv4_csa_topk_calib:
+      cases: all
+    # Standalone paged_mqa/hca_attn/csa_attn rows are experimental-only: the
+    # production SDK has no query call-site for them. Keep their registry
+    # entries available for explicit research runs, but do not schedule them in
+    # the default model plan.
+    mhc_module:
+      cases: all
+  vllm:
+    # These four full-module paths are consumed by the production DSV4 model.
+    # Standalone sparse kernels and mHC remain registry-only because their
+    # current consumer contract/schedule does not represent vLLM 0.24.0's
+    # fused TileLang post->pre+norm and boundary/head calls.
+    dsv4_csa_context_module:
+      cases: all
+    dsv4_hca_context_module:
+      cases: all
+    dsv4_csa_generation_module:
+      cases: all
+    dsv4_hca_generation_module:
+      cases: all

@@ -1,0 +1,653 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Naive generator parameter builder for quick configuration generation.
+
+This module provides utilities for building generator parameters using
+the smallest parallelization that fits the model in memory.
+
+For dense models, this is pure TP (tensor parallelism).  For MoE models,
+the parallelization strategy depends on the model architecture and the
+optimization objective:
+
+- **Dense** (no MoE): TP
+- **MLA + MoE + throughput** (DeepSeek-V3 family): DEP
+- **All other sparse** (MLA + MoE + latency, GQA + MoE): TEP
+"""
+
+import logging
+import os
+import re
+from typing import Any
+
+import yaml
+
+from aiconfigurator.sdk import perf_database
+from aiconfigurator.sdk.utils import (
+    _load_model_config_from_model_path,
+    _parse_hf_config_json,
+    get_model_config_from_model_path,
+)
+
+logger = logging.getLogger(__name__)
+
+_RFC1123_MAX_LEN = 63
+
+# Engine-limit keys stripped by ``build_naive_generator_params`` when the
+# caller asks to preserve the target image's own resolved limits
+# (``preserve_engine_limits=True``). Keep in sync with the rule plugins'
+# ``preserve_engine_limits`` guard.
+_ENGINE_LIMIT_KEYS = (
+    "max_batch_size",
+    "max_num_tokens",
+    "max_seq_len",
+    "tokens_per_block",
+    "gpu_memory_utilization",
+    "compilation_config",
+    "cuda_graph_batch_sizes",
+)
+
+# Default fallbacks
+_DEFAULT_GPUS_PER_NODE = 8
+_DEFAULT_VRAM_BYTES = 141 * 1024 * 1024 * 1024  # 141 GiB (H200)
+_MEMORY_MULTIPLIER = 1.5  # Require 1.5x model weight to fit in VRAM
+_BYTES_PER_PARAM = 2  # FP16/BF16
+
+# MoE architecture sets — must stay in sync with
+# dynamo profiler's model_info.py (canonical source).
+_MLA_MOE_ARCHITECTURES = {"DeepseekV3ForCausalLM", "DeepseekV32ForCausalLM"}
+_MOE_ARCHITECTURES = _MLA_MOE_ARCHITECTURES | {
+    "Qwen3MoeForCausalLM",
+}
+
+
+def _resolve_parallelization(
+    architecture: str,
+    is_moe: bool,
+    num_gpus: int,
+    optimization_type: str | None = None,
+) -> dict[str, int]:
+    """Return parallelization params for a given model architecture.
+
+    The returned dict is suitable for merging into a worker params dict
+    and contains the keys consumed by the generator (``tensor_parallel_size``,
+    ``pipeline_parallel_size``, ``data_parallel_size``,
+    ``moe_tensor_parallel_size``, ``moe_expert_parallel_size``).
+
+    Rules (same for agg and disagg):
+    - **Dense**: TP = num_gpus
+    - **MLA + MoE + throughput** (DeepSeek-V3): DEP = num_gpus
+    - **All other sparse**: TEP = num_gpus
+    """
+    if not is_moe:
+        return {
+            "tensor_parallel_size": num_gpus,
+            "pipeline_parallel_size": 1,
+            "data_parallel_size": 1,
+            "moe_tensor_parallel_size": 1,
+            "moe_expert_parallel_size": 1,
+        }
+
+    # MLA + MoE + throughput → DEP
+    if architecture in _MLA_MOE_ARCHITECTURES and optimization_type == "throughput":
+        return {
+            "tensor_parallel_size": 1,
+            "pipeline_parallel_size": 1,
+            "data_parallel_size": num_gpus,
+            "moe_tensor_parallel_size": 1,
+            "moe_expert_parallel_size": num_gpus,
+        }
+
+    # All other sparse → TEP
+    return {
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+        "data_parallel_size": 1,
+        "moe_tensor_parallel_size": num_gpus,
+        "moe_expert_parallel_size": 1,
+    }
+
+
+def _sanitize_rfc1123(name: str) -> str:
+    """Sanitize a string to be a valid RFC 1123 subdomain label prefix.
+
+    Converts ``"Qwen/Qwen3-32B"`` → ``"qwen-qwen3-32b"``, etc.
+    Falls back to ``"dynamo"`` when the input is empty or None.
+    """
+    if not name:
+        return "dynamo"
+    sanitized = name.lower()
+    sanitized = re.sub(r"[^a-z0-9\-.]", "-", sanitized)
+    sanitized = re.sub(r"-{2,}", "-", sanitized)
+    sanitized = sanitized.strip("-.")
+    sanitized = sanitized[:_RFC1123_MAX_LEN].rstrip("-.")
+    return sanitized or "dynamo"
+
+
+def _deep_merge_dicts(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _section_override(overrides: dict[str, Any] | None, section: str) -> dict[str, Any]:
+    value = (overrides or {}).get(section)
+    return value if isinstance(value, dict) else {}
+
+
+def _role_override(overrides: dict[str, Any], role: str) -> dict[str, Any]:
+    value = overrides.get(role)
+    return value if isinstance(value, dict) else {}
+
+
+def _drop_empty_worker_roles(params: dict[str, Any]) -> None:
+    worker_params = params.get("params")
+    if isinstance(worker_params, dict):
+        params["params"] = {role: values for role, values in worker_params.items() if values}
+
+
+def _get_system_config(system_name: str) -> dict[str, Any]:
+    """
+    Read system configuration from YAML config file.
+
+    Args:
+        system_name: Name of the system (e.g., 'h200_sxm', 'gb200').
+
+    Returns:
+        Dictionary with 'gpus_per_node' and 'vram_per_gpu' keys.
+    """
+    result = {
+        "gpus_per_node": _DEFAULT_GPUS_PER_NODE,
+        "vram_per_gpu": _DEFAULT_VRAM_BYTES,
+    }
+
+    try:
+        for systems_root in perf_database.get_systems_paths():
+            system_yaml_path = os.path.join(systems_root, f"{system_name}.yaml")
+            if not os.path.isfile(system_yaml_path):
+                continue
+            with open(system_yaml_path) as f:
+                system_spec = yaml.safe_load(f)
+            result["gpus_per_node"] = int(system_spec.get("node", {}).get("num_gpus_per_node", _DEFAULT_GPUS_PER_NODE))
+            result["vram_per_gpu"] = int(system_spec.get("gpu", {}).get("mem_capacity", _DEFAULT_VRAM_BYTES))
+            break
+    except Exception as e:
+        logger.warning(f"Could not read system config for {system_name}: {e}")
+
+    return result
+
+
+def _estimate_model_weight_bytes(model_path: str, *, model_metadata: dict[str, Any] | None = None) -> int:
+    """
+    Estimate model weight size in bytes based on model config.
+
+    Formula based on DPP (Dynamo Performance Profiler):
+    - Embedding: vocab_size * hidden_size
+    - Per layer:
+      - Attention: 4 * hidden_size^2 (Q, K, V, O projections)
+      - FFN: 3 * hidden_size * inter_size (gate, up, down)
+      - Layer norms: ~4 * hidden_size
+    - For MoE: FFN * num_experts + router
+
+    Args:
+        model_path: HuggingFace model path or local path.
+        model_metadata: Optional dictionary populated with the detected
+            ``architecture`` and ``is_moe`` values from the same config used
+            for sizing.
+
+    Returns:
+        Estimated model weight size in bytes.
+
+    Raises:
+        RuntimeError: If the model config cannot be fetched (e.g. model not found
+            on HuggingFace). Callers must not proceed with guessed parameters.
+    """
+    try:
+        raw_config = _load_model_config_from_model_path(model_path)
+    except Exception as e:
+        logger.exception("Could not estimate model size for %s.", model_path)
+        raise RuntimeError(f"Model {model_path!r} not found or config unavailable") from e
+
+    try:
+        config = _parse_hf_config_json(raw_config)
+        weight_bytes = _estimate_weight_bytes_from_config(config, model_path)
+
+        if model_metadata is not None:
+            num_experts = config["num_experts"]
+            model_metadata.update(
+                architecture=config.get("architecture", ""),
+                is_moe=bool(num_experts and num_experts > 1),
+            )
+
+        return weight_bytes
+
+    except ValueError as e:
+        # The normalized AIC parser rejects architectures that AIC cannot model,
+        # but those are exactly the models that use naive config generation.
+        # Reuse the architecture-agnostic raw-config estimator so sizing remains
+        # available without weakening the native AIC support boundary.
+        from aiconfigurator.sdk.memory import NaiveKVCacheEstimator
+
+        logger.info(
+            "Normalized model parsing failed for %s; using raw config for naive sizing.",
+            model_path,
+        )
+        logger.debug("Normalized parser error for %s: %s", model_path, e)
+        try:
+            estimator = NaiveKVCacheEstimator.from_hf_config(
+                raw_config,
+                tp_size=1,
+                pp_size=1,
+            )
+            weight_bytes = estimator.weight_bytes()
+            if weight_bytes is None:
+                raise ValueError(
+                    "insufficient raw model metadata; expected hidden/layer/vocab "
+                    "dimensions and FFN geometry (canonical or Hugging Face aliases)"
+                )
+            logger.info(
+                "Estimated model weight size from raw config for %s: %.2f GiB",
+                model_path,
+                weight_bytes / (1024**3),
+            )
+            if model_metadata is not None:
+                architectures = raw_config.get("architectures")
+                architecture = architectures[0] if isinstance(architectures, list) and architectures else ""
+                num_experts = estimator.geometry.get("num_experts") or 0
+                model_metadata.update(
+                    architecture=architecture,
+                    is_moe=bool(num_experts and num_experts > 1),
+                )
+            return weight_bytes
+        except Exception as fallback_error:
+            logger.exception(
+                "Could not estimate model size for %s from raw config.",
+                model_path,
+            )
+            raise RuntimeError(
+                f"Could not estimate model size for {model_path!r}: {fallback_error}"
+            ) from fallback_error
+
+    except Exception as e:
+        logger.exception("Could not estimate model size for %s.", model_path)
+        raise RuntimeError(f"Model {model_path!r} not found or config unavailable") from e
+
+
+def _estimate_weight_bytes_from_config(config: dict, model_path: str) -> int:
+    """Run the DPP weight-size formula over an already-resolved model config."""
+
+    try:
+        num_layers = config["layers"]
+        hidden_size = config["hidden_size"]
+        inter_size = config["inter_size"]
+        vocab_size = config["vocab"]
+        num_experts = config["num_experts"]
+        moe_inter_size = config["moe_inter_size"]
+
+        # Embedding parameters
+        embedding_params = vocab_size * hidden_size
+
+        # Per-layer parameters
+        # Attention: Q, K, V, O projections = 4 * hidden^2
+        attention_params = 4 * hidden_size * hidden_size
+
+        # FFN parameters
+        if num_experts and num_experts > 1:
+            # MoE: gate + up + down for each expert, plus router
+            ffn_inter = moe_inter_size if moe_inter_size else inter_size
+            ffn_params = 3 * hidden_size * ffn_inter * num_experts
+            # Router/gate
+            ffn_params += hidden_size * num_experts
+        else:
+            # Dense: gate + up + down (for SwiGLU-style FFN)
+            ffn_params = 3 * hidden_size * inter_size
+
+        # Layer norms (2 per layer) + small bias terms
+        norm_params = 4 * hidden_size
+
+        # Total per layer
+        per_layer_params = attention_params + ffn_params + norm_params
+
+        # Total parameters
+        total_params = embedding_params + (num_layers * per_layer_params)
+
+        # Convert to bytes (BF16)
+        weight_bytes = total_params * _BYTES_PER_PARAM
+
+        logger.info(
+            f"Estimated model weight size for {model_path}: "
+            f"{weight_bytes / (1024**3):.2f} GiB ({total_params / 1e9:.2f}B params)"
+        )
+
+        return weight_bytes
+
+    except Exception as e:
+        logger.exception("Could not estimate model size for %s.", model_path)
+        raise RuntimeError(f"Model {model_path!r} not found or config unavailable") from e
+
+
+def _calculate_min_tp(
+    model_weight_bytes: int,
+    vram_per_gpu: int,
+    gpus_per_node: int,
+    total_gpus: int,
+    allow_multi_node: bool = False,
+) -> tuple[int, bool, int]:
+    """
+    Calculate the minimum TP size that fits the model in memory.
+    Formula: tp * vram_per_gpu > memory_multiplier * model_weight_bytes
+    Args:
+        model_weight_bytes: Estimated model weight size in bytes.
+        vram_per_gpu: VRAM per GPU in bytes.
+        gpus_per_node: Number of GPUs per node.
+        total_gpus: Total GPUs available.
+        allow_multi_node: When True, do not cap the result at ``gpus_per_node``.
+            Use for MoE wide-EP sweeps where an engine can span nodes; the
+            result is still capped at ``total_gpus``.
+    Returns:
+        selected_tp: selected TP (capped to available GPUs)
+        fits: whether model actually fits in memory
+        required_tp: true TP required for memory fit (before capping)
+    """
+    # Required VRAM per model copy
+    required_vram = model_weight_bytes * _MEMORY_MULTIPLIER
+    # Find minimum TP where: tp * vram_per_gpu > required_vram
+    # => tp > required_vram / vram_per_gpu
+    min_tp_float = required_vram / vram_per_gpu
+    min_tp = max(1, int(min_tp_float) + (1 if min_tp_float % 1 > 0 else 0))
+    # Round up to power of 2 for efficiency
+    tp = 1
+    while tp < min_tp:
+        tp *= 2
+
+    # Cap at gpus_per_node (single-node constraint) unless multi-node is allowed.
+    max_tp = total_gpus if allow_multi_node else min(gpus_per_node, total_gpus)
+
+    fits = tp <= max_tp
+    if not fits:
+        logger.warning(
+            f"Model requires TP={tp} to fit in memory, but max TP is {max_tp} "
+            f"(gpus_per_node={gpus_per_node}, total_gpus={total_gpus}, "
+            f"allow_multi_node={allow_multi_node}). "
+            f"The model may not fit! Consider using PP or other parallelism "
+            f"strategies to fit across more than one node, or use a system "
+            f"with more GPUs."
+        )
+
+    selected_tp = min(tp, max_tp)
+    logger.info(
+        f"TP calculation: model={model_weight_bytes / (1024**3):.2f}GiB, "
+        f"vram={vram_per_gpu / (1024**3):.2f}GiB, "
+        f"required={required_vram / (1024**3):.2f}GiB (1.5x), "
+        f"min_tp={min_tp}, selected_tp={selected_tp}, fit={fits}, required_tp={tp}"
+    )
+    return selected_tp, fits, tp
+
+
+def build_naive_generator_params(
+    model_name: str,
+    total_gpus: int,
+    system_name: str,
+    backend_name: str,
+    mode: str = "agg",
+    optimization_type: str | None = None,
+    generator_dynamo_version: str | None = None,
+    generator_overrides: dict[str, Any] | None = None,
+    preserve_engine_limits: bool = False,
+    model_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Build generator parameters for naive configuration generation.
+
+    Calculates the smallest parallelization that fits the model in memory
+    and selects the appropriate strategy (TP, TEP, or DEP) based on the
+    model architecture and optimization objective.
+
+    This function is the FPM collector's declared render entry point:
+    ``collector/fpm_forward`` imports it from ``aiconfigurator.generator.naive``
+    and renders every cell with ``preserve_engine_limits=True``.
+
+    Args:
+        model_name: Name or HuggingFace ID of the model.
+        total_gpus: Total number of GPUs available.
+        system_name: Name of the system (e.g., 'h200_sxm', 'gb200').
+        backend_name: Name of the backend (e.g., 'trtllm', 'sglang', 'vllm').
+        mode: Serving mode — ``"agg"`` (aggregated, single worker type) or
+            ``"disagg"`` (disaggregated, separate prefill/decode workers).
+        optimization_type: ``"throughput"`` or ``"latency"`` (or ``None``
+            for legacy callers). Influences parallelization for MoE models.
+        generator_dynamo_version: Optional Dynamo version used by schema
+            defaults such as backend runtime images.
+        generator_overrides: Optional raw generator override mapping loaded
+            from ``--generator-config`` and ``--generator-set``.
+        preserve_engine_limits: When True, strip the naive engine-limit
+            defaults in ``_ENGINE_LIMIT_KEYS`` from every worker role's params
+            and set ``params["preserve_engine_limits"] = True`` so the rule
+            plugins do not reintroduce them. Native self-benchmarking must
+            observe the limits resolved by the target engine image instead of
+            the SLA-derived serving defaults.
+        model_config: Optional pre-parsed model configuration in the shape
+            returned by ``get_model_config_from_model_path``. When provided
+            (the FPM collector's frozen-plan render), model metadata is taken
+            from this payload verbatim and no filesystem or network model
+            resolution happens -- render stays a pure function of the frozen
+            plan even for checkpoints only reachable inside the cluster.
+
+    Returns:
+        Dictionary containing generator parameters.  When ``mode="agg"``,
+        ``params.agg`` is populated.  When ``mode="disagg"``, both
+        ``params.prefill`` and ``params.decode`` are populated with
+        identical parallelization.
+    """
+    # Get system config (GPUs per node and VRAM)
+    system_config = _get_system_config(system_name)
+    gpus_per_node = system_config["gpus_per_node"]
+    vram_per_gpu = system_config["vram_per_gpu"]
+
+    # Estimate model weight size and retain architecture metadata from the same
+    # raw config so unsupported models do not require another parse/download.
+    # FPM renders size straight from the frozen config when one is provided.
+    model_metadata: dict[str, Any] = {}
+    if model_config is not None:
+        model_weight_bytes = _estimate_weight_bytes_from_config(model_config, model_name)
+    else:
+        model_weight_bytes = _estimate_model_weight_bytes(model_name, model_metadata=model_metadata)
+
+    # Calculate minimum GPU count that fits the model
+    min_gpus, fits, required_tp = _calculate_min_tp(
+        model_weight_bytes=model_weight_bytes,
+        vram_per_gpu=vram_per_gpu,
+        gpus_per_node=gpus_per_node,
+        total_gpus=total_gpus,
+    )
+
+    # Detect model architecture for MoE-aware parallelization
+    architecture = str(model_metadata.get("architecture", ""))
+    is_moe = bool(model_metadata.get("is_moe", False))
+    if not model_metadata:
+        # The frozen config wins when provided; otherwise preserve the
+        # test/mocking seam for callers that replace the weight estimator
+        # with a plain integer-returning stub.
+        try:
+            detected = model_config if model_config is not None else get_model_config_from_model_path(model_name)
+            architecture = detected.get("architecture", "")
+            num_experts = detected.get("num_experts", 0)
+            is_moe = bool(num_experts and num_experts > 1)
+        except Exception:
+            logger.warning(
+                "Could not detect model architecture for %s; assuming dense (TP-only).",
+                model_name,
+            )
+
+    # Resolve parallelization strategy
+    parallel = _resolve_parallelization(
+        architecture=architecture,
+        is_moe=is_moe,
+        num_gpus=min_gpus,
+        optimization_type=optimization_type,
+    )
+
+    strategy = "TP" if not is_moe else ("DEP" if parallel["data_parallel_size"] > 1 else "TEP")
+    logger.info(
+        "Naive config: model=%s, strategy=%s=%d, optimization_type=%s, mode=%s",
+        model_name,
+        strategy,
+        min_gpus,
+        optimization_type or "default",
+        mode,
+    )
+
+    # Default max batch size - conservative value that works for most models
+    max_batch_size = 128
+
+    # Build the generator params structure
+    default_isl = 4000
+    default_osl = 1000
+
+    # Worker params shared by all modes
+    worker_params = {
+        **parallel,
+        "max_batch_size": max_batch_size,
+        "gpus_per_worker": min_gpus,
+    }
+
+    name_prefix = _sanitize_rfc1123(model_name)
+
+    overrides = generator_overrides or {}
+    effective_dynamo_version = generator_dynamo_version or overrides.get("generator_dynamo_version")
+
+    service = {
+        "model_name": model_name,
+        "served_model_name": model_name,
+        "model_path": model_name,
+        "include_frontend": True,
+    }
+    k8s = {
+        "system_name": system_name,
+        "name_prefix": name_prefix,
+    }
+    dyn_config = {
+        "mode": mode,
+    }
+    sla = {
+        "isl": default_isl,
+        "osl": default_osl,
+    }
+    node_config = {
+        "num_gpus_per_node": gpus_per_node,
+        "system_name": system_name,
+    }
+    model_config = {
+        "is_moe": is_moe,
+        "fits_in_memory": fits,
+        "required_tp": required_tp,
+    }
+
+    service = _deep_merge_dicts(service, _section_override(overrides, "ServiceConfig"))
+    k8s = _deep_merge_dicts(k8s, _section_override(overrides, "K8sConfig"))
+    dyn_config = _deep_merge_dicts(dyn_config, _section_override(overrides, "DynConfig"))
+    sla = _deep_merge_dicts(sla, _section_override(overrides, "SlaConfig"))
+    node_config = _deep_merge_dicts(node_config, _section_override(overrides, "NodeConfig"))
+    model_config = _deep_merge_dicts(model_config, _section_override(overrides, "ModelConfig"))
+    bench_config = _section_override(overrides, "BenchConfig")
+    sflow_config = _section_override(overrides, "SflowConfig")
+    llmd_config = _section_override(overrides, "LlmdConfig")
+
+    worker_overrides = _section_override(overrides, "Workers")
+    params_overrides = _section_override(overrides, "params")
+
+    if mode == "disagg":
+        # Disaggregated: separate prefill and decode workers with identical parallelization
+        if total_gpus < 2 * min_gpus:
+            logger.warning(
+                "Disaggregated mode requires at least %d GPUs (%d prefill + %d decode), "
+                "but only %d are available. Workers may overcommit GPU resources.",
+                2 * min_gpus,
+                min_gpus,
+                min_gpus,
+                total_gpus,
+            )
+        prefill_workers = 1
+        decode_workers = max(1, (total_gpus // min_gpus) - 1) if total_gpus > min_gpus else 1
+        prefill_params = _deep_merge_dicts(dict(worker_params), _role_override(worker_overrides, "prefill"))
+        prefill_params = _deep_merge_dicts(prefill_params, _role_override(params_overrides, "prefill"))
+        decode_params = _deep_merge_dicts(dict(worker_params), _role_override(worker_overrides, "decode"))
+        decode_params = _deep_merge_dicts(decode_params, _role_override(params_overrides, "decode"))
+        worker_config = {
+            "prefill_workers": prefill_workers,
+            "prefill_gpus_per_worker": min_gpus,
+            "decode_workers": decode_workers,
+            "decode_gpus_per_worker": min_gpus,
+        }
+        worker_config = _deep_merge_dicts(worker_config, _section_override(overrides, "WorkerConfig"))
+
+        from .aggregators import collect_generator_params
+
+        params = collect_generator_params(
+            service=service,
+            k8s=k8s,
+            prefill_params=prefill_params,
+            decode_params=decode_params,
+            prefill_workers=int(worker_config.get("prefill_workers", prefill_workers)),
+            decode_workers=int(worker_config.get("decode_workers", decode_workers)),
+            num_gpus_per_node=int(node_config.get("num_gpus_per_node", gpus_per_node)),
+            sla=sla,
+            bench=bench_config,
+            sflow=sflow_config,
+            dyn_config=dyn_config,
+            backend=backend_name,
+            generator_dynamo_version=effective_dynamo_version,
+        )
+    else:
+        # Aggregated: single worker type
+        agg_workers = total_gpus // min_gpus
+        agg_params = _deep_merge_dicts(dict(worker_params), _role_override(worker_overrides, "agg"))
+        agg_params = _deep_merge_dicts(agg_params, _role_override(params_overrides, "agg"))
+        worker_config = {
+            "agg_workers": agg_workers,
+            "agg_gpus_per_worker": min_gpus,
+        }
+        worker_config = _deep_merge_dicts(worker_config, _section_override(overrides, "WorkerConfig"))
+
+        from .aggregators import collect_generator_params
+
+        params = collect_generator_params(
+            service=service,
+            k8s=k8s,
+            agg_params=agg_params,
+            agg_workers=int(worker_config.get("agg_workers", agg_workers)),
+            num_gpus_per_node=int(node_config.get("num_gpus_per_node", gpus_per_node)),
+            sla=sla,
+            bench=bench_config,
+            sflow=sflow_config,
+            dyn_config=dyn_config,
+            backend=backend_name,
+            generator_dynamo_version=effective_dynamo_version,
+        )
+
+    params["ModelConfig"] = model_config
+    # collect_generator_params rebuilds NodeConfig with only num_gpus_per_node,
+    # dropping system_name (and any NodeConfig override). Merge the full
+    # node_config back so the system identity survives; run.sh reads
+    # NodeConfig.system_name to pick the device env var (e.g. B60 needs
+    # ONEAPI_DEVICE_SELECTOR instead of CUDA_VISIBLE_DEVICES).
+    params["NodeConfig"] = _deep_merge_dicts(params.get("NodeConfig", {}), node_config)
+    if llmd_config:
+        params["LlmdConfig"] = llmd_config
+    params["backend"] = backend_name
+    if effective_dynamo_version:
+        params["generator_dynamo_version"] = effective_dynamo_version
+    _drop_empty_worker_roles(params)
+
+    if preserve_engine_limits:
+        for role_params in params.get("params", {}).values():
+            for key in _ENGINE_LIMIT_KEYS:
+                role_params.pop(key, None)
+        params["preserve_engine_limits"] = True
+
+    return params
