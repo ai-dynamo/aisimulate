@@ -1,131 +1,116 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# CODEOWNERS-as-code taxonomy for ai-dynamo/aisimulate.
 
 meta:
-  catch_all: maintainers
+  catch_all: "@ai-dynamo/access-aisimulate-maintain"
 
-teams:
-  maintainers: "@ai-dynamo/access-aisimulate-maintain"
-  forward_pass_engine: "@ai-dynamo/aisimulate-forward-pass-engine-codeowners"
-  sweeper: "@ai-dynamo/aisimulate-sweeper-codeowners"
-  replay: "@ai-dynamo/aisimulate-replay-codeowners"
-  mocker: "@ai-dynamo/aisimulate-mocker-codeowners"
-  infra: "@ai-dynamo/aisimulate-infra-codeowners"
-  devops: "@ai-dynamo/devops"
+areas:
+  - label: maintainers
+    github_team: "@ai-dynamo/access-aisimulate-maintain"
+    path_globs:
+      - LICENSE
+      - README.md
+      - CONTRIBUTORS.md
+      - docs/migration.md
+      - src/aisimulate/__init__.py
+      - tests/conftest.py
+  - label: forward-pass-engine
+    github_team: "@ai-dynamo/aisimulate-forward-pass-engine-codeowners"
+    path_globs:
+      - src/aisimulate/aic.py
+      - tests/test_aic.py
+  - label: sweeper
+    github_team: "@ai-dynamo/aisimulate-sweeper-codeowners"
+    path_globs:
+      - src/aisimulate/sweeper/
+      - docs/sweeper/
+      - examples/sweeper/
+      - tests/sweeper/
+  - label: replay
+    github_team: "@ai-dynamo/aisimulate-replay-codeowners"
+    path_globs:
+      - crates/core/src/replay/
+      - src/aisimulate/replay/
+      - src/aisimulate/runner.py
+      - src/aisimulate/traffic.py
+      - tests/test_replay_cli.py
+      - tests/test_runner.py
+      - tests/test_traffic.py
+  - label: mocker
+    github_team: "@ai-dynamo/aisimulate-mocker-codeowners"
+    path_globs:
+      - crates/core/src/engine/
+  - label: infra
+    github_team: "@ai-dynamo/aisimulate-infra-codeowners"
+    path_globs:
+      - .github/
+      - .gitignore
+      - Cargo.lock
+      - Cargo.toml
+      - crates/python/Cargo.toml
+      - pyproject.toml
+  - label: devops
+    github_team: "@ai-dynamo/devops"
+    path_globs: []
 
-# Rules use GitHub's last-match-wins semantics. Keep broader directory rules
-# before their narrower overrides.
-rules:
-  - section: fallback
-    pattern: "*"
-    owners: [maintainers]
-
-  - section: maintainers
-    pattern: /LICENSE
-    owners: [maintainers]
-  - section: maintainers
-    pattern: /README.md
-    owners: [maintainers]
-  - section: maintainers
-    pattern: /docs/migration.md
-    owners: [maintainers]
-  - section: maintainers
-    pattern: /src/aisimulate/__init__.py
-    owners: [maintainers]
-  - section: maintainers
-    pattern: /tests/conftest.py
-    owners: [maintainers]
-
-  - section: forward-pass engine
-    pattern: /src/aisimulate/aic.py
-    owners: [forward_pass_engine, maintainers]
-  - section: forward-pass engine
-    pattern: /tests/test_aic.py
-    owners: [forward_pass_engine, maintainers]
-
-  - section: sweeper
-    pattern: /src/aisimulate/sweeper/
+# More-specific shared entries are emitted after base area rules, preserving
+# GitHub's last-match-wins behavior. As in AIConfigurator, the maintainer team
+# stays visible on subsystem changes without requiring every listed team to
+# approve: any listed code owner can satisfy GitHub's code-owner gate.
+shared:
+  - glob: src/aisimulate/aic.py
+    owners: [forward-pass-engine, maintainers]
+  - glob: tests/test_aic.py
+    owners: [forward-pass-engine, maintainers]
+  - glob: src/aisimulate/sweeper/
     owners: [sweeper, maintainers]
-  - section: sweeper
-    pattern: /docs/sweeper/
+  - glob: docs/sweeper/
     owners: [sweeper, maintainers]
-  - section: sweeper
-    pattern: /examples/sweeper/
+  - glob: examples/sweeper/
     owners: [sweeper, maintainers]
-  - section: sweeper
-    pattern: /tests/sweeper/
+  - glob: tests/sweeper/
     owners: [sweeper, maintainers]
-
-  - section: replay
-    pattern: /crates/core/src/replay/
+  - glob: crates/core/src/replay/
     owners: [replay, maintainers]
-  - section: replay
-    pattern: /src/aisimulate/replay/
+  - glob: src/aisimulate/replay/
     owners: [replay, maintainers]
-  - section: replay
-    pattern: /src/aisimulate/runner.py
+  - glob: src/aisimulate/runner.py
     owners: [replay, maintainers]
-  - section: replay
-    pattern: /src/aisimulate/traffic.py
+  - glob: src/aisimulate/traffic.py
     owners: [replay, maintainers]
-  - section: replay
-    pattern: /tests/test_replay_cli.py
+  - glob: tests/test_replay_cli.py
     owners: [replay, maintainers]
-  - section: replay
-    pattern: /tests/test_runner.py
+  - glob: tests/test_runner.py
     owners: [replay, maintainers]
-  - section: replay
-    pattern: /tests/test_traffic.py
+  - glob: tests/test_traffic.py
     owners: [replay, maintainers]
-
-  - section: mocker
-    pattern: /crates/core/src/engine/
+  - glob: crates/core/src/engine/
     owners: [mocker, maintainers]
-  - section: mocker and forward-pass engine
-    pattern: /crates/core/src/engine/timing.rs
-    owners: [mocker, forward_pass_engine, maintainers]
-
-  - section: shared native contracts
-    pattern: /crates/core/Cargo.toml
+  - glob: crates/core/src/engine/timing.rs
+    owners: [mocker, forward-pass-engine, maintainers]
+  - glob: crates/core/Cargo.toml
     owners: [mocker, replay, infra, maintainers]
-  - section: shared native contracts
-    pattern: /crates/core/README.md
+  - glob: crates/core/README.md
     owners: [mocker, replay, maintainers]
-  - section: shared native contracts
-    pattern: /crates/core/src/lib.rs
+  - glob: crates/core/src/lib.rs
     owners: [mocker, replay, maintainers]
-  - section: shared native contracts
-    pattern: /crates/core/tests/
+  - glob: crates/core/tests/
     owners: [mocker, replay, maintainers]
-  - section: shared native contracts
-    pattern: /crates/python/src/
-    owners: [mocker, replay, forward_pass_engine, maintainers]
-  - section: shared native contracts
-    pattern: /crates/python/Cargo.toml
+  - glob: crates/python/src/
+    owners: [mocker, replay, forward-pass-engine, maintainers]
+  - glob: crates/python/Cargo.toml
     owners: [infra, maintainers]
-
-  - section: infrastructure
-    pattern: /.github/
-    owners: [infra]
-  - section: infrastructure
-    pattern: /.gitignore
-    owners: [infra]
-  - section: infrastructure
-    pattern: /Cargo.lock
+  - glob: Cargo.lock
     owners: [infra, maintainers]
-  - section: infrastructure
-    pattern: /Cargo.toml
+  - glob: Cargo.toml
     owners: [infra, maintainers]
-  - section: infrastructure
-    pattern: /pyproject.toml
+  - glob: pyproject.toml
     owners: [infra, maintainers]
-
-  - section: ownership policy
-    pattern: /.github/codeowners/
+  # Ownership policy changes require DevOps review.
+  - glob: .github/codeowners/
     owners: [devops]
-  - section: ownership policy
-    pattern: /.github/workflows/codeowners.yml
+  - glob: .github/workflows/codeowners.yml
     owners: [devops]
-  - section: ownership policy
-    pattern: /CODEOWNERS
+  - glob: CODEOWNERS
     owners: [devops]
