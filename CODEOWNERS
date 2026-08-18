@@ -64,6 +64,7 @@
 /CODEOWNERS                                          @ai-dynamo/aisimulate-infra-codeowners
 /Cargo.lock                                          @ai-dynamo/aisimulate-infra-codeowners
 /Cargo.toml                                          @ai-dynamo/aisimulate-infra-codeowners
+/pytest.ini                                          @ai-dynamo/aisimulate-infra-codeowners
 /pyproject.toml                                      @ai-dynamo/aisimulate-infra-codeowners
 /crates/python/Cargo.toml                            @ai-dynamo/aisimulate-infra-codeowners
 
@@ -76,6 +77,7 @@
 /CODEOWNERS                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /Cargo.lock                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /Cargo.toml                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/pytest.ini                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/sweeper/                                       @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /pyproject.toml                                      @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/sweeper/                                      @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain

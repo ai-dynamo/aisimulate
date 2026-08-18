@@ -55,6 +55,7 @@ areas:
       - Cargo.toml
       - crates/python/Cargo.toml
       - pyproject.toml
+      - pytest.ini
       - scripts/
 
 # More-specific shared entries are emitted after base area rules, preserving
@@ -123,6 +124,8 @@ shared:
   - glob: Cargo.toml
     owners: [infra, maintainers]
   - glob: pyproject.toml
+    owners: [infra, maintainers]
+  - glob: pytest.ini
     owners: [infra, maintainers]
   - glob: scripts/
     owners: [infra, maintainers]
