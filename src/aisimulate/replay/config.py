@@ -130,6 +130,8 @@ def parse_base_replay_config(args: argparse.Namespace) -> ReplayCliConfig:
             args.shared_prefix_ratio != 0.0,
             args.num_prefix_groups != 0,
             args.inter_turn_delay_ms != 0.0,
+            args.random_range_ratio != 1.0,
+            args.random_seed != 0,
         )
     )
     if bool(trace_files) == uses_synthetic:
@@ -200,6 +202,8 @@ def parse_base_replay_config(args: argparse.Namespace) -> ReplayCliConfig:
             "osl": args.output_tokens,
             "request_count": args.request_count,
             "arrival_seed": args.arrival_seed,
+            "random_range_ratio": args.random_range_ratio,
+            "random_seed": args.random_seed,
             "turns_per_session": args.turns_per_session,
             "shared_prefix_ratio": args.shared_prefix_ratio,
             "num_prefix_groups": args.num_prefix_groups,

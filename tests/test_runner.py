@@ -289,6 +289,65 @@ def test_runner_materializes_seeded_poisson_open_loop_requests():
     assert arrivals == sorted(arrivals)
 
 
+def test_runner_randomizes_synthetic_lengths_deterministically():
+    execution_specs = []
+    for seed in (7, 7, 8):
+        runtime = RecordingRuntime()
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(
+                workload={
+                    "isl": 100,
+                    "osl": 50,
+                    "request_count": 32,
+                    "arrival_interval_ms": 0.0,
+                    "random_range_ratio": 0.8,
+                    "random_seed": seed,
+                }
+            )
+        )
+        execution_specs.append(runtime.execution_spec)
+
+    def lengths(execution_spec):
+        return [
+            (request["input_tokens"], request["output_tokens"])
+            for request in execution_spec["requests"]
+        ]
+
+    first_lengths = lengths(execution_specs[0])
+    assert first_lengths == lengths(execution_specs[1])
+    assert first_lengths != lengths(execution_specs[2])
+    assert len(set(first_lengths)) > 1
+    assert all(80 <= isl <= 100 and 40 <= osl <= 50 for isl, osl in first_lengths)
+
+
+@pytest.mark.parametrize("ratio", [0.0, -0.1, 1.1, float("inf"), float("nan")])
+def test_runner_rejects_invalid_random_range_ratio(ratio):
+    with pytest.raises(ValueError, match="random_range_ratio"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                workload={
+                    "isl": 64,
+                    "osl": 2,
+                    "request_count": 2,
+                    "arrival_interval_ms": 0.0,
+                    "random_range_ratio": ratio,
+                }
+            )
+        )
+
+
+def test_runner_rejects_random_length_options_for_trace_replay():
+    with pytest.raises(ValueError, match="only apply to synthetic replay"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                workload={
+                    "trace_path": "unused.jsonl",
+                    "random_range_ratio": 0.8,
+                }
+            )
+        )
+
+
 def test_runner_lowers_disaggregated_grouped_engines():
     runtime = RecordingRuntime()
     deployment = BackendDeploymentSpec(

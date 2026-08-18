@@ -3,9 +3,9 @@
 
 """Score a replay ``trace_report`` against the optimization goal.
 
-Three steps, mirroring the existing profiler replay optimizer
-(``components/src/dynamo/profiler/utils/replay_optimize``) adapted to sweeper's
-``Candidate`` / ``OptimizationGoal`` and the merged replay report keys:
+Three steps, mirroring the profiler replay optimizer in the ``ai-dynamo/dynamo`` repository at
+``components/src/dynamo/profiler/utils/replay_optimize``, adapted to sweeper's ``Candidate`` /
+``OptimizationGoal`` and the merged replay report keys:
 
 1. **objective** — map the goal target to a number from the report. The
    ``goodput_per_gpu`` / ``throughput_per_gpu`` targets divide ``goodput`` / ``throughput``
