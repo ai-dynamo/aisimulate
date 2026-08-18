@@ -303,9 +303,18 @@ def test_synthetic_random_length_options_are_validated():
     for ratio in (0.0, -0.1, 1.1, float("inf"), float("nan")):
         with pytest.raises(ValidationError, match="random_range_ratio"):
             Workload(**_workload(random_range_ratio=ratio))
+    for ratio in (True, "0.8"):
+        with pytest.raises(ValidationError, match="random_range_ratio"):
+            Workload(**_workload(random_range_ratio=ratio))
     for seed in (-1, 2**64):
         with pytest.raises(ValidationError, match="random_seed"):
             Workload(**_workload(random_seed=seed))
+    for seed in (True, 1.0, "7"):
+        with pytest.raises(ValidationError, match="random_seed"):
+            Workload(**_workload(random_seed=seed))
+    for lengths in ({"isl": 1}, {"osl": 1}):
+        with pytest.raises(ValidationError, match="zero-token lower bound"):
+            Workload(**_workload(**lengths, random_range_ratio=0.8))
     with pytest.raises(ValidationError, match="single-turn"):
         Workload(**_workload(random_range_ratio=0.8, turns_per_session=2))
     with pytest.raises(ValidationError, match="must not set synthetic fields"):

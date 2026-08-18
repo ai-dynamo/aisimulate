@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class OptimizationTarget(str, Enum):
@@ -206,6 +206,22 @@ class Workload(BaseModel):
     # *synthetic* closed-loop workload use ``concurrency`` or ``kv_load_ratio`` instead.
     replay_concurrency: int | None = None
 
+    @field_validator("random_range_ratio", mode="before")
+    @classmethod
+    def _validate_random_range_ratio_type(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"random_range_ratio must be a number, got {value!r}")
+        return value
+
+    @field_validator("random_seed", mode="before")
+    @classmethod
+    def _validate_random_seed_type(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"random_seed must be an unsigned 64-bit integer, got {value!r}"
+            )
+        return value
+
     @property
     def is_trace_based(self) -> bool:
         return self.trace_path is not None
@@ -349,6 +365,13 @@ class Workload(BaseModel):
                 "random_range_ratio must be finite and in (0.0, 1.0], got "
                 f"{self.random_range_ratio!r}"
             )
+        for name in ("isl", "osl"):
+            length = getattr(self, name)
+            if length is not None and int(length * self.random_range_ratio) == 0:
+                raise ValueError(
+                    f"random_range_ratio={self.random_range_ratio} gives a zero-token "
+                    f"lower bound for {name}={length}"
+                )
         if (
             isinstance(self.random_seed, bool)
             or self.random_seed < 0
