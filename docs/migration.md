@@ -41,10 +41,14 @@ boundary cleanup and is not a fourth release artifact.
 ### Source provenance
 
 The migration branch keeps the earlier path-filtered AIC core history. The
-complete upper application is imported as a snapshot from AIConfigurator
-source commit `13b5cf2697876692b0a52098266c81162add11fc`. The final tree moves
-that upper application beneath `python/aisimulate/` and updates the existing
-core layout without copying a second buildable AIC core manifest.
+complete upper application was initially imported as a snapshot from
+AIConfigurator source commit `13b5cf2697876692b0a52098266c81162add11fc`.
+The current synchronization boundary is source commit
+`ff2be1fd434fd516474e42b77f94cd5a5f841b9b`, which includes the data-plane
+engine migration from PR #1555, the SGLang DSA data update from PR #1556, and
+the deprecation/PyO3 unification from PR #1566. The final tree moves the upper
+application beneath `python/aisimulate/` and updates the existing core layout
+without copying a second buildable AIC core manifest.
 
 The imported upper tree includes the CLI, generator, SDK compatibility layer,
 Collector, tests, docs, Docker/development assets, and the original inactive
@@ -56,7 +60,7 @@ The source commit is the future synchronization boundary. For example:
 ```bash
 git log --follow -- crates/aisimulate-core/src/lib.rs
 git log --follow -- python/aisimulate-core/src/aiconfigurator_core/sdk/engine.py
-git diff 13b5cf2697876692b0a52098266c81162add11fc:src/aiconfigurator/main.py HEAD:python/aisimulate/src/aiconfigurator/main.py
+git diff ff2be1fd434fd516474e42b77f94cd5a5f841b9b:src/aiconfigurator/main.py HEAD:python/aisimulate/src/aiconfigurator/main.py
 ```
 
 ### CLI cutover gate
