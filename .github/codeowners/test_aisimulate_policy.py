@@ -40,6 +40,30 @@ def test_subsystem_teams_retain_maintainer_coownership() -> None:
 
 
 def test_representative_routing_contract() -> None:
+    # Migrated AIC estimator and full application surface.
+    assert _owners("crates/aisimulate-core/src/fpm/model.rs") == {
+        FPE,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate-core/src/aisimulate_core/sdk/engine.py") == {
+        FPE,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/src/aiconfigurator/generator/__init__.py") == {
+        FPE,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/collector/collect.py") == {
+        FPE,
+        MAINTAINERS,
+    }
+    assert _owners("crates/tests/public-api/src/lib.rs") == {
+        FPE,
+        MAINTAINERS,
+    }
+    assert _owners("docs/core-api.md") == {FPE, MAINTAINERS}
+
+    # Standalone Replay, Sweeper, and Mocker surface.
     assert _owners("src/aisimulate/aic.py") == {FPE, MAINTAINERS}
     assert _owners("src/aisimulate/sweeper/search.py") == {SWEEPER, MAINTAINERS}
     assert _owners("src/aisimulate/replay/cli.py") == {REPLAY, MAINTAINERS}
@@ -65,9 +89,24 @@ def test_representative_routing_contract() -> None:
         INFRA,
         MAINTAINERS,
     }
+
+    # Active and imported repository metadata.
     assert _owners(".github/workflows/ci.yml") == {INFRA}
+    assert _owners("scripts/build_release_artifacts.py") == {INFRA, MAINTAINERS}
+    assert _owners("python/aisimulate/.github/workflows/build-test.yml") == {
+        INFRA,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/pyproject.toml") == {
+        FPE,
+        INFRA,
+        MAINTAINERS,
+    }
     assert _owners(".github/workflows/codeowners.yml") == {DEVOPS}
     assert _owners(".github/codeowners/areas.yaml") == {DEVOPS}
+    assert _owners("python/aisimulate/.github/codeowners/areas.yaml") == {DEVOPS}
+    assert _owners("python/aisimulate/CODEOWNERS") == {DEVOPS}
+    assert _owners("crates/aisimulate-core/deny.toml") == {DEVOPS}
     assert _owners("CODEOWNERS") == {DEVOPS}
     assert _owners("README.md") == {MAINTAINERS}
 

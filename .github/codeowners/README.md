@@ -63,3 +63,12 @@ their declarative sources.
 The workflow makes policy problems visible. Repository rules must separately
 require the `codeowners` status check and code-owner review for those results to
 be merge-blocking.
+
+## Migrated AIConfigurator Snapshot
+
+The full AIC source import preserves `python/aisimulate/CODEOWNERS` and
+`python/aisimulate/.github/codeowners/` as inactive provenance. GitHub only
+discovers CODEOWNERS at the repository root, `.github/`, or `docs/`, so the
+generated root file in this PR is the only active repository policy. The root
+policy routes changes to those preserved ownership artifacts to DevOps to keep
+the active and historical policies from being confused.
