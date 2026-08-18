@@ -12,37 +12,39 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - name: Install stable Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt
+      - run: rustup default stable
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace
 
   aic-core-rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install stable Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
       - run: cargo test --manifest-path crates/aisimulate-core/Cargo.toml
       - run: cargo test --manifest-path crates/tests/public-api/Cargo.toml
 
   standalone-wheel:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - run: python -m pip install 'maturin>=1.8,<2'
       - run: python -m maturin build --release --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: aisimulate-wheel
           path: dist/*.whl
@@ -50,8 +52,8 @@ jobs:
   core-wheel:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - run: python -m pip install maturin pytest
@@ -62,8 +64,8 @@ jobs:
   application-wheel:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - run: python -m pip install maturin pytest
@@ -80,11 +82,13 @@ jobs:
   release-artifact-contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install stable Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
       - run: python -m pip install build maturin
       - run: python scripts/build_release_artifacts.py --check-only
       - run: python scripts/build_release_artifacts.py --output-dir dist
