@@ -83,8 +83,16 @@ retained. For example:
 
 ```bash
 git log --follow -- crates/core/src/engine/generalized/engine.rs
-git log --follow -- src/aisimulate/sweeper/search.py
+git log --follow -- python/aisimulate/src/aisimulate/sweeper/search.py
 ```
+
+The two migration branches initially carried separate `aisimulate` Python
+manifests. The post-merge reconciliation keeps the preserved source histories
+but builds one 0.12 application wheel from `python/aisimulate/`: its mixed
+Maturin layout packages the Replay extension together with the complete AIC
+application and the Replay/Sweeper Python sources. The generalized Replay
+engine remains an internal, non-publishable Rust crate; the only published
+`aisimulate-core` crate is the estimator described above.
 
 The imported history requires a merge commit. Squashing would retain the files
 but discard that Dynamo ancestry from this repository's `main` history.

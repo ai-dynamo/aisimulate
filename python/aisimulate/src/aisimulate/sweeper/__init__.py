@@ -93,12 +93,11 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
-    "SWEEP_CONFIG_PROVIDER_ENTRY_POINT_GROUP",
     "API_VERSION",
     "REPLAY_SPEC_API_VERSION",
+    "SWEEP_CONFIG_PROVIDER_ENTRY_POINT_GROUP",
     "AdapterReplaySpec",
     "AdapterSearchConfig",
-    "ProviderResolutionError",
     "AdapterSearchPlan",
     "BackendDeploymentSpec",
     "BranchSampler",
@@ -113,6 +112,7 @@ __all__ = [
     "OptimizationGoal",
     "OptimizationTarget",
     "ParallelShape",
+    "ProviderResolutionError",
     "ReplayOutputRequirements",
     "ReplayReport",
     "ReplaySpec",
@@ -124,10 +124,10 @@ __all__ = [
     "SLATarget",
     "SearchSpace",
     "SearchSpaceFragment",
-    "SweepConfigProvider",
     "SmartSearchConfig",
     "Suggestion",
     "SweepConfig",
+    "SweepConfigProvider",
     "SweepContext",
     "Sweeper",
     "Workload",
@@ -145,8 +145,8 @@ __all__ = [
     "objective_value",
     "parallel_configs_for",
     "rank",
-    "resolve_providers",
     "resolve_model_hardware",
+    "resolve_providers",
     "score_report",
     "unroll_sample",
 ]

@@ -22,11 +22,11 @@ pytestmark = pytest.mark.timeout(30)
 
 def _source_checkout_roots() -> tuple[Path, Path]:
     """Return the package and repository roots for source-only contracts."""
-    aisimulate_root = Path(__file__).resolve().parents[2]
-    repo_root = aisimulate_root
+    repo_root = Path(__file__).resolve().parents[2]
+    aisimulate_root = repo_root / "python" / "aisimulate"
     source_tree_markers = (
         aisimulate_root / "pyproject.toml",
-        aisimulate_root / "crates/core/Cargo.toml",
+        repo_root / "crates/core/Cargo.toml",
         repo_root / "Cargo.toml",
     )
     if not all(path.is_file() for path in source_tree_markers):
@@ -66,10 +66,18 @@ def test_aisimulate_native_runtime_imports_from_installed_distribution():
     assert callable(runtime.run_replay_json)
 
 
-def test_aisimulate_has_no_console_script():
+def test_aisimulate_publishes_only_compatibility_console_scripts():
     distribution = importlib.metadata.distribution("aisimulate")
 
-    assert all(entry.group != "console_scripts" for entry in distribution.entry_points)
+    scripts = {
+        entry.name: entry.value
+        for entry in distribution.entry_points
+        if entry.group == "console_scripts"
+    }
+    assert scripts == {
+        "aiconfigurator": "aiconfigurator.main:main",
+        "aisimulate": "aisimulate.main:main",
+    }
 
 
 def test_ai_dynamo_has_no_aisimulate_extra():
@@ -126,12 +134,12 @@ def test_ai_dynamo_registers_optional_sweeper_providers():
 def test_aisimulate_source_versions_are_synchronized():
     root, repo_root = _source_checkout_roots()
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    core = tomllib.loads((root / "crates/core/Cargo.toml").read_text())
-    python = tomllib.loads((root / "crates/python/Cargo.toml").read_text())
+    core = tomllib.loads((repo_root / "crates/core/Cargo.toml").read_text())
+    python = tomllib.loads((repo_root / "crates/python/Cargo.toml").read_text())
     workspace = tomllib.loads((repo_root / "Cargo.toml").read_text())
 
-    expected_python = "0.1.0.dev1"
-    expected_cargo = "0.1.0-dev.1"
+    expected_python = "0.12.0"
+    expected_cargo = "0.12.0"
     assert project["project"]["version"] == expected_python
     assert core["package"]["version"] == expected_cargo
     assert python["package"]["version"] == expected_cargo

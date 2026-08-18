@@ -4,11 +4,12 @@ AISimulate 0.12.0 has one product version and exactly three release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
-| `aisimulate` wheel | `python/aisimulate/pyproject.toml` | Complete application, CLI, generator, compatibility SDK, and package data |
+| `aisimulate` wheel | `python/aisimulate/pyproject.toml` | Complete application, CLI, generator, compatibility SDK, Replay, Sweeper, native runtime, and package data |
 | `aisimulate-core` wheel | `python/aisimulate-core/pyproject.toml` | Native Python estimator, model metadata, and performance data |
 | `aisimulate-core` crate | `crates/aisimulate-core/Cargo.toml` | Native Rust estimator |
 
-The workspace test crate is `publish = false`. Imported AIConfigurator source
+The internal Replay engine and Python binding crates and the workspace test
+crate are `publish = false`. Imported AIConfigurator source
 does not retain another buildable `aiconfigurator` or `aiconfigurator-core`
 manifest. Compatibility commands and namespaces live inside the approved
 wheels and therefore do not add artifacts.

@@ -81,7 +81,7 @@ class EngineReplayRunnerFactory:
             supports_disaggregated_attention_dp=False,
         )
 
-    def create(self, worker_id: int) -> "EngineReplayRunner":
+    def create(self, worker_id: int) -> EngineReplayRunner:
         return EngineReplayRunner(
             worker_id=worker_id,
             capabilities=self.capabilities(),

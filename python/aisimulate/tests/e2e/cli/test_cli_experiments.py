@@ -18,14 +18,12 @@ def _get_exp_yaml_files():
 
 _ALL_EXP_YAMLS = _get_exp_yaml_files()
 
-# Mark a small subset as suitable for CI/build workflows.
-# _BUILD_EXP_FILENAMES = {
-#    # Keep this small and stable; it should be representative but fast.
-#    "qwen3_32b_request_latency.yaml",
-# }
-
-# use all exps for build test now
-_BUILD_EXP_FILENAMES = [Path(exp_yaml).name for exp_yaml in _ALL_EXP_YAMLS]
+# Keep the pre-merge build subset small, stable, and representative. The full
+# experiment matrix remains available to explicit e2e invocations; some
+# large-EP searches intentionally exceed the per-test CI timeout.
+_BUILD_EXP_FILENAMES = {
+    "qwen3_32b_request_latency.yaml",
+}
 
 
 def _parametrize_exp_yamls(yaml_paths: list[str]) -> list:
