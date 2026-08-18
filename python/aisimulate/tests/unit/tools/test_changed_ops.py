@@ -400,6 +400,16 @@ class TestNoChange:
         assert changed == []
         assert len(unchanged) == 2
 
+    def test_nested_logical_repo_root_is_all_unchanged(self, mod, repo):
+        nested_root = repo / "python" / "aisimulate"
+        _write_tree(nested_root, _default_files())
+        base_sha = _commit_all(repo, "nested base")
+
+        changed, unchanged = mod.compute_changed_ops(nested_root, base_sha, base_sha)
+
+        assert changed == []
+        assert len(unchanged) == 2
+
 
 # --------------------------------------------------------------------------
 # tables / systems derivation

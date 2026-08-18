@@ -132,8 +132,26 @@ def _git(repo_root: Path, args: list[str], *, check: bool = True) -> subprocess.
     return subprocess.run(["git", *args], cwd=repo_root, capture_output=True, check=check)
 
 
+@cache
+def _git_tree_prefix(repo_root: Path) -> str:
+    """Path from the Git worktree root to the logical AISimulate root.
+
+    AISimulate can be checked out as a standalone repository or nested under
+    ``python/aisimulate`` in the consolidated monorepo. Git object paths are
+    always worktree-root-relative, even when the command runs from a nested
+    directory, so revision-aware reads must add this prefix explicitly.
+    """
+    proc = _git(repo_root, ["rev-parse", "--show-prefix"])
+    return proc.stdout.decode("utf-8").strip()
+
+
+def _git_tree_path(repo_root: Path, path: str) -> str:
+    return f"{_git_tree_prefix(repo_root)}{path}"
+
+
 def _git_file_exists(repo_root: Path, rev: str, path: str) -> bool:
-    return _git(repo_root, ["cat-file", "-e", f"{rev}:{path}"], check=False).returncode == 0
+    tree_path = _git_tree_path(repo_root, path)
+    return _git(repo_root, ["cat-file", "-e", f"{rev}:{tree_path}"], check=False).returncode == 0
 
 
 def _resolve_rev(repo_root: Path, rev: str) -> str:
@@ -147,7 +165,8 @@ def _resolve_rev(repo_root: Path, rev: str) -> str:
 
 @cache
 def _read_git_file(repo_root: Path, rev: str, path: str) -> bytes:
-    return _git(repo_root, ["show", f"{rev}:{path}"]).stdout
+    tree_path = _git_tree_path(repo_root, path)
+    return _git(repo_root, ["show", f"{rev}:{tree_path}"]).stdout
 
 
 def _read_git_text(repo_root: Path, rev: str, path: str) -> str:
@@ -156,8 +175,13 @@ def _read_git_text(repo_root: Path, rev: str, path: str) -> str:
 
 @cache
 def _git_ls_tree(repo_root: Path, rev: str, path_prefix: str) -> tuple[str, ...]:
-    proc = _git(repo_root, ["ls-tree", "-r", "--name-only", rev, "--", path_prefix])
-    return tuple(line for line in proc.stdout.decode("utf-8").splitlines() if line)
+    tree_prefix = _git_tree_prefix(repo_root)
+    tree_path = _git_tree_path(repo_root, path_prefix)
+    proc = _git(repo_root, ["ls-tree", "-r", "--name-only", rev, "--", tree_path])
+    lines = proc.stdout.decode("utf-8").splitlines()
+    if tree_prefix:
+        lines = [line.removeprefix(tree_prefix) for line in lines if line.startswith(tree_prefix)]
+    return tuple(line for line in lines if line)
 
 
 def _load_yaml_at_rev(repo_root: Path, rev: str, path: str) -> dict[str, Any]:
