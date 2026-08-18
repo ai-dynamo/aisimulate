@@ -76,7 +76,9 @@ KVBM sweep fields have been removed and have no adapter migration.
 
 Read the canonical [Sweeper documentation](docs/sweeper/overview.md) for its configuration,
 search-space, and replay behavior. Backend-neutral and Dynamo integration examples live under
-[`examples/sweeper`](examples/sweeper/README.md).
+[`examples/sweeper`](examples/sweeper/README.md). See the [Dynamo integration
+guide](docs/sweeper/dynamo-integration.md) for the two-repository development layout and adapter
+contracts.
 
 ## Development
 

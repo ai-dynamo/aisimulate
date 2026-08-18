@@ -28,6 +28,8 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
 - [Results](results.md) describes `ReplaySpec` and `Candidate` output.
 - [Sweep Configuration Providers](sweep-config-provider.md) documents the extension ABI.
+- [Dynamo Integration](dynamo-integration.md) composes Dynamo's optional Planner, Router, and
+  replay adapters with the standalone Sweeper core.
 
 ## Python Entry Point
 
