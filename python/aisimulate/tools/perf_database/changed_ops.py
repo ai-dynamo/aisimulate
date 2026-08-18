@@ -80,6 +80,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import posixpath
 import subprocess
 import sys
 from collections import defaultdict
@@ -96,6 +97,7 @@ HASH_CLOSURES_PATH = "collector/hash_closures.yaml"
 REGISTRY_TYPES_PATH = "collector/registry_types.py"
 PROVENANCE_PATH = "collector/provenance.py"
 DATA_PREFIX = "aic-core/src/aiconfigurator_core/systems/data"
+AISIMULATE_DATA_PREFIX = "../aisimulate-core/src/aiconfigurator_core/systems/data"
 
 # Naming/path CONVENTIONS mirrored from collector/provenance.py, not a file
 # list — see module docstring. Kept as hardcoded literals (like the PATH
@@ -456,20 +458,41 @@ def _case_plan_hash_at_rev(repo_root: Path, rev: str, modules: set[str], closure
 # --------------------------------------------------------------------------
 
 
+@cache
+def _git_ls_tree_sibling_data(repo_root: Path, rev: str) -> tuple[str, ...]:
+    """List core data when it is a sibling of the nested application root."""
+    tree_prefix = _git_tree_prefix(repo_root)
+    if not tree_prefix:
+        return ()
+    tree_path = posixpath.normpath(posixpath.join(tree_prefix, AISIMULATE_DATA_PREFIX))
+    proc = _git(repo_root, ["ls-tree", "-r", "--full-tree", "--name-only", rev, "--", tree_path])
+    entries: list[str] = []
+    for line in proc.stdout.decode("utf-8").splitlines():
+        if not line:
+            continue
+        suffix = line.removeprefix(tree_path).lstrip("/")
+        entries.append(posixpath.join(AISIMULATE_DATA_PREFIX, suffix) if suffix else AISIMULATE_DATA_PREFIX)
+    return tuple(entries)
+
+
 def _systems_holding(
     repo_root: Path, rev: str, family: str, backend_dir: str | None, table_stems: set[str]
 ) -> set[str]:
     if not backend_dir or not table_stems:
         return set()
-    prefix_depth = len(Path(DATA_PREFIX).parts)
     systems: set[str] = set()
-    for entry_path in _git_ls_tree(repo_root, rev, DATA_PREFIX):
-        rel_parts = Path(entry_path).parts[prefix_depth:]
-        if len(rel_parts) != 5:
-            continue
-        system, entry_family, entry_backend, _version, filename = rel_parts
-        if entry_family == family and entry_backend == backend_dir and Path(filename).stem in table_stems:
-            systems.add(system)
+    data_trees = ((DATA_PREFIX, _git_ls_tree(repo_root, rev, DATA_PREFIX)),)
+    if _git_tree_prefix(repo_root):
+        data_trees += ((AISIMULATE_DATA_PREFIX, _git_ls_tree_sibling_data(repo_root, rev)),)
+    for data_prefix, entries in data_trees:
+        prefix_depth = len(Path(data_prefix).parts)
+        for entry_path in entries:
+            rel_parts = Path(entry_path).parts[prefix_depth:]
+            if len(rel_parts) != 5:
+                continue
+            system, entry_family, entry_backend, _version, filename = rel_parts
+            if entry_family == family and entry_backend == backend_dir and Path(filename).stem in table_stems:
+                systems.add(system)
     return systems
 
 
