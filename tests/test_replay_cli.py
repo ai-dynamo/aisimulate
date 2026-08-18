@@ -89,6 +89,10 @@ def test_engine_cli_runs_shared_synthetic_schema_and_writes_outputs(
                 "4",
                 "--request-count",
                 "1",
+                "--random-range-ratio",
+                "0.8",
+                "--random-seed",
+                "7",
                 "--replay-concurrency",
                 "1",
                 "--report-json",
@@ -102,6 +106,8 @@ def test_engine_cli_runs_shared_synthetic_schema_and_writes_outputs(
 
     assert runner.spec.backend_deployment.deployment_mode == "agg"
     assert runner.spec.workload["request_count"] == 1
+    assert runner.spec.workload["random_range_ratio"] == 0.8
+    assert runner.spec.workload["random_seed"] == 7
     assert runner.output_requirements.include_raw_report is True
     assert runner.output_requirements.capture_per_request is True
     assert json.loads(report_path.read_text()) == {

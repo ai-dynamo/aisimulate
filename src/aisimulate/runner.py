@@ -335,6 +335,13 @@ def _materialize_requests(
     if trace_path is not None:
         if not isinstance(trace_path, str) or not trace_path:
             raise TypeError("trace_path must be a non-empty string")
+        if (
+            workload.get("random_range_ratio", 1.0) != 1.0
+            or workload.get("random_seed", 0) != 0
+        ):
+            raise ValueError(
+                "random_range_ratio and random_seed only apply to synthetic replay"
+            )
         configured_trace_block_size = workload.get("trace_block_size")
         requests = materialize_configured_traffic(
             {
@@ -414,12 +421,23 @@ def _materialize_requests(
     else:
         interval = arrival_interval_ms or 0.0
         arrival_times = [index * interval for index in range(request_count)]
+
+    random_range_ratio = _random_range_ratio(workload.get("random_range_ratio", 1.0))
+    random_seed = _random_seed(workload.get("random_seed", 0))
+    length_rng = random.Random(random_seed)
+    # Follow InferenceX's draw order: sample the complete ISL vector before OSL.
+    input_lengths = _sample_synthetic_lengths(
+        isl, request_count, random_range_ratio, length_rng
+    )
+    output_lengths = _sample_synthetic_lengths(
+        osl, request_count, random_range_ratio, length_rng
+    )
     requests = [
         {
             "id": f"synthetic-{index}",
             "arrival_time_ms": arrival_times[index],
-            "input_tokens": isl,
-            "output_tokens": osl,
+            "input_tokens": input_lengths[index],
+            "output_tokens": output_lengths[index],
             "metadata": None,
         }
         for index in range(request_count)
@@ -727,6 +745,47 @@ def _positive_int(value: JSONValue, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"{name} must be a positive integer")
     return value
+
+
+def _random_range_ratio(value: JSONValue) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value <= 0.0
+        or value > 1.0
+    ):
+        raise ValueError(
+            f"random_range_ratio must be finite and in (0.0, 1.0], got {value!r}"
+        )
+    return float(value)
+
+
+def _random_seed(value: JSONValue) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= 0xFFFF_FFFF_FFFF_FFFF
+    ):
+        raise ValueError("random_seed must be an unsigned 64-bit integer")
+    return value
+
+
+def _sample_synthetic_lengths(
+    upper: int,
+    count: int,
+    random_range_ratio: float,
+    rng: random.Random,
+) -> list[int]:
+    if random_range_ratio == 1.0:
+        return [upper] * count
+    lower = int(upper * random_range_ratio)
+    if lower == 0:
+        raise ValueError(
+            f"random_range_ratio={random_range_ratio} gives a zero-token "
+            f"lower bound for length {upper}"
+        )
+    return [rng.randint(lower, upper) for _ in range(count)]
 
 
 def _require_parallel_match(

@@ -55,6 +55,8 @@ Every `Workload` field:
 | `kv_load_ratio` | `float \| list[float] \| None` | Pareto default: `[0.0, 1.0]` when no other load is set | Candidate-relative closed-loop load (shape 4). A scalar pins the load for any goal; a two-value `[min, max]` range is a continuous Vizier dimension and is allowed only under a Pareto goal. Values are non-negative; a user may set a maximum above `1` to search oversubscription. |
 | `request_rate` | `float \| None` | `None` | Open-loop QPS (shape 2). Mutually exclusive with `concurrency` and `kv_load_ratio`. |
 | `num_request_ratio` | `float \| None` | `None` | Synthetic request count relative to the load: `num_requests = round(num_request_ratio * load)`. Required for synthetic. See below. |
+| `random_range_ratio` | `float` | `1.0` | Uniformly sample each synthetic ISL and OSL from `[int(ratio * configured_length), configured_length]`. Must be in `(0.0, 1.0]`; `1.0` preserves fixed lengths. Single-turn only. |
+| `random_seed` | `int` | `0` | Unsigned 64-bit seed for deterministic synthetic ISL/OSL sampling. |
 | `shared_prefix_ratio` | `float` | `0.0` | Fraction of shared prefix across requests (cache-locality / prefix sharing). |
 | `num_prefix_groups` | `int` | `0` | Number of distinct shared-prefix groups. |
 | `turns_per_session` | `int` | `1` | Turns per multi-turn session. |
@@ -65,7 +67,7 @@ Every `Workload` field:
 | `replay_concurrency` | `int \| None` | `None` | Closed-loop in-flight cap **for a trace** (shape 1c); when set, trace timestamps are ignored. For synthetic closed-loop use `concurrency` instead. |
 
 The synthetic fields are `isl`, `osl`, `request_rate`, `concurrency`, `kv_load_ratio`,
-`num_request_ratio`;
+`num_request_ratio`, `random_range_ratio`, and `random_seed`;
 `shared_prefix_ratio`, `num_prefix_groups`, `turns_per_session`, `inter_turn_delay_ms` are
 shared synthetic knobs carried by `ReplaySpec.workload`.
 
@@ -119,17 +121,29 @@ So the synthetic trace length **scales with the swept load automatically**: with
 yields `5120`. Result is floored at `1`; `num_request_ratio` itself is treated as `0.0`
 when unset (`max(1, …)` keeps at least one request).
 
+## Randomized synthetic lengths
+
+Set `random_range_ratio` below `1.0` to avoid phase-locking fixed-length closed-loop
+requests. AISimulate independently samples every request's ISL and OSL, materializing the
+complete ISL vector before the OSL vector to match InferenceX's draw order. `random_seed`
+makes the generated workload repeatable. The configured `isl` and `osl` remain inclusive
+upper bounds; for example, ratio `0.8` with `isl: 1000` and `osl: 1000` produces lengths
+in `[800, 1000]`.
+
 ## Validation (`Workload._validate_workload`)
 
 - **Trace workload** (`trace_path` set): must **not** set any synthetic field
-  (`isl`, `osl`, `request_rate`, `concurrency`, `kv_load_ratio`, `num_request_ratio`) — error lists the
-  offenders. `replay_concurrency`, if set, must be a positive int.
+  (`isl`, `osl`, `request_rate`, `concurrency`, `kv_load_ratio`, `num_request_ratio`, or
+  non-default random-length options) — error lists the offenders. `replay_concurrency`, if set,
+  must be a positive int.
 - **Synthetic workload** (no `trace_path`): **exactly one** of `request_rate`,
   `concurrency`, or `kv_load_ratio` (none / multiple -> error); `isl`, `osl`,
   `num_request_ratio` are all
   **required**; `replay_concurrency` is rejected (it is trace-only — use `concurrency`).
   `concurrency` must be one positive int; `request_rate`, `isl`, `osl`, and
   `num_request_ratio` must be positive. KV-load values must be finite and non-negative.
+  `random_range_ratio` must be finite and in `(0.0, 1.0]`, `random_seed` must be an
+  unsigned 64-bit integer, and randomized lengths currently require a single-turn workload.
 - **Ranged KV load only under Pareto** — `[min, max]` must contain exactly two values with
   `min < max`; `SmartSearchConfig._validate_kv_load_ratio_range` rejects it for scalar
   goals. A scalar `kv_load_ratio` is valid for every goal. A synthetic Pareto config that
