@@ -3,7 +3,42 @@
 
 [workspace]
 members = [
-  "crates/aisimulate-core",
-  "crates/tests/public-api",
+    "crates/core",
+    "crates/python",
 ]
-resolver = "2"
+# Keep the imported AIC estimator workspace independent until its public
+# `aisimulate-core` package is consolidated with the package already on main.
+# Cargo does not allow two packages with the same name in one workspace.
+exclude = [
+    "crates/aisimulate-core",
+    "crates/tests/public-api",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0-dev.1"
+edition = "2024"
+description = "Backend-neutral inference simulation and deployment configuration search"
+authors = ["NVIDIA Inc. <sw-dl-dynamo@nvidia.com>"]
+license = "Apache-2.0"
+homepage = "https://github.com/ai-dynamo/aisimulate"
+repository = "https://github.com/ai-dynamo/aisimulate.git"
+keywords = ["llm", "genai", "inference", "simulation", "nvidia"]
+
+[workspace.dependencies]
+aisimulate-core = { path = "crates/core", version = "0.1.0-dev.1" }
+anyhow = "1"
+blake3 = "1"
+derive_builder = "0.20"
+rand = "0.9.2"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2.0.17"
+tracing = "0.1"
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+xxhash-rust = { version = "0.8", features = ["xxh3", "const_xxh3"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
