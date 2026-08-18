@@ -17,7 +17,6 @@ SWEEPER = "@ai-dynamo/aisimulate-sweeper-codeowners"
 REPLAY = "@ai-dynamo/aisimulate-replay-codeowners"
 MOCKER = "@ai-dynamo/aisimulate-mocker-codeowners"
 INFRA = "@ai-dynamo/aisimulate-infra-codeowners"
-DEVOPS = "@ai-dynamo/devops"
 AREA_TEAMS = {FPE, SWEEPER, REPLAY, MOCKER}
 
 
@@ -102,12 +101,15 @@ def test_representative_routing_contract() -> None:
         INFRA,
         MAINTAINERS,
     }
-    assert _owners(".github/workflows/codeowners.yml") == {DEVOPS}
-    assert _owners(".github/codeowners/areas.yaml") == {DEVOPS}
-    assert _owners("python/aisimulate/.github/codeowners/areas.yaml") == {DEVOPS}
-    assert _owners("python/aisimulate/CODEOWNERS") == {DEVOPS}
-    assert _owners("crates/aisimulate-core/deny.toml") == {DEVOPS}
-    assert _owners("CODEOWNERS") == {DEVOPS}
+    assert _owners(".github/workflows/codeowners.yml") == {INFRA, MAINTAINERS}
+    assert _owners(".github/codeowners/areas.yaml") == {INFRA, MAINTAINERS}
+    assert _owners("python/aisimulate/.github/codeowners/areas.yaml") == {
+        INFRA,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/CODEOWNERS") == {INFRA, MAINTAINERS}
+    assert _owners("crates/aisimulate-core/deny.toml") == {FPE, MAINTAINERS}
+    assert _owners("CODEOWNERS") == {INFRA, MAINTAINERS}
     assert _owners("README.md") == {MAINTAINERS}
 
 

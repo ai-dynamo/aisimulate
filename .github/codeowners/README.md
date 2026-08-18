@@ -70,5 +70,7 @@ The full AIC source import preserves `python/aisimulate/CODEOWNERS` and
 `python/aisimulate/.github/codeowners/` as inactive provenance. GitHub only
 discovers CODEOWNERS at the repository root, `.github/`, or `docs/`, so the
 generated root file in this PR is the only active repository policy. The root
-policy routes changes to those preserved ownership artifacts to DevOps to keep
-the active and historical policies from being confused.
+policy routes changes to those preserved ownership artifacts to AISimulate
+Infra plus maintainers to keep the active and historical policies from being
+confused. The DevOps team is not listed in the active policy and is never a
+required code-owner approver.

@@ -6,7 +6,6 @@
 #   python .github/codeowners/who_owns.py --codeowners CODEOWNERS <path> ...  # owners of specific paths
 #
 # Area index (base owner per subsystem; the catch-all owns everything else):
-#   devops               @ai-dynamo/devops
 #   forward-pass-engine  @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 #   infra                @ai-dynamo/aisimulate-infra-codeowners
 #   maintainers          @ai-dynamo/access-aisimulate-maintain
@@ -22,7 +21,6 @@
 #   @ai-dynamo/aisimulate-mocker-codeowners
 #   @ai-dynamo/aisimulate-replay-codeowners
 #   @ai-dynamo/aisimulate-sweeper-codeowners
-#   @ai-dynamo/devops
 
 *                                                    @ai-dynamo/access-aisimulate-maintain
 
@@ -63,6 +61,7 @@
 /.github/                                            @ai-dynamo/aisimulate-infra-codeowners
 /scripts/                                            @ai-dynamo/aisimulate-infra-codeowners
 /.gitignore                                          @ai-dynamo/aisimulate-infra-codeowners
+/CODEOWNERS                                          @ai-dynamo/aisimulate-infra-codeowners
 /Cargo.lock                                          @ai-dynamo/aisimulate-infra-codeowners
 /Cargo.toml                                          @ai-dynamo/aisimulate-infra-codeowners
 /pyproject.toml                                      @ai-dynamo/aisimulate-infra-codeowners
@@ -74,7 +73,7 @@
 
 # --- Shared ownership: multi-team (any one approves; wins via last-match) ---
 /scripts/                                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
-/CODEOWNERS                                          @ai-dynamo/devops
+/CODEOWNERS                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /Cargo.lock                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /Cargo.toml                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/sweeper/                                       @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -86,7 +85,7 @@
 /crates/core/tests/                                  @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/python/src/                                  @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/                                  @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
-/.github/codeowners/                                 @ai-dynamo/devops
+/.github/codeowners/                                 @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_runner.py                                @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/README.md                               @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /src/aisimulate/aic.py                               @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -110,11 +109,11 @@
 /python/aisimulate/.github/                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/AGENTS.md                         @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitignore                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
-/python/aisimulate/CODEOWNERS                        @ai-dynamo/devops
+/python/aisimulate/CODEOWNERS                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/pytest.ini                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/SECURITY.md                       @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.dockerignore                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
-/.github/workflows/codeowners.yml                    @ai-dynamo/devops
+/.github/workflows/codeowners.yml                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/engine/timing.rs                    @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitattributes                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/DEVELOPMENT.md                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -124,9 +123,6 @@
 /python/aisimulate/.coderabbit.yaml                  @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/eslint.config.js                  @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate-core/pyproject.toml               @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
-/python/aisimulate/.github/codeowners/               @ai-dynamo/devops
+/python/aisimulate/.github/codeowners/               @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.pre-commit-config.yaml           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
-/python/aisimulate/.github/workflows/codeowners.yml  @ai-dynamo/devops
-
-# --- File-type ownership: unanchored patterns (wins via last-match at any depth) ---
-deny.toml                                            @ai-dynamo/devops
+/python/aisimulate/.github/workflows/codeowners.yml  @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
