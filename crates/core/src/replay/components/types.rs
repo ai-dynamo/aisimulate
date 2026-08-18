@@ -187,10 +187,10 @@ impl<Events: EngineEventBatch> EngineEffects<Events> {
 
 /// Accumulated traffic statistics returned when the replay traffic accumulator is drained.
 ///
-/// IMPORTANT: When fields here are added or renamed, update the PyO3
-/// binding in ``lib/bindings/python/rust/llm/replay.rs`` (drain_traffic
-/// method) so the exported JSON dict matches.  The Python adapter in
-/// ``replay_adapter.py`` reads these keys by name.
+/// IMPORTANT: When fields here are added or renamed, update the PyO3 binding in the
+/// `ai-dynamo/dynamo` repository at `lib/bindings/python/rust/llm/replay.rs`
+/// (`drain_traffic`) so the exported JSON dict matches. The Python adapter in
+/// `replay_adapter.py` reads these keys by name.
 #[derive(Debug, Clone)]
 pub struct TrafficStats {
     pub duration_s: f64,
