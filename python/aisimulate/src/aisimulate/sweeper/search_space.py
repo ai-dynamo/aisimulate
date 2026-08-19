@@ -519,11 +519,31 @@ def enumerate_branches(
                         support.setdefault(cfg, set()).add(backend)
 
         if not support:
+            enumeration_report = (
+                {
+                    "deployment_mode": deployment_mode,
+                    "counts": {
+                        name: enumeration_counts[name]
+                        for name in ("considered", "accepted", "pruned")
+                    },
+                    "pruning_diagnostics": [
+                        diagnostic.as_dict()
+                        for diagnostic in pruning_diagnostics
+                    ],
+                }
+                if pruning_diagnostics or enumeration_counts
+                else None
+            )
             if pinned is not None:
                 # an explicit pin that no backend can run is a user error -> fail fast
                 raise NoViableParallelConfig(
                     f"deployment_mode={deployment_mode!r}: no configured backend can run the pinned "
-                    f"parallel_configs (illegal shape, replay-incompatible backend, or no perf DB)"
+                    f"parallel_configs (illegal shape, replay-incompatible backend, or no perf DB)",
+                    enumeration_reports=(
+                        (enumeration_report,)
+                        if enumeration_report is not None
+                        else ()
+                    ),
                 )
             # natural infeasibility for this mode -> skip it, keep any viable modes
             warnings.warn(
@@ -536,20 +556,8 @@ def enumerate_branches(
                 ),
                 stacklevel=2,
             )
-            if pruning_diagnostics or enumeration_counts:
-                skipped_enumeration_reports.append(
-                    {
-                        "deployment_mode": deployment_mode,
-                        "counts": {
-                            name: enumeration_counts[name]
-                            for name in ("considered", "accepted", "pruned")
-                        },
-                        "pruning_diagnostics": [
-                            diagnostic.as_dict()
-                            for diagnostic in pruning_diagnostics
-                        ],
-                    }
-                )
+            if enumeration_report is not None:
+                skipped_enumeration_reports.append(enumeration_report)
             skipped.append(deployment_mode)
             continue
         if pinned is not None:
