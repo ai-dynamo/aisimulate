@@ -15,7 +15,14 @@ The complete candidate ledger is the source of truth. Scalar top-N and Pareto fr
 refer to ledger rows by stable `candidate_id`; they do not discard the other evaluated candidates.
 
 ```python
-result = sweeper.run_result(config, top_n=5, candidate_retention="all")
+from aisimulate.sweeper import LoadTarget
+
+result = sweeper.run_result(
+    config,
+    top_n=5,
+    candidate_retention="all",
+    load_target=LoadTarget(request_rate=250.0, max_gpus=64),
+)
 
 result.to_json()                 # lossless interchange
 result.to_csv()                  # documented analysis view
@@ -37,6 +44,7 @@ Pareto, QA, and configuration-selection code should consume `SweepResult`.
 | `candidates` | Retained candidate records in evaluation order. |
 | `views.top_n` | Best-first scalar candidate IDs, limited by `top_n`. |
 | `views.pareto_front` | Non-dominated candidate IDs in frontier order. |
+| `load_recommendation` | Optional target plus ranked minimum-GPU records, or actionable no-feasible reasons. |
 | `provenance` | Search strategy, run ID/time, implementation, input fingerprint, and validated input config. |
 
 `views.top_n` and `views.pareto_front` are mutually exclusive. An empty result has empty views and
@@ -47,6 +55,21 @@ objective's natural direction. Engine-only and adapter-backed candidates share t
 `analyze_candidates` path for strict aggregate SLA filtering, Pareto dominance, scalar ranking,
 and deterministic ties. This keeps cross-mode/backend comparison independent of result arrival
 order while preserving each candidate's full configuration and metrics.
+
+### Load recommendation
+
+Passing `load_target` to `run_result` sizes the feasible ledger rows after replay and stores the
+derived view in the same `SweepResult`; it does not create a second result envelope or rerun a
+candidate. Every recommendation references a retained `candidate_id`. With
+`candidate_retention: views`, recommendation rows are retained even when they are outside scalar
+top-N or the Pareto front.
+
+The target preserves request rate or concurrency, `max_gpus`, and `allow_partial`. Each ranked
+record preserves `capacity_per_replica`, `capacity_per_gpu`, the true uncapped
+`replicas_needed`/`total_gpus_needed`, capped `deployed_replicas`/`deployed_gpus`,
+`supported_load`, `load_served_pct`, `limiting_role`, and `partial`. If no candidate can be sized,
+the target remains present, recommendations are empty, and `no_feasible_reasons` explains each
+rejection. Recommendation success or failure never changes candidate status or run counts.
 
 ### Candidate record
 
@@ -117,10 +140,19 @@ mapping keys, includes empty-run provenance, and round-trips through `SweepResul
 `SweepResult.to_csv()` is a one-row-per-retained-candidate analysis view with these columns:
 
 `schema_version`, `candidate_id`, `status`, `reason_category`, `reason`, `used_gpus`, `score`,
-`config_json`, `metrics_json`, `objectives_json`, `provenance_json`, `is_top_n`, and `is_pareto`.
+`config_json`, `metrics_json`, `objectives_json`, `provenance_json`, `is_top_n`, `is_pareto`,
+`load_target_kind`, `load_target_value`, `load_target_max_gpus`, `load_target_allow_partial`,
+`recommendation_capacity_per_replica`, `recommendation_capacity_per_gpu`,
+`recommendation_replicas_needed`, `recommendation_total_gpus_needed`,
+`recommendation_deployed_replicas`, `recommendation_deployed_gpus`,
+`recommendation_supported_load`, `recommendation_load_served_pct`,
+`recommendation_limiting_role`, `recommendation_partial`, and
+`recommendation_no_feasible_reasons_json`.
 
-Nested fields are canonical JSON cells rather than lossy dotted columns. CSV is not the interchange
-format: an empty CSV has only its header and therefore cannot carry run provenance or counts.
+Nested fields and no-feasible reasons use canonical JSON cells rather than lossy dotted columns.
+Target fields repeat on retained candidate rows and recommendation fields are populated only on the
+referenced candidate row. CSV is not the interchange format: an empty CSV has only its header and
+therefore cannot carry run provenance, counts, or an empty-run recommendation failure.
 
 ## Legacy AIC mapping
 

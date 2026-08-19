@@ -20,6 +20,9 @@ from aisimulate.sweeper import (
     CandidateRecord,
     CandidateRetention,
     CandidateStatus,
+    LoadRecommendationRecord,
+    LoadRecommendationView,
+    LoadTarget,
     OperationProvenance,
     ReasonCategory,
     ReplayReport,
@@ -163,6 +166,48 @@ def test_result_json_round_trip_is_lossless_and_schema_versioned():
     assert SweepResult.model_json_schema()["properties"]["schema_version"]["const"] == "1.0"
 
 
+def test_result_json_round_trip_preserves_full_load_recommendation():
+    payload = _complete_result().model_dump(mode="json")
+    payload["load_recommendation"] = LoadRecommendationView(
+        target=LoadTarget(request_rate=15, max_gpus=8, allow_partial=True),
+        recommendations=[
+            LoadRecommendationRecord(
+                candidate_id="candidate-000001",
+                capacity_per_replica=10,
+                capacity_per_gpu=1.25,
+                replicas_needed=2,
+                total_gpus_needed=16,
+                deployed_replicas=1,
+                deployed_gpus=8,
+                supported_load=10,
+                load_served_pct=1000 / 15,
+                limiting_role="decode",
+                partial=True,
+            )
+        ],
+    ).model_dump(mode="json")
+    result = SweepResult.model_validate(payload)
+
+    decoded = json.loads(result.to_json(indent=None))
+    recommendation = decoded["load_recommendation"]["recommendations"][0]
+
+    assert decoded["schema_version"] == RESULT_SCHEMA_VERSION
+    assert recommendation == {
+        "candidate_id": "candidate-000001",
+        "capacity_per_replica": 10.0,
+        "capacity_per_gpu": 1.25,
+        "replicas_needed": 2,
+        "total_gpus_needed": 16,
+        "deployed_replicas": 1,
+        "deployed_gpus": 8,
+        "supported_load": 10.0,
+        "load_served_pct": 1000 / 15,
+        "limiting_role": "decode",
+        "partial": True,
+    }
+    assert SweepResult.from_json(result.to_json()) == result
+
+
 def test_result_rejects_unknown_schema_version_and_inconsistent_counts():
     payload = json.loads(_complete_result().to_json())
     payload["schema_version"] = "2.0"
@@ -192,6 +237,42 @@ def test_flat_csv_is_one_row_per_candidate_with_canonical_json_cells():
     assert json.loads(rows[0]["config_json"])["backend"] == "trtllm"
     assert json.loads(rows[0]["provenance_json"])["operations"][0]["source"] == "silicon"
     assert rows[3]["reason_category"] == "runtime_timeout"
+
+
+def test_flat_csv_expands_load_target_and_recommendation_fields():
+    payload = _complete_result().model_dump(mode="json")
+    payload["load_recommendation"] = {
+        "target": {"request_rate": 15, "max_gpus": 8, "allow_partial": True},
+        "recommendations": [
+            {
+                "candidate_id": "candidate-000001",
+                "capacity_per_replica": 10,
+                "capacity_per_gpu": 1.25,
+                "replicas_needed": 2,
+                "total_gpus_needed": 16,
+                "deployed_replicas": 1,
+                "deployed_gpus": 8,
+                "supported_load": 10,
+                "load_served_pct": 1000 / 15,
+                "limiting_role": "decode",
+                "partial": True,
+            }
+        ],
+    }
+
+    rows = list(
+        csv.DictReader(io.StringIO(SweepResult.model_validate(payload).to_csv()))
+    )
+
+    assert rows[0]["load_target_kind"] == "request_rate"
+    assert rows[0]["load_target_value"] == "15.0"
+    assert rows[0]["load_target_max_gpus"] == "8"
+    assert rows[0]["load_target_allow_partial"] == "True"
+    assert rows[0]["recommendation_total_gpus_needed"] == "16"
+    assert rows[0]["recommendation_deployed_gpus"] == "8"
+    assert rows[0]["recommendation_limiting_role"] == "decode"
+    assert rows[0]["recommendation_partial"] == "True"
+    assert rows[1]["recommendation_total_gpus_needed"] == ""
 
 
 class _Sampler:
@@ -227,6 +308,7 @@ class _Runner:
         return ReplayReport(
             metrics={
                 "output_throughput_tok_s": float(max_num_seqs),
+                "request_throughput_rps": float(max_num_seqs) / 32,
                 "mean_power_w": 400.0,
             },
             metadata={
@@ -355,6 +437,109 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
     assert views_only.counts.feasible == 2
     assert len(views_only.candidates) == 1
     assert views_only.selected_candidates[0].score == 512.0
+
+
+def test_run_result_preserves_mixed_full_and_partial_load_recommendations(monkeypatch):
+    parallel_config = ReplicaParallelConfig(
+        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
+    )
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel_config,),
+        supported_backends={parallel_config: frozenset({"trtllm"})},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    monkeypatch.setattr(
+        search_module,
+        "enumerate_branches",
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+    )
+    monkeypatch.setattr(
+        search_module,
+        "resolve_backend_version",
+        lambda hardware, backend: "1.0",
+    )
+
+    result = Sweeper(
+        runner_factory=_RunnerFactory(),
+        sampler_factory=_Sampler,
+        show_progress=False,
+    ).run_result(
+        _config(),
+        top_n=1,
+        candidate_retention=CandidateRetention.VIEWS,
+        load_target=LoadTarget(request_rate=20, max_gpus=16, allow_partial=True),
+        recommendation_top_n=2,
+    )
+
+    assert result.counts.feasible == 2
+    assert len(result.candidates) == 2
+    assert result.load_recommendation is not None
+    recommendations = result.load_recommendation.recommendations
+    assert [item.partial for item in recommendations] == [False, True]
+    assert recommendations[0].total_gpus_needed == 16
+    assert recommendations[0].deployed_gpus == 16
+    assert recommendations[0].load_served_pct == 100
+    assert recommendations[1].total_gpus_needed == 24
+    assert recommendations[1].deployed_gpus == 16
+    assert recommendations[1].supported_load == 16
+    assert recommendations[1].limiting_role == "agg"
+    assert SweepResult.from_json(result.to_json()) == result
+
+
+class _NoRequestCapacityRunner(_Runner):
+    def run(self, spec):
+        report = super().run(spec)
+        report.metrics.pop("request_throughput_rps")
+        return report
+
+
+class _NoRequestCapacityRunnerFactory(_RunnerFactory):
+    def create(self, worker_id):
+        del worker_id
+        return _NoRequestCapacityRunner()
+
+
+def test_run_result_preserves_no_feasible_recommendation_reasons(monkeypatch):
+    parallel_config = ReplicaParallelConfig(
+        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
+    )
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel_config,),
+        supported_backends={parallel_config: frozenset({"trtllm"})},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    monkeypatch.setattr(
+        search_module,
+        "enumerate_branches",
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+    )
+    monkeypatch.setattr(
+        search_module,
+        "resolve_backend_version",
+        lambda hardware, backend: "1.0",
+    )
+
+    result = Sweeper(
+        runner_factory=_NoRequestCapacityRunnerFactory(),
+        sampler_factory=_Sampler,
+        show_progress=False,
+    ).run_result(_config(), load_target=LoadTarget(request_rate=20))
+
+    assert result.counts.feasible == 2
+    assert result.load_recommendation is not None
+    assert result.load_recommendation.recommendations == []
+    assert len(result.load_recommendation.no_feasible_reasons) == 2
+    assert all(
+        "does not expose positive finite request_rate capacity" in reason
+        for reason in result.load_recommendation.no_feasible_reasons
+    )
+    rows = list(csv.DictReader(io.StringIO(result.to_csv())))
+    assert json.loads(rows[0]["recommendation_no_feasible_reasons_json"]) == list(
+        result.load_recommendation.no_feasible_reasons
+    )
+    assert SweepResult.from_json(result.to_json()) == result
 
 
 def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monkeypatch):

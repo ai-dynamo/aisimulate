@@ -68,6 +68,16 @@ candidate's complete `used_gpus`, so every aggregate, P/D, encoder, attention, a
 worker represented by the evaluator is included without topology logic in the sizing
 layer.
 
-The canonical Sweeper result envelope owns persistent run output. Until that envelope
-adopts load recommendations, `LoadRecommendation.model_dump_json()` is the lossless
-machine-readable form; deployment artifact generation remains outside this module.
+## Canonical run result
+
+Use `Sweeper.run_result(..., load_target=target)` when recommendation output must travel with the
+candidate ledger, counts, and provenance. The resulting `SweepResult.load_recommendation` stores
+the target and candidate-ID-based recommendation records. It preserves both uncapped and deployed
+sizing, served load, partial status, and the limiting role without embedding duplicate candidates.
+If sizing produces no recommendation, the canonical result remains successful and preserves the
+actionable rejection list in `no_feasible_reasons`; candidate status and counts are unchanged.
+
+`SweepResult.to_json()` is the strict lossless interchange form. `to_csv()` repeats flattened target
+fields on retained rows and fills recommendation fields on the referenced candidate rows.
+`recommend_min_gpus` and `LoadRecommendation` remain available for standalone post-processing;
+deployment artifact generation remains outside this module.

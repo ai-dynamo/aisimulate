@@ -55,6 +55,7 @@ from .provider import (
     SweepConfigProvider,
     SweepContext,
 )
+from .recommend import LoadTarget, NoFeasibleLoadRecommendation, recommend_min_gpus
 from .replay import (
     REPLAY_SPEC_API_VERSION,
     ReplayReport,
@@ -68,6 +69,8 @@ from .result import (
     CandidateRecord,
     CandidateRetention,
     CandidateStatus,
+    LoadRecommendationRecord,
+    LoadRecommendationView,
     ReasonCategory,
     ResultViews,
     SearchStrategy,
@@ -821,6 +824,8 @@ class Sweeper:
         *,
         top_n: int | None = 5,
         candidate_retention: CandidateRetention | str = CandidateRetention.ALL,
+        load_target: LoadTarget | None = None,
+        recommendation_top_n: int = 5,
         on_round: Callable[[int, list[Candidate]], None] | None = None,
     ) -> SweepResult:
         """Run the sweep and return the canonical schema-versioned result.
@@ -833,11 +838,14 @@ class Sweeper:
 
         ``candidate_retention="all"`` preserves every unique feasible, infeasible,
         unsupported, timed-out, and failed candidate. ``"feasible"`` retains only
-        feasible rows and ``"views"`` retains only the scalar top-N or Pareto front;
-        run-wide counts always describe the complete run.
+        feasible rows and ``"views"`` retains only candidates referenced by the scalar
+        top-N, Pareto, or load-recommendation views; run-wide counts always describe
+        the complete run. Passing ``load_target`` adds a canonical minimum-GPU view.
         """
         if top_n is not None and top_n < 1:
             raise ValueError(f"top_n must be positive or None, got {top_n}")
+        if recommendation_top_n < 1:
+            raise ValueError(f"recommendation_top_n must be positive, got {recommendation_top_n}")
         retention = CandidateRetention(candidate_retention)
         runner_factory = self._runner_factory
         providers = self._providers
@@ -1396,6 +1404,32 @@ class Sweeper:
             pareto_front=selected_ids if goal.is_pareto else [],
             top_n=[] if goal.is_pareto else selected_ids,
         )
+        load_recommendation: LoadRecommendationView | None = None
+        if load_target is not None:
+            try:
+                sized = recommend_min_gpus(
+                    candidates,
+                    load_target,
+                    goal=goal,
+                    osl=config.workload.osl or 1,
+                    top_n=recommendation_top_n,
+                )
+            except NoFeasibleLoadRecommendation as exc:
+                load_recommendation = LoadRecommendationView(
+                    target=load_target,
+                    no_feasible_reasons=list(exc.reasons) or ["no candidates were provided"],
+                )
+            else:
+                load_recommendation = LoadRecommendationView(
+                    target=load_target,
+                    recommendations=[
+                        LoadRecommendationRecord.from_recommendation(
+                            record_id_by_candidate_object[id(recommendation.candidate)],
+                            recommendation,
+                        )
+                        for recommendation in sized
+                    ],
+                )
         status_counts = dict.fromkeys(CandidateStatus, 0)
         for record in candidate_records:
             status_counts[record.status] += 1
@@ -1420,8 +1454,13 @@ class Sweeper:
                 candidate_records,
                 retention=retention,
                 views=views,
+                additional_view_ids=(
+                    item.candidate_id
+                    for item in (load_recommendation.recommendations if load_recommendation is not None else [])
+                ),
             ),
             views=views,
+            load_recommendation=load_recommendation,
             provenance=make_run_provenance(
                 config,
                 search_strategy=SearchStrategy.OPTIMIZER_GUIDED,

@@ -15,6 +15,7 @@ import hashlib
 import io
 import json
 import math
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
@@ -23,6 +24,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from .config import Candidate, SmartSearchConfig
+from .recommend import LoadRecommendation, LoadTarget
 from .replay import canonical_json, validate_json_value
 
 RESULT_SCHEMA_VERSION = "1.0"
@@ -184,6 +186,85 @@ class ResultViews(BaseModel):
     pareto_front: list[str] = Field(default_factory=list)
 
 
+class LoadRecommendationRecord(BaseModel):
+    """One retained candidate's load-sizing result.
+
+    The record references the canonical candidate ledger rather than embedding a
+    second copy of the candidate. Uncapped fields always describe the true minimum;
+    deployed fields describe the optional GPU-capped deployment.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(pattern=r"^candidate-[0-9]{6,}$")
+    capacity_per_replica: float = Field(gt=0, allow_inf_nan=False)
+    capacity_per_gpu: float = Field(gt=0, allow_inf_nan=False)
+    replicas_needed: int = Field(ge=1)
+    total_gpus_needed: int = Field(ge=1)
+    deployed_replicas: int = Field(ge=1)
+    deployed_gpus: int = Field(ge=1)
+    supported_load: float = Field(gt=0, allow_inf_nan=False)
+    load_served_pct: float = Field(ge=0, le=100, allow_inf_nan=False)
+    limiting_role: str = Field(min_length=1)
+    partial: bool
+
+    @classmethod
+    def from_recommendation(
+        cls,
+        candidate_id: str,
+        recommendation: LoadRecommendation,
+    ) -> LoadRecommendationRecord:
+        """Reference a standalone sizing result from the canonical ledger."""
+
+        return cls(
+            candidate_id=candidate_id,
+            capacity_per_replica=recommendation.capacity_per_replica,
+            capacity_per_gpu=recommendation.capacity_per_gpu,
+            replicas_needed=recommendation.replicas_needed,
+            total_gpus_needed=recommendation.total_gpus_needed,
+            deployed_replicas=recommendation.deployed_replicas,
+            deployed_gpus=recommendation.deployed_gpus,
+            supported_load=recommendation.supported_load,
+            load_served_pct=recommendation.load_served_pct,
+            limiting_role=recommendation.limiting_role,
+            partial=recommendation.partial,
+        )
+
+
+class LoadRecommendationView(BaseModel):
+    """Target, ranked deployments, or reasons that no deployment was feasible."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: LoadTarget
+    recommendations: list[LoadRecommendationRecord] = Field(default_factory=list)
+    no_feasible_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_outcome(self) -> LoadRecommendationView:
+        candidate_ids = [item.candidate_id for item in self.recommendations]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("load recommendation candidate IDs must be unique")
+        if self.recommendations and self.no_feasible_reasons:
+            raise ValueError("a successful load recommendation cannot carry no-feasible reasons")
+        if not self.recommendations and not self.no_feasible_reasons:
+            raise ValueError("an empty load recommendation requires no-feasible reasons")
+        if any(not reason for reason in self.no_feasible_reasons):
+            raise ValueError("no-feasible reasons cannot be empty")
+        for item in self.recommendations:
+            if item.deployed_replicas > item.replicas_needed:
+                raise ValueError("deployed_replicas cannot exceed replicas_needed")
+            expected_supported_load = item.capacity_per_replica * item.deployed_replicas
+            if not math.isclose(item.supported_load, expected_supported_load):
+                raise ValueError("supported_load must equal capacity_per_replica * deployed_replicas")
+            expected_served_pct = min(100.0, item.supported_load / self.target.value * 100.0)
+            if not math.isclose(item.load_served_pct, expected_served_pct):
+                raise ValueError("load_served_pct must match supported_load and target")
+            if item.partial != (item.load_served_pct < 100.0):
+                raise ValueError("partial must indicate load_served_pct below 100")
+        return self
+
+
 class SweepRunProvenance(BaseModel):
     """Run-wide reproducibility information."""
 
@@ -213,6 +294,7 @@ class SweepResult(BaseModel):
     counts: SweepCounts
     candidates: list[CandidateRecord]
     views: ResultViews
+    load_recommendation: LoadRecommendationView | None = None
     provenance: SweepRunProvenance
 
     @model_validator(mode="after")
@@ -221,7 +303,11 @@ class SweepResult(BaseModel):
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError("candidate IDs must be unique")
         retained_ids = set(candidate_ids)
-        missing = (set(self.views.top_n) | set(self.views.pareto_front)) - retained_ids
+        recommendation_ids = {
+            item.candidate_id
+            for item in (self.load_recommendation.recommendations if self.load_recommendation is not None else [])
+        }
+        missing = (set(self.views.top_n) | set(self.views.pareto_front) | recommendation_ids) - retained_ids
         if missing:
             raise ValueError(f"result views reference candidates not retained: {sorted(missing)}")
         if self.views.top_n and self.views.pareto_front:
@@ -233,9 +319,21 @@ class SweepResult(BaseModel):
             if len(view) != len(set(view)):
                 raise ValueError(f"{name} candidate IDs must be unique")
         by_id = {candidate.candidate_id: candidate for candidate in self.candidates}
+        if self.load_recommendation is not None:
+            for item in self.load_recommendation.recommendations:
+                used_gpus = by_id[item.candidate_id].used_gpus
+                if used_gpus is None or used_gpus < 1:
+                    raise ValueError("a load recommendation requires a positive candidate GPU count")
+                if item.total_gpus_needed != item.replicas_needed * used_gpus:
+                    raise ValueError("total_gpus_needed must match replicas_needed and candidate GPUs")
+                if item.deployed_gpus != item.deployed_replicas * used_gpus:
+                    raise ValueError("deployed_gpus must match deployed_replicas and candidate GPUs")
+                expected_capacity_per_gpu = item.capacity_per_replica / used_gpus
+                if not math.isclose(item.capacity_per_gpu, expected_capacity_per_gpu):
+                    raise ValueError("capacity_per_gpu must match capacity_per_replica and candidate GPUs")
         non_feasible = [
             candidate_id
-            for candidate_id in self.views.top_n + self.views.pareto_front
+            for candidate_id in (self.views.top_n + self.views.pareto_front + list(recommendation_ids))
             if by_id[candidate_id].status is not CandidateStatus.FEASIBLE
         ]
         if non_feasible:
@@ -313,12 +411,34 @@ class SweepResult(BaseModel):
             "provenance_json",
             "is_top_n",
             "is_pareto",
+            "load_target_kind",
+            "load_target_value",
+            "load_target_max_gpus",
+            "load_target_allow_partial",
+            "recommendation_capacity_per_replica",
+            "recommendation_capacity_per_gpu",
+            "recommendation_replicas_needed",
+            "recommendation_total_gpus_needed",
+            "recommendation_deployed_replicas",
+            "recommendation_deployed_gpus",
+            "recommendation_supported_load",
+            "recommendation_load_served_pct",
+            "recommendation_limiting_role",
+            "recommendation_partial",
+            "recommendation_no_feasible_reasons_json",
         ]
         writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         top_n = set(self.views.top_n)
         pareto = set(self.views.pareto_front)
+        load_view = self.load_recommendation
+        recommendations = (
+            {recommendation.candidate_id: recommendation for recommendation in load_view.recommendations}
+            if load_view is not None
+            else {}
+        )
         for candidate in self.candidates:
+            recommendation = recommendations.get(candidate.candidate_id)
             writer.writerow(
                 {
                     "schema_version": self.schema_version,
@@ -336,6 +456,47 @@ class SweepResult(BaseModel):
                     "provenance_json": canonical_json(candidate.provenance),
                     "is_top_n": candidate.candidate_id in top_n,
                     "is_pareto": candidate.candidate_id in pareto,
+                    "load_target_kind": load_view.target.kind if load_view is not None else "",
+                    "load_target_value": load_view.target.value if load_view is not None else "",
+                    "load_target_max_gpus": (
+                        load_view.target.max_gpus
+                        if load_view is not None and load_view.target.max_gpus is not None
+                        else ""
+                    ),
+                    "load_target_allow_partial": (load_view.target.allow_partial if load_view is not None else ""),
+                    "recommendation_capacity_per_replica": (
+                        recommendation.capacity_per_replica if recommendation is not None else ""
+                    ),
+                    "recommendation_capacity_per_gpu": (
+                        recommendation.capacity_per_gpu if recommendation is not None else ""
+                    ),
+                    "recommendation_replicas_needed": (
+                        recommendation.replicas_needed if recommendation is not None else ""
+                    ),
+                    "recommendation_total_gpus_needed": (
+                        recommendation.total_gpus_needed if recommendation is not None else ""
+                    ),
+                    "recommendation_deployed_replicas": (
+                        recommendation.deployed_replicas if recommendation is not None else ""
+                    ),
+                    "recommendation_deployed_gpus": (
+                        recommendation.deployed_gpus if recommendation is not None else ""
+                    ),
+                    "recommendation_supported_load": (
+                        recommendation.supported_load if recommendation is not None else ""
+                    ),
+                    "recommendation_load_served_pct": (
+                        recommendation.load_served_pct if recommendation is not None else ""
+                    ),
+                    "recommendation_limiting_role": (
+                        recommendation.limiting_role if recommendation is not None else ""
+                    ),
+                    "recommendation_partial": (recommendation.partial if recommendation is not None else ""),
+                    "recommendation_no_feasible_reasons_json": (
+                        canonical_json(load_view.no_feasible_reasons)
+                        if load_view is not None and load_view.no_feasible_reasons
+                        else ""
+                    ),
                 }
             )
         return output.getvalue()
@@ -472,6 +633,7 @@ def retain_candidate_records(
     *,
     retention: CandidateRetention,
     views: ResultViews,
+    additional_view_ids: Iterable[str] = (),
 ) -> list[CandidateRecord]:
     """Apply the requested payload-retention policy without changing run counts."""
 
@@ -479,5 +641,5 @@ def retain_candidate_records(
         return records
     if retention is CandidateRetention.FEASIBLE:
         return [record for record in records if record.status is CandidateStatus.FEASIBLE]
-    selected = set(views.top_n) | set(views.pareto_front)
+    selected = set(views.top_n) | set(views.pareto_front) | set(additional_view_ids)
     return [record for record in records if record.candidate_id in selected]
