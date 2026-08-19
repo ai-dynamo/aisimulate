@@ -55,7 +55,7 @@ Planner, or online adapters remain available through `python -m dynamo.replay`
 when `ai-dynamo` is installed separately. Both commands share the engine,
 topology, traffic, replay-mode, SLA, and output arguments; Dynamo adds its
 adapter options. For configuration search, call
-`Sweeper(runner_factory=...).run(config)` or start from an example under
+`Sweeper(runner_factory=...).run_result(config)` or start from an example under
 [`examples/sweeper`](examples/sweeper/README.md).
 
 For example, run one engine-only synthetic replay with fixed timing:
@@ -96,14 +96,16 @@ from aisimulate.sweeper import SmartSearchConfig, Sweeper
 from dynamo.replay.simulation import DynamoReplayRunnerFactory
 
 config = SmartSearchConfig.from_yaml("smart_sweep.yaml")
-candidates = Sweeper(
+result = Sweeper(
     runner_factory=DynamoReplayRunnerFactory(),
-).run(config)
+).run_result(config)
+print(result.counts)
+print(result.selected_candidates)
 ```
 
 The standalone module validates the backend-neutral core schema but intentionally has no implicit
 replay runtime. Adapter-owned search spaces are validated when the selected adapters are resolved
-by `Sweeper.run`.
+by `Sweeper.run_result`.
 KVBM sweep fields have been removed and have no adapter migration.
 
 Read the canonical [Sweeper documentation](docs/sweeper/overview.md) for its configuration,

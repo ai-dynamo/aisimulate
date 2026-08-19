@@ -11,8 +11,8 @@ subtitle: Experimental backend-neutral configuration search
 > standard deprecation period.
 
 Sweeper searches deployment configurations with a black-box optimizer. It turns every suggestion
-into a versioned `ReplaySpec`, sends that specification to an injected `RunnerFactory`, and returns
-ranked candidates or a Pareto front.
+into a versioned `ReplaySpec`, sends that specification to an injected `RunnerFactory`, and returns a
+schema-versioned `SweepResult` with a complete candidate ledger and ranked or Pareto views.
 
 The `aisimulate` package owns only backend-neutral simulation behavior. Optional feature packages
 can register a `SweepConfigProvider` that contributes search dimensions and materializes its part
@@ -26,7 +26,7 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [Configuration](configuration.md) describes core and adapter-owned search spaces.
 - [Traffic](traffic.md) defines trace, request-rate, concurrency, and KV-load workloads.
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
-- [Results](results.md) describes `ReplaySpec` and `Candidate` output.
+- [Results](results.md) describes `ReplaySpec`, the `SweepResult` envelope, and candidate records.
 - [Sweep Configuration Providers](sweep-config-provider.md) documents the extension ABI.
 - [Dynamo Integration](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental/sweeper-experimental/dynamo-integration.md)
   composes Dynamo's optional Planner, Router, and replay adapters with the standalone Sweeper core.
@@ -39,7 +39,7 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 from aisimulate.sweeper import SmartSearchConfig, Sweeper
 
 config = SmartSearchConfig.from_yaml("sweep.yaml")
-candidates = Sweeper(runner_factory=my_runner_factory).run(config)
+result = Sweeper(runner_factory=my_runner_factory).run_result(config)
 ```
 
 The standalone `python -m aisimulate.sweeper` command validates configuration but deliberately does
@@ -50,6 +50,6 @@ not choose a replay implementation.
 - A provider is imported only when its adapter name appears under `adapters`.
 - The runner advertises supported `ReplaySpec` versions, backend/topology pairs, and runtime hooks
   before a study starts.
-- Every `Sweeper.run` call owns fresh optimizer studies, result caches, runners, and worker pools.
+- Every `Sweeper.run_result` call owns fresh optimizer studies, result caches, runners, and worker pools.
 - KVBM search fields are rejected. The AI Simulate engine and replay path do not support those
   fields and provide no adapter migration for the old host or disk offload settings.

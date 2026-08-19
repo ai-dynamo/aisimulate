@@ -27,7 +27,9 @@ from aisimulate.sweeper import SmartSearchConfig, Sweeper
 
 config = SmartSearchConfig.from_yaml("sweep.yaml")
 sweeper = Sweeper(runner_factory=my_runner_factory, show_progress=False)
-candidates = sweeper.run(config)
+result = sweeper.run_result(config)
+print(result.counts)
+print(result.selected_candidates)
 ```
 
 Set `sweep.parallel_evals` above one to use spawned worker processes. Scripts using that mode must
