@@ -17,8 +17,22 @@ _DEPLOYMENT_PINNED = (
     "gpu_budget",
     "min_gpu_budget",
     "context_length",
+    "max_seq_len",
     "startup_time",
     "aic_nextn",
+    "nextn_accepted",
+    "enable_chunked_prefill",
+    "enable_wideep",
+    "enable_eplb",
+    "wideep_num_slots",
+    "moe_backend",
+    "attention_backend",
+    "gemm_quant_mode",
+    "moe_quant_mode",
+    "kvcache_quant_mode",
+    "fmha_quant_mode",
+    "comm_quant_mode",
+    "free_gpu_memory_fraction",
 )
 
 # engine knobs per branch: searched batching + pinned scalars.

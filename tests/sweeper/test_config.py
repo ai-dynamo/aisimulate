@@ -159,6 +159,71 @@ def test_invalid_estimator_controls_fail_in_schema(overrides, message):
         SearchSpace(**_search_space(**overrides))
 
 
+def test_engine_request_controls_round_trip_through_yaml(tmp_path):
+    path = tmp_path / "engine-controls.yaml"
+    path.write_text(
+        """
+search_space:
+  deployment_mode: [agg]
+  backend: [sglang]
+  model_name: example/moe
+  hardware_sku: gb200
+  max_seq_len: 8192
+  enable_chunked_prefill: true
+  enable_wideep: true
+  enable_eplb: true
+  wideep_num_slots: 64
+  moe_backend: deepep_moe
+  attention_backend: fa3
+  gemm_quant_mode: fp8
+  moe_quant_mode: fp8
+  kvcache_quant_mode: fp8
+  fmha_quant_mode: fp8
+  comm_quant_mode: fp8
+  aic_nextn: 3
+  nextn_accepted: 1.5
+  free_gpu_memory_fraction: 0.82
+workload:
+  isl: 4096
+  osl: 1024
+  concurrency: 2
+  num_request_ratio: 1
+  cached_prefix_tokens: 512
+"""
+    )
+
+    config = SmartSearchConfig.from_yaml(path)
+    dumped = config.model_dump(mode="json")
+
+    assert dumped["workload"]["cached_prefix_tokens"] == 512
+    assert dumped["search_space"]["enable_chunked_prefill"] is True
+    assert dumped["search_space"]["wideep_num_slots"] == 64
+    assert dumped["search_space"]["attention_backend"] == "fa3"
+    assert dumped["search_space"]["kvcache_quant_mode"] == "fp8"
+    assert config.search_space.nextn_accepted == 1.5
+    assert config.search_space.free_gpu_memory_fraction == 0.82
+
+
+def test_speculative_acceptance_is_explicit_and_bounded():
+    with pytest.raises(ValidationError, match="requires explicit nextn_accepted"):
+        SearchSpace(**_search_space(aic_nextn=2))
+    with pytest.raises(ValidationError, match=r"within \[0, aic_nextn=2\]"):
+        SearchSpace(**_search_space(aic_nextn=2, nextn_accepted=2.5))
+
+    disabled = SearchSpace(**_search_space(aic_nextn=0))
+    assert disabled.aic_nextn == 0
+    assert disabled.nextn_accepted is None
+    with pytest.raises(ValidationError, match="greater than zero"):
+        SearchSpace(**_search_space(aic_nextn=0, nextn_accepted=0))
+
+
+def test_cached_prefix_is_exact_and_within_shortest_input():
+    workload = Workload(**_workload(cached_prefix_tokens=2000, random_range_ratio=0.5))
+    assert workload.cached_prefix_tokens == 2000
+    with pytest.raises(ValidationError, match="shortest synthetic input"):
+        Workload(**_workload(cached_prefix_tokens=2001, random_range_ratio=0.5))
+
+
 def test_extra_fields_are_forbidden_at_each_boundary():
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         SmartSearchConfig(

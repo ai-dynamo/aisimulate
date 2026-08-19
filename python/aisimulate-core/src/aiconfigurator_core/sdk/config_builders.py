@@ -33,6 +33,11 @@ def build_model_config(
     forward_model: str | None = None,
     enable_encoder_dp: bool = True,
     cp_size: int = 1,
+    moe_backend: str | None = None,
+    attention_backend: str | None = None,
+    enable_wideep: bool = False,
+    enable_eplb: bool = False,
+    wideep_num_slots: int | None = None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
     return ModelConfig(
@@ -49,6 +54,11 @@ def build_model_config(
         comm_quant_mode=CommQuantMode[comm_quant_mode] if comm_quant_mode else None,
         forward_model=forward_model or "op_level",
         enable_encoder_dp=enable_encoder_dp,
+        moe_backend=moe_backend,
+        attention_backend=attention_backend or "flashinfer",
+        enable_wideep=enable_wideep,
+        enable_eplb=enable_eplb,
+        wideep_num_slots=wideep_num_slots,
     )
 
 

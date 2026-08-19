@@ -94,6 +94,11 @@ def estimate_kv_tokens(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     nextn: int = 0,
+    gemm_quant_mode: str | None = None,
+    moe_quant_mode: str | None = None,
+    kvcache_quant_mode: str | None = None,
+    fmha_quant_mode: str | None = None,
+    comm_quant_mode: str | None = None,
 ) -> int | None:
     """Per-rank KV-cache capacity (in tokens) for ``shape``, or ``None`` when the
     shape leaves no KV budget (weights + activations already fill VRAM -> OOM).
@@ -122,6 +127,11 @@ def estimate_kv_tokens(
                 if systems_paths is not None
                 else None
             ),
+            gemm_quant_mode=gemm_quant_mode,
+            moe_quant_mode=moe_quant_mode,
+            kvcache_quant_mode=kvcache_quant_mode,
+            fmha_quant_mode=fmha_quant_mode,
+            comm_quant_mode=comm_quant_mode,
             allow_naive_fallback=False,
         )
     except ValueError as exc:
@@ -150,6 +160,12 @@ def feasible_shape_tokens(
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
+    nextn: int = 0,
+    gemm_quant_mode: str | None = None,
+    moe_quant_mode: str | None = None,
+    kvcache_quant_mode: str | None = None,
+    fmha_quant_mode: str | None = None,
+    comm_quant_mode: str | None = None,
 ) -> dict[ParallelShape, int]:
     """Map each *feasible* shape to its KV-cache token capacity.
 
@@ -173,6 +189,12 @@ def feasible_shape_tokens(
             max_num_tokens=max_num_tokens,
             max_batch_size=max_batch_size,
             memory_fraction=memory_fraction,
+            nextn=nextn,
+            gemm_quant_mode=gemm_quant_mode,
+            moe_quant_mode=moe_quant_mode,
+            kvcache_quant_mode=kvcache_quant_mode,
+            fmha_quant_mode=fmha_quant_mode,
+            comm_quant_mode=comm_quant_mode,
         )
         if tokens is not None and tokens > max_seq_len:
             feasible[shape] = tokens

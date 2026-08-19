@@ -243,6 +243,25 @@ def enumerate_branches(
                         estimator_kwargs["backend_version"] = requested_version
                     if ss.systems_paths != ["default"]:
                         estimator_kwargs["systems_paths"] = ss.systems_paths
+                engine_kwargs: dict[str, Any] = {}
+                if ss.enable_wideep:
+                    engine_kwargs["enable_wideep"] = True
+                if ss.moe_backend is not None:
+                    engine_kwargs["moe_backend"] = ss.moe_backend
+                for name in (
+                    "gemm_quant_mode",
+                    "moe_quant_mode",
+                    "kvcache_quant_mode",
+                    "fmha_quant_mode",
+                    "comm_quant_mode",
+                ):
+                    value = getattr(ss, name)
+                    if value is not None:
+                        engine_kwargs[name] = value
+                if ss.aic_nextn is not None:
+                    engine_kwargs["nextn"] = ss.aic_nextn
+                if ss.free_gpu_memory_fraction is not None:
+                    engine_kwargs["memory_fraction"] = ss.free_gpu_memory_fraction
                 legal = parallel_configs_for(
                     ss.model_name,
                     ss.hardware_sku,
@@ -253,6 +272,7 @@ def enumerate_branches(
                     max_seq_len=max_seq_len,
                     **domain_kwargs,
                     **estimator_kwargs,
+                    **engine_kwargs,
                 )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

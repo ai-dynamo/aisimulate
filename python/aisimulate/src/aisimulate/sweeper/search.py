@@ -51,6 +51,11 @@ from .config import (
 )
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
+from .engine_request import (
+    EngineControlTemplate,
+    materialize_engine_request,
+    resolve_engine_controls,
+)
 from .estimator import resolve_estimator_specs
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
@@ -382,6 +387,7 @@ def _materialize_one(
     provider_plans: Mapping[str, AdapterSearchPlan],
     runner_factory: RunnerFactory,
     estimator_specs: Mapping[str, EstimatorSpec],
+    engine_controls: Mapping[str, EngineControlTemplate],
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
     try:
@@ -397,6 +403,10 @@ def _materialize_one(
         # select a different backend version.
         sample["backend_version"] = backend_version
         sample["estimator"] = asdict(estimator)
+        engine_request = materialize_engine_request(
+            engine_controls[selection["backend"]], config=config, sample=sample
+        )
+        sample["engine_request"] = asdict(engine_request)
         concurrency = config.workload.concurrency
         if "kv_load_ratio" in selection:
             ratio = float(selection["kv_load_ratio"])
@@ -424,6 +434,7 @@ def _materialize_one(
             sample,
             backend_version=backend_version,
             estimator=estimator,
+            engine_request=engine_request,
         )
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
@@ -675,6 +686,8 @@ class Sweeper:
         goal = config.goal
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
+        engine_controls = resolve_engine_controls(config)
+        max_seq_len = next(iter(engine_controls.values())).max_seq_len
 
         # Resolve every estimator/data identity before branch enumeration creates
         # studies or adapters perform work. Candidate materialization consumes this
@@ -685,7 +698,7 @@ class Sweeper:
         # search before adapters perform any potentially expensive preparation.
         branches = enumerate_branches(
             config,
-            max_seq_len=config.search_space.context_length,
+            max_seq_len=max_seq_len,
             runner_capabilities=capabilities,
             estimator_specs=estimator_specs,
         )
@@ -784,6 +797,7 @@ class Sweeper:
                 "workload": config.workload.model_dump(mode="python"),
                 "goal": goal.model_dump(mode="python"),
                 "provider_plans": provider_plans,
+                "engine_controls": engine_controls,
             }
         )
         replay_cache: dict[Any, tuple[Candidate, dict[str, float]]] = {}
@@ -1019,6 +1033,7 @@ class Sweeper:
                         provider_plans=provider_plans,
                         runner_factory=runner_factory,
                         estimator_specs=estimator_specs,
+                        engine_controls=engine_controls,
                     )
                     if build_result is not None:
                         candidate, observe_metrics, outcome, reason = build_result
