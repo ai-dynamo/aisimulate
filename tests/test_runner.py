@@ -621,6 +621,101 @@ def test_runner_rejects_moe_topology_mismatch_before_runtime(
     assert runtime.execution_spec is None
 
 
+def test_runner_honors_nested_rank_aic_moe_topology():
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args["rank"] = {
+        "backend": "vllm",
+        "block_size": 4,
+        "num_gpu_blocks": 16,
+        "timing_model": {
+            "type": "external",
+            "provider": "aic",
+            "config": {
+                "model": "test-model",
+                "backend": "vllm",
+                "system": "test-system",
+                "tp": 2,
+                "attention_dp": 1,
+                "moe_tp_size": 2,
+                "moe_ep_size": 4,
+                "backend_version": "test",
+            },
+        },
+    }
+    for field in ("block_size", "num_gpu_blocks", "timing_model"):
+        engine_args.pop(field)
+    parallel_config = {
+        "tp": 2,
+        "pp": 1,
+        "attention_dp": 1,
+        "cp": 1,
+        "moe_tp": 2,
+        "moe_ep": 4,
+        "replicas": 2,
+    }
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config=parallel_config,
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    timing = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
+    assert timing["moe_tp_size"] == 2
+    assert timing["moe_ep_size"] == 4
+
+
+def test_runner_rejects_nested_rank_aic_moe_topology_mismatch():
+    engine_args = _engine_args()
+    engine_args["rank"] = {
+        "backend": "vllm",
+        "block_size": 4,
+        "num_gpu_blocks": 16,
+        "timing_model": {
+            "type": "external",
+            "provider": "aic",
+            "config": {
+                "moe_tp_size": 2,
+                "moe_ep_size": 4,
+            },
+        },
+    }
+    for field in ("block_size", "num_gpu_blocks", "timing_model"):
+        engine_args.pop(field)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config={
+            "tp": 2,
+            "attention_dp": 1,
+            "moe_tp": 1,
+            "moe_ep": 4,
+            "replicas": 2,
+        },
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"parallel_config\.moe_tp=1 conflicts with "
+            r"aggregated MoE tensor parallel size=2"
+        ),
+    ):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(deployment=deployment)
+        )
+
+
 def test_runner_accepts_matching_backend_version_in_explicit_aic_timing():
     runtime = RecordingRuntime()
     timing = {

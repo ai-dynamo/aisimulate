@@ -532,6 +532,26 @@ def _materialize_engine_role(
     role_config.pop("startup_time", None)
     model = role_config.pop("aic_model_path", None)
     system = role_config.pop("aic_system", None)
+    nested_rank_config = role_config.get("rank")
+    if nested_rank_config is not None and not isinstance(nested_rank_config, dict):
+        raise ValueError(f"engine provider {role} rank config must be a mapping")
+
+    def nested_moe_value(target: str) -> JSONValue | None:
+        if not isinstance(nested_rank_config, dict):
+            return None
+        for alias in _AIC_TIMING_FIELD_ALIASES[target]:
+            if alias in nested_rank_config:
+                return nested_rank_config[alias]
+        timing_model = nested_rank_config.get("timing_model")
+        if (
+            not isinstance(timing_model, dict)
+            or timing_model.get("type") != "external"
+            or timing_model.get("provider") != "aic"
+            or not isinstance(timing_model.get("config"), dict)
+        ):
+            return None
+        return timing_model["config"].get(target)
+
     raw_dp_size = _pop_matching_aliases(
         role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1
     )
@@ -540,11 +560,21 @@ def _materialize_engine_role(
     )
     raw_pp_size = role_config.get("aic_pp_size", 1)
     raw_cp_size = role_config.get("aic_cp_size", 1)
+    nested_moe_tp_size = nested_moe_value("moe_tp_size")
+    nested_moe_ep_size = nested_moe_value("moe_ep_size")
     raw_moe_tp_size = role_config.get(
-        "aic_moe_tp_size", role_config.get("moe_tp_size", 1)
+        "aic_moe_tp_size",
+        role_config.get(
+            "moe_tp_size",
+            nested_moe_tp_size if nested_moe_tp_size is not None else 1,
+        ),
     )
     raw_moe_ep_size = role_config.get(
-        "aic_moe_ep_size", role_config.get("moe_ep_size", 1)
+        "aic_moe_ep_size",
+        role_config.get(
+            "moe_ep_size",
+            nested_moe_ep_size if nested_moe_ep_size is not None else 1,
+        ),
     )
     dp_size = _positive_int(
         raw_dp_size,
