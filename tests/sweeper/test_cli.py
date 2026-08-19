@@ -98,7 +98,7 @@ def test_cli_requires_an_injected_replay_runtime(monkeypatch, tmp_path, capsys):
 
     error = capsys.readouterr().err
     assert "no default replay runtime" in error
-    assert "Sweeper(runner_factory=...).run(config)" in error
+    assert "Sweeper(runner_factory=...).run_result(config)" in error
 
 
 def test_runner_wrapper_preserves_no_candidate_exit(capsys):

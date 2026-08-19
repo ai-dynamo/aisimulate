@@ -13,6 +13,7 @@ import yaml
 from pydantic import ValidationError
 
 from .config import Candidate, SmartSearchConfig
+from .result import SweepResult
 
 
 def load_config_or_parser_error(
@@ -31,9 +32,13 @@ def load_config_or_parser_error(
 
 
 def print_candidates_or_exit(
-    config: SmartSearchConfig, candidates: Sequence[Candidate]
+    config: SmartSearchConfig, result: SweepResult | Sequence[Candidate]
 ) -> None:
-    """Preserve the legacy CLI result and no-candidate behavior for wrappers."""
+    """Render the canonical result, accepting the legacy list during migration."""
+
+    candidates = (
+        result.selected_candidates if isinstance(result, SweepResult) else list(result)
+    )
 
     if not candidates:
         print(
@@ -79,7 +84,7 @@ def main() -> None:
     del config
     parser.error(
         "the standalone CLI has no default replay runtime; call "
-        "aisimulate.sweeper.Sweeper(runner_factory=...).run(config) from Python"
+        "aisimulate.sweeper.Sweeper(runner_factory=...).run_result(config) from Python"
     )
 
 

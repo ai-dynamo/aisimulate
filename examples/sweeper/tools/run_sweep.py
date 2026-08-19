@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 
+from dynamo.replay.simulation import DynamoReplayRunnerFactory
 from pydantic import ValidationError
 
 from aisimulate.sweeper import Sweeper
@@ -14,7 +15,6 @@ from aisimulate.sweeper.__main__ import (
     load_config_or_parser_error,
     print_candidates_or_exit,
 )
-from dynamo.replay.simulation import DynamoReplayRunnerFactory
 
 
 def main() -> None:
@@ -26,12 +26,12 @@ def main() -> None:
 
     config = load_config_or_parser_error(parser, args.config)
     try:
-        candidates = Sweeper(
+        result = Sweeper(
             runner_factory=DynamoReplayRunnerFactory(),
-        ).run(config)
+        ).run_result(config)
     except ValidationError as exc:
         parser.error(f"invalid adapter search space in {args.config}: {exc}")
-    print_candidates_or_exit(config, candidates)
+    print_candidates_or_exit(config, result)
 
 
 if __name__ == "__main__":
