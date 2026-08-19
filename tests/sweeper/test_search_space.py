@@ -158,6 +158,23 @@ def test_scheduler_limits_condition_exact_topology_domain_and_thorough_count(
 
     assert seen == [(4096, 1), (8192, 1), (4096, 2), (8192, 2)]
     assert set(branch.parallel_configs) == {_AGG_CFG, _AGG_ALT_CFG}
+    assert branch.enumeration_counts == {
+        "considered": 4,
+        "accepted": 2,
+        "pruned": 2,
+    }
+    assert [diagnostic.as_dict() for diagnostic in branch.pruning_diagnostics] == [
+        {
+            "backend": "vllm",
+            "role": None,
+            "category": "no_parallel_config",
+            "detail": (
+                "2 scheduler point(s) pruned; first "
+                "{'agg_batch_size': 1, 'agg_context_tokens': 8192}: "
+                "scheduler limits (8192, 1) do not fit"
+            ),
+        }
+    ]
     assert sampler.candidate_count == 2
     assert {
         (
@@ -191,8 +208,65 @@ def test_large_infeasible_scheduler_limit_is_not_counted(monkeypatch):
     (branch,) = enumerate_branches(config)
     sampler = ExhaustiveBranchSampler(branch)
 
+    assert branch.enumeration_counts == {
+        "considered": 2,
+        "accepted": 1,
+        "pruned": 1,
+    }
     assert sampler.candidate_count == 1
     assert sampler.suggest(2)[0].selection["agg_batch_size"] == 1
+
+
+def test_all_scheduler_points_pruned_retain_ordered_terminal_report(monkeypatch):
+    def no_scheduler_point_fits(*args, **kwargs):
+        del args
+        if kwargs["backend"] == "vllm":
+            raise NoPerfDatabase("vllm database missing")
+        raise NoViableParallelConfig("sglang scheduler limits do not fit")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        no_scheduler_point_fits,
+    )
+    config = _config(
+        backend=["vllm", "sglang"],
+        agg_batch_size_candidates=[1, 2],
+        agg_context_tokens_candidates=[4096, 8192],
+    )
+
+    with pytest.warns(UserWarning, match="no configured backend"), pytest.raises(
+        NoViableParallelConfig
+    ) as exc_info:
+        enumerate_branches(config)
+
+    assert exc_info.value.as_dict()["enumeration_reports"] == [
+        {
+            "deployment_mode": "agg",
+            "counts": {"considered": 8, "accepted": 0, "pruned": 8},
+            "pruning_diagnostics": [
+                {
+                    "backend": "vllm",
+                    "role": None,
+                    "category": "kv_capacity",
+                    "detail": (
+                        "4 scheduler point(s) pruned; first "
+                        "{'agg_batch_size': 1, 'agg_context_tokens': 4096}: "
+                        "vllm database missing"
+                    ),
+                },
+                {
+                    "backend": "sglang",
+                    "role": None,
+                    "category": "no_parallel_config",
+                    "detail": (
+                        "4 scheduler point(s) pruned; first "
+                        "{'agg_batch_size': 1, 'agg_context_tokens': 4096}: "
+                        "sglang scheduler limits do not fit"
+                    ),
+                },
+            ],
+        }
+    ]
 
 
 def test_enumerate_real_backend_space_honors_runner_topologies():

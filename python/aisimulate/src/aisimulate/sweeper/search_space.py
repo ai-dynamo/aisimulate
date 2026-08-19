@@ -577,6 +577,29 @@ def enumerate_branches(
                 ]
         else:
             support = {}
+            enumeration_counts = {"considered": 0, "accepted": 0, "pruned": 0}
+            scheduler_failures: dict[
+                tuple[str, RoleFailureCategory],
+                tuple[int, dict[str, int], str],
+            ] = {}
+
+            def record_scheduler_failure(
+                backend: str,
+                category: RoleFailureCategory,
+                selection: dict[str, int],
+                detail: str,
+            ) -> None:
+                key = (backend, category)
+                current = scheduler_failures.get(key)
+                if current is None:
+                    scheduler_failures[key] = (1, dict(selection), detail)
+                else:
+                    scheduler_failures[key] = (
+                        current[0] + 1,
+                        current[1],
+                        current[2],
+                    )
+
             runner_incompatible = [
                 backend
                 for backend in ss.backend
@@ -625,6 +648,7 @@ def enumerate_branches(
                             else value
                         )
                 for scheduler_selection in scheduler_selections:
+                    enumeration_counts["considered"] += 1
                     try:
                         legal = parallel_configs_for(
                             ss.model_name,
@@ -641,8 +665,25 @@ def enumerate_branches(
                             **estimator_kwargs,
                             **_engine_kwargs(ss),
                         )
-                    except (NoPerfDatabase, NoViableParallelConfig):
+                    except NoPerfDatabase as exc:
+                        enumeration_counts["pruned"] += 1
+                        record_scheduler_failure(
+                            backend,
+                            RoleFailureCategory.KV_CAPACITY,
+                            scheduler_selection,
+                            str(exc),
+                        )
                         continue
+                    except NoViableParallelConfig as exc:
+                        enumeration_counts["pruned"] += 1
+                        record_scheduler_failure(
+                            backend,
+                            RoleFailureCategory.NO_PARALLEL_CONFIG,
+                            scheduler_selection,
+                            str(exc),
+                        )
+                        continue
+                    enumerated_count = len(legal)
                     legal = [
                         cfg
                         for cfg in legal
@@ -651,16 +692,51 @@ def enumerate_branches(
                         )
                     ]
                     legal_set = set(legal)
-                    for cfg in pinned if pinned is not None else legal:
-                        if cfg in legal_set:
-                            support.setdefault(cfg, set()).add(backend)
-                            scheduler_support.setdefault(cfg, {}).setdefault(
-                                backend, set()
-                            ).add(
-                                _scheduler_point(
-                                    scheduler_knob_names, scheduler_selection
-                                )
+                    accepted = [
+                        cfg
+                        for cfg in (pinned if pinned is not None else legal)
+                        if cfg in legal_set
+                    ]
+                    if not accepted:
+                        enumeration_counts["pruned"] += 1
+                        record_scheduler_failure(
+                            backend,
+                            RoleFailureCategory.NO_PARALLEL_CONFIG,
+                            scheduler_selection,
+                            (
+                                "no pinned parallel config is legal under this scheduler point"
+                                if pinned is not None
+                                else "runner capability filtering removed every parallel config"
+                                if enumerated_count
+                                else "parallel enumeration returned no config"
+                            ),
+                        )
+                        continue
+                    enumeration_counts["accepted"] += 1
+                    for cfg in accepted:
+                        support.setdefault(cfg, set()).add(backend)
+                        scheduler_support.setdefault(cfg, {}).setdefault(
+                            backend, set()
+                        ).add(
+                            _scheduler_point(
+                                scheduler_knob_names, scheduler_selection
                             )
+                        )
+            pruning_diagnostics = tuple(
+                BranchPruningDiagnostic(
+                    backend=backend,
+                    category=category,
+                    detail=(
+                        f"{count} scheduler point(s) pruned; first "
+                        f"{first_selection}: {first_detail}"
+                    ),
+                )
+                for (backend, category), (
+                    count,
+                    first_selection,
+                    first_detail,
+                ) in scheduler_failures.items()
+            )
 
         if not support:
             enumeration_report = (
