@@ -35,6 +35,7 @@ _SUPPORTED_BACKEND_TOPOLOGIES = (
 _AIC_TIMING_FIELD_ALIASES = {
     "backend_version": ("backend_version", "aic_backend_version"),
     "pp": ("aic_pp_size",),
+    "cp_size": ("aic_cp_size",),
     "moe_tp_size": ("moe_tp_size", "aic_moe_tp_size"),
     "moe_ep_size": ("moe_ep_size", "aic_moe_ep_size"),
     "gemm_dtype": ("gemm_dtype", "aic_gemm_dtype"),
@@ -490,6 +491,8 @@ def _materialize_engine_role(
     raw_tp_size = _pop_matching_aliases(
         role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1
     )
+    raw_pp_size = role_config.get("aic_pp_size", 1)
+    raw_cp_size = role_config.get("aic_cp_size", 1)
     dp_size = _positive_int(
         raw_dp_size,
         f"engine provider {role} dp_size",
@@ -498,6 +501,8 @@ def _materialize_engine_role(
         raw_tp_size,
         f"engine provider {role} tensor_parallel_size",
     )
+    pp_size = _positive_int(raw_pp_size, f"engine provider {role} pipeline parallel")
+    cp_size = _positive_int(raw_cp_size, f"engine provider {role} context parallel")
     parallel_prefix = "" if role == "aggregated" else f"{role}_"
     _require_parallel_match(
         parallel_config,
@@ -510,6 +515,18 @@ def _materialize_engine_role(
         f"{parallel_prefix}attention_dp",
         dp_size,
         f"{role} attention DP size",
+    )
+    _require_parallel_match(
+        parallel_config,
+        f"{parallel_prefix}pp",
+        pp_size,
+        f"{role} pipeline parallel size",
+    )
+    _require_parallel_match(
+        parallel_config,
+        f"{parallel_prefix}cp",
+        cp_size,
+        f"{role} context parallel size",
     )
 
     nested_rank = role_config.pop("rank", None)
@@ -582,7 +599,7 @@ def _materialize_engine_role(
         if not configured:
             continue
         value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
+        if target in {"pp", "cp_size", "moe_tp_size", "moe_ep_size"}:
             value = _positive_int(value, f"engine provider {role} {target}")
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")

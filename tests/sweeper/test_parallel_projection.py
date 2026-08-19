@@ -10,6 +10,7 @@ from aisimulate.sweeper.parallel_projection import (
     AGG_ATTENTION_MODE,
     AGG_FFN_MODE,
     AGG_GPUS_PER_ENGINE,
+    AGG_PIPELINE_PARALLEL,
     DECODE_ATTENTION_MODE,
     DECODE_FFN_MODE,
     DECODE_GPUS_PER_ENGINE,
@@ -185,3 +186,37 @@ def test_dense_pool_does_not_expose_ffn_mode():
     projector = ParallelConfigProjector(branch)
 
     assert AGG_FFN_MODE not in {parameter.name for parameter in projector.parameters}
+
+
+def test_rapid_projection_distinguishes_pipeline_and_context_parallel_shapes():
+    pipeline = ReplicaParallelConfig(
+        ParallelShape(tp=2, pp=2, dp=1, moe_tp=1, moe_ep=1, cp=1), replicas=2
+    )
+    context = ReplicaParallelConfig(
+        ParallelShape(tp=1, pp=1, dp=1, moe_tp=1, moe_ep=4, cp=4), replicas=2
+    )
+    branch = _branch(
+        "agg",
+        [pipeline, context],
+        {
+            pipeline: frozenset({"sglang"}),
+            context: frozenset({"sglang"}),
+        },
+        budget=8,
+    )
+    projector = ParallelConfigProjector(branch)
+
+    projection = projector.project(
+        {
+            USED_GPU_RATIO: 1.0,
+            AGG_GPUS_PER_ENGINE: 4,
+            AGG_ATTENTION_MODE: "cp",
+            AGG_PIPELINE_PARALLEL: 1,
+            AGG_FFN_MODE: "ep",
+        },
+        "sglang",
+    )
+
+    assert projection.config == context
+    assert projection.actual_features[AGG_ATTENTION_MODE] == "cp"
+    assert projection.actual_features[AGG_PIPELINE_PARALLEL] == 1.0

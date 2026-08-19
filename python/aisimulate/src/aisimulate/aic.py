@@ -81,6 +81,11 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
         moe_tp_size=lowered.get("aic_moe_tp_size"),
         moe_ep_size=lowered.get("aic_moe_ep_size"),
         attention_dp_size=attention_dp,
+        cp_size=(
+            lowered.get("aic_cp_size")
+            if lowered.get("aic_cp_size") is not None
+            else 1
+        ),
         gemm_dtype=lowered.get("aic_gemm_dtype"),
         moe_dtype=lowered.get("aic_moe_dtype"),
         fmha_dtype=lowered.get("aic_fmha_dtype"),
@@ -107,6 +112,7 @@ def estimate_num_gpu_blocks(
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
     attention_dp_size: int | None = None,
+    cp_size: int = 1,
     gemm_dtype: str | None = None,
     moe_dtype: str | None = None,
     fmha_dtype: str | None = None,
@@ -173,6 +179,7 @@ def estimate_num_gpu_blocks(
             attention_dp_size=(
                 attention_dp_size if attention_dp_size is not None else 1
             ),
+            cp_size=cp_size,
             moe_tp_size=moe_tp_size,
             moe_ep_size=moe_ep_size,
             gemm_quant_mode=_quant_mode_name("gemm", gemm_dtype),

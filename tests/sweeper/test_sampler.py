@@ -146,6 +146,36 @@ def test_thorough_sampler_enumerates_complete_finite_space_canonically():
     )
 
 
+def test_thorough_candidate_count_includes_execution_and_topology_dimensions():
+    tp = ReplicaParallelConfig(
+        ParallelShape(tp=4, pp=1, dp=1, moe_tp=1, moe_ep=1, cp=1), replicas=1
+    )
+    pp = ReplicaParallelConfig(
+        ParallelShape(tp=2, pp=2, dp=1, moe_tp=1, moe_ep=1, cp=1), replicas=1
+    )
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(tp, pp),
+        supported_backends={
+            tp: frozenset({"vllm"}),
+            pp: frozenset({"vllm"}),
+        },
+        knob_choices={
+            "backend": ["vllm"],
+            "agg_batch_size": [16, 32],
+            "agg_context_tokens": [4096, 8192],
+        },
+    )
+
+    sampler = ExhaustiveBranchSampler(branch)
+    suggestions = sampler.suggest(100)
+
+    # 2 legal topologies * 2 actual batches * 2 actual context limits.
+    assert sampler.candidate_count == 8
+    assert len(suggestions) == 8
+    assert {suggestion.parallel_config for suggestion in suggestions} == {tp, pp}
+
+
 def test_thorough_sampler_rejects_continuous_ranges():
     branch = _branch_with_kv_load()
 

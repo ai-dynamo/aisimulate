@@ -56,6 +56,7 @@ def test_agg_unroll_preserves_backend_shape_and_batching():
             "attention_dp",
             "moe_tp",
             "moe_ep",
+            "cp",
             "pp",
             "replicas",
             "strategy",
@@ -70,6 +71,7 @@ def test_agg_unroll_preserves_backend_shape_and_batching():
         "attention_dp": 1,
         "moe_tp": 1,
         "moe_ep": 4,
+        "cp": 1,
         "pp": 1,
         "replicas": 2,
         "strategy": "tep",
@@ -111,6 +113,27 @@ def test_disagg_unroll_preserves_both_roles():
     assert sample["used_gpus"] == 24
     assert "tp" not in sample
     assert "agg_max_num_seqs" not in sample
+
+
+def test_actual_batch_and_context_choices_materialize_scheduler_limits():
+    sample = unroll_sample(
+        search_space=_space(
+            agg_batch_size_candidates=[16, 32],
+            agg_context_tokens_candidates=[4096, 8192],
+        ),
+        selection={
+            "deployment_mode": "agg",
+            "backend": "vllm",
+            "agg_batch_size": 32,
+            "agg_context_tokens": 8192,
+        },
+        parallel_config=AGG_CONFIG,
+    )
+
+    assert sample["agg_batch_size"] == 32
+    assert sample["agg_context_tokens"] == 8192
+    assert sample["agg_max_num_seqs"] == 32
+    assert sample["agg_max_num_batched_tokens"] == 8192
 
 
 def test_unroll_folds_only_backend_pinned_values():

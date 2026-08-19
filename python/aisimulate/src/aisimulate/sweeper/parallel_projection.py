@@ -30,8 +30,11 @@ DECODE_ATTENTION_MODE = "decode_attention_mode"
 AGG_FFN_MODE = "agg_ffn_mode"
 PREFILL_FFN_MODE = "prefill_ffn_mode"
 DECODE_FFN_MODE = "decode_ffn_mode"
+AGG_PIPELINE_PARALLEL = "agg_pipeline_parallel"
+PREFILL_PIPELINE_PARALLEL = "prefill_pipeline_parallel"
+DECODE_PIPELINE_PARALLEL = "decode_pipeline_parallel"
 
-_ATTENTION_MODE_ORDER = ("tp", "dp")
+_ATTENTION_MODE_ORDER = ("tp", "dp", "cp")
 _FFN_MODE_ORDER = ("ep", "tp")
 
 
@@ -82,6 +85,8 @@ def _all_shapes(config: ParallelConfig) -> tuple[ParallelShape, ...]:
 
 def _attention_mode(shape: ParallelShape) -> str:
     # The enumerator emits pure attention TP or DP.  G=1 is canonicalized as TP.
+    if shape.cp > 1:
+        return "cp"
     return "dp" if shape.dp > 1 else "tp"
 
 
@@ -93,7 +98,15 @@ def _ffn_mode(shape: ParallelShape) -> str:
 def _config_key(config: ParallelConfig) -> tuple[int, ...]:
     def role_key(role: ReplicaParallelConfig) -> tuple[int, ...]:
         shape = role.shape
-        return (shape.tp, shape.pp, shape.dp, shape.moe_tp, shape.moe_ep, role.replicas)
+        return (
+            shape.tp,
+            shape.pp,
+            shape.dp,
+            shape.moe_tp,
+            shape.moe_ep,
+            shape.cp,
+            role.replicas,
+        )
 
     if isinstance(config, ReplicaParallelConfig):
         return role_key(config)
@@ -143,6 +156,7 @@ class ParallelConfigProjector:
         features: dict[str, float | str] = {
             f"{prefix}_num_gpus_per_engine_target": float(role.shape.gpus_per_worker),
             f"{prefix}_attention_mode": _attention_mode(role.shape),
+            f"{prefix}_pipeline_parallel": float(role.shape.pp),
         }
         if self.is_moe:
             features[f"{prefix}_ffn_mode"] = _ffn_mode(role.shape)
@@ -202,6 +216,7 @@ class ParallelConfigProjector:
                     self._categorical_parameter(
                         AGG_ATTENTION_MODE, _ATTENTION_MODE_ORDER
                     ),
+                    self._discrete_parameter(AGG_PIPELINE_PARALLEL),
                 ]
             )
             if self.is_moe:
@@ -221,6 +236,8 @@ class ParallelConfigProjector:
                 self._categorical_parameter(
                     DECODE_ATTENTION_MODE, _ATTENTION_MODE_ORDER
                 ),
+                self._discrete_parameter(PREFILL_PIPELINE_PARALLEL),
+                self._discrete_parameter(DECODE_PIPELINE_PARALLEL),
             ]
         )
         if self.is_moe:

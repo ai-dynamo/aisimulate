@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from aiconfigurator.generator.naive import _estimate_model_weight_bytes
 from aiconfigurator_core.sdk import perf_database
 from aiconfigurator_core.sdk.models import check_is_moe
+from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY
+from aiconfigurator_core.sdk.models.helpers import _architecture_to_model_family
 from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
 
 from .kv_estimate import (
@@ -35,6 +37,7 @@ from .kv_estimate import (
 from .parallel_enum import (
     DisaggParallelConfig,
     ReplicaParallelConfig,
+    RoleParallelCandidates,
     enumerate_disagg_configs,
     enumerate_parallel_configs,
 )
@@ -62,6 +65,10 @@ class ModelHardware:
     vram_per_gpu: int
     gpus_per_node: int
     max_context: int | None  # model's max context length (the default max_seq_len)
+    model_family: str
+    default_gpus_per_worker: tuple[int, ...]
+    default_pp_candidates: tuple[int, ...]
+    default_cp_candidates: tuple[int, ...]
 
 
 def resolve_model_hardware(
@@ -75,6 +82,7 @@ def resolve_model_hardware(
     allow_pure_tp = is_moe and architecture in _GQA_MOE_ARCHITECTURES
     mla = is_moe and not allow_pure_tp
     max_context = model_config.get("context")
+    model_family = _architecture_to_model_family(str(model_config.get("architecture", "")))
 
     system_spec = perf_database.load_system_spec(hardware_sku)
     if not system_spec:
@@ -88,6 +96,26 @@ def resolve_model_hardware(
 
     # Large MoE (a node can't hold ~2x the weights) auto-enables multi-node wideEP.
     enable_wideep = is_moe and gpus_per_node * vram_per_gpu < 2 * weight_bytes
+    model_cls = _MODEL_REGISTRY.get(model_family)
+    default_cp_candidates = (
+        (1, 2, 4, 8)
+        if model_cls is not None and model_cls.supports_cp(backend)
+        else (1,)
+    )
+    architecture = str(model_config.get("architecture", ""))
+    default_pp_candidates = (
+        (1, 2)
+        if architecture in {"DeepseekV32ForCausalLM", "DeepseekV4ForCausalLM"}
+        and hardware_sku in {"gb200", "gb300"}
+        else (1,)
+    )
+    if is_moe and enable_wideep and backend in {"trtllm", "sglang"}:
+        # Wide-EP augments the fused single-node ladder; it does not replace it.
+        default_gpus_per_worker = (1, 2, 4, 8, 16, 32, 64)
+    elif hardware_sku in {"gb200", "gb300"}:
+        default_gpus_per_worker = (1, 2, 4, 8, 16)
+    else:
+        default_gpus_per_worker = (1, 2, 4, 8)
 
     return ModelHardware(
         model_name=model_name,
@@ -100,6 +128,49 @@ def resolve_model_hardware(
         vram_per_gpu=vram_per_gpu,
         gpus_per_node=gpus_per_node,
         max_context=int(max_context) if max_context else None,
+        model_family=model_family,
+        default_gpus_per_worker=default_gpus_per_worker,
+        default_pp_candidates=default_pp_candidates,
+        default_cp_candidates=default_cp_candidates,
+    )
+
+
+def _resolved_role_candidates(
+    configured: RoleParallelCandidates | None,
+    facts: ModelHardware,
+    *,
+    role: str,
+) -> RoleParallelCandidates:
+    """Apply capability-derived PP/CP defaults without overriding explicit lists."""
+
+    defaults = RoleParallelCandidates()
+    if configured is not None:
+        default_cp = facts.default_cp_candidates if role != "decode" else (1,)
+        cp_candidates = (
+            tuple(value for value in configured.cp if value in default_cp)
+            if configured.cp
+            else default_cp
+        )
+        return RoleParallelCandidates(
+            gpus_per_worker=(
+                configured.gpus_per_worker or facts.default_gpus_per_worker
+            ),
+            tp=configured.tp or defaults.tp,
+            pp=configured.pp or facts.default_pp_candidates,
+            attention_dp=configured.attention_dp or defaults.attention_dp,
+            moe_tp=configured.moe_tp or defaults.moe_tp,
+            moe_ep=configured.moe_ep or defaults.moe_ep,
+            cp=cp_candidates,
+            workers=configured.workers,
+        )
+    return RoleParallelCandidates(
+        gpus_per_worker=facts.default_gpus_per_worker,
+        tp=defaults.tp,
+        pp=facts.default_pp_candidates,
+        attention_dp=defaults.attention_dp,
+        moe_tp=defaults.moe_tp,
+        moe_ep=defaults.moe_ep,
+        cp=facts.default_cp_candidates if role != "decode" else (1,),
     )
 
 
@@ -115,6 +186,19 @@ def parallel_configs_for(
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
+    agg_candidates: RoleParallelCandidates | None = None,
+    prefill_candidates: RoleParallelCandidates | None = None,
+    decode_candidates: RoleParallelCandidates | None = None,
+    num_gpu_per_replica: tuple[int, ...] | None = (
+        1,
+        2,
+        4,
+        8,
+        *range(16, 129, 8),
+    ),
+    max_gpu_per_replica: int | None = 128,
+    max_prefill_workers: int | None = 32,
+    max_decode_workers: int | None = 32,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
     the GPU budget and can hold a ``max_seq_len``-token sequence.
@@ -154,9 +238,32 @@ def parallel_configs_for(
         allow_moe_pure_tp=True,
     )
     if deployment_mode == "disagg":
-        configs = enumerate_disagg_configs(**common)
+        configs = enumerate_disagg_configs(
+            **common,
+            prefill_candidates=_resolved_role_candidates(
+                prefill_candidates, mh, role="prefill"
+            ),
+            decode_candidates=_resolved_role_candidates(
+                decode_candidates, mh, role="decode"
+            ),
+            num_gpu_per_replica=num_gpu_per_replica,
+            max_gpu_per_replica=max_gpu_per_replica,
+            max_prefill_workers=max_prefill_workers,
+            max_decode_workers=max_decode_workers,
+        )
     elif deployment_mode == "agg":
-        configs = enumerate_parallel_configs(**common)
+        role = _resolved_role_candidates(agg_candidates, mh, role="agg")
+        configs = enumerate_parallel_configs(
+            **common,
+            gpus_per_worker_candidates=role.gpus_per_worker,
+            tp_candidates=role.tp,
+            pp_candidates=role.pp,
+            attention_dp_candidates=role.attention_dp,
+            moe_tp_candidates=role.moe_tp,
+            moe_ep_candidates=role.moe_ep,
+            cp_candidates=role.cp,
+            worker_candidates=role.workers,
+        )
     else:
         raise ValueError(
             f"deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}"

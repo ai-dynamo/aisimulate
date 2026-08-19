@@ -65,6 +65,65 @@ def test_branch_knobs_are_backend_only_and_mode_specific():
     assert not {"router_mode", "planner_scaling_policy", "num_g2_blocks"} & set(agg)
 
 
+def test_actual_batch_and_context_candidates_replace_scheduler_aliases():
+    search_space = _config(
+        agg_batch_size_candidates=[16, 32],
+        agg_context_tokens_candidates=[4096, 8192],
+    ).search_space
+
+    choices = branch_knob_choices(search_space, "agg")
+
+    assert choices["agg_batch_size"] == [16, 32]
+    assert choices["agg_context_tokens"] == [4096, 8192]
+    assert "agg_max_num_seqs" not in choices
+    assert "agg_max_num_batched_tokens" not in choices
+
+
+def test_explicit_role_domains_and_replica_controls_reach_enumerator(monkeypatch):
+    seen = {}
+
+    def fake_parallel_configs(*args, **kwargs):
+        seen.update(kwargs)
+        return [_DISAGG_DP1_CFG]
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs
+    )
+    config = _config(
+        deployment_mode=["disagg"],
+        backend=["vllm"],
+        prefill_num_gpu_candidates=[4, 8],
+        prefill_tp_candidates=[2, 4],
+        prefill_pp_candidates=[1, 2],
+        prefill_cp_candidates=[1, 4],
+        prefill_num_workers_candidates=[1, 3],
+        decode_num_gpu_candidates=[2],
+        decode_tp_candidates=[2],
+        decode_num_workers_candidates=[2],
+        num_gpu_per_replica=[8, 16],
+        max_gpu_per_replica=16,
+        max_prefill_workers=3,
+        max_decode_workers=4,
+    )
+
+    enumerate_branches(config)
+
+    prefill = seen["prefill_candidates"]
+    decode = seen["decode_candidates"]
+    assert prefill.gpus_per_worker == (4, 8)
+    assert prefill.tp == (2, 4)
+    assert prefill.pp == (1, 2)
+    assert prefill.cp == (1, 4)
+    assert prefill.workers == (1, 3)
+    assert decode.gpus_per_worker == (2,)
+    assert decode.tp == (2,)
+    assert decode.workers == (2,)
+    assert seen["num_gpu_per_replica"] == (8, 16)
+    assert seen["max_gpu_per_replica"] == 16
+    assert seen["max_prefill_workers"] == 3
+    assert seen["max_decode_workers"] == 4
+
+
 def test_enumerate_real_backend_space_honors_runner_topologies():
     config = _config(
         deployment_mode=["agg", "disagg"],

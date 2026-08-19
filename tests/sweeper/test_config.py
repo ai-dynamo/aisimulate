@@ -263,6 +263,60 @@ def test_well_formed_agg_and_disagg_parallel_configs_are_accepted():
     )
 
 
+def test_role_parallel_execution_and_replica_candidates_are_explicit():
+    space = SearchSpace(
+        **_search_space(
+            agg_num_gpu_candidates=[8, 16],
+            agg_tp_candidates=[4, 8],
+            agg_pp_candidates=[1, 2],
+            agg_dp_candidates=[1],
+            agg_moe_tp_candidates=[1],
+            agg_moe_ep_candidates=[8, 16],
+            agg_cp_candidates=[1, 2],
+            agg_batch_size_candidates=[16, 32],
+            agg_context_tokens_candidates=[4096, 8192],
+            agg_num_workers_candidates=[1, 2],
+            num_gpu_per_replica=[8, 16],
+            max_gpu_per_replica=16,
+            max_prefill_workers=4,
+            max_decode_workers=8,
+        )
+    )
+
+    assert space.agg_pp_candidates == [1, 2]
+    assert space.agg_cp_candidates == [1, 2]
+    assert space.agg_batch_size_candidates == [16, 32]
+    assert space.agg_context_tokens_candidates == [4096, 8192]
+    assert space.agg_num_workers_candidates == [1, 2]
+    assert space.num_gpu_per_replica == [8, 16]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("agg_tp_candidates", [], "non-empty"),
+        ("agg_pp_candidates", [1, 1], "duplicates"),
+        ("prefill_num_workers_candidates", [0], "positive"),
+        ("decode_cp_candidates", [1, 2], "decode_cp_candidates"),
+    ],
+)
+def test_role_candidate_lists_fail_loudly(field, value, message):
+    with pytest.raises(ValidationError, match=message):
+        SearchSpace(**_search_space(**{field: value}))
+
+
+def test_actual_execution_candidates_round_trip_with_scheduler_defaults():
+    space = SearchSpace(
+        **_search_space(
+            agg_batch_size_candidates=[16],
+            agg_context_tokens_candidates=[4096],
+        )
+    )
+
+    round_tripped = SearchSpace.model_validate(space.model_dump(mode="python"))
+
+    assert round_tripped.agg_batch_size_candidates == [16]
+    assert round_tripped.agg_context_tokens_candidates == [4096]
 def test_trace_and_synthetic_workloads_are_mutually_exclusive():
     with pytest.raises(ValidationError, match="must not set synthetic fields"):
         Workload(

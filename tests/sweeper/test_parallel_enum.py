@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from aisimulate.sweeper.parallel_enum import (
+    RoleParallelCandidates,
     enumerate_disagg_configs,
     enumerate_parallel_configs,
     enumerate_worker_shapes,
+    enumerate_worker_shapes_with_diagnostics,
 )
 
 
@@ -171,3 +173,95 @@ def test_disagg_dense_small_budget():
     assert cfgs
     assert all(c.total_gpus <= 4 for c in cfgs)
     assert all(c.prefill.shape.strategy == "tp" for c in cfgs)
+
+
+def test_explicit_pipeline_and_context_parallel_candidates_are_enumerated():
+    pipeline = enumerate_worker_shapes(
+        is_moe=False,
+        backend="vllm",
+        gpus_per_worker=4,
+        tp_candidates=(2,),
+        pp_candidates=(2,),
+        attention_dp_candidates=(1,),
+        moe_tp_candidates=(1,),
+        moe_ep_candidates=(1,),
+    )
+    assert [(shape.tp, shape.pp, shape.cp) for shape in pipeline] == [(2, 2, 1)]
+
+    context, context_diagnostics = enumerate_worker_shapes_with_diagnostics(
+        is_moe=True,
+        backend="sglang",
+        gpus_per_worker=4,
+        tp_candidates=(1, 2),
+        pp_candidates=(1,),
+        attention_dp_candidates=(1,),
+        moe_tp_candidates=(1,),
+        moe_ep_candidates=(4,),
+        cp_candidates=(2, 4),
+    )
+    assert [
+        (shape.tp, shape.pp, shape.dp, shape.moe_ep, shape.cp) for shape in context
+    ] == [(1, 1, 1, 4, 4)]
+    assert context_diagnostics.as_dict() == {
+        "gpu_count_mismatch": 2,
+        "sglang_cp_attention_parallelism": 1,
+    }
+
+
+def test_invalid_combination_pruning_counts_are_deterministic():
+    shapes, diagnostics = enumerate_worker_shapes_with_diagnostics(
+        is_moe=False,
+        backend="vllm",
+        gpus_per_worker=2,
+        tp_candidates=(1, 2),
+        pp_candidates=(1,),
+        attention_dp_candidates=(1,),
+        moe_tp_candidates=(1,),
+        moe_ep_candidates=(1,),
+        cp_candidates=(1,),
+    )
+
+    assert [(shape.tp, shape.pp) for shape in shapes] == [(2, 1)]
+    assert diagnostics.considered == 2
+    assert diagnostics.accepted == 1
+    assert diagnostics.as_dict() == {"gpu_count_mismatch": 1}
+
+
+def test_disagg_role_worker_lists_and_replica_ceiling_prune_before_search():
+    prefill = RoleParallelCandidates(
+        gpus_per_worker=(2,),
+        tp=(2,),
+        pp=(1,),
+        attention_dp=(1,),
+        moe_tp=(1,),
+        moe_ep=(1,),
+        cp=(1,),
+        workers=(1, 2),
+    )
+    decode = RoleParallelCandidates(
+        gpus_per_worker=(1,),
+        tp=(1,),
+        pp=(1,),
+        attention_dp=(1,),
+        moe_tp=(1,),
+        moe_ep=(1,),
+        cp=(1,),
+        workers=(1, 3),
+    )
+
+    configs = enumerate_disagg_configs(
+        is_moe=False,
+        backend="vllm",
+        gpu_budget=8,
+        prefill_candidates=prefill,
+        decode_candidates=decode,
+        num_gpu_per_replica=(3, 5),
+        max_gpu_per_replica=5,
+        max_prefill_workers=1,
+        max_decode_workers=3,
+    )
+
+    assert [
+        (config.prefill.replicas, config.decode.replicas, config.total_gpus)
+        for config in configs
+    ] == [(1, 1, 3), (1, 3, 5)]

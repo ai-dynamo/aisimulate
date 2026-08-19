@@ -22,7 +22,12 @@ from typing import Any
 from .config import SmartSearchConfig
 from .kv_estimate import NoPerfDatabase
 from .model_hw import NoViableParallelConfig, parallel_configs_for
-from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+from .parallel_enum import (
+    DisaggParallelConfig,
+    ParallelShape,
+    ReplicaParallelConfig,
+    RoleParallelCandidates,
+)
 from .replay import RunnerCapabilities
 
 _ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig
@@ -61,7 +66,8 @@ def _engine_knobs(deployment_mode: str) -> tuple[str, ...]:
 
 def _shape_from_dict(d: dict[str, Any]) -> ParallelShape:
     """A per-worker :class:`ParallelShape` from a pinned shape dict. Omitted dims
-    default to 1 (so dense models can write just ``{tp: N}``); ``pp`` defaults to 1."""
+    default to 1 (so dense models can write just ``{tp: N}``); ``pp`` and ``cp``
+    default to 1."""
     if "tp" not in d:
         raise ValueError(f"a parallel_configs shape needs a 'tp' field, got {d}")
     return ParallelShape(
@@ -70,6 +76,7 @@ def _shape_from_dict(d: dict[str, Any]) -> ParallelShape:
         moe_tp=int(d.get("moe_tp", 1)),
         moe_ep=int(d.get("moe_ep", 1)),
         pp=int(d.get("pp", 1)),
+        cp=int(d.get("cp", 1)),
     )
 
 
@@ -93,7 +100,48 @@ def _parse_parallel_entry(entry: dict[str, Any], deployment_mode: str):
 def branch_knob_choices(search_space, deployment_mode: str) -> dict[str, list[Any]]:
     """Backend-owned atomic knobs for one deployment branch."""
     names = _engine_knobs(deployment_mode)
-    return {name: list(getattr(search_space, name)) for name in names}
+    choices = {name: list(getattr(search_space, name)) for name in names}
+    roles = ("agg",) if deployment_mode == "agg" else ("prefill", "decode")
+    for role in roles:
+        batch_candidates = getattr(search_space, f"{role}_batch_size_candidates")
+        if batch_candidates is not None:
+            choices.pop(f"{role}_max_num_seqs")
+            choices[f"{role}_batch_size"] = list(batch_candidates)
+        context_candidates = getattr(
+            search_space, f"{role}_context_tokens_candidates"
+        )
+        if context_candidates is not None:
+            choices.pop(f"{role}_max_num_batched_tokens")
+            choices[f"{role}_context_tokens"] = list(context_candidates)
+    return choices
+
+
+def _role_parallel_candidates(search_space, role: str) -> RoleParallelCandidates | None:
+    """Translate configured role lists; empty tuples retain capability defaults."""
+
+    names = {
+        "gpus_per_worker": "num_gpu_candidates",
+        "tp": "tp_candidates",
+        "pp": "pp_candidates",
+        "attention_dp": "dp_candidates",
+        "moe_tp": "moe_tp_candidates",
+        "moe_ep": "moe_ep_candidates",
+        "cp": "cp_candidates",
+    }
+    configured = {
+        target: getattr(search_space, f"{role}_{source}")
+        for target, source in names.items()
+    }
+    workers = getattr(search_space, f"{role}_num_workers_candidates")
+    if all(value is None for value in configured.values()) and workers is None:
+        return None
+    return RoleParallelCandidates(
+        **{
+            target: tuple(value) if value is not None else ()
+            for target, value in configured.items()
+        },
+        workers=tuple(workers) if workers is not None else None,
+    )
 
 
 def _runner_supports_parallel_config(
@@ -162,6 +210,24 @@ def enumerate_branches(
             ):
                 continue
             try:
+                domain_kwargs: dict[str, Any] = {}
+                for role in ("agg", "prefill", "decode"):
+                    candidates = _role_parallel_candidates(ss, role)
+                    if candidates is not None:
+                        domain_kwargs[f"{role}_candidates"] = candidates
+                for field_name in (
+                    "num_gpu_per_replica",
+                    "max_gpu_per_replica",
+                    "max_prefill_workers",
+                    "max_decode_workers",
+                ):
+                    if field_name in ss.model_fields_set:
+                        value = getattr(ss, field_name)
+                        domain_kwargs[field_name] = (
+                            tuple(value)
+                            if field_name == "num_gpu_per_replica"
+                            else value
+                        )
                 legal = parallel_configs_for(
                     ss.model_name,
                     ss.hardware_sku,
@@ -170,6 +236,7 @@ def enumerate_branches(
                     backend=backend,
                     min_gpu_budget=ss.min_gpu_budget,
                     max_seq_len=max_seq_len,
+                    **domain_kwargs,
                 )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

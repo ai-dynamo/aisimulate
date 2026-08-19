@@ -76,6 +76,55 @@ configuration for each candidate.
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
 
+## Parallel and Execution Domains
+
+Every role accepts an explicit finite candidate list for GPUs per worker, TP, PP,
+attention DP, MoE TP, MoE EP, CP, actual scheduler batch/context limits, and worker count:
+
+```yaml
+search_space:
+  deployment_mode: [disagg]
+  prefill_num_gpu_candidates: [4, 8]
+  prefill_tp_candidates: [1, 2, 4]
+  prefill_pp_candidates: [1, 2]
+  prefill_dp_candidates: [1]
+  prefill_moe_tp_candidates: [1]
+  prefill_moe_ep_candidates: [4, 8]
+  prefill_cp_candidates: [1, 2, 4]
+  prefill_batch_size_candidates: [1, 2, 4]
+  prefill_context_tokens_candidates: [8192, 16384]
+  prefill_num_workers_candidates: [1, 2]
+
+  decode_num_gpu_candidates: [4, 8]
+  decode_tp_candidates: [1, 2, 4]
+  decode_pp_candidates: [1]
+  decode_dp_candidates: [1, 2, 4]
+  decode_moe_tp_candidates: [1]
+  decode_moe_ep_candidates: [4, 8]
+  decode_cp_candidates: [1]
+  decode_batch_size_candidates: [256, 512]
+  decode_context_tokens_candidates: [8192]
+  decode_num_workers_candidates: [1, 2, 4]
+
+  num_gpu_per_replica: [8, 16, 24, 32]
+  max_gpu_per_replica: 32
+  max_prefill_workers: 2
+  max_decode_workers: 4
+```
+
+Use the same fields with the `agg_` prefix for aggregated deployments. An omitted topology
+list uses capability-derived defaults: CP is offered only for model/backend combinations that
+declare CP support, decode CP remains 1, and PP=2 is added for DeepSeek V3.2/V4 on Blackwell.
+Configured lists are authoritative and are pruned deterministically by GPU-count, MoE-width,
+backend, KV-feasibility, worker-count, and replica-budget rules before sampling. Rapid and
+thorough consume the resulting `BranchSpace.parallel_configs`; thorough enumerates all of it,
+while rapid projects optimizer suggestions onto that identical legal pool.
+
+`*_batch_size_candidates` and `*_context_tokens_candidates` are clearer aliases for the
+replay scheduler's `max_num_seqs` and `max_num_batched_tokens`; when supplied, they take
+precedence over the older lists for that role. `EnumerationDiagnostics` exposes stable
+considered/accepted counts plus pruning-reason counts for topology enumeration.
+
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
 

@@ -24,6 +24,8 @@ def _engine_args_payload(
     attention_dp = int(sample[f"{prefix}attention_dp"])
     moe_tp = int(sample[f"{prefix}moe_tp"])
     moe_ep = int(sample[f"{prefix}moe_ep"])
+    pp = int(sample[f"{prefix}pp"])
+    cp = int(sample[f"{prefix}cp"])
     backend = sample["backend"]
     memory_fraction_field = {
         "vllm": "gpu_memory_utilization",
@@ -38,7 +40,9 @@ def _engine_args_payload(
         "aic_system": sample["hardware_sku"],
         "aic_model_path": sample["model_name"],
         "aic_tp_size": tp,
+        "aic_pp_size": pp,
         "aic_attention_dp_size": attention_dp,
+        "aic_cp_size": cp,
         "max_num_batched_tokens": int(sample[f"{role}_max_num_batched_tokens"]),
         "max_num_seqs": int(sample[f"{role}_max_num_seqs"]),
         "block_size": int(sample[f"{role}_block_size"]),
@@ -74,6 +78,7 @@ def build_backend_deployment(
                 "attention_dp",
                 "moe_tp",
                 "moe_ep",
+                "cp",
                 "strategy",
                 "replicas",
                 "prefill_tp",
@@ -81,6 +86,7 @@ def build_backend_deployment(
                 "prefill_attention_dp",
                 "prefill_moe_tp",
                 "prefill_moe_ep",
+                "prefill_cp",
                 "prefill_strategy",
                 "prefill_replicas",
                 "decode_tp",
@@ -88,6 +94,7 @@ def build_backend_deployment(
                 "decode_attention_dp",
                 "decode_moe_tp",
                 "decode_moe_ep",
+                "decode_cp",
                 "decode_strategy",
                 "decode_replicas",
             }

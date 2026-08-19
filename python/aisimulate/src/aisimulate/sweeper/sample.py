@@ -49,6 +49,7 @@ def _shape_fields(shape: ParallelShape) -> dict[str, Any]:
         "attention_dp": shape.dp,
         "moe_tp": shape.moe_tp,
         "moe_ep": shape.moe_ep,
+        "cp": shape.cp,
         "strategy": shape.strategy,
     }
 
@@ -99,7 +100,17 @@ def unroll_sample(
         searched = _PREFILL_SEARCHED + _DECODE_SEARCHED
         pinned = _PREFILL_PINNED + _DECODE_PINNED
     for key in searched:
-        sample[key] = selection[key]
+        if key in selection:
+            sample[key] = selection[key]
+            continue
+        role, suffix = key.split("_max_", 1)
+        alias = (
+            f"{role}_context_tokens"
+            if suffix == "num_batched_tokens"
+            else f"{role}_batch_size"
+        )
+        sample[alias] = selection[alias]
+        sample[key] = selection[alias]
     for key in pinned:
         sample[key] = getattr(search_space, key)
     return sample

@@ -66,6 +66,7 @@ def test_agg_backend_deployment_preserves_engine_payload():
         "attention_dp": 1,
         "moe_tp": 1,
         "moe_ep": 4,
+        "cp": 1,
         "strategy": "tep",
         "replicas": 2,
     }
@@ -77,7 +78,9 @@ def test_agg_backend_deployment_preserves_engine_payload():
         "aic_system": "example_sku",
         "aic_model_path": "example/model",
         "aic_tp_size": 4,
+        "aic_pp_size": 1,
         "aic_attention_dp_size": 1,
+        "aic_cp_size": 1,
         "aic_moe_tp_size": 1,
         "aic_moe_ep_size": 4,
         "max_num_batched_tokens": 16384,
@@ -175,6 +178,19 @@ def test_optional_backend_runtime_values_are_forwarded():
 
     assert engine["startup_time"] == 45.0
     assert engine["aic_nextn"] == 2
+
+
+def test_pipeline_and_context_parallelism_reach_aic_execution():
+    parallel = ReplicaParallelConfig(
+        ParallelShape(tp=1, pp=2, dp=1, moe_tp=1, moe_ep=4, cp=4), replicas=1
+    )
+    engine = _agg_deployment(
+        selection=_agg_selection(backend="sglang"), parallel_config=parallel
+    ).agg_engine_args
+
+    assert engine["aic_tp_size"] == 1
+    assert engine["aic_pp_size"] == 2
+    assert engine["aic_cp_size"] == 4
 
 
 def test_backend_deployment_contains_no_dynamo_policy_fields():

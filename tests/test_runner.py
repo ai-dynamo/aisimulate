@@ -165,6 +165,7 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     engine_args["aic_backend_version"] = "test"
     engine_args["aic_nextn"] = 3
     engine_args["aic_pp_size"] = 2
+    engine_args["aic_cp_size"] = 4
     engine_args["systems_path"] = "/tmp/custom-systems.yaml"
     calls = []
 
@@ -188,8 +189,10 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     assert runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 321
     timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
     assert timing_config["pp"] == 2
+    assert timing_config["cp_size"] == 4
     assert timing_config["systems_path"] == "/tmp/custom-systems.yaml"
     assert calls[0]["pp_size"] == 2
+    assert calls[0]["cp_size"] == 4
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
     assert "nextn" not in calls[0]
 

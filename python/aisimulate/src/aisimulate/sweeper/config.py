@@ -417,6 +417,24 @@ SEARCH_CHOICES: dict[str, tuple] = {
     "agg_max_num_seqs": (256, 512, 1024),
 }
 
+_ROLE_CANDIDATE_SUFFIXES = (
+    "num_gpu_candidates",
+    "tp_candidates",
+    "pp_candidates",
+    "dp_candidates",
+    "moe_tp_candidates",
+    "moe_ep_candidates",
+    "cp_candidates",
+    "batch_size_candidates",
+    "context_tokens_candidates",
+    "num_workers_candidates",
+)
+_ROLE_CANDIDATE_FIELDS = tuple(
+    f"{role}_{suffix}"
+    for role in ("agg", "prefill", "decode")
+    for suffix in _ROLE_CANDIDATE_SUFFIXES
+)
+
 
 class SearchSpace(BaseModel):
     """Dynamo-independent backend inputs to one search run.
@@ -445,6 +463,51 @@ class SearchSpace(BaseModel):
     startup_time: float | None = None
     aic_nextn: int | None = None  # speculative-decode (MTP) depth, 1..5
 
+    # Explicit per-role topology domains. ``None`` selects model/hardware/backend
+    # defaults; a non-empty list is authoritative. Batch/context candidates are
+    # replay scheduler limits and therefore remain distinct from topology legality.
+    agg_num_gpu_candidates: list[int] | None = None
+    agg_tp_candidates: list[int] | None = None
+    agg_pp_candidates: list[int] | None = None
+    agg_dp_candidates: list[int] | None = None
+    agg_moe_tp_candidates: list[int] | None = None
+    agg_moe_ep_candidates: list[int] | None = None
+    agg_cp_candidates: list[int] | None = None
+    agg_batch_size_candidates: list[int] | None = None
+    agg_context_tokens_candidates: list[int] | None = None
+    agg_num_workers_candidates: list[int] | None = None
+
+    prefill_num_gpu_candidates: list[int] | None = None
+    prefill_tp_candidates: list[int] | None = None
+    prefill_pp_candidates: list[int] | None = None
+    prefill_dp_candidates: list[int] | None = None
+    prefill_moe_tp_candidates: list[int] | None = None
+    prefill_moe_ep_candidates: list[int] | None = None
+    prefill_cp_candidates: list[int] | None = None
+    prefill_batch_size_candidates: list[int] | None = None
+    prefill_context_tokens_candidates: list[int] | None = None
+    prefill_num_workers_candidates: list[int] | None = None
+
+    decode_num_gpu_candidates: list[int] | None = None
+    decode_tp_candidates: list[int] | None = None
+    decode_pp_candidates: list[int] | None = None
+    decode_dp_candidates: list[int] | None = None
+    decode_moe_tp_candidates: list[int] | None = None
+    decode_moe_ep_candidates: list[int] | None = None
+    decode_cp_candidates: list[int] | None = None
+    decode_batch_size_candidates: list[int] | None = None
+    decode_context_tokens_candidates: list[int] | None = None
+    decode_num_workers_candidates: list[int] | None = None
+
+    # Disaggregated P/D cell controls. The allowed-size ladder and ceiling are
+    # applied before either search policy sees the domain.
+    num_gpu_per_replica: list[int] = Field(
+        default_factory=lambda: [1, 2, 4, 8, *range(16, 129, 8)]
+    )
+    max_gpu_per_replica: int = Field(default=128, ge=1)
+    max_prefill_workers: int = Field(default=32, ge=1)
+    max_decode_workers: int = Field(default=32, ge=1)
+
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
     prefill_max_num_seqs: list[int] = [1, 2, 4, 8, 16, 32, 64, 128, 256]
@@ -468,6 +531,32 @@ class SearchSpace(BaseModel):
     agg_block_size: int = 64
     agg_gpu_memory_utilization: float = 0.9
     agg_enable_prefix_caching: bool = True
+
+    @field_validator(*_ROLE_CANDIDATE_FIELDS, "num_gpu_per_replica", mode="before")
+    @classmethod
+    def _validate_positive_candidate_lists(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not isinstance(value, list) or not value:
+            raise ValueError("candidate lists must be non-empty lists")
+        if any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in value):
+            raise ValueError(f"candidate lists need positive integers, got {value!r}")
+        if len(set(value)) != len(value):
+            raise ValueError(f"candidate lists must not contain duplicates, got {value!r}")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_decode_context_parallelism(self) -> SearchSpace:
+        """Decode is token-serial and cannot use prefill context parallelism."""
+
+        if self.decode_cp_candidates is not None and any(
+            value != 1 for value in self.decode_cp_candidates
+        ):
+            raise ValueError(
+                "decode_cp_candidates must contain only 1; context parallelism applies "
+                "to aggregate/prefill execution"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
