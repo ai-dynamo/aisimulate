@@ -13,11 +13,13 @@ from aisimulate.sweeper.heterogeneous import (
     DisaggRateMatchControls,
     DisaggRole,
     RoleEstimate,
+    RoleEstimatorSpecs,
     RoleFailureCategory,
     RoleIdentity,
     RoleSearchError,
     rate_match_disaggregated,
 )
+from aisimulate.sweeper.replay import EstimatorSpec
 
 
 def _identity(
@@ -56,6 +58,53 @@ def _estimate(
         gpus_per_worker=gpus_per_worker,
         parallel_config={"tp": gpus_per_worker, "replicas": workers},
         provenance={"estimator": identity.backend_version},
+    )
+
+
+def _estimator(
+    role: DisaggRole, *, architecture: str = "ExampleForCausalLM"
+) -> EstimatorSpec:
+    return EstimatorSpec(
+        model_path=f"{role.value}/model",
+        model_architecture=architecture,
+        system=f"{role.value}_system",
+        backend="vllm",
+        backend_version="1",
+        performance_data_version="1",
+        database_mode="SILICON",
+        transfer_policy=("xshape",),
+        forward_model="op_level",
+        engine_step_backend="rust",
+        systems_paths=(f"/{role.value}/systems",),
+        performance_data_root=f"/{role.value}/systems",
+    )
+
+
+def _role_estimators(
+    *, decode_architecture: str = "ExampleForCausalLM"
+) -> RoleEstimatorSpecs:
+    prefill = _estimator(DisaggRole.PREFILL)
+    decode = _estimator(DisaggRole.DECODE, architecture=decode_architecture)
+    return RoleEstimatorSpecs(
+        pair=DisaggBackendPair("vllm", "vllm"),
+        prefill=prefill,
+        decode=decode,
+        identities={
+            "prefill": _identity(
+                DisaggRole.PREFILL,
+                model=prefill.model_path,
+                system=prefill.system,
+                backend=prefill.backend,
+                version=prefill.backend_version,
+            ),
+            "decode": _identity(
+                DisaggRole.DECODE,
+                model=decode.model_path,
+                system=decode.system,
+                backend=decode.backend,
+                version=decode.backend_version,
+            ),
+        },
     )
 
 
@@ -98,6 +147,40 @@ def test_role_identity_is_losslessly_json_serializable() -> None:
     assert payload["provenance"] == {"resolved_by": "test"}
 
 
+def test_role_estimator_contract_rejects_identity_mismatch() -> None:
+    estimators = _role_estimators()
+
+    with pytest.raises(RoleSearchError, match="identity does not match") as exc_info:
+        RoleEstimatorSpecs(
+            pair=estimators.pair,
+            prefill=estimators.prefill,
+            decode=estimators.decode,
+            identities={
+                **estimators.identities,
+                "decode": _identity(
+                    DisaggRole.DECODE,
+                    model="wrong/model",
+                    system=estimators.decode.system,
+                    backend=estimators.decode.backend,
+                    version=estimators.decode.backend_version,
+                ),
+            },
+        )
+
+    assert exc_info.value.role is DisaggRole.DECODE
+    assert exc_info.value.category is RoleFailureCategory.INVALID_IDENTITY
+
+
+def test_role_estimator_contract_rejects_incompatible_kv_architectures() -> None:
+    with pytest.raises(
+        RoleSearchError, match="incompatible for KV handoff"
+    ) as exc_info:
+        _role_estimators(decode_architecture="DifferentForCausalLM")
+
+    assert exc_info.value.role is DisaggRole.DECODE
+    assert exc_info.value.category is RoleFailureCategory.INVALID_IDENTITY
+
+
 def test_default_rate_matching_preserves_heterogeneous_role_provenance() -> None:
     prefill = _estimate(
         _identity(
@@ -138,7 +221,9 @@ def test_default_rate_matching_preserves_heterogeneous_role_provenance() -> None
     assert result.limiting_role is DisaggRole.PREFILL
     assert result.ttft_ms == pytest.approx(20.0 * 1.1 * 1.8)
     assert result.tpot_ms == pytest.approx(2.0 * 1.08)
-    assert result.request_latency_ms == pytest.approx(result.ttft_ms + 4 * result.tpot_ms)
+    assert result.request_latency_ms == pytest.approx(
+        result.ttft_ms + 4 * result.tpot_ms
+    )
     assert payload["role_identities"]["prefill"]["backend"] == "sglang"
     assert payload["role_identities"]["decode"]["hardware_sku"] == "h200_sxm"
     assert payload["provenance"]["role_provenance"] == {
@@ -194,6 +279,38 @@ def test_custom_rate_controls_can_make_decode_limiting() -> None:
     assert result.limiting_role is DisaggRole.DECODE
     assert result.ttft_ms == pytest.approx(80.0)
     assert result.tpot_ms == pytest.approx(3.0)
+
+
+def test_rate_matching_rejects_finite_inputs_that_overflow_outputs() -> None:
+    prefill = _estimate(
+        _identity(
+            DisaggRole.PREFILL,
+            model="m",
+            system="h100_sxm",
+            backend="vllm",
+            version="1",
+        ),
+        rate=1e308,
+        latency_ms=1e308,
+        workers=2,
+        gpus_per_worker=1,
+    )
+    decode = _estimate(
+        _identity(
+            DisaggRole.DECODE,
+            model="m",
+            system="h100_sxm",
+            backend="vllm",
+            version="1",
+        ),
+        rate=1e308,
+        latency_ms=1e308,
+        workers=2,
+        gpus_per_worker=1,
+    )
+
+    with pytest.raises(ValueError, match="must be finite"):
+        rate_match_disaggregated(prefill, decode, output_length=2)
 
 
 def test_gpu_budget_failure_is_role_attributed_and_actionable() -> None:

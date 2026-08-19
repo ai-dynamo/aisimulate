@@ -604,11 +604,11 @@ class SearchSpace(BaseModel):
     decode_comm_quant_mode: str | None = None
     prefill_free_gpu_memory_fraction: float | None = Field(default=None, gt=0, le=1)
     decode_free_gpu_memory_fraction: float | None = Field(default=None, gt=0, le=1)
-    prefill_rate_degradation: float = Field(default=0.9, gt=0)
-    decode_rate_degradation: float = Field(default=0.92, gt=0)
-    prefill_latency_correction: float = Field(default=1.1, gt=0)
-    decode_latency_correction: float = Field(default=1.08, gt=0)
-    ttft_correction_factor: float = Field(default=1.8, gt=0)
+    prefill_rate_degradation: float = Field(default=0.9, gt=0, allow_inf_nan=False)
+    decode_rate_degradation: float = Field(default=0.92, gt=0, allow_inf_nan=False)
+    prefill_latency_correction: float = Field(default=1.1, gt=0, allow_inf_nan=False)
+    decode_latency_correction: float = Field(default=1.08, gt=0, allow_inf_nan=False)
+    ttft_correction_factor: float = Field(default=1.8, gt=0, allow_inf_nan=False)
 
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]

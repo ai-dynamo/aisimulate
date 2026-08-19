@@ -178,6 +178,52 @@ class RoleEstimatorSpecs:
         expected = {DisaggRole.PREFILL.value, DisaggRole.DECODE.value}
         if set(self.identities) != expected:
             raise ValueError(f"identities must contain exactly {sorted(expected)}")
+        for role in (DisaggRole.PREFILL, DisaggRole.DECODE):
+            identity = self.identities[role.value]
+            estimator = self.estimator_for(role)
+            expected_identity = (
+                role,
+                estimator.model_path,
+                estimator.system,
+                estimator.backend,
+                estimator.backend_version,
+            )
+            actual_identity = (
+                identity.role,
+                identity.model_name,
+                identity.hardware_sku,
+                identity.backend,
+                identity.backend_version,
+            )
+            if actual_identity != expected_identity:
+                raise RoleSearchError(
+                    role,
+                    RoleFailureCategory.INVALID_IDENTITY,
+                    "role identity does not match its resolved estimator",
+                    provenance={
+                        "identity": identity.as_dict(),
+                        "estimator": {
+                            "model_name": estimator.model_path,
+                            "hardware_sku": estimator.system,
+                            "backend": estimator.backend,
+                            "backend_version": estimator.backend_version,
+                        },
+                    },
+                )
+        if self.prefill.model_architecture != self.decode.model_architecture:
+            raise RoleSearchError(
+                DisaggRole.DECODE,
+                RoleFailureCategory.INVALID_IDENTITY,
+                "prefill/decode model architectures are incompatible for KV handoff: "
+                f"{self.prefill.model_architecture!r} != "
+                f"{self.decode.model_architecture!r}",
+                provenance={
+                    "prefill_model": self.prefill.model_path,
+                    "prefill_architecture": self.prefill.model_architecture,
+                    "decode_model": self.decode.model_path,
+                    "decode_architecture": self.decode.model_architecture,
+                },
+            )
         object.__setattr__(self, "identities", MappingProxyType(dict(self.identities)))
 
     def estimator_for(self, role: DisaggRole | str) -> EstimatorSpec:
@@ -271,6 +317,19 @@ class DisaggRateMatchResult:
     provenance: Mapping[str, Any]
 
     def __post_init__(self) -> None:
+        for name in (
+            "sequence_rate",
+            "tokens_per_second",
+            "tokens_per_second_per_gpu",
+            "ttft_ms",
+            "tpot_ms",
+            "request_latency_ms",
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"DisaggRateMatchResult.{name} must be finite and non-negative, got {value!r}"
+                )
         object.__setattr__(self, "role_rates", MappingProxyType(dict(self.role_rates)))
         object.__setattr__(self, "role_identities", MappingProxyType(dict(self.role_identities)))
         object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))

@@ -58,6 +58,7 @@ from .provider import (
 from .replay import (
     REPLAY_SPEC_API_VERSION,
     BackendDeploymentSpec,
+    DisaggregatedCorrectionSpec,
     EngineRequestSpec,
     EstimatorSpec,
     HookCapability,
@@ -140,6 +141,7 @@ __all__ = [
     "DisaggRateMatchControls",
     "DisaggRateMatchResult",
     "DisaggRole",
+    "DisaggregatedCorrectionSpec",
     "EngineRequestSpec",
     "EngineStepBackend",
     "EstimatorResolutionError",

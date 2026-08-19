@@ -13,6 +13,7 @@ from .runner import (
 )
 from .sweeper.replay import (
     BackendDeploymentSpec,
+    DisaggregatedCorrectionSpec,
     EngineRequestSpec,
     ReplayOutputRequirements,
     ReplayReport,
@@ -27,6 +28,7 @@ __version__ = version("aisimulate")
 
 __all__ = [
     "BackendDeploymentSpec",
+    "DisaggregatedCorrectionSpec",
     "EngineReplayRunner",
     "EngineReplayRunnerFactory",
     "EngineRequestSpec",

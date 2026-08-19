@@ -130,20 +130,30 @@ system definition, exact performance-data version, engine controls, and KV-feasi
 independently. Sweeper then pairs role shapes only when their combined GPU count is within
 `gpu_budget` (and `min_gpu_budget`, when set). The replay contract retains `prefill_backend`,
 `decode_backend`, both exact versions, role estimator specs, and role engine requests; candidate
-configuration retains the same role identities and provenance.
+configuration retains the same role identities and provenance. Role identity must match the
+resolved estimator exactly, and prefill/decode model architectures must match for KV handoff.
 
-The engine runner supports mixed vLLM/SGLang P/D pairs and reports an unsupported backend by role.
-TensorRT-LLM remains fail-closed for either disaggregated role. `decode_enable_chunked_prefill=true`
-is also rejected because chunked prefill is a prefill-role scheduler control.
+Runners must advertise both each role's backend/topology and the exact P/D backend pair; independent
+support for vLLM and SGLang is not enough to claim their mixed pair. The built-in engine runner
+explicitly supports all vLLM/SGLang P/D pairs and reports an unsupported backend by role.
+TensorRT-LLM remains fail-closed for either disaggregated role. Partially pruned pair domains remain
+visible in `BranchSpace.pruning_diagnostics` with stable categories and considered/accepted/pruned
+counts. `decode_enable_chunked_prefill=true` is rejected because chunked prefill is a prefill-role
+scheduler control; a shared `enable_chunked_prefill=true` materializes `true` only for prefill and
+`false` for decode.
 Optional adapter providers must explicitly return
 `AdapterSearchPlan(supports_heterogeneous_pd=True)`; providers that have not audited their
 materialization against role-specific identities are rejected.
 
 Legacy-calibrated P/D matching defaults are explicit inputs: `prefill_rate_degradation=0.9`,
 `decode_rate_degradation=0.92`, `prefill_latency_correction=1.1`,
-`decode_latency_correction=1.08`, and `ttft_correction_factor=1.8`. The public
-`rate_match_disaggregated` result preserves per-role rates, identities, GPU totals, the limiting
-role, correction provenance, and role-attributed budget failures.
+`decode_latency_correction=1.08`, and `ttft_correction_factor=1.8`. These finite positive controls
+are retained in `BackendDeploymentSpec` and consumed by replay as role service-time scales:
+`prefill_latency_correction * ttft_correction_factor / prefill_rate_degradation` for prefill and
+`decode_latency_correction / decode_rate_degradation` for decode. The public
+`rate_match_disaggregated` result also preserves per-role rates, identities, GPU totals, the
+limiting role, correction provenance, and role-attributed budget failures; non-finite results are
+rejected before serialization or ranking.
 
 ## Pinned Parallel Configurations
 

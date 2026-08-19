@@ -210,13 +210,13 @@ def test_resolved_estimator_contract_is_forwarded_to_every_engine():
         "aic_database_mode": "HYBRID",
         "aic_transfer_policy": ["xshape", "xquant"],
         "aic_forward_model": "fpm",
-        "aic_engine_step_backend": "rust",
-        "aic_systems_paths": ["/custom/systems"],
-        "aic_performance_data_version": BACKEND_VERSION,
+        "systems_path": "/custom/systems",
     }
     engine = deployment.agg_engine_args
     assert engine is not None
     assert {key: engine[key] for key in expected} == expected
+    assert deployment.estimator.engine_step_backend == "rust"
+    assert deployment.estimator.performance_data_version == BACKEND_VERSION
 
 
 def test_zero_speculative_depth_is_not_forwarded_to_the_runner():

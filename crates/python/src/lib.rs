@@ -57,6 +57,14 @@ struct AicTimingConfig {
     #[serde(default)]
     systems_path: Option<String>,
     #[serde(default)]
+    database_mode: Option<String>,
+    #[serde(default)]
+    transfer_policy: Option<Vec<String>>,
+    #[serde(default)]
+    forward_model: Option<String>,
+    #[serde(default = "one_f64")]
+    latency_scale: f64,
+    #[serde(default)]
     moe_backend: Option<String>,
     #[serde(default)]
     attention_backend: Option<String>,
@@ -70,6 +78,10 @@ struct AicTimingConfig {
 
 const fn one() -> u32 {
     1
+}
+
+const fn one_f64() -> f64 {
+    1.0
 }
 
 impl AicTimingConfig {
@@ -136,6 +148,7 @@ impl AicTimingConfig {
 
 struct AicTimingModel {
     engine: Py<PyAny>,
+    latency_scale: f64,
 }
 
 impl AicTimingModel {
@@ -159,6 +172,10 @@ impl AicTimingModel {
             "AIC backend version cannot be empty"
         );
         config.resolved_memory_fraction()?;
+        ensure!(
+            config.latency_scale.is_finite() && config.latency_scale > 0.0,
+            "AIC latency_scale must be positive and finite"
+        );
 
         let engine = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
             let sdk = PyModule::import(py, "aiconfigurator_core.sdk.engine")?;
@@ -177,6 +194,9 @@ impl AicTimingModel {
             kwargs.set_item("nextn", config.nextn)?;
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
+            kwargs.set_item("database_mode", config.database_mode.as_deref())?;
+            kwargs.set_item("transfer_policy", config.transfer_policy.as_deref())?;
+            kwargs.set_item("forward_model", config.forward_model.as_deref())?;
             kwargs.set_item("moe_backend", config.moe_backend.as_deref())?;
             kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
             kwargs.set_item("enable_wideep", config.enable_wideep)?;
@@ -198,7 +218,10 @@ impl AicTimingModel {
         .map_err(|error| {
             anyhow!("AIC timing provider could not compile the requested engine: {error}")
         })?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            latency_scale: config.latency_scale,
+        })
     }
 }
 
@@ -221,6 +244,7 @@ impl TimingModel for AicTimingModel {
                 )?
                 .extract::<f64>()
         })
+        .map(|latency| latency * self.latency_scale)
         .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
     }
 
@@ -242,6 +266,7 @@ impl TimingModel for AicTimingModel {
                 )?
                 .extract::<f64>()
         })
+        .map(|latency| latency * self.latency_scale)
         .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))
     }
 }
@@ -495,6 +520,10 @@ mod tests {
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
             systems_path: None,
+            database_mode: None,
+            transfer_policy: None,
+            forward_model: None,
+            latency_scale: 1.0,
             moe_backend: None,
             attention_backend: None,
             enable_wideep: false,
@@ -556,6 +585,10 @@ mod tests {
             "backend": "sglang",
             "system": "test-system",
             "tp": 1,
+            "database_mode": "HYBRID",
+            "transfer_policy": ["xshape", "xquant"],
+            "forward_model": "fpm",
+            "latency_scale": 2.5,
             "moe_backend": "deepep_moe",
             "attention_backend": "fa3",
             "enable_wideep": true,
@@ -569,6 +602,13 @@ mod tests {
         assert!(config.enable_wideep);
         assert!(config.enable_eplb);
         assert_eq!(config.wideep_num_slots, Some(64));
+        assert_eq!(config.database_mode.as_deref(), Some("HYBRID"));
+        assert_eq!(
+            config.transfer_policy.as_deref(),
+            Some(["xshape".to_owned(), "xquant".to_owned()].as_slice())
+        );
+        assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+        assert_eq!(config.latency_scale, 2.5);
     }
 
     #[test]

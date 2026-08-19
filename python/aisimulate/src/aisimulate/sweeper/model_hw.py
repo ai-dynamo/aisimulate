@@ -62,6 +62,7 @@ class ModelHardware:
     vram_per_gpu: int
     gpus_per_node: int
     max_context: int | None  # model's max context length (the default max_seq_len)
+    sm_version: int = -1
 
 
 def resolve_model_hardware(
@@ -85,8 +86,7 @@ def resolve_model_hardware(
     )
     if not system_spec:
         raise ValueError(
-            f"unknown hardware_sku {hardware_sku!r}: no system config found on "
-            "AIConfigurator Core's systems path"
+            f"unknown hardware_sku {hardware_sku!r}: no system config found on AIConfigurator Core's systems path"
         )
     vram_per_gpu = int(system_spec["gpu"]["mem_capacity"])
     gpus_per_node = int(system_spec["node"]["num_gpus_per_node"])
@@ -106,6 +106,7 @@ def resolve_model_hardware(
         vram_per_gpu=vram_per_gpu,
         gpus_per_node=gpus_per_node,
         max_context=int(max_context) if max_context else None,
+        sm_version=int(system_spec.get("gpu", {}).get("sm_version", -1)),
     )
 
 

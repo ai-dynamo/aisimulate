@@ -320,6 +320,8 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    database_mode: str | None = None,
+    transfer_policy: list[str] | None = None,
     moe_backend: str | None = None,
     attention_backend: str | None = None,
     enable_wideep: bool = False,
@@ -362,9 +364,17 @@ def compile_engine(
     model = get_model(model_path, model_config, backend)
 
     # The database supplies the shared-layer perf sources, the query mode and
-    # the transfer policy stamped into the compiled `EngineConfig`. Load lazily
-    # and tolerate failure; the Rust core falls back to its own defaults.
-    database = _maybe_load_database(system, backend, backend_version, systems_path)
+    # the transfer policy stamped into the compiled `EngineConfig`. Explicit
+    # data controls are fail-closed; the legacy unconfigured path retains its
+    # compatibility fallback.
+    database = _maybe_load_database(
+        system,
+        backend,
+        backend_version,
+        systems_path,
+        database_mode=database_mode,
+        transfer_policy=transfer_policy,
+    )
 
     spec_json = build_engine_spec_json(
         model,
@@ -615,11 +625,35 @@ def _evaluate_single_op(
     return PerformanceResult(latency, energy=energy, source=source)
 
 
-def _maybe_load_database(system: str, backend: str, backend_version: str | None, systems_path: str | None) -> Any:
-    try:
-        from aiconfigurator_core.sdk import perf_database
+def _maybe_load_database(
+    system: str,
+    backend: str,
+    backend_version: str | None,
+    systems_path: str | None,
+    *,
+    database_mode: str | None = None,
+    transfer_policy: list[str] | None = None,
+) -> Any:
+    from aiconfigurator_core.sdk import perf_database
 
-        return perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
+    if database_mode is not None or transfer_policy is not None:
+        if backend_version is None:
+            raise ValueError(
+                "database_mode/transfer_policy require an exact backend_version"
+            )
+        return perf_database.get_database_view(
+            system,
+            backend,
+            backend_version,
+            systems_paths=systems_path,
+            allow_missing_data=database_mode in {"EMPIRICAL", "SOL"},
+            database_mode=database_mode,
+            transfer_policy=transfer_policy,
+        )
+    try:
+        return perf_database.get_database(
+            system, backend, backend_version, systems_paths=systems_path
+        )
     except Exception:
         return None
 

@@ -15,9 +15,9 @@ from aiconfigurator_core.sdk.common import (
     MoEQuantMode,
 )
 from aiconfigurator_core.sdk.models import get_model_family
-from aiconfigurator_core.sdk.perf_database import is_blackwell_system
 
 from .config import SmartSearchConfig, Workload
+from .estimator import resolve_systems_paths
 from .heterogeneous import (
     DisaggBackendPair,
     DisaggRole,
@@ -79,11 +79,15 @@ def resolve_engine_controls(
     _validate_quant_mode("comm_quant_mode", ss.comm_quant_mode, CommQuantMode)
 
     model_family = get_model_family(ss.model_name)
+    systems_paths = list(resolve_systems_paths(ss.systems_paths))
     required_tokens = _required_workload_tokens(config.workload)
     resolved: dict[str, EngineControlTemplate] = {}
     for backend in dict.fromkeys(ss.backend):
         model_hw = resolve_model_hardware(
-            ss.model_name, ss.hardware_sku, backend=backend
+            ss.model_name,
+            ss.hardware_sku,
+            backend=backend,
+            systems_paths=systems_paths,
         )
         max_seq_len = ss.max_seq_len or ss.context_length or model_hw.max_context
         if max_seq_len is None:
@@ -139,7 +143,7 @@ def resolve_engine_controls(
                     "moe_backend='megamoe' has packaged performance data only for "
                     f"DeepSeek-V4-Pro; got {ss.model_name!r}"
                 )
-            if not is_blackwell_system(ss.hardware_sku):
+            if model_hw.sm_version < 100:
                 raise ValueError(
                     "moe_backend='megamoe' requires a Blackwell-class system; "
                     f"got {ss.hardware_sku!r}"
@@ -218,6 +222,7 @@ _ROLE_ENGINE_FIELDS = (
     "fmha_quant_mode",
     "comm_quant_mode",
     "free_gpu_memory_fraction",
+    "systems_paths",
 )
 
 
@@ -287,7 +292,10 @@ def materialize_role_engine_request(
             backend_version=estimator.backend_version,
             cached_prefix_tokens=config.workload.cached_prefix_tokens,
             context_tokens=int(sample[f"{name}_max_num_batched_tokens"]),
-            enable_chunked_prefill=bool(ss.role_value(name, "enable_chunked_prefill")),
+            enable_chunked_prefill=(
+                role is DisaggRole.PREFILL
+                and bool(ss.role_value(name, "enable_chunked_prefill"))
+            ),
             enable_wideep=bool(ss.role_value(name, "enable_wideep")),
             enable_eplb=bool(ss.role_value(name, "enable_eplb")),
             wideep_num_slots=ss.role_value(name, "wideep_num_slots"),

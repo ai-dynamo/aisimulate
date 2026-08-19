@@ -209,20 +209,24 @@ def _role_identity(
     role: DisaggRole,
     estimator: EstimatorSpec,
 ) -> RoleIdentity:
-    inherited = tuple(
-        name
-        for name in _ROLE_ESTIMATOR_FIELDS
-        if getattr(search_space, f"{role.value}_{name}") is None
-    )
+    inherited_fields: list[str] = []
+    for name in _ROLE_ESTIMATOR_FIELDS:
+        override = getattr(search_space, f"{role.value}_{name}")
+        if override is None or (
+            name == "backend_version"
+            and isinstance(override, dict)
+            and estimator.backend not in override
+        ):
+            inherited_fields.append(name)
     if getattr(search_space, f"{role.value}_backend") is None:
-        inherited += ("backend",)
+        inherited_fields.append("backend")
     return RoleIdentity(
         role=role,
         model_name=estimator.model_path,
         hardware_sku=estimator.system,
         backend=estimator.backend,
         backend_version=estimator.backend_version,
-        inherited_fields=inherited,
+        inherited_fields=tuple(inherited_fields),
         provenance={
             "performance_data_version": estimator.performance_data_version,
             "performance_data_root": estimator.performance_data_root,
