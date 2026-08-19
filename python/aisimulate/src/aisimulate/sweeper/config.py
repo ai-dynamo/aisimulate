@@ -62,13 +62,34 @@ class OptimizationTarget(str, Enum):
 
 
 class SLATarget(BaseModel):
-    """Per-request latency bounds in ms. Set ttft_ms+itl_ms, or e2e_ms."""
+    """Latency bounds in milliseconds.
+
+    ``ttft_ms`` + ``itl_ms`` and ``e2e_ms`` are understood by replay as
+    per-request goodput bounds. The same fields can also be applied to the
+    aggregate mean metrics when :attr:`OptimizationGoal.strict_sla` is enabled.
+    ``request_latency_ms`` is aggregate-only and uses the legacy definition
+    ``mean_ttft_ms + mean_tpot_ms * (osl - 1)``.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     ttft_ms: float | None = Field(default=None, gt=0)
     itl_ms: float | None = Field(default=None, gt=0)
     e2e_ms: float | None = Field(default=None, gt=0)
+    request_latency_ms: float | None = Field(default=None, gt=0)
+
+    @property
+    def has_aggregate_bound(self) -> bool:
+        """Whether at least one strict aggregate bound is configured."""
+        return any(
+            value is not None
+            for value in (
+                self.ttft_ms,
+                self.itl_ms,
+                self.e2e_ms,
+                self.request_latency_ms,
+            )
+        )
 
 
 # Goodput-based scalar targets — the only ones that need an SLA (their metric counts
@@ -98,6 +119,10 @@ class OptimizationGoal(BaseModel):
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
     pareto_objectives: list[OptimizationTarget] | None = None
+    # Preserve replay goodput's per-request SLA semantics by default. When
+    # enabled, configured SLA bounds also gate aggregate mean metrics before
+    # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
+    strict_sla: bool = False
 
     @property
     def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
@@ -146,6 +171,10 @@ class OptimizationGoal(BaseModel):
             raise ValueError(
                 f"{culprits} require an SLA target (ttft_ms+itl_ms or e2e_ms)"
             )
+        if self.strict_sla and (
+            self.sla is None or not self.sla.has_aggregate_bound
+        ):
+            raise ValueError("strict_sla requires at least one SLA bound")
         return self
 
 
@@ -676,6 +705,21 @@ class SmartSearchConfig(BaseModel):
             raise ValueError(
                 "a ranged workload.kv_load_ratio is only allowed when goal.target is 'pareto' "
                 f"(got target={self.goal.target.value}); use one scalar kv_load_ratio"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_request_latency_sla(self) -> SmartSearchConfig:
+        """Aggregate request latency needs one fixed output length."""
+        sla = self.goal.sla
+        if (
+            self.goal.strict_sla
+            and sla is not None
+            and sla.request_latency_ms is not None
+            and self.workload.osl is None
+        ):
+            raise ValueError(
+                "strict request_latency_ms requires a synthetic workload with a fixed osl"
             )
         return self
 
