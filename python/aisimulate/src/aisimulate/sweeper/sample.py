@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from .config import SearchSpace
+from .heterogeneous import DisaggBackendPair
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
 # Pinned deployment/runtime scalars folded in so the selected sample stands alone.
@@ -33,6 +34,11 @@ _DEPLOYMENT_PINNED = (
     "fmha_quant_mode",
     "comm_quant_mode",
     "free_gpu_memory_fraction",
+    "prefill_rate_degradation",
+    "decode_rate_degradation",
+    "prefill_latency_correction",
+    "decode_latency_correction",
+    "ttft_correction_factor",
 )
 
 # engine knobs per branch: searched batching + pinned scalars.
@@ -96,10 +102,21 @@ def unroll_sample(
     search_space: SearchSpace,
     selection: dict[str, Any],
     parallel_config: ReplicaParallelConfig | DisaggParallelConfig,
+    backend_pair: DisaggBackendPair | None = None,
 ) -> dict[str, Any]:
     """Expand a backend selection and its projected parallel configuration."""
     mode = selection["deployment_mode"]
     sample: dict[str, Any] = {"deployment_mode": mode, "backend": selection["backend"]}
+    if backend_pair is not None:
+        if mode != "disagg":
+            raise ValueError("backend_pair is only valid for deployment_mode='disagg'")
+        sample.update(
+            prefill_backend=backend_pair.prefill,
+            decode_backend=backend_pair.decode,
+        )
+        for role in ("prefill", "decode"):
+            for name in ("model_name", "hardware_sku"):
+                sample[f"{role}_{name}"] = search_space.role_value(role, name)
 
     for key in _DEPLOYMENT_PINNED:
         sample[key] = getattr(search_space, key)

@@ -94,6 +94,57 @@ backend/performance-data version per run, custom system paths remain request-sco
 data root/mode, normalized transfer policy, forward model, and engine-step backend. Unavailable
 versions and incomplete FPM data pairs fail before a sampler study is created.
 
+## Heterogeneous Prefill/Decode
+
+Disaggregated search accepts `prefill_` and `decode_` overrides for model, system, backend,
+backend version, estimator/data controls, sequence capacity, memory fraction, WideEP/EPLB,
+MoE/attention backends, and every quantization mode. An omitted role field inherits the matching
+unprefixed field. Existing configurations without role overrides therefore use the original
+homogeneous search path unchanged.
+
+```yaml
+search_space:
+  deployment_mode: [disagg]
+  model_name: example/shared-model       # inherited when a role omits model_name
+  hardware_sku: h200_sxm                 # decode inherits this value
+  backend: [vllm]                        # decode inherits this search list
+  gpu_budget: 16
+
+  prefill_model_name: example/prefill-model
+  prefill_hardware_sku: gb200_nv18
+  prefill_backend: [sglang]
+  prefill_backend_version: 0.5.6
+  prefill_systems_paths: [/data/gb200-systems]
+  prefill_enable_wideep: true
+  prefill_moe_backend: deepep_moe
+  prefill_free_gpu_memory_fraction: 0.81
+
+  decode_model_name: example/decode-model
+  decode_backend_version: 0.11.0
+  decode_gemm_quant_mode: fp8
+  decode_free_gpu_memory_fraction: 0.72
+```
+
+Prefill and decode backend lists form searched backend pairs. Each role resolves its model,
+system definition, exact performance-data version, engine controls, and KV-feasible worker shapes
+independently. Sweeper then pairs role shapes only when their combined GPU count is within
+`gpu_budget` (and `min_gpu_budget`, when set). The replay contract retains `prefill_backend`,
+`decode_backend`, both exact versions, role estimator specs, and role engine requests; candidate
+configuration retains the same role identities and provenance.
+
+The engine runner supports mixed vLLM/SGLang P/D pairs and reports an unsupported backend by role.
+TensorRT-LLM remains fail-closed for either disaggregated role. `decode_enable_chunked_prefill=true`
+is also rejected because chunked prefill is a prefill-role scheduler control.
+Optional adapter providers must explicitly return
+`AdapterSearchPlan(supports_heterogeneous_pd=True)`; providers that have not audited their
+materialization against role-specific identities are rejected.
+
+Legacy-calibrated P/D matching defaults are explicit inputs: `prefill_rate_degradation=0.9`,
+`decode_rate_degradation=0.92`, `prefill_latency_correction=1.1`,
+`decode_latency_correction=1.08`, and `ttft_correction_factor=1.8`. The public
+`rate_match_disaggregated` result preserves per-role rates, identities, GPU totals, the limiting
+role, correction provenance, and role-attributed budget failures.
+
 ## Pinned Parallel Configurations
 
 Pinning `parallel_configs` requires exactly one deployment mode. An aggregated entry is one shape:

@@ -557,6 +557,59 @@ class SearchSpace(BaseModel):
     comm_quant_mode: str | None = None
     free_gpu_memory_fraction: float | None = Field(default=None, gt=0, le=1)
 
+    # Disaggregated role overrides. ``None`` inherits the unprefixed value above,
+    # so existing homogeneous P/D inputs retain their exact behavior. Backend
+    # lists are searched independently and filtered by role feasibility.
+    prefill_model_name: str | None = None
+    decode_model_name: str | None = None
+    prefill_hardware_sku: str | None = None
+    decode_hardware_sku: str | None = None
+    prefill_backend: list[str] | None = None
+    decode_backend: list[str] | None = None
+    prefill_backend_version: str | dict[str, str] | None = None
+    decode_backend_version: str | dict[str, str] | None = None
+    prefill_database_mode: DatabaseMode | None = None
+    decode_database_mode: DatabaseMode | None = None
+    prefill_transfer_policy: list[TransferKind] | None = None
+    decode_transfer_policy: list[TransferKind] | None = None
+    prefill_forward_model: ForwardModel | None = None
+    decode_forward_model: ForwardModel | None = None
+    prefill_engine_step_backend: EngineStepBackend | None = None
+    decode_engine_step_backend: EngineStepBackend | None = None
+    prefill_systems_paths: list[str] | None = None
+    decode_systems_paths: list[str] | None = None
+    prefill_max_seq_len: int | None = Field(default=None, gt=0)
+    decode_max_seq_len: int | None = Field(default=None, gt=0)
+    prefill_enable_chunked_prefill: bool | None = None
+    decode_enable_chunked_prefill: bool | None = None
+    prefill_enable_wideep: bool | None = None
+    decode_enable_wideep: bool | None = None
+    prefill_enable_eplb: bool | None = None
+    decode_enable_eplb: bool | None = None
+    prefill_wideep_num_slots: int | None = Field(default=None, gt=0)
+    decode_wideep_num_slots: int | None = Field(default=None, gt=0)
+    prefill_moe_backend: str | None = None
+    decode_moe_backend: str | None = None
+    prefill_attention_backend: str | None = None
+    decode_attention_backend: str | None = None
+    prefill_gemm_quant_mode: str | None = None
+    decode_gemm_quant_mode: str | None = None
+    prefill_moe_quant_mode: str | None = None
+    decode_moe_quant_mode: str | None = None
+    prefill_kvcache_quant_mode: str | None = None
+    decode_kvcache_quant_mode: str | None = None
+    prefill_fmha_quant_mode: str | None = None
+    decode_fmha_quant_mode: str | None = None
+    prefill_comm_quant_mode: str | None = None
+    decode_comm_quant_mode: str | None = None
+    prefill_free_gpu_memory_fraction: float | None = Field(default=None, gt=0, le=1)
+    decode_free_gpu_memory_fraction: float | None = Field(default=None, gt=0, le=1)
+    prefill_rate_degradation: float = Field(default=0.9, gt=0)
+    decode_rate_degradation: float = Field(default=0.92, gt=0)
+    prefill_latency_correction: float = Field(default=1.1, gt=0)
+    decode_latency_correction: float = Field(default=1.08, gt=0)
+    ttft_correction_factor: float = Field(default=1.8, gt=0)
+
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
     prefill_max_num_seqs: list[int] = [1, 2, 4, 8, 16, 32, 64, 128, 256]
@@ -581,31 +634,58 @@ class SearchSpace(BaseModel):
     agg_gpu_memory_utilization: float = 0.9
     agg_enable_prefix_caching: bool = True
 
-    @field_validator("database_mode", mode="before")
+    @field_validator(
+        "database_mode",
+        "prefill_database_mode",
+        "decode_database_mode",
+        mode="before",
+    )
     @classmethod
     def _normalize_database_mode(cls, value: Any) -> Any:
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("forward_model", "engine_step_backend", mode="before")
+    @field_validator(
+        "forward_model",
+        "engine_step_backend",
+        "prefill_forward_model",
+        "decode_forward_model",
+        "prefill_engine_step_backend",
+        "decode_engine_step_backend",
+        mode="before",
+    )
     @classmethod
     def _normalize_lowercase_control(cls, value: Any) -> Any:
         return value.lower() if isinstance(value, str) else value
 
-    @field_validator("transfer_policy", mode="before")
+    @field_validator(
+        "transfer_policy",
+        "prefill_transfer_policy",
+        "decode_transfer_policy",
+        mode="before",
+    )
     @classmethod
-    def _validate_transfer_policy(cls, value: Any) -> list[TransferKind]:
+    def _validate_transfer_policy(cls, value: Any) -> list[TransferKind] | None:
+        if value is None:
+            return None
         return _normalize_transfer_policy(value)
 
-    @field_validator("systems_paths", mode="before")
+    @field_validator(
+        "systems_paths",
+        "prefill_systems_paths",
+        "decode_systems_paths",
+        mode="before",
+    )
     @classmethod
     def _normalize_systems_paths(cls, value: Any) -> Any:
         if isinstance(value, str):
             value = [part.strip() for part in value.split(",") if part.strip()]
         return value
 
-    @field_validator("systems_paths")
+    @field_validator("systems_paths", "prefill_systems_paths", "decode_systems_paths")
     @classmethod
-    def _validate_systems_paths(cls, value: list[str]) -> list[str]:
+    def _validate_systems_paths(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
         cleaned = [entry.strip() for entry in value if entry.strip()]
         if not cleaned:
             raise ValueError("systems_paths must contain at least one path or 'default'")
@@ -619,6 +699,20 @@ class SearchSpace(BaseModel):
         "kvcache_quant_mode",
         "fmha_quant_mode",
         "comm_quant_mode",
+        "prefill_moe_backend",
+        "decode_moe_backend",
+        "prefill_attention_backend",
+        "decode_attention_backend",
+        "prefill_gemm_quant_mode",
+        "decode_gemm_quant_mode",
+        "prefill_moe_quant_mode",
+        "decode_moe_quant_mode",
+        "prefill_kvcache_quant_mode",
+        "decode_kvcache_quant_mode",
+        "prefill_fmha_quant_mode",
+        "decode_fmha_quant_mode",
+        "prefill_comm_quant_mode",
+        "decode_comm_quant_mode",
         mode="before",
     )
     @classmethod
@@ -628,6 +722,20 @@ class SearchSpace(BaseModel):
         if not isinstance(value, str) or not value.strip():
             raise ValueError("engine control names must be non-empty strings")
         return value.strip().lower()
+
+    @field_validator(
+        "prefill_model_name",
+        "decode_model_name",
+        "prefill_hardware_sku",
+        "decode_hardware_sku",
+    )
+    @classmethod
+    def _validate_role_identity_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("role identity overrides must be non-empty strings")
+        return value.strip()
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
@@ -643,39 +751,61 @@ class SearchSpace(BaseModel):
                     raise ValueError(
                         f"{field_name} has invalid choice {v!r}; allowed: {list(allowed)}"
                     )
+        for field_name in ("prefill_backend", "decode_backend"):
+            values = getattr(self, field_name)
+            if values is None:
+                continue
+            if not values:
+                raise ValueError(f"{field_name} must list at least one backend")
+            invalid = [
+                value for value in values if value not in SEARCH_CHOICES["backend"]
+            ]
+            if invalid:
+                raise ValueError(
+                    f"{field_name} has invalid choice(s) {invalid}; allowed: {list(SEARCH_CHOICES['backend'])}"
+                )
         return self
 
     @model_validator(mode="after")
     def _validate_backend_versions(self) -> SearchSpace:
-        configured = list(dict.fromkeys(self.backend))
-        if isinstance(self.backend_version, str):
-            if not self.backend_version.strip():
-                raise ValueError("backend_version must be a non-empty version")
-            if len(configured) != 1:
-                raise ValueError(
-                    "a string backend_version requires exactly one configured backend; "
-                    "use a {backend: version} mapping for a multi-backend search"
+        def validate(field_name: str, configured: list[str]) -> None:
+            value = getattr(self, field_name)
+            if isinstance(value, str):
+                if not value.strip():
+                    raise ValueError(f"{field_name} must be a non-empty version")
+                if len(configured) != 1:
+                    raise ValueError(
+                        f"a string {field_name} requires exactly one configured backend; "
+                        "use a {backend: version} mapping for a multi-backend search"
+                    )
+                setattr(self, field_name, value.strip())
+            elif isinstance(value, dict):
+                unknown = sorted(set(value) - set(configured))
+                if unknown:
+                    raise ValueError(
+                        f"{field_name} contains unconfigured backend(s): {unknown}"
+                    )
+                invalid = [
+                    backend
+                    for backend, version in value.items()
+                    if not isinstance(version, str) or not version.strip()
+                ]
+                if invalid:
+                    raise ValueError(
+                        f"{field_name} needs a non-empty version for {sorted(invalid)}"
+                    )
+                setattr(
+                    self,
+                    field_name,
+                    {backend: version.strip() for backend, version in value.items()},
                 )
-            self.backend_version = self.backend_version.strip()
-        elif isinstance(self.backend_version, dict):
-            unknown = sorted(set(self.backend_version) - set(configured))
-            if unknown:
-                raise ValueError(
-                    f"backend_version contains unconfigured backend(s): {unknown}"
-                )
-            invalid = [
-                backend
-                for backend, version in self.backend_version.items()
-                if not isinstance(version, str) or not version.strip()
-            ]
-            if invalid:
-                raise ValueError(
-                    f"backend_version needs a non-empty version for {sorted(invalid)}"
-                )
-            self.backend_version = {
-                backend: version.strip()
-                for backend, version in self.backend_version.items()
-            }
+
+        validate("backend_version", list(dict.fromkeys(self.backend)))
+        for role in ("prefill", "decode"):
+            configured = list(
+                dict.fromkeys(getattr(self, f"{role}_backend") or self.backend)
+            )
+            validate(f"{role}_backend_version", configured)
         return self
 
     def requested_backend_version(self, backend: str) -> str | None:
@@ -686,6 +816,67 @@ class SearchSpace(BaseModel):
         if isinstance(self.backend_version, dict):
             return self.backend_version.get(backend)
         return None
+
+    def role_backends(self, role: str) -> list[str]:
+        """Configured backends for one P/D role, inheriting the shared list."""
+
+        if role not in {"prefill", "decode"}:
+            raise ValueError(f"role must be 'prefill' or 'decode', got {role!r}")
+        return list(dict.fromkeys(getattr(self, f"{role}_backend") or self.backend))
+
+    def role_value(self, role: str, name: str) -> Any:
+        """Resolve one role override, falling back to the unprefixed field."""
+
+        if role not in {"prefill", "decode"}:
+            raise ValueError(f"role must be 'prefill' or 'decode', got {role!r}")
+        override = getattr(self, f"{role}_{name}")
+        return getattr(self, name) if override is None else override
+
+    def requested_role_backend_version(self, role: str, backend: str) -> str | None:
+        """Resolve the role pin first, then inherit the shared backend version."""
+
+        value = getattr(self, f"{role}_backend_version")
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict) and backend in value:
+            return value[backend]
+        return (
+            self.requested_backend_version(backend) if backend in self.backend else None
+        )
+
+    @property
+    def has_role_overrides(self) -> bool:
+        """Whether disaggregated search needs independent role resolution."""
+
+        names = (
+            "model_name",
+            "hardware_sku",
+            "backend",
+            "backend_version",
+            "database_mode",
+            "transfer_policy",
+            "forward_model",
+            "engine_step_backend",
+            "systems_paths",
+            "max_seq_len",
+            "enable_chunked_prefill",
+            "enable_wideep",
+            "enable_eplb",
+            "wideep_num_slots",
+            "moe_backend",
+            "attention_backend",
+            "gemm_quant_mode",
+            "moe_quant_mode",
+            "kvcache_quant_mode",
+            "fmha_quant_mode",
+            "comm_quant_mode",
+            "free_gpu_memory_fraction",
+        )
+        return any(
+            getattr(self, f"{role}_{name}") is not None
+            for role in ("prefill", "decode")
+            for name in names
+        )
 
     @model_validator(mode="after")
     def _validate_gpu_budget(self) -> SearchSpace:
@@ -738,6 +929,25 @@ class SearchSpace(BaseModel):
                 "moe_backend must be 'deepep_moe' or 'megamoe', got "
                 f"{self.moe_backend!r}"
             )
+        if self.has_role_overrides and "disagg" not in self.deployment_mode:
+            raise ValueError(
+                "prefill_/decode_ role overrides require deployment_mode to include 'disagg'"
+            )
+        if self.decode_enable_chunked_prefill is True:
+            raise ValueError(
+                "decode_enable_chunked_prefill is unsupported: chunked prefill is a prefill-role scheduler control"
+            )
+        for role in ("prefill", "decode"):
+            attention_backend = self.role_value(role, "attention_backend")
+            if attention_backend not in (None, "flashinfer", "fa3"):
+                raise ValueError(
+                    f"{role}_attention_backend must be 'flashinfer' or 'fa3', got {attention_backend!r}"
+                )
+            moe_backend = self.role_value(role, "moe_backend")
+            if moe_backend not in (None, "deepep_moe", "megamoe"):
+                raise ValueError(
+                    f"{role}_moe_backend must be 'deepep_moe' or 'megamoe', got {moe_backend!r}"
+                )
         return self
 
     @model_validator(mode="after")

@@ -443,6 +443,41 @@ def test_runner_lowers_disaggregated_grouped_engines():
     assert set(runtime.execution_spec["engine"]) == {"prefill", "decode"}
 
 
+def test_runner_lowers_heterogeneous_disaggregated_backends_and_versions():
+    runtime = RecordingRuntime()
+    prefill_args = _engine_args(role="prefill")
+    prefill_args.pop("timing_model")
+    prefill_args.update(
+        engine_type="sglang",
+        aic_backend="sglang",
+        aic_backend_version="0.5.6",
+    )
+    decode_args = _engine_args(role="decode")
+    decode_args.pop("timing_model")
+    decode_args["aic_backend_version"] = "0.11.0"
+    deployment = BackendDeploymentSpec(
+        deployment_mode="disagg",
+        backend="prefill=sglang,decode=vllm",
+        backend_version="prefill=0.5.6,decode=0.11.0",
+        prefill_backend="sglang",
+        prefill_backend_version="0.5.6",
+        decode_backend="vllm",
+        decode_backend_version="0.11.0",
+        prefill_engine_args=prefill_args,
+        decode_engine_args=decode_args,
+        num_prefill_workers=1,
+        num_decode_workers=1,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    engines = runtime.execution_spec["engine"]
+    assert engines["prefill"]["rank"]["backend"] == "sglang"
+    assert engines["decode"]["rank"]["backend"] == "vllm"
+
+
 @pytest.mark.parametrize("role", ["prefill", "decode"])
 def test_runner_rejects_disaggregated_attention_dp_before_runtime(role):
     runtime = RecordingRuntime()

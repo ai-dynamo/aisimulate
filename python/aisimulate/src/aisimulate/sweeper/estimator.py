@@ -13,6 +13,14 @@ from aiconfigurator_core.sdk import perf_database
 from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
 
 from .config import ForwardModel, SearchSpace
+from .heterogeneous import (
+    DisaggBackendPair,
+    DisaggRole,
+    RoleEstimatorSpecs,
+    RoleFailureCategory,
+    RoleIdentity,
+    RoleSearchError,
+)
 from .replay import EstimatorSpec
 
 
@@ -160,4 +168,113 @@ def resolve_estimator_specs(search_space: SearchSpace) -> dict[str, EstimatorSpe
             systems_paths=systems_paths,
             performance_data_root=systems_root,
         )
+    return resolved
+
+
+_ROLE_ESTIMATOR_FIELDS = (
+    "model_name",
+    "hardware_sku",
+    "backend_version",
+    "database_mode",
+    "transfer_policy",
+    "forward_model",
+    "engine_step_backend",
+    "systems_paths",
+)
+
+
+def _role_search_space(
+    search_space: SearchSpace,
+    role: DisaggRole,
+    backend: str,
+) -> SearchSpace:
+    """Materialize one role's inherited estimator inputs as a homogeneous view."""
+
+    updates = {
+        name: search_space.role_value(role.value, name)
+        for name in _ROLE_ESTIMATOR_FIELDS
+        if name != "backend_version"
+    }
+    updates.update(
+        backend=[backend],
+        backend_version=search_space.requested_role_backend_version(
+            role.value, backend
+        ),
+    )
+    return search_space.model_copy(update=updates)
+
+
+def _role_identity(
+    search_space: SearchSpace,
+    role: DisaggRole,
+    estimator: EstimatorSpec,
+) -> RoleIdentity:
+    inherited = tuple(
+        name
+        for name in _ROLE_ESTIMATOR_FIELDS
+        if getattr(search_space, f"{role.value}_{name}") is None
+    )
+    if getattr(search_space, f"{role.value}_backend") is None:
+        inherited += ("backend",)
+    return RoleIdentity(
+        role=role,
+        model_name=estimator.model_path,
+        hardware_sku=estimator.system,
+        backend=estimator.backend,
+        backend_version=estimator.backend_version,
+        inherited_fields=inherited,
+        provenance={
+            "performance_data_version": estimator.performance_data_version,
+            "performance_data_root": estimator.performance_data_root,
+            "database_mode": estimator.database_mode,
+            "transfer_policy": list(estimator.transfer_policy),
+            "forward_model": estimator.forward_model,
+            "engine_step_backend": estimator.engine_step_backend,
+            "systems_paths": list(estimator.systems_paths),
+        },
+    )
+
+
+def resolve_role_estimator_specs(
+    search_space: SearchSpace,
+) -> dict[str, RoleEstimatorSpecs]:
+    """Resolve each independent prefill/decode backend pair fail-fast by role."""
+
+    per_role: dict[tuple[DisaggRole, str], EstimatorSpec] = {}
+    for role in (DisaggRole.PREFILL, DisaggRole.DECODE):
+        for backend in search_space.role_backends(role.value):
+            role_space = _role_search_space(search_space, role, backend)
+            try:
+                per_role[(role, backend)] = resolve_estimator_specs(role_space)[backend]
+            except EstimatorResolutionError as exc:
+                raise RoleSearchError(
+                    role,
+                    RoleFailureCategory.ESTIMATOR_RESOLUTION,
+                    str(exc),
+                    provenance={
+                        "model_name": role_space.model_name,
+                        "hardware_sku": role_space.hardware_sku,
+                        "backend": backend,
+                        "requested_backend_version": role_space.backend_version,
+                        "systems_paths": role_space.systems_paths,
+                    },
+                ) from exc
+
+    resolved: dict[str, RoleEstimatorSpecs] = {}
+    for prefill_backend in search_space.role_backends("prefill"):
+        for decode_backend in search_space.role_backends("decode"):
+            pair = DisaggBackendPair(prefill_backend, decode_backend)
+            prefill = per_role[(DisaggRole.PREFILL, prefill_backend)]
+            decode = per_role[(DisaggRole.DECODE, decode_backend)]
+            resolved[pair.label] = RoleEstimatorSpecs(
+                pair=pair,
+                prefill=prefill,
+                decode=decode,
+                identities={
+                    "prefill": _role_identity(
+                        search_space, DisaggRole.PREFILL, prefill
+                    ),
+                    "decode": _role_identity(search_space, DisaggRole.DECODE, decode),
+                },
+            )
     return resolved

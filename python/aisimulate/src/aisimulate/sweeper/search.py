@@ -47,9 +47,12 @@ from .discovery import resolve_providers
 from .engine_request import (
     EngineControlTemplate,
     materialize_engine_request,
+    materialize_role_engine_request,
     resolve_engine_controls,
+    resolve_role_engine_controls,
 )
-from .estimator import resolve_estimator_specs
+from .estimator import resolve_estimator_specs, resolve_role_estimator_specs
+from .heterogeneous import RoleEstimatorSpecs
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
     AdapterReplaySpec,
@@ -178,6 +181,8 @@ def _validate_search_plan(name: str, plan: Any) -> None:
             raise TypeError("search diagnostics must be a dictionary")
         if type(plan.potential_runtime_hooks) is not tuple:
             raise TypeError("potential_runtime_hooks must be a tuple")
+        if type(plan.supports_heterogeneous_pd) is not bool:
+            raise TypeError("supports_heterogeneous_pd must be a boolean")
         _validate_search_fragment(plan.fragment)
         validate_json_value(plan.state, path=f"adapter {name!r} search plan state")
         validate_json_value(
@@ -376,34 +381,75 @@ def _materialize_one(
     runner_factory: RunnerFactory,
     estimator_specs: Mapping[str, EstimatorSpec],
     engine_controls: Mapping[str, EngineControlTemplate],
+    role_estimator_specs: Mapping[str, RoleEstimatorSpecs],
+    role_engine_controls: Mapping[str, Mapping[str, EngineControlTemplate]],
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
     try:
+        role_estimators = role_estimator_specs.get(selection["backend"])
         sample = unroll_sample(
             search_space=config.search_space,
             selection=selection,
             parallel_config=parallel_config,
+            backend_pair=(
+                role_estimators.pair if role_estimators is not None else None
+            ),
         )
-        estimator = estimator_specs[selection["backend"]]
-        backend_version = estimator.backend_version
+        estimator = (
+            None
+            if role_estimators is not None
+            else estimator_specs[selection["backend"]]
+        )
+        backend_version = (
+            f"prefill={role_estimators.prefill.backend_version},decode={role_estimators.decode.backend_version}"
+            if role_estimators is not None
+            else estimator.backend_version
+        )
         # The resolved perf-model version is part of the evaluated contract. Keep it
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
         sample["backend_version"] = backend_version
-        sample["estimator"] = asdict(estimator)
-        engine_request = materialize_engine_request(
-            engine_controls[selection["backend"]], config=config, sample=sample
-        )
+        if role_estimators is not None:
+            sample["role_estimators"] = {
+                role: asdict(role_estimators.estimator_for(role))
+                for role in ("prefill", "decode")
+            }
+            sample["role_identities"] = role_estimators.as_dict()["identities"]
+            sample["prefill_backend_version"] = role_estimators.prefill.backend_version
+            sample["decode_backend_version"] = role_estimators.decode.backend_version
+            engine_request = materialize_role_engine_request(
+                role_estimators.pair,
+                dict(role_engine_controls[selection["backend"]]),
+                role_estimators,
+                config=config,
+                sample=sample,
+            )
+        else:
+            sample["estimator"] = asdict(estimator)
+            engine_request = materialize_engine_request(
+                engine_controls[selection["backend"]], config=config, sample=sample
+            )
         sample["engine_request"] = asdict(engine_request)
         concurrency = config.workload.concurrency
         if "kv_load_ratio" in selection:
             ratio = float(selection["kv_load_ratio"])
+            role_version_kwargs = (
+                {
+                    "role_backend_versions": {
+                        "prefill": role_estimators.prefill.backend_version,
+                        "decode": role_estimators.decode.backend_version,
+                    }
+                }
+                if role_estimators is not None
+                else {}
+            )
             resolution = resolve_kv_load(
                 sample,
                 workload=config.workload,
                 parallel_config=parallel_config,
                 ratio=ratio,
                 backend_version=backend_version,
+                **role_version_kwargs,
             )
             concurrency = resolution.concurrency
             sample["kv_load_ratio"] = resolution.ratio
@@ -423,6 +469,14 @@ def _materialize_one(
             backend_version=backend_version,
             estimator=estimator,
             engine_request=engine_request,
+            role_estimators=(
+                {
+                    "prefill": role_estimators.prefill,
+                    "decode": role_estimators.decode,
+                }
+                if role_estimators is not None
+                else None
+            ),
         )
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
@@ -632,13 +686,29 @@ class Sweeper:
         goal = config.goal
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
-        engine_controls = resolve_engine_controls(config)
-        max_seq_len = next(iter(engine_controls.values())).max_seq_len
+        ss = config.search_space
+        needs_homogeneous = "agg" in ss.deployment_mode or not ss.has_role_overrides
+        engine_controls = resolve_engine_controls(config) if needs_homogeneous else {}
+        max_seq_len = (
+            next(iter(engine_controls.values())).max_seq_len
+            if engine_controls
+            else None
+        )
 
         # Resolve every estimator/data identity before branch enumeration creates
         # studies or adapters perform work. Candidate materialization consumes this
         # immutable map and never re-resolves ``latest`` independently.
-        estimator_specs = resolve_estimator_specs(config.search_space)
+        estimator_specs = resolve_estimator_specs(ss) if needs_homogeneous else {}
+        role_estimator_specs = (
+            resolve_role_estimator_specs(ss)
+            if ss.has_role_overrides and "disagg" in ss.deployment_mode
+            else {}
+        )
+        role_engine_controls = (
+            resolve_role_engine_controls(config, role_estimator_specs)
+            if role_estimator_specs
+            else {}
+        )
 
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
@@ -647,10 +717,24 @@ class Sweeper:
             max_seq_len=max_seq_len,
             runner_capabilities=capabilities,
             estimator_specs=estimator_specs,
+            role_estimator_specs=role_estimator_specs,
+            role_engine_controls=role_engine_controls,
         )
         resolved_providers, provider_plans = _prepare_providers(
             config, injected=providers, show_progress=show_progress
         )
+        if ss.has_role_overrides:
+            unsupported_adapters = sorted(
+                name
+                for name, plan in provider_plans.items()
+                if not plan.supports_heterogeneous_pd
+            )
+            if unsupported_adapters:
+                raise ValueError(
+                    "heterogeneous prefill/decode search requires every adapter "
+                    "plan to opt in with supports_heterogeneous_pd=True; unsupported "
+                    f"adapter(s): {unsupported_adapters}"
+                )
         for name, plan in provider_plans.items():
             unsupported = [
                 hook
@@ -953,6 +1037,8 @@ class Sweeper:
                                 runner_factory=runner_factory,
                                 estimator_specs=estimator_specs,
                                 engine_controls=engine_controls,
+                                role_estimator_specs=role_estimator_specs,
+                                role_engine_controls=role_engine_controls,
                             )
                             if build_result is not None:
                                 (
