@@ -366,12 +366,26 @@ def test_partial_heterogeneous_pair_pruning_retains_stable_diagnostics(
     ]
 
 
+@pytest.mark.parametrize("pinned", [False, True], ids=["enumerated", "pinned"])
 def test_all_heterogeneous_pairs_pruned_retain_terminal_report(
     monkeypatch,
+    pinned: bool,
 ) -> None:
     config = _config(
         prefill_backend=["sglang", "vllm"],
         decode_backend=["vllm"],
+        **(
+            {
+                "parallel_configs": [
+                    {
+                        "prefill": {"tp": 1, "replicas": 1},
+                        "decode": {"tp": 1, "replicas": 1},
+                    }
+                ]
+            }
+            if pinned
+            else {}
+        ),
     )
     mixed = _catalog()
     homogeneous_prefill = _estimator(
@@ -429,7 +443,13 @@ def test_all_heterogeneous_pairs_pruned_retain_terminal_report(
             role_engine_controls=controls,
         )
 
-    assert any("no configured backend" in str(item.message) for item in warning_records)
+    assert any(
+        "heterogeneous backend pair pruned" in str(item.message)
+        for item in warning_records
+    )
+    assert any("no configured backend" in str(item.message) for item in warning_records) is (
+        not pinned
+    )
     assert exc_info.value.as_dict()["enumeration_reports"] == [
         {
             "deployment_mode": "disagg",
