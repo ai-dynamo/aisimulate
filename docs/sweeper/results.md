@@ -42,6 +42,12 @@ Pareto, QA, and configuration-selection code should consume `SweepResult`.
 `views.top_n` and `views.pareto_front` are mutually exclusive. An empty result has empty views and
 an empty candidate list, while its counts and run provenance remain present.
 
+For `goal.target: pareto`, the result contains only non-dominated candidates and preserves each
+objective's natural direction. Engine-only and adapter-backed candidates share the public
+`analyze_candidates` path for strict aggregate SLA filtering, Pareto dominance, scalar ranking,
+and deterministic ties. This keeps cross-mode/backend comparison independent of result arrival
+order while preserving each candidate's full configuration and metrics.
+
 ### Candidate record
 
 Every materialized or capability-gated candidate attempt has one record when retention is `all`.
@@ -78,7 +84,7 @@ run-local cache and does not create duplicate ledger rows.
 | `timed_out` | Replay exceeded `max_eval_seconds`. It remains infeasible to the optimizer, but is distinct in results. |
 | `failed` | Materialization, runner execution, or the runner/result contract failed. |
 
-Stable reason categories are `gpu_budget`, `kv_capacity`, `backend_topology`, `runtime_timeout`,
+Stable reason categories are `gpu_budget`, `kv_capacity`, `backend_topology`, `strict_sla`, `runtime_timeout`,
 `candidate_materialization`, `replay_runtime`, `runner_contract`, `invalid_metrics`, and `unknown`.
 
 ## Provenance

@@ -79,7 +79,12 @@ from .result import (
 )
 from .sample import unroll_sample
 from .sampler import BranchSampler, Suggestion, make_branch_sampler
-from .score import is_feasible, make_candidate, pareto_front, rank
+from .score import (
+    aggregate_sla_violations,
+    analyze_candidates,
+    is_feasible,
+    make_candidate,
+)
 from .search_space import BranchSpace, enumerate_branches
 
 logger = logging.getLogger(__name__)
@@ -691,6 +696,23 @@ def _score_prepared(
             reason_category=ReasonCategory.GPU_BUDGET,
             runner_metadata=replay_result.metadata,
         )
+    if goal.strict_sla:
+        assert goal.sla is not None  # OptimizationGoal validates this invariant.
+        violations = aggregate_sla_violations(
+            report,
+            goal.sla,
+            osl=config.workload.osl or 1,
+        )
+        if violations:
+            return _EvalResult(
+                candidate=None,
+                observe_metrics=None,
+                outcome="infeasible",
+                reason=f"strict aggregate SLA violation: {'; '.join(violations)}",
+                reason_category=ReasonCategory.STRICT_SLA,
+                runner_metadata=replay_result.metadata,
+                report_metrics=report,
+            )
     if goal.is_pareto:
         candidate = make_candidate(
             sample,
@@ -1332,11 +1354,11 @@ class Sweeper:
                 if branch_stalled:
                     continue
 
-        # Single-objective -> rank best-first by score; Pareto -> the non-dominated front.
-        selected_candidates = (
-            pareto_front(candidates, goal.resolved_pareto_objectives)
-            if goal.is_pareto
-            else rank(candidates)
+        # Single-objective -> rank best-first by score; pareto -> the non-dominated front.
+        selected_candidates = analyze_candidates(
+            candidates,
+            goal,
+            osl=config.workload.osl or 1,
         )
         if not goal.is_pareto and top_n is not None:
             selected_candidates = selected_candidates[:top_n]

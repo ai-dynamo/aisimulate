@@ -461,6 +461,65 @@ def test_goodput_goal_fails_closed_when_runner_omits_metric(monkeypatch):
     )
 
 
+def test_strict_aggregate_sla_gates_before_sampler_observation_and_ranking(
+    monkeypatch,
+):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    sampler_seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        sampler_seen["sampler"] = sampler
+        return sampler
+
+    class LatencyRunner(_FakeRunner):
+        def run(self, spec: ReplaySpec) -> ReplayReport:
+            self.calls += 1
+            self.specs.append(spec)
+            args = spec.backend_deployment.agg_engine_args
+            assert args is not None
+            max_seqs = float(args["max_num_seqs"])
+            return ReplayReport(
+                metrics={
+                    "output_throughput_tok_s": max_seqs,
+                    "mean_ttft_ms": 100.0,
+                    "mean_tpot_ms": max_seqs / 32.0,
+                }
+            )
+
+    base = _config()
+    config = SmartSearchConfig(
+        search_space=base.search_space,
+        workload={
+            "isl": 1024,
+            "osl": 128,
+            "concurrency": 16,
+            "num_request_ratio": 2,
+        },
+        sweep=base.sweep,
+        goal={
+            "target": "throughput",
+            "sla": {"itl_ms": 16.0},
+            "strict_sla": True,
+        },
+    )
+    candidates = _run_sweep(
+        config,
+        runner_factory=_FakeRunnerFactory(runner=LatencyRunner()),
+        sampler_factory=sampler_factory,
+        show_progress=False,
+    )
+
+    assert [candidate.score for candidate in candidates] == [512.0, 256.0]
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "infeasible"
+        and "strict aggregate SLA violation" in item[1]
+        for item in sampler_seen["sampler"].scored
+    )
+
+
 def test_replay_spec_version_is_checked_before_runner_creation(monkeypatch):
     branch = _branch(_pc())
     _stub(monkeypatch, branch)

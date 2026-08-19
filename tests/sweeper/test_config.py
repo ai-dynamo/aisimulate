@@ -354,6 +354,27 @@ def test_goodput_requires_complete_sla():
     )
 
 
+def test_strict_sla_requires_a_bound_but_does_not_change_goodput_requirement():
+    with pytest.raises(ValidationError, match="strict_sla requires"):
+        OptimizationGoal(strict_sla=True)
+
+    goal = OptimizationGoal(
+        target=OptimizationTarget.THROUGHPUT,
+        sla=SLATarget(request_latency_ms=10_000),
+        strict_sla=True,
+    )
+    assert goal.strict_sla
+
+    # Aggregate request latency cannot substitute for replay's per-request
+    # goodput SLA contract.
+    with pytest.raises(ValidationError, match="require an SLA"):
+        OptimizationGoal(
+            target=OptimizationTarget.GOODPUT,
+            sla=SLATarget(request_latency_ms=10_000),
+            strict_sla=True,
+        )
+
+
 def test_scalar_target_directions():
     assert OptimizationTarget.THROUGHPUT.maximize
     assert OptimizationTarget.THROUGHPUT_PER_GPU.maximize
@@ -473,10 +494,48 @@ def test_invalid_kv_load_ratio_is_rejected(value):
         )
 
 
-@pytest.mark.parametrize("kwargs", [{"ttft_ms": 0}, {"itl_ms": -1}, {"e2e_ms": -5}])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"ttft_ms": 0},
+        {"itl_ms": -1},
+        {"e2e_ms": -5},
+        {"request_latency_ms": 0},
+    ],
+)
 def test_non_positive_sla_is_rejected(kwargs):
     with pytest.raises(ValidationError):
         SLATarget(**kwargs)
+
+
+def test_strict_request_latency_requires_synthetic_fixed_osl():
+    with pytest.raises(ValidationError, match="fixed osl"):
+        SmartSearchConfig(
+            search_space=_search_space(),
+            workload={"trace_path": "/tmp/trace.jsonl"},
+            goal={
+                "target": "throughput",
+                "strict_sla": True,
+                "sla": {"request_latency_ms": 10_000},
+            },
+        )
+
+    config = SmartSearchConfig(
+        search_space=_search_space(),
+        workload={
+            "isl": 1024,
+            "osl": 256,
+            "concurrency": 16,
+            "num_request_ratio": 2,
+        },
+        goal={
+            "target": "throughput",
+            "strict_sla": True,
+            "sla": {"request_latency_ms": 10_000},
+        },
+    )
+    assert config.goal.sla is not None
+    assert config.goal.sla.request_latency_ms == 10_000
 
 
 @pytest.mark.parametrize(

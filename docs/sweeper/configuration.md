@@ -34,6 +34,12 @@ workload:
 
 goal:
   target: throughput_per_gpu
+  # Optional legacy-compatible aggregate gating. Replay goodput remains
+  # per-request; strict_sla filters aggregate means before ranking.
+  strict_sla: true
+  sla:
+    ttft_ms: 800
+    itl_ms: 30
 
 sweep:
   max_rounds: 10
@@ -93,6 +99,19 @@ sweeper = Sweeper(
 
 Sweeper loads only names present under `adapters`. See [Sweep Configuration
 Providers](sweep-config-provider.md) for the complete ABI.
+
+## Strict Aggregate SLA
+
+The default SLA behavior is replay goodput: requests are individually counted against
+`ttft_ms` + `itl_ms`, or `e2e_ms`. Set `goal.strict_sla: true` to additionally require
+the aggregate candidate means to stay within every configured bound before scalar
+ranking or Pareto dominance. Bounds are inclusive. Missing metrics fail closed.
+
+`sla.request_latency_ms` preserves the legacy aggregate formula
+`mean_ttft_ms + mean_tpot_ms * (osl - 1)`. It is valid only for a synthetic workload
+with one fixed `osl`. `enumerate_request_latency_constraints` exposes the deterministic
+legacy TTFT/TPOT constraint pairs without adding an AIConfigurator dependency to the
+standalone Sweeper package.
 
 ## Sampler Algorithm Override
 

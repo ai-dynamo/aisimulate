@@ -7,14 +7,24 @@ import math
 
 import pytest
 
-from aisimulate.sweeper.config import Candidate, OptimizationTarget
+from aisimulate.sweeper.config import (
+    Candidate,
+    OptimizationGoal,
+    OptimizationTarget,
+    SLATarget,
+)
 from aisimulate.sweeper.score import (
+    aggregate_sla_violations,
+    analyze_candidates,
+    enumerate_request_latency_constraints,
     is_feasible,
     make_candidate,
+    meets_aggregate_sla,
     objective_value,
     objective_vector,
     pareto_front,
     rank,
+    request_latency_ms,
     score_report,
 )
 
@@ -140,6 +150,63 @@ def test_is_feasible_budget_only():
     assert not is_feasible(used_gpus=64, gpu_budget=32)  # over budget
 
 
+def test_request_latency_uses_legacy_ttft_tpot_formula_and_fails_closed():
+    assert request_latency_ms(REPORT, osl=21) == 1200.0
+    assert request_latency_ms({}, osl=21) == math.inf
+    with pytest.raises(ValueError, match="osl must be"):
+        request_latency_ms(REPORT, osl=0)
+
+
+def test_request_latency_constraint_pairs_are_deterministic_and_exact():
+    pairs = enumerate_request_latency_constraints(
+        osl=101,
+        request_latency_ms=10_000.0,
+        ttft_ms=2_500.0,
+    )
+
+    assert pairs == sorted(pairs)
+    assert [ttft for ttft, _ in pairs] == [
+        300.0,
+        400.0,
+        500.0,
+        600.0,
+        800.0,
+        1000.0,
+        1200.0,
+        1400.0,
+        1600.0,
+        2000.0,
+        2500.0,
+        3000.0,
+        5000.0,
+        8000.0,
+    ]
+    assert (2_500.0, 75.0) in pairs
+    assert all(ttft + tpot * 100 == 10_000.0 for ttft, tpot in pairs)
+    with pytest.raises(ValueError, match="osl > 1"):
+        enumerate_request_latency_constraints(osl=1, request_latency_ms=10_000.0)
+
+
+def test_aggregate_sla_bounds_are_inclusive_and_missing_metrics_fail_closed():
+    exact = SLATarget(
+        ttft_ms=800.0,
+        itl_ms=20.0,
+        e2e_ms=1200.0,
+        request_latency_ms=1200.0,
+    )
+    assert meets_aggregate_sla(REPORT, exact, osl=21)
+    assert aggregate_sla_violations(REPORT, exact, osl=21) == ()
+
+    violations = aggregate_sla_violations(
+        {"mean_ttft_ms": 801.0},
+        exact,
+        osl=21,
+    )
+    assert any("ttft 801ms > 800ms" in item for item in violations)
+    assert any("mean_tpot_ms is missing" in item for item in violations)
+    assert any("request latency needs" in item for item in violations)
+
+
 def test_throughput_per_user_objective():
     # the InferenceX x-axis: mean per-user output throughput (tok/s/user), a raw rate
     assert objective_value(REPORT, OptimizationTarget.THROUGHPUT_PER_USER) == 50.0
@@ -200,6 +267,16 @@ def test_pareto_front_ignores_candidates_without_objectives():
     assert pareto_front([a, scalar], objs) == [a]
 
 
+def test_pareto_front_ignores_non_finite_objectives():
+    objs = [
+        OptimizationTarget.THROUGHPUT_PER_GPU,
+        OptimizationTarget.THROUGHPUT_PER_USER,
+    ]
+    valid = _pareto_cand(100.0, 10.0)
+    invalid = _pareto_cand(float("nan"), 20.0)
+    assert pareto_front([invalid, valid], objs) == [valid]
+
+
 def test_make_candidate_pareto_sets_objectives():
     objs = [
         OptimizationTarget.THROUGHPUT_PER_GPU,
@@ -244,3 +321,40 @@ def test_make_candidate_and_rank():
     assert (
         ranked[0] is tie and ranked[1] is b and ranked[2] is a
     )  # 1000(8gpu), 1000(16gpu), 500
+
+
+def test_rank_has_stable_config_tie_break_and_drops_non_finite_scores():
+    z = Candidate(config={"backend": "z"}, used_gpus=8, score=10.0, metrics={})
+    a = Candidate(config={"backend": "a"}, used_gpus=8, score=10.0, metrics={})
+    invalid = Candidate(
+        config={"backend": "invalid"},
+        used_gpus=1,
+        score=float("nan"),
+        metrics={},
+    )
+    assert rank([z, invalid, a]) == [a, z]
+
+
+def test_strict_sla_filters_before_pareto_dominance():
+    objectives = [
+        OptimizationTarget.THROUGHPUT_PER_GPU,
+        OptimizationTarget.THROUGHPUT_PER_USER,
+    ]
+    violating = _pareto_cand(200.0, 20.0)
+    violating.metrics = {"mean_tpot_ms": 50.0}
+    compliant = _pareto_cand(100.0, 10.0)
+    compliant.metrics = {"mean_tpot_ms": 20.0}
+    strict_goal = OptimizationGoal(
+        target=OptimizationTarget.PARETO,
+        pareto_objectives=objectives,
+        sla=SLATarget(itl_ms=20.0),
+        strict_sla=True,
+    )
+
+    assert analyze_candidates([violating, compliant], strict_goal, osl=10) == [
+        compliant
+    ]
+    default_goal = strict_goal.model_copy(update={"strict_sla": False})
+    assert analyze_candidates([violating, compliant], default_goal, osl=10) == [
+        violating
+    ]
