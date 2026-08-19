@@ -73,10 +73,14 @@ class SLATarget(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ttft_ms: float | None = Field(default=None, gt=0)
-    itl_ms: float | None = Field(default=None, gt=0)
-    e2e_ms: float | None = Field(default=None, gt=0)
-    request_latency_ms: float | None = Field(default=None, gt=0)
+    ttft_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    itl_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    e2e_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    request_latency_ms: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+    )
 
     @property
     def has_aggregate_bound(self) -> bool:

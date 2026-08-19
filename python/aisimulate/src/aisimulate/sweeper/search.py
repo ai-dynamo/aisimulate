@@ -69,6 +69,7 @@ from .result import (
     CandidateRecord,
     CandidateRetention,
     CandidateStatus,
+    LoadRecommendationFailureRecord,
     LoadRecommendationRecord,
     LoadRecommendationView,
     ReasonCategory,
@@ -1415,9 +1416,41 @@ class Sweeper:
                     top_n=recommendation_top_n,
                 )
             except NoFeasibleLoadRecommendation as exc:
+                if exc.failures:
+                    no_feasible_reasons = [
+                        LoadRecommendationFailureRecord(
+                            candidate_id=record_id_by_candidate_object[
+                                id(failure.candidate)
+                            ],
+                            reason=failure.reason,
+                        )
+                        for failure in exc.failures
+                    ]
+                elif candidate_records:
+                    no_feasible_reasons = [
+                        LoadRecommendationFailureRecord(
+                            candidate_id=(
+                                record.candidate_id
+                                if retention is not CandidateRetention.FEASIBLE
+                                else None
+                            ),
+                            reason=(
+                                f"{record.reason_category.value}: {record.reason}"
+                                if record.reason_category is not None
+                                else record.reason or "candidate was not feasible"
+                            ),
+                        )
+                        for record in candidate_records
+                    ]
+                else:
+                    no_feasible_reasons = [
+                        LoadRecommendationFailureRecord(
+                            reason="no candidates were evaluated"
+                        )
+                    ]
                 load_recommendation = LoadRecommendationView(
                     target=load_target,
-                    no_feasible_reasons=list(exc.reasons) or ["no candidates were provided"],
+                    no_feasible_reasons=no_feasible_reasons,
                 )
             else:
                 load_recommendation = LoadRecommendationView(
@@ -1447,6 +1480,16 @@ class Sweeper:
             failed=status_counts[CandidateStatus.FAILED],
             cache_hits=tally["cache_hit"],
         )
+        load_view_ids: list[str] = []
+        if load_recommendation is not None:
+            load_view_ids.extend(
+                item.candidate_id for item in load_recommendation.recommendations
+            )
+            load_view_ids.extend(
+                item.candidate_id
+                for item in load_recommendation.no_feasible_reasons
+                if item.candidate_id is not None
+            )
         return SweepResult(
             candidate_retention=retention,
             counts=counts,
@@ -1454,10 +1497,7 @@ class Sweeper:
                 candidate_records,
                 retention=retention,
                 views=views,
-                additional_view_ids=(
-                    item.candidate_id
-                    for item in (load_recommendation.recommendations if load_recommendation is not None else [])
-                ),
+                additional_view_ids=load_view_ids,
             ),
             views=views,
             load_recommendation=load_recommendation,

@@ -501,6 +501,8 @@ def test_invalid_kv_load_ratio_is_rejected(value):
         {"itl_ms": -1},
         {"e2e_ms": -5},
         {"request_latency_ms": 0},
+        {"ttft_ms": float("inf")},
+        {"itl_ms": float("nan")},
     ],
 )
 def test_non_positive_sla_is_rejected(kwargs):

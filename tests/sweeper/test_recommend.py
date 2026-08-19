@@ -76,6 +76,29 @@ def test_make_candidate_preserves_request_rate_capacity():
     assert candidate.metrics["request_throughput_rps"] == 12.5
 
 
+def test_make_candidate_preserves_evaluated_concurrency_capacity():
+    candidate = make_candidate(
+        {
+            "used_gpus": 2,
+            "deployment_mode": "disagg",
+            "concurrency": 8,
+        },
+        {
+            "output_throughput_tok_s": 1000.0,
+            "supported_concurrency": 64.0,
+            "prefill_concurrency_capacity": 80.0,
+            "decode_concurrency_capacity": 64.0,
+        },
+        target=OptimizationTarget.THROUGHPUT,
+    )
+
+    recommendation = size_candidate(candidate, LoadTarget(concurrency=128))
+
+    assert candidate.metrics["supported_concurrency"] == 64.0
+    assert recommendation.replicas_needed == 2
+    assert recommendation.limiting_role == "decode"
+
+
 def test_request_rate_recommendation_minimizes_true_gpu_count():
     narrow = _candidate("narrow", gpus=2, rate=10)
     wide = _candidate("wide", gpus=4, rate=21)
@@ -156,6 +179,29 @@ def test_strict_sla_filters_before_min_gpu_ranking():
     assert [result.candidate.config["name"] for result in results] == ["compliant"]
 
 
+def test_all_strict_sla_failures_preserve_candidate_and_bound_detail():
+    violating = _candidate(
+        "late",
+        gpus=2,
+        rate=20,
+        metrics={"mean_tpot_ms": 20.0},
+    )
+
+    with pytest.raises(NoFeasibleLoadRecommendation) as exc_info:
+        recommend_min_gpus(
+            [violating],
+            LoadTarget(request_rate=20),
+            goal=OptimizationGoal(
+                sla=SLATarget(itl_ms=10),
+                strict_sla=True,
+            ),
+            osl=128,
+        )
+
+    assert exc_info.value.failures[0].candidate is violating
+    assert "tpot 20ms > 10ms" in exc_info.value.failures[0].reason
+
+
 def test_gpu_cap_requires_explicit_partial_service():
     candidate = _candidate("capped", gpus=4, rate=10)
 
@@ -212,6 +258,10 @@ def test_missing_or_impossible_capacity_has_actionable_no_feasible_error():
     message = str(exc_info.value)
     assert "does not expose" in message
     assert "one replica needs 16 GPUs" in message
+    assert [failure.candidate for failure in exc_info.value.failures] == [
+        missing,
+        too_wide,
+    ]
 
 
 def test_higher_target_is_monotonic_for_one_topology():

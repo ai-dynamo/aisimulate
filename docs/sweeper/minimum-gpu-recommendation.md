@@ -26,6 +26,10 @@ concurrency sizing reads `supported_concurrency`, `kv_load_concurrency_capacity`
 evaluated candidate `concurrency`, in that order. Missing, non-positive, or non-finite
 capacity fails closed with an actionable reason.
 
+Replay concurrency capacity is retained as a sizing metric, including optional per-role
+`*_supported_concurrency` and `*_concurrency_capacity` values. An evaluated metric takes
+precedence over a configured offered-load value.
+
 ## Sizing and ranking
 
 For one candidate, the uncapped minimum is:
@@ -75,7 +79,8 @@ candidate ledger, counts, and provenance. The resulting `SweepResult.load_recomm
 the target and candidate-ID-based recommendation records. It preserves both uncapped and deployed
 sizing, served load, partial status, and the limiting role without embedding duplicate candidates.
 If sizing produces no recommendation, the canonical result remains successful and preserves the
-actionable rejection list in `no_feasible_reasons`; candidate status and counts are unchanged.
+actionable rejection list in `no_feasible_reasons`; each candidate-specific reason carries its
+stable `candidate_id` and candidate status and counts are unchanged.
 
 `SweepResult.to_json()` is the strict lossless interchange form. `to_csv()` repeats flattened target
 fields on retained rows and fills recommendation fields on the referenced candidate rows.

@@ -8,12 +8,13 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import Candidate, OptimizationGoal
-from .score import meets_aggregate_sla
+from .score import aggregate_sla_violations
 
 _RATE_CAPACITY_KEY = "request_throughput_rps"
 _CONCURRENCY_CAPACITY_KEYS = (
@@ -89,11 +90,20 @@ class UnsupportedCandidateCapacity(ValueError):
     """An evaluated candidate does not expose the requested capacity."""
 
 
+@dataclass(frozen=True)
+class LoadRecommendationFailure:
+    """One candidate-specific sizing rejection retained by a failed recommendation."""
+
+    candidate: Candidate
+    reason: str
+
+
 class NoFeasibleLoadRecommendation(ValueError):
     """No candidate can be sized under the requested policy."""
 
-    def __init__(self, reasons: Sequence[str]) -> None:
-        self.reasons = tuple(reasons)
+    def __init__(self, failures: Sequence[LoadRecommendationFailure]) -> None:
+        self.failures = tuple(failures)
+        self.reasons = tuple(failure.reason for failure in self.failures)
         detail = "; ".join(self.reasons[:5]) or "no candidates were provided"
         if len(self.reasons) > 5:
             detail += f"; +{len(self.reasons) - 5} more"
@@ -232,20 +242,35 @@ def recommend_min_gpus(
         raise ValueError("osl must be at least 1")
 
     recommendations: list[LoadRecommendation] = []
-    reasons: list[str] = []
-    for index, candidate in enumerate(candidates):
+    failures: list[LoadRecommendationFailure] = []
+    for candidate in candidates:
         if goal.strict_sla:
             assert goal.sla is not None
-            if not meets_aggregate_sla(candidate.metrics, goal.sla, osl=osl):
-                reasons.append(f"candidate {index}: strict aggregate SLA violation")
+            violations = aggregate_sla_violations(
+                candidate.metrics,
+                goal.sla,
+                osl=osl,
+            )
+            if violations:
+                failures.append(
+                    LoadRecommendationFailure(
+                        candidate=candidate,
+                        reason=(
+                            "strict aggregate SLA violation: "
+                            + "; ".join(violations)
+                        ),
+                    )
+                )
                 continue
         try:
             recommendations.append(size_candidate(candidate, target))
         except UnsupportedCandidateCapacity as exc:
-            reasons.append(f"candidate {index}: {exc}")
+            failures.append(
+                LoadRecommendationFailure(candidate=candidate, reason=str(exc))
+            )
 
     if not recommendations:
-        raise NoFeasibleLoadRecommendation(reasons)
+        raise NoFeasibleLoadRecommendation(failures)
 
     def _rank_key(recommendation: LoadRecommendation) -> tuple[Any, ...]:
         latency = _finite_positive(recommendation.candidate.metrics.get("mean_e2e_latency_ms"))

@@ -27,7 +27,7 @@ from .config import Candidate, SmartSearchConfig
 from .recommend import LoadRecommendation, LoadTarget
 from .replay import canonical_json, validate_json_value
 
-RESULT_SCHEMA_VERSION = "1.0"
+RESULT_SCHEMA_VERSION = "1.1"
 
 
 class SearchStrategy(str, Enum):
@@ -231,6 +231,18 @@ class LoadRecommendationRecord(BaseModel):
         )
 
 
+class LoadRecommendationFailureRecord(BaseModel):
+    """One actionable sizing rejection, optionally linked to a retained candidate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str | None = Field(
+        default=None,
+        pattern=r"^candidate-[0-9]{6,}$",
+    )
+    reason: str = Field(min_length=1)
+
+
 class LoadRecommendationView(BaseModel):
     """Target, ranked deployments, or reasons that no deployment was feasible."""
 
@@ -238,22 +250,37 @@ class LoadRecommendationView(BaseModel):
 
     target: LoadTarget
     recommendations: list[LoadRecommendationRecord] = Field(default_factory=list)
-    no_feasible_reasons: list[str] = Field(default_factory=list)
+    no_feasible_reasons: list[LoadRecommendationFailureRecord] = Field(
+        default_factory=list
+    )
 
     @model_validator(mode="after")
     def _validate_outcome(self) -> LoadRecommendationView:
         candidate_ids = [item.candidate_id for item in self.recommendations]
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError("load recommendation candidate IDs must be unique")
+        failure_ids = [
+            item.candidate_id
+            for item in self.no_feasible_reasons
+            if item.candidate_id is not None
+        ]
+        if len(failure_ids) != len(set(failure_ids)):
+            raise ValueError("load recommendation failure candidate IDs must be unique")
         if self.recommendations and self.no_feasible_reasons:
             raise ValueError("a successful load recommendation cannot carry no-feasible reasons")
         if not self.recommendations and not self.no_feasible_reasons:
             raise ValueError("an empty load recommendation requires no-feasible reasons")
-        if any(not reason for reason in self.no_feasible_reasons):
-            raise ValueError("no-feasible reasons cannot be empty")
         for item in self.recommendations:
             if item.deployed_replicas > item.replicas_needed:
                 raise ValueError("deployed_replicas cannot exceed replicas_needed")
+            expected_replicas = max(
+                1,
+                math.ceil(self.target.value / item.capacity_per_replica),
+            )
+            if item.replicas_needed != expected_replicas:
+                raise ValueError(
+                    "replicas_needed must be the uncapped minimum for the target"
+                )
             expected_supported_load = item.capacity_per_replica * item.deployed_replicas
             if not math.isclose(item.supported_load, expected_supported_load):
                 raise ValueError("supported_load must equal capacity_per_replica * deployed_replicas")
@@ -262,6 +289,26 @@ class LoadRecommendationView(BaseModel):
                 raise ValueError("load_served_pct must match supported_load and target")
             if item.partial != (item.load_served_pct < 100.0):
                 raise ValueError("partial must indicate load_served_pct below 100")
+            if item.partial:
+                if not self.target.allow_partial:
+                    raise ValueError(
+                        "a partial recommendation requires target.allow_partial=true"
+                    )
+                if self.target.max_gpus is None:
+                    raise ValueError("a partial recommendation requires target.max_gpus")
+                if item.deployed_replicas >= item.replicas_needed:
+                    raise ValueError(
+                        "a partial recommendation must deploy fewer than replicas_needed"
+                    )
+            elif item.deployed_replicas != item.replicas_needed:
+                raise ValueError(
+                    "a full recommendation must deploy the uncapped replica count"
+                )
+            if (
+                self.target.max_gpus is not None
+                and item.deployed_gpus > self.target.max_gpus
+            ):
+                raise ValueError("deployed_gpus cannot exceed target.max_gpus")
         return self
 
 
@@ -289,7 +336,7 @@ class SweepResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0"] = RESULT_SCHEMA_VERSION
+    schema_version: Literal["1.0", "1.1"] = RESULT_SCHEMA_VERSION
     candidate_retention: CandidateRetention = CandidateRetention.ALL
     counts: SweepCounts
     candidates: list[CandidateRecord]
@@ -299,15 +346,36 @@ class SweepResult(BaseModel):
 
     @model_validator(mode="after")
     def _validate_identity_and_views(self) -> SweepResult:
+        if self.schema_version == "1.0" and self.load_recommendation is not None:
+            raise ValueError("load_recommendation requires schema_version='1.1'")
         candidate_ids = [candidate.candidate_id for candidate in self.candidates]
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError("candidate IDs must be unique")
         retained_ids = set(candidate_ids)
         recommendation_ids = {
             item.candidate_id
-            for item in (self.load_recommendation.recommendations if self.load_recommendation is not None else [])
+            for item in (
+                self.load_recommendation.recommendations
+                if self.load_recommendation is not None
+                else []
+            )
         }
-        missing = (set(self.views.top_n) | set(self.views.pareto_front) | recommendation_ids) - retained_ids
+        failure_ids = {
+            item.candidate_id
+            for item in (
+                self.load_recommendation.no_feasible_reasons
+                if self.load_recommendation is not None
+                else []
+            )
+            if item.candidate_id is not None
+        }
+        referenced_ids = (
+            set(self.views.top_n)
+            | set(self.views.pareto_front)
+            | recommendation_ids
+            | failure_ids
+        )
+        missing = referenced_ids - retained_ids
         if missing:
             raise ValueError(f"result views reference candidates not retained: {sorted(missing)}")
         if self.views.top_n and self.views.pareto_front:
@@ -338,10 +406,10 @@ class SweepResult(BaseModel):
         ]
         if non_feasible:
             raise ValueError(f"result views reference non-feasible candidates: {non_feasible}")
+        status_counts = dict.fromkeys(CandidateStatus, 0)
+        for candidate in self.candidates:
+            status_counts[candidate.status] += 1
         if self.candidate_retention is CandidateRetention.ALL:
-            status_counts = dict.fromkeys(CandidateStatus, 0)
-            for candidate in self.candidates:
-                status_counts[candidate.status] += 1
             if status_counts[CandidateStatus.FEASIBLE] != self.counts.feasible:
                 raise ValueError("retained feasible candidates do not match counts")
             if status_counts[CandidateStatus.INFEASIBLE] != self.counts.infeasible:
@@ -352,6 +420,24 @@ class SweepResult(BaseModel):
                 raise ValueError("retained timed-out candidates do not match counts")
             if status_counts[CandidateStatus.FAILED] != self.counts.failed:
                 raise ValueError("retained failed candidates do not match counts")
+        elif self.candidate_retention is CandidateRetention.FEASIBLE:
+            if any(
+                candidate.status is not CandidateStatus.FEASIBLE
+                for candidate in self.candidates
+            ):
+                raise ValueError(
+                    "candidate_retention='feasible' can retain only feasible candidates"
+                )
+            if len(self.candidates) != self.counts.feasible:
+                raise ValueError(
+                    "candidate_retention='feasible' must retain every feasible candidate"
+                )
+        elif retained_ids != referenced_ids:
+            extras = sorted(retained_ids - referenced_ids)
+            raise ValueError(
+                "candidate_retention='views' retained unreferenced candidates: "
+                f"{extras}"
+            )
         return self
 
     @property
@@ -371,7 +457,10 @@ class SweepResult(BaseModel):
     def to_json(self, *, indent: int | None = 2) -> str:
         """Serialize the lossless canonical representation using strict JSON."""
 
-        payload = self.model_dump(mode="json")
+        payload = self.model_dump(
+            mode="json",
+            exclude={"load_recommendation"} if self.schema_version == "1.0" else None,
+        )
         validate_json_value(payload, path="sweep result")
         return json.dumps(
             payload,
@@ -397,7 +486,7 @@ class SweepResult(BaseModel):
         """
 
         output = io.StringIO(newline="")
-        fieldnames = [
+        legacy_fieldnames = [
             "schema_version",
             "candidate_id",
             "status",
@@ -411,6 +500,8 @@ class SweepResult(BaseModel):
             "provenance_json",
             "is_top_n",
             "is_pareto",
+        ]
+        load_fieldnames = [
             "load_target_kind",
             "load_target_value",
             "load_target_max_gpus",
@@ -425,9 +516,18 @@ class SweepResult(BaseModel):
             "recommendation_load_served_pct",
             "recommendation_limiting_role",
             "recommendation_partial",
+            "recommendation_failure_reason",
             "recommendation_no_feasible_reasons_json",
         ]
-        writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+        fieldnames = legacy_fieldnames + (
+            load_fieldnames if self.schema_version == "1.1" else []
+        )
+        writer = csv.DictWriter(
+            output,
+            fieldnames=fieldnames,
+            extrasaction="ignore",
+            lineterminator="\n",
+        )
         writer.writeheader()
         top_n = set(self.views.top_n)
         pareto = set(self.views.pareto_front)
@@ -437,8 +537,20 @@ class SweepResult(BaseModel):
             if load_view is not None
             else {}
         )
+        recommendation_failures = (
+            {
+                failure.candidate_id: failure
+                for failure in load_view.no_feasible_reasons
+                if failure.candidate_id is not None
+            }
+            if load_view is not None
+            else {}
+        )
         for candidate in self.candidates:
             recommendation = recommendations.get(candidate.candidate_id)
+            recommendation_failure = recommendation_failures.get(
+                candidate.candidate_id
+            )
             writer.writerow(
                 {
                     "schema_version": self.schema_version,
@@ -492,6 +604,11 @@ class SweepResult(BaseModel):
                         recommendation.limiting_role if recommendation is not None else ""
                     ),
                     "recommendation_partial": (recommendation.partial if recommendation is not None else ""),
+                    "recommendation_failure_reason": (
+                        recommendation_failure.reason
+                        if recommendation_failure is not None
+                        else ""
+                    ),
                     "recommendation_no_feasible_reasons_json": (
                         canonical_json(load_view.no_feasible_reasons)
                         if load_view is not None and load_view.no_feasible_reasons

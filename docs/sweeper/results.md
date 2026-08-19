@@ -6,7 +6,7 @@ subtitle: A lossless candidate ledger with scalar and Pareto views
 ---
 
 > [!WARNING]
-> **Experimental.** Schema version `1.0` is the first machine-readable Sweeper result contract.
+> **Experimental.** Schema version `1.1` is the current machine-readable Sweeper result contract.
 > Within a schema version, fields keep their meaning and units; incompatible changes require a new
 > `schema_version` and an explicit converter.
 
@@ -38,7 +38,7 @@ Pareto, QA, and configuration-selection code should consume `SweepResult`.
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Result contract version. The only accepted value in this release is `1.0`. |
+| `schema_version` | Result contract version. New results use `1.1`; the reader also accepts `1.0`. |
 | `candidate_retention` | `all`, `feasible`, or `views`; counts always describe the complete run. |
 | `counts` | Outcome and cache counts for the complete run. |
 | `candidates` | Retained candidate records in evaluation order. |
@@ -49,6 +49,15 @@ Pareto, QA, and configuration-selection code should consume `SweepResult`.
 
 `views.top_n` and `views.pareto_front` are mutually exclusive. An empty result has empty views and
 an empty candidate list, while its counts and run provenance remain present.
+
+Schema `1.0` predates `load_recommendation`; a `1.0` payload cannot contain that field. The `1.1`
+reader round-trips strict `1.0` JSON without adding the new field, so an archived result remains
+readable by both the original strict reader and the current reader. Re-exported `1.0` CSV likewise
+uses the original candidate-ledger columns without `1.1` recommendation columns.
+
+Retention is validated, not advisory: `all` contains every status and exactly matches run counts,
+`feasible` contains every and only feasible row, and `views` contains exactly the rows referenced by
+scalar, Pareto, recommendation, or recommendation-failure views.
 
 For `goal.target: pareto`, the result contains only non-dominated candidates and preserves each
 objective's natural direction. Engine-only and adapter-backed candidates share the public
@@ -69,7 +78,9 @@ record preserves `capacity_per_replica`, `capacity_per_gpu`, the true uncapped
 `replicas_needed`/`total_gpus_needed`, capped `deployed_replicas`/`deployed_gpus`,
 `supported_load`, `load_served_pct`, `limiting_role`, and `partial`. If no candidate can be sized,
 the target remains present, recommendations are empty, and `no_feasible_reasons` explains each
-rejection. Recommendation success or failure never changes candidate status or run counts.
+rejection as `{candidate_id, reason}`. A candidate ID is present whenever that ledger row is
+retained; global reasons use `null`. Recommendation success or failure never changes candidate
+status or run counts.
 
 ### Candidate record
 
@@ -146,12 +157,14 @@ mapping keys, includes empty-run provenance, and round-trips through `SweepResul
 `recommendation_replicas_needed`, `recommendation_total_gpus_needed`,
 `recommendation_deployed_replicas`, `recommendation_deployed_gpus`,
 `recommendation_supported_load`, `recommendation_load_served_pct`,
-`recommendation_limiting_role`, `recommendation_partial`, and
+`recommendation_limiting_role`, `recommendation_partial`, `recommendation_failure_reason`, and
 `recommendation_no_feasible_reasons_json`.
 
 Nested fields and no-feasible reasons use canonical JSON cells rather than lossy dotted columns.
 Target fields repeat on retained candidate rows and recommendation fields are populated only on the
-referenced candidate row. CSV is not the interchange format: an empty CSV has only its header and
+referenced candidate row. Candidate-specific sizing failures populate
+`recommendation_failure_reason`; the canonical JSON failure list repeats for analysis. CSV is not
+the interchange format: an empty CSV has only its header and
 therefore cannot carry run provenance, counts, or an empty-run recommendation failure.
 
 ## Legacy AIC mapping
