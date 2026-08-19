@@ -487,6 +487,29 @@ def _validate_pinned(config: AFDSearchConfig) -> tuple[AFDTopology, ...]:
     candidates: list[AFDTopology] = []
     seen: set[AFDTopology] = set()
     for topology in config.pinned_topologies:
+        if topology.phase is not config.phase:
+            raise AFDInfeasible(
+                AFDReasonCategory.INCOMPATIBLE_PHASE,
+                f"pinned topology phase={topology.phase.value!r} does not match "
+                f"AFD search phase={config.phase.value!r}; use a topology with "
+                "the phase requested by the search contract",
+                provenance={
+                    "topology_phase": topology.phase.value,
+                    "search_phase": config.phase.value,
+                },
+            )
+        if topology.combined_with_pd != config.combined_with_pd:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "pinned topology combined_with_pd="
+                f"{topology.combined_with_pd!r} does not match AFD search "
+                f"combined_with_pd={config.combined_with_pd!r}; use a topology "
+                "with the pure or combined mode requested by the search contract",
+                provenance={
+                    "topology_combined_with_pd": topology.combined_with_pd,
+                    "search_combined_with_pd": config.combined_with_pd,
+                },
+            )
         if topology.gpus_per_node != config.gpus_per_node:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,

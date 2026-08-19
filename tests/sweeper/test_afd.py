@@ -182,6 +182,7 @@ def test_pinned_domain_is_lossless_and_honors_budget():
             gpus_per_node=8,
             is_moe=False,
             pinned_topologies=(pinned,),
+            combined_with_pd=False,
         )
     )
     assert result.candidates == (pinned,)
@@ -194,9 +195,60 @@ def test_pinned_domain_is_lossless_and_honors_budget():
                 gpus_per_node=8,
                 is_moe=False,
                 pinned_topologies=(pinned,),
+                combined_with_pd=False,
             )
         )
     assert budget_error.value.category is AFDReasonCategory.GPU_BUDGET
+
+
+def test_pinned_domain_rejects_phase_mismatch_with_search_contract():
+    pinned = _topology(phase="decode", combined_with_pd=False)
+
+    with pytest.raises(
+        AFDInfeasible,
+        match="does not match AFD search phase",
+    ) as error:
+        enumerate_afd_topologies(
+            AFDSearchConfig(
+                total_gpus=16,
+                gpus_per_node=8,
+                is_moe=False,
+                pinned_topologies=(pinned,),
+                phase="prefill",
+                combined_with_pd=False,
+            )
+        )
+
+    assert error.value.category is AFDReasonCategory.INCOMPATIBLE_PHASE
+    assert error.value.provenance == {
+        "topology_phase": "decode",
+        "search_phase": "prefill",
+    }
+
+
+def test_pinned_domain_rejects_pure_or_combined_mode_mismatch():
+    pinned = _topology(phase="decode", combined_with_pd=False)
+
+    with pytest.raises(
+        AFDInfeasible,
+        match="does not match AFD search combined_with_pd",
+    ) as error:
+        enumerate_afd_topologies(
+            AFDSearchConfig(
+                total_gpus=16,
+                gpus_per_node=8,
+                is_moe=False,
+                pinned_topologies=(pinned,),
+                phase="decode",
+                combined_with_pd=True,
+            )
+        )
+
+    assert error.value.category is AFDReasonCategory.INVALID_TOPOLOGY
+    assert error.value.provenance == {
+        "topology_combined_with_pd": False,
+        "search_combined_with_pd": True,
+    }
 
 
 def test_candidate_overflow_is_actionable_or_explicitly_truncated():
