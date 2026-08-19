@@ -327,6 +327,7 @@ def enumerate_branches(
     ss = config.search_space
     branches: list[BranchSpace] = []
     skipped: list[str] = []  # modes dropped because no backend was viable
+    skipped_enumeration_reports: list[dict[str, Any]] = []
     # Dedupe modes (preserving order): a repeated deployment_mode would yield duplicate
     # branches and hence colliding Vizier study_ids (one study per mode).
     for deployment_mode in dict.fromkeys(ss.deployment_mode):
@@ -456,6 +457,20 @@ def enumerate_branches(
                 ),
                 stacklevel=2,
             )
+            if pruning_diagnostics or enumeration_counts:
+                skipped_enumeration_reports.append(
+                    {
+                        "deployment_mode": deployment_mode,
+                        "counts": {
+                            name: enumeration_counts[name]
+                            for name in ("considered", "accepted", "pruned")
+                        },
+                        "pruning_diagnostics": [
+                            diagnostic.as_dict()
+                            for diagnostic in pruning_diagnostics
+                        ],
+                    }
+                )
             skipped.append(deployment_mode)
             continue
         if pinned is not None:
@@ -503,6 +518,7 @@ def enumerate_branches(
     if not branches:
         raise NoViableParallelConfig(
             f"no deployment_mode has a viable parallel config (skipped {skipped}); check "
-            f"backends / model / hardware / gpu_budget={ss.gpu_budget}"
+            f"backends / model / hardware / gpu_budget={ss.gpu_budget}",
+            enumeration_reports=tuple(skipped_enumeration_reports),
         )
     return branches

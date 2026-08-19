@@ -138,7 +138,8 @@ support for vLLM and SGLang is not enough to claim their mixed pair. The built-i
 explicitly supports all vLLM/SGLang P/D pairs and reports an unsupported backend by role.
 TensorRT-LLM remains fail-closed for either disaggregated role. Partially pruned pair domains remain
 visible in `BranchSpace.pruning_diagnostics` with stable categories and considered/accepted/pruned
-counts. `decode_enable_chunked_prefill=true` is rejected because chunked prefill is a prefill-role
+counts. If every pair is pruned, the terminal `NoViableParallelConfig` retains the same ordered
+data in `enumeration_reports` and `as_dict()`. `decode_enable_chunked_prefill=true` is rejected because chunked prefill is a prefill-role
 scheduler control; a shared `enable_chunked_prefill=true` materializes `true` only for prefill and
 `false` for decode.
 Optional adapter providers must explicitly return
