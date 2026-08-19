@@ -18,7 +18,11 @@ from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfi
 from aisimulate.sweeper.parallel_projection import ParallelConfigProjector
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 from aisimulate.sweeper.sample import unroll_sample
-from aisimulate.sweeper.sampler import ExhaustiveBranchSampler, Suggestion
+from aisimulate.sweeper.sampler import (
+    ExhaustiveBranchSampler,
+    Suggestion,
+    VizierBranchSampler,
+)
 from aisimulate.sweeper.search import Sweeper
 from aisimulate.sweeper.search_space import enumerate_branches
 
@@ -188,6 +192,28 @@ def test_rapid_searched_pure_afd_uses_projectable_complete_legal_pool(monkeypatc
     assert projection.actual_features["afd_pipeline_model"] == "serial"
 
 
+def test_real_rapid_sampler_projects_only_onto_the_thorough_afd_pool(monkeypatch):
+    _patch_facts(monkeypatch)
+    monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
+    config = _config("afd", afd_phase="decode")
+    (branch,) = enumerate_branches(
+        config, runner_capabilities=_capabilities("afd")
+    )
+    thorough_pool = set(branch.parallel_configs)
+
+    sampler = VizierBranchSampler(branch, study_id="afd_projector", seed=11)
+    suggestions = sampler.suggest(16)
+
+    assert suggestions
+    assert all(item.projection is not None for item in suggestions)
+    assert all(item.parallel_config in thorough_pool for item in suggestions)
+    assert all(
+        item.selection["backend"]
+        in branch.supported_backends[item.parallel_config]
+        for item in suggestions
+    )
+
+
 def test_combined_afd_uses_role_domain_and_accounts_for_every_gpu(monkeypatch):
     _patch_facts(monkeypatch)
     seen = {}
@@ -308,14 +334,16 @@ def test_runner_capability_gate_fails_closed_before_afd_materialization(monkeypa
     _patch_facts(monkeypatch)
     config = _config("afd")
 
-    with pytest.warns(UserWarning, match="no configured backend.*AFD"):
-        with pytest.raises(NoViableParallelConfig):
-            enumerate_branches(
-                config,
-                runner_capabilities=RunnerCapabilities(
-                    supported_backend_topologies=(("vllm", "agg"),)
-                ),
-            )
+    with (
+        pytest.warns(UserWarning, match="no configured backend.*AFD"),
+        pytest.raises(NoViableParallelConfig),
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=RunnerCapabilities(
+                supported_backend_topologies=(("vllm", "agg"),)
+            ),
+        )
 
 
 class _AFDRunner:

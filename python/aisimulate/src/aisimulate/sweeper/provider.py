@@ -92,7 +92,12 @@ class AdapterReplaySpec:
 
 @runtime_checkable
 class SweepConfigProvider(Protocol):
-    """Versioned search-time provider implemented by optional feature packages."""
+    """Versioned search-time provider implemented by optional feature packages.
+
+    Providers may expose a ``supported_topologies`` collection. Its absence
+    preserves the pre-AFD ``agg``/``disagg`` contract; ``afd`` and ``afd+pd``
+    always require explicit opt-in before search-plan generation.
+    """
 
     name: str
     api_version: int

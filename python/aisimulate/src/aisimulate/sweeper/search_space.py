@@ -276,6 +276,7 @@ def _enumerate_afd_branch(
         )
         for entry in ss.afd_pinned_topologies
     )
+    batch_candidates = tuple(ss.afd_batch_size_candidates or ())
     enumeration = enumerate_afd_topologies(
         AFDSearchConfig(
             total_gpus=ss.gpu_budget,
@@ -284,7 +285,7 @@ def _enumerate_afd_branch(
             num_experts=facts.num_experts,
             pinned_topologies=pinned,
             tp_a_candidates=tuple(ss.afd_tp_a_candidates or ()),
-            a_batch_size_candidates=tuple(ss.afd_batch_size_candidates),
+            a_batch_size_candidates=batch_candidates,
             f_moe_ep_size_candidates=tuple(ss.afd_f_moe_ep_size_candidates or ()),
             microbatch_candidates=tuple(ss.afd_microbatch_candidates),
             pipeline_model_candidates=tuple(ss.afd_pipeline_model_candidates),

@@ -365,7 +365,7 @@ class AFDSearchConfig:
     num_experts: int = 0
     pinned_topologies: tuple[AFDTopology, ...] = ()
     tp_a_candidates: tuple[int, ...] = ()
-    a_batch_size_candidates: tuple[int, ...] = (128,)
+    a_batch_size_candidates: tuple[int, ...] = ()
     f_moe_ep_size_candidates: tuple[int | str, ...] = ()
     microbatch_candidates: tuple[int, ...] = (2, 3, 4)
     pipeline_model_candidates: tuple[AFDPipelineModel | str, ...] = (
@@ -414,10 +414,16 @@ class AFDSearchConfig:
                 AFDReasonCategory.INVALID_TOPOLOGY,
                 "pipeline_model_candidates must not be empty",
             )
-        for name, values in (
-            ("a_batch_size_candidates", self.a_batch_size_candidates),
-            ("microbatch_candidates", self.microbatch_candidates),
-        ):
+        if not self.pinned_topologies and not self.a_batch_size_candidates:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "a_batch_size_candidates must be explicit for searched AFD domains; "
+                "legacy AFD derives this value from A/F partition memory, so Sweeper "
+                "must not silently assume a fixed batch",
+            )
+        for value in self.a_batch_size_candidates:
+            _positive_int("a_batch_size_candidates", value)
+        for name, values in (("microbatch_candidates", self.microbatch_candidates),):
             if not values:
                 raise AFDInfeasible(
                     AFDReasonCategory.INVALID_TOPOLOGY,
@@ -771,8 +777,17 @@ def evaluate_afd_phase(
         else:
             cycle = max(t_a, t_f, t_c)
             hidden = t_c <= max(t_a, t_f)
-    fill = t_a + t_f + t_a2f + t_f2a
-    step = (fill + cycle * max(topology.num_microbatches * times.num_layers - 1, 0)) * float(latency_correction)
+    if times.phase is AFDPhase.PREFILL:
+        # Legacy prefill is a single shot over the uncached suffix. It advances
+        # layer-by-layer at the pipeline cycle time; decode alone pays pipeline
+        # fill and every microbatch-layer cadence.
+        fill = 0.0
+        step = times.num_layers * cycle * float(latency_correction)
+        formula = "AFDInferenceSession.run_afd.prefill_num_layers_times_cycle"
+    else:
+        fill = t_a + t_f + t_a2f + t_f2a
+        step = (fill + cycle * max(topology.num_microbatches * times.num_layers - 1, 0)) * float(latency_correction)
+        formula = "AFDInferenceSession._pipeline_global_step_latency"
     if step <= 0:
         raise AFDInfeasible(
             AFDReasonCategory.INVALID_MEASUREMENT,
@@ -798,7 +813,7 @@ def evaluate_afd_phase(
         total_gpus=topology.total_gpus,
         provenance={
             "schema_version": AFD_SCHEMA_VERSION,
-            "formula": "AFDInferenceSession._pipeline_global_step_latency",
+            "formula": formula,
             "layer_times": {
                 "attention_ms": t_a,
                 "ffn_ms": t_f,
@@ -1220,11 +1235,13 @@ def rate_match_afd_with_pd(
 def require_afd_adapter_support(
     adapter_name: str,
     supported_topologies: Collection[str],
-    topology: AFDTopology,
+    topology: AFDTopology | str,
 ) -> None:
     """Fail closed unless an adapter explicitly advertises this AFD mode."""
 
-    required = topology.adapter_topology
+    required = topology.adapter_topology if isinstance(topology, AFDTopology) else topology
+    if required not in {"afd", "afd+pd"}:
+        raise ValueError(f"AFD adapter topology must be 'afd' or 'afd+pd', got {required!r}")
     if required not in supported_topologies and "*" not in supported_topologies:
         raise AFDInfeasible(
             AFDReasonCategory.UNSUPPORTED_ADAPTER,

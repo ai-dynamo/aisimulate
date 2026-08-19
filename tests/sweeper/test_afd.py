@@ -118,6 +118,17 @@ def test_default_dense_domain_matches_legacy_candidate_order():
     assert result.provenance["source"].endswith("build_afd_parallel_lists")
 
 
+def test_searched_domain_rejects_an_implicit_fixed_batch():
+    with pytest.raises(AFDInfeasible, match="must be explicit") as error:
+        AFDSearchConfig(
+            total_gpus=32,
+            gpus_per_node=8,
+            is_moe=False,
+        )
+
+    assert error.value.category is AFDReasonCategory.INVALID_TOPOLOGY
+
+
 def test_moe_domain_resolves_symbolic_ep_and_filters_expert_divisibility():
     result = enumerate_afd_topologies(
         AFDSearchConfig(
@@ -126,6 +137,7 @@ def test_moe_domain_resolves_symbolic_ep_and_filters_expert_divisibility():
             is_moe=True,
             num_experts=16,
             tp_a_candidates=(8,),
+            a_batch_size_candidates=(128,),
             f_moe_ep_size_candidates=(3, "n_f_nodes", "ffn_tp"),
             microbatch_candidates=(3,),
             pipeline_model_candidates=("optimistic",),
@@ -192,6 +204,7 @@ def test_candidate_overflow_is_actionable_or_explicitly_truncated():
         total_gpus=32,
         gpus_per_node=8,
         is_moe=False,
+        a_batch_size_candidates=(128,),
         max_candidates=2,
     )
     with pytest.raises(AFDInfeasible) as overflow:
@@ -204,6 +217,7 @@ def test_candidate_overflow_is_actionable_or_explicitly_truncated():
             total_gpus=32,
             gpus_per_node=8,
             is_moe=False,
+            a_batch_size_candidates=(128,),
             max_candidates=2,
             candidate_overflow="truncate",
         )
@@ -217,7 +231,12 @@ def test_candidate_overflow_is_actionable_or_explicitly_truncated():
 def test_search_requires_two_node_minimum_with_actionable_budget_reason():
     with pytest.raises(AFDInfeasible) as error:
         enumerate_afd_topologies(
-            AFDSearchConfig(total_gpus=8, gpus_per_node=8, is_moe=False)
+            AFDSearchConfig(
+                total_gpus=8,
+                gpus_per_node=8,
+                is_moe=False,
+                a_batch_size_candidates=(128,),
+            )
         )
     assert error.value.category is AFDReasonCategory.GPU_BUDGET
     assert "at least 16 GPUs" in error.value.detail
@@ -241,6 +260,26 @@ def test_pipeline_evaluator_matches_legacy_optimistic_formula():
     assert result.balance_ratio == pytest.approx(0.5)
     assert result.tokens_per_second == pytest.approx(256 / 0.0135)
     assert result.sequence_rate == pytest.approx((256 / 0.0135) / 16)
+
+
+def test_prefill_pipeline_matches_legacy_single_shot_formula():
+    result = evaluate_afd_phase(
+        _topology(phase="prefill"),
+        _times("prefill"),
+        input_length=128,
+        output_length=16,
+    )
+
+    # Legacy prefill is num_layers * cycle, with no decode pipeline fill or
+    # microbatch-layer cadence: 2 layers * max(1, 2, .5) ms.
+    assert result.pipeline_fill_ms == 0
+    assert result.cycle_ms == pytest.approx(2.0)
+    assert result.step_latency_ms == pytest.approx(4.0)
+    assert result.sequence_rate == pytest.approx(256 / 0.004)
+    assert result.tokens_per_second == pytest.approx((256 / 0.004) * 128)
+    assert result.provenance["formula"].endswith(
+        "prefill_num_layers_times_cycle"
+    )
 
 
 def test_optimistic_pipeline_falls_back_when_microbatch_count_is_too_small():
@@ -287,10 +326,10 @@ def test_pure_both_phase_rate_matches_without_double_counting_gpus():
     assert result.total_gpus == topology.total_gpus == 16
     assert result.companion_gpus == 0
     assert set(result.phase_evaluations) == {"prefill", "decode"}
-    assert result.ttft_ms == pytest.approx(13.5 * 1.8)
+    assert result.ttft_ms == pytest.approx(4.0 * 1.8)
     assert result.tpot_ms == pytest.approx(13.5 * 1.2)
     assert result.sequence_rate == pytest.approx(
-        min((256 / 0.0135) * 0.9, ((256 / (0.0135 * 1.2)) / 16) * 0.95)
+        min((256 / 0.004) * 0.9, ((256 / (0.0135 * 1.2)) / 16) * 0.95)
     )
     json.dumps(result.as_dict(), sort_keys=True)
 
@@ -350,7 +389,7 @@ def test_prefill_afd_can_rate_match_static_decode_companion():
         decode_latency_correction=1.25,
     )
 
-    assert result.ttft_ms == pytest.approx(13.5 * 1.5)
+    assert result.ttft_ms == pytest.approx(4.0 * 1.5)
     assert result.tpot_ms == pytest.approx(5.0)
     assert result.companion.phase.value == "decode"
 

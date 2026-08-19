@@ -168,6 +168,9 @@ draws the companion from the opposite role's execution fields. Decode companions
 CP=1. The global `gpu_budget` and optional `min_gpu_budget` apply to the complete A+F+P/D
 deployment. `afd_max_candidates` bounds the finite topology domain; the default
 `afd_candidate_overflow: error` preserves completeness instead of silently truncating it.
+`afd_batch_size_candidates` has no default: legacy AIC derives batch per topology from A/F
+partition HBM and KV capacity, which generic Sweeper cannot safely approximate without the runtime
+adapter. Supply only batches qualified by that adapter's memory model, or pin a complete topology.
 
 Pin exact topologies with `afd_pinned_topologies` and exactly one AFD deployment mode:
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import aisimulate.sweeper.search as search_module
+from aisimulate.sweeper.afd import AFDInfeasible, AFDReasonCategory
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.provider import (
@@ -91,6 +92,60 @@ class _Adapter:
             config={"mode": selection["mode"]},
             runtime_hooks=(hook,),
         )
+
+
+def test_afd_adapter_capability_fails_before_search_plan_generation() -> None:
+    config_data = _config().model_dump(mode="python")
+    config_data["search_space"].update(
+        {
+            "deployment_mode": ["afd"],
+            "gpu_budget": 16,
+            "afd_batch_size_candidates": [8],
+        }
+    )
+    config = SmartSearchConfig.model_validate(config_data)
+    adapter = _Adapter()
+
+    with pytest.raises(AFDInfeasible) as error:
+        search_module._prepare_providers(
+            config,
+            injected={"test.feature": adapter},
+            show_progress=False,
+        )
+
+    assert error.value.category is AFDReasonCategory.UNSUPPORTED_ADAPTER
+    assert error.value.provenance["required_topology"] == "afd"
+    assert adapter.generated == []
+
+
+def test_afd_adapter_capability_allows_explicit_opt_in() -> None:
+    class AFDAdapter(_Adapter):
+        supported_topologies = ("afd",)
+
+        def generate_search_space(self, search_spec, context):
+            self.generated.append((search_spec, context))
+            return AdapterSearchPlan()
+
+    config_data = _config().model_dump(mode="python")
+    config_data["search_space"].update(
+        {
+            "deployment_mode": ["afd"],
+            "gpu_budget": 16,
+            "afd_batch_size_candidates": [8],
+        }
+    )
+    config = SmartSearchConfig.model_validate(config_data)
+    adapter = AFDAdapter()
+
+    providers, plans = search_module._prepare_providers(
+        config,
+        injected={"test.feature": adapter},
+        show_progress=False,
+    )
+
+    assert providers == {"test.feature": adapter}
+    assert plans == {"test.feature": AdapterSearchPlan()}
+    assert len(adapter.generated) == 1
 
 
 class _MutatingAdapter(_Adapter):

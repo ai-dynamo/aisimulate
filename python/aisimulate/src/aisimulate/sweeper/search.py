@@ -29,7 +29,7 @@ import math
 import multiprocessing as mp
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
@@ -42,6 +42,7 @@ from typing import Any
 
 from tqdm import tqdm
 
+from .afd import require_afd_adapter_support
 from .config import (
     Candidate,
     OptimizationGoal,
@@ -137,6 +138,23 @@ def _prepare_providers(
             f"{_ADAPTER_PARAM_SEPARATOR!r}: {invalid_names}"
         )
     providers = resolve_providers(config.adapters, injected=injected)
+    required_afd_modes = tuple(
+        mode
+        for mode in dict.fromkeys(config.search_space.deployment_mode)
+        if mode in {"afd", "afd+pd"}
+    )
+    for name, provider in providers.items():
+        supported = getattr(provider, "supported_topologies", ("agg", "disagg"))
+        if isinstance(supported, str) or not isinstance(supported, Collection):
+            raise TypeError(
+                f"provider {name!r} supported_topologies must be a collection of strings"
+            )
+        if any(not isinstance(mode, str) for mode in supported):
+            raise TypeError(
+                f"provider {name!r} supported_topologies must contain only strings"
+            )
+        for mode in required_afd_modes:
+            require_afd_adapter_support(name, supported, mode)
     base_context = SweepContext(
         core_search_space=config.search_space.model_dump(mode="json"),
         workload=config.workload.model_dump(mode="json"),

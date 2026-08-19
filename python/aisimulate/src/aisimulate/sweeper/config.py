@@ -469,7 +469,10 @@ class SearchSpace(BaseModel):
     # same per-role legal domain used by aggregate/P/D search.
     afd_pinned_topologies: list[dict[str, Any]] = Field(default_factory=list)
     afd_tp_a_candidates: list[int] | None = None
-    afd_batch_size_candidates: list[int] = [128]
+    # Legacy AFD derives this per topology from A/F partition memory. Generic
+    # Sweeper cannot reproduce that adapter-owned calculation safely, so a
+    # searched AFD domain must declare memory-qualified batches explicitly.
+    afd_batch_size_candidates: list[int] | None = None
     afd_f_moe_ep_size_candidates: list[int | str] | None = None
     afd_microbatch_candidates: list[int] = [2, 3, 4]
     afd_pipeline_model_candidates: list[str] = ["optimistic", "conservative"]
@@ -613,6 +616,13 @@ class SearchSpace(BaseModel):
             raise ValueError("afd_candidate_overflow must be 'error' or 'truncate'")
         if "afd+pd" in self.deployment_mode and self.afd_phase == "both":
             raise ValueError("deployment_mode='afd+pd' requires afd_phase prefill or decode")
+        has_afd_mode = any(mode in {"afd", "afd+pd"} for mode in self.deployment_mode)
+        if has_afd_mode and not self.afd_pinned_topologies and self.afd_batch_size_candidates is None:
+            raise ValueError(
+                "searched AFD requires explicit, memory-qualified "
+                "afd_batch_size_candidates; legacy's topology-specific "
+                "batch derivation must not be replaced by an implicit fixed batch"
+            )
         if self.afd_pinned_topologies:
             modes = list(dict.fromkeys(self.deployment_mode))
             if len(modes) != 1 or modes[0] not in {"afd", "afd+pd"}:

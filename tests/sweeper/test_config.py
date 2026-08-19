@@ -76,6 +76,7 @@ def test_defaults_are_backend_only():
 
     assert config.search_space.gpu_budget == 32
     assert config.search_space.prefill_block_size == 64
+    assert config.search_space.afd_batch_size_candidates is None
     assert config.search_space.prefill_max_num_seqs == [
         1,
         2,
@@ -94,6 +95,41 @@ def test_defaults_are_backend_only():
     assert (
         not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
     )
+
+
+def test_searched_afd_requires_explicit_memory_qualified_batch_candidates():
+    with pytest.raises(ValidationError, match="memory-qualified"):
+        SearchSpace(
+            **_search_space(
+                deployment_mode=["afd"],
+                backend=["vllm"],
+            )
+        )
+
+    searched = SearchSpace(
+        **_search_space(
+            deployment_mode=["afd"],
+            backend=["vllm"],
+            afd_batch_size_candidates=[64, 128],
+        )
+    )
+    assert searched.afd_batch_size_candidates == [64, 128]
+
+    pinned = SearchSpace(
+        **_search_space(
+            deployment_mode=["afd"],
+            backend=["vllm"],
+            afd_pinned_topologies=[
+                {
+                    "n_a_nodes": 1,
+                    "n_f_nodes": 1,
+                    "tp_a": 1,
+                    "a_batch_size": 64,
+                }
+            ],
+        )
+    )
+    assert pinned.afd_batch_size_candidates is None
 
 
 def test_extra_fields_are_forbidden_at_each_boundary():

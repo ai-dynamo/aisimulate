@@ -48,6 +48,9 @@ When that tuple is empty, `enumerate_afd_topologies` searches:
 
 The enumerator preserves the legacy canonical order. `candidate_overflow="error"` is the default;
 explicit `"truncate"` returns a deterministic prefix and records `complete=false` in provenance.
+Legacy AIC derives `a_batch_size` for each topology from A/F partition HBM and KV capacity. The
+generic topology core has no runtime-adapter memory model, so searched domains must provide
+explicit, memory-qualified `a_batch_size_candidates`; there is deliberately no fixed default.
 
 ```python
 from aisimulate.sweeper import AFDSearchConfig, enumerate_afd_topologies
@@ -75,8 +78,10 @@ F-to-A transfer times. The core applies the legacy pipeline regimes:
 - conservative: `max(A + A_to_F, F + F_to_A)`; and
 - serial: the sum of all compute and transfer stages.
 
-Global step latency includes pipeline fill and every microbatch-layer cadence. Pure AFD can cover
-prefill, decode, or both. When both phases use the same A/F pools, GPU count is not doubled.
+Decode global-step latency includes pipeline fill and every microbatch-layer cadence. Legacy
+prefill is a single shot over the uncached suffix, so its step is `num_layers * cycle` without the
+decode fill/cadence term. Pure AFD can cover prefill, decode, or both. When both phases use the same
+A/F pools, GPU count is not doubled.
 
 ## Combined AFD and P/D
 
@@ -89,7 +94,8 @@ domain, exceeding that limit errors unless deterministic truncation is requested
 
 Adapters fail closed. A pure AFD topology requires an explicit `afd` capability; combined AFD+P/D
 requires `afd+pd`. An adapter that advertises only `agg` or `disagg` cannot consume or generate an
-AFD candidate.
+AFD candidate. Sweeper providers opt in with `supported_topologies`; providers that omit the field
+retain the pre-AFD `agg`/`disagg` behavior and fail before generating an AFD search plan.
 
 ## Generic Sweeper Integration
 
