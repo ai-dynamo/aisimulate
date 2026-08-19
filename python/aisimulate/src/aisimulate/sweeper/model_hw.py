@@ -72,7 +72,11 @@ class ModelHardware:
 
 
 def resolve_model_hardware(
-    model_name: str, hardware_sku: str, *, backend: str
+    model_name: str,
+    hardware_sku: str,
+    *,
+    backend: str,
+    systems_paths: list[str] | None = None,
 ) -> ModelHardware:
     """Read the model weights + SKU spec (via AIC) to derive is_moe / mla / wideep
     and the model's max context length."""
@@ -84,7 +88,9 @@ def resolve_model_hardware(
     max_context = model_config.get("context")
     model_family = _architecture_to_model_family(str(model_config.get("architecture", "")))
 
-    system_spec = perf_database.load_system_spec(hardware_sku)
+    system_spec = perf_database.load_system_spec(
+        hardware_sku, systems_paths=systems_paths
+    )
     if not system_spec:
         raise ValueError(
             f"unknown hardware_sku {hardware_sku!r}: no system config found on "
@@ -199,6 +205,8 @@ def parallel_configs_for(
     max_gpu_per_replica: int | None = 128,
     max_prefill_workers: int | None = 32,
     max_decode_workers: int | None = 32,
+    backend_version: str | None = None,
+    systems_paths: list[str] | None = None,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
     the GPU budget and can hold a ``max_seq_len``-token sequence.
@@ -218,7 +226,12 @@ def parallel_configs_for(
     :class:`NoViableParallelConfig` when no shape can hold the sequence within the
     budget.
     """
-    mh = resolve_model_hardware(model_name, hardware_sku, backend=backend)
+    mh = resolve_model_hardware(
+        model_name,
+        hardware_sku,
+        backend=backend,
+        systems_paths=systems_paths,
+    )
     seq_len = max_seq_len if max_seq_len is not None else mh.max_context
     if seq_len is None:
         raise ValueError(
@@ -283,6 +296,8 @@ def parallel_configs_for(
         max_num_tokens=max_num_tokens,
         max_batch_size=max_batch_size,
         memory_fraction=memory_fraction,
+        backend_version=backend_version,
+        systems_paths=systems_paths,
     )
     if deployment_mode == "agg":
         kept = [c for c in configs if c.shape in feasible]

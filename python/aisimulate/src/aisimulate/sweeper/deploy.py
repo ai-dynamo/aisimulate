@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .replay import BackendDeploymentSpec
+from .replay import BackendDeploymentSpec, EstimatorSpec
 
 
 def _role_prefix(role: str) -> str:
@@ -16,7 +16,11 @@ def _role_prefix(role: str) -> str:
 
 
 def _engine_args_payload(
-    sample: dict[str, Any], role: str, *, backend_version: str
+    sample: dict[str, Any],
+    role: str,
+    *,
+    backend_version: str,
+    estimator: EstimatorSpec | None = None,
 ) -> dict[str, Any]:
     """Build the runner-neutral engine argument payload for one role."""
     prefix = _role_prefix(role)
@@ -56,18 +60,42 @@ def _engine_args_payload(
         payload["aic_nextn"] = int(sample["aic_nextn"])
     if sample.get("startup_time") is not None:
         payload["startup_time"] = float(sample["startup_time"])
+    if estimator is not None:
+        payload.update(
+            {
+                "aic_database_mode": estimator.database_mode,
+                "aic_transfer_policy": list(estimator.transfer_policy),
+                "aic_forward_model": estimator.forward_model,
+                "aic_engine_step_backend": estimator.engine_step_backend,
+                "aic_systems_paths": list(estimator.systems_paths),
+                "aic_performance_data_version": estimator.performance_data_version,
+            }
+        )
     return payload
 
 
 def build_backend_deployment(
-    sample: dict[str, Any], *, backend_version: str
+    sample: dict[str, Any],
+    *,
+    backend_version: str,
+    estimator: EstimatorSpec | None = None,
 ) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
+    if estimator is not None and (
+        estimator.backend != sample["backend"]
+        or estimator.backend_version != backend_version
+    ):
+        raise ValueError(
+            "estimator identity does not match the sampled backend/version: "
+            f"{estimator.backend}/{estimator.backend_version} != "
+            f"{sample['backend']}/{backend_version}"
+        )
     common = {
         "deployment_mode": mode,
         "backend": sample["backend"],
         "backend_version": backend_version,
+        "estimator": estimator,
         "parallel_config": {
             key: value
             for key, value in sample.items()
@@ -103,17 +131,26 @@ def build_backend_deployment(
     if mode == "agg":
         return BackendDeploymentSpec(
             agg_engine_args=_engine_args_payload(
-                sample, "agg", backend_version=backend_version
+                sample,
+                "agg",
+                backend_version=backend_version,
+                estimator=estimator,
             ),
             num_workers=int(sample["replicas"]),
             **common,
         )
     return BackendDeploymentSpec(
         prefill_engine_args=_engine_args_payload(
-            sample, "prefill", backend_version=backend_version
+            sample,
+            "prefill",
+            backend_version=backend_version,
+            estimator=estimator,
         ),
         decode_engine_args=_engine_args_payload(
-            sample, "decode", backend_version=backend_version
+            sample,
+            "decode",
+            backend_version=backend_version,
+            estimator=estimator,
         ),
         num_prefill_workers=int(sample["prefill_replicas"]),
         num_decode_workers=int(sample["decode_replicas"]),

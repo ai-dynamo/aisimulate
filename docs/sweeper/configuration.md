@@ -20,6 +20,14 @@ search_space:
   gpu_budget: 32
   deployment_mode: [disagg, agg]
   backend: [vllm, sglang]
+  backend_version:
+    vllm: 0.11.0
+    sglang: 0.5.6
+  database_mode: HYBRID
+  transfer_policy: balanced
+  forward_model: op_level
+  engine_step_backend: rust
+  systems_paths: [default]
 
 adapters:
   example.policy:
@@ -69,6 +77,12 @@ configuration for each candidate.
 | `hardware_sku` | required | AI Configurator system identifier |
 | `deployment_mode` | `[disagg, agg]` | deployment branches to search |
 | `backend` | `[vllm]` | engine backends to search |
+| `backend_version` | `None` | exact version for one backend, or a per-backend version mapping; omitted backends resolve once to latest |
+| `database_mode` | `SILICON` | `SILICON`, `HYBRID`, `EMPIRICAL`, or `SOL` data mode |
+| `transfer_policy` | `aggressive` | empirical transfer preset or tier list (`xshape`, `xquant`, `xprofile`, `xop`) |
+| `forward_model` | `op_level` | granular `op_level` or exact-data `fpm` forward estimation |
+| `engine_step_backend` | `rust` | compiled engine-step implementation (the only supported value) |
+| `systems_paths` | `[default]` | ordered request-scoped system/data roots; `default` is the packaged Core root |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
 | `context_length` | `None` | optional KV-feasibility sequence length |
@@ -127,6 +141,12 @@ considered/accepted counts plus pruning-reason counts for topology enumeration.
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
+
+Estimator controls resolve before branch enumeration. `latest` becomes one concrete
+backend/performance-data version per run, custom system paths remain request-scoped, and every
+`ReplaySpec` plus returned candidate records the same model architecture, system, backend/version,
+data root/mode, normalized transfer policy, forward model, and engine-step backend. Unavailable
+versions and incomplete FPM data pairs fail before a sampler study is created.
 
 ## Pinned Parallel Configurations
 

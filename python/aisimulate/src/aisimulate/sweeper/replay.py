@@ -20,6 +20,29 @@ REPLAY_SPEC_API_VERSION = 1
 
 
 @dataclass(frozen=True)
+class EstimatorSpec:
+    """Resolved, request-scoped estimator and performance-data identity.
+
+    This contract is deliberately concrete: a runner never resolves ``latest``
+    independently, consults process-global system paths, or guesses an empirical
+    transfer policy after the search has begun.
+    """
+
+    model_path: str
+    model_architecture: str
+    system: str
+    backend: str
+    backend_version: str
+    performance_data_version: str
+    database_mode: str
+    transfer_policy: tuple[str, ...]
+    forward_model: str
+    engine_step_backend: str
+    systems_paths: tuple[str, ...]
+    performance_data_root: str
+
+
+@dataclass(frozen=True)
 class BackendDeploymentSpec:
     """Concrete backend engines and fleet shape for one candidate."""
 
@@ -33,6 +56,8 @@ class BackendDeploymentSpec:
     num_workers: int = 0
     num_prefill_workers: int = 0
     num_decode_workers: int = 0
+    # Appended to preserve the positional constructor slots above.
+    estimator: EstimatorSpec | None = None
 
 
 @dataclass(frozen=True)
