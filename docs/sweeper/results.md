@@ -22,8 +22,9 @@ then constructs a `ReplaySpec`.
 - concrete concurrency when KV-load search derives it;
 - concrete adapter configurations and their runtime hooks.
 
-`RunnerCapabilities.require_compatible` checks the version, backend/topology pair, and hooks before
-execution. `canonical_json` creates deterministic strict JSON and rejects non-finite values.
+`RunnerCapabilities.require_compatible` checks the version, each backend/topology, the explicit
+heterogeneous P/D backend pair, and hooks before execution. `canonical_json` creates deterministic
+strict JSON and rejects non-finite values.
 
 ## Candidate Output
 

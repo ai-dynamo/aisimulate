@@ -69,6 +69,7 @@ class ModelHardware:
     default_gpus_per_worker: tuple[int, ...]
     default_pp_candidates: tuple[int, ...]
     default_cp_candidates: tuple[int, ...]
+    sm_version: int = -1
 
 
 def resolve_model_hardware(
@@ -93,8 +94,7 @@ def resolve_model_hardware(
     )
     if not system_spec:
         raise ValueError(
-            f"unknown hardware_sku {hardware_sku!r}: no system config found on "
-            "AIConfigurator Core's systems path"
+            f"unknown hardware_sku {hardware_sku!r}: no system config found on AIConfigurator Core's systems path"
         )
     vram_per_gpu = int(system_spec["gpu"]["mem_capacity"])
     gpus_per_node = int(system_spec["node"]["num_gpus_per_node"])
@@ -138,6 +138,7 @@ def resolve_model_hardware(
         default_gpus_per_worker=default_gpus_per_worker,
         default_pp_candidates=default_pp_candidates,
         default_cp_candidates=default_cp_candidates,
+        sm_version=int(system_spec.get("gpu", {}).get("sm_version", -1)),
     )
 
 

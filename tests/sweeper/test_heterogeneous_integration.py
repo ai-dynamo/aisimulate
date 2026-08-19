@@ -31,6 +31,7 @@ from aisimulate.sweeper.parallel_enum import (
     ReplicaParallelConfig,
 )
 from aisimulate.sweeper.replay import (
+    BackendDeploymentSpec,
     EstimatorSpec,
     ReplaySpec,
     RunnerCapabilities,
@@ -83,8 +84,12 @@ def _estimator(
 
 def _catalog() -> RoleEstimatorSpecs:
     pair = DisaggBackendPair("sglang", "vllm")
-    prefill = _estimator("sglang", model="prefill/model", system="gb200_nv18", version="0.4.9")
-    decode = _estimator("vllm", model="decode/model", system="h200_sxm", version="0.10.1")
+    prefill = _estimator(
+        "sglang", model="prefill/model", system="gb200_nv18", version="0.4.9"
+    )
+    decode = _estimator(
+        "vllm", model="decode/model", system="h200_sxm", version="0.10.1"
+    )
     return RoleEstimatorSpecs(
         pair=pair,
         prefill=prefill,
@@ -134,7 +139,9 @@ def test_role_overrides_fail_closed_for_aggregated_only_and_decode_chunking() ->
     with pytest.raises(ValueError, match="require deployment_mode to include 'disagg'"):
         _config(deployment_mode=["agg"], prefill_model_name="prefill/model")
 
-    with pytest.raises(ValueError, match="decode_enable_chunked_prefill is unsupported"):
+    with pytest.raises(
+        ValueError, match="decode_enable_chunked_prefill is unsupported"
+    ):
         _config(decode_enable_chunked_prefill=True)
 
 
@@ -179,7 +186,9 @@ def test_role_estimator_resolution_uses_independent_inherited_views(
         ("prefill/model", "gb200_nv18", "sglang", "0.4.9"),
         ("decode/model", "h200_sxm", "vllm", "0.10.1"),
     ]
-    assert catalogs["prefill=sglang,decode=vllm"].identities["decode"].inherited_fields == (
+    assert catalogs["prefill=sglang,decode=vllm"].identities[
+        "decode"
+    ].inherited_fields == (
         "hardware_sku",
         "database_mode",
         "transfer_policy",
@@ -188,6 +197,39 @@ def test_role_estimator_resolution_uses_independent_inherited_views(
         "systems_paths",
         "backend",
     )
+
+
+def test_role_backend_version_mapping_records_shared_fallback_as_inherited(
+    monkeypatch,
+) -> None:
+    config = _config(
+        backend=["vllm"],
+        backend_version={"vllm": "0.10.1"},
+        prefill_backend=["sglang", "vllm"],
+        prefill_backend_version={"sglang": "0.4.9"},
+    )
+
+    def fake_resolve(search_space):
+        backend = search_space.backend[0]
+        return {
+            backend: _estimator(
+                backend,
+                model=search_space.model_name,
+                system=search_space.hardware_sku,
+                version=search_space.backend_version,
+            )
+        }
+
+    monkeypatch.setattr(estimator_mod, "resolve_estimator_specs", fake_resolve)
+
+    catalogs = resolve_role_estimator_specs(config.search_space)
+
+    inherited = (
+        catalogs["prefill=vllm,decode=vllm"]
+        .identity_for(DisaggRole.PREFILL)
+        .inherited_fields
+    )
+    assert "backend_version" in inherited
 
 
 def test_heterogeneous_branch_pairs_role_shapes_under_shared_budget(
@@ -203,8 +245,12 @@ def test_heterogeneous_branch_pairs_role_shapes_under_shared_budget(
     role_estimators = {catalog.pair.label: catalog}
     role_controls = {
         catalog.pair.label: {
-            "prefill": EngineControlTemplate("sglang", 32768, "EXAMPLE", True, "of_total"),
-            "decode": EngineControlTemplate("vllm", 16384, "EXAMPLE", False, "of_total"),
+            "prefill": EngineControlTemplate(
+                "sglang", 32768, "EXAMPLE", True, "of_total"
+            ),
+            "decode": EngineControlTemplate(
+                "vllm", 16384, "EXAMPLE", False, "of_total"
+            ),
         }
     }
     seen = []
@@ -219,7 +265,10 @@ def test_heterogeneous_branch_pairs_role_shapes_under_shared_budget(
         ]
 
     monkeypatch.setattr(search_space_mod, "parallel_configs_for", fake_parallel_configs)
-    capabilities = RunnerCapabilities(supported_backend_topologies=(("vllm", "disagg"), ("sglang", "disagg")))
+    capabilities = RunnerCapabilities(
+        supported_backend_topologies=(("vllm", "disagg"), ("sglang", "disagg")),
+        supported_disaggregated_backend_pairs=(("sglang", "vllm"),),
+    )
 
     branch = enumerate_branches(
         config,
@@ -235,11 +284,91 @@ def test_heterogeneous_branch_pairs_role_shapes_under_shared_budget(
     assert branch.knob_choices["backend"] == [catalog.pair.label]
     assert len(branch.parallel_configs) == 1
     assert branch.parallel_configs[0].total_gpus == 6
-    assert branch.supported_backends[branch.parallel_configs[0]] == frozenset({catalog.pair.label})
+    assert branch.supported_backends[branch.parallel_configs[0]] == frozenset(
+        {catalog.pair.label}
+    )
+
+
+def test_partial_heterogeneous_pair_pruning_retains_stable_diagnostics(
+    monkeypatch,
+) -> None:
+    config = _config(
+        prefill_backend=["sglang", "vllm"],
+        decode_backend=["vllm"],
+    )
+    mixed = _catalog()
+    homogeneous_prefill = _estimator(
+        "vllm", model="prefill/model", system="gb200_nv18", version="0.10.1"
+    )
+    homogeneous = RoleEstimatorSpecs(
+        pair=DisaggBackendPair("vllm", "vllm"),
+        prefill=homogeneous_prefill,
+        decode=mixed.decode,
+        identities={
+            "prefill": RoleIdentity(
+                DisaggRole.PREFILL,
+                homogeneous_prefill.model_path,
+                homogeneous_prefill.system,
+                homogeneous_prefill.backend,
+                homogeneous_prefill.backend_version,
+            ),
+            "decode": mixed.identities["decode"],
+        },
+    )
+    catalogs = {mixed.pair.label: mixed, homogeneous.pair.label: homogeneous}
+    controls = {
+        pair_label: {
+            "prefill": EngineControlTemplate(
+                estimators.prefill.backend, 32768, "EXAMPLE", True, "of_total"
+            ),
+            "decode": EngineControlTemplate(
+                estimators.decode.backend, 16384, "EXAMPLE", False, "of_total"
+            ),
+        }
+        for pair_label, estimators in catalogs.items()
+    }
+
+    def fake_parallel_configs(model, system, **kwargs):
+        if kwargs["backend"] == "sglang":
+            raise search_space_mod.NoViableParallelConfig("sglang role does not fit")
+        return [ReplicaParallelConfig(ParallelShape(2, 1, 1, 1), 1)]
+
+    monkeypatch.setattr(search_space_mod, "parallel_configs_for", fake_parallel_configs)
+    capabilities = RunnerCapabilities(
+        supported_backend_topologies=(("vllm", "disagg"), ("sglang", "disagg")),
+        supported_disaggregated_backend_pairs=(
+            ("sglang", "vllm"),
+            ("vllm", "vllm"),
+        ),
+    )
+
+    with pytest.warns(UserWarning, match="category='no_parallel_config'"):
+        (branch,) = enumerate_branches(
+            config,
+            runner_capabilities=capabilities,
+            role_estimator_specs=catalogs,
+            role_engine_controls=controls,
+        )
+
+    assert branch.knob_choices["backend"] == [homogeneous.pair.label]
+    assert branch.enumeration_counts == {
+        "considered": 2,
+        "accepted": 1,
+        "pruned": 1,
+    }
+    assert [diagnostic.as_dict() for diagnostic in branch.pruning_diagnostics] == [
+        {
+            "backend": mixed.pair.label,
+            "role": "prefill",
+            "category": "no_parallel_config",
+            "detail": "sglang role does not fit",
+        }
+    ]
 
 
 def test_deployment_materializes_role_correct_engine_and_estimator_payloads() -> None:
     config = _config(
+        enable_chunked_prefill=True,
         prefill_model_name="prefill/model",
         prefill_hardware_sku="gb200_nv18",
         prefill_backend=["sglang"],
@@ -272,14 +401,21 @@ def test_deployment_materializes_role_correct_engine_and_estimator_payloads() ->
     engine_request = materialize_role_engine_request(
         catalog.pair,
         {
-            "prefill": EngineControlTemplate("sglang", 32768, "EXAMPLE", True, "of_total"),
-            "decode": EngineControlTemplate("vllm", 16384, "EXAMPLE", False, "of_total"),
+            "prefill": EngineControlTemplate(
+                "sglang", 32768, "EXAMPLE", True, "of_total"
+            ),
+            "decode": EngineControlTemplate(
+                "vllm", 16384, "EXAMPLE", False, "of_total"
+            ),
         },
         catalog,
         config=config,
         sample=sample,
     )
     sample["engine_request"] = asdict(engine_request)
+
+    assert engine_request.role_requests["prefill"].enable_chunked_prefill is True
+    assert engine_request.role_requests["decode"].enable_chunked_prefill is False
 
     deployment = build_backend_deployment(
         sample,
@@ -306,6 +442,10 @@ def test_deployment_materializes_role_correct_engine_and_estimator_payloads() ->
     assert deployment.decode_engine_args["engine_type"] == "vllm"
     assert deployment.decode_engine_args["gpu_memory_utilization"] == 0.72
     assert deployment.decode_engine_args["aic_gemm_dtype"] == "fp8"
+    assert deployment.prefill_engine_args["enable_chunked_prefill"] is True
+    assert deployment.decode_engine_args["enable_chunked_prefill"] is False
+    assert deployment.disaggregated_corrections is not None
+    assert deployment.disaggregated_corrections.prefill_rate_degradation == 0.9
 
     with pytest.raises(ValueError, match="decode estimator backend.*sampled backend"):
         build_backend_deployment(
@@ -347,7 +487,8 @@ def test_candidate_materialization_retains_role_identity_and_provenance() -> Non
                 supported_backend_topologies=(
                     ("sglang", "disagg"),
                     ("vllm", "disagg"),
-                )
+                ),
+                supported_disaggregated_backend_pairs=(("sglang", "vllm"),),
             )
 
     prepared, result = search_mod._materialize_one(
@@ -363,8 +504,12 @@ def test_candidate_materialization_retains_role_identity_and_provenance() -> Non
         role_estimator_specs={pair_label: catalog},
         role_engine_controls={
             pair_label: {
-                "prefill": EngineControlTemplate("sglang", 32768, "EXAMPLE", True, "of_total"),
-                "decode": EngineControlTemplate("vllm", 16384, "EXAMPLE", False, "of_total"),
+                "prefill": EngineControlTemplate(
+                    "sglang", 32768, "EXAMPLE", True, "of_total"
+                ),
+                "decode": EngineControlTemplate(
+                    "vllm", 16384, "EXAMPLE", False, "of_total"
+                ),
             }
         },
     )
@@ -379,6 +524,26 @@ def test_candidate_materialization_retains_role_identity_and_provenance() -> Non
     deployment = prepared.replay_spec.backend_deployment
     assert deployment.prefill_backend == "sglang"
     assert deployment.decode_backend == "vllm"
+
+
+def test_runner_requires_explicit_heterogeneous_pair_capability() -> None:
+    capabilities = RunnerCapabilities(
+        supported_backend_topologies=(("sglang", "disagg"), ("vllm", "disagg"))
+    )
+    deployment = BackendDeploymentSpec(
+        deployment_mode="disagg",
+        backend="prefill=sglang,decode=vllm",
+        backend_version="prefill=0.4.9,decode=0.10.1",
+        prefill_backend="sglang",
+        prefill_backend_version="0.4.9",
+        decode_backend="vllm",
+        decode_backend_version="0.10.1",
+    )
+
+    with pytest.raises(ValueError, match="does not explicitly support.*backend pair"):
+        capabilities.require_compatible(
+            ReplaySpec(backend_deployment=deployment, workload={}, goal={})
+        )
 
 
 def test_kv_load_resolves_model_system_backend_version_and_controls_by_role(
@@ -483,8 +648,12 @@ def test_runner_capabilities_report_the_unsupported_role() -> None:
     engine_request = materialize_role_engine_request(
         catalog.pair,
         {
-            "prefill": EngineControlTemplate("sglang", 32768, "EXAMPLE", False, "of_total"),
-            "decode": EngineControlTemplate("vllm", 16384, "EXAMPLE", False, "of_total"),
+            "prefill": EngineControlTemplate(
+                "sglang", 32768, "EXAMPLE", False, "of_total"
+            ),
+            "decode": EngineControlTemplate(
+                "vllm", 16384, "EXAMPLE", False, "of_total"
+            ),
         },
         catalog,
         config=config,
@@ -497,7 +666,9 @@ def test_runner_capabilities_report_the_unsupported_role() -> None:
         role_estimators={"prefill": catalog.prefill, "decode": catalog.decode},
     )
     replay = ReplaySpec(backend_deployment=deployment, workload={}, goal={})
-    capabilities = RunnerCapabilities(supported_backend_topologies=(("sglang", "disagg"),))
+    capabilities = RunnerCapabilities(
+        supported_backend_topologies=(("sglang", "disagg"),)
+    )
 
     with pytest.raises(ValueError, match="decode backend/topology 'vllm'/'disagg'"):
         capabilities.require_compatible(replay)

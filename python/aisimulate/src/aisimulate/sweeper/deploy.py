@@ -8,7 +8,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .replay import BackendDeploymentSpec, EngineRequestSpec, EstimatorSpec
+from .replay import (
+    BackendDeploymentSpec,
+    DisaggregatedCorrectionSpec,
+    EngineRequestSpec,
+    EstimatorSpec,
+)
 
 
 def _role_prefix(role: str) -> str:
@@ -107,9 +112,7 @@ def _engine_args_payload(
                 "aic_database_mode": estimator.database_mode,
                 "aic_transfer_policy": list(estimator.transfer_policy),
                 "aic_forward_model": estimator.forward_model,
-                "aic_engine_step_backend": estimator.engine_step_backend,
-                "aic_systems_paths": list(estimator.systems_paths),
-                "aic_performance_data_version": estimator.performance_data_version,
+                "systems_path": estimator.performance_data_root,
             }
         )
     return payload
@@ -223,6 +226,13 @@ def build_backend_deployment(
             prefill_backend_version=role_estimators["prefill"].backend_version,
             decode_backend=str(sample["decode_backend"]),
             decode_backend_version=role_estimators["decode"].backend_version,
+            disaggregated_corrections=DisaggregatedCorrectionSpec(
+                prefill_rate_degradation=float(sample["prefill_rate_degradation"]),
+                decode_rate_degradation=float(sample["decode_rate_degradation"]),
+                prefill_latency_correction=float(sample["prefill_latency_correction"]),
+                decode_latency_correction=float(sample["decode_latency_correction"]),
+                ttft_correction_factor=float(sample["ttft_correction_factor"]),
+            ),
         )
     return BackendDeploymentSpec(
         prefill_engine_args=_engine_args_payload(

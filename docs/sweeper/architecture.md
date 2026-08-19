@@ -63,8 +63,11 @@ collisions without adding feature-specific fields to the core schema.
 
 ## Replay and Failure Semantics
 
-Before execution, `RunnerCapabilities` verifies the replay-spec version, backend/topology pair, and
-every runtime hook. Unsupported combinations fail before the optimizer spends trials on them.
+Before execution, `RunnerCapabilities` verifies the replay-spec version, each backend/topology,
+the explicit heterogeneous P/D backend pair, and every runtime hook. Unsupported combinations fail
+before the optimizer spends trials on them. Heterogeneous branch enumeration retains deterministic
+pair/role/category pruning diagnostics and considered/accepted/pruned counts even when another pair
+remains viable.
 
 Optimizer ask/tell stays in the main process. Exact repeated suggestions use a run-local result
 cache. Candidate build failures, replay failures, GPU-budget violations, and timeouts become

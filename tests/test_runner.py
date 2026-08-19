@@ -18,6 +18,7 @@ from aisimulate.runner import (
 from aisimulate.sweeper import (
     AdapterReplaySpec,
     BackendDeploymentSpec,
+    DisaggregatedCorrectionSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
@@ -101,6 +102,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
 
     assert capabilities.supports_backend_topology("vllm", "agg")
     assert capabilities.supports_backend_topology("sglang", "disagg")
+    assert capabilities.supports_disaggregated_backend_pair("sglang", "vllm")
     assert not capabilities.supports_backend_topology("trtllm", "disagg")
     assert not capabilities.supports_disaggregated_attention_dp
     assert capabilities.supported_hooks == ()
@@ -175,6 +177,10 @@ def test_runner_lowers_engine_controls_into_scheduler_and_aic_timing():
             "aic_kv_cache_dtype": "fp8",
             "aic_fmha_dtype": "fp8",
             "aic_comm_dtype": "fp8",
+            "aic_database_mode": "HYBRID",
+            "aic_transfer_policy": ["xshape", "xquant"],
+            "aic_forward_model": "fpm",
+            "systems_path": "/tmp/pinned-performance-data",
         }
     )
     deployment = BackendDeploymentSpec(
@@ -202,6 +208,16 @@ def test_runner_lowers_engine_controls_into_scheduler_and_aic_timing():
     assert timing["attention_backend"] == "fa3"
     assert timing["gemm_dtype"] == "fp8"
     assert timing["kv_cache_dtype"] == "fp8"
+    assert timing["database_mode"] == "HYBRID"
+    assert timing["transfer_policy"] == ["xshape", "xquant"]
+    assert timing["forward_model"] == "fpm"
+    assert timing["systems_path"] == "/tmp/pinned-performance-data"
+    assert not {
+        "aic_database_mode",
+        "aic_transfer_policy",
+        "aic_forward_model",
+        "systems_path",
+    } & set(rank)
 
 
 def test_runner_lowers_sglang_with_prefix_caching_disabled():
@@ -466,6 +482,13 @@ def test_runner_lowers_heterogeneous_disaggregated_backends_and_versions():
         prefill_backend_version="0.5.6",
         decode_backend="vllm",
         decode_backend_version="0.11.0",
+        disaggregated_corrections=DisaggregatedCorrectionSpec(
+            prefill_rate_degradation=0.5,
+            decode_rate_degradation=0.8,
+            prefill_latency_correction=2.0,
+            decode_latency_correction=1.2,
+            ttft_correction_factor=3.0,
+        ),
         prefill_engine_args=prefill_args,
         decode_engine_args=decode_args,
         num_prefill_workers=1,
@@ -479,6 +502,35 @@ def test_runner_lowers_heterogeneous_disaggregated_backends_and_versions():
     engines = runtime.execution_spec["engine"]
     assert engines["prefill"]["rank"]["backend"] == "sglang"
     assert engines["decode"]["rank"]["backend"] == "vllm"
+    assert engines["prefill"]["rank"]["timing_model"]["config"]["latency_scale"] == 12.0
+    assert engines["decode"]["rank"]["timing_model"]["config"][
+        "latency_scale"
+    ] == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize(
+    ("field", "role", "expected"),
+    [
+        ("prefill_rate_degradation", "prefill", 0.5),
+        ("decode_rate_degradation", "decode", 0.5),
+        ("prefill_latency_correction", "prefill", 2.0),
+        ("decode_latency_correction", "decode", 2.0),
+        ("ttft_correction_factor", "prefill", 2.0),
+    ],
+)
+def test_each_disaggregated_correction_changes_role_service_time(field, role, expected):
+    values = {
+        "prefill_rate_degradation": 1.0,
+        "decode_rate_degradation": 1.0,
+        "prefill_latency_correction": 1.0,
+        "decode_latency_correction": 1.0,
+        "ttft_correction_factor": 1.0,
+    }
+    values[field] = 2.0
+
+    corrections = DisaggregatedCorrectionSpec(**values)
+
+    assert corrections.latency_scale(role) == expected
 
 
 @pytest.mark.parametrize("role", ["prefill", "decode"])

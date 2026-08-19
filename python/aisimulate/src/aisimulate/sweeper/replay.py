@@ -102,6 +102,55 @@ class EngineRequestSpec:
 
 
 @dataclass(frozen=True)
+class DisaggregatedCorrectionSpec:
+    """Legacy-calibrated role service corrections consumed by replay."""
+
+    prefill_rate_degradation: float = 0.9
+    decode_rate_degradation: float = 0.92
+    prefill_latency_correction: float = 1.1
+    decode_latency_correction: float = 1.08
+    ttft_correction_factor: float = 1.8
+
+    def __post_init__(self) -> None:
+        for name in (
+            "prefill_rate_degradation",
+            "decode_rate_degradation",
+            "prefill_latency_correction",
+            "decode_latency_correction",
+            "ttft_correction_factor",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) <= 0.0
+            ):
+                raise ValueError(
+                    f"{name} must be a positive finite number, got {value!r}"
+                )
+
+    def latency_scale(self, role: str) -> float:
+        """Lower role rate and latency corrections to one service-time scale."""
+
+        if role == "prefill":
+            scale = (
+                self.prefill_latency_correction
+                * self.ttft_correction_factor
+                / self.prefill_rate_degradation
+            )
+        elif role == "decode":
+            scale = self.decode_latency_correction / self.decode_rate_degradation
+        else:
+            raise ValueError(
+                f"correction role must be 'prefill' or 'decode', got {role!r}"
+            )
+        if not math.isfinite(scale):
+            raise ValueError(f"{role} correction scale overflowed to {scale!r}")
+        return scale
+
+
+@dataclass(frozen=True)
 class BackendDeploymentSpec:
     """Concrete backend engines and fleet shape for one candidate."""
 
@@ -123,6 +172,7 @@ class BackendDeploymentSpec:
     decode_backend: str | None = None
     decode_backend_version: str | None = None
     role_estimators: dict[str, EstimatorSpec] = field(default_factory=dict)
+    disaggregated_corrections: DisaggregatedCorrectionSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -189,6 +239,7 @@ class RunnerCapabilities:
     supported_backend_topologies: tuple[tuple[str, str], ...] = ()
     supported_hooks: tuple[HookCapability, ...] = ()
     supports_disaggregated_attention_dp: bool = False
+    supported_disaggregated_backend_pairs: tuple[tuple[str, str], ...] = ()
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -205,6 +256,17 @@ class RunnerCapabilities:
 
     def supports_hook(self, hook: RuntimeHookSpec) -> bool:
         return any(capability.supports(hook) for capability in self.supported_hooks)
+
+    def supports_disaggregated_backend_pair(
+        self, prefill_backend: str, decode_backend: str
+    ) -> bool:
+        """Return whether a runner explicitly supports one P/D backend pair."""
+
+        return any(
+            supported_prefill in (prefill_backend, "*")
+            and supported_decode in (decode_backend, "*")
+            for supported_prefill, supported_decode in self.supported_disaggregated_backend_pairs
+        )
 
     def supports_attention_dp(self, topology: str, *dp_sizes: int) -> bool:
         """Return whether the topology supports all requested attention-DP sizes."""
@@ -247,15 +309,23 @@ class RunnerCapabilities:
                     backend, deployment.deployment_mode
                 ):
                     raise ValueError(
-                        f"runner does not support {role} backend/topology "
-                        f"{backend!r}/{deployment.deployment_mode!r}"
+                        f"runner does not support {role} backend/topology {backend!r}/{deployment.deployment_mode!r}"
                     )
+            assert deployment.prefill_backend is not None
+            assert deployment.decode_backend is not None
+            if not self.supports_disaggregated_backend_pair(
+                deployment.prefill_backend, deployment.decode_backend
+            ):
+                raise ValueError(
+                    "runner does not explicitly support disaggregated backend pair "
+                    f"prefill={deployment.prefill_backend!r}, "
+                    f"decode={deployment.decode_backend!r}"
+                )
         elif not self.supports_backend_topology(
             deployment.backend, deployment.deployment_mode
         ):
             raise ValueError(
-                f"runner does not support backend/topology "
-                f"{deployment.backend!r}/{deployment.deployment_mode!r}"
+                f"runner does not support backend/topology {deployment.backend!r}/{deployment.deployment_mode!r}"
             )
         unsupported = [
             hook for hook in spec.runtime_hooks if not self.supports_hook(hook)

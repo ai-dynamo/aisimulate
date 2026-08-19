@@ -31,6 +31,12 @@ _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("sglang", "disagg"),
     ("trtllm", "agg"),
 )
+_SUPPORTED_DISAGGREGATED_BACKEND_PAIRS = (
+    ("vllm", "vllm"),
+    ("vllm", "sglang"),
+    ("sglang", "vllm"),
+    ("sglang", "sglang"),
+)
 
 _AIC_TIMING_FIELD_ALIASES = {
     "backend_version": ("backend_version", "aic_backend_version"),
@@ -44,6 +50,9 @@ _AIC_TIMING_FIELD_ALIASES = {
     "kv_cache_dtype": ("kv_cache_dtype", "aic_kv_cache_dtype"),
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
+    "database_mode": ("database_mode", "aic_database_mode"),
+    "transfer_policy": ("transfer_policy", "aic_transfer_policy"),
+    "forward_model": ("forward_model", "aic_forward_model"),
     "enable_wideep": ("aic_enable_wideep",),
     "enable_eplb": ("aic_enable_eplb",),
     "wideep_num_slots": ("aic_wideep_num_slots",),
@@ -85,6 +94,7 @@ class EngineReplayRunnerFactory:
             replay_spec_api_version=1,
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=False,
+            supported_disaggregated_backend_pairs=_SUPPORTED_DISAGGREGATED_BACKEND_PAIRS,
         )
 
     def create(self, worker_id: int) -> EngineReplayRunner:
@@ -241,6 +251,11 @@ def _materialize_engine_execution_spec(
             deployment.parallel_config,
             raw_prefill,
             "prefill",
+            latency_scale=(
+                deployment.disaggregated_corrections.latency_scale("prefill")
+                if deployment.disaggregated_corrections is not None
+                else 1.0
+            ),
         )
         decode = _materialize_engine_role(
             decode_backend,
@@ -248,6 +263,11 @@ def _materialize_engine_execution_spec(
             deployment.parallel_config,
             raw_decode,
             "decode",
+            latency_scale=(
+                deployment.disaggregated_corrections.latency_scale("decode")
+                if deployment.disaggregated_corrections is not None
+                else 1.0
+            ),
         )
         for role, role_config in (("prefill", prefill), ("decode", decode)):
             # TODO(#12965): Keep this fail-fast until disaggregated handoff and
@@ -490,6 +510,8 @@ def _materialize_engine_role(
     parallel_config: Mapping[str, JSONValue],
     raw_config: Mapping[str, JSONValue],
     role: str,
+    *,
+    latency_scale: float = 1.0,
 ) -> dict[str, JSONValue]:
     """Materialize one single-rank or attention-DP generalized engine."""
 
@@ -635,9 +657,24 @@ def _materialize_engine_role(
         elif target in {"enable_wideep", "enable_eplb"}:
             if not isinstance(value, bool):
                 raise ValueError(f"engine provider {role} {target} must be a boolean")
+        elif target == "transfer_policy":
+            if (
+                not isinstance(value, list)
+                or not value
+                or any(not isinstance(item, str) or not item for item in value)
+            ):
+                raise ValueError(
+                    f"engine provider {role} transfer_policy must be a non-empty string list"
+                )
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")
         aic_timing_overrides[target] = value
+    if not math.isfinite(latency_scale) or latency_scale <= 0.0:
+        raise ValueError(
+            f"engine provider {role} latency_scale must be positive and finite"
+        )
+    if latency_scale != 1.0:
+        aic_timing_overrides["latency_scale"] = latency_scale
 
     if deployment_backend_version:
         configured_version = aic_timing_overrides.get("backend_version")

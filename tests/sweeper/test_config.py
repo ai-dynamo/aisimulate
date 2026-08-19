@@ -100,7 +100,9 @@ def test_defaults_are_backend_only():
     assert config.search_space.engine_step_backend is EngineStepBackend.RUST
     assert config.search_space.systems_paths == ["default"]
     dumped = config.search_space.model_dump()
-    assert not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
+    assert (
+        not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
+    )
 
 
 def test_estimator_controls_normalize_to_canonical_values():
@@ -652,6 +654,25 @@ def test_invalid_kv_load_ratio_is_rejected(value):
                 "num_request_ratio": 10,
             },
             goal={"target": "pareto"},
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "prefill_rate_degradation",
+        "decode_rate_degradation",
+        "prefill_latency_correction",
+        "decode_latency_correction",
+        "ttft_correction_factor",
+    ],
+)
+def test_disaggregated_corrections_reject_non_finite_values(field):
+    with pytest.raises(ValidationError):
+        SearchSpace(
+            model_name="m",
+            hardware_sku="h200_sxm",
+            **{field: float("inf")},
         )
 
 

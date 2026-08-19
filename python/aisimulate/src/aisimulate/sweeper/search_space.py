@@ -22,7 +22,11 @@ from typing import Any
 
 from .config import SmartSearchConfig
 from .engine_request import EngineControlTemplate
-from .heterogeneous import DisaggRole, RoleEstimatorSpecs
+from .heterogeneous import (
+    DisaggRole,
+    RoleEstimatorSpecs,
+    RoleFailureCategory,
+)
 from .kv_estimate import NoPerfDatabase
 from .model_hw import NoViableParallelConfig, parallel_configs_for
 from .parallel_enum import (
@@ -61,6 +65,29 @@ class BranchSpace:
     # Continuous workload dimensions. Currently only Pareto ``kv_load_ratio`` uses
     # this; list-valued component knobs remain discrete choices above.
     float_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # Stable, pre-sampling accounting for configured domains that were rejected.
+    # This remains attached to the viable branch even when only some backend pairs
+    # were pruned, instead of losing those failures in the enumeration step.
+    pruning_diagnostics: tuple[BranchPruningDiagnostic, ...] = ()
+    enumeration_counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BranchPruningDiagnostic:
+    """One deterministic pre-search domain-pruning reason."""
+
+    backend: str
+    category: RoleFailureCategory
+    detail: str
+    role: DisaggRole | None = None
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "backend": self.backend,
+            "role": self.role.value if self.role is not None else None,
+            "category": self.category.value,
+            "detail": self.detail,
+        }
 
 
 def _engine_knobs(deployment_mode: str) -> tuple[str, ...]:
@@ -201,22 +228,47 @@ def _heterogeneous_support(
     runner_capabilities: RunnerCapabilities | None,
     role_estimator_specs: Mapping[str, RoleEstimatorSpecs],
     role_engine_controls: Mapping[str, Mapping[str, EngineControlTemplate]],
-) -> dict[_ParallelConfig, set[str]]:
+) -> tuple[
+    dict[_ParallelConfig, set[str]],
+    tuple[BranchPruningDiagnostic, ...],
+]:
     """Enumerate independent role shapes, then pair them under one GPU budget."""
 
     ss = config.search_space
     support: dict[_ParallelConfig, set[str]] = {}
+    diagnostics: list[BranchPruningDiagnostic] = []
     for pair_label, estimators in role_estimator_specs.items():
         pair = estimators.pair
-        if runner_capabilities is not None and any(
-            not runner_capabilities.supports_backend_topology(
-                pair.backend_for(role), "disagg"
+        if runner_capabilities is not None:
+            unsupported_role = next(
+                (
+                    role
+                    for role in (DisaggRole.PREFILL, DisaggRole.DECODE)
+                    if not runner_capabilities.supports_backend_topology(
+                        pair.backend_for(role), "disagg"
+                    )
+                ),
+                None,
             )
-            for role in (DisaggRole.PREFILL, DisaggRole.DECODE)
-        ):
-            continue
+            pair_supported = runner_capabilities.supports_disaggregated_backend_pair(
+                pair.prefill, pair.decode
+            )
+            if unsupported_role is not None or not pair_supported:
+                diagnostics.append(
+                    BranchPruningDiagnostic(
+                        backend=pair_label,
+                        role=unsupported_role,
+                        category=RoleFailureCategory.UNSUPPORTED_BACKEND,
+                        detail=(
+                            "runner does not support the role backend/topology"
+                            if unsupported_role is not None
+                            else "runner does not explicitly support the heterogeneous backend pair"
+                        ),
+                    )
+                )
+                continue
         per_role: dict[str, list[ReplicaParallelConfig]] = {}
-        failed = False
+        failure: BranchPruningDiagnostic | None = None
         for role in (DisaggRole.PREFILL, DisaggRole.DECODE):
             name = role.value
             estimator = estimators.estimator_for(role)
@@ -236,8 +288,21 @@ def _heterogeneous_support(
                     agg_candidates=role_candidates,
                     **_engine_kwargs(ss, name),
                 )
-            except (NoPerfDatabase, NoViableParallelConfig):
-                failed = True
+            except NoPerfDatabase as exc:
+                failure = BranchPruningDiagnostic(
+                    backend=pair_label,
+                    role=role,
+                    category=RoleFailureCategory.KV_CAPACITY,
+                    detail=str(exc),
+                )
+                break
+            except NoViableParallelConfig as exc:
+                failure = BranchPruningDiagnostic(
+                    backend=pair_label,
+                    role=role,
+                    category=RoleFailureCategory.NO_PARALLEL_CONFIG,
+                    detail=str(exc),
+                )
                 break
             max_workers = (
                 ss.max_prefill_workers
@@ -250,7 +315,8 @@ def _heterogeneous_support(
                 if isinstance(value, ReplicaParallelConfig)
                 and value.replicas <= max_workers
             ]
-        if failed:
+        if failure is not None:
+            diagnostics.append(failure)
             continue
         legal_pairs = [
             DisaggParallelConfig(prefill=prefill, decode=decode)
@@ -264,13 +330,37 @@ def _heterogeneous_support(
                 or prefill.total_gpus + decode.total_gpus >= ss.min_gpu_budget
             )
         ]
+        if not legal_pairs:
+            diagnostics.append(
+                BranchPruningDiagnostic(
+                    backend=pair_label,
+                    category=RoleFailureCategory.GPU_BUDGET,
+                    detail=(
+                        "no prefill/decode parallel-config pair fits the shared "
+                        f"gpu range [{ss.min_gpu_budget or 1}, {ss.gpu_budget}]"
+                    ),
+                )
+            )
+            continue
         legal_set = set(legal_pairs)
+        pair_accepted = False
         for candidate in pinned if pinned is not None else legal_pairs:
             if candidate in legal_set and _runner_supports_parallel_config(
                 runner_capabilities, "disagg", candidate
             ):
                 support.setdefault(candidate, set()).add(pair_label)
-    return support
+                pair_accepted = True
+        if not pair_accepted:
+            diagnostics.append(
+                BranchPruningDiagnostic(
+                    backend=pair_label,
+                    category=RoleFailureCategory.NO_PARALLEL_CONFIG,
+                    detail=(
+                        "no legal parallel config remains after pinned-domain and runner-capability filtering"
+                    ),
+                )
+            )
+    return support, tuple(diagnostics)
 
 
 def enumerate_branches(
@@ -309,27 +399,46 @@ def enumerate_branches(
         )
         heterogeneous = deployment_mode == "disagg" and ss.has_role_overrides
         runner_incompatible: list[str] = []
+        pruning_diagnostics: tuple[BranchPruningDiagnostic, ...] = ()
+        enumeration_counts: dict[str, int] = {}
         if heterogeneous:
             if role_estimator_specs is None or role_engine_controls is None:
                 raise ValueError(
                     "heterogeneous disagg enumeration requires role estimator and engine-control catalogs"
                 )
-            support = _heterogeneous_support(
+            support, pruning_diagnostics = _heterogeneous_support(
                 config,
                 pinned=pinned,
                 runner_capabilities=runner_capabilities,
                 role_estimator_specs=role_estimator_specs,
                 role_engine_controls=role_engine_controls,
             )
+            accepted_pairs = set().union(*support.values()) if support else set()
+            enumeration_counts = {
+                "considered": len(role_estimator_specs),
+                "accepted": len(accepted_pairs),
+                "pruned": len(role_estimator_specs) - len(accepted_pairs),
+            }
+            for diagnostic in pruning_diagnostics:
+                warnings.warn(
+                    "smart-sweep: heterogeneous backend pair pruned — "
+                    f"backend={diagnostic.backend!r}, "
+                    f"role={diagnostic.role.value if diagnostic.role else 'pair'!r}, "
+                    f"category={diagnostic.category.value!r}: {diagnostic.detail}",
+                    stacklevel=2,
+                )
             if runner_capabilities is not None:
                 runner_incompatible = [
                     label
                     for label, estimators in role_estimator_specs.items()
-                    if any(
-                        not runner_capabilities.supports_backend_topology(
+                    if not all(
+                        runner_capabilities.supports_backend_topology(
                             estimators.pair.backend_for(role), "disagg"
                         )
                         for role in (DisaggRole.PREFILL, DisaggRole.DECODE)
+                    )
+                    or not runner_capabilities.supports_disaggregated_backend_pair(
+                        estimators.pair.prefill, estimators.pair.decode
                     )
                 ]
         else:
@@ -465,6 +574,8 @@ def enumerate_branches(
                 knob_choices=knob_choices,
                 gpu_budget=ss.gpu_budget,
                 float_ranges=float_ranges,
+                pruning_diagnostics=pruning_diagnostics,
+                enumeration_counts=enumeration_counts,
             )
         )
 

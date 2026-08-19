@@ -45,6 +45,7 @@ def _stub_model(monkeypatch, *, is_moe=True, mla=True, family="DEEPSEEK") -> Non
             is_moe=is_moe,
             mla=mla,
             max_context=16384,
+            sm_version=100,
         ),
     )
 
@@ -77,6 +78,33 @@ def test_resolves_supported_engine_controls_before_replay(monkeypatch):
             memory_fraction_kind="of_total",
         )
     }
+
+
+def test_engine_control_resolution_uses_configured_system_roots(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(engine_request_mod, "get_model_family", lambda model: "GPT")
+    monkeypatch.setattr(
+        engine_request_mod,
+        "resolve_systems_paths",
+        lambda configured: ("/resolved/custom-systems",),
+    )
+
+    def fake_model_hardware(*args, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(
+            is_moe=False,
+            mla=False,
+            max_context=16384,
+            sm_version=90,
+        )
+
+    monkeypatch.setattr(
+        engine_request_mod, "resolve_model_hardware", fake_model_hardware
+    )
+
+    resolve_engine_controls(_config(systems_paths=["/requested/custom-systems"]))
+
+    assert seen["systems_paths"] == ["/resolved/custom-systems"]
 
 
 def test_rejects_unsupported_model_backend_controls(monkeypatch):
