@@ -26,6 +26,8 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [Configuration](configuration.md) describes core and adapter-owned search spaces.
 - [Traffic](traffic.md) defines trace, request-rate, concurrency, and KV-load workloads.
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
+- [Minimum-GPU Recommendation](minimum-gpu-recommendation.md) sizes evaluated candidates for a
+  target request rate or concurrency.
 - [Results](results.md) describes `ReplaySpec`, the `SweepResult` envelope, and candidate records.
 - [Sweep Configuration Providers](sweep-config-provider.md) documents the extension ABI.
 - [Dynamo Integration](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental/sweeper-experimental/dynamo-integration.md)
