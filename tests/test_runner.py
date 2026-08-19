@@ -255,6 +255,7 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     engine_args["aic_nextn"] = 3
     engine_args["aic_pp_size"] = 2
     engine_args["aic_cp_size"] = 4
+    engine_args["max_num_seqs"] = 512
     engine_args["systems_path"] = "/tmp/custom-systems.yaml"
     calls = []
 
@@ -284,6 +285,7 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     assert calls[0]["cp_size"] == 4
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
     assert calls[0]["nextn"] == 3
+    assert calls[0]["max_batch_size"] == 512
 
 
 def test_runner_captures_requested_raw_and_per_request_report():
@@ -576,6 +578,47 @@ def test_runner_threads_canonical_backend_version_into_aic_timing():
 
     timing = runtime.execution_spec["engine"]["rank"]["timing_model"]
     assert timing["config"]["backend_version"] == "0.11.1"
+
+
+@pytest.mark.parametrize(
+    ("engine_field", "parallel_field", "label"),
+    [
+        ("aic_moe_tp_size", "moe_tp", "MoE tensor parallel"),
+        ("aic_moe_ep_size", "moe_ep", "MoE expert parallel"),
+    ],
+)
+def test_runner_rejects_moe_topology_mismatch_before_runtime(
+    engine_field, parallel_field, label
+):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args[engine_field] = 2
+    parallel_config = {
+        "tp": 2,
+        "pp": 1,
+        "attention_dp": 1,
+        "cp": 1,
+        "moe_tp": 1,
+        "moe_ep": 1,
+        "replicas": 2,
+    }
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config=parallel_config,
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=rf"parallel_config\.{parallel_field}=1 conflicts with aggregated {label} size=2",
+    ):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(deployment=deployment)
+        )
+    assert runtime.execution_spec is None
 
 
 def test_runner_accepts_matching_backend_version_in_explicit_aic_timing():

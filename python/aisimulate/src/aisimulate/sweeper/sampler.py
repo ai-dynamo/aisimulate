@@ -28,7 +28,6 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import islice, product
-from math import prod
 from typing import Any, Protocol
 
 from ._quiet import configure_vizier_runtime
@@ -294,7 +293,7 @@ class VizierBranchSampler:
                 projection = None
             else:
                 projection = self._parallel_projector.project(
-                    params, selection["backend"]
+                    params, selection["backend"], selection
                 )
                 parallel_config = projection.config
             suggestions.append(
@@ -408,16 +407,13 @@ class ExhaustiveBranchSampler:
         self._parallel_configs = tuple(
             sorted(branch.parallel_configs, key=_parallel_order_key)
         )
-        backend_choices = self._choices.get("backend", [])
-        non_backend_count = prod(
-            len(choices) for name, choices in self._choices.items() if name != "backend"
-        )
-        self.candidate_count = non_backend_count * sum(
-            sum(
-                backend in branch.supported_backends[parallel]
-                for backend in backend_choices
+        value_lists = [self._choices[name] for name in self._names]
+        self.candidate_count = sum(
+            branch.supports_selection(
+                parallel, dict(zip(self._names, values, strict=True))
             )
             for parallel in self._parallel_configs
+            for values in product(*value_lists)
         )
         self._next_index = 0
         self._iterator = self._enumerate()
@@ -425,10 +421,9 @@ class ExhaustiveBranchSampler:
     def _enumerate(self):
         value_lists = [self._choices[name] for name in self._names]
         for parallel in self._parallel_configs:
-            supported = self.branch.supported_backends[parallel]
             for values in product(*value_lists):
                 selection = dict(zip(self._names, values, strict=True))
-                if selection.get("backend") not in supported:
+                if not self.branch.supports_selection(parallel, selection):
                     continue
                 selection = {
                     "deployment_mode": self.branch.deployment_mode,

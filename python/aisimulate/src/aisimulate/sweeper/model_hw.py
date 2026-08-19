@@ -216,6 +216,10 @@ def parallel_configs_for(
     min_gpu_budget: int | None = None,
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
+    prefill_max_num_tokens: int | None = None,
+    prefill_max_batch_size: int | None = None,
+    decode_max_num_tokens: int | None = None,
+    decode_max_batch_size: int | None = None,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     agg_candidates: RoleParallelCandidates | None = None,
     prefill_candidates: RoleParallelCandidates | None = None,
@@ -316,19 +320,13 @@ def parallel_configs_for(
             f"deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}"
         )
 
-    # KV-cache validity: keep configs whose every role-shape holds a max_seq_len sequence.
-    if deployment_mode == "agg":
-        shapes = [c.shape for c in configs]
-    else:
-        shapes = [c.prefill.shape for c in configs] + [c.decode.shape for c in configs]
-    feasible = feasible_shape_tokens(
-        shapes,
+    # KV-cache validity: keep configs whose every role-shape holds a max_seq_len
+    # sequence under that role's concrete scheduler limits.
+    feasibility_kwargs = dict(
         model_name=model_name,
         hardware_sku=hardware_sku,
         backend=backend,
         max_seq_len=seq_len,
-        max_num_tokens=max_num_tokens,
-        max_batch_size=max_batch_size,
         memory_fraction=memory_fraction,
         backend_version=backend_version,
         systems_paths=systems_paths,
@@ -340,12 +338,47 @@ def parallel_configs_for(
         nextn=nextn,
     )
     if deployment_mode == "agg":
+        feasible = feasible_shape_tokens(
+            [c.shape for c in configs],
+            max_num_tokens=max_num_tokens,
+            max_batch_size=max_batch_size,
+            **feasibility_kwargs,
+        )
         kept = [c for c in configs if c.shape in feasible]
     else:
+        prefill_feasible = feasible_shape_tokens(
+            [c.prefill.shape for c in configs],
+            max_num_tokens=(
+                prefill_max_num_tokens
+                if prefill_max_num_tokens is not None
+                else max_num_tokens
+            ),
+            max_batch_size=(
+                prefill_max_batch_size
+                if prefill_max_batch_size is not None
+                else max_batch_size
+            ),
+            **feasibility_kwargs,
+        )
+        decode_feasible = feasible_shape_tokens(
+            [c.decode.shape for c in configs],
+            max_num_tokens=(
+                decode_max_num_tokens
+                if decode_max_num_tokens is not None
+                else max_num_tokens
+            ),
+            max_batch_size=(
+                decode_max_batch_size
+                if decode_max_batch_size is not None
+                else max_batch_size
+            ),
+            **feasibility_kwargs,
+        )
         kept = [
             c
             for c in configs
-            if c.prefill.shape in feasible and c.decode.shape in feasible
+            if c.prefill.shape in prefill_feasible
+            and c.decode.shape in decode_feasible
         ]
     if not kept:
         raise NoViableParallelConfig(

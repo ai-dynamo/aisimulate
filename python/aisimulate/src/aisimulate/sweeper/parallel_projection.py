@@ -258,17 +258,34 @@ class ParallelConfigProjector:
             )
         return requested
 
-    def project(self, params: dict[str, Any], backend: str) -> ParallelProjection:
+    def project(
+        self,
+        params: dict[str, Any],
+        backend: str,
+        selection: dict[str, Any] | None = None,
+    ) -> ParallelProjection:
         requested = self.requested_features(params)
-        candidates = [
+        backend_candidates = [
             config
             for config in self.branch.parallel_configs
             if backend in self.branch.supported_backends.get(config, frozenset())
         ]
-        if not candidates:
+        if not backend_candidates:
             raise ValueError(
                 f"backend {backend!r} has no valid parallel config in this branch"
             )
+        scheduler_selection = {"backend": backend, **(selection or {})}
+        candidates = [
+            config
+            for config in backend_candidates
+            if self.branch.supports_selection(config, scheduler_selection)
+        ]
+        # Independent optimizer dimensions can request a scheduler/backend point
+        # with no legal topology. Return a deterministic topology for trial
+        # bookkeeping; the search loop rejects it through the same exact relation.
+        if not candidates:
+            candidates = backend_candidates
+        scheduler_candidates = list(candidates)
 
         categorical_names = [
             parameter.name
@@ -290,11 +307,7 @@ class ParallelConfigProjector:
             for parameter in self.parameters
             if parameter.kind != "categorical"
         ]
-        backend_features = [
-            self._features[config]
-            for config in self.branch.parallel_configs
-            if backend in self.branch.supported_backends.get(config, frozenset())
-        ]
+        backend_features = [self._features[config] for config in scheduler_candidates]
 
         def transformed(name: str, value: float) -> float:
             return (

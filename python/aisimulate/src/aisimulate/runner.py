@@ -540,6 +540,12 @@ def _materialize_engine_role(
     )
     raw_pp_size = role_config.get("aic_pp_size", 1)
     raw_cp_size = role_config.get("aic_cp_size", 1)
+    raw_moe_tp_size = role_config.get(
+        "aic_moe_tp_size", role_config.get("moe_tp_size", 1)
+    )
+    raw_moe_ep_size = role_config.get(
+        "aic_moe_ep_size", role_config.get("moe_ep_size", 1)
+    )
     dp_size = _positive_int(
         raw_dp_size,
         f"engine provider {role} dp_size",
@@ -550,6 +556,12 @@ def _materialize_engine_role(
     )
     pp_size = _positive_int(raw_pp_size, f"engine provider {role} pipeline parallel")
     cp_size = _positive_int(raw_cp_size, f"engine provider {role} context parallel")
+    moe_tp_size = _positive_int(
+        raw_moe_tp_size, f"engine provider {role} MoE tensor parallel"
+    )
+    moe_ep_size = _positive_int(
+        raw_moe_ep_size, f"engine provider {role} MoE expert parallel"
+    )
     parallel_prefix = "" if role == "aggregated" else f"{role}_"
     _require_parallel_match(
         parallel_config,
@@ -574,6 +586,18 @@ def _materialize_engine_role(
         f"{parallel_prefix}cp",
         cp_size,
         f"{role} context parallel size",
+    )
+    _require_parallel_match(
+        parallel_config,
+        f"{parallel_prefix}moe_tp",
+        moe_tp_size,
+        f"{role} MoE tensor parallel size",
+    )
+    _require_parallel_match(
+        parallel_config,
+        f"{parallel_prefix}moe_ep",
+        moe_ep_size,
+        f"{role} MoE expert parallel size",
     )
 
     nested_rank = role_config.pop("rank", None)

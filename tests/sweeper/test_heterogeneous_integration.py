@@ -39,6 +39,7 @@ from aisimulate.sweeper.replay import (
     RunnerCapabilities,
 )
 from aisimulate.sweeper.sample import unroll_sample
+from aisimulate.sweeper.sampler import ExhaustiveBranchSampler
 from aisimulate.sweeper.search_space import enumerate_branches
 
 
@@ -343,7 +344,7 @@ def test_heterogeneous_execution_domains_materialize_and_match_runner_topology(
 
     def fake_parallel_configs(model, system, **kwargs):
         del model, system
-        role_domains[kwargs["backend"]] = kwargs["agg_candidates"]
+        role_domains[kwargs["backend"]] = kwargs
         if kwargs["backend"] == "sglang":
             shape = ParallelShape(2, 1, 1, 1, pp=2, cp=2)
             return [
@@ -366,7 +367,7 @@ def test_heterogeneous_execution_domains_materialize_and_match_runner_topology(
         role_engine_controls=role_controls,
     )
 
-    assert asdict(role_domains["sglang"]) == {
+    assert asdict(role_domains["sglang"]["agg_candidates"]) == {
         "gpus_per_worker": (8,),
         "tp": (2,),
         "pp": (2,),
@@ -376,7 +377,15 @@ def test_heterogeneous_execution_domains_materialize_and_match_runner_topology(
         "cp": (2,),
         "workers": (1, 2),
     }
-    assert asdict(role_domains["vllm"])["workers"] == (1, 2)
+    assert asdict(role_domains["vllm"]["agg_candidates"])["workers"] == (1, 2)
+    assert (
+        role_domains["sglang"]["max_num_tokens"],
+        role_domains["sglang"]["max_batch_size"],
+    ) == (12288, 7)
+    assert (
+        role_domains["vllm"]["max_num_tokens"],
+        role_domains["vllm"]["max_batch_size"],
+    ) == (4096, 19)
     assert branch.enumeration_counts == {
         "considered": 1,
         "accepted": 1,
@@ -468,6 +477,71 @@ def test_heterogeneous_execution_domains_materialize_and_match_runner_topology(
         EngineReplayRunnerFactory(runtime=runtime).create(0).run(
             replace(replay, backend_deployment=mismatched)
         )
+
+
+def test_heterogeneous_scheduler_limits_condition_thorough_candidate_count(
+    monkeypatch,
+) -> None:
+    config = _config(
+        gpu_budget=4,
+        num_gpu_per_replica=[2, 4],
+        max_gpu_per_replica=4,
+        prefill_model_name="prefill/model",
+        prefill_backend=["sglang"],
+        prefill_batch_size_candidates=[1],
+        prefill_context_tokens_candidates=[4096, 8192],
+        decode_model_name="decode/model",
+        decode_batch_size_candidates=[1, 2],
+        decode_context_tokens_candidates=[4096],
+    )
+    catalog = _catalog()
+    pair_label = catalog.pair.label
+    role_controls = {
+        pair_label: {
+            "prefill": EngineControlTemplate(
+                "sglang", 32768, "EXAMPLE", False, "of_total"
+            ),
+            "decode": EngineControlTemplate(
+                "vllm", 16384, "EXAMPLE", False, "of_total"
+            ),
+        }
+    }
+
+    def fake_parallel_configs(model, system, **kwargs):
+        del model, system
+        limits = (kwargs["max_num_tokens"], kwargs["max_batch_size"])
+        width = 1 if limits == (4096, 1) else 2
+        return [
+            ReplicaParallelConfig(
+                ParallelShape(width, 1, 1, 1),
+                1,
+            )
+        ]
+
+    monkeypatch.setattr(search_space_mod, "parallel_configs_for", fake_parallel_configs)
+    capabilities = RunnerCapabilities(
+        supported_backend_topologies=(("sglang", "disagg"), ("vllm", "disagg")),
+        supported_disaggregated_backend_pairs=(("sglang", "vllm"),),
+    )
+
+    (branch,) = enumerate_branches(
+        config,
+        runner_capabilities=capabilities,
+        role_estimator_specs={pair_label: catalog},
+        role_engine_controls=role_controls,
+    )
+    sampler = ExhaustiveBranchSampler(branch)
+    suggestions = sampler.suggest(10)
+
+    assert sampler.candidate_count == 2
+    assert {
+        (
+            suggestion.selection["prefill_context_tokens"],
+            suggestion.selection["decode_batch_size"],
+            suggestion.parallel_config.total_gpus,
+        )
+        for suggestion in suggestions
+    } == {(4096, 1, 2), (8192, 2, 4)}
 
 
 def test_partial_heterogeneous_pair_pruning_retains_stable_diagnostics(

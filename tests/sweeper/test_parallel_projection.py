@@ -113,6 +113,50 @@ def test_projection_hard_filters_backend_then_snaps_worker_size():
     assert not projection.mode_projected
 
 
+def test_rapid_projection_filters_topologies_by_exact_scheduler_limits():
+    small = _role(gpus=4, attention="tp", ffn="ep", replicas=4)
+    large = _role(gpus=8, attention="dp", ffn="ep", replicas=2)
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(small, large),
+        supported_backends={
+            small: frozenset({"vllm"}),
+            large: frozenset({"vllm"}),
+        },
+        knob_choices={
+            "backend": ["vllm"],
+            "agg_max_num_batched_tokens": [4096, 32768],
+            "agg_max_num_seqs": [1, 512],
+        },
+        gpu_budget=16,
+        scheduler_knob_names=(
+            "agg_max_num_batched_tokens",
+            "agg_max_num_seqs",
+        ),
+        scheduler_support={
+            small: {"vllm": frozenset({(4096, 1)})},
+            large: {"vllm": frozenset({(32768, 512)})},
+        },
+    )
+    projector = ParallelConfigProjector(branch)
+
+    projection = projector.project(
+        {
+            USED_GPU_RATIO: 1.0,
+            AGG_GPUS_PER_ENGINE: 8,
+            AGG_ATTENTION_MODE: "dp",
+            AGG_FFN_MODE: "ep",
+        },
+        "vllm",
+        {
+            "agg_max_num_batched_tokens": 4096,
+            "agg_max_num_seqs": 1,
+        },
+    )
+
+    assert projection.config == small
+
+
 def test_projection_falls_back_when_requested_mode_has_no_valid_config():
     dep8 = _role(gpus=8, attention="dp", ffn="ep", replicas=2)
     branch = _branch("agg", [dep8], {dep8: frozenset({"vllm"})})

@@ -16,12 +16,16 @@ from aisimulate.sweeper.parallel_enum import (
     ReplicaParallelConfig,
 )
 from aisimulate.sweeper.replay import RunnerCapabilities
+from aisimulate.sweeper.sampler import ExhaustiveBranchSampler
 from aisimulate.sweeper.search_space import branch_knob_choices, enumerate_branches
 
 TRACE = str(Path(__file__).parent / "data" / "mooncake_tiny.jsonl")
 
 _AGG_CFG = ReplicaParallelConfig(
     ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
+)
+_AGG_ALT_CFG = ReplicaParallelConfig(
+    ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1
 )
 _DISAGG_DP1_CFG = DisaggParallelConfig(prefill=_AGG_CFG, decode=_AGG_CFG)
 _DP8_CFG = ReplicaParallelConfig(
@@ -124,6 +128,73 @@ def test_explicit_role_domains_and_replica_controls_reach_enumerator(monkeypatch
     assert seen["max_decode_workers"] == 4
 
 
+def test_scheduler_limits_condition_exact_topology_domain_and_thorough_count(
+    monkeypatch,
+):
+    seen = []
+
+    def fake_parallel_configs(*args, **kwargs):
+        del args
+        limits = (kwargs["max_num_tokens"], kwargs["max_batch_size"])
+        seen.append(limits)
+        if limits == (4096, 1):
+            return [_AGG_CFG]
+        if limits == (8192, 2):
+            return [_AGG_ALT_CFG]
+        raise NoViableParallelConfig(f"scheduler limits {limits} do not fit")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs
+    )
+    config = _config(
+        backend=["vllm"],
+        agg_batch_size_candidates=[1, 2],
+        agg_context_tokens_candidates=[4096, 8192],
+    )
+
+    (branch,) = enumerate_branches(config)
+    sampler = ExhaustiveBranchSampler(branch)
+    suggestions = sampler.suggest(10)
+
+    assert seen == [(4096, 1), (8192, 1), (4096, 2), (8192, 2)]
+    assert set(branch.parallel_configs) == {_AGG_CFG, _AGG_ALT_CFG}
+    assert sampler.candidate_count == 2
+    assert {
+        (
+            suggestion.parallel_config,
+            suggestion.selection["agg_context_tokens"],
+            suggestion.selection["agg_batch_size"],
+        )
+        for suggestion in suggestions
+    } == {
+        (_AGG_CFG, 4096, 1),
+        (_AGG_ALT_CFG, 8192, 2),
+    }
+
+
+def test_large_infeasible_scheduler_limit_is_not_counted(monkeypatch):
+    def fake_parallel_configs(*args, **kwargs):
+        del args
+        if kwargs["max_batch_size"] == 1:
+            return [_AGG_CFG]
+        raise NoViableParallelConfig("large scheduler batch does not fit")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs
+    )
+    config = _config(
+        backend=["vllm"],
+        agg_batch_size_candidates=[1, 512],
+        agg_context_tokens_candidates=[8192],
+    )
+
+    (branch,) = enumerate_branches(config)
+    sampler = ExhaustiveBranchSampler(branch)
+
+    assert sampler.candidate_count == 1
+    assert sampler.suggest(2)[0].selection["agg_batch_size"] == 1
+
+
 def test_enumerate_real_backend_space_honors_runner_topologies():
     config = _config(
         deployment_mode=["agg", "disagg"],
@@ -159,7 +230,9 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
         backend,
         min_gpu_budget=None,
         max_seq_len=None,
+        **kwargs,
     ):
+        del kwargs
         calls.append((deployment_mode, backend))
         return [_DISAGG_DP1_CFG]
 
@@ -177,7 +250,8 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
         runner_capabilities=_capabilities(("vllm", "disagg")),
     )
 
-    assert calls == [("disagg", "vllm")]
+    assert calls
+    assert set(calls) == {("disagg", "vllm")}
     assert branch.knob_choices["backend"] == ["vllm"]
     assert branch.supported_backends[_DISAGG_DP1_CFG] == frozenset({"vllm"})
 
@@ -261,7 +335,9 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
         backend,
         min_gpu_budget=None,
         max_seq_len=None,
+        **kwargs,
     ):
+        del kwargs
         if deployment_mode == "disagg":
             raise NoViableParallelConfig("disagg does not fit")
         return [_AGG_CFG]
@@ -312,7 +388,9 @@ def test_backend_without_perf_database_is_dropped(monkeypatch):
         backend,
         min_gpu_budget=None,
         max_seq_len=None,
+        **kwargs,
     ):
+        del kwargs
         if backend == "vllm":
             raise NoPerfDatabase("no vLLM perf database")
         return [_AGG_CFG]

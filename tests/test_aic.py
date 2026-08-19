@@ -37,6 +37,8 @@ def test_materializer_sets_rank_local_capacity_with_nextn(
             "aic_nextn": 3,
             "systems_path": "/tmp/custom-systems.yaml",
             "block_size": 64,
+            "max_num_batched_tokens": 32768,
+            "max_num_seqs": 512,
         }
     )
 
@@ -47,6 +49,8 @@ def test_materializer_sets_rank_local_capacity_with_nextn(
     assert calls[0]["cp_size"] == 4
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
     assert calls[0]["nextn"] == 3
+    assert calls[0]["max_num_batched_tokens"] == 32768
+    assert calls[0]["max_batch_size"] == 512
 
 
 def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
@@ -68,6 +72,7 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
         tp_size=1,
         block_size=64,
         max_num_batched_tokens=4096,
+        max_batch_size=512,
         pp_size=3,
         cp_size=4,
         gemm_dtype="int4",
@@ -87,6 +92,8 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
     assert kwargs["gemm_quant_mode"] == "int4_wo"
     assert kwargs["fmha_quant_mode"] is None
     assert kwargs["nextn"] == 0
+    assert kwargs["max_num_tokens"] == 4096
+    assert kwargs["max_batch_size"] == 512
 
 
 def test_explicit_capacity_is_preserved_without_estimation(monkeypatch) -> None:
@@ -120,6 +127,7 @@ def test_materializer_preserves_explicit_zero_values(monkeypatch) -> None:
             "aic_attention_dp_size": 0,
             "block_size": 0,
             "max_num_batched_tokens": 0,
+            "max_num_seqs": 0,
             "gpu_memory_utilization": 0.0,
             "mem_fraction_static": 0.0,
             "free_gpu_memory_fraction": 0.0,
@@ -130,6 +138,7 @@ def test_materializer_preserves_explicit_zero_values(monkeypatch) -> None:
     assert calls[0]["attention_dp_size"] == 0
     assert calls[0]["block_size"] == 0
     assert calls[0]["max_num_batched_tokens"] == 0
+    assert calls[0]["max_batch_size"] == 0
     assert calls[0]["gpu_memory_utilization"] == 0.0
     assert calls[0]["mem_fraction_static"] == 0.0
     assert calls[0]["free_gpu_memory_fraction"] == 0.0

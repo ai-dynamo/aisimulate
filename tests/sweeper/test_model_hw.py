@@ -233,6 +233,32 @@ def test_kv_filter_disagg_requires_both_roles_feasible(monkeypatch):
 
 
 @pytest.mark.model(DEEPSEEK)
+def test_kv_filter_disagg_uses_each_roles_scheduler_limits(monkeypatch):
+    seen = []
+
+    def fake_feasible(shapes, **kwargs):
+        seen.append((kwargs["max_num_tokens"], kwargs["max_batch_size"]))
+        return dict.fromkeys(shapes, 100_000)
+
+    monkeypatch.setattr(mh_mod, "feasible_shape_tokens", fake_feasible)
+
+    parallel_configs_for(
+        DEEPSEEK,
+        "gb200",
+        gpu_budget=16,
+        deployment_mode="disagg",
+        backend="trtllm",
+        max_seq_len=8192,
+        prefill_max_num_tokens=16384,
+        prefill_max_batch_size=4,
+        decode_max_num_tokens=4096,
+        decode_max_batch_size=512,
+    )
+
+    assert seen == [(16384, 4), (4096, 512)]
+
+
+@pytest.mark.model(DEEPSEEK)
 def test_kv_filter_no_feasible_shape_raises(monkeypatch):
     monkeypatch.setattr(mh_mod, "feasible_shape_tokens", lambda shapes, **kwargs: {})
     with pytest.raises(NoViableParallelConfig, match="KV-cache estimate"):

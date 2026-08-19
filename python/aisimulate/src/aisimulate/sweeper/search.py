@@ -1083,12 +1083,13 @@ class Sweeper:
                 duplicates_by_key: dict[Any, list[Suggestion]] = {}
                 for suggestion in suggestions:
                     backend = suggestion.selection["backend"]
-                    if backend not in branch.supported_backends.get(
-                        suggestion.parallel_config, frozenset()
+                    if not branch.supports_selection(
+                        suggestion.parallel_config, suggestion.selection
                     ):
                         sampler.observe_infeasible(
                             suggestion,
-                            f"backend {backend!r} does not support this parallel config",
+                            f"backend {backend!r} does not support this parallel config "
+                            "under the selected scheduler limits",
                         )
                         _record("unsupported", None)
                         continue

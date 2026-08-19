@@ -18,6 +18,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from itertools import product
 from typing import Any
 
 from .config import SmartSearchConfig
@@ -38,6 +39,7 @@ from .parallel_enum import (
 from .replay import EstimatorSpec, RunnerCapabilities
 
 _ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig
+_SchedulerPoint = tuple[int, ...]
 
 _AGG_ENGINE = ("agg_max_num_batched_tokens", "agg_max_num_seqs")
 _DISAGG_ENGINE = (
@@ -70,6 +72,33 @@ class BranchSpace:
     # were pruned, instead of losing those failures in the enumeration step.
     pruning_diagnostics: tuple[BranchPruningDiagnostic, ...] = ()
     enumeration_counts: dict[str, int] = field(default_factory=dict)
+    # Appended to preserve the positional constructor slots above. Exact scheduler
+    # limits under which each topology/backend pair is KV-feasible; values follow
+    # ``scheduler_knob_names`` order. Empty metadata preserves the legacy
+    # unconditional relation used by lightweight fixtures.
+    scheduler_knob_names: tuple[str, ...] = ()
+    scheduler_support: dict[
+        _ParallelConfig, dict[str, frozenset[_SchedulerPoint]]
+    ] = field(default_factory=dict)
+
+    def supports_selection(
+        self, config: _ParallelConfig, selection: Mapping[str, Any]
+    ) -> bool:
+        """Whether backend, topology, and concrete scheduler limits are legal."""
+
+        backend = selection.get("backend")
+        if backend not in self.supported_backends.get(config, frozenset()):
+            return False
+        if not self.scheduler_knob_names:
+            return True
+        points = self.scheduler_support.get(config, {}).get(str(backend))
+        if not points:
+            return False
+        try:
+            point = tuple(int(selection[name]) for name in self.scheduler_knob_names)
+        except (KeyError, TypeError, ValueError):
+            return False
+        return point in points
 
 
 @dataclass(frozen=True)
@@ -144,6 +173,65 @@ def branch_knob_choices(search_space, deployment_mode: str) -> dict[str, list[An
             choices.pop(f"{role}_max_num_batched_tokens")
             choices[f"{role}_context_tokens"] = list(context_candidates)
     return choices
+
+
+def _scheduler_domain(
+    search_space, deployment_mode: str
+) -> tuple[tuple[str, ...], tuple[dict[str, int], ...]]:
+    """Concrete finite scheduler points in deterministic knob order."""
+
+    choices = branch_knob_choices(search_space, deployment_mode)
+    names = tuple(sorted(choices))
+    points = tuple(
+        dict(zip(names, (int(value) for value in values), strict=True))
+        for values in product(*(choices[name] for name in names))
+    )
+    return names, points
+
+
+def _role_scheduler_limits(
+    selection: Mapping[str, int], role: str
+) -> tuple[int, int]:
+    """Return ``(max_num_tokens, max_batch_size)`` for one concrete role."""
+
+    context_name = (
+        f"{role}_context_tokens"
+        if f"{role}_context_tokens" in selection
+        else f"{role}_max_num_batched_tokens"
+    )
+    batch_name = (
+        f"{role}_batch_size"
+        if f"{role}_batch_size" in selection
+        else f"{role}_max_num_seqs"
+    )
+    return int(selection[context_name]), int(selection[batch_name])
+
+
+def _scheduler_kwargs(
+    selection: Mapping[str, int], deployment_mode: str
+) -> dict[str, int]:
+    """Capacity-estimator kwargs for an exact scheduler point."""
+
+    if deployment_mode == "agg":
+        max_num_tokens, max_batch_size = _role_scheduler_limits(selection, "agg")
+        return {
+            "max_num_tokens": max_num_tokens,
+            "max_batch_size": max_batch_size,
+        }
+    prefill_tokens, prefill_batch = _role_scheduler_limits(selection, "prefill")
+    decode_tokens, decode_batch = _role_scheduler_limits(selection, "decode")
+    return {
+        "prefill_max_num_tokens": prefill_tokens,
+        "prefill_max_batch_size": prefill_batch,
+        "decode_max_num_tokens": decode_tokens,
+        "decode_max_batch_size": decode_batch,
+    }
+
+
+def _scheduler_point(
+    names: tuple[str, ...], selection: Mapping[str, int]
+) -> _SchedulerPoint:
+    return tuple(int(selection[name]) for name in names)
 
 
 def _role_parallel_candidates(search_space, role: str) -> RoleParallelCandidates | None:
@@ -228,14 +316,20 @@ def _heterogeneous_support(
     runner_capabilities: RunnerCapabilities | None,
     role_estimator_specs: Mapping[str, RoleEstimatorSpecs],
     role_engine_controls: Mapping[str, Mapping[str, EngineControlTemplate]],
+    scheduler_knob_names: tuple[str, ...],
+    scheduler_selections: tuple[dict[str, int], ...],
 ) -> tuple[
     dict[_ParallelConfig, set[str]],
+    dict[_ParallelConfig, dict[str, set[_SchedulerPoint]]],
     tuple[BranchPruningDiagnostic, ...],
 ]:
     """Enumerate independent role shapes, then pair them under one GPU budget."""
 
     ss = config.search_space
     support: dict[_ParallelConfig, set[str]] = {}
+    scheduler_support: dict[
+        _ParallelConfig, dict[str, set[_SchedulerPoint]]
+    ] = {}
     diagnostics: list[BranchPruningDiagnostic] = []
     for pair_label, estimators in role_estimator_specs.items():
         pair = estimators.pair
@@ -267,100 +361,131 @@ def _heterogeneous_support(
                     )
                 )
                 continue
-        per_role: dict[str, list[ReplicaParallelConfig]] = {}
-        failure: BranchPruningDiagnostic | None = None
+        per_role: dict[
+            str, dict[tuple[int, int], list[ReplicaParallelConfig]]
+        ] = {}
+        pair_failure: BranchPruningDiagnostic | None = None
         for role in (DisaggRole.PREFILL, DisaggRole.DECODE):
             name = role.value
             estimator = estimators.estimator_for(role)
             template = role_engine_controls[pair_label][name]
             role_candidates = _role_parallel_candidates(ss, name)
-            try:
-                legal = parallel_configs_for(
-                    estimator.model_path,
-                    estimator.system,
-                    gpu_budget=ss.gpu_budget,
-                    deployment_mode="agg",
-                    backend=estimator.backend,
-                    min_gpu_budget=None,
-                    max_seq_len=template.max_seq_len,
-                    backend_version=estimator.backend_version,
-                    systems_paths=list(estimator.systems_paths),
-                    agg_candidates=role_candidates,
-                    **_engine_kwargs(ss, name),
-                )
-            except NoPerfDatabase as exc:
-                failure = BranchPruningDiagnostic(
-                    backend=pair_label,
-                    role=role,
-                    category=RoleFailureCategory.KV_CAPACITY,
-                    detail=str(exc),
-                )
-                break
-            except NoViableParallelConfig as exc:
-                failure = BranchPruningDiagnostic(
-                    backend=pair_label,
-                    role=role,
-                    category=RoleFailureCategory.NO_PARALLEL_CONFIG,
-                    detail=str(exc),
-                )
-                break
             max_workers = (
                 ss.max_prefill_workers
                 if role is DisaggRole.PREFILL
                 else ss.max_decode_workers
             )
-            per_role[name] = [
-                value
-                for value in legal
-                if isinstance(value, ReplicaParallelConfig)
-                and value.replicas <= max_workers
-            ]
-        if failure is not None:
-            diagnostics.append(failure)
-            continue
-        legal_pairs = [
-            DisaggParallelConfig(prefill=prefill, decode=decode)
-            for prefill in per_role["prefill"]
-            for decode in per_role["decode"]
-            if prefill.total_gpus + decode.total_gpus <= ss.gpu_budget
-            and prefill.total_gpus + decode.total_gpus <= ss.max_gpu_per_replica
-            and prefill.total_gpus + decode.total_gpus in ss.num_gpu_per_replica
-            and (
-                ss.min_gpu_budget is None
-                or prefill.total_gpus + decode.total_gpus >= ss.min_gpu_budget
-            )
-        ]
-        if not legal_pairs:
-            diagnostics.append(
-                BranchPruningDiagnostic(
-                    backend=pair_label,
-                    category=RoleFailureCategory.GPU_BUDGET,
-                    detail=(
-                        "no prefill/decode parallel-config pair fits the shared "
-                        f"gpu range [{ss.min_gpu_budget or 1}, {ss.gpu_budget}]"
-                    ),
+            limits = tuple(
+                dict.fromkeys(
+                    _role_scheduler_limits(selection, name)
+                    for selection in scheduler_selections
                 )
             )
+            legal_by_limits: dict[
+                tuple[int, int], list[ReplicaParallelConfig]
+            ] = {}
+            first_failure: BranchPruningDiagnostic | None = None
+            for max_num_tokens, max_batch_size in limits:
+                try:
+                    legal = parallel_configs_for(
+                        estimator.model_path,
+                        estimator.system,
+                        gpu_budget=ss.gpu_budget,
+                        deployment_mode="agg",
+                        backend=estimator.backend,
+                        min_gpu_budget=None,
+                        max_seq_len=template.max_seq_len,
+                        max_num_tokens=max_num_tokens,
+                        max_batch_size=max_batch_size,
+                        backend_version=estimator.backend_version,
+                        systems_paths=list(estimator.systems_paths),
+                        agg_candidates=role_candidates,
+                        **_engine_kwargs(ss, name),
+                    )
+                except NoPerfDatabase as exc:
+                    first_failure = first_failure or BranchPruningDiagnostic(
+                        backend=pair_label,
+                        role=role,
+                        category=RoleFailureCategory.KV_CAPACITY,
+                        detail=str(exc),
+                    )
+                    legal_by_limits[(max_num_tokens, max_batch_size)] = []
+                    continue
+                except NoViableParallelConfig as exc:
+                    first_failure = first_failure or BranchPruningDiagnostic(
+                        backend=pair_label,
+                        role=role,
+                        category=RoleFailureCategory.NO_PARALLEL_CONFIG,
+                        detail=str(exc),
+                    )
+                    legal_by_limits[(max_num_tokens, max_batch_size)] = []
+                    continue
+                legal_by_limits[(max_num_tokens, max_batch_size)] = [
+                    value
+                    for value in legal
+                    if isinstance(value, ReplicaParallelConfig)
+                    and value.replicas <= max_workers
+                ]
+            if not any(legal_by_limits.values()):
+                pair_failure = first_failure or BranchPruningDiagnostic(
+                    backend=pair_label,
+                    role=role,
+                    category=RoleFailureCategory.NO_PARALLEL_CONFIG,
+                    detail="no role topology is legal for any configured scheduler limit",
+                )
+                break
+            per_role[name] = legal_by_limits
+        if pair_failure is not None:
+            diagnostics.append(pair_failure)
             continue
-        legal_set = set(legal_pairs)
         pair_accepted = False
-        for candidate in pinned if pinned is not None else legal_pairs:
-            if candidate in legal_set and _runner_supports_parallel_config(
-                runner_capabilities, "disagg", candidate
-            ):
-                support.setdefault(candidate, set()).add(pair_label)
-                pair_accepted = True
+        has_budget_pair = False
+        for selection in scheduler_selections:
+            legal_pairs = [
+                DisaggParallelConfig(prefill=prefill, decode=decode)
+                for prefill in per_role["prefill"][
+                    _role_scheduler_limits(selection, "prefill")
+                ]
+                for decode in per_role["decode"][
+                    _role_scheduler_limits(selection, "decode")
+                ]
+                if prefill.total_gpus + decode.total_gpus <= ss.gpu_budget
+                and prefill.total_gpus + decode.total_gpus <= ss.max_gpu_per_replica
+                and prefill.total_gpus + decode.total_gpus in ss.num_gpu_per_replica
+                and (
+                    ss.min_gpu_budget is None
+                    or prefill.total_gpus + decode.total_gpus >= ss.min_gpu_budget
+                )
+            ]
+            has_budget_pair = has_budget_pair or bool(legal_pairs)
+            legal_set = set(legal_pairs)
+            for candidate in pinned if pinned is not None else legal_pairs:
+                if candidate in legal_set and _runner_supports_parallel_config(
+                    runner_capabilities, "disagg", candidate
+                ):
+                    support.setdefault(candidate, set()).add(pair_label)
+                    scheduler_support.setdefault(candidate, {}).setdefault(
+                        pair_label, set()
+                    ).add(_scheduler_point(scheduler_knob_names, selection))
+                    pair_accepted = True
         if not pair_accepted:
             diagnostics.append(
                 BranchPruningDiagnostic(
                     backend=pair_label,
-                    category=RoleFailureCategory.NO_PARALLEL_CONFIG,
+                    category=(
+                        RoleFailureCategory.NO_PARALLEL_CONFIG
+                        if has_budget_pair
+                        else RoleFailureCategory.GPU_BUDGET
+                    ),
                     detail=(
                         "no legal parallel config remains after pinned-domain and runner-capability filtering"
+                        if has_budget_pair
+                        else "no prefill/decode parallel-config pair fits the shared "
+                        f"gpu range [{ss.min_gpu_budget or 1}, {ss.gpu_budget}]"
                     ),
                 )
             )
-    return support, tuple(diagnostics)
+    return support, scheduler_support, tuple(diagnostics)
 
 
 def enumerate_branches(
@@ -399,20 +524,28 @@ def enumerate_branches(
             else None
         )
         heterogeneous = deployment_mode == "disagg" and ss.has_role_overrides
+        scheduler_knob_names, scheduler_selections = _scheduler_domain(
+            ss, deployment_mode
+        )
         runner_incompatible: list[str] = []
         pruning_diagnostics: tuple[BranchPruningDiagnostic, ...] = ()
         enumeration_counts: dict[str, int] = {}
+        scheduler_support: dict[
+            _ParallelConfig, dict[str, set[_SchedulerPoint]]
+        ] = {}
         if heterogeneous:
             if role_estimator_specs is None or role_engine_controls is None:
                 raise ValueError(
                     "heterogeneous disagg enumeration requires role estimator and engine-control catalogs"
                 )
-            support, pruning_diagnostics = _heterogeneous_support(
+            support, scheduler_support, pruning_diagnostics = _heterogeneous_support(
                 config,
                 pinned=pinned,
                 runner_capabilities=runner_capabilities,
                 role_estimator_specs=role_estimator_specs,
                 role_engine_controls=role_engine_controls,
+                scheduler_knob_names=scheduler_knob_names,
+                scheduler_selections=scheduler_selections,
             )
             accepted_pairs = set().union(*support.values()) if support else set()
             enumeration_counts = {
@@ -460,63 +593,74 @@ def enumerate_branches(
                     )
                 ):
                     continue
-                try:
-                    estimator_kwargs: dict[str, Any] = {}
-                    if estimator_specs is not None:
-                        estimator = estimator_specs[backend]
-                        estimator_kwargs.update(
-                            backend_version=estimator.backend_version,
-                            systems_paths=list(estimator.systems_paths),
+                estimator_kwargs: dict[str, Any] = {}
+                if estimator_specs is not None:
+                    estimator = estimator_specs[backend]
+                    estimator_kwargs.update(
+                        backend_version=estimator.backend_version,
+                        systems_paths=list(estimator.systems_paths),
+                    )
+                else:
+                    requested_version = ss.requested_backend_version(backend)
+                    if requested_version is not None:
+                        estimator_kwargs["backend_version"] = requested_version
+                    if ss.systems_paths != ["default"]:
+                        estimator_kwargs["systems_paths"] = ss.systems_paths
+                domain_kwargs: dict[str, Any] = {}
+                for role in ("agg", "prefill", "decode"):
+                    candidates = _role_parallel_candidates(ss, role)
+                    if candidates is not None:
+                        domain_kwargs[f"{role}_candidates"] = candidates
+                for field_name in (
+                    "num_gpu_per_replica",
+                    "max_gpu_per_replica",
+                    "max_prefill_workers",
+                    "max_decode_workers",
+                ):
+                    if field_name in ss.model_fields_set:
+                        value = getattr(ss, field_name)
+                        domain_kwargs[field_name] = (
+                            tuple(value)
+                            if field_name == "num_gpu_per_replica"
+                            else value
                         )
-                    else:
-                        requested_version = ss.requested_backend_version(backend)
-                        if requested_version is not None:
-                            estimator_kwargs["backend_version"] = requested_version
-                        if ss.systems_paths != ["default"]:
-                            estimator_kwargs["systems_paths"] = ss.systems_paths
-                    domain_kwargs: dict[str, Any] = {}
-                    for role in ("agg", "prefill", "decode"):
-                        candidates = _role_parallel_candidates(ss, role)
-                        if candidates is not None:
-                            domain_kwargs[f"{role}_candidates"] = candidates
-                    for field_name in (
-                        "num_gpu_per_replica",
-                        "max_gpu_per_replica",
-                        "max_prefill_workers",
-                        "max_decode_workers",
-                    ):
-                        if field_name in ss.model_fields_set:
-                            value = getattr(ss, field_name)
-                            domain_kwargs[field_name] = (
-                                tuple(value)
-                                if field_name == "num_gpu_per_replica"
-                                else value
+                for scheduler_selection in scheduler_selections:
+                    try:
+                        legal = parallel_configs_for(
+                            ss.model_name,
+                            ss.hardware_sku,
+                            gpu_budget=ss.gpu_budget,
+                            deployment_mode=deployment_mode,
+                            backend=backend,
+                            min_gpu_budget=ss.min_gpu_budget,
+                            max_seq_len=max_seq_len,
+                            **_scheduler_kwargs(
+                                scheduler_selection, deployment_mode
+                            ),
+                            **domain_kwargs,
+                            **estimator_kwargs,
+                            **_engine_kwargs(ss),
+                        )
+                    except (NoPerfDatabase, NoViableParallelConfig):
+                        continue
+                    legal = [
+                        cfg
+                        for cfg in legal
+                        if _runner_supports_parallel_config(
+                            runner_capabilities, deployment_mode, cfg
+                        )
+                    ]
+                    legal_set = set(legal)
+                    for cfg in pinned if pinned is not None else legal:
+                        if cfg in legal_set:
+                            support.setdefault(cfg, set()).add(backend)
+                            scheduler_support.setdefault(cfg, {}).setdefault(
+                                backend, set()
+                            ).add(
+                                _scheduler_point(
+                                    scheduler_knob_names, scheduler_selection
+                                )
                             )
-                    legal = parallel_configs_for(
-                        ss.model_name,
-                        ss.hardware_sku,
-                        gpu_budget=ss.gpu_budget,
-                        deployment_mode=deployment_mode,
-                        backend=backend,
-                        min_gpu_budget=ss.min_gpu_budget,
-                        max_seq_len=max_seq_len,
-                        **domain_kwargs,
-                        **estimator_kwargs,
-                        **_engine_kwargs(ss),
-                    )
-                except (NoPerfDatabase, NoViableParallelConfig):
-                    continue  # unusable for this mode -> drop it from the search
-                legal = [
-                    cfg
-                    for cfg in legal
-                    if _runner_supports_parallel_config(
-                        runner_capabilities, deployment_mode, cfg
-                    )
-                ]
-                legal_set = set(legal)
-                for cfg in pinned if pinned is not None else legal:
-                    if cfg in legal_set:
-                        support.setdefault(cfg, set()).add(backend)
 
         if not support:
             enumeration_report = (
@@ -595,6 +739,14 @@ def enumerate_branches(
                 parallel_configs=tuple(support),
                 supported_backends={cfg: frozenset(bs) for cfg, bs in support.items()},
                 knob_choices=knob_choices,
+                scheduler_knob_names=scheduler_knob_names,
+                scheduler_support={
+                    cfg: {
+                        backend: frozenset(points)
+                        for backend, points in by_backend.items()
+                    }
+                    for cfg, by_backend in scheduler_support.items()
+                },
                 gpu_budget=ss.gpu_budget,
                 float_ranges=float_ranges,
                 pruning_diagnostics=pruning_diagnostics,
