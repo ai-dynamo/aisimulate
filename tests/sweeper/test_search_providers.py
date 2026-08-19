@@ -9,6 +9,7 @@ import pytest
 
 import aisimulate.sweeper.search as search_module
 from aisimulate.sweeper.config import SmartSearchConfig
+from aisimulate.sweeper.engine_request import EngineControlTemplate
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.provider import (
     AdapterReplaySpec,
@@ -246,6 +247,19 @@ def _stub_branch(monkeypatch) -> None:
         "resolve_backend_version",
         lambda hardware, backend: "0.11.0",
     )
+    monkeypatch.setattr(
+        search_module,
+        "resolve_engine_controls",
+        lambda config: {
+            "vllm": EngineControlTemplate(
+                backend="vllm",
+                max_seq_len=4096,
+                model_family="GPT",
+                is_moe=False,
+                memory_fraction_kind="of_total",
+            )
+        },
+    )
 
 
 def test_adapter_accepts_search_space_and_materializes_spec_on_main(
@@ -297,6 +311,19 @@ def test_core_branch_preflight_runs_before_adapter_preparation(monkeypatch) -> N
         raise ValueError("no viable backend/topology branch")
 
     monkeypatch.setattr(search_module, "enumerate_branches", reject_branches)
+    monkeypatch.setattr(
+        search_module,
+        "resolve_engine_controls",
+        lambda config: {
+            "vllm": EngineControlTemplate(
+                backend="vllm",
+                max_seq_len=4096,
+                model_family="GPT",
+                is_moe=False,
+                memory_fraction_kind="of_total",
+            )
+        },
+    )
 
     with pytest.raises(ValueError, match="no viable backend/topology branch"):
         _run_sweep(

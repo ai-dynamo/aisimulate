@@ -20,6 +20,31 @@ REPLAY_SPEC_API_VERSION = 1
 
 
 @dataclass(frozen=True)
+class EngineRequestSpec:
+    """Resolved legacy engine/request controls evaluated for one candidate."""
+
+    cached_prefix_tokens: int = 0
+    context_tokens: dict[str, int] = field(default_factory=dict)
+    enable_chunked_prefill: bool = False
+    enable_wideep: bool = False
+    enable_eplb: bool = False
+    wideep_num_slots: int | None = None
+    moe_backend: str | None = None
+    attention_backend: str | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    nextn: int = 0
+    nextn_accepted: float | None = None
+    memory_fraction_kind: str = "of_total"
+    memory_fraction_by_role: dict[str, float] = field(default_factory=dict)
+    max_seq_len: int = 0
+    model_family: str = ""
+
+
+@dataclass(frozen=True)
 class BackendDeploymentSpec:
     """Concrete backend engines and fleet shape for one candidate."""
 
@@ -33,6 +58,7 @@ class BackendDeploymentSpec:
     num_workers: int = 0
     num_prefill_workers: int = 0
     num_decode_workers: int = 0
+    engine_request: EngineRequestSpec | None = None
 
 
 @dataclass(frozen=True)

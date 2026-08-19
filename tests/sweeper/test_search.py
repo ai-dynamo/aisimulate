@@ -9,6 +9,7 @@ import pytest
 
 import aisimulate.sweeper.search as search_mod
 from aisimulate.sweeper.config import OptimizationGoal, SmartSearchConfig
+from aisimulate.sweeper.engine_request import EngineControlTemplate
 from aisimulate.sweeper.kv_load import KVLoadResolution
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import (
@@ -148,6 +149,19 @@ def _stub(monkeypatch, branch):
         lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
     monkeypatch.setattr(
+        search_mod,
+        "resolve_engine_controls",
+        lambda config: {
+            "trtllm": EngineControlTemplate(
+                backend="trtllm",
+                max_seq_len=131072,
+                model_family="DEEPSEEK",
+                is_moe=True,
+                memory_fraction_kind="of_free",
+            )
+        },
+    )
+    monkeypatch.setattr(
         search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
     )
 
@@ -178,6 +192,10 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     assert candidates[0].metrics["gpu_hours"] == 1.0
     assert factory.worker_ids == [0]
     assert all(isinstance(spec, ReplaySpec) for spec in factory.runner.specs)
+    assert candidates[0].config["engine_request"]["max_seq_len"] == 131072
+    assert (
+        factory.runner.specs[0].backend_deployment.engine_request.max_seq_len == 131072
+    )
     assert factory.runner.closed
 
 
@@ -664,6 +682,19 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
         search_mod,
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
+    )
+    monkeypatch.setattr(
+        search_mod,
+        "resolve_engine_controls",
+        lambda config: {
+            "trtllm": EngineControlTemplate(
+                backend="trtllm",
+                max_seq_len=131072,
+                model_family="DEEPSEEK",
+                is_moe=True,
+                memory_fraction_kind="of_free",
+            )
+        },
     )
     monkeypatch.setattr(
         search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"

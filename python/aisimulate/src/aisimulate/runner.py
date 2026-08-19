@@ -43,6 +43,11 @@ _AIC_TIMING_FIELD_ALIASES = {
     "kv_cache_dtype": ("kv_cache_dtype", "aic_kv_cache_dtype"),
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
+    "enable_wideep": ("aic_enable_wideep",),
+    "enable_eplb": ("aic_enable_eplb",),
+    "wideep_num_slots": ("aic_wideep_num_slots",),
+    "moe_backend": ("aic_moe_backend",),
+    "attention_backend": ("aic_attention_backend",),
 }
 
 
@@ -442,6 +447,26 @@ def _materialize_requests(
         }
         for index in range(request_count)
     ]
+    cached_prefix_tokens = workload.get("cached_prefix_tokens", 0)
+    if (
+        not isinstance(cached_prefix_tokens, int)
+        or isinstance(cached_prefix_tokens, bool)
+        or cached_prefix_tokens < 0
+        or cached_prefix_tokens > min(input_lengths)
+    ):
+        raise ValueError(
+            "cached_prefix_tokens must be a non-negative integer no greater "
+            "than every synthetic input length"
+        )
+    if cached_prefix_tokens:
+        prefix = list(range(1, cached_prefix_tokens + 1))
+        for index, request in enumerate(requests):
+            suffix_length = input_lengths[index] - cached_prefix_tokens
+            suffix_seed = (index + 1) * 1_000_003 + cached_prefix_tokens
+            request["input_token_ids"] = prefix + [
+                (suffix_seed + offset) & 0xFFFF_FFFF
+                for offset in range(suffix_length)
+            ]
     return requests, concurrency
 
 
@@ -582,8 +607,11 @@ def _materialize_engine_role(
         if not configured:
             continue
         value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
+        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
             value = _positive_int(value, f"engine provider {role} {target}")
+        elif target in {"enable_wideep", "enable_eplb"}:
+            if not isinstance(value, bool):
+                raise ValueError(f"engine provider {role} {target} must be a boolean")
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")
         aic_timing_overrides[target] = value
@@ -648,6 +676,25 @@ def _materialize_engine_role(
                 f"engine provider {role} aic_nextn_accept_rates must be a string"
             )
         rank["aic_nextn_accept_rates"] = accept_rates
+
+    nextn_accepted = _pop_alias(
+        rank,
+        "aic_nextn_accepted",
+        ("aic_nextn_accepted", "nextn_accepted"),
+    )
+    if nextn_accepted is not None:
+        if nextn is None:
+            raise ValueError(
+                f"engine provider {role} aic_nextn_accepted requires aic_nextn"
+            )
+        if accept_rates is not None:
+            raise ValueError(
+                f"engine provider {role} cannot set both aic_nextn_accepted and "
+                "aic_nextn_accept_rates"
+            )
+        rank["aic_nextn_accept_rates"] = _accept_rates_for_expected(
+            nextn, nextn_accepted, role=role
+        )
 
     mtp_seed = _pop_alias(rank, "aic_mtp_seed", ("aic_mtp_seed", "mtp_seed"))
     if mtp_seed is not None:
@@ -745,6 +792,31 @@ def _positive_int(value: JSONValue, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"{name} must be a positive integer")
     return value
+
+
+def _accept_rates_for_expected(
+    nextn: int, value: JSONValue, *, role: str
+) -> str:
+    """Lower an explicit expected accepted-token count to conditional rates."""
+
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or not 0.0 <= float(value) <= nextn
+    ):
+        raise ValueError(
+            f"engine provider {role} aic_nextn_accepted must be finite and "
+            f"within [0, {nextn}]"
+        )
+    expected = float(value)
+    whole = int(expected)
+    fraction = expected - whole
+    rates = [1.0] * whole
+    if len(rates) < nextn:
+        rates.append(fraction)
+    rates.extend([0.0] * (nextn - len(rates)))
+    return ",".join(format(rate, ".17g") for rate in rates)
 
 
 def _random_range_ratio(value: JSONValue) -> float:

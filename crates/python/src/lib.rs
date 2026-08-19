@@ -56,6 +56,16 @@ struct AicTimingConfig {
     free_gpu_memory_fraction: Option<f64>,
     #[serde(default)]
     systems_path: Option<String>,
+    #[serde(default)]
+    moe_backend: Option<String>,
+    #[serde(default)]
+    attention_backend: Option<String>,
+    #[serde(default)]
+    enable_wideep: bool,
+    #[serde(default)]
+    enable_eplb: bool,
+    #[serde(default)]
+    wideep_num_slots: Option<u32>,
 }
 
 const fn one() -> u32 {
@@ -167,6 +177,11 @@ impl AicTimingModel {
             kwargs.set_item("nextn", config.nextn)?;
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
+            kwargs.set_item("moe_backend", config.moe_backend.as_deref())?;
+            kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
+            kwargs.set_item("enable_wideep", config.enable_wideep)?;
+            kwargs.set_item("enable_eplb", config.enable_eplb)?;
+            kwargs.set_item("wideep_num_slots", config.wideep_num_slots)?;
             let spec = sdk.getattr("compile_engine")?.call(
                 (
                     config.model.as_str(),
@@ -480,6 +495,11 @@ mod tests {
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
             systems_path: None,
+            moe_backend: None,
+            attention_backend: None,
+            enable_wideep: false,
+            enable_eplb: false,
+            wideep_num_slots: None,
         }
     }
 
@@ -527,6 +547,28 @@ mod tests {
                 .to_string()
                 .contains("gpu_memory_utilization")
         );
+    }
+
+    #[test]
+    fn aic_timing_config_deserializes_engine_controls() {
+        let config: AicTimingConfig = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "backend": "sglang",
+            "system": "test-system",
+            "tp": 1,
+            "moe_backend": "deepep_moe",
+            "attention_backend": "fa3",
+            "enable_wideep": true,
+            "enable_eplb": true,
+            "wideep_num_slots": 64
+        }))
+        .unwrap();
+
+        assert_eq!(config.moe_backend.as_deref(), Some("deepep_moe"));
+        assert_eq!(config.attention_backend.as_deref(), Some("fa3"));
+        assert!(config.enable_wideep);
+        assert!(config.enable_eplb);
+        assert_eq!(config.wideep_num_slots, Some(64));
     }
 
     #[test]

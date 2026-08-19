@@ -42,6 +42,7 @@ from .provider import (
 from .replay import (
     REPLAY_SPEC_API_VERSION,
     BackendDeploymentSpec,
+    EngineRequestSpec,
     HookCapability,
     ReplayOutputRequirements,
     ReplayReport,
@@ -105,6 +106,7 @@ __all__ = [
     "Candidate",
     "CandidateContext",
     "DisaggParallelConfig",
+    "EngineRequestSpec",
     "HookCapability",
     "ModelHardware",
     "NoPerfDatabase",

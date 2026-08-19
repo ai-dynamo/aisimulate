@@ -121,6 +121,7 @@ def test_unroll_folds_only_backend_pinned_values():
             context_length=4096,
             startup_time=300.0,
             aic_nextn=2,
+            nextn_accepted=1.25,
             agg_block_size=32,
             agg_gpu_memory_utilization=0.8,
             agg_enable_prefix_caching=False,
@@ -134,6 +135,7 @@ def test_unroll_folds_only_backend_pinned_values():
     assert sample["context_length"] == 4096
     assert sample["startup_time"] == 300.0
     assert sample["aic_nextn"] == 2
+    assert sample["nextn_accepted"] == 1.25
     assert sample["agg_block_size"] == 32
     assert sample["agg_gpu_memory_utilization"] == 0.8
     assert sample["agg_enable_prefix_caching"] is False

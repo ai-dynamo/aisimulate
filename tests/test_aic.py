@@ -15,7 +15,7 @@ pytestmark = [
 ]
 
 
-def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
+def test_materializer_sets_rank_local_capacity_with_nextn(
     monkeypatch,
 ) -> None:
     calls = []
@@ -44,7 +44,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
     assert calls[0]["attention_dp_size"] == 2
     assert calls[0]["pp_size"] == 3
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
-    assert "nextn" not in calls[0]
+    assert calls[0]["nextn"] == 3
 
 
 def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
@@ -82,7 +82,7 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
     assert kwargs["systems_path"] == "/tmp/custom-systems.yaml"
     assert kwargs["gemm_quant_mode"] == "int4_wo"
     assert kwargs["fmha_quant_mode"] is None
-    assert "nextn" not in kwargs
+    assert kwargs["nextn"] == 0
 
 
 def test_explicit_capacity_is_preserved_without_estimation(monkeypatch) -> None:

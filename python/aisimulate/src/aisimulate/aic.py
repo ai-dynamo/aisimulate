@@ -86,6 +86,7 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
         fmha_dtype=lowered.get("aic_fmha_dtype"),
         kv_cache_dtype=lowered.get("aic_kv_cache_dtype"),
         comm_dtype=lowered.get("aic_comm_dtype"),
+        nextn=int(lowered.get("aic_nextn") or 0),
         systems_path=lowered.get("systems_path"),
     )
     return lowered
@@ -112,14 +113,10 @@ def estimate_num_gpu_blocks(
     fmha_dtype: str | None = None,
     kv_cache_dtype: str | None = None,
     comm_dtype: str | None = None,
+    nextn: int = 0,
     systems_path: str | None = None,
 ) -> int:
-    """Estimate per-rank KV blocks using the replay-wide AIC contract.
-
-    NextN is intentionally absent. AIC currently can return negative KV
-    capacity for Eagle when speculative-decoding state is included. Timing
-    compilation still receives NextN; only capacity estimation omits it.
-    """
+    """Estimate per-rank KV blocks using the replay-wide AIC contract."""
 
     if backend_name not in DEFAULT_BACKEND_VERSIONS:
         supported = ", ".join(sorted(DEFAULT_BACKEND_VERSIONS))
@@ -180,6 +177,7 @@ def estimate_num_gpu_blocks(
             fmha_quant_mode=_quant_mode_name("fmha", fmha_dtype),
             kvcache_quant_mode=_quant_mode_name("kvcache", kv_cache_dtype),
             comm_quant_mode=_quant_mode_name("comm", comm_dtype),
+            nextn=nextn,
             systems_path=systems_path,
         )
     )
