@@ -16,6 +16,7 @@ from aisimulate.sweeper.parallel_projection import (
     USED_GPU_RATIO,
 )
 from aisimulate.sweeper.sampler import (
+    ExhaustiveBranchSampler,
     Suggestion,
     _decoder_for,
     _index_decoder,
@@ -104,6 +105,69 @@ def _branch() -> BranchSpace:
             ],  # discrete float
         },
     )
+
+
+def test_thorough_sampler_enumerates_complete_finite_space_canonically():
+    pc1, pc2, _ = _branch().parallel_configs
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(pc2, pc1),
+        supported_backends={
+            pc1: frozenset({"vllm"}),
+            pc2: frozenset({"vllm", "trtllm"}),
+        },
+        knob_choices={
+            "backend": ["trtllm", "vllm", "vllm"],
+            "agg_max_num_seqs": [512, 256],
+            "adapter::example::enabled": [True, False],
+        },
+    )
+
+    first = ExhaustiveBranchSampler(branch)
+    first_suggestions = first.suggest(100)
+    second = ExhaustiveBranchSampler(branch)
+    second_suggestions = second.suggest(100)
+
+    # pc1 has one supported backend and pc2 has two: (1 + 2) * 2 * 2.
+    assert first.candidate_count == 12
+    assert len(first_suggestions) == first.candidate_count
+    assert [
+        (suggestion.selection, suggestion.parallel_config)
+        for suggestion in first_suggestions
+    ] == [
+        (suggestion.selection, suggestion.parallel_config)
+        for suggestion in second_suggestions
+    ]
+    assert first.suggest(1) == []
+    assert all(
+        suggestion.selection["backend"]
+        in branch.supported_backends[suggestion.parallel_config]
+        for suggestion in first_suggestions
+    )
+
+
+def test_thorough_sampler_rejects_continuous_ranges():
+    branch = _branch_with_kv_load()
+
+    with pytest.raises(ValueError, match="finite discrete space.*kv_load_ratio"):
+        ExhaustiveBranchSampler(branch)
+
+
+def test_seeded_rapid_sampler_reproduces_suggestion_sequence(monkeypatch):
+    monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
+    first = make_branch_sampler(_branch(), study_id="seeded_first", seed=73)
+    second = make_branch_sampler(_branch(), study_id="seeded_second", seed=73)
+
+    first_suggestions = first.suggest(count=8)
+    second_suggestions = second.suggest(count=8)
+
+    assert [
+        (suggestion.selection, suggestion.parallel_config)
+        for suggestion in first_suggestions
+    ] == [
+        (suggestion.selection, suggestion.parallel_config)
+        for suggestion in second_suggestions
+    ]
 
 
 def test_suggest_produces_valid_selections():

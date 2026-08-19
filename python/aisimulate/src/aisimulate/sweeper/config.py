@@ -61,6 +61,18 @@ class OptimizationTarget(str, Enum):
         return self is not OptimizationTarget.E2E_LATENCY
 
 
+class SearchPolicy(str, Enum):
+    """How Sweeper chooses candidates from the configured search space.
+
+    ``rapid`` keeps the optimizer-guided, bounded search used by the refactored
+    Sweeper. ``thorough`` visits every runnable point in a finite discrete search
+    space in a canonical order.
+    """
+
+    RAPID = "rapid"
+    THOROUGH = "thorough"
+
+
 class SLATarget(BaseModel):
     """Per-request latency bounds in ms. Set ttft_ms+itl_ms, or e2e_ms."""
 
@@ -527,6 +539,11 @@ class SweepConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    policy: SearchPolicy = SearchPolicy.RAPID
+    # Seeds the default rapid Vizier designer. Thorough enumeration has a canonical
+    # order, so its seed is recorded for provenance but deliberately does not reorder
+    # candidates.
+    seed: int = Field(default=0, ge=0, le=(2**32 - 1))
     max_rounds: int = Field(default=20, ge=1)  # total Vizier/replay barrier rounds
     parallel_evals: int = Field(
         default=16, ge=1
@@ -539,6 +556,13 @@ class SweepConfig(BaseModel):
     # instead of hanging the sweep (e.g. an over-subscribed config that churns). Only enforced
     # on the worker-pool path (parallel_evals > 1); None disables the cap.
     max_eval_seconds: float | None = Field(default=600.0, gt=0)
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _validate_seed_type(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"seed must be an unsigned 32-bit integer, got {value!r}")
+        return value
 
 
 class AdapterSearchConfig(BaseModel):

@@ -493,6 +493,26 @@ def test_non_positive_sweep_control_is_rejected(kwargs):
         SweepConfig(**kwargs)
 
 
+def test_search_policy_defaults_to_bounded_rapid():
+    config = SweepConfig()
+
+    assert config.policy.value == "rapid"
+    assert config.seed == 0
+
+
+@pytest.mark.parametrize("seed", [-1, 2**32, True, 1.5])
+def test_invalid_search_seed_is_rejected(seed):
+    with pytest.raises(ValidationError):
+        SweepConfig(seed=seed)
+
+
+def test_thorough_policy_is_explicitly_selectable():
+    config = SweepConfig(policy="thorough", seed=19)
+
+    assert config.policy.value == "thorough"
+    assert config.seed == 19
+
+
 @pytest.mark.parametrize(
     ("minimum", "maximum"),
     [(0, 16), (32, 16)],

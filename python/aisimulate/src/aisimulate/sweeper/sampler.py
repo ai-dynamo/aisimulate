@@ -27,6 +27,8 @@ import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import islice, product
+from math import prod
 from typing import Any, Protocol
 
 from ._quiet import configure_vizier_runtime
@@ -96,6 +98,40 @@ def _vizier_modules() -> tuple[Any, Any]:
     return clients, vz
 
 
+def _make_seeded_designer(problem: Any, algorithm: str, seed: int) -> Any:
+    """Build the pinned optimizer in-process so its seed is explicit."""
+
+    if algorithm in {"DEFAULT", "ALGORITHM_UNSPECIFIED", "GP_UCB_PE"}:
+        import jax
+        from vizier._src.algorithms.designers import gp_ucb_pe
+
+        return gp_ucb_pe.VizierGPUCBPEBandit(
+            problem,
+            rng=jax.random.PRNGKey(seed),
+        )
+    if algorithm == "GAUSSIAN_PROCESS_BANDIT":
+        from vizier._src.algorithms.designers import gp_bandit
+
+        return gp_bandit.VizierGPBandit.from_problem(problem, seed=seed)
+    if algorithm == "RANDOM_SEARCH":
+        from vizier._src.algorithms.designers import random as random_designer
+
+        return random_designer.RandomDesigner.from_problem(problem, seed=seed)
+    if algorithm == "QUASI_RANDOM_SEARCH":
+        from vizier._src.algorithms.designers import quasi_random
+
+        return quasi_random.QuasiRandomDesigner.from_problem(problem, seed=seed)
+    if algorithm in {"GRID_SEARCH", "SHUFFLED_GRID_SEARCH"}:
+        from vizier._src.algorithms.designers import grid
+
+        return grid.GridSearchDesigner.from_problem(problem, seed=seed)
+    raise ValueError(
+        f"rapid search seed is not supported by Vizier algorithm {algorithm!r}; "
+        "use DEFAULT, GP_UCB_PE, GAUSSIAN_PROCESS_BANDIT, RANDOM_SEARCH, "
+        "QUASI_RANDOM_SEARCH, GRID_SEARCH, or SHUFFLED_GRID_SEARCH"
+    )
+
+
 class VizierBranchSampler:
     """A Vizier study over one :class:`BranchSpace`.
 
@@ -112,6 +148,7 @@ class VizierBranchSampler:
         *,
         study_id: str,
         objectives: list[tuple[str, bool]] | None = None,
+        seed: int | None = None,
     ):
         configure_vizier_runtime()
         clients, vz = _vizier_modules()
@@ -124,6 +161,7 @@ class VizierBranchSampler:
             clients.environment_variables.servicer_use_sql_ram()
 
         self.branch = branch
+        self._seed = seed
         self._objectives = objectives or [(_METRIC, True)]
         self._decoders: dict[str, Callable[[Any], Any]] = {}
         self._constants: dict[str, Any] = {}
@@ -213,14 +251,36 @@ class VizierBranchSampler:
         # can spin/hang at low observation counts; RANDOM_SEARCH bypasses the GP (instant
         # suggest, uniform exploration) to cover the curve ends without that stall.
         study_config.algorithm = _vizier_algorithm()
-        self._study = clients.Study.from_study_config(
-            study_config, owner="sweeper", study_id=study_id
-        )
+        if seed is None:
+            self._designer = None
+            self._next_trial_id = 0
+            self._study = clients.Study.from_study_config(
+                study_config, owner="sweeper", study_id=study_id
+            )
+        else:
+            self._designer = _make_seeded_designer(
+                problem,
+                study_config.algorithm,
+                seed,
+            )
+            self._next_trial_id = 1
+            self._study = None
 
     def suggest(self, count: int) -> list[Suggestion]:
         suggestions: list[Suggestion] = []
-        for trial in self._study.suggest(count=count):
-            params = dict(trial.parameters)
+        if self._designer is not None:
+            trials = []
+            for trial_suggestion in self._designer.suggest(count=count):
+                trials.append(trial_suggestion.to_trial(uid=self._next_trial_id))
+                self._next_trial_id += 1
+        else:
+            assert self._study is not None
+            trials = self._study.suggest(count=count)
+        for trial in trials:
+            params = {
+                name: value.value if hasattr(value, "value") else value
+                for name, value in dict(trial.parameters).items()
+            }
             # backend is a searched knob now (in knob_choices) -> comes via _constants
             # (single backend) or _decoders (multiple), not a per-branch constant.
             selection: dict[str, Any] = {
@@ -257,7 +317,12 @@ class VizierBranchSampler:
         metadata["sweeper_projection"] = json.dumps(
             suggestion.projection.metadata(), sort_keys=True
         )
-        suggestion.handle.update_metadata(metadata)
+        if hasattr(suggestion.handle, "update_metadata"):
+            suggestion.handle.update_metadata(metadata)
+        else:
+            suggestion.handle.metadata["sweeper_projection"] = metadata[
+                "sweeper_projection"
+            ]
 
     def observe(self, suggestion: Suggestion, metrics: dict[str, float]) -> None:
         _, vz = _vizier_modules()
@@ -266,6 +331,7 @@ class VizierBranchSampler:
         suggestion.handle.complete(
             vz.Measurement(metrics={k: float(v) for k, v in metrics.items()})
         )
+        self._update_designer(suggestion)
 
     def observe_infeasible(self, suggestion: Suggestion, reason: str) -> None:
         """Mark a candidate that could not be evaluated (e.g. replay error) so the
@@ -274,6 +340,120 @@ class VizierBranchSampler:
 
         self._update_projection_metadata(suggestion)
         suggestion.handle.complete(vz.Measurement(), infeasible_reason=reason)
+        self._update_designer(suggestion)
+
+    def _update_designer(self, suggestion: Suggestion) -> None:
+        if self._designer is None:
+            return
+        from vizier import algorithms
+
+        self._designer.update(
+            algorithms.CompletedTrials([suggestion.handle]),
+            algorithms.ActiveTrials([]),
+        )
+
+
+def _dedupe_json_choices(choices: list[Any]) -> list[Any]:
+    """Dedupe validated JSON choices without collapsing distinct scalar types."""
+
+    seen: set[tuple[str, str]] = set()
+    result: list[Any] = []
+    for choice in choices:
+        key = (
+            type(choice).__qualname__,
+            json.dumps(choice, sort_keys=True, separators=(",", ":")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(choice)
+    return result
+
+
+def _parallel_order_key(config: Any) -> str:
+    """Canonical key for deterministic topology enumeration."""
+
+    from dataclasses import asdict
+
+    return json.dumps(asdict(config), sort_keys=True, separators=(",", ":"))
+
+
+class ExhaustiveBranchSampler:
+    """Deterministically enumerate every runnable point in a finite branch.
+
+    Continuous dimensions are deliberately rejected: silently gridding them
+    would make ``thorough`` incomplete relative to the configured domain. Pin a
+    scalar value or expose an explicit list of categorical choices instead.
+    """
+
+    def __init__(self, branch: BranchSpace):
+        if branch.float_ranges:
+            names = sorted(branch.float_ranges)
+            raise ValueError(
+                "thorough search requires a finite discrete space; pin continuous "
+                f"dimension(s) {names} to scalar values or categorical choices"
+            )
+
+        self.branch = branch
+        self._names = sorted(branch.knob_choices)
+        self._choices = {
+            name: _dedupe_json_choices(list(branch.knob_choices[name]))
+            for name in self._names
+        }
+        empty = [name for name, choices in self._choices.items() if not choices]
+        if empty:
+            raise ValueError(
+                f"thorough search cannot enumerate empty choice list(s): {empty}"
+            )
+        self._parallel_configs = tuple(
+            sorted(branch.parallel_configs, key=_parallel_order_key)
+        )
+        backend_choices = self._choices.get("backend", [])
+        non_backend_count = prod(
+            len(choices) for name, choices in self._choices.items() if name != "backend"
+        )
+        self.candidate_count = non_backend_count * sum(
+            sum(
+                backend in branch.supported_backends[parallel]
+                for backend in backend_choices
+            )
+            for parallel in self._parallel_configs
+        )
+        self._next_index = 0
+        self._iterator = self._enumerate()
+
+    def _enumerate(self):
+        value_lists = [self._choices[name] for name in self._names]
+        for parallel in self._parallel_configs:
+            supported = self.branch.supported_backends[parallel]
+            for values in product(*value_lists):
+                selection = dict(zip(self._names, values, strict=True))
+                if selection.get("backend") not in supported:
+                    continue
+                selection = {
+                    "deployment_mode": self.branch.deployment_mode,
+                    **selection,
+                }
+                yield selection, parallel
+
+    def suggest(self, count: int) -> list[Suggestion]:
+        suggestions = []
+        for selection, parallel in islice(self._iterator, count):
+            suggestions.append(
+                Suggestion(
+                    selection=selection,
+                    parallel_config=parallel,
+                    handle=self._next_index,
+                )
+            )
+            self._next_index += 1
+        return suggestions
+
+    def observe(self, suggestion: Suggestion, metrics: dict[str, float]) -> None:
+        del suggestion, metrics
+
+    def observe_infeasible(self, suggestion: Suggestion, reason: str) -> None:
+        del suggestion, reason
 
 
 def make_branch_sampler(
@@ -281,7 +461,13 @@ def make_branch_sampler(
     *,
     study_id: str,
     objectives: list[tuple[str, bool]] | None = None,
+    seed: int | None = None,
 ) -> BranchSampler:
     """Construct the default (Vizier) sampler for a branch. ``objectives`` (name, maximize)
     pairs default to a single maximized ``"objective"``; pass >=2 for a Pareto study."""
-    return VizierBranchSampler(branch, study_id=study_id, objectives=objectives)
+    return VizierBranchSampler(
+        branch,
+        study_id=study_id,
+        objectives=objectives,
+        seed=seed,
+    )
