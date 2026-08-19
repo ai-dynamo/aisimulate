@@ -107,6 +107,61 @@ def _branch() -> BranchSpace:
     )
 
 
+def _sparse_scheduler_branch() -> BranchSpace:
+    config = ReplicaParallelConfig(
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
+    )
+    choices = list(range(1, 10))
+    return BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(config,),
+        supported_backends={config: frozenset({"vllm"})},
+        knob_choices={
+            "backend": ["vllm"],
+            "agg_max_num_batched_tokens": choices,
+            "agg_max_num_seqs": choices,
+        },
+        gpu_budget=1,
+        scheduler_knob_names=(
+            "agg_max_num_batched_tokens",
+            "agg_max_num_seqs",
+        ),
+        scheduler_support={config: {"vllm": frozenset({(9, 9)})}},
+    )
+
+
+def _paired_scheduler_branch() -> BranchSpace:
+    small = ReplicaParallelConfig(
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
+    )
+    large = ReplicaParallelConfig(
+        ParallelShape(tp=3, dp=1, moe_tp=1, moe_ep=1), replicas=1
+    )
+    choices = list(range(1, 10))
+    return BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(small, large),
+        supported_backends={
+            small: frozenset({"vllm"}),
+            large: frozenset({"vllm"}),
+        },
+        knob_choices={
+            "backend": ["vllm"],
+            "agg_max_num_batched_tokens": choices,
+            "agg_max_num_seqs": choices,
+        },
+        gpu_budget=3,
+        scheduler_knob_names=(
+            "agg_max_num_batched_tokens",
+            "agg_max_num_seqs",
+        ),
+        scheduler_support={
+            small: {"vllm": frozenset({(1, 1)})},
+            large: {"vllm": frozenset({(9, 9)})},
+        },
+    )
+
+
 def test_thorough_sampler_enumerates_complete_finite_space_canonically():
     pc1, pc2, _ = _branch().parallel_configs
     branch = BranchSpace(
@@ -198,6 +253,64 @@ def test_seeded_rapid_sampler_reproduces_suggestion_sequence(monkeypatch):
         (suggestion.selection, suggestion.parallel_config)
         for suggestion in second_suggestions
     ]
+
+
+def test_seed_zero_projects_sparse_scheduler_domain_without_retry_luck(monkeypatch):
+    monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
+    branch = _sparse_scheduler_branch()
+    sampler = make_branch_sampler(branch, study_id="sparse_seed_zero", seed=0)
+
+    suggestions = sampler.suggest(count=176)
+
+    assert len(suggestions) == 176
+    assert all(
+        branch.supports_selection(suggestion.parallel_config, suggestion.selection)
+        for suggestion in suggestions
+    )
+    assert all(
+        (
+            suggestion.selection["agg_max_num_batched_tokens"],
+            suggestion.selection["agg_max_num_seqs"],
+        )
+        == (9, 9)
+        for suggestion in suggestions
+    )
+    assert suggestions[0].projection is not None
+    assert suggestions[0].projection.scheduler_projected
+
+    sampler.observe(suggestions[0], {"objective": 1.0})
+    metadata = suggestions[0].handle.metadata
+    projection = json.loads(metadata["sweeper_projection"])
+    assert projection["requested_scheduler"] != projection["actual_scheduler"]
+    assert set(projection["requested_scheduler"].values()) <= set(range(1, 10))
+    assert projection["actual_scheduler"] == {
+        "agg_max_num_batched_tokens": 9,
+        "agg_max_num_seqs": 9,
+    }
+    assert projection["scheduler_projected"]
+
+
+def test_seeded_rapid_scheduler_pairs_stay_in_thorough_domain(monkeypatch):
+    monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
+    branch = _paired_scheduler_branch()
+    thorough = ExhaustiveBranchSampler(branch)
+    thorough_suggestions = thorough.suggest(count=10)
+    thorough_domain = {
+        (suggestion.parallel_config, tuple(sorted(suggestion.selection.items())))
+        for suggestion in thorough_suggestions
+    }
+
+    assert thorough.candidate_count == 2
+    assert len(thorough_suggestions) == 2
+    for seed in (0, 1, 73):
+        sampler = make_branch_sampler(
+            branch, study_id=f"sparse_domain_seed_{seed}", seed=seed
+        )
+        for suggestion in sampler.suggest(count=12):
+            assert (
+                suggestion.parallel_config,
+                tuple(sorted(suggestion.selection.items())),
+            ) in thorough_domain
 
 
 def test_suggest_produces_valid_selections():
@@ -387,6 +500,18 @@ def test_projection_is_written_to_trial_metadata(monkeypatch):
     assert projection["actual_parallel_config"]
     assert projection["requested_features"]
     assert projection["actual_features"]
+
+
+def test_seeded_observe_infeasible_marks_trial_and_continues(monkeypatch):
+    monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
+    sampler = make_branch_sampler(_branch(), study_id="infeasible_seed_zero", seed=0)
+    suggestion = sampler.suggest(count=1)[0]
+
+    sampler.observe_infeasible(suggestion, "forced infeasible regression")
+
+    assert suggestion.handle.infeasible
+    assert suggestion.handle.infeasibility_reason == "forced infeasible regression"
+    assert sampler.suggest(count=1)
 
 
 def test_suggest_observe_round_trips():

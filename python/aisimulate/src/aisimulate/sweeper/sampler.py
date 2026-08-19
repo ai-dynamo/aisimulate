@@ -288,7 +288,7 @@ class VizierBranchSampler:
             }
             for knob, decode in self._decoders.items():
                 selection[knob] = decode(params[knob])
-            if self._parallel_pinned:
+            if self._parallel_pinned and not self.branch.scheduler_knob_names:
                 parallel_config = self.branch.parallel_configs[0]
                 projection = None
             else:
@@ -296,6 +296,7 @@ class VizierBranchSampler:
                     params, selection["backend"], selection
                 )
                 parallel_config = projection.config
+                selection.update(projection.actual_scheduler)
             suggestions.append(
                 Suggestion(
                     selection=selection,
@@ -338,7 +339,7 @@ class VizierBranchSampler:
         _, vz = _vizier_modules()
 
         self._update_projection_metadata(suggestion)
-        suggestion.handle.complete(vz.Measurement(), infeasible_reason=reason)
+        suggestion.handle.complete(vz.Measurement(), infeasibility_reason=reason)
         self._update_designer(suggestion)
 
     def _update_designer(self, suggestion: Suggestion) -> None:

@@ -66,6 +66,10 @@ class ParallelProjection:
     actual_features: dict[str, float | str]
     distance: float
     mode_projected: bool
+    requested_scheduler: dict[str, int]
+    actual_scheduler: dict[str, int]
+    scheduler_distance: float
+    scheduler_projected: bool
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -74,6 +78,10 @@ class ParallelProjection:
             "projection_distance": self.distance,
             "mode_projected": self.mode_projected,
             "actual_parallel_config": asdict(self.config),
+            "requested_scheduler": self.requested_scheduler,
+            "actual_scheduler": self.actual_scheduler,
+            "scheduler_projection_distance": self.scheduler_distance,
+            "scheduler_projected": self.scheduler_projected,
         }
 
 
@@ -258,6 +266,89 @@ class ParallelConfigProjector:
             )
         return requested
 
+    def _project_scheduler(
+        self,
+        backend: str,
+        selection: dict[str, Any] | None,
+        backend_candidates: list[ParallelConfig],
+    ) -> tuple[
+        list[ParallelConfig],
+        dict[str, int],
+        dict[str, int],
+        float,
+    ]:
+        """Project independent scheduler knobs onto the backend's legal relation."""
+
+        names = self.branch.scheduler_knob_names
+        if not names:
+            return backend_candidates, {}, {}, 0.0
+        if selection is None:
+            raise ValueError(
+                "scheduler-conditioned parallel projection requires a concrete selection"
+            )
+        try:
+            requested_point = tuple(int(selection[name]) for name in names)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"scheduler-conditioned parallel projection requires every concrete scheduler knob: {names}"
+            ) from exc
+
+        legal_points = sorted(
+            {
+                point
+                for config in backend_candidates
+                for point in self.branch.scheduler_support.get(config, {}).get(
+                    backend, frozenset()
+                )
+            }
+        )
+        if not legal_points:
+            raise ValueError(
+                f"backend {backend!r} has no scheduler-feasible parallel config in this branch"
+            )
+
+        domains = {
+            name: tuple(
+                dict.fromkeys(int(value) for value in self.branch.knob_choices[name])
+            )
+            for name in names
+        }
+
+        def scheduler_distance(point: tuple[int, ...]) -> float:
+            distance = 0.0
+            for name, requested, actual in zip(
+                names, requested_point, point, strict=True
+            ):
+                domain = domains[name]
+                span = max(domain) - min(domain)
+                if span:
+                    delta = (actual - requested) / span
+                    distance += delta * delta
+                elif actual != requested:
+                    return math.inf
+            return distance
+
+        actual_point = min(
+            legal_points,
+            key=lambda point: (scheduler_distance(point), point),
+        )
+        candidates = [
+            config
+            for config in backend_candidates
+            if actual_point
+            in self.branch.scheduler_support.get(config, {}).get(backend, frozenset())
+        ]
+        if not candidates:  # Defensive consistency guard for the relation above.
+            raise ValueError(
+                f"backend {backend!r} scheduler point {actual_point} has no parallel config"
+            )
+        return (
+            candidates,
+            dict(zip(names, requested_point, strict=True)),
+            dict(zip(names, actual_point, strict=True)),
+            scheduler_distance(actual_point),
+        )
+
     def project(
         self,
         params: dict[str, Any],
@@ -274,17 +365,12 @@ class ParallelConfigProjector:
             raise ValueError(
                 f"backend {backend!r} has no valid parallel config in this branch"
             )
-        scheduler_selection = {"backend": backend, **(selection or {})}
-        candidates = [
-            config
-            for config in backend_candidates
-            if self.branch.supports_selection(config, scheduler_selection)
-        ]
-        # Independent optimizer dimensions can request a scheduler/backend point
-        # with no legal topology. Return a deterministic topology for trial
-        # bookkeeping; the search loop rejects it through the same exact relation.
-        if not candidates:
-            candidates = backend_candidates
+        (
+            candidates,
+            requested_scheduler,
+            actual_scheduler,
+            scheduler_distance,
+        ) = self._project_scheduler(backend, selection, backend_candidates)
         scheduler_candidates = list(candidates)
 
         categorical_names = [
@@ -349,4 +435,8 @@ class ParallelConfigProjector:
             actual_features=dict(self._features[selected]),
             distance=numeric_distance(selected),
             mode_projected=min_mismatches > 0,
+            requested_scheduler=requested_scheduler,
+            actual_scheduler=actual_scheduler,
+            scheduler_distance=scheduler_distance,
+            scheduler_projected=requested_scheduler != actual_scheduler,
         )

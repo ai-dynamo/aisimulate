@@ -155,6 +155,66 @@ def test_rapid_projection_filters_topologies_by_exact_scheduler_limits():
     )
 
     assert projection.config == small
+    assert projection.requested_scheduler == {
+        "agg_max_num_batched_tokens": 4096,
+        "agg_max_num_seqs": 1,
+    }
+    assert projection.actual_scheduler == projection.requested_scheduler
+    assert not projection.scheduler_projected
+
+
+def test_rapid_projection_snaps_invalid_scheduler_to_nearest_legal_pair():
+    small = _role(gpus=4, attention="tp", ffn="ep", replicas=4)
+    large = _role(gpus=8, attention="dp", ffn="ep", replicas=2)
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(small, large),
+        supported_backends={
+            small: frozenset({"vllm"}),
+            large: frozenset({"vllm"}),
+        },
+        knob_choices={
+            "backend": ["vllm"],
+            "agg_max_num_batched_tokens": [4096, 8192, 32768],
+            "agg_max_num_seqs": [1, 512],
+        },
+        gpu_budget=16,
+        scheduler_knob_names=(
+            "agg_max_num_batched_tokens",
+            "agg_max_num_seqs",
+        ),
+        scheduler_support={
+            small: {"vllm": frozenset({(4096, 1)})},
+            large: {"vllm": frozenset({(32768, 512)})},
+        },
+    )
+    projector = ParallelConfigProjector(branch)
+
+    projection = projector.project(
+        {
+            USED_GPU_RATIO: 1.0,
+            AGG_GPUS_PER_ENGINE: 8,
+            AGG_ATTENTION_MODE: "dp",
+            AGG_FFN_MODE: "ep",
+        },
+        "vllm",
+        {
+            "agg_max_num_batched_tokens": 8192,
+            "agg_max_num_seqs": 1,
+        },
+    )
+
+    assert projection.config == small
+    assert projection.requested_scheduler == {
+        "agg_max_num_batched_tokens": 8192,
+        "agg_max_num_seqs": 1,
+    }
+    assert projection.actual_scheduler == {
+        "agg_max_num_batched_tokens": 4096,
+        "agg_max_num_seqs": 1,
+    }
+    assert projection.scheduler_projected
+    assert projection.scheduler_distance > 0.0
 
 
 def test_projection_falls_back_when_requested_mode_has_no_valid_config():
