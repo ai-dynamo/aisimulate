@@ -19,7 +19,9 @@ replaces the old BF16 min-GPU weight floor entirely.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
+from typing import Any
 
 from aiconfigurator.generator.naive import _estimate_model_weight_bytes
 from aiconfigurator_core.sdk import perf_database
@@ -48,7 +50,29 @@ _GQA_MOE_ARCHITECTURES = frozenset({"Qwen3MoeForCausalLM"})
 
 
 class NoViableParallelConfig(ValueError):
-    """No parallel config can hold the model+sequence within the GPU budget."""
+    """No parallel config can hold the model+sequence within the GPU budget.
+
+    ``enumeration_reports`` is populated by branch enumeration when configured
+    domains were considered and pruned before sampling. Keeping the ordered
+    reports on the terminal error prevents all-pairs-pruned diagnostics from
+    being reduced to a list of skipped deployment modes.
+    """
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        enumeration_reports: tuple[dict[str, Any], ...] = (),
+    ) -> None:
+        self.detail = detail
+        self.enumeration_reports = tuple(deepcopy(enumeration_reports))
+        super().__init__(detail)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "detail": self.detail,
+            "enumeration_reports": deepcopy(list(self.enumeration_reports)),
+        }
 
 
 @dataclass(frozen=True)

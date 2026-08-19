@@ -295,7 +295,9 @@ class RoleEstimate:
 
     @property
     def standalone_sequence_rate(self) -> float:
-        return self.workers * self.sequence_rate_per_worker
+        value = self.workers * self.sequence_rate_per_worker
+        _positive_finite("standalone_sequence_rate", value, role=self.identity.role)
+        return value
 
 
 @dataclass(frozen=True)
@@ -329,6 +331,17 @@ class DisaggRateMatchResult:
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(
                     f"DisaggRateMatchResult.{name} must be finite and non-negative, got {value!r}"
+                )
+        for name, value in self.role_rates.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0.0
+            ):
+                raise ValueError(
+                    "DisaggRateMatchResult.role_rates"
+                    f"[{name!r}] must be finite and non-negative, got {value!r}"
                 )
         object.__setattr__(self, "role_rates", MappingProxyType(dict(self.role_rates)))
         object.__setattr__(self, "role_identities", MappingProxyType(dict(self.role_identities)))
@@ -379,8 +392,16 @@ def rate_match_disaggregated(
         _positive_int("gpu_budget", gpu_budget, role=DisaggRole.DECODE)
 
     resolved = controls or DisaggRateMatchControls()
-    prefill_rate = prefill.standalone_sequence_rate * resolved.prefill_degradation
-    decode_rate = decode.standalone_sequence_rate * resolved.decode_degradation
+    prefill_standalone_rate = prefill.standalone_sequence_rate
+    decode_standalone_rate = decode.standalone_sequence_rate
+    prefill_rate = prefill_standalone_rate * resolved.prefill_degradation
+    decode_rate = decode_standalone_rate * resolved.decode_degradation
+    _positive_finite(
+        "effective_sequence_rate", prefill_rate, role=DisaggRole.PREFILL
+    )
+    _positive_finite(
+        "effective_sequence_rate", decode_rate, role=DisaggRole.DECODE
+    )
     sequence_rate = min(prefill_rate, decode_rate)
     limiting_role = DisaggRole.PREFILL if prefill_rate <= decode_rate else DisaggRole.DECODE
     prefill_gpus = prefill.total_gpus
@@ -404,9 +425,9 @@ def rate_match_disaggregated(
     request_latency_ms = ttft_ms + tpot_ms * max(output_length - 1, 0)
     tokens_per_second = sequence_rate * output_length
     role_rates = {
-        "prefill_standalone": prefill.standalone_sequence_rate,
+        "prefill_standalone": prefill_standalone_rate,
         "prefill_effective": prefill_rate,
-        "decode_standalone": decode.standalone_sequence_rate,
+        "decode_standalone": decode_standalone_rate,
         "decode_effective": decode_rate,
     }
     return DisaggRateMatchResult(

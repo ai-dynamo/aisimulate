@@ -19,7 +19,7 @@ from aisimulate.sweeper.heterogeneous import (
     RoleSearchError,
     rate_match_disaggregated,
 )
-from aisimulate.sweeper.replay import EstimatorSpec
+from aisimulate.sweeper.replay import EstimatorSpec, canonical_json
 
 
 def _identity(
@@ -309,8 +309,107 @@ def test_rate_matching_rejects_finite_inputs_that_overflow_outputs() -> None:
         gpus_per_worker=1,
     )
 
-    with pytest.raises(ValueError, match="must be finite"):
+    with pytest.raises(ValueError, match="finite"):
         rate_match_disaggregated(prefill, decode, output_length=2)
+
+
+@pytest.mark.parametrize(
+    ("workers", "controls", "field"),
+    [
+        (2, None, "standalone_sequence_rate"),
+        (
+            1,
+            DisaggRateMatchControls(prefill_degradation=2.0),
+            "effective_sequence_rate",
+        ),
+    ],
+)
+def test_rate_matching_rejects_role_rate_arithmetic_overflow(
+    workers: int,
+    controls: DisaggRateMatchControls | None,
+    field: str,
+) -> None:
+    prefill = _estimate(
+        _identity(
+            DisaggRole.PREFILL,
+            model="m",
+            system="h100_sxm",
+            backend="vllm",
+            version="1",
+        ),
+        rate=1e308,
+        latency_ms=1.0,
+        workers=workers,
+        gpus_per_worker=1,
+    )
+    decode = _estimate(
+        _identity(
+            DisaggRole.DECODE,
+            model="m",
+            system="h100_sxm",
+            backend="vllm",
+            version="1",
+        ),
+        rate=1.0,
+        latency_ms=1.0,
+        workers=1,
+        gpus_per_worker=1,
+    )
+
+    with pytest.raises(RoleSearchError) as exc_info:
+        rate_match_disaggregated(
+            prefill, decode, output_length=2, controls=controls
+        )
+
+    assert exc_info.value.role is DisaggRole.PREFILL
+    assert exc_info.value.category is RoleFailureCategory.INVALID_ESTIMATE
+    assert exc_info.value.as_dict()["provenance"] == {
+        "field": field,
+        "value": float("inf"),
+    }
+
+
+def test_rate_match_result_validates_role_rates_before_canonical_json() -> None:
+    prefill = _estimate(
+        _identity(
+            DisaggRole.PREFILL,
+            model="m",
+            system="h100_sxm",
+            backend="vllm",
+            version="1",
+        ),
+        rate=1.0,
+        latency_ms=1.0,
+        workers=1,
+        gpus_per_worker=1,
+    )
+    decode = _estimate(
+        _identity(
+            DisaggRole.DECODE,
+            model="m",
+            system="h100_sxm",
+            backend="vllm",
+            version="1",
+        ),
+        rate=1.0,
+        latency_ms=1.0,
+        workers=1,
+        gpus_per_worker=1,
+    )
+
+    result = rate_match_disaggregated(prefill, decode, output_length=2)
+
+    assert canonical_json(result.as_dict())
+    with pytest.raises(ValueError, match=r"role_rates\['prefill_standalone'\]"):
+        type(result)(
+            **{
+                **result.__dict__,
+                "role_rates": {
+                    **result.role_rates,
+                    "prefill_standalone": float("inf"),
+                },
+            }
+        )
 
 
 def test_gpu_budget_failure_is_role_attributed_and_actionable() -> None:

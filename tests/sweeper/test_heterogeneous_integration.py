@@ -366,6 +366,92 @@ def test_partial_heterogeneous_pair_pruning_retains_stable_diagnostics(
     ]
 
 
+def test_all_heterogeneous_pairs_pruned_retain_terminal_report(
+    monkeypatch,
+) -> None:
+    config = _config(
+        prefill_backend=["sglang", "vllm"],
+        decode_backend=["vllm"],
+    )
+    mixed = _catalog()
+    homogeneous_prefill = _estimator(
+        "vllm", model="prefill/model", system="gb200_nv18", version="0.10.1"
+    )
+    homogeneous = RoleEstimatorSpecs(
+        pair=DisaggBackendPair("vllm", "vllm"),
+        prefill=homogeneous_prefill,
+        decode=mixed.decode,
+        identities={
+            "prefill": RoleIdentity(
+                DisaggRole.PREFILL,
+                homogeneous_prefill.model_path,
+                homogeneous_prefill.system,
+                homogeneous_prefill.backend,
+                homogeneous_prefill.backend_version,
+            ),
+            "decode": mixed.identities["decode"],
+        },
+    )
+    catalogs = {mixed.pair.label: mixed, homogeneous.pair.label: homogeneous}
+    controls = {
+        pair_label: {
+            "prefill": EngineControlTemplate(
+                estimators.prefill.backend, 32768, "EXAMPLE", True, "of_total"
+            ),
+            "decode": EngineControlTemplate(
+                estimators.decode.backend, 16384, "EXAMPLE", False, "of_total"
+            ),
+        }
+        for pair_label, estimators in catalogs.items()
+    }
+
+    def no_role_fits(model, system, **kwargs):
+        raise search_space_mod.NoViableParallelConfig(
+            f"{kwargs['backend']} role does not fit"
+        )
+
+    monkeypatch.setattr(search_space_mod, "parallel_configs_for", no_role_fits)
+    capabilities = RunnerCapabilities(
+        supported_backend_topologies=(("vllm", "disagg"), ("sglang", "disagg")),
+        supported_disaggregated_backend_pairs=(
+            ("sglang", "vllm"),
+            ("vllm", "vllm"),
+        ),
+    )
+
+    with pytest.warns(UserWarning) as warning_records, pytest.raises(
+        search_space_mod.NoViableParallelConfig
+    ) as exc_info:
+        enumerate_branches(
+            config,
+            runner_capabilities=capabilities,
+            role_estimator_specs=catalogs,
+            role_engine_controls=controls,
+        )
+
+    assert any("no configured backend" in str(item.message) for item in warning_records)
+    assert exc_info.value.as_dict()["enumeration_reports"] == [
+        {
+            "deployment_mode": "disagg",
+            "counts": {"considered": 2, "accepted": 0, "pruned": 2},
+            "pruning_diagnostics": [
+                {
+                    "backend": mixed.pair.label,
+                    "role": "prefill",
+                    "category": "no_parallel_config",
+                    "detail": "sglang role does not fit",
+                },
+                {
+                    "backend": homogeneous.pair.label,
+                    "role": "prefill",
+                    "category": "no_parallel_config",
+                    "detail": "vllm role does not fit",
+                },
+            ],
+        }
+    ]
+
+
 def test_deployment_materializes_role_correct_engine_and_estimator_payloads() -> None:
     config = _config(
         enable_chunked_prefill=True,
