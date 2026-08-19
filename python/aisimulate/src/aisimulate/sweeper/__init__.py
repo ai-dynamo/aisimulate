@@ -16,12 +16,16 @@ from typing import Any
 from .config import (
     AdapterSearchConfig,
     Candidate,
+    DatabaseMode,
+    EngineStepBackend,
+    ForwardModel,
     OptimizationGoal,
     OptimizationTarget,
     SearchSpace,
     SLATarget,
     SmartSearchConfig,
     SweepConfig,
+    TransferKind,
     Workload,
 )
 from .discovery import (
@@ -42,6 +46,7 @@ from .provider import (
 from .replay import (
     REPLAY_SPEC_API_VERSION,
     BackendDeploymentSpec,
+    EstimatorSpec,
     HookCapability,
     ReplayOutputRequirements,
     ReplayReport,
@@ -54,6 +59,8 @@ from .replay import (
 
 _LAZY_EXPORTS = {
     "build_backend_deployment": (".deploy", "build_backend_deployment"),
+    "EstimatorResolutionError": (".estimator", "EstimatorResolutionError"),
+    "resolve_estimator_specs": (".estimator", "resolve_estimator_specs"),
     "NoPerfDatabase": (".kv_estimate", "NoPerfDatabase"),
     "estimate_kv_tokens": (".kv_estimate", "estimate_kv_tokens"),
     "feasible_shape_tokens": (".kv_estimate", "feasible_shape_tokens"),
@@ -104,7 +111,12 @@ __all__ = [
     "BranchSpace",
     "Candidate",
     "CandidateContext",
+    "DatabaseMode",
     "DisaggParallelConfig",
+    "EngineStepBackend",
+    "EstimatorResolutionError",
+    "EstimatorSpec",
+    "ForwardModel",
     "HookCapability",
     "ModelHardware",
     "NoPerfDatabase",
@@ -130,6 +142,7 @@ __all__ = [
     "SweepConfigProvider",
     "SweepContext",
     "Sweeper",
+    "TransferKind",
     "Workload",
     "build_backend_deployment",
     "canonical_json",
@@ -145,6 +158,7 @@ __all__ = [
     "objective_value",
     "parallel_configs_for",
     "rank",
+    "resolve_estimator_specs",
     "resolve_model_hardware",
     "resolve_providers",
     "score_report",

@@ -13,6 +13,7 @@ from aisimulate.sweeper.kv_load import KVLoadResolution
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import (
     BackendDeploymentSpec,
+    EstimatorSpec,
     ReplayReport,
     ReplaySpec,
     RunnerCapabilities,
@@ -141,14 +142,35 @@ def _branch(parallel_config):
     )
 
 
+def _estimator_spec(backend="trtllm", version="1.3.0rc10"):
+    return EstimatorSpec(
+        model_path="deepseek-ai/DeepSeek-V3",
+        model_architecture="DeepseekV3ForCausalLM",
+        system="gb200",
+        backend=backend,
+        backend_version=version,
+        performance_data_version=version,
+        database_mode="SILICON",
+        transfer_policy=("xshape", "xquant", "xprofile", "xop"),
+        forward_model="op_level",
+        engine_step_backend="rust",
+        systems_paths=("/systems",),
+        performance_data_root="/systems",
+    )
+
+
 def _stub(monkeypatch, branch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, estimator_specs=None: [branch],
     )
     monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
+        search_mod,
+        "resolve_estimator_specs",
+        lambda search_space: {
+            backend: _estimator_spec(backend) for backend in search_space.backend
+        },
     )
 
 
@@ -175,9 +197,19 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     assert all(
         candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates
     )
+    assert all(
+        candidate.config["estimator"]["model_architecture"]
+        == "DeepseekV3ForCausalLM"
+        for candidate in candidates
+    )
     assert candidates[0].metrics["gpu_hours"] == 1.0
     assert factory.worker_ids == [0]
     assert all(isinstance(spec, ReplaySpec) for spec in factory.runner.specs)
+    assert all(
+        spec.backend_deployment.estimator is not None
+        and spec.backend_deployment.estimator.backend_version == "1.3.0rc10"
+        for spec in factory.runner.specs
+    )
     assert factory.runner.closed
 
 
@@ -484,6 +516,34 @@ def test_replay_spec_version_is_checked_before_runner_creation(monkeypatch):
     assert factory.worker_ids == []
 
 
+def test_estimator_identity_fails_before_branch_enumeration(monkeypatch):
+    factory = _FakeRunnerFactory()
+    branch_called = False
+
+    def fail_resolution(search_space):
+        del search_space
+        raise ValueError("pinned estimator unavailable")
+
+    def enumerate_never(*args, **kwargs):
+        nonlocal branch_called
+        branch_called = True
+        return []
+
+    monkeypatch.setattr(search_mod, "resolve_estimator_specs", fail_resolution)
+    monkeypatch.setattr(search_mod, "enumerate_branches", enumerate_never)
+
+    with pytest.raises(ValueError, match="pinned estimator unavailable"):
+        _run_sweep(
+            _config(),
+            runner_factory=factory,
+            sampler_factory=_FakeSampler,
+            show_progress=False,
+        )
+
+    assert not branch_called
+    assert factory.worker_ids == []
+
+
 def test_unsupported_backend_pair_never_reaches_runner(monkeypatch):
     pc = _pc()
     branch = BranchSpace(
@@ -663,10 +723,14 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, estimator_specs=None: [agg, disagg],
     )
     monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
+        search_mod,
+        "resolve_estimator_specs",
+        lambda search_space: {
+            backend: _estimator_spec(backend) for backend in search_space.backend
+        },
     )
     seen = []
 

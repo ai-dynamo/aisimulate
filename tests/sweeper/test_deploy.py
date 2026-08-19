@@ -12,6 +12,7 @@ from aisimulate.sweeper.parallel_enum import (
     ParallelShape,
     ReplicaParallelConfig,
 )
+from aisimulate.sweeper.replay import EstimatorSpec
 from aisimulate.sweeper.sample import unroll_sample
 
 BACKEND_VERSION = "1.3.0rc10"
@@ -175,6 +176,47 @@ def test_optional_backend_runtime_values_are_forwarded():
 
     assert engine["startup_time"] == 45.0
     assert engine["aic_nextn"] == 2
+
+
+def test_resolved_estimator_contract_is_forwarded_to_every_engine():
+    estimator = EstimatorSpec(
+        model_path="example/model",
+        model_architecture="ExampleForCausalLM",
+        system="example_sku",
+        backend="trtllm",
+        backend_version=BACKEND_VERSION,
+        performance_data_version=BACKEND_VERSION,
+        database_mode="HYBRID",
+        transfer_policy=("xshape", "xquant"),
+        forward_model="fpm",
+        engine_step_backend="rust",
+        systems_paths=("/custom/systems",),
+        performance_data_root="/custom/systems",
+    )
+    sample = unroll_sample(
+        search_space=_space(),
+        selection=_agg_selection(),
+        parallel_config=AGG_MOE,
+    )
+
+    deployment = build_backend_deployment(
+        sample,
+        backend_version=BACKEND_VERSION,
+        estimator=estimator,
+    )
+
+    assert deployment.estimator is estimator
+    expected = {
+        "aic_database_mode": "HYBRID",
+        "aic_transfer_policy": ["xshape", "xquant"],
+        "aic_forward_model": "fpm",
+        "aic_engine_step_backend": "rust",
+        "aic_systems_paths": ["/custom/systems"],
+        "aic_performance_data_version": BACKEND_VERSION,
+    }
+    engine = deployment.agg_engine_args
+    assert engine is not None
+    assert {key: engine[key] for key in expected} == expected
 
 
 def test_backend_deployment_contains_no_dynamo_policy_fields():

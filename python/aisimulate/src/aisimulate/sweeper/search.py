@@ -44,7 +44,7 @@ from tqdm import tqdm
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
-from .kv_estimate import resolve_backend_version
+from .estimator import resolve_estimator_specs
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
     AdapterReplaySpec,
@@ -57,6 +57,7 @@ from .provider import (
 )
 from .replay import (
     REPLAY_SPEC_API_VERSION,
+    EstimatorSpec,
     ReplayReport,
     ReplaySpec,
     Runner,
@@ -368,6 +369,7 @@ def _materialize_one(
     providers: Mapping[str, SweepConfigProvider],
     provider_plans: Mapping[str, AdapterSearchPlan],
     runner_factory: RunnerFactory,
+    estimator_specs: Mapping[str, EstimatorSpec],
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
     try:
@@ -376,13 +378,13 @@ def _materialize_one(
             selection=selection,
             parallel_config=parallel_config,
         )
-        backend_version = resolve_backend_version(
-            config.search_space.hardware_sku, selection["backend"]
-        )
+        estimator = estimator_specs[selection["backend"]]
+        backend_version = estimator.backend_version
         # The resolved perf-model version is part of the evaluated contract. Keep it
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
         sample["backend_version"] = backend_version
+        sample["estimator"] = asdict(estimator)
         concurrency = config.workload.concurrency
         if "kv_load_ratio" in selection:
             ratio = float(selection["kv_load_ratio"])
@@ -407,7 +409,9 @@ def _materialize_one(
             # concurrency and one derived from kv_load_ratio.
             sample["concurrency"] = concurrency
         backend_deployment = build_backend_deployment(
-            sample, backend_version=backend_version
+            sample,
+            backend_version=backend_version,
+            estimator=estimator,
         )
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
@@ -618,12 +622,18 @@ class Sweeper:
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
 
+        # Resolve every estimator/data identity before branch enumeration creates
+        # studies or adapters perform work. Candidate materialization consumes this
+        # immutable map and never re-resolves ``latest`` independently.
+        estimator_specs = resolve_estimator_specs(config.search_space)
+
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
         branches = enumerate_branches(
             config,
             max_seq_len=config.search_space.context_length,
             runner_capabilities=capabilities,
+            estimator_specs=estimator_specs,
         )
         resolved_providers, provider_plans = _prepare_providers(
             config, injected=providers, show_progress=show_progress
@@ -927,6 +937,7 @@ class Sweeper:
                                 providers=resolved_providers,
                                 provider_plans=provider_plans,
                                 runner_factory=runner_factory,
+                                estimator_specs=estimator_specs,
                             )
                             if build_result is not None:
                                 (

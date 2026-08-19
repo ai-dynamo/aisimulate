@@ -26,7 +26,8 @@ replay runtime.
 ```mermaid
 flowchart TD
     A["Validate SmartSearchConfig"] --> B["Preflight Runner capabilities"]
-    B --> C["Enumerate backend branches"]
+    B --> R["Resolve estimator and performance-data identities"]
+    R --> C["Enumerate backend branches"]
     C --> D["Resolve configured providers"]
     D --> E["Generate namespaced search dimensions"]
     E --> F["Ask sampler for suggestions"]
@@ -41,6 +42,12 @@ flowchart TD
 Provider code runs in the main process. Worker tasks receive only a serializable `ReplaySpec`; they
 do not import or pickle provider objects. Each worker creates one runner and reuses it for candidate
 replays.
+
+The `ReplaySpec.backend_deployment.estimator` contract pins the model path and architecture,
+system, backend and performance-data version, database mode, normalized empirical-transfer policy,
+forward model, engine-step backend, and resolved system roots. Resolution is request-scoped and
+happens once before search, so worker processes never consult mutable global system paths or choose
+a newer data version independently.
 
 ## Provider Preparation
 

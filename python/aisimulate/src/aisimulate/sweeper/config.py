@@ -61,6 +61,83 @@ class OptimizationTarget(str, Enum):
         return self is not OptimizationTarget.E2E_LATENCY
 
 
+class DatabaseMode(str, Enum):
+    """Performance-data source used by the estimator."""
+
+    SILICON = "SILICON"
+    HYBRID = "HYBRID"
+    EMPIRICAL = "EMPIRICAL"
+    SOL = "SOL"
+
+
+class TransferKind(str, Enum):
+    """Empirical transfer tiers, ordered from highest to lowest confidence."""
+
+    XSHAPE = "xshape"
+    XQUANT = "xquant"
+    XPROFILE = "xprofile"
+    XOP = "xop"
+
+
+class ForwardModel(str, Enum):
+    """Forward-pass model used for every candidate in a sweep."""
+
+    OP_LEVEL = "op_level"
+    FPM = "fpm"
+
+
+class EngineStepBackend(str, Enum):
+    """Engine-step implementation used by the estimator."""
+
+    RUST = "rust"
+
+
+_ALL_TRANSFERS = list(TransferKind)
+_TRANSFER_PRESETS: dict[str, list[TransferKind]] = {
+    "off": [],
+    "conservative": [TransferKind.XSHAPE],
+    "balanced": [TransferKind.XSHAPE, TransferKind.XQUANT],
+    "aggressive": _ALL_TRANSFERS,
+}
+
+
+def _transfer_kind(token: Any) -> TransferKind:
+    if isinstance(token, TransferKind):
+        return token
+    try:
+        return TransferKind(str(token).strip().lower())
+    except ValueError as exc:
+        kinds = ", ".join(kind.value for kind in TransferKind)
+        presets = ", ".join(_TRANSFER_PRESETS)
+        raise ValueError(
+            f"unknown transfer kind/preset {token!r}; valid kinds: {kinds}; "
+            f"presets: {presets}"
+        ) from exc
+
+
+def _normalize_transfer_policy(value: Any) -> list[TransferKind]:
+    """Normalize legacy preset/comma/list syntax into one canonical tier list."""
+
+    if value is None:
+        return list(_ALL_TRANSFERS)
+    values: list[Any]
+    if isinstance(value, str):
+        values = [part.strip() for part in value.split(",") if part.strip()]
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        values = list(value)
+    else:
+        values = [value]
+
+    selected: set[TransferKind] = set()
+    for item in values:
+        key = str(item.value if isinstance(item, TransferKind) else item).strip().lower()
+        if key in _TRANSFER_PRESETS:
+            selected.update(_TRANSFER_PRESETS[key])
+        else:
+            selected.add(_transfer_kind(item))
+    return [kind for kind in TransferKind if kind in selected]
+
+
 class SLATarget(BaseModel):
     """Per-request latency bounds in ms. Set ttft_ms+itl_ms, or e2e_ms."""
 
@@ -427,6 +504,18 @@ class SearchSpace(BaseModel):
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
+    # A string pins the sole configured backend. A mapping pins backends
+    # independently while leaving omitted backends on latest-version resolution.
+    backend_version: str | dict[str, str] | None = None
+    database_mode: DatabaseMode = DatabaseMode.SILICON
+    transfer_policy: list[TransferKind] = Field(
+        default_factory=lambda: list(_ALL_TRANSFERS)
+    )
+    forward_model: ForwardModel = ForwardModel.OP_LEVEL
+    engine_step_backend: EngineStepBackend = EngineStepBackend.RUST
+    # Request-scoped system-definition/data roots. ``default`` expands to the
+    # packaged AISimulate Core systems directory without mutating process globals.
+    systems_paths: list[str] = Field(default_factory=lambda: ["default"])
     gpu_budget: int = 32  # max GPUs per candidate
     min_gpu_budget: int | None = None
     context_length: int | None = None
@@ -457,6 +546,36 @@ class SearchSpace(BaseModel):
     agg_gpu_memory_utilization: float = 0.9
     agg_enable_prefix_caching: bool = True
 
+    @field_validator("database_mode", mode="before")
+    @classmethod
+    def _normalize_database_mode(cls, value: Any) -> Any:
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator("forward_model", "engine_step_backend", mode="before")
+    @classmethod
+    def _normalize_lowercase_control(cls, value: Any) -> Any:
+        return value.lower() if isinstance(value, str) else value
+
+    @field_validator("transfer_policy", mode="before")
+    @classmethod
+    def _validate_transfer_policy(cls, value: Any) -> list[TransferKind]:
+        return _normalize_transfer_policy(value)
+
+    @field_validator("systems_paths", mode="before")
+    @classmethod
+    def _normalize_systems_paths(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        return value
+
+    @field_validator("systems_paths")
+    @classmethod
+    def _validate_systems_paths(cls, value: list[str]) -> list[str]:
+        cleaned = [entry.strip() for entry in value if entry.strip()]
+        if not cleaned:
+            raise ValueError("systems_paths must contain at least one path or 'default'")
+        return list(dict.fromkeys(cleaned))
+
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
@@ -472,6 +591,48 @@ class SearchSpace(BaseModel):
                         f"{field_name} has invalid choice {v!r}; allowed: {list(allowed)}"
                     )
         return self
+
+    @model_validator(mode="after")
+    def _validate_backend_versions(self) -> SearchSpace:
+        configured = list(dict.fromkeys(self.backend))
+        if isinstance(self.backend_version, str):
+            if not self.backend_version.strip():
+                raise ValueError("backend_version must be a non-empty version")
+            if len(configured) != 1:
+                raise ValueError(
+                    "a string backend_version requires exactly one configured backend; "
+                    "use a {backend: version} mapping for a multi-backend search"
+                )
+            self.backend_version = self.backend_version.strip()
+        elif isinstance(self.backend_version, dict):
+            unknown = sorted(set(self.backend_version) - set(configured))
+            if unknown:
+                raise ValueError(
+                    f"backend_version contains unconfigured backend(s): {unknown}"
+                )
+            invalid = [
+                backend
+                for backend, version in self.backend_version.items()
+                if not isinstance(version, str) or not version.strip()
+            ]
+            if invalid:
+                raise ValueError(
+                    f"backend_version needs a non-empty version for {sorted(invalid)}"
+                )
+            self.backend_version = {
+                backend: version.strip()
+                for backend, version in self.backend_version.items()
+            }
+        return self
+
+    def requested_backend_version(self, backend: str) -> str | None:
+        """Return the version pin for ``backend``; ``None`` means resolve latest."""
+
+        if isinstance(self.backend_version, str):
+            return self.backend_version
+        if isinstance(self.backend_version, dict):
+            return self.backend_version.get(backend)
+        return None
 
     @model_validator(mode="after")
     def _validate_gpu_budget(self) -> SearchSpace:
