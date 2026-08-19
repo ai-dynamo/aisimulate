@@ -514,6 +514,24 @@ def test_seeded_observe_infeasible_marks_trial_and_continues(monkeypatch):
     assert sampler.suggest(count=1)
 
 
+def test_unseeded_observe_infeasible_marks_trial_and_continues(monkeypatch):
+    monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
+    sampler = make_branch_sampler(
+        _branch(), study_id=f"infeasible_unseeded_{uuid.uuid4().hex}"
+    )
+    suggestion = sampler.suggest(count=1)[0]
+
+    sampler.observe_infeasible(suggestion, "forced service infeasible regression")
+
+    materialized = suggestion.handle.materialize()
+    assert materialized.infeasible
+    assert (
+        materialized.infeasibility_reason
+        == "forced service infeasible regression"
+    )
+    assert sampler.suggest(count=1)
+
+
 def test_suggest_observe_round_trips():
     # Verify the ask/tell round-trip feeds back without error and the study
     # tracks the best observed score. (Convergence quality isn't asserted —

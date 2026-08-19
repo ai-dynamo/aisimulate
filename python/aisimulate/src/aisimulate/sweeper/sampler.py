@@ -339,7 +339,10 @@ class VizierBranchSampler:
         _, vz = _vizier_modules()
 
         self._update_projection_metadata(suggestion)
-        suggestion.handle.complete(vz.Measurement(), infeasibility_reason=reason)
+        if self._designer is None:
+            suggestion.handle.complete(vz.Measurement(), infeasible_reason=reason)
+        else:
+            suggestion.handle.complete(vz.Measurement(), infeasibility_reason=reason)
         self._update_designer(suggestion)
 
     def _update_designer(self, suggestion: Suggestion) -> None:
