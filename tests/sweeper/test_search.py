@@ -164,7 +164,7 @@ def _stub(monkeypatch, branch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None, estimator_specs=None: [branch],
+        lambda config, **kwargs: [branch],
     )
     monkeypatch.setattr(
         search_mod,
@@ -212,8 +212,7 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
         candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates
     )
     assert all(
-        candidate.config["estimator"]["model_architecture"]
-        == "DeepseekV3ForCausalLM"
+        candidate.config["estimator"]["model_architecture"] == "DeepseekV3ForCausalLM"
         for candidate in candidates
     )
     assert candidates[0].metrics["gpu_hours"] == 1.0
@@ -825,7 +824,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None, estimator_specs=None: [agg, disagg],
+        lambda config, **kwargs: [agg, disagg],
     )
     monkeypatch.setattr(
         search_mod,

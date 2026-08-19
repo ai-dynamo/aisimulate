@@ -147,6 +147,7 @@ def test_fpm_rejects_mtp_before_search(monkeypatch, tmp_path):
                 backend_version="0.11.0",
                 forward_model="fpm",
                 aic_nextn=2,
+                nextn_accepted=1.0,
             )
         )
 

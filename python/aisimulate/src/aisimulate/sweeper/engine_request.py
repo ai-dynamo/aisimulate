@@ -18,9 +18,16 @@ from aiconfigurator_core.sdk.models import get_model_family
 from aiconfigurator_core.sdk.perf_database import is_blackwell_system
 
 from .config import SmartSearchConfig, Workload
+from .heterogeneous import (
+    DisaggBackendPair,
+    DisaggRole,
+    RoleEstimatorSpecs,
+    RoleFailureCategory,
+    RoleSearchError,
+)
 from .kv_estimate import memory_fraction_kind
 from .model_hw import resolve_model_hardware
-from .replay import EngineRequestSpec
+from .replay import EngineRequestSpec, RoleEngineRequestSpec
 
 _DEEPSEEK_V4_MEGAMOE_MODELS = frozenset(
     {
@@ -192,4 +199,122 @@ def materialize_engine_request(
         memory_fraction_by_role=memory_by_role,
         max_seq_len=template.max_seq_len,
         model_family=template.model_family,
+    )
+
+
+_ROLE_ENGINE_FIELDS = (
+    "model_name",
+    "hardware_sku",
+    "max_seq_len",
+    "enable_chunked_prefill",
+    "enable_wideep",
+    "enable_eplb",
+    "wideep_num_slots",
+    "moe_backend",
+    "attention_backend",
+    "gemm_quant_mode",
+    "moe_quant_mode",
+    "kvcache_quant_mode",
+    "fmha_quant_mode",
+    "comm_quant_mode",
+    "free_gpu_memory_fraction",
+)
+
+
+def _role_config(
+    config: SmartSearchConfig,
+    role: DisaggRole,
+    backend: str,
+) -> SmartSearchConfig:
+    ss = config.search_space
+    updates = {name: ss.role_value(role.value, name) for name in _ROLE_ENGINE_FIELDS}
+    updates["backend"] = [backend]
+    role_space = ss.model_copy(update=updates)
+    return config.model_copy(update={"search_space": role_space})
+
+
+def resolve_role_engine_controls(
+    config: SmartSearchConfig,
+    estimator_specs: dict[str, RoleEstimatorSpecs],
+) -> dict[str, dict[str, EngineControlTemplate]]:
+    """Resolve engine controls independently for every searched P/D pair."""
+
+    resolved: dict[str, dict[str, EngineControlTemplate]] = {}
+    for pair_label, estimators in estimator_specs.items():
+        role_templates: dict[str, EngineControlTemplate] = {}
+        for role in (DisaggRole.PREFILL, DisaggRole.DECODE):
+            estimator = estimators.estimator_for(role)
+            try:
+                role_templates[role.value] = resolve_engine_controls(
+                    _role_config(config, role, estimator.backend)
+                )[estimator.backend]
+            except ValueError as exc:
+                raise RoleSearchError(
+                    role,
+                    RoleFailureCategory.ENGINE_CONTROLS,
+                    str(exc),
+                    provenance={
+                        "backend_pair": pair_label,
+                        "model_name": estimator.model_path,
+                        "hardware_sku": estimator.system,
+                        "backend": estimator.backend,
+                    },
+                ) from exc
+        resolved[pair_label] = role_templates
+    return resolved
+
+
+def materialize_role_engine_request(
+    pair: DisaggBackendPair,
+    templates: dict[str, EngineControlTemplate],
+    estimators: RoleEstimatorSpecs,
+    *,
+    config: SmartSearchConfig,
+    sample: dict[str, object],
+) -> EngineRequestSpec:
+    """Bind inherited role controls to one heterogeneous candidate."""
+
+    ss = config.search_space
+    role_requests: dict[str, RoleEngineRequestSpec] = {}
+    for role in (DisaggRole.PREFILL, DisaggRole.DECODE):
+        name = role.value
+        template = templates[name]
+        estimator = estimators.estimator_for(role)
+        memory_fraction = ss.role_value(name, "free_gpu_memory_fraction")
+        role_requests[name] = RoleEngineRequestSpec(
+            role=name,
+            backend=pair.backend_for(role),
+            backend_version=estimator.backend_version,
+            cached_prefix_tokens=config.workload.cached_prefix_tokens,
+            context_tokens=int(sample[f"{name}_max_num_batched_tokens"]),
+            enable_chunked_prefill=bool(ss.role_value(name, "enable_chunked_prefill")),
+            enable_wideep=bool(ss.role_value(name, "enable_wideep")),
+            enable_eplb=bool(ss.role_value(name, "enable_eplb")),
+            wideep_num_slots=ss.role_value(name, "wideep_num_slots"),
+            moe_backend=ss.role_value(name, "moe_backend"),
+            attention_backend=ss.role_value(name, "attention_backend"),
+            gemm_quant_mode=ss.role_value(name, "gemm_quant_mode"),
+            moe_quant_mode=ss.role_value(name, "moe_quant_mode"),
+            kvcache_quant_mode=ss.role_value(name, "kvcache_quant_mode"),
+            fmha_quant_mode=ss.role_value(name, "fmha_quant_mode"),
+            comm_quant_mode=ss.role_value(name, "comm_quant_mode"),
+            nextn=ss.aic_nextn or 0,
+            nextn_accepted=ss.nextn_accepted,
+            memory_fraction_kind=template.memory_fraction_kind,
+            memory_fraction=float(
+                memory_fraction
+                if memory_fraction is not None
+                else sample[f"{name}_gpu_memory_utilization"]
+            ),
+            max_seq_len=template.max_seq_len,
+            model_family=template.model_family,
+        )
+    return EngineRequestSpec(
+        cached_prefix_tokens=config.workload.cached_prefix_tokens,
+        context_tokens={
+            role: request.context_tokens for role, request in role_requests.items()
+        },
+        nextn=ss.aic_nextn or 0,
+        nextn_accepted=ss.nextn_accepted,
+        role_requests=role_requests,
     )

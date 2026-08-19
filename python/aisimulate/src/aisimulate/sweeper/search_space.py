@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import SmartSearchConfig
+from .engine_request import EngineControlTemplate
+from .heterogeneous import DisaggRole, RoleEstimatorSpecs
 from .kv_estimate import NoPerfDatabase
 from .model_hw import NoViableParallelConfig, parallel_configs_for
 from .parallel_enum import (
@@ -163,12 +165,123 @@ def _runner_supports_parallel_config(
     )
 
 
+def _engine_kwargs(search_space, role: str | None = None) -> dict[str, Any]:
+    """KV/shape controls for a shared or independently resolved role."""
+
+    get = (
+        (lambda name: getattr(search_space, name))
+        if role is None
+        else (lambda name: search_space.role_value(role, name))
+    )
+    kwargs: dict[str, Any] = {}
+    if get("enable_wideep"):
+        kwargs["enable_wideep"] = True
+    if (moe_backend := get("moe_backend")) is not None:
+        kwargs["moe_backend"] = moe_backend
+    for name in (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "kvcache_quant_mode",
+        "fmha_quant_mode",
+        "comm_quant_mode",
+    ):
+        if (value := get(name)) is not None:
+            kwargs[name] = value
+    if search_space.aic_nextn is not None:
+        kwargs["nextn"] = search_space.aic_nextn
+    if (memory_fraction := get("free_gpu_memory_fraction")) is not None:
+        kwargs["memory_fraction"] = memory_fraction
+    return kwargs
+
+
+def _heterogeneous_support(
+    config: SmartSearchConfig,
+    *,
+    pinned: list[_ParallelConfig] | None,
+    runner_capabilities: RunnerCapabilities | None,
+    role_estimator_specs: Mapping[str, RoleEstimatorSpecs],
+    role_engine_controls: Mapping[str, Mapping[str, EngineControlTemplate]],
+) -> dict[_ParallelConfig, set[str]]:
+    """Enumerate independent role shapes, then pair them under one GPU budget."""
+
+    ss = config.search_space
+    support: dict[_ParallelConfig, set[str]] = {}
+    for pair_label, estimators in role_estimator_specs.items():
+        pair = estimators.pair
+        if runner_capabilities is not None and any(
+            not runner_capabilities.supports_backend_topology(
+                pair.backend_for(role), "disagg"
+            )
+            for role in (DisaggRole.PREFILL, DisaggRole.DECODE)
+        ):
+            continue
+        per_role: dict[str, list[ReplicaParallelConfig]] = {}
+        failed = False
+        for role in (DisaggRole.PREFILL, DisaggRole.DECODE):
+            name = role.value
+            estimator = estimators.estimator_for(role)
+            template = role_engine_controls[pair_label][name]
+            role_candidates = _role_parallel_candidates(ss, name)
+            try:
+                legal = parallel_configs_for(
+                    estimator.model_path,
+                    estimator.system,
+                    gpu_budget=ss.gpu_budget,
+                    deployment_mode="agg",
+                    backend=estimator.backend,
+                    min_gpu_budget=None,
+                    max_seq_len=template.max_seq_len,
+                    backend_version=estimator.backend_version,
+                    systems_paths=list(estimator.systems_paths),
+                    agg_candidates=role_candidates,
+                    **_engine_kwargs(ss, name),
+                )
+            except (NoPerfDatabase, NoViableParallelConfig):
+                failed = True
+                break
+            max_workers = (
+                ss.max_prefill_workers
+                if role is DisaggRole.PREFILL
+                else ss.max_decode_workers
+            )
+            per_role[name] = [
+                value
+                for value in legal
+                if isinstance(value, ReplicaParallelConfig)
+                and value.replicas <= max_workers
+            ]
+        if failed:
+            continue
+        legal_pairs = [
+            DisaggParallelConfig(prefill=prefill, decode=decode)
+            for prefill in per_role["prefill"]
+            for decode in per_role["decode"]
+            if prefill.total_gpus + decode.total_gpus <= ss.gpu_budget
+            and prefill.total_gpus + decode.total_gpus <= ss.max_gpu_per_replica
+            and prefill.total_gpus + decode.total_gpus in ss.num_gpu_per_replica
+            and (
+                ss.min_gpu_budget is None
+                or prefill.total_gpus + decode.total_gpus >= ss.min_gpu_budget
+            )
+        ]
+        legal_set = set(legal_pairs)
+        for candidate in pinned if pinned is not None else legal_pairs:
+            if candidate in legal_set and _runner_supports_parallel_config(
+                runner_capabilities, "disagg", candidate
+            ):
+                support.setdefault(candidate, set()).add(pair_label)
+    return support
+
+
 def enumerate_branches(
     config: SmartSearchConfig,
     *,
     max_seq_len: int | None = None,
     runner_capabilities: RunnerCapabilities | None = None,
     estimator_specs: Mapping[str, EstimatorSpec] | None = None,
+    role_estimator_specs: Mapping[str, RoleEstimatorSpecs] | None = None,
+    role_engine_controls: Mapping[str, Mapping[str, EngineControlTemplate]]
+    | None = None,
 ) -> list[BranchSpace]:
     """One :class:`BranchSpace` per ``deployment_mode``. Within each, ``backend`` is a
     searched knob: the parallel-config domain is the **union** of every configured
@@ -194,99 +307,106 @@ def enumerate_branches(
             if ss.parallel_configs
             else None
         )
-        support: dict[_ParallelConfig, set[str]] = {}
-        runner_incompatible = [
-            backend
-            for backend in ss.backend
-            if runner_capabilities is not None
-            and not runner_capabilities.supports_backend_topology(
-                backend, deployment_mode
+        heterogeneous = deployment_mode == "disagg" and ss.has_role_overrides
+        runner_incompatible: list[str] = []
+        if heterogeneous:
+            if role_estimator_specs is None or role_engine_controls is None:
+                raise ValueError(
+                    "heterogeneous disagg enumeration requires role estimator and engine-control catalogs"
+                )
+            support = _heterogeneous_support(
+                config,
+                pinned=pinned,
+                runner_capabilities=runner_capabilities,
+                role_estimator_specs=role_estimator_specs,
+                role_engine_controls=role_engine_controls,
             )
-        ]
-        for backend in ss.backend:
-            if (
-                runner_capabilities is not None
+            if runner_capabilities is not None:
+                runner_incompatible = [
+                    label
+                    for label, estimators in role_estimator_specs.items()
+                    if any(
+                        not runner_capabilities.supports_backend_topology(
+                            estimators.pair.backend_for(role), "disagg"
+                        )
+                        for role in (DisaggRole.PREFILL, DisaggRole.DECODE)
+                    )
+                ]
+        else:
+            support = {}
+            runner_incompatible = [
+                backend
+                for backend in ss.backend
+                if runner_capabilities is not None
                 and not runner_capabilities.supports_backend_topology(
                     backend, deployment_mode
                 )
-            ):
-                continue
-            try:
-                domain_kwargs: dict[str, Any] = {}
-                for role in ("agg", "prefill", "decode"):
-                    candidates = _role_parallel_candidates(ss, role)
-                    if candidates is not None:
-                        domain_kwargs[f"{role}_candidates"] = candidates
-                for field_name in (
-                    "num_gpu_per_replica",
-                    "max_gpu_per_replica",
-                    "max_prefill_workers",
-                    "max_decode_workers",
-                ):
-                    if field_name in ss.model_fields_set:
-                        value = getattr(ss, field_name)
-                        domain_kwargs[field_name] = (
-                            tuple(value)
-                            if field_name == "num_gpu_per_replica"
-                            else value
-                        )
-                estimator_kwargs: dict[str, Any] = {}
-                if estimator_specs is not None:
-                    estimator = estimator_specs[backend]
-                    estimator_kwargs.update(
-                        backend_version=estimator.backend_version,
-                        systems_paths=list(estimator.systems_paths),
-                    )
-                else:
-                    requested_version = ss.requested_backend_version(backend)
-                    if requested_version is not None:
-                        estimator_kwargs["backend_version"] = requested_version
-                    if ss.systems_paths != ["default"]:
-                        estimator_kwargs["systems_paths"] = ss.systems_paths
-                engine_kwargs: dict[str, Any] = {}
-                if ss.enable_wideep:
-                    engine_kwargs["enable_wideep"] = True
-                if ss.moe_backend is not None:
-                    engine_kwargs["moe_backend"] = ss.moe_backend
-                for name in (
-                    "gemm_quant_mode",
-                    "moe_quant_mode",
-                    "kvcache_quant_mode",
-                    "fmha_quant_mode",
-                    "comm_quant_mode",
-                ):
-                    value = getattr(ss, name)
-                    if value is not None:
-                        engine_kwargs[name] = value
-                if ss.aic_nextn is not None:
-                    engine_kwargs["nextn"] = ss.aic_nextn
-                if ss.free_gpu_memory_fraction is not None:
-                    engine_kwargs["memory_fraction"] = ss.free_gpu_memory_fraction
-                legal = parallel_configs_for(
-                    ss.model_name,
-                    ss.hardware_sku,
-                    gpu_budget=ss.gpu_budget,
-                    deployment_mode=deployment_mode,
-                    backend=backend,
-                    min_gpu_budget=ss.min_gpu_budget,
-                    max_seq_len=max_seq_len,
-                    **domain_kwargs,
-                    **estimator_kwargs,
-                    **engine_kwargs,
-                )
-            except (NoPerfDatabase, NoViableParallelConfig):
-                continue  # backend unusable for this mode -> drop it from the search
-            legal = [
-                cfg
-                for cfg in legal
-                if _runner_supports_parallel_config(
-                    runner_capabilities, deployment_mode, cfg
-                )
             ]
-            legal_set = set(legal)
-            for cfg in pinned if pinned is not None else legal:
-                if cfg in legal_set:
-                    support.setdefault(cfg, set()).add(backend)
+            for backend in ss.backend:
+                if (
+                    runner_capabilities is not None
+                    and not runner_capabilities.supports_backend_topology(
+                        backend, deployment_mode
+                    )
+                ):
+                    continue
+                try:
+                    estimator_kwargs: dict[str, Any] = {}
+                    if estimator_specs is not None:
+                        estimator = estimator_specs[backend]
+                        estimator_kwargs.update(
+                            backend_version=estimator.backend_version,
+                            systems_paths=list(estimator.systems_paths),
+                        )
+                    else:
+                        requested_version = ss.requested_backend_version(backend)
+                        if requested_version is not None:
+                            estimator_kwargs["backend_version"] = requested_version
+                        if ss.systems_paths != ["default"]:
+                            estimator_kwargs["systems_paths"] = ss.systems_paths
+                    domain_kwargs: dict[str, Any] = {}
+                    for role in ("agg", "prefill", "decode"):
+                        candidates = _role_parallel_candidates(ss, role)
+                        if candidates is not None:
+                            domain_kwargs[f"{role}_candidates"] = candidates
+                    for field_name in (
+                        "num_gpu_per_replica",
+                        "max_gpu_per_replica",
+                        "max_prefill_workers",
+                        "max_decode_workers",
+                    ):
+                        if field_name in ss.model_fields_set:
+                            value = getattr(ss, field_name)
+                            domain_kwargs[field_name] = (
+                                tuple(value)
+                                if field_name == "num_gpu_per_replica"
+                                else value
+                            )
+                    legal = parallel_configs_for(
+                        ss.model_name,
+                        ss.hardware_sku,
+                        gpu_budget=ss.gpu_budget,
+                        deployment_mode=deployment_mode,
+                        backend=backend,
+                        min_gpu_budget=ss.min_gpu_budget,
+                        max_seq_len=max_seq_len,
+                        **domain_kwargs,
+                        **estimator_kwargs,
+                        **_engine_kwargs(ss),
+                    )
+                except (NoPerfDatabase, NoViableParallelConfig):
+                    continue  # unusable for this mode -> drop it from the search
+                legal = [
+                    cfg
+                    for cfg in legal
+                    if _runner_supports_parallel_config(
+                        runner_capabilities, deployment_mode, cfg
+                    )
+                ]
+                legal_set = set(legal)
+                for cfg in pinned if pinned is not None else legal:
+                    if cfg in legal_set:
+                        support.setdefault(cfg, set()).add(backend)
 
         if not support:
             if pinned is not None:
@@ -317,11 +437,18 @@ def enumerate_branches(
 
         knob_choices = branch_knob_choices(ss, deployment_mode)
         viable_backends = set().union(*support.values())
-        knob_choices["backend"] = [
-            backend
-            for backend in dict.fromkeys(ss.backend)
-            if backend in viable_backends
-        ]
+        if heterogeneous:
+            knob_choices["backend"] = [
+                label
+                for label in role_estimator_specs or {}
+                if label in viable_backends
+            ]
+        else:
+            knob_choices["backend"] = [
+                backend
+                for backend in dict.fromkeys(ss.backend)
+                if backend in viable_backends
+            ]
         float_ranges: dict[str, tuple[float, float]] = {}
         kv_load_range = config.workload.kv_load_ratio_range
         if kv_load_range is not None:

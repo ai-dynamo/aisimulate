@@ -245,7 +245,7 @@ def _stub_branch(monkeypatch) -> None:
     monkeypatch.setattr(
         search_module,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None, estimator_specs=None: [branch],
+        lambda config, **kwargs: [branch],
     )
     estimator = EstimatorSpec(
         model_path="model",
@@ -456,6 +456,49 @@ def test_adapter_contract_rejects_non_json_values_before_worker_submission() -> 
         )
 
 
+def test_heterogeneous_search_rejects_adapter_without_explicit_opt_in(
+    monkeypatch,
+) -> None:
+    class HeterogeneousUnawareAdapter:
+        name = "test.feature"
+        api_version = 1
+
+        def generate_search_space(self, search_spec, context):
+            del search_spec, context
+            return AdapterSearchPlan()
+
+        def materialize_replay(self, plan, selection, context):
+            del plan, selection, context
+            return AdapterReplaySpec()
+
+    config_data = _config().model_dump(mode="python")
+    config_data["search_space"].update(
+        {
+            "deployment_mode": ["disagg"],
+            "prefill_model_name": "prefill-model",
+        }
+    )
+    config = SmartSearchConfig.model_validate(config_data)
+    monkeypatch.setattr(search_module, "resolve_role_estimator_specs", lambda _: {})
+    monkeypatch.setattr(
+        search_module,
+        "enumerate_branches",
+        lambda config, **kwargs: [],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="supports_heterogeneous_pd=True.*test.feature",
+    ):
+        _run_sweep(
+            config,
+            runner_factory=_RunnerFactory(),
+            providers={"test.feature": HeterogeneousUnawareAdapter()},
+            sampler_factory=_Sampler,
+            show_progress=False,
+        )
+
+
 @pytest.mark.parametrize(
     "spec",
     [
@@ -481,6 +524,7 @@ def test_adapter_replay_contract_rejects_invalid_field_shapes(spec) -> None:
     [
         AdapterSearchPlan(diagnostics=[]),
         AdapterSearchPlan(potential_runtime_hooks=[]),
+        AdapterSearchPlan(supports_heterogeneous_pd=1),
         AdapterSearchPlan(
             fragment=SearchSpaceFragment(choices_by_branch={"agg": {"mode": (1,)}})
         ),

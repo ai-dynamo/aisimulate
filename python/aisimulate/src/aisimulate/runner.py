@@ -220,20 +220,31 @@ def _materialize_engine_execution_spec(
             },
         }
     elif deployment_mode == "disagg":
-        if deployment.backend == "trtllm":
-            raise ValueError("engine replay does not support TensorRT-LLM disagg")
+        prefill_backend = deployment.prefill_backend or deployment.backend
+        decode_backend = deployment.decode_backend or deployment.backend
+        prefill_backend_version = (
+            deployment.prefill_backend_version or deployment.backend_version
+        )
+        decode_backend_version = (
+            deployment.decode_backend_version or deployment.backend_version
+        )
+        if "trtllm" in {prefill_backend, decode_backend}:
+            role = "prefill" if prefill_backend == "trtllm" else "decode"
+            raise ValueError(
+                f"engine replay does not support TensorRT-LLM disagg for {role}"
+            )
         raw_prefill = _required_engine_args(deployment.prefill_engine_args, "prefill")
         raw_decode = _required_engine_args(deployment.decode_engine_args, "decode")
         prefill = _materialize_engine_role(
-            deployment.backend,
-            deployment.backend_version,
+            prefill_backend,
+            prefill_backend_version,
             deployment.parallel_config,
             raw_prefill,
             "prefill",
         )
         decode = _materialize_engine_role(
-            deployment.backend,
-            deployment.backend_version,
+            decode_backend,
+            decode_backend_version,
             deployment.parallel_config,
             raw_decode,
             "decode",
@@ -258,17 +269,6 @@ def _materialize_engine_execution_spec(
             deployment.num_decode_workers,
             "num_decode_workers",
         )
-        prefill_backend = prefill["rank"].get("backend", "vllm")
-        decode_backend = decode["rank"].get("backend", "vllm")
-        if prefill_backend != decode_backend:
-            raise ValueError(
-                "disaggregated prefill and decode must use the same backend: "
-                f"{prefill_backend!r} != {decode_backend!r}"
-            )
-        if prefill_backend == "trtllm":
-            raise ValueError(
-                "engine replay does not support TensorRT-LLM disaggregated mode"
-            )
         engine = {"prefill": prefill, "decode": decode}
         topology = {
             "kind": "disaggregated",

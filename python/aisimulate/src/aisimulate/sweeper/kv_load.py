@@ -45,6 +45,7 @@ def _per_rank_capacity_tokens(
     kvcache_quant_mode: str | None,
     fmha_quant_mode: str | None,
     comm_quant_mode: str | None,
+    systems_paths: tuple[str, ...] | None,
 ) -> int:
     tokens = estimate_kv_tokens(
         shape,
@@ -61,6 +62,7 @@ def _per_rank_capacity_tokens(
         kvcache_quant_mode=kvcache_quant_mode,
         fmha_quant_mode=fmha_quant_mode,
         comm_quant_mode=comm_quant_mode,
+        systems_paths=list(systems_paths) if systems_paths is not None else None,
     )
     if tokens is None:
         raise InfeasibleKVCapacity(
@@ -83,25 +85,51 @@ def _role_capacity_tokens(
         raise ValueError(
             f"{role}_block_size must be greater than zero, got {block_size}"
         )
+    role_request = (
+        sample.get("engine_request", {}).get("role_requests", {}).get(role, {})
+        if isinstance(sample.get("engine_request"), dict)
+        else {}
+    )
+    role_estimator = (
+        sample.get("role_estimators", {}).get(role, {})
+        if isinstance(sample.get("role_estimators"), dict)
+        else {}
+    )
     per_rank_tokens = _per_rank_capacity_tokens(
         config.shape,
-        model_name=str(sample["model_name"]),
-        hardware_sku=str(sample["hardware_sku"]),
-        backend=str(sample["backend"]),
+        model_name=str(sample.get(f"{role}_model_name", sample["model_name"])),
+        hardware_sku=str(sample.get(f"{role}_hardware_sku", sample["hardware_sku"])),
+        backend=str(sample.get(f"{role}_backend", sample["backend"])),
         backend_version=backend_version,
         max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
         max_batch_size=int(sample[f"{role}_max_num_seqs"]),
         memory_fraction=float(
-            sample[f"{role}_gpu_memory_utilization"]
-            if sample.get("free_gpu_memory_fraction") is None
-            else sample["free_gpu_memory_fraction"]
+            role_request.get(
+                "memory_fraction",
+                sample[f"{role}_gpu_memory_utilization"]
+                if sample.get("free_gpu_memory_fraction") is None
+                else sample["free_gpu_memory_fraction"],
+            )
         ),
-        nextn=int(sample.get("aic_nextn") or 0),
-        gemm_quant_mode=sample.get("gemm_quant_mode"),
-        moe_quant_mode=sample.get("moe_quant_mode"),
-        kvcache_quant_mode=sample.get("kvcache_quant_mode"),
-        fmha_quant_mode=sample.get("fmha_quant_mode"),
-        comm_quant_mode=sample.get("comm_quant_mode"),
+        nextn=int(role_request.get("nextn", sample.get("aic_nextn") or 0)),
+        gemm_quant_mode=role_request.get(
+            "gemm_quant_mode", sample.get("gemm_quant_mode")
+        ),
+        moe_quant_mode=role_request.get("moe_quant_mode", sample.get("moe_quant_mode")),
+        kvcache_quant_mode=role_request.get(
+            "kvcache_quant_mode", sample.get("kvcache_quant_mode")
+        ),
+        fmha_quant_mode=role_request.get(
+            "fmha_quant_mode", sample.get("fmha_quant_mode")
+        ),
+        comm_quant_mode=role_request.get(
+            "comm_quant_mode", sample.get("comm_quant_mode")
+        ),
+        systems_paths=(
+            tuple(role_estimator["systems_paths"])
+            if role_estimator.get("systems_paths")
+            else None
+        ),
     )
     # Dynamo's AIC estimator returns per-rank blocks. Offline replay models one
     # engine-wide KV pool, so attention-DP ranks contribute independent capacity;
@@ -122,6 +150,7 @@ def resolve_kv_load(
     parallel_config: ReplicaParallelConfig | DisaggParallelConfig,
     ratio: float,
     backend_version: str,
+    role_backend_versions: dict[str, str] | None = None,
 ) -> KVLoadResolution:
     """Map a normalized KV load to candidate-specific closed-loop concurrency.
 
@@ -148,7 +177,10 @@ def resolve_kv_load(
 
     capacities = {
         role: _role_capacity_tokens(
-            sample, role=role, config=config, backend_version=backend_version
+            sample,
+            role=role,
+            config=config,
+            backend_version=(role_backend_versions or {}).get(role, backend_version),
         )
         for role, config in role_configs.items()
     }

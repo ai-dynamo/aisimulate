@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from .replay import BackendDeploymentSpec, EngineRequestSpec, EstimatorSpec
@@ -31,7 +32,11 @@ def _engine_args_payload(
     moe_ep = int(sample[f"{prefix}moe_ep"])
     pp = int(sample[f"{prefix}pp"])
     cp = int(sample[f"{prefix}cp"])
-    backend = sample["backend"]
+    role_request = engine_request.for_role(role) if engine_request is not None else None
+    backend = role_request.backend if role_request is not None else sample["backend"]
+    resolved_backend_version = (
+        role_request.backend_version if role_request is not None else backend_version
+    )
     memory_fraction_field = {
         "vllm": "gpu_memory_utilization",
         "sglang": "mem_fraction_static",
@@ -41,9 +46,9 @@ def _engine_args_payload(
         "worker_type": "aggregated" if role == "agg" else role,
         "engine_type": backend,
         "aic_backend": backend,
-        "aic_backend_version": backend_version,
-        "aic_system": sample["hardware_sku"],
-        "aic_model_path": sample["model_name"],
+        "aic_backend_version": resolved_backend_version,
+        "aic_system": sample.get(f"{role}_hardware_sku", sample["hardware_sku"]),
+        "aic_model_path": sample.get(f"{role}_model_name", sample["model_name"]),
         "aic_tp_size": tp,
         "aic_pp_size": pp,
         "aic_attention_dp_size": attention_dp,
@@ -52,7 +57,9 @@ def _engine_args_payload(
         "max_num_seqs": int(sample[f"{role}_max_num_seqs"]),
         "block_size": int(sample[f"{role}_block_size"]),
         memory_fraction_field: float(
-            engine_request.memory_fraction_by_role[role]
+            role_request.memory_fraction
+            if role_request is not None
+            else engine_request.memory_fraction_by_role[role]
             if engine_request is not None
             else sample[f"{role}_gpu_memory_utilization"]
         ),
@@ -61,15 +68,17 @@ def _engine_args_payload(
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
-    if sample.get("aic_nextn"):
-        payload["aic_nextn"] = int(sample["aic_nextn"])
+    nextn = role_request.nextn if role_request is not None else sample.get("aic_nextn")
+    if nextn:
+        payload["aic_nextn"] = int(nextn)
     if engine_request is not None:
-        payload["max_model_len"] = engine_request.max_seq_len
+        controls = role_request or engine_request
+        payload["max_model_len"] = controls.max_seq_len
         payload["enable_chunked_prefill"] = bool(
-            engine_request.enable_chunked_prefill and role != "decode"
+            controls.enable_chunked_prefill and role != "decode"
         )
-        if engine_request.nextn_accepted is not None:
-            payload["aic_nextn_accepted"] = engine_request.nextn_accepted
+        if controls.nextn_accepted is not None:
+            payload["aic_nextn_accepted"] = controls.nextn_accepted
         for name in (
             "enable_wideep",
             "enable_eplb",
@@ -77,7 +86,7 @@ def _engine_args_payload(
             "moe_backend",
             "attention_backend",
         ):
-            value = getattr(engine_request, name)
+            value = getattr(controls, name)
             if value not in (None, False):
                 payload[f"aic_{name}"] = value
         for name, argument in (
@@ -87,7 +96,7 @@ def _engine_args_payload(
             ("fmha_quant_mode", "aic_fmha_dtype"),
             ("comm_quant_mode", "aic_comm_dtype"),
         ):
-            value = getattr(engine_request, name)
+            value = getattr(controls, name)
             if value is not None:
                 payload[argument] = value
     if sample.get("startup_time") is not None:
@@ -112,6 +121,7 @@ def build_backend_deployment(
     backend_version: str,
     estimator: EstimatorSpec | None = None,
     engine_request: EngineRequestSpec | None = None,
+    role_estimators: Mapping[str, EstimatorSpec] | None = None,
 ) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
@@ -130,6 +140,7 @@ def build_backend_deployment(
         "backend_version": backend_version,
         "estimator": estimator,
         "engine_request": engine_request,
+        "role_estimators": dict(role_estimators or {}),
         "parallel_config": {
             key: value
             for key, value in sample.items()
@@ -174,19 +185,66 @@ def build_backend_deployment(
             num_workers=int(sample["replicas"]),
             **common,
         )
+    heterogeneous = bool(role_estimators)
+    if heterogeneous:
+        expected_roles = {"prefill", "decode"}
+        if set(role_estimators or {}) != expected_roles:
+            raise ValueError(
+                f"role_estimators must contain exactly {sorted(expected_roles)}"
+            )
+        if (
+            engine_request is None
+            or set(engine_request.role_requests) != expected_roles
+        ):
+            raise ValueError(
+                "heterogeneous disagg requires explicit prefill/decode engine requests"
+            )
+        for role in sorted(expected_roles):
+            role_estimator = role_estimators[role]
+            role_request = engine_request.role_requests[role]
+            sampled_backend = str(sample[f"{role}_backend"])
+            if role_estimator.backend != sampled_backend:
+                raise ValueError(
+                    f"{role} estimator backend {role_estimator.backend!r} does not "
+                    f"match sampled backend {sampled_backend!r}"
+                )
+            if (
+                role_request.role != role
+                or role_request.backend != role_estimator.backend
+                or role_request.backend_version != role_estimator.backend_version
+            ):
+                raise ValueError(
+                    f"{role} engine request identity does not match its estimator: "
+                    f"{role_request.backend}/{role_request.backend_version} != "
+                    f"{role_estimator.backend}/{role_estimator.backend_version}"
+                )
+        common.update(
+            prefill_backend=str(sample["prefill_backend"]),
+            prefill_backend_version=role_estimators["prefill"].backend_version,
+            decode_backend=str(sample["decode_backend"]),
+            decode_backend_version=role_estimators["decode"].backend_version,
+        )
     return BackendDeploymentSpec(
         prefill_engine_args=_engine_args_payload(
             sample,
             "prefill",
-            backend_version=backend_version,
-            estimator=estimator,
+            backend_version=(
+                role_estimators["prefill"].backend_version
+                if heterogeneous
+                else backend_version
+            ),
+            estimator=(role_estimators["prefill"] if heterogeneous else estimator),
             engine_request=engine_request,
         ),
         decode_engine_args=_engine_args_payload(
             sample,
             "decode",
-            backend_version=backend_version,
-            estimator=estimator,
+            backend_version=(
+                role_estimators["decode"].backend_version
+                if heterogeneous
+                else backend_version
+            ),
+            estimator=(role_estimators["decode"] if heterogeneous else estimator),
             engine_request=engine_request,
         ),
         num_prefill_workers=int(sample["prefill_replicas"]),

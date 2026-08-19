@@ -1,0 +1,278 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from aisimulate import RoleEngineRequestSpec
+from aisimulate.sweeper.heterogeneous import (
+    DisaggBackendPair,
+    DisaggRateMatchControls,
+    DisaggRole,
+    RoleEstimate,
+    RoleFailureCategory,
+    RoleIdentity,
+    RoleSearchError,
+    rate_match_disaggregated,
+)
+
+
+def _identity(
+    role: DisaggRole,
+    *,
+    model: str,
+    system: str,
+    backend: str,
+    version: str,
+    inherited_fields: tuple[str, ...] = (),
+) -> RoleIdentity:
+    return RoleIdentity(
+        role=role,
+        model_name=model,
+        hardware_sku=system,
+        backend=backend,
+        backend_version=version,
+        inherited_fields=inherited_fields,
+        provenance={"resolved_by": "test"},
+    )
+
+
+def _estimate(
+    identity: RoleIdentity,
+    *,
+    rate: float,
+    latency_ms: float,
+    workers: int,
+    gpus_per_worker: int,
+) -> RoleEstimate:
+    return RoleEstimate(
+        identity=identity,
+        sequence_rate_per_worker=rate,
+        latency_ms=latency_ms,
+        workers=workers,
+        gpus_per_worker=gpus_per_worker,
+        parallel_config={"tp": gpus_per_worker, "replicas": workers},
+        provenance={"estimator": identity.backend_version},
+    )
+
+
+def test_backend_pair_preserves_role_assignment() -> None:
+    pair = DisaggBackendPair(prefill="sglang", decode="vllm")
+
+    assert pair.homogeneous is False
+    assert pair.label == "prefill=sglang,decode=vllm"
+    assert pair.backend_for(DisaggRole.PREFILL) == "sglang"
+    assert pair.backend_for("decode") == "vllm"
+    assert DisaggBackendPair("vllm", "vllm").homogeneous is True
+
+
+def test_role_engine_request_contract_is_public() -> None:
+    request = RoleEngineRequestSpec(
+        role="prefill",
+        backend="sglang",
+        backend_version="0.4.9",
+    )
+
+    assert request.role == "prefill"
+    assert request.backend == "sglang"
+
+
+def test_role_identity_is_losslessly_json_serializable() -> None:
+    identity = _identity(
+        DisaggRole.PREFILL,
+        model="prefill-model",
+        system="gb200_nv18",
+        backend="sglang",
+        version="0.4.9",
+        inherited_fields=("systems_paths", "database_mode"),
+    )
+
+    payload = identity.as_dict()
+
+    assert json.loads(json.dumps(payload)) == payload
+    assert payload["role"] == "prefill"
+    assert payload["inherited_fields"] == ["systems_paths", "database_mode"]
+    assert payload["provenance"] == {"resolved_by": "test"}
+
+
+def test_default_rate_matching_preserves_heterogeneous_role_provenance() -> None:
+    prefill = _estimate(
+        _identity(
+            DisaggRole.PREFILL,
+            model="prefill-model",
+            system="gb200_nv18",
+            backend="sglang",
+            version="0.4.9",
+        ),
+        rate=10.0,
+        latency_ms=20.0,
+        workers=2,
+        gpus_per_worker=4,
+    )
+    decode = _estimate(
+        _identity(
+            DisaggRole.DECODE,
+            model="decode-model",
+            system="h200_sxm",
+            backend="vllm",
+            version="0.10.1",
+        ),
+        rate=8.0,
+        latency_ms=2.0,
+        workers=3,
+        gpus_per_worker=2,
+    )
+
+    result = rate_match_disaggregated(prefill, decode, output_length=5)
+    payload = result.as_dict()
+
+    assert result.sequence_rate == pytest.approx(18.0)
+    assert result.tokens_per_second == pytest.approx(90.0)
+    assert result.total_gpus == 14
+    assert result.prefill_gpus == 8
+    assert result.decode_gpus == 6
+    assert result.tokens_per_second_per_gpu == pytest.approx(90.0 / 14.0)
+    assert result.limiting_role is DisaggRole.PREFILL
+    assert result.ttft_ms == pytest.approx(20.0 * 1.1 * 1.8)
+    assert result.tpot_ms == pytest.approx(2.0 * 1.08)
+    assert result.request_latency_ms == pytest.approx(result.ttft_ms + 4 * result.tpot_ms)
+    assert payload["role_identities"]["prefill"]["backend"] == "sglang"
+    assert payload["role_identities"]["decode"]["hardware_sku"] == "h200_sxm"
+    assert payload["provenance"]["role_provenance"] == {
+        "prefill": {"estimator": "0.4.9"},
+        "decode": {"estimator": "0.10.1"},
+    }
+    assert json.loads(json.dumps(payload)) == payload
+
+
+def test_custom_rate_controls_can_make_decode_limiting() -> None:
+    prefill = _estimate(
+        _identity(
+            DisaggRole.PREFILL,
+            model="m",
+            system="h100_sxm",
+            backend="vllm",
+            version="1",
+        ),
+        rate=10.0,
+        latency_ms=10.0,
+        workers=2,
+        gpus_per_worker=1,
+    )
+    decode = _estimate(
+        _identity(
+            DisaggRole.DECODE,
+            model="m",
+            system="h100_sxm",
+            backend="vllm",
+            version="2",
+        ),
+        rate=5.0,
+        latency_ms=1.0,
+        workers=2,
+        gpus_per_worker=1,
+    )
+    controls = DisaggRateMatchControls(
+        prefill_degradation=1.0,
+        decode_degradation=0.5,
+        prefill_latency_correction=2.0,
+        decode_latency_correction=3.0,
+        ttft_correction_factor=4.0,
+    )
+
+    result = rate_match_disaggregated(
+        prefill,
+        decode,
+        output_length=2,
+        controls=controls,
+    )
+
+    assert result.sequence_rate == pytest.approx(5.0)
+    assert result.limiting_role is DisaggRole.DECODE
+    assert result.ttft_ms == pytest.approx(80.0)
+    assert result.tpot_ms == pytest.approx(3.0)
+
+
+def test_gpu_budget_failure_is_role_attributed_and_actionable() -> None:
+    prefill = _estimate(
+        _identity(
+            DisaggRole.PREFILL,
+            model="m",
+            system="gb200_nv18",
+            backend="sglang",
+            version="1",
+        ),
+        rate=1.0,
+        latency_ms=1.0,
+        workers=2,
+        gpus_per_worker=4,
+    )
+    decode = _estimate(
+        _identity(
+            DisaggRole.DECODE,
+            model="m",
+            system="h200_sxm",
+            backend="vllm",
+            version="2",
+        ),
+        rate=100.0,
+        latency_ms=1.0,
+        workers=1,
+        gpus_per_worker=2,
+    )
+
+    with pytest.raises(RoleSearchError) as exc_info:
+        rate_match_disaggregated(
+            prefill,
+            decode,
+            output_length=4,
+            gpu_budget=9,
+        )
+
+    error = exc_info.value
+    assert error.role is DisaggRole.PREFILL
+    assert error.category is RoleFailureCategory.GPU_BUDGET
+    assert error.as_dict()["provenance"] == {
+        "prefill_gpus": 8,
+        "decode_gpus": 2,
+        "total_gpus": 10,
+        "gpu_budget": 9,
+    }
+    assert "exceeding gpu_budget=9" in str(error)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "role", "field"),
+    [
+        ({"rate": 0.0, "workers": 1}, DisaggRole.PREFILL, "sequence_rate_per_worker"),
+        ({"rate": 1.0, "workers": 0}, DisaggRole.DECODE, "workers"),
+    ],
+)
+def test_invalid_estimates_report_the_responsible_role(
+    kwargs: dict[str, float | int],
+    role: DisaggRole,
+    field: str,
+) -> None:
+    identity = _identity(
+        role,
+        model="m",
+        system="h100_sxm",
+        backend="vllm",
+        version="1",
+    )
+
+    with pytest.raises(RoleSearchError) as exc_info:
+        _estimate(
+            identity,
+            rate=float(kwargs["rate"]),
+            latency_ms=1.0,
+            workers=int(kwargs["workers"]),
+            gpus_per_worker=1,
+        )
+
+    assert exc_info.value.role is role
+    assert exc_info.value.category is RoleFailureCategory.INVALID_ESTIMATE
+    assert exc_info.value.as_dict()["provenance"]["field"] == field

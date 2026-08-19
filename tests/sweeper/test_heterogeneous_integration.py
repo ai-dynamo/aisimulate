@@ -1,0 +1,503 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+from dataclasses import asdict, replace
+
+import pytest
+
+import aisimulate.sweeper.estimator as estimator_mod
+import aisimulate.sweeper.kv_load as kv_load_mod
+import aisimulate.sweeper.search as search_mod
+import aisimulate.sweeper.search_space as search_space_mod
+from aisimulate.sweeper.config import SmartSearchConfig
+from aisimulate.sweeper.deploy import build_backend_deployment
+from aisimulate.sweeper.engine_request import (
+    EngineControlTemplate,
+    materialize_role_engine_request,
+)
+from aisimulate.sweeper.estimator import resolve_role_estimator_specs
+from aisimulate.sweeper.heterogeneous import (
+    DisaggBackendPair,
+    DisaggRole,
+    RoleEstimatorSpecs,
+    RoleIdentity,
+)
+from aisimulate.sweeper.kv_load import resolve_kv_load
+from aisimulate.sweeper.parallel_enum import (
+    DisaggParallelConfig,
+    ParallelShape,
+    ReplicaParallelConfig,
+)
+from aisimulate.sweeper.replay import (
+    EstimatorSpec,
+    ReplaySpec,
+    RunnerCapabilities,
+)
+from aisimulate.sweeper.sample import unroll_sample
+from aisimulate.sweeper.search_space import enumerate_branches
+
+
+def _config(**search_overrides) -> SmartSearchConfig:
+    search_space = {
+        "model_name": "shared/model",
+        "hardware_sku": "h200_sxm",
+        "backend": ["vllm"],
+        "deployment_mode": ["disagg"],
+        "gpu_budget": 8,
+        "prefill_max_num_batched_tokens": [8192],
+        "prefill_max_num_seqs": [16],
+        "decode_max_num_batched_tokens": [8192],
+        "decode_max_num_seqs": [256],
+    }
+    search_space.update(search_overrides)
+    return SmartSearchConfig(
+        search_space=search_space,
+        workload={"isl": 128, "osl": 32, "concurrency": 1, "num_request_ratio": 1},
+    )
+
+
+def _estimator(
+    backend: str,
+    *,
+    model: str,
+    system: str,
+    version: str,
+) -> EstimatorSpec:
+    return EstimatorSpec(
+        model_path=model,
+        model_architecture="ExampleForCausalLM",
+        system=system,
+        backend=backend,
+        backend_version=version,
+        performance_data_version=version,
+        database_mode="SILICON",
+        transfer_policy=("xshape",),
+        forward_model="op_level",
+        engine_step_backend="rust",
+        systems_paths=(f"/{system}/systems",),
+        performance_data_root=f"/{system}/systems",
+    )
+
+
+def _catalog() -> RoleEstimatorSpecs:
+    pair = DisaggBackendPair("sglang", "vllm")
+    prefill = _estimator("sglang", model="prefill/model", system="gb200_nv18", version="0.4.9")
+    decode = _estimator("vllm", model="decode/model", system="h200_sxm", version="0.10.1")
+    return RoleEstimatorSpecs(
+        pair=pair,
+        prefill=prefill,
+        decode=decode,
+        identities={
+            "prefill": RoleIdentity(
+                DisaggRole.PREFILL,
+                prefill.model_path,
+                prefill.system,
+                prefill.backend,
+                prefill.backend_version,
+            ),
+            "decode": RoleIdentity(
+                DisaggRole.DECODE,
+                decode.model_path,
+                decode.system,
+                decode.backend,
+                decode.backend_version,
+            ),
+        },
+    )
+
+
+def test_role_overrides_inherit_unspecified_shared_inputs() -> None:
+    config = _config(
+        prefill_model_name="prefill/model",
+        prefill_hardware_sku="gb200_nv18",
+        prefill_backend=["sglang"],
+        prefill_backend_version="0.4.9",
+        prefill_enable_wideep=True,
+        prefill_moe_backend="deepep_moe",
+        decode_backend_version="0.10.1",
+    )
+    ss = config.search_space
+
+    assert ss.has_role_overrides is True
+    assert ss.role_value("prefill", "model_name") == "prefill/model"
+    assert ss.role_value("decode", "model_name") == "shared/model"
+    assert ss.role_value("decode", "hardware_sku") == "h200_sxm"
+    assert ss.role_backends("prefill") == ["sglang"]
+    assert ss.role_backends("decode") == ["vllm"]
+    assert ss.requested_role_backend_version("prefill", "sglang") == "0.4.9"
+    assert ss.requested_role_backend_version("decode", "vllm") == "0.10.1"
+
+
+def test_role_overrides_fail_closed_for_aggregated_only_and_decode_chunking() -> None:
+    with pytest.raises(ValueError, match="require deployment_mode to include 'disagg'"):
+        _config(deployment_mode=["agg"], prefill_model_name="prefill/model")
+
+    with pytest.raises(ValueError, match="decode_enable_chunked_prefill is unsupported"):
+        _config(decode_enable_chunked_prefill=True)
+
+
+def test_role_estimator_resolution_uses_independent_inherited_views(
+    monkeypatch,
+) -> None:
+    config = _config(
+        prefill_model_name="prefill/model",
+        prefill_hardware_sku="gb200_nv18",
+        prefill_backend=["sglang"],
+        prefill_backend_version="0.4.9",
+        decode_model_name="decode/model",
+        decode_backend_version="0.10.1",
+    )
+    seen = []
+
+    def fake_resolve(search_space):
+        backend = search_space.backend[0]
+        seen.append(
+            (
+                search_space.model_name,
+                search_space.hardware_sku,
+                backend,
+                search_space.backend_version,
+            )
+        )
+        return {
+            backend: _estimator(
+                backend,
+                model=search_space.model_name,
+                system=search_space.hardware_sku,
+                version=search_space.backend_version,
+            )
+        }
+
+    monkeypatch.setattr(estimator_mod, "resolve_estimator_specs", fake_resolve)
+
+    catalogs = resolve_role_estimator_specs(config.search_space)
+
+    assert list(catalogs) == ["prefill=sglang,decode=vllm"]
+    assert seen == [
+        ("prefill/model", "gb200_nv18", "sglang", "0.4.9"),
+        ("decode/model", "h200_sxm", "vllm", "0.10.1"),
+    ]
+    assert catalogs["prefill=sglang,decode=vllm"].identities["decode"].inherited_fields == (
+        "hardware_sku",
+        "database_mode",
+        "transfer_policy",
+        "forward_model",
+        "engine_step_backend",
+        "systems_paths",
+        "backend",
+    )
+
+
+def test_heterogeneous_branch_pairs_role_shapes_under_shared_budget(
+    monkeypatch,
+) -> None:
+    config = _config(
+        prefill_model_name="prefill/model",
+        prefill_hardware_sku="gb200_nv18",
+        prefill_backend=["sglang"],
+        prefill_enable_wideep=True,
+    )
+    catalog = _catalog()
+    role_estimators = {catalog.pair.label: catalog}
+    role_controls = {
+        catalog.pair.label: {
+            "prefill": EngineControlTemplate("sglang", 32768, "EXAMPLE", True, "of_total"),
+            "decode": EngineControlTemplate("vllm", 16384, "EXAMPLE", False, "of_total"),
+        }
+    }
+    seen = []
+
+    def fake_parallel_configs(model, system, **kwargs):
+        seen.append((model, system, kwargs["backend"], kwargs["max_seq_len"]))
+        if kwargs["backend"] == "sglang":
+            return [ReplicaParallelConfig(ParallelShape(4, 1, 1, 4), 1)]
+        return [
+            ReplicaParallelConfig(ParallelShape(2, 1, 1, 1), 1),
+            ReplicaParallelConfig(ParallelShape(2, 1, 1, 1), 3),
+        ]
+
+    monkeypatch.setattr(search_space_mod, "parallel_configs_for", fake_parallel_configs)
+    capabilities = RunnerCapabilities(supported_backend_topologies=(("vllm", "disagg"), ("sglang", "disagg")))
+
+    branch = enumerate_branches(
+        config,
+        runner_capabilities=capabilities,
+        role_estimator_specs=role_estimators,
+        role_engine_controls=role_controls,
+    )[0]
+
+    assert seen == [
+        ("prefill/model", "gb200_nv18", "sglang", 32768),
+        ("decode/model", "h200_sxm", "vllm", 16384),
+    ]
+    assert branch.knob_choices["backend"] == [catalog.pair.label]
+    assert len(branch.parallel_configs) == 1
+    assert branch.parallel_configs[0].total_gpus == 6
+    assert branch.supported_backends[branch.parallel_configs[0]] == frozenset({catalog.pair.label})
+
+
+def test_deployment_materializes_role_correct_engine_and_estimator_payloads() -> None:
+    config = _config(
+        prefill_model_name="prefill/model",
+        prefill_hardware_sku="gb200_nv18",
+        prefill_backend=["sglang"],
+        prefill_enable_wideep=True,
+        prefill_moe_backend="deepep_moe",
+        prefill_free_gpu_memory_fraction=0.81,
+        decode_model_name="decode/model",
+        decode_gemm_quant_mode="fp8",
+        decode_free_gpu_memory_fraction=0.72,
+    )
+    catalog = _catalog()
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(4, 1, 1, 4), 1),
+        decode=ReplicaParallelConfig(ParallelShape(2, 1, 1, 1), 1),
+    )
+    selection = {
+        "deployment_mode": "disagg",
+        "backend": catalog.pair.label,
+        "prefill_max_num_batched_tokens": 8192,
+        "prefill_max_num_seqs": 16,
+        "decode_max_num_batched_tokens": 8192,
+        "decode_max_num_seqs": 256,
+    }
+    sample = unroll_sample(
+        search_space=config.search_space,
+        selection=selection,
+        parallel_config=parallel,
+        backend_pair=catalog.pair,
+    )
+    engine_request = materialize_role_engine_request(
+        catalog.pair,
+        {
+            "prefill": EngineControlTemplate("sglang", 32768, "EXAMPLE", True, "of_total"),
+            "decode": EngineControlTemplate("vllm", 16384, "EXAMPLE", False, "of_total"),
+        },
+        catalog,
+        config=config,
+        sample=sample,
+    )
+    sample["engine_request"] = asdict(engine_request)
+
+    deployment = build_backend_deployment(
+        sample,
+        backend_version="prefill=0.4.9,decode=0.10.1",
+        engine_request=engine_request,
+        role_estimators={"prefill": catalog.prefill, "decode": catalog.decode},
+    )
+
+    assert deployment.prefill_backend == "sglang"
+    assert deployment.decode_backend == "vllm"
+    assert deployment.prefill_backend_version == "0.4.9"
+    assert deployment.decode_backend_version == "0.10.1"
+    assert deployment.role_estimators == {
+        "prefill": catalog.prefill,
+        "decode": catalog.decode,
+    }
+    assert deployment.prefill_engine_args["aic_model_path"] == "prefill/model"
+    assert deployment.prefill_engine_args["aic_system"] == "gb200_nv18"
+    assert deployment.prefill_engine_args["engine_type"] == "sglang"
+    assert deployment.prefill_engine_args["mem_fraction_static"] == 0.81
+    assert deployment.prefill_engine_args["aic_enable_wideep"] is True
+    assert deployment.prefill_engine_args["aic_moe_backend"] == "deepep_moe"
+    assert deployment.decode_engine_args["aic_model_path"] == "decode/model"
+    assert deployment.decode_engine_args["engine_type"] == "vllm"
+    assert deployment.decode_engine_args["gpu_memory_utilization"] == 0.72
+    assert deployment.decode_engine_args["aic_gemm_dtype"] == "fp8"
+
+    with pytest.raises(ValueError, match="decode estimator backend.*sampled backend"):
+        build_backend_deployment(
+            sample,
+            backend_version="prefill=0.4.9,decode=0.10.1",
+            engine_request=engine_request,
+            role_estimators={
+                "prefill": catalog.prefill,
+                "decode": replace(catalog.decode, backend="sglang"),
+            },
+        )
+
+
+def test_candidate_materialization_retains_role_identity_and_provenance() -> None:
+    config = _config(
+        prefill_model_name="prefill/model",
+        prefill_hardware_sku="gb200_nv18",
+        prefill_backend=["sglang"],
+        decode_model_name="decode/model",
+    )
+    catalog = _catalog()
+    pair_label = catalog.pair.label
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(4, 1, 1, 4), 1),
+        decode=ReplicaParallelConfig(ParallelShape(2, 1, 1, 1), 1),
+    )
+    selection = {
+        "deployment_mode": "disagg",
+        "backend": pair_label,
+        "prefill_max_num_batched_tokens": 8192,
+        "prefill_max_num_seqs": 16,
+        "decode_max_num_batched_tokens": 8192,
+        "decode_max_num_seqs": 256,
+    }
+
+    class Factory:
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(
+                    ("sglang", "disagg"),
+                    ("vllm", "disagg"),
+                )
+            )
+
+    prepared, result = search_mod._materialize_one(
+        selection,
+        parallel,
+        config=config,
+        goal=config.goal,
+        providers={},
+        provider_plans={},
+        runner_factory=Factory(),
+        estimator_specs={},
+        engine_controls={},
+        role_estimator_specs={pair_label: catalog},
+        role_engine_controls={
+            pair_label: {
+                "prefill": EngineControlTemplate("sglang", 32768, "EXAMPLE", True, "of_total"),
+                "decode": EngineControlTemplate("vllm", 16384, "EXAMPLE", False, "of_total"),
+            }
+        },
+    )
+
+    assert result is None
+    assert prepared is not None
+    assert prepared.sample["backend"] == pair_label
+    assert prepared.sample["prefill_backend_version"] == "0.4.9"
+    assert prepared.sample["decode_backend_version"] == "0.10.1"
+    assert prepared.sample["role_identities"]["prefill"]["hardware_sku"] == "gb200_nv18"
+    assert prepared.sample["role_estimators"]["decode"]["model_path"] == "decode/model"
+    deployment = prepared.replay_spec.backend_deployment
+    assert deployment.prefill_backend == "sglang"
+    assert deployment.decode_backend == "vllm"
+
+
+def test_kv_load_resolves_model_system_backend_version_and_controls_by_role(
+    monkeypatch,
+) -> None:
+    config = _config(
+        prefill_model_name="prefill/model",
+        prefill_hardware_sku="gb200_nv18",
+        prefill_backend=["sglang"],
+        decode_model_name="decode/model",
+        decode_gemm_quant_mode="fp8",
+    )
+    catalog = _catalog()
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(1, 1, 1, 1), 1),
+        decode=ReplicaParallelConfig(ParallelShape(1, 1, 1, 1), 1),
+    )
+    sample = unroll_sample(
+        search_space=config.search_space,
+        selection={
+            "deployment_mode": "disagg",
+            "backend": catalog.pair.label,
+            "prefill_max_num_batched_tokens": 8192,
+            "prefill_max_num_seqs": 16,
+            "decode_max_num_batched_tokens": 8192,
+            "decode_max_num_seqs": 256,
+        },
+        parallel_config=parallel,
+        backend_pair=catalog.pair,
+    )
+    sample["role_estimators"] = {
+        "prefill": asdict(catalog.prefill),
+        "decode": asdict(catalog.decode),
+    }
+    sample["engine_request"] = {
+        "role_requests": {
+            "prefill": {"memory_fraction": 0.81, "nextn": 0},
+            "decode": {
+                "memory_fraction": 0.72,
+                "nextn": 0,
+                "gemm_quant_mode": "fp8",
+            },
+        }
+    }
+    seen = []
+
+    def fake_capacity(shape, **kwargs):
+        seen.append(kwargs)
+        return 8192
+
+    monkeypatch.setattr(kv_load_mod, "_per_rank_capacity_tokens", fake_capacity)
+
+    resolution = resolve_kv_load(
+        sample,
+        workload=config.workload,
+        parallel_config=parallel,
+        ratio=1.0,
+        backend_version="unused-composite",
+        role_backend_versions={"prefill": "0.4.9", "decode": "0.10.1"},
+    )
+
+    assert resolution.role_capacity_tokens == {"prefill": 8192, "decode": 8192}
+    assert [
+        (
+            item["model_name"],
+            item["hardware_sku"],
+            item["backend"],
+            item["backend_version"],
+            item["memory_fraction"],
+            item["gemm_quant_mode"],
+        )
+        for item in seen
+    ] == [
+        ("prefill/model", "gb200_nv18", "sglang", "0.4.9", 0.81, None),
+        ("decode/model", "h200_sxm", "vllm", "0.10.1", 0.72, "fp8"),
+    ]
+
+
+def test_runner_capabilities_report_the_unsupported_role() -> None:
+    config = _config(
+        prefill_model_name="prefill/model",
+        prefill_backend=["sglang"],
+    )
+    catalog = _catalog()
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(1, 1, 1, 1), 1),
+        decode=ReplicaParallelConfig(ParallelShape(1, 1, 1, 1), 1),
+    )
+    sample = unroll_sample(
+        search_space=config.search_space,
+        selection={
+            "deployment_mode": "disagg",
+            "backend": catalog.pair.label,
+            "prefill_max_num_batched_tokens": 8192,
+            "prefill_max_num_seqs": 16,
+            "decode_max_num_batched_tokens": 8192,
+            "decode_max_num_seqs": 256,
+        },
+        parallel_config=parallel,
+        backend_pair=catalog.pair,
+    )
+    engine_request = materialize_role_engine_request(
+        catalog.pair,
+        {
+            "prefill": EngineControlTemplate("sglang", 32768, "EXAMPLE", False, "of_total"),
+            "decode": EngineControlTemplate("vllm", 16384, "EXAMPLE", False, "of_total"),
+        },
+        catalog,
+        config=config,
+        sample=sample,
+    )
+    deployment = build_backend_deployment(
+        sample,
+        backend_version="pair",
+        engine_request=engine_request,
+        role_estimators={"prefill": catalog.prefill, "decode": catalog.decode},
+    )
+    replay = ReplaySpec(backend_deployment=deployment, workload={}, goal={})
+    capabilities = RunnerCapabilities(supported_backend_topologies=(("sglang", "disagg"),))
+
+    with pytest.raises(ValueError, match="decode backend/topology 'vllm'/'disagg'"):
+        capabilities.require_compatible(replay)

@@ -43,6 +43,34 @@ class EstimatorSpec:
 
 
 @dataclass(frozen=True)
+class RoleEngineRequestSpec:
+    """Resolved engine controls for exactly one disaggregated role."""
+
+    role: str
+    backend: str
+    backend_version: str
+    cached_prefix_tokens: int = 0
+    context_tokens: int = 0
+    enable_chunked_prefill: bool = False
+    enable_wideep: bool = False
+    enable_eplb: bool = False
+    wideep_num_slots: int | None = None
+    moe_backend: str | None = None
+    attention_backend: str | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    nextn: int = 0
+    nextn_accepted: float | None = None
+    memory_fraction_kind: str = "of_total"
+    memory_fraction: float = 0.9
+    max_seq_len: int = 0
+    model_family: str = ""
+
+
+@dataclass(frozen=True)
 class EngineRequestSpec:
     """Resolved legacy engine/request controls evaluated for one candidate."""
 
@@ -65,6 +93,12 @@ class EngineRequestSpec:
     memory_fraction_by_role: dict[str, float] = field(default_factory=dict)
     max_seq_len: int = 0
     model_family: str = ""
+    role_requests: dict[str, RoleEngineRequestSpec] = field(default_factory=dict)
+
+    def for_role(self, role: str) -> RoleEngineRequestSpec | None:
+        """Return the explicit role request for heterogeneous P/D, if present."""
+
+        return self.role_requests.get(role)
 
 
 @dataclass(frozen=True)
@@ -84,6 +118,11 @@ class BackendDeploymentSpec:
     # Appended to preserve the positional constructor slots above.
     estimator: EstimatorSpec | None = None
     engine_request: EngineRequestSpec | None = None
+    prefill_backend: str | None = None
+    prefill_backend_version: str | None = None
+    decode_backend: str | None = None
+    decode_backend_version: str | None = None
+    role_estimators: dict[str, EstimatorSpec] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -195,7 +234,23 @@ class RunnerCapabilities:
 
         self.require_replay_spec_version(spec.api_version)
         deployment = spec.backend_deployment
-        if not self.supports_backend_topology(
+        if deployment.deployment_mode == "disagg" and (
+            deployment.prefill_backend is not None
+            or deployment.decode_backend is not None
+        ):
+            role_backends = {
+                "prefill": deployment.prefill_backend,
+                "decode": deployment.decode_backend,
+            }
+            for role, backend in role_backends.items():
+                if backend is None or not self.supports_backend_topology(
+                    backend, deployment.deployment_mode
+                ):
+                    raise ValueError(
+                        f"runner does not support {role} backend/topology "
+                        f"{backend!r}/{deployment.deployment_mode!r}"
+                    )
+        elif not self.supports_backend_topology(
             deployment.backend, deployment.deployment_mode
         ):
             raise ValueError(
