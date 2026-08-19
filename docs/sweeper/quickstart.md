@@ -12,7 +12,8 @@ subtitle: Run a backend-neutral sweep with an injected replay runtime
 From a source checkout, install AI Simulate and run its neutral example:
 
 ```bash
-python -m pip install -e .
+python -m pip install -e ./python/aisimulate-core
+python -m pip install -e ./python/aisimulate
 python examples/sweeper/run_sweep.py \
   --config examples/sweeper/sweep.yaml
 ```

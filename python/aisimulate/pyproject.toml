@@ -41,7 +41,12 @@ requires-python = ">=3.11,<3.14"
 
 dependencies = [
     "aisimulate-core==0.12.0",
+    "chex==0.1.87",
+    "flax==0.10.0",
+    "google-vizier[jax]==0.1.21",
     "jinja2>=3.1.0",
+    "jax==0.4.38",
+    "jaxlib==0.4.38",
     "packaging>=20.0",
     "matplotlib>=3.9.4",
     "numpy>=2.1,<3",
@@ -56,6 +61,8 @@ dependencies = [
     "bokeh",
     "nvidia-ml-py",
     "munch>=4.0.0",
+    "optax==0.2.4",
+    "tfp-nightly[jax]==0.26.0.dev20260626",
 ]
 
 [project.optional-dependencies]
@@ -71,7 +78,6 @@ dev = [
     "pytest-split>=0.10.0",
     "pytest-timeout>=2.3.1",
     "pytest-xdist==3.8.0",
-    "prometheus-api-client==0.6.0",
     "import-ipynb==0.2",
     "jsonschema>=4.23",
 ]
@@ -86,8 +92,8 @@ GitHub = "https://github.com/ai-dynamo/aisimulate"
 Repository = "https://github.com/ai-dynamo/aisimulate.git"
 
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.12,<2"]
+build-backend = "maturin"
 
 [project.scripts]
 # The AISimulate command intentionally delegates to the proven AIC command
@@ -97,18 +103,24 @@ build-backend = "setuptools.build_meta"
 aisimulate = "aisimulate.main:main"
 aiconfigurator = "aiconfigurator.main:main"
 
-[tool.setuptools]
-include-package-data = false
-
-[tool.setuptools.package-data]
-"aiconfigurator.cli" = ["*.yaml", "exps/*.yaml"]
-"aiconfigurator.generator" = ["config/**/*.yaml", "config/backend_templates/**/*.j2", "rule_plugin/**/*.rule", "facts/**/*.yaml", "environment/*.yaml"]
-"aiconfigurator.sdk.config_adapter" = ["schemas/*.json"]
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["aisimulate*", "aiconfigurator", "aiconfigurator.cli*", "aiconfigurator.generator*", "aiconfigurator.sdk*"]
-exclude = ["aiconfigurator_core*"]
+[tool.maturin]
+manifest-path = "../../crates/python/Cargo.toml"
+module-name = "aisimulate._runtime"
+python-source = "src"
+python-packages = ["aisimulate", "aiconfigurator"]
+abi3 = true
+features = ["extension-module"]
+exclude = ["**/__pycache__/**", "**/*.pyc"]
+include = [
+    "src/aiconfigurator/cli/*.yaml",
+    "src/aiconfigurator/cli/exps/*.yaml",
+    "src/aiconfigurator/generator/config/**/*.yaml",
+    "src/aiconfigurator/generator/config/backend_templates/**/*.j2",
+    "src/aiconfigurator/generator/rule_plugin/**/*.rule",
+    "src/aiconfigurator/generator/facts/**/*.yaml",
+    "src/aiconfigurator/generator/environment/*.yaml",
+    "src/aiconfigurator/sdk/config_adapter/schemas/*.json",
+]
 
 [tool.uv.sources]
 aisimulate-core = { path = "../aisimulate-core", editable = true }
@@ -163,6 +175,12 @@ ignore = [
     "UP045", # require using X | None for type annotations
     "B019", # forbid using functools.cache on class methods
     "B023", # Function definition does not bind loop variable
+    # Compatibility APIs migrated from the standalone package intentionally
+    # preserve their established exception types and public exception names.
+    "TRY004",
+    "N818",
+    # Existing tests use regular-expression fragments in match= strings.
+    "RUF043",
 ]
 
 [tool.ruff.lint.isort]

@@ -13,7 +13,7 @@ areas:
       - README.md
       - CONTRIBUTORS.md
       - docs/
-      - src/aisimulate/__init__.py
+      - python/aisimulate/src/aisimulate/__init__.py
       - tests/conftest.py
   - label: forward-pass-engine
     github_team: "@ai-dynamo/aisimulate-forward-pass-engine-codeowners"
@@ -22,12 +22,12 @@ areas:
       - crates/tests/public-api/
       - python/aisimulate-core/
       - python/aisimulate/
-      - src/aisimulate/aic.py
+      - python/aisimulate/src/aisimulate/aic.py
       - tests/test_aic.py
   - label: sweeper
     github_team: "@ai-dynamo/aisimulate-sweeper-codeowners"
     path_globs:
-      - src/aisimulate/sweeper/
+      - python/aisimulate/src/aisimulate/sweeper/
       - docs/sweeper/
       - examples/sweeper/
       - tests/sweeper/
@@ -35,9 +35,9 @@ areas:
     github_team: "@ai-dynamo/aisimulate-replay-codeowners"
     path_globs:
       - crates/core/src/replay/
-      - src/aisimulate/replay/
-      - src/aisimulate/runner.py
-      - src/aisimulate/traffic.py
+      - python/aisimulate/src/aisimulate/replay/
+      - python/aisimulate/src/aisimulate/runner.py
+      - python/aisimulate/src/aisimulate/traffic.py
       - tests/test_replay_cli.py
       - tests/test_runner.py
       - tests/test_traffic.py
@@ -54,7 +54,7 @@ areas:
       - Cargo.lock
       - Cargo.toml
       - crates/python/Cargo.toml
-      - pyproject.toml
+      - pytest.ini
       - scripts/
 
 # More-specific shared entries are emitted after base area rules, preserving
@@ -76,11 +76,13 @@ shared:
     owners: [forward-pass-engine, maintainers]
   - glob: docs/core-api.md
     owners: [forward-pass-engine, maintainers]
-  - glob: src/aisimulate/aic.py
+  - glob: python/aisimulate/src/aisimulate/__init__.py
+    owners: [forward-pass-engine, sweeper, replay, maintainers]
+  - glob: python/aisimulate/src/aisimulate/aic.py
     owners: [forward-pass-engine, maintainers]
   - glob: tests/test_aic.py
     owners: [forward-pass-engine, maintainers]
-  - glob: src/aisimulate/sweeper/
+  - glob: python/aisimulate/src/aisimulate/sweeper/
     owners: [sweeper, maintainers]
   - glob: docs/sweeper/
     owners: [sweeper, maintainers]
@@ -90,11 +92,11 @@ shared:
     owners: [sweeper, maintainers]
   - glob: crates/core/src/replay/
     owners: [replay, maintainers]
-  - glob: src/aisimulate/replay/
+  - glob: python/aisimulate/src/aisimulate/replay/
     owners: [replay, maintainers]
-  - glob: src/aisimulate/runner.py
+  - glob: python/aisimulate/src/aisimulate/runner.py
     owners: [replay, maintainers]
-  - glob: src/aisimulate/traffic.py
+  - glob: python/aisimulate/src/aisimulate/traffic.py
     owners: [replay, maintainers]
   - glob: tests/test_replay_cli.py
     owners: [replay, maintainers]
@@ -122,7 +124,7 @@ shared:
     owners: [infra, maintainers]
   - glob: Cargo.toml
     owners: [infra, maintainers]
-  - glob: pyproject.toml
+  - glob: pytest.ini
     owners: [infra, maintainers]
   - glob: scripts/
     owners: [infra, maintainers]
@@ -152,7 +154,7 @@ shared:
   - glob: python/aisimulate/eslint.config.js
     owners: [infra, maintainers]
   - glob: python/aisimulate/pyproject.toml
-    owners: [forward-pass-engine, infra, maintainers]
+    owners: [forward-pass-engine, sweeper, replay, mocker, infra, maintainers]
   - glob: python/aisimulate/pytest.ini
     owners: [infra, maintainers]
   - glob: python/aisimulate/uv.lock

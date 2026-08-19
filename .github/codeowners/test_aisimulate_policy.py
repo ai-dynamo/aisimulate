@@ -62,10 +62,33 @@ def test_representative_routing_contract() -> None:
     }
     assert _owners("docs/core-api.md") == {FPE, MAINTAINERS}
 
-    # Standalone Replay, Sweeper, and Mocker surface.
-    assert _owners("src/aisimulate/aic.py") == {FPE, MAINTAINERS}
-    assert _owners("src/aisimulate/sweeper/search.py") == {SWEEPER, MAINTAINERS}
-    assert _owners("src/aisimulate/replay/cli.py") == {REPLAY, MAINTAINERS}
+    # Unified application Replay, Sweeper, and Mocker surface.
+    assert _owners("python/aisimulate/src/aisimulate/aic.py") == {
+        FPE,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/src/aisimulate/sweeper/search.py") == {
+        SWEEPER,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/src/aisimulate/replay/cli.py") == {
+        REPLAY,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/src/aisimulate/runner.py") == {
+        REPLAY,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/src/aisimulate/traffic.py") == {
+        REPLAY,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/src/aisimulate/__init__.py") == {
+        FPE,
+        SWEEPER,
+        REPLAY,
+        MAINTAINERS,
+    }
     assert _owners("crates/core/src/replay/event.rs") == {REPLAY, MAINTAINERS}
     assert _owners("crates/core/src/engine/scheduler/vllm/core.rs") == {
         MOCKER,
@@ -98,6 +121,9 @@ def test_representative_routing_contract() -> None:
     }
     assert _owners("python/aisimulate/pyproject.toml") == {
         FPE,
+        SWEEPER,
+        REPLAY,
+        MOCKER,
         INFRA,
         MAINTAINERS,
     }

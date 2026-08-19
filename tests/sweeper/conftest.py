@@ -32,7 +32,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         )
         item.add_marker(
             pytest.mark.filterwarnings(
-                r"ignore:datetime\.datetime\.utcnow\(\) is deprecated.*:DeprecationWarning:google\.protobuf\.internal\.well_known_types"
+                r"ignore:datetime\.datetime\.utcnow\(\) is deprecated.*:"
+                r"DeprecationWarning:google\.protobuf\.internal\.well_known_types"
             )
         )
         if item_path.name in _INTEGRATION_TESTS:

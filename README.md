@@ -25,7 +25,7 @@ consumable from Python and Rust.
 
 This repository produces exactly three release artifacts:
 
-1. `aisimulate` Python wheel — the complete application, CLI, Replay, and Sweeper;
+1. `aisimulate` Python wheel — the complete application, CLI, native Replay runtime, and Sweeper;
 2. `aisimulate-core` Python wheel — the estimator SDK, native extension,
    model metadata, and performance data;
 3. `aisimulate-core` Rust crate — the native estimator and simulation core for
@@ -74,7 +74,8 @@ Install AISimulate by itself for engine-only development:
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install -e .
+uv pip install -e ./python/aisimulate-core
+uv pip install -e ./python/aisimulate
 ```
 
 For Dynamo feature development, install `ai-dynamo` separately. Its optional
@@ -120,9 +121,8 @@ crates/
   python/               Python binding for the Replay runtime
   tests/public-api/     external-consumer compile contract
 python/
-  aisimulate/           complete AIC application and compatibility CLI
+  aisimulate/           complete application, compatibility CLI, Replay, Sweeper, and native runtime
   aisimulate-core/      Python estimator SDK, metadata, and performance data
-src/aisimulate/         standalone Replay and Sweeper Python source
 docs/
   artifact-contract.md  three-artifact release boundary
   core-api.md           public core API and compatibility contract
@@ -135,7 +135,8 @@ scripts/
 
 ```bash
 cargo test --workspace
-python -m pytest
+python -m pytest -c pytest.ini tests
+python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"
 ```
 
 Read the canonical [Sweeper documentation](docs/sweeper/overview.md) for its
