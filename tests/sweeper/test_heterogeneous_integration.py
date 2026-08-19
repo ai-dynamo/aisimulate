@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, replace
 
 import pytest
@@ -11,6 +12,7 @@ import aisimulate.sweeper.estimator as estimator_mod
 import aisimulate.sweeper.kv_load as kv_load_mod
 import aisimulate.sweeper.search as search_mod
 import aisimulate.sweeper.search_space as search_space_mod
+from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.engine_request import (
@@ -240,6 +242,7 @@ def test_heterogeneous_branch_pairs_role_shapes_under_shared_budget(
         prefill_hardware_sku="gb200_nv18",
         prefill_backend=["sglang"],
         prefill_enable_wideep=True,
+        num_gpu_per_replica=[6],
     )
     catalog = _catalog()
     role_estimators = {catalog.pair.label: catalog}
@@ -287,6 +290,184 @@ def test_heterogeneous_branch_pairs_role_shapes_under_shared_budget(
     assert branch.supported_backends[branch.parallel_configs[0]] == frozenset(
         {catalog.pair.label}
     )
+
+
+def test_heterogeneous_execution_domains_materialize_and_match_runner_topology(
+    monkeypatch,
+) -> None:
+    config = _config(
+        gpu_budget=12,
+        num_gpu_per_replica=[12],
+        max_gpu_per_replica=12,
+        max_prefill_workers=1,
+        max_decode_workers=2,
+        prefill_model_name="prefill/model",
+        prefill_hardware_sku="gb200_nv18",
+        prefill_backend=["sglang"],
+        prefill_num_gpu_candidates=[8],
+        prefill_tp_candidates=[2],
+        prefill_pp_candidates=[2],
+        prefill_dp_candidates=[1],
+        prefill_moe_tp_candidates=[1],
+        prefill_moe_ep_candidates=[1],
+        prefill_cp_candidates=[2],
+        prefill_num_workers_candidates=[1, 2],
+        prefill_batch_size_candidates=[7],
+        prefill_context_tokens_candidates=[12288],
+        decode_model_name="decode/model",
+        decode_num_gpu_candidates=[2],
+        decode_tp_candidates=[2],
+        decode_pp_candidates=[1],
+        decode_dp_candidates=[1],
+        decode_moe_tp_candidates=[1],
+        decode_moe_ep_candidates=[1],
+        decode_cp_candidates=[1],
+        decode_num_workers_candidates=[1, 2],
+        decode_batch_size_candidates=[19],
+        decode_context_tokens_candidates=[4096],
+    )
+    catalog = _catalog()
+    pair_label = catalog.pair.label
+    role_estimators = {pair_label: catalog}
+    role_controls = {
+        pair_label: {
+            "prefill": EngineControlTemplate(
+                "sglang", 32768, "EXAMPLE", True, "of_total"
+            ),
+            "decode": EngineControlTemplate(
+                "vllm", 16384, "EXAMPLE", False, "of_total"
+            ),
+        }
+    }
+    role_domains = {}
+
+    def fake_parallel_configs(model, system, **kwargs):
+        del model, system
+        role_domains[kwargs["backend"]] = kwargs["agg_candidates"]
+        if kwargs["backend"] == "sglang":
+            shape = ParallelShape(2, 1, 1, 1, pp=2, cp=2)
+            return [
+                ReplicaParallelConfig(shape, 1),
+                ReplicaParallelConfig(shape, 2),
+            ]
+        shape = ParallelShape(2, 1, 1, 1, pp=1, cp=1)
+        return [
+            ReplicaParallelConfig(shape, 1),
+            ReplicaParallelConfig(shape, 2),
+        ]
+
+    monkeypatch.setattr(search_space_mod, "parallel_configs_for", fake_parallel_configs)
+    capabilities = EngineReplayRunnerFactory().capabilities()
+
+    (branch,) = enumerate_branches(
+        config,
+        runner_capabilities=capabilities,
+        role_estimator_specs=role_estimators,
+        role_engine_controls=role_controls,
+    )
+
+    assert asdict(role_domains["sglang"]) == {
+        "gpus_per_worker": (8,),
+        "tp": (2,),
+        "pp": (2,),
+        "attention_dp": (1,),
+        "moe_tp": (1,),
+        "moe_ep": (1,),
+        "cp": (2,),
+        "workers": (1, 2),
+    }
+    assert asdict(role_domains["vllm"])["workers"] == (1, 2)
+    assert branch.enumeration_counts == {
+        "considered": 1,
+        "accepted": 1,
+        "pruned": 0,
+    }
+    assert len(branch.parallel_configs) == 1
+    parallel = branch.parallel_configs[0]
+    assert parallel.prefill.shape.pp == 2
+    assert parallel.prefill.shape.cp == 2
+    assert parallel.prefill.replicas == 1
+    assert parallel.decode.replicas == 2
+    assert parallel.total_gpus == 12
+    assert branch.knob_choices["prefill_batch_size"] == [7]
+    assert branch.knob_choices["prefill_context_tokens"] == [12288]
+    assert branch.knob_choices["decode_batch_size"] == [19]
+    assert branch.knob_choices["decode_context_tokens"] == [4096]
+
+    sample = unroll_sample(
+        search_space=config.search_space,
+        selection={
+            "deployment_mode": "disagg",
+            "backend": pair_label,
+            "prefill_batch_size": 7,
+            "prefill_context_tokens": 12288,
+            "decode_batch_size": 19,
+            "decode_context_tokens": 4096,
+        },
+        parallel_config=parallel,
+        backend_pair=catalog.pair,
+    )
+    engine_request = materialize_role_engine_request(
+        catalog.pair,
+        role_controls[pair_label],
+        catalog,
+        config=config,
+        sample=sample,
+    )
+    deployment = build_backend_deployment(
+        sample,
+        backend_version="prefill=0.4.9,decode=0.10.1",
+        engine_request=engine_request,
+        role_estimators={"prefill": catalog.prefill, "decode": catalog.decode},
+    )
+
+    assert deployment.num_prefill_workers == 1
+    assert deployment.num_decode_workers == 2
+    assert deployment.prefill_engine_args["aic_pp_size"] == 2
+    assert deployment.prefill_engine_args["aic_cp_size"] == 2
+    assert deployment.prefill_engine_args["max_num_seqs"] == 7
+    assert deployment.prefill_engine_args["max_num_batched_tokens"] == 12288
+    assert deployment.decode_engine_args["max_num_seqs"] == 19
+    assert deployment.decode_engine_args["max_num_batched_tokens"] == 4096
+
+    class RecordingRuntime:
+        execution = None
+
+        def run_replay_json(self, execution_spec_json):
+            self.execution = json.loads(execution_spec_json)
+            return json.dumps(
+                {
+                    "duration_ms": 1.0,
+                    "output_throughput_tok_s": 1.0,
+                    "gpu_hours": 0.0,
+                    "completed_requests": 1,
+                }
+            )
+
+    deployment.prefill_engine_args["num_gpu_blocks"] = 16
+    deployment.decode_engine_args["num_gpu_blocks"] = 16
+    runtime = RecordingRuntime()
+    replay = ReplaySpec(
+        backend_deployment=deployment,
+        workload={"isl": 128, "osl": 32, "concurrency": 1, "num_request_ratio": 1},
+        goal={"target": "throughput"},
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(replay)
+
+    assert runtime.execution["topology"]["prefill"]["initial_workers"] == 1
+    assert runtime.execution["topology"]["decode"]["initial_workers"] == 2
+    prefill_timing = runtime.execution["engine"]["prefill"]["rank"]["timing_model"]
+    assert prefill_timing["config"]["pp"] == 2
+    assert prefill_timing["config"]["cp_size"] == 2
+
+    mismatched = replace(
+        deployment,
+        parallel_config={**deployment.parallel_config, "prefill_pp": 1},
+    )
+    with pytest.raises(ValueError, match="prefill pipeline parallel size=2"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            replace(replay, backend_deployment=mismatched)
+        )
 
 
 def test_partial_heterogeneous_pair_pruning_retains_stable_diagnostics(
