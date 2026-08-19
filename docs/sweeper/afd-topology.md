@@ -6,9 +6,9 @@ subtitle: Attention-FFN disaggregation, pipeline evaluation, and P/D rate matchi
 ---
 
 > [!WARNING]
-> **Experimental.** The AFD contract is available as a Sweeper-core Python API. The generic rapid
-> search projector does not yet place AFD topologies in a `SmartSearchConfig` study. That wiring
-> depends on the shared execution-dimension work tracked by AIC-1773.
+> **Experimental.** Sweeper can place AFD topologies in generic rapid and thorough studies, but a
+> backend remains unavailable unless its runner explicitly advertises the exact `afd` or `afd+pd`
+> capability. Runtime serving and deployment-file generation remain adapter responsibilities.
 
 Attention-FFN Disaggregation (AFD) places attention operations on an A-worker pool and FFN/MoE
 operations on an F-worker pool. `aisimulate.sweeper.afd` provides a backend-neutral contract for
@@ -90,6 +90,16 @@ domain, exceeding that limit errors unless deterministic truncation is requested
 Adapters fail closed. A pure AFD topology requires an explicit `afd` capability; combined AFD+P/D
 requires `afd+pd`. An adapter that advertises only `agg` or `disagg` cannot consume or generate an
 AFD candidate.
+
+## Generic Sweeper Integration
+
+Set `deployment_mode: [afd]` for pure AFD or `[afd+pd]` for one AFD phase plus a conventional
+opposite-phase companion. `afd_phase: both` is valid only for pure AFD. The companion uses the
+same role-specific topology and scheduler fields as aggregate/P/D search, so rapid and thorough
+consume the same pruned legal pool. AFD enumeration counts, pruning reasons, completeness, and
+A/F/P-or-D GPU accounting are retained in the branch and materialized deployment provenance.
+
+See [Sweeper Configuration](configuration.md#afd-domains) for the YAML schema and examples.
 
 ## Infeasibility and Provenance
 

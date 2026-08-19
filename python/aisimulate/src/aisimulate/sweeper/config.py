@@ -407,8 +407,9 @@ class Workload(BaseModel):
 # candidate generator can reuse it. Pinned scalars and the generated
 # ``parallel_configs`` are intentionally not choice-constrained.
 SEARCH_CHOICES: dict[str, tuple] = {
-    "deployment_mode": ("disagg", "agg"),
+    "deployment_mode": ("disagg", "agg", "afd", "afd+pd"),
     "backend": ("vllm", "sglang", "trtllm"),
+    "afd_pipeline_model_candidates": ("optimistic", "conservative", "serial"),
     "prefill_max_num_batched_tokens": (8192, 16384, 32768),
     "prefill_max_num_seqs": (1, 2, 4, 8, 16, 32, 64, 128, 256),
     "decode_max_num_batched_tokens": (8192,),
@@ -462,6 +463,22 @@ class SearchSpace(BaseModel):
     context_length: int | None = None
     startup_time: float | None = None
     aic_nextn: int | None = None  # speculative-decode (MTP) depth, 1..5
+
+    # Attention--FFN disaggregation. ``deployment_mode`` selects pure ``afd`` or
+    # combined ``afd+pd``; the latter adds one opposite-phase companion from the
+    # same per-role legal domain used by aggregate/P/D search.
+    afd_pinned_topologies: list[dict[str, Any]] = Field(default_factory=list)
+    afd_tp_a_candidates: list[int] | None = None
+    afd_batch_size_candidates: list[int] = [128]
+    afd_f_moe_ep_size_candidates: list[int | str] | None = None
+    afd_microbatch_candidates: list[int] = [2, 3, 4]
+    afd_pipeline_model_candidates: list[str] = ["optimistic", "conservative"]
+    afd_phase: str = "decode"
+    afd_comm_overhead_factor: float = Field(default=1.0, gt=0)
+    afd_boundary_on_attn: bool = True
+    afd_max_af_ratio: float = Field(default=4.0, gt=0)
+    afd_max_candidates: int = Field(default=10_000, ge=1)
+    afd_candidate_overflow: str = "error"
 
     # Explicit per-role topology domains. ``None`` selects model/hardware/backend
     # defaults; a non-empty list is authoritative. Batch/context candidates are
@@ -545,6 +562,70 @@ class SearchSpace(BaseModel):
             raise ValueError(f"candidate lists must not contain duplicates, got {value!r}")
         return value
 
+    @field_validator(
+        "afd_tp_a_candidates",
+        "afd_batch_size_candidates",
+        "afd_microbatch_candidates",
+        mode="before",
+    )
+    @classmethod
+    def _validate_afd_positive_candidate_lists(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not isinstance(value, list) or not value:
+            raise ValueError("AFD candidate lists must be non-empty lists")
+        if any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in value):
+            raise ValueError(f"AFD candidate lists need positive integers, got {value!r}")
+        if len(set(value)) != len(value):
+            raise ValueError(f"AFD candidate lists must not contain duplicates, got {value!r}")
+        return value
+
+    @field_validator("afd_f_moe_ep_size_candidates", mode="before")
+    @classmethod
+    def _validate_afd_ep_candidates(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not isinstance(value, list) or not value:
+            raise ValueError("afd_f_moe_ep_size_candidates must be a non-empty list")
+        allowed_symbols = {"n_f_nodes", "ffn_tp", "tp_f"}
+        invalid = [
+            item
+            for item in value
+            if not (
+                (isinstance(item, int) and not isinstance(item, bool) and item > 0)
+                or (isinstance(item, str) and item in allowed_symbols)
+            )
+        ]
+        if invalid:
+            raise ValueError(
+                "afd_f_moe_ep_size_candidates accepts positive integers, "
+                f"'n_f_nodes', 'ffn_tp', or 'tp_f'; got {invalid!r}"
+            )
+        if len({(type(item).__name__, item) for item in value}) != len(value):
+            raise ValueError("afd_f_moe_ep_size_candidates must not contain duplicates")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_afd_contract(self) -> SearchSpace:
+        if self.afd_phase not in {"prefill", "decode", "both"}:
+            raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
+        if self.afd_candidate_overflow not in {"error", "truncate"}:
+            raise ValueError("afd_candidate_overflow must be 'error' or 'truncate'")
+        if "afd+pd" in self.deployment_mode and self.afd_phase == "both":
+            raise ValueError("deployment_mode='afd+pd' requires afd_phase prefill or decode")
+        if self.afd_pinned_topologies:
+            modes = list(dict.fromkeys(self.deployment_mode))
+            if len(modes) != 1 or modes[0] not in {"afd", "afd+pd"}:
+                raise ValueError("afd_pinned_topologies requires exactly one AFD deployment_mode")
+            required = {"n_a_nodes", "n_f_nodes", "tp_a", "a_batch_size"}
+            for index, topology in enumerate(self.afd_pinned_topologies):
+                if not isinstance(topology, dict):
+                    raise ValueError(f"afd_pinned_topologies[{index}] must be a mapping")
+                missing = sorted(required - topology.keys())
+                if missing:
+                    raise ValueError(f"afd_pinned_topologies[{index}] is missing {missing}")
+        return self
+
     @model_validator(mode="after")
     def _validate_decode_context_parallelism(self) -> SearchSpace:
         """Decode is token-serial and cannot use prefill context parallelism."""
@@ -595,6 +676,9 @@ class SearchSpace(BaseModel):
         ``enumerate_branches`` against the model+hardware."""
         if not self.parallel_configs:
             return self
+
+        if any(mode in {"afd", "afd+pd"} for mode in self.deployment_mode):
+            raise ValueError("parallel_configs only pins agg/disagg shapes; use afd_pinned_topologies for AFD")
 
         def validate_shape_dict(value: Any, label: str) -> None:
             if not isinstance(value, dict):

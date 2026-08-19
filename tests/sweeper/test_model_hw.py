@@ -26,6 +26,7 @@ def test_resolve_deepseek_is_moe_mla_wideep():
     assert mh.is_moe and mh.mla and mh.enable_wideep
     assert mh.weight_bytes > 0
     assert mh.max_context == 163840  # DeepSeek-V3 max context
+    assert mh.num_experts == 256
     assert mh.default_gpus_per_worker == (1, 2, 4, 8, 16, 32, 64)
 
 
@@ -36,6 +37,7 @@ def test_resolve_dense_qwen():
     assert not mh.mla
     assert not mh.enable_wideep  # dense models never enable wideEP
     assert mh.max_context == 40960  # Qwen3-32B max context
+    assert mh.num_experts == 0
     assert mh.default_gpus_per_worker == (1, 2, 4, 8)
 
 
@@ -90,6 +92,7 @@ def test_custom_pipeline_context_and_worker_domain_reaches_kv_filter(monkeypatch
         gpus_per_node=8,
         max_context=8192,
         model_family="DEEPSEEK",
+        num_experts=256,
         default_gpus_per_worker=(1, 2, 4, 8, 16),
         default_pp_candidates=(1,),
         default_cp_candidates=(1, 2, 4, 8),

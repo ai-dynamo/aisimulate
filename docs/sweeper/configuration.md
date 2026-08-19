@@ -76,6 +76,10 @@ configuration for each candidate.
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
 
+`deployment_mode` also accepts `afd` for pure attention--FFN disaggregation and `afd+pd` for
+one AFD phase plus a conventional opposite-phase companion. A runner must advertise the exact
+`(backend, deployment_mode)` pair before either branch enters the search domain.
+
 ## Parallel and Execution Domains
 
 Every role accepts an explicit finite candidate list for GPUs per worker, TP, PP,
@@ -127,6 +131,64 @@ considered/accepted counts plus pruning-reason counts for topology enumeration.
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
+
+## AFD Domains
+
+AFD search uses the same legal `BranchSpace.parallel_configs` pool for rapid and thorough
+policies. Rapid projects optimizer suggestions onto that finite pool. Thorough enumerates the
+entire pool in canonical order. A pure AFD candidate accounts for attention (A) and FFN (F) GPUs;
+an `afd+pd` candidate also accounts for every GPU in its conventional prefill or decode
+companion.
+
+```yaml
+search_space:
+  model_name: example/moe-model
+  hardware_sku: h200_sxm
+  backend: [vllm]
+  deployment_mode: [afd+pd]
+  gpu_budget: 64
+
+  # AFD owns decode; the companion is drawn from the prefill domain below.
+  afd_phase: decode
+  afd_tp_a_candidates: [4, 8]
+  afd_batch_size_candidates: [64, 128]
+  afd_f_moe_ep_size_candidates: [n_f_nodes, ffn_tp]
+  afd_microbatch_candidates: [3, 4]
+  afd_pipeline_model_candidates: [optimistic, conservative]
+
+  prefill_num_gpu_candidates: [4, 8]
+  prefill_tp_candidates: [4, 8]
+  prefill_num_workers_candidates: [1, 2]
+  prefill_batch_size_candidates: [1, 2, 4]
+  prefill_context_tokens_candidates: [8192, 16384]
+```
+
+Use `afd_phase: both` only with pure `afd`. For `afd+pd`, select `prefill` or `decode`; Sweeper
+draws the companion from the opposite role's execution fields. Decode companions always use
+CP=1. The global `gpu_budget` and optional `min_gpu_budget` apply to the complete A+F+P/D
+deployment. `afd_max_candidates` bounds the finite topology domain; the default
+`afd_candidate_overflow: error` preserves completeness instead of silently truncating it.
+
+Pin exact topologies with `afd_pinned_topologies` and exactly one AFD deployment mode:
+
+```yaml
+search_space:
+  deployment_mode: [afd]
+  afd_phase: both
+  afd_pinned_topologies:
+    - n_a_nodes: 2
+      n_f_nodes: 1
+      tp_a: 4
+      a_batch_size: 128
+      f_moe_ep_size: 8
+      num_microbatches: 3
+      pipeline_model: optimistic
+```
+
+Model, hardware, GPU-per-node, phase, and pure-versus-combined facts remain authoritative and are
+added during materialization. AFD candidates currently reject `kv_load_ratio`: the generic replay
+path cannot derive scheduler-visible KV capacity for split A/F pools. Use request rate,
+concurrency, or a trace instead.
 
 ## Pinned Parallel Configurations
 

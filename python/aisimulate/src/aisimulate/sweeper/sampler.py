@@ -32,6 +32,7 @@ from math import prod
 from typing import Any, Protocol
 
 from ._quiet import configure_vizier_runtime
+from .afd import AFDParallelConfig
 from .parallel_enum import DisaggParallelConfig, ReplicaParallelConfig
 from .parallel_projection import ParallelConfigProjector, ParallelProjection
 from .search_space import BranchSpace
@@ -55,7 +56,7 @@ class Suggestion:
     plus an opaque handle the sampler uses to report the score."""
 
     selection: dict[str, Any]
-    parallel_config: ReplicaParallelConfig | DisaggParallelConfig
+    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig
     handle: Any = field(repr=False)
     projection: ParallelProjection | None = field(default=None, repr=False)
 

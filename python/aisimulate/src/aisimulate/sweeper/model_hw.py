@@ -69,6 +69,7 @@ class ModelHardware:
     default_gpus_per_worker: tuple[int, ...]
     default_pp_candidates: tuple[int, ...]
     default_cp_candidates: tuple[int, ...]
+    num_experts: int = 0
 
 
 def resolve_model_hardware(
@@ -83,6 +84,7 @@ def resolve_model_hardware(
     mla = is_moe and not allow_pure_tp
     max_context = model_config.get("context")
     model_family = _architecture_to_model_family(str(model_config.get("architecture", "")))
+    num_experts = int(model_config.get("num_experts") or model_config.get("n_routed_experts") or 0)
 
     system_spec = perf_database.load_system_spec(hardware_sku)
     if not system_spec:
@@ -129,6 +131,7 @@ def resolve_model_hardware(
         gpus_per_node=gpus_per_node,
         max_context=int(max_context) if max_context else None,
         model_family=model_family,
+        num_experts=num_experts,
         default_gpus_per_worker=default_gpus_per_worker,
         default_pp_candidates=default_pp_candidates,
         default_cp_candidates=default_cp_candidates,

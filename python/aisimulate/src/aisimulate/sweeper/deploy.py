@@ -64,6 +64,59 @@ def build_backend_deployment(
 ) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
+    if mode in {"afd", "afd+pd"}:
+        topology = {
+            key.removeprefix("afd_"): value
+            for key, value in sample.items()
+            if key
+            in {
+                "afd_n_a_nodes",
+                "afd_n_f_nodes",
+                "afd_gpus_per_node",
+                "afd_tp_a",
+                "afd_ffn_tp",
+                "afd_f_moe_ep_size",
+                "afd_a_batch_size",
+                "afd_total_batch_size",
+                "afd_num_microbatches",
+                "afd_pipeline_model",
+                "afd_phase",
+                "afd_combined_with_pd",
+                "afd_comm_overhead_factor",
+                "afd_boundary_on_attn",
+                "afd_attention_gpus",
+                "afd_ffn_gpus",
+                "afd_companion_gpus",
+            }
+        }
+        common = {
+            "deployment_mode": mode,
+            "backend": sample["backend"],
+            "backend_version": backend_version,
+            "parallel_config": {
+                "afd": topology,
+                "afd_provenance": sample["afd_provenance"],
+                "companion_role": (
+                    "decode" if "decode_replicas" in sample else "prefill" if "prefill_replicas" in sample else None
+                ),
+            },
+        }
+        if mode == "afd":
+            return BackendDeploymentSpec(**common)
+        if "prefill_replicas" in sample:
+            return BackendDeploymentSpec(
+                prefill_engine_args=_engine_args_payload(sample, "prefill", backend_version=backend_version),
+                num_prefill_workers=int(sample["prefill_replicas"]),
+                **common,
+            )
+        if "decode_replicas" in sample:
+            return BackendDeploymentSpec(
+                decode_engine_args=_engine_args_payload(sample, "decode", backend_version=backend_version),
+                num_decode_workers=int(sample["decode_replicas"]),
+                **common,
+            )
+        raise ValueError("afd+pd materialization requires an opposite-phase companion")
+
     common = {
         "deployment_mode": mode,
         "backend": sample["backend"],

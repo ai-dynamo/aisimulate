@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .afd import AFDParallelConfig
 from .config import SearchSpace
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
@@ -78,11 +79,55 @@ def _unroll_parallel(
     return out
 
 
+def _unroll_afd(parallel_config: AFDParallelConfig) -> dict[str, Any]:
+    topology = parallel_config.topology
+    out: dict[str, Any] = {
+        "afd_n_a_nodes": topology.n_a_nodes,
+        "afd_n_f_nodes": topology.n_f_nodes,
+        "afd_gpus_per_node": topology.gpus_per_node,
+        "afd_tp_a": topology.tp_a,
+        "afd_ffn_tp": topology.ffn_tp,
+        "afd_f_moe_ep_size": topology.f_moe_ep_size,
+        "afd_a_batch_size": topology.a_batch_size,
+        "afd_total_batch_size": topology.total_batch_size,
+        "afd_num_microbatches": topology.num_microbatches,
+        "afd_pipeline_model": topology.pipeline_model.value,
+        "afd_phase": topology.phase.value,
+        "afd_combined_with_pd": topology.combined_with_pd,
+        "afd_comm_overhead_factor": topology.comm_overhead_factor,
+        "afd_boundary_on_attn": topology.boundary_on_attn,
+        "afd_attention_workers": topology.attention_workers,
+        "afd_ffn_workers": topology.ffn_workers,
+        "afd_attention_gpus": topology.attention_gpus,
+        "afd_ffn_gpus": topology.ffn_gpus,
+        "afd_companion_gpus": (parallel_config.companion.total_gpus if parallel_config.companion is not None else 0),
+        "afd_provenance": parallel_config.provenance(),
+        "used_gpus": parallel_config.total_gpus,
+    }
+    if parallel_config.companion is not None:
+        role = parallel_config.companion_role
+        assert role is not None
+        for key, value in _shape_fields(parallel_config.companion.shape).items():
+            out[f"{role}_{key}"] = value
+        out[f"{role}_replicas"] = parallel_config.companion.replicas
+    return out
+
+
+def _materialize_searched_knob(sample: dict[str, Any], selection: dict[str, Any], key: str) -> None:
+    if key in selection:
+        sample[key] = selection[key]
+        return
+    role, suffix = key.split("_max_", 1)
+    alias = f"{role}_context_tokens" if suffix == "num_batched_tokens" else f"{role}_batch_size"
+    sample[alias] = selection[alias]
+    sample[key] = selection[alias]
+
+
 def unroll_sample(
     *,
     search_space: SearchSpace,
     selection: dict[str, Any],
-    parallel_config: ReplicaParallelConfig | DisaggParallelConfig,
+    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig,
 ) -> dict[str, Any]:
     """Expand a backend selection and its projected parallel configuration."""
     mode = selection["deployment_mode"]
@@ -90,6 +135,21 @@ def unroll_sample(
 
     for key in _DEPLOYMENT_PINNED:
         sample[key] = getattr(search_space, key)
+
+    if isinstance(parallel_config, AFDParallelConfig):
+        sample.update(_unroll_afd(parallel_config))
+        if mode == "afd":
+            return sample
+        if mode != "afd+pd" or parallel_config.companion_role is None:
+            raise TypeError("AFD parallel config does not match its deployment mode")
+        role = parallel_config.companion_role
+        searched = _PREFILL_SEARCHED if role == "prefill" else _DECODE_SEARCHED
+        pinned = _PREFILL_PINNED if role == "prefill" else _DECODE_PINNED
+        for key in searched:
+            _materialize_searched_knob(sample, selection, key)
+        for key in pinned:
+            sample[key] = getattr(search_space, key)
+        return sample
 
     sample.update(_unroll_parallel(mode, parallel_config))
 
@@ -100,17 +160,7 @@ def unroll_sample(
         searched = _PREFILL_SEARCHED + _DECODE_SEARCHED
         pinned = _PREFILL_PINNED + _DECODE_PINNED
     for key in searched:
-        if key in selection:
-            sample[key] = selection[key]
-            continue
-        role, suffix = key.split("_max_", 1)
-        alias = (
-            f"{role}_context_tokens"
-            if suffix == "num_batched_tokens"
-            else f"{role}_batch_size"
-        )
-        sample[alias] = selection[alias]
-        sample[key] = selection[alias]
+        _materialize_searched_knob(sample, selection, key)
     for key in pinned:
         sample[key] = getattr(search_space, key)
     return sample

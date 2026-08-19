@@ -14,10 +14,11 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from .afd import AFDParallelConfig
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from .search_space import BranchSpace
 
-ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig
+ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig
 
 USED_GPU_RATIO = "used_gpu_ratio"
 PREFILL_GPU_SHARE = "prefill_gpu_share"
@@ -33,6 +34,17 @@ DECODE_FFN_MODE = "decode_ffn_mode"
 AGG_PIPELINE_PARALLEL = "agg_pipeline_parallel"
 PREFILL_PIPELINE_PARALLEL = "prefill_pipeline_parallel"
 DECODE_PIPELINE_PARALLEL = "decode_pipeline_parallel"
+AFD_ATTENTION_GPU_SHARE = "afd_attention_gpu_share"
+AFD_TP_A = "afd_tp_a"
+AFD_F_MOE_EP = "afd_f_moe_ep"
+AFD_BATCH_SIZE = "afd_batch_size"
+AFD_MICROBATCHES = "afd_microbatches"
+AFD_PIPELINE_MODEL = "afd_pipeline_model"
+AFD_COMPANION_GPU_SHARE = "afd_companion_gpu_share"
+AFD_COMPANION_GPUS_PER_ENGINE = "afd_companion_num_gpus_per_engine_target"
+AFD_COMPANION_ATTENTION_MODE = "afd_companion_attention_mode"
+AFD_COMPANION_FFN_MODE = "afd_companion_ffn_mode"
+AFD_COMPANION_PIPELINE_PARALLEL = "afd_companion_pipeline_parallel"
 
 _ATTENTION_MODE_ORDER = ("tp", "dp", "cp")
 _FFN_MODE_ORDER = ("ep", "tp")
@@ -78,6 +90,8 @@ class ParallelProjection:
 
 
 def _all_shapes(config: ParallelConfig) -> tuple[ParallelShape, ...]:
+    if isinstance(config, AFDParallelConfig):
+        return (config.companion.shape,) if config.companion is not None else ()
     if isinstance(config, ReplicaParallelConfig):
         return (config.shape,)
     return (config.prefill.shape, config.decode.shape)
@@ -95,7 +109,7 @@ def _ffn_mode(shape: ParallelShape) -> str:
     return "ep" if shape.moe_ep > 1 else "tp"
 
 
-def _config_key(config: ParallelConfig) -> tuple[int, ...]:
+def _config_key(config: ParallelConfig) -> tuple[Any, ...]:
     def role_key(role: ReplicaParallelConfig) -> tuple[int, ...]:
         shape = role.shape
         return (
@@ -108,6 +122,19 @@ def _config_key(config: ParallelConfig) -> tuple[int, ...]:
             role.replicas,
         )
 
+    if isinstance(config, AFDParallelConfig):
+        topology = config.topology
+        companion = role_key(config.companion) if config.companion else ()
+        return (
+            topology.n_a_nodes,
+            topology.n_f_nodes,
+            topology.tp_a,
+            topology.f_moe_ep_size,
+            topology.a_batch_size,
+            topology.num_microbatches,
+            topology.pipeline_model.value,
+            *companion,
+        )
     if isinstance(config, ReplicaParallelConfig):
         return role_key(config)
     return (*role_key(config.prefill), *role_key(config.decode))
@@ -139,6 +166,9 @@ class ParallelConfigProjector:
             shape.moe_tp > 1 or shape.moe_ep > 1
             for config in branch.parallel_configs
             for shape in _all_shapes(config)
+        ) or any(
+            isinstance(config, AFDParallelConfig) and config.topology.is_moe
+            for config in branch.parallel_configs
         )
         self._features = {
             config: self._encode(config) for config in branch.parallel_configs
@@ -166,6 +196,26 @@ class ParallelConfigProjector:
         features: dict[str, float | str] = {
             USED_GPU_RATIO: config.total_gpus / self.gpu_budget
         }
+        if isinstance(config, AFDParallelConfig):
+            topology = config.topology
+            features.update(
+                {
+                    AFD_ATTENTION_GPU_SHARE: topology.attention_gpus / config.total_gpus,
+                    AFD_TP_A: float(topology.tp_a),
+                    AFD_F_MOE_EP: float(topology.f_moe_ep_size),
+                    AFD_BATCH_SIZE: float(topology.a_batch_size),
+                    AFD_MICROBATCHES: float(topology.num_microbatches),
+                    AFD_PIPELINE_MODEL: topology.pipeline_model.value,
+                }
+            )
+            if config.companion is not None:
+                features[AFD_COMPANION_GPU_SHARE] = (
+                    config.companion.total_gpus / config.total_gpus
+                )
+                features.update(
+                    self._role_features("afd_companion", config.companion)
+                )
+            return features
         if isinstance(config, ReplicaParallelConfig):
             features.update(self._role_features("agg", config))
             return features
@@ -209,6 +259,35 @@ class ParallelConfigProjector:
 
     def _build_parameters(self) -> tuple[ParallelParameter, ...]:
         parameters = [self._float_parameter(USED_GPU_RATIO, default=1.0)]
+        if self.branch.deployment_mode in {"afd", "afd+pd"}:
+            parameters.extend(
+                [
+                    self._float_parameter(AFD_ATTENTION_GPU_SHARE, default=0.5),
+                    self._discrete_parameter(AFD_TP_A),
+                    self._discrete_parameter(AFD_F_MOE_EP),
+                    self._discrete_parameter(AFD_BATCH_SIZE),
+                    self._discrete_parameter(AFD_MICROBATCHES),
+                    self._categorical_parameter(
+                        AFD_PIPELINE_MODEL,
+                        ("optimistic", "conservative", "serial"),
+                    ),
+                ]
+            )
+            if self.branch.deployment_mode == "afd+pd":
+                parameters.extend(
+                    [
+                        self._float_parameter(AFD_COMPANION_GPU_SHARE, default=0.5),
+                        self._discrete_parameter(AFD_COMPANION_GPUS_PER_ENGINE),
+                        self._categorical_parameter(
+                            AFD_COMPANION_ATTENTION_MODE,
+                            _ATTENTION_MODE_ORDER,
+                        ),
+                        self._discrete_parameter(AFD_COMPANION_PIPELINE_PARALLEL),
+                    ]
+                )
+                if self.is_moe:
+                    parameters.append(self._categorical_parameter(AFD_COMPANION_FFN_MODE, _FFN_MODE_ORDER))
+            return tuple(parameters)
         if self.branch.deployment_mode == "agg":
             parameters.extend(
                 [
