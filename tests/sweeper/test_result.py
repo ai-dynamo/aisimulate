@@ -380,6 +380,25 @@ def test_load_recommendation_rejects_inconsistent_partial_and_cap_payloads(
         SweepResult.model_validate(payload)
 
 
+def test_load_recommendation_rejects_non_maximal_capped_partial_deployment():
+    payload = _partial_load_payload()
+    payload["load_recommendation"]["target"].update(
+        request_rate=25,
+        max_gpus=16,
+    )
+    payload["load_recommendation"]["recommendations"][0].update(
+        replicas_needed=3,
+        total_gpus_needed=24,
+        deployed_replicas=1,
+        deployed_gpus=8,
+        supported_load=10,
+        load_served_pct=40,
+    )
+
+    with pytest.raises(ValidationError, match="maximum replica count"):
+        SweepResult.model_validate(payload)
+
+
 def test_load_recommendation_failure_ids_must_be_retained_and_unique():
     payload = _complete_result().model_dump(mode="json")
     payload["load_recommendation"] = {
@@ -749,6 +768,52 @@ def test_run_result_preserves_no_feasible_recommendation_reasons(monkeypatch):
         for row in rows
     )
     assert SweepResult.from_json(result.to_json()) == result
+
+
+def test_views_retains_sizing_and_terminal_failures_in_mixed_run(monkeypatch):
+    parallel_config = ReplicaParallelConfig(
+        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
+    )
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel_config,),
+        supported_backends={parallel_config: frozenset({"trtllm"})},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    monkeypatch.setattr(
+        search_module,
+        "enumerate_branches",
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+    )
+    monkeypatch.setattr(
+        search_module,
+        "resolve_backend_version",
+        lambda hardware, backend: "1.0",
+    )
+
+    result = Sweeper(
+        runner_factory=_NoRequestCapacityRunnerFactory(),
+        sampler_factory=_UnsupportedThenFailedSampler,
+        show_progress=False,
+    ).run_result(
+        _config(),
+        candidate_retention=CandidateRetention.VIEWS,
+        load_target=LoadTarget(request_rate=20),
+    )
+
+    assert result.counts.feasible == 1
+    assert result.counts.unsupported == 1
+    assert {record.status for record in result.candidates} == {
+        CandidateStatus.FEASIBLE,
+        CandidateStatus.UNSUPPORTED,
+    }
+    assert result.load_recommendation is not None
+    failures = result.load_recommendation.no_feasible_reasons
+    assert {failure.candidate_id for failure in failures} == {
+        record.candidate_id for record in result.candidates
+    }
+    assert any("request_rate capacity" in failure.reason for failure in failures)
+    assert any("backend_topology" in failure.reason for failure in failures)
 
 
 def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monkeypatch):

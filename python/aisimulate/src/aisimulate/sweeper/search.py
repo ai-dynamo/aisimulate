@@ -1426,6 +1426,30 @@ class Sweeper:
                         )
                         for failure in exc.failures
                     ]
+                    if retention is not CandidateRetention.FEASIBLE:
+                        sizing_failure_ids = {
+                            failure.candidate_id
+                            for failure in no_feasible_reasons
+                            if failure.candidate_id is not None
+                        }
+                        no_feasible_reasons.extend(
+                            LoadRecommendationFailureRecord(
+                                candidate_id=record.candidate_id,
+                                reason=(
+                                    f"{record.reason_category.value}: {record.reason}"
+                                    if record.reason_category is not None
+                                    else record.reason or "candidate was not feasible"
+                                ),
+                            )
+                            for record in candidate_records
+                            if record.status
+                            in {
+                                CandidateStatus.UNSUPPORTED,
+                                CandidateStatus.TIMED_OUT,
+                                CandidateStatus.FAILED,
+                            }
+                            and record.candidate_id not in sizing_failure_ids
+                        )
                 elif candidate_records:
                     no_feasible_reasons = [
                         LoadRecommendationFailureRecord(

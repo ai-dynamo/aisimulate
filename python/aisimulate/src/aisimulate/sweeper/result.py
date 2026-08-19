@@ -396,6 +396,20 @@ class SweepResult(BaseModel):
                     raise ValueError("total_gpus_needed must match replicas_needed and candidate GPUs")
                 if item.deployed_gpus != item.deployed_replicas * used_gpus:
                     raise ValueError("deployed_gpus must match deployed_replicas and candidate GPUs")
+                max_replicas = (
+                    item.replicas_needed
+                    if self.load_recommendation.target.max_gpus is None
+                    else self.load_recommendation.target.max_gpus // used_gpus
+                )
+                expected_deployed_replicas = min(
+                    item.replicas_needed,
+                    max_replicas,
+                )
+                if item.deployed_replicas != expected_deployed_replicas:
+                    raise ValueError(
+                        "deployed_replicas must equal the maximum replica count "
+                        "allowed by target.max_gpus"
+                    )
                 expected_capacity_per_gpu = item.capacity_per_replica / used_gpus
                 if not math.isclose(item.capacity_per_gpu, expected_capacity_per_gpu):
                     raise ValueError("capacity_per_gpu must match capacity_per_replica and candidate GPUs")
