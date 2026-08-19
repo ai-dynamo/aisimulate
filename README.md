@@ -74,7 +74,8 @@ Install AISimulate by itself for engine-only development:
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install -e .
+uv pip install -e ./python/aisimulate-core
+uv pip install -e ./python/aisimulate
 ```
 
 For Dynamo feature development, install `ai-dynamo` separately. Its optional
