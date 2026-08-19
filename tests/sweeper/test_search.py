@@ -9,6 +9,7 @@ import pytest
 
 import aisimulate.sweeper.search as search_mod
 from aisimulate.sweeper.config import OptimizationGoal, SmartSearchConfig
+from aisimulate.sweeper.engine_request import EngineControlTemplate
 from aisimulate.sweeper.kv_load import KVLoadResolution
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import (
@@ -172,6 +173,19 @@ def _stub(monkeypatch, branch):
             backend: _estimator_spec(backend) for backend in search_space.backend
         },
     )
+    monkeypatch.setattr(
+        search_mod,
+        "resolve_engine_controls",
+        lambda config: {
+            "trtllm": EngineControlTemplate(
+                backend="trtllm",
+                max_seq_len=131072,
+                model_family="DEEPSEEK",
+                is_moe=True,
+                memory_fraction_kind="of_free",
+            )
+        },
+    )
 
 
 def _pc(*, tp=4, replicas=2):
@@ -209,6 +223,10 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
         spec.backend_deployment.estimator is not None
         and spec.backend_deployment.estimator.backend_version == "1.3.0rc10"
         for spec in factory.runner.specs
+    )
+    assert candidates[0].config["engine_request"]["max_seq_len"] == 131072
+    assert (
+        factory.runner.specs[0].backend_deployment.engine_request.max_seq_len == 131072
     )
     assert factory.runner.closed
 
@@ -730,6 +748,19 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
         "resolve_estimator_specs",
         lambda search_space: {
             backend: _estimator_spec(backend) for backend in search_space.backend
+        },
+    )
+    monkeypatch.setattr(
+        search_mod,
+        "resolve_engine_controls",
+        lambda config: {
+            "trtllm": EngineControlTemplate(
+                backend="trtllm",
+                max_seq_len=131072,
+                model_family="DEEPSEEK",
+                is_moe=True,
+                memory_fraction_kind="of_free",
+            )
         },
     )
     seen = []

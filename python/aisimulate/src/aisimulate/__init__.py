@@ -13,6 +13,7 @@ from .runner import (
 )
 from .sweeper.replay import (
     BackendDeploymentSpec,
+    EngineRequestSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
@@ -27,6 +28,7 @@ __all__ = [
     "BackendDeploymentSpec",
     "EngineReplayRunner",
     "EngineReplayRunnerFactory",
+    "EngineRequestSpec",
     "InvalidRunnerError",
     "ReplayOutputRequirements",
     "ReplayReport",

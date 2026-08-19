@@ -58,6 +58,7 @@ Every `Workload` field:
 | `num_request_ratio` | `float \| None` | `None` | Synthetic request count relative to the load: `num_requests = round(num_request_ratio * load)`. Required for synthetic. See below. |
 | `random_range_ratio` | `float` | `1.0` | Uniformly sample each synthetic ISL and OSL from `[int(ratio * configured_length), configured_length]`. Must be in `(0.0, 1.0]`; `1.0` preserves fixed lengths. Single-turn only. |
 | `random_seed` | `int` | `0` | Unsigned 64-bit seed for deterministic synthetic ISL/OSL sampling. |
+| `cached_prefix_tokens` | `int` | `0` | Exact common prompt-prefix length materialized as token IDs for KV-aware replay. It must not exceed the shortest randomized ISL and is independent of ratio-based locality controls. |
 | `shared_prefix_ratio` | `float` | `0.0` | Fraction of shared prefix across requests (cache-locality / prefix sharing). |
 | `num_prefix_groups` | `int` | `0` | Number of distinct shared-prefix groups. |
 | `turns_per_session` | `int` | `1` | Turns per multi-turn session. |
@@ -68,7 +69,7 @@ Every `Workload` field:
 | `replay_concurrency` | `int \| None` | `None` | Closed-loop in-flight cap **for a trace** (shape 1c); when set, trace timestamps are ignored. For synthetic closed-loop use `concurrency` instead. |
 
 The synthetic fields are `isl`, `osl`, `request_rate`, `concurrency`, `kv_load_ratio`,
-`num_request_ratio`, `random_range_ratio`, and `random_seed`;
+`num_request_ratio`, `random_range_ratio`, `random_seed`, and `cached_prefix_tokens`;
 `shared_prefix_ratio`, `num_prefix_groups`, `turns_per_session`, `inter_turn_delay_ms` are
 shared synthetic knobs carried by `ReplaySpec.workload`.
 
