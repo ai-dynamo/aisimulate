@@ -33,22 +33,23 @@ This repository produces exactly three release artifacts:
 
 It does **not** publish an `aiconfigurator` wheel or an `aiconfigurator-core`
 wheel/crate. The legacy Python import namespaces and the `aiconfigurator`
-console command remain compatibility surfaces inside the two AISimulate
-wheels for the 0.12 transition.
+console command remain supported surfaces inside the two AISimulate wheels.
+The `aisimulate` distribution does not install a second top-level application
+command named `aisimulate`.
 
-## CLI transition
+## CLI continuity
 
-The `aisimulate` wheel installs both compatibility commands:
+Installing the `aisimulate` wheel preserves the established command name:
 
 ```bash
-aisimulate cli generate --model-path Qwen/Qwen3-32B-FP8 --total-gpus 8 --system h200_sxm
+uv pip install aisimulate
 aiconfigurator cli generate --model-path Qwen/Qwen3-32B-FP8 --total-gpus 8 --system h200_sxm
 ```
 
-Both currently execute the complete, proven AIC CLI. The newer
-`predict`/`recommend` design must satisfy the tracked AIC-to-AISimulate parity
-matrix, product requirements, and approved exceptions before it replaces this
-delegation.
+AISimulate becomes the package and source owner without renaming the CLI that
+users already invoke. Any future `predict`/`recommend` actions must satisfy the
+tracked AIC parity and product gates and evolve the retained `aiconfigurator`
+command rather than introducing a second top-level executable.
 
 For an engine-only replay, use `python -m aisimulate.replay`. Dynamo Router,
 Planner, or online adapters remain available through `python -m dynamo.replay`

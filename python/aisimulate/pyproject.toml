@@ -96,11 +96,9 @@ requires = ["maturin>=1.12,<2"]
 build-backend = "maturin"
 
 [project.scripts]
-# The AISimulate command intentionally delegates to the proven AIC command
-# surface during the 0.12 compatibility window. The replacement
-# predict/recommend CLI must pass the tracked parity gate before this target
-# changes.
-aisimulate = "aisimulate.main:main"
+# AISimulate owns and ships the application, but preserves the established
+# AIConfigurator command identity. The distribution name is not a second
+# top-level application command.
 aiconfigurator = "aiconfigurator.main:main"
 
 [tool.maturin]
