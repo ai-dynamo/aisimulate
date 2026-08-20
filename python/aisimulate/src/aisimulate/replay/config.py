@@ -55,9 +55,7 @@ class ReplayCliConfig:
         workload = dict(self.workload)
         if self.uses_trace:
             if len(self.trace_files) != 1:
-                raise ValueError(
-                    "AISimulate Runner replay requires exactly one trace file"
-                )
+                raise ValueError("AISimulate Runner replay requires exactly one trace file")
             workload["trace_path"] = self.trace_files[0]
         concurrency = workload.get("replay_concurrency")
         return ReplaySpec(
@@ -73,13 +71,8 @@ class ReplayCliConfig:
 
     def _deployment_spec(self) -> BackendDeploymentSpec:
         if self.extra_engine_args is not None:
-            if (
-                self.prefill_engine_args is not None
-                or self.decode_engine_args is not None
-            ):
-                raise ValueError(
-                    "--extra-engine-args cannot be combined with prefill/decode engine arguments"
-                )
+            if self.prefill_engine_args is not None or self.decode_engine_args is not None:
+                raise ValueError("--extra-engine-args cannot be combined with prefill/decode engine arguments")
             backend = _engine_backend(self.extra_engine_args)
             return BackendDeploymentSpec(
                 deployment_mode="agg",
@@ -91,22 +84,19 @@ class ReplayCliConfig:
 
         if self.prefill_engine_args is None or self.decode_engine_args is None:
             raise ValueError(
-                "engine replay requires --extra-engine-args or both "
-                "--prefill-engine-args and --decode-engine-args"
+                "engine replay requires --extra-engine-args or both --prefill-engine-args and --decode-engine-args"
             )
         prefill_backend = _engine_backend(self.prefill_engine_args)
         decode_backend = _engine_backend(self.decode_engine_args)
         if prefill_backend != decode_backend:
             raise ValueError(
-                "prefill and decode engine backends must match: "
-                f"{prefill_backend!r} != {decode_backend!r}"
+                f"prefill and decode engine backends must match: {prefill_backend!r} != {decode_backend!r}"
             )
         prefill_version = _engine_backend_version(self.prefill_engine_args)
         decode_version = _engine_backend_version(self.decode_engine_args)
         if prefill_version and decode_version and prefill_version != decode_version:
             raise ValueError(
-                "prefill and decode backend versions must match: "
-                f"{prefill_version!r} != {decode_version!r}"
+                f"prefill and decode backend versions must match: {prefill_version!r} != {decode_version!r}"
             )
         return BackendDeploymentSpec(
             deployment_mode="disagg",
@@ -135,20 +125,13 @@ def parse_base_replay_config(args: argparse.Namespace) -> ReplayCliConfig:
         )
     )
     if bool(trace_files) == uses_synthetic:
-        raise ValueError(
-            "provide either trace_file or all of "
-            "--input-tokens/--output-tokens/--request-count"
-        )
+        raise ValueError("provide either trace_file or all of --input-tokens/--output-tokens/--request-count")
     if uses_synthetic and not all(value is not None for value in synthetic_args):
-        raise ValueError(
-            "synthetic replay requires --input-tokens, --output-tokens, and --request-count"
-        )
+        raise ValueError("synthetic replay requires --input-tokens, --output-tokens, and --request-count")
     if args.trace_format == "dynamo" and not trace_files:
         raise ValueError("--trace-format=dynamo requires at least one trace file")
     if args.trace_format != "dynamo" and len(trace_files) > 1:
-        raise ValueError(
-            f"--trace-format={args.trace_format} requires exactly one trace file"
-        )
+        raise ValueError(f"--trace-format={args.trace_format} requires exactly one trace file")
 
     if uses_synthetic:
         controllers = (
@@ -162,14 +145,8 @@ def parse_base_replay_config(args: argparse.Namespace) -> ReplayCliConfig:
                 "--request-rate, or --arrival-interval-ms"
             )
     elif args.request_rate is not None or args.arrival_interval_ms is not None:
-        raise ValueError(
-            "--request-rate and --arrival-interval-ms only apply to synthetic replay"
-        )
-    if (
-        trace_files
-        and args.trace_format == "applied_compute_agentic"
-        and args.replay_concurrency is None
-    ):
+        raise ValueError("--request-rate and --arrival-interval-ms only apply to synthetic replay")
+    if trace_files and args.trace_format == "applied_compute_agentic" and args.replay_concurrency is None:
         raise ValueError(
             "--trace-format=applied_compute_agentic requires --replay-concurrency "
             "because the source traces do not include first-turn timestamps"
@@ -177,11 +154,17 @@ def parse_base_replay_config(args: argparse.Namespace) -> ReplayCliConfig:
     if args.max_sim_time_seconds is not None:
         _nonnegative_number(args.max_sim_time_seconds, "max_sim_time_seconds")
         if not trace_files:
-            raise ValueError(
-                "--max-sim-time-seconds currently only supports trace-file replay"
-            )
+            raise ValueError("--max-sim-time-seconds currently only supports trace-file replay")
     if args.trace_block_size is not None:
         _positive_int(args.trace_block_size, "trace_block_size")
+    if args.agentic_lanes is not None:
+        _positive_int(args.agentic_lanes, "agentic_lanes")
+        if not trace_files:
+            raise ValueError("--agentic-lanes requires trace-file replay")
+        if args.trace_format not in {"agentic_mooncake", "weka", "dynamo"}:
+            raise ValueError("--agentic-lanes requires --trace-format=agentic_mooncake, weka, or dynamo")
+        if args.replay_concurrency is not None:
+            raise ValueError("--agentic-lanes cannot be combined with --replay-concurrency")
 
     workload: dict[str, JSONValue]
     if trace_files:
@@ -196,6 +179,8 @@ def parse_base_replay_config(args: argparse.Namespace) -> ReplayCliConfig:
             workload["replay_concurrency"] = args.replay_concurrency
         if args.max_sim_time_seconds is not None:
             workload["max_sim_time_ms"] = args.max_sim_time_seconds * 1_000.0
+        if args.agentic_lanes is not None:
+            workload["agentic_lanes"] = args.agentic_lanes
     else:
         workload = {
             "isl": args.input_tokens,
@@ -229,25 +214,17 @@ def parse_base_replay_config(args: argparse.Namespace) -> ReplayCliConfig:
     return ReplayCliConfig(
         trace_files=trace_files,
         extra_engine_args=_json_object(args.extra_engine_args, "--extra-engine-args"),
-        prefill_engine_args=_json_object(
-            args.prefill_engine_args, "--prefill-engine-args"
-        ),
-        decode_engine_args=_json_object(
-            args.decode_engine_args, "--decode-engine-args"
-        ),
+        prefill_engine_args=_json_object(args.prefill_engine_args, "--prefill-engine-args"),
+        decode_engine_args=_json_object(args.decode_engine_args, "--decode-engine-args"),
         num_workers=_positive_int(args.num_workers, "num_workers"),
-        num_prefill_workers=_positive_int(
-            args.num_prefill_workers, "num_prefill_workers"
-        ),
+        num_prefill_workers=_positive_int(args.num_prefill_workers, "num_prefill_workers"),
         num_decode_workers=_positive_int(args.num_decode_workers, "num_decode_workers"),
         replay_mode=args.replay_mode,
         workload=workload,
         goal={"target": "throughput", "sla": sla or None},
         output=ReplayOutputConfig(
             report_json=Path(args.report_json) if args.report_json else None,
-            per_request_jsonl=(
-                Path(args.per_request_jsonl) if args.per_request_jsonl else None
-            ),
+            per_request_jsonl=(Path(args.per_request_jsonl) if args.per_request_jsonl else None),
         ),
     )
 
@@ -302,11 +279,6 @@ def _positive_int(value: object, name: str) -> int:
 
 
 def _nonnegative_number(value: object, name: str) -> float:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        or value < 0
-    ):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
         raise ValueError(f"{name} must be finite and non-negative")
     return float(value)
