@@ -90,7 +90,6 @@ jobs:
           python -m pytest -q
           python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py
           python/aisimulate/tests/cross_package/test_core_version_contract.py
-      - run: python -m aisimulate version
       - run: aiconfigurator version
       - run: python -m pytest -q -c pytest.ini tests
       - run: >-
@@ -140,5 +139,5 @@ jobs:
           release-smoke/bin/python -c
           "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core;
           assert aisimulate.__version__ == aisimulate_core.__version__ == '0.12.0'"
-      - run: release-smoke/bin/aisimulate version
+      - run: test ! -e release-smoke/bin/aisimulate
       - run: release-smoke/bin/aiconfigurator version

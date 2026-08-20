@@ -32,10 +32,10 @@ This repository produces exactly three release artifacts:
    Rust consumers.
 
 It does **not** publish an `aiconfigurator` wheel or an `aiconfigurator-core`
-wheel/crate. The legacy Python import namespaces and the `aiconfigurator`
-console command remain supported surfaces inside the two AISimulate wheels.
-The `aisimulate` distribution does not install a second top-level application
-command named `aisimulate`.
+wheel/crate. The legacy Python import namespaces remain in the relevant
+AISimulate wheels, and the application wheel preserves the supported
+`aiconfigurator` console command. The `aisimulate` distribution does not
+install a second top-level application command named `aisimulate`.
 
 ## CLI continuity
 
