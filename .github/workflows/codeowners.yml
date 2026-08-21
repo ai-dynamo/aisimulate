@@ -21,7 +21,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     container:
-      image: ubuntu:24.04
+      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
