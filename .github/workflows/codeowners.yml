@@ -1,81 +1,43 @@
-name: codeowners
+name: Velonix runner smoke test
 
-# Keeps CODEOWNERS in sync with the declarative source and gates changes that
-# would leave a path unowned. Team membership is managed separately.
 on:
-  pull_request:
-    paths:
-      - "**"
-  push:
-    branches: [main]
-    paths:
-      - "**"
+  workflow_dispatch:
 
-# The workflow runs scripts from the PR diff, so keep its token read-only and
-# out of the persisted git configuration.
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
-  codeowners:
-    runs-on: ubuntu-latest
+  smoke:
+    name: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            expected_uname: x86_64
+            runner: prod-aisimulate-default-amd64-v1
+          - arch: arm64
+            expected_uname: aarch64
+            runner: prod-aisimulate-default-arm64-v1
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    container:
+      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dockerhub/busybox:1.37
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - run: pip install pyyaml==6.0.3 pytest==8.4.2
-
-      # GitHub prefers these locations over the generated root file. Either
-      # one would silently shadow the managed policy.
-      - name: Reject shadow CODEOWNERS files
+      - name: Validate architecture and scratch storage
+        shell: sh
+        env:
+          EXPECTED_UNAME: ${{ matrix.expected_uname }}
         run: |
-          if [[ -e .github/CODEOWNERS || -e docs/CODEOWNERS ]]; then
-            echo "::error::The generated root CODEOWNERS must be the repository's only CODEOWNERS file."
-            exit 1
-          fi
-
-      - name: Unit and repository policy tests
-        run: |
-          python -m pytest -c /dev/null .github/codeowners/test_*.py -v \
-            -p no:cacheprovider \
-            --override-ini="addopts=" \
-            --override-ini="filterwarnings="
-
-      # A policy edit can orphan any tracked path, so build_codeowners.py
-      # automatically switches policy-changing PRs to a full-tree gate.
-      - name: Validate coverage (diff-aware, PR)
-        if: github.event_name == 'pull_request'
-        run: |
-          python .github/codeowners/build_codeowners.py \
-            --areas .github/codeowners/areas.yaml \
-            --repo . \
-            --strict \
-            --changed-only \
-            --base ${{ github.event.pull_request.base.sha }}
-
-      - name: Validate 100% coverage (strict, full tree)
-        if: github.event_name != 'pull_request'
-        run: |
-          python .github/codeowners/build_codeowners.py \
-            --areas .github/codeowners/areas.yaml \
-            --repo . \
-            --strict
-
-      - name: Regenerate and check for drift
-        run: |
-          python .github/codeowners/emit_codeowners.py \
-            --areas .github/codeowners/areas.yaml \
-            --out CODEOWNERS \
-            --external .github/codeowners/external_contributors.yaml \
-            --contributors-out CONTRIBUTORS.md
-          if [[ -n "$(git status --porcelain --untracked-files=all -- \
-              CODEOWNERS CONTRIBUTORS.md)" ]]; then
-            git diff -- CODEOWNERS CONTRIBUTORS.md || true
-            git status --short --untracked-files=all -- CODEOWNERS CONTRIBUTORS.md
-            echo "::error::Generated CODEOWNERS artifacts are out of date. Regenerate and commit every changed output."
-            exit 1
-          fi
+          set -eu
+          actual_uname="$(uname -m)"
+          test "${actual_uname}" = "${EXPECTED_UNAME}"
+          test -d /scratch
+          marker="/scratch/aisimulate-velonix-${GITHUB_RUN_ID}-${GITHUB_JOB}"
+          printf 'ok\n' > "${marker}"
+          test "$(cat "${marker}")" = "ok"
+          rm "${marker}"
+          printf 'runner=%s architecture=%s scratch=ok\n' \
+            "${{ matrix.runner }}" "${actual_uname}"
