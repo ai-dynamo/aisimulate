@@ -15,7 +15,7 @@ migration is tracked by
 | AIC 0.11 surface | AISimulate 0.12 surface | Compatibility |
 | --- | --- | --- |
 | Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command and import namespace ship inside `aisimulate` during the compatibility window |
-| CLI `aiconfigurator ...` | `aisimulate ...` | Both commands delegate to the complete AIC CLI until the new CLI passes the parity gate |
+| CLI `aiconfigurator ...` | `aiconfigurator ...` from the `aisimulate` wheel | The distribution and source owner change; the command name does not |
 | Python distribution `aiconfigurator-core` | `aisimulate-core` | Install name changes |
 | `aiconfigurator_core` | `aisimulate_core` | Old import remains available in 0.12.0 |
 | `aiconfigurator_core.sdk` | `aisimulate_core.sdk` | Old facade and explicit submodules remain available in 0.12.0 |
@@ -63,14 +63,16 @@ git log --follow -- python/aisimulate-core/src/aiconfigurator_core/sdk/engine.py
 git diff ff2be1fd434fd516474e42b77f94cd5a5f841b9b:src/aiconfigurator/main.py HEAD:python/aisimulate/src/aiconfigurator/main.py
 ```
 
-### CLI cutover gate
+### CLI identity and evolution gate
 
 Copying all AIC code removes repository-placement risk; it does not by itself
 prove that the newer `predict`/`recommend` CLI is a behavioral replacement.
 Until AIC-1480/AIC-1472/AIC-1476 have passing evidence or approved exceptions,
-the `aisimulate` executable delegates to the full AIC command implementation.
-The legacy `aiconfigurator` executable is an alias in the same wheel, not a
-fourth release artifact.
+the complete AIC command implementation remains the supported surface. The
+`aisimulate` wheel installs only the established `aiconfigurator` application
+command; `aisimulate` remains the distribution and Python namespace, not a
+second top-level executable. Future CLI actions must evolve the retained
+command identity and do not add a fourth release artifact.
 
 ## Dynamo-to-AISimulate package migration
 

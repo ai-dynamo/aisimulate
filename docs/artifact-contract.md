@@ -11,8 +11,8 @@ AISimulate 0.12.0 has one product version and exactly three release artifacts:
 The internal Replay engine and Python binding crates and the workspace test
 crate are `publish = false`. Imported AIConfigurator source
 does not retain another buildable `aiconfigurator` or `aiconfigurator-core`
-manifest. Compatibility commands and namespaces live inside the approved
-wheels and therefore do not add artifacts.
+manifest. The preserved command and compatibility namespaces live inside the
+approved wheels and therefore do not add artifacts.
 
 `scripts/build_release_artifacts.py` validates the manifest set before it
 builds and validates the output directory afterward. A release build fails if

@@ -42,7 +42,7 @@ def check_manifests() -> None:
 
     publishable_crates: dict[Path, str] = {}
     for path in ROOT.rglob("Cargo.toml"):
-        if "target" in path.parts:
+        if ".venv" in path.parts or "target" in path.parts:
             continue
         manifest = _toml(path)
         package = manifest.get("package")
@@ -63,7 +63,7 @@ def check_manifests() -> None:
         str(dep).lower().startswith(("dynamo", "ai-dynamo"))
         for dep in [*app["dependencies"], *core["dependencies"]]
     )
-    assert set(app["scripts"]) == {"aisimulate", "aiconfigurator"}
+    assert app["scripts"] == {"aiconfigurator": "aiconfigurator.main:main"}
 
 
 def _run(

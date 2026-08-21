@@ -66,7 +66,7 @@ def test_aisimulate_native_runtime_imports_from_installed_distribution():
     assert callable(runtime.run_replay_json)
 
 
-def test_aisimulate_publishes_only_compatibility_console_scripts():
+def test_aisimulate_preserves_only_the_aiconfigurator_console_script():
     distribution = importlib.metadata.distribution("aisimulate")
 
     scripts = {
@@ -74,10 +74,7 @@ def test_aisimulate_publishes_only_compatibility_console_scripts():
         for entry in distribution.entry_points
         if entry.group == "console_scripts"
     }
-    assert scripts == {
-        "aiconfigurator": "aiconfigurator.main:main",
-        "aisimulate": "aisimulate.main:main",
-    }
+    assert scripts == {"aiconfigurator": "aiconfigurator.main:main"}
 
 
 def test_ai_dynamo_has_no_aisimulate_extra():
