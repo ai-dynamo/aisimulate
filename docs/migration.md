@@ -55,12 +55,15 @@ Collector, tests, docs, Docker/development assets, and the original inactive
 workflow definitions. Only the repository-root `.github/workflows/` directory
 is active in AISimulate.
 
-The source commit is the future synchronization boundary. For example:
+The source commit is the future synchronization boundary. With an
+AIConfigurator clone at the sibling `../aiconfigurator` path and its origin
+fetched, for example:
 
 ```bash
 git log --follow -- crates/aisimulate-core/src/lib.rs
 git log --follow -- python/aisimulate-core/src/aiconfigurator_core/sdk/engine.py
-git diff 095f58a51c4ca8e61b66ec108d86f223f8d559ce:src/aiconfigurator/main.py HEAD:python/aisimulate/src/aiconfigurator/main.py
+git -C ../aiconfigurator fetch origin
+diff -u <(git -C ../aiconfigurator show 095f58a51c4ca8e61b66ec108d86f223f8d559ce:src/aiconfigurator/main.py) <(git show HEAD:python/aisimulate/src/aiconfigurator/main.py)
 ```
 
 ### Bulk synchronization ledger
@@ -92,14 +95,14 @@ The closure audit accounts for all 406 source paths and all six detected renames
 
 ### Intentional AISimulate adaptations
 
-- Source paths map to the existing AIS layout: `aic-core/rust/aiconfigurator-core/` to `crates/aisimulate-core/`, `aic-core/src/aiconfigurator_core/` to `python/aisimulate-core/src/aiconfigurator_core/`, and the upper application, Collector, tests, docs, and tools beneath `python/aisimulate/`. Crate, distribution, package-data, and tool references follow those destinations.
+- Source paths map to the existing AIS layout: `aic-core/rust/aiconfigurator-core/` to `crates/aisimulate-core/`, `aic-core/src/aiconfigurator_core/` to `python/aisimulate-core/src/aiconfigurator_core/`, and the upper application, Collector, tests, docs, and tools beneath `python/aisimulate/`. Migration-introduced crate, distribution, package-data, and tool references follow those destinations; pre-existing source-provenance comments may retain historical AIC paths.
 - The source `.gitattributes` snapshot remains byte-identical under `python/aisimulate/`. Root `.gitattributes` carries equivalent mapped rules for the active AIS data and generated model-config paths and is owned by AISimulate Infra plus maintainers.
 - The source engine-step golden is byte-identical. Source model configs, collection metadata, reuse declarations, Parquet files, `collector_ref` values, framework image digests, and other pinned SHAs are preserved unless a row is explicitly named here.
 - `perf_data_reuse_manifest.yaml` is intentionally regenerated from the final AIS data tree because the source snapshot predates the data added by #1507 and #1486. Its generator defaults and rendered instructions use the sibling AIS core path.
 - Source workflows and actions are provenance-only snapshots under `python/aisimulate/.github/`. The repository-root workflows remain unchanged by this synchronization; [AIC-1706](https://linear.app/nvidia/issue/AIC-1706/repo-establish-aisimulate-ci-release-and-ownership-contract) owns active CI and release applicability.
 - AISimulate release manifests and lockfiles retain the three-artifact contract. The migration does not add an AIC manifest or change `Cargo.toml`, either `pyproject.toml`, `Cargo.lock`, or `uv.lock`.
-- Rust formatting, AIS API documentation, and Python lint adaptations are limited to crate/module identity and existing AIS checks. Commit `d04a247` explicitly defers Qwen W4A16 Collector cases that the retained runtime cannot execute instead of silently relabeling them.
-- Commit `8f2ac6f` removes unrelated-case filtering from the DSV4 Collector and bounds the MSA evidence waiver to its approved scope. These are post-port policy corrections, not untracked source drift.
+- Rust formatting, AIS API documentation, and Python lint adaptations are limited to crate/module identity and existing AIS checks. Commit `f6e2f7a` explicitly defers Qwen W4A16 Collector cases that the retained runtime cannot execute instead of silently relabeling them.
+- Commit `7f07f3b` removes unrelated-case filtering from the DSV4 Collector and bounds the MSA evidence waiver to its approved scope. These are post-port policy corrections, not untracked source drift.
 
 ### CLI identity and evolution gate
 
