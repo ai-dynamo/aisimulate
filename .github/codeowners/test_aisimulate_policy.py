@@ -135,9 +135,21 @@ def test_representative_routing_contract() -> None:
     }
     assert _owners("python/aisimulate/CODEOWNERS") == {INFRA, MAINTAINERS}
     assert _owners("crates/aisimulate-core/deny.toml") == {FPE, MAINTAINERS}
+    assert _owners("deny.toml") == {INFRA, MAINTAINERS}
     assert _owners("CODEOWNERS") == {INFRA, MAINTAINERS}
     assert _owners("README.md") == {MAINTAINERS}
+    assert _owners("CONTRIBUTING.md") == {MAINTAINERS}
 
 
 def test_unclassified_future_path_uses_maintainer_fallback() -> None:
     assert _owners("future/unclassified.txt") == {MAINTAINERS}
+
+
+def test_dependency_policy_covers_every_rust_manifest_root() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    for manifest in (
+        "Cargo.toml",
+        "crates/aisimulate-core/Cargo.toml",
+        "crates/tests/public-api/Cargo.toml",
+    ):
+        assert f"--manifest-path {manifest}" in workflow
