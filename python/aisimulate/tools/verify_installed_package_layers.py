@@ -10,7 +10,11 @@ import importlib
 import importlib.metadata
 import importlib.resources
 import importlib.util
+import json
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Running this file directly prepends ``tools/`` to sys.path. Remove that path
@@ -211,11 +215,81 @@ def _verify_legacy_sdk_compatibility() -> None:
         raise RuntimeError("Task must not be shipped by the standalone core package")
 
 
+def _verify_fpm_workflow() -> str:
+    """Verify the installed application owns a runnable FPM workflow."""
+
+    app_version = _distribution_version("aisimulate")
+    if app_version is None:
+        raise RuntimeError("aisimulate distribution is not installed")
+    _require_distribution_files(
+        "aisimulate",
+        (
+            "collector/__init__.py",
+            "collector/model_cases.py",
+            "collector/cases/base_ops/mla_module.yaml",
+            "collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",
+            "collector/fpm_forward/__main__.py",
+            "collector/fpm_forward/cli.py",
+            "collector/fpm_forward/runtime/fpm_exec.sh",
+            "collector/fpm_forward/runtime/preflight.py",
+        ),
+    )
+
+    runtime = importlib.resources.files("collector.fpm_forward.runtime")
+    for name in ("fpm_exec.sh", "preflight.py"):
+        asset = runtime / name
+        if not asset.is_file():
+            raise RuntimeError(f"installed FPM runtime asset is missing: {asset}")
+
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    env["FPM_COLLECTOR_SOURCE_REVISION"] = "installed-wheel-verification"
+    with tempfile.TemporaryDirectory(prefix="aisimulate-installed-fpm-") as workdir:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "collector.fpm_forward",
+                "--model-path",
+                "nvidia/GLM-5.2-NVFP4",
+                "--gpu",
+                "b200_sxm",
+                "--fpm-max-gpus",
+                "4",
+                "--plan-only",
+            ],
+            cwd=workdir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    try:
+        plan = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        plan = {}
+    if (
+        completed.returncode != 0
+        or plan.get("schema_name") != "aic_fpm_collection_plan"
+        or plan.get("aic_revision") != "installed-wheel-verification"
+        or not plan.get("cells")
+    ):
+        raise RuntimeError(
+            f"installed FPM module entry point failed:\nstdout={completed.stdout}\nstderr={completed.stderr}"
+        )
+    print(f"Verified installed AISimulate {app_version} FPM workflow and runtime assets")
+    return app_version
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--expect", choices=("core", "full", "upper"), required=True)
+    parser.add_argument("--expect", choices=("core", "fpm", "full", "upper"), required=True)
     parser.add_argument("--exercise-engine", action="store_true")
     args = parser.parse_args()
+
+    if args.expect == "fpm":
+        _verify_fpm_workflow()
+        return 0
 
     if args.expect == "core":
         core_version = _verify_core(exercise_engine=args.exercise_engine)

@@ -17,6 +17,7 @@ from aiconfigurator.sdk.utils import (
     _attach_hf_quant_config,
     _attach_inferred_quant_fields,
     _download_hf_json,
+    _get_model_config_path,
     _parse_hf_config_json,
 )
 
@@ -118,8 +119,7 @@ class ResolvedModelConfig:
 
 
 def _aic_cached_model_config_path(model_path: str) -> Path | None:
-    root = Path(__file__).resolve().parents[2]
-    cached = root / "src" / "aiconfigurator" / "model_configs" / f"{model_path.replace('/', '--')}_config.json"
+    cached = Path(_get_model_config_path()) / f"{model_path.replace('/', '--')}_config.json"
     return cached if cached.exists() else None
 
 

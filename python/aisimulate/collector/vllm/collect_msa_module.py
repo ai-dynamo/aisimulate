@@ -922,7 +922,7 @@ def main():
     parser.add_argument("--num-heads", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--seq-len", type=int, default=None)
-    parser.add_argument("--prefix-len", type=int, default=0)
+    parser.add_argument("--prefix-len", type=int, default=None)
     parser.add_argument("--gemm-type", type=str, choices=["bfloat16", "fp8_block", "nvfp4"], default=None)
     parser.add_argument(
         "--kv-cache-dtype",
@@ -953,7 +953,7 @@ def main():
                 kv_cache_dtype=args.kv_cache_dtype or "bfloat16",
                 compute_dtype="bfloat16",
                 gemm_type=args.gemm_type or "bfloat16",
-                prefix_len=args.prefix_len,
+                prefix_len=args.prefix_len or 0,
                 perf_filename=perf_filename,
                 model_path=model_path,
                 device=args.device,

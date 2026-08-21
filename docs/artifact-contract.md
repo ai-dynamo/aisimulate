@@ -4,7 +4,7 @@ AISimulate 0.12.0 has one product version and exactly three release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
-| `aisimulate` wheel | `python/aisimulate/pyproject.toml` | Complete application, CLI, generator, compatibility SDK, Replay, Sweeper, native runtime, and package data |
+| `aisimulate` wheel | `python/aisimulate/pyproject.toml` | Complete application, CLI, generator, compatibility SDK, FPM Collector workflow/runtime, Replay, Sweeper, native runtime, and package data |
 | `aisimulate-core` wheel | `python/aisimulate-core/pyproject.toml` | Native Python estimator, model metadata, and performance data |
 | `aisimulate-core` crate | `crates/aisimulate-core/Cargo.toml` | Native Rust estimator |
 
