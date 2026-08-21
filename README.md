@@ -151,5 +151,5 @@ The branch retains both imported histories: the path-filtered AIC core ancestry
 and the path-filtered Dynamo ancestry for the former `aisimulate/` directory.
 The complete AIC upper application was initially imported from AIConfigurator
 `main` commit `13b5cf2697876692b0a52098266c81162add11fc` and is synchronized
-through commit `ff2be1fd434fd516474e42b77f94cd5a5f841b9b`. See
+through commit `095f58a51c4ca8e61b66ec108d86f223f8d559ce`. See
 [`docs/migration.md`](docs/migration.md) for the complete mapping.

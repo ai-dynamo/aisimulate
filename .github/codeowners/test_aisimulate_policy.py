@@ -114,6 +114,7 @@ def test_representative_routing_contract() -> None:
 
     # Active and imported repository metadata.
     assert _owners(".github/workflows/ci.yml") == {INFRA}
+    assert _owners(".gitattributes") == {INFRA, MAINTAINERS}
     assert _owners("scripts/build_release_artifacts.py") == {INFRA, MAINTAINERS}
     assert _owners("python/aisimulate/.github/workflows/build-test.yml") == {
         INFRA,
