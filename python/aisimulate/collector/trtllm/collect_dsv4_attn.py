@@ -164,6 +164,9 @@ def _filter_shapes(mode: str, drops: dict[str, int] | None = None):
 def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[dict]:
     cases: list[dict] = []
     tp_sizes = [1] if "--smoke" in sys.argv else _DSV4_MODULE_TP_SIZES
+    model_paths = _selected_dsv4_models()
+    if not model_paths:
+        return []
     drops: dict[str, int] = {}
     # Loop-invariant: same shape grid for every (model, tp) pair, so compute
     # (and count drops) once. Case order is unchanged.
@@ -173,7 +176,7 @@ def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[dict]:
         print(
             f"[trtllm-dsv4] {mode}/{attn_kind}: dropped {total_dropped} shape(s) at generation (budget filter): {drops}"
         )
-    for model_path in _selected_dsv4_models():
+    for model_path in model_paths:
         for tp_size in tp_sizes:
             for bs, sl, prefix in shapes:
                 params = [sl, bs, tp_size, "fp8", "bfloat16", "fp8_block", model_path, attn_kind]

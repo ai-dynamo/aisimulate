@@ -93,6 +93,39 @@ def test_dsv4_case_population_shape_and_budget(monkeypatch):
             assert tp in (1, 2, 4, 8)
 
 
+def test_dsv4_getters_return_empty_for_unrelated_model_filter(monkeypatch, capsys):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "Qwen/Qwen3-32B")
+    module = _load_module_with_torch_stub(monkeypatch)
+
+    for getter in (
+        module.get_dsv4_csa_context_test_cases,
+        module.get_dsv4_hca_context_test_cases,
+        module.get_dsv4_csa_generation_test_cases,
+        module.get_dsv4_hca_generation_test_cases,
+    ):
+        assert getter() == []
+
+    assert "is not a DSV4 model; generating no DSV4 cases" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "getter_name",
+    [
+        "get_dsv4_csa_context_test_cases",
+        "get_dsv4_hca_context_test_cases",
+        "get_dsv4_csa_generation_test_cases",
+        "get_dsv4_hca_generation_test_cases",
+    ],
+)
+def test_dsv4_getters_fail_when_budget_drops_every_selected_model_shape(monkeypatch, getter_name):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "sgl-project/DeepSeek-V4-Flash-FP8")
+    module = _load_module_with_torch_stub(monkeypatch)
+    monkeypatch.setattr(module, "MAX_SEQ_LEN", 0)
+
+    with pytest.raises(RuntimeError, match="budget filter dropped every shape"):
+        getattr(module, getter_name)()
+
+
 def test_dsv4_worker_infers_mode_from_perf_filename(monkeypatch):
     module = _load_module_with_torch_stub(monkeypatch)
 

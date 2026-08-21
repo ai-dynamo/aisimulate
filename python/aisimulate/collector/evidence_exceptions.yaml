@@ -16,7 +16,7 @@ schema_version: 2
 
 evidence_exceptions:
 
-# --- PR #1486: shared-file manifest fan-out (33 pairs) --------------------
+# --- PR #1486: shared-file manifest fan-out (36 pairs) --------------------
 # Scope = exactly the resolver-listed pairs whose ONLY change reasons are
 # shared-file edits (derive_table_status semantics change — metadata-only;
 # the DSV4 budget relocation — DSV4 plan hashes verified bit-identical;
@@ -28,9 +28,9 @@ evidence_exceptions:
 - scope:
     reasons: [collector_code, case_plan]
     pairs:
-      sglang: [attention, encoder_attention, gemm, kda, linear_attention, mhc, mla, mla_bmm, moe, quantize, sparse_attention]
-      trtllm: [attention, encoder_attention, gemm, linear_attention, mhc, mla, mla_bmm, quantize]
-      vllm: [attention, encoder_attention, gemm, kda, linear_attention, mhc, mla, mla_bmm, moe, quantize, sparse_attention]
+      sglang: [attention, encoder_attention, gemm, kda, linear_attention, mhc, mla, mla_bmm, moe, msa, quantize, sparse_attention]
+      trtllm: [attention, encoder_attention, gemm, linear_attention, mhc, mla, mla_bmm, msa, quantize]
+      vllm: [attention, encoder_attention, gemm, kda, linear_attention, mhc, mla, mla_bmm, moe, msa, quantize, sparse_attention]
       wideep_sglang: [comm, moe]
       wideep_trtllm: [moe]
   requirements_waived: [before_after_diff, collect_new_cases_only]
