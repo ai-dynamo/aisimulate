@@ -35,40 +35,38 @@ It does **not** publish an `aiconfigurator` wheel or an `aiconfigurator-core`
 wheel/crate, nor a Python `aisimulate-core` distribution. The legacy Python
 import namespaces remain in the `aisimulate` wheel, which also preserves the supported
 `aiconfigurator` console command. The `aisimulate` distribution does not
-install a second top-level application command named `aisimulate`.
+rename that compatibility command; it additionally installs the public
+`aisimulate predict`/`aisimulate recommend` application.
 
-## CLI continuity
+## CLIs
 
-Installing the `aisimulate` wheel preserves the established command name:
+Installing the `aisimulate` wheel provides the unified simulation CLI and preserves the established
+AIC command name:
 
 ```bash
 uv pip install aisimulate
+aisimulate predict --config prediction.yaml
+aisimulate recommend --config recommendation.yaml
 aiconfigurator cli generate --model-path Qwen/Qwen3-32B-FP8 --total-gpus 8 --system h200_sxm
 ```
 
-AISimulate becomes the package and source owner without renaming the CLI that
-users already invoke. Any future `predict`/`recommend` actions must satisfy the
-tracked AIC parity and product gates and evolve the retained `aiconfigurator`
-command rather than introducing a second top-level executable.
+`aisimulate` is the only Replay/Sweeper CLI. The built-in `engine` stack is the default;
+`--stack dynamo` selects the optional runner and Router/Planner configuration adapters registered by
+an independently installed `ai-dynamo` wheel. The existing Replay and Sweeper Python APIs remain
+available to embedded callers.
 
-For an engine-only replay, use `python -m aisimulate.replay`. Dynamo Router,
-Planner, or online adapters remain available through `python -m dynamo.replay`
-when `ai-dynamo` is installed separately. Both commands share the engine,
-topology, traffic, replay-mode, SLA, and output arguments; Dynamo adds its
-adapter options. For configuration search, call
-`Sweeper(runner_factory=...).run(config)` or start from an example under
-[`examples/sweeper`](examples/sweeper/README.md).
+For example, a minimal prediction input is:
 
-For example, run one engine-only synthetic replay with fixed timing:
-
-```bash
-python -m aisimulate.replay \
-  --extra-engine-args '{"engine_type":"vllm","num_gpu_blocks":1024,"block_size":16,"timing_model":{"type":"fixed","prefill_ms":10,"decode_ms":2}}' \
-  --input-tokens 1024 \
-  --output-tokens 128 \
-  --request-count 16 \
-  --replay-concurrency 4
+```yaml
+engine:
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
+  backend: vllm
+  workers:
+    aggregated: {}
 ```
+
+See [`docs/cli-design.md`](docs/cli-design.md) for the complete schema and search-domain contract.
 
 Install AISimulate by itself for engine-only development:
 
@@ -85,9 +83,9 @@ Router and Planner adapters consume the released `aisimulate` artifact:
 uv pip install aisimulate ai-dynamo
 ```
 
-The `ai-dynamo` wheel registers the `dynamo.planner` and `dynamo.router` Sweeper provider entry
-points. Its Dynamo runner composes the materialized runtime hooks with the shared AI Simulate
-Replayer.
+The `ai-dynamo` wheel registers the `dynamo` runner factory plus `dynamo.planner` and
+`dynamo.router` configuration adapters and Sweeper providers. Its runner composes the materialized
+runtime hooks with the shared AISimulate Replayer.
 
 Run a sweep from Python with an explicit runner:
 

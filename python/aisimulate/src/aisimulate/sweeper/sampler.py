@@ -24,7 +24,9 @@ optimizer can replace Vizier without touching orchestration.
 from __future__ import annotations
 
 import json
+import math
 import os
+import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -112,7 +114,10 @@ class VizierBranchSampler:
         *,
         study_id: str,
         objectives: list[tuple[str, bool]] | None = None,
+        algorithm: str = "bayesian",
+        seed: int = 42,
     ):
+        del seed  # Vizier's embedded DEFAULT designer owns its internal RNG.
         configure_vizier_runtime()
         clients, vz = _vizier_modules()
 
@@ -128,7 +133,10 @@ class VizierBranchSampler:
         self._decoders: dict[str, Callable[[Any], Any]] = {}
         self._constants: dict[str, Any] = {}
         self._parallel_projector = ParallelConfigProjector(branch)
-        self._parallel_pinned = len(branch.parallel_configs) == 1
+        self._parallel_pinned = (
+            len(branch.parallel_configs) == 1
+            and not branch.parallel_independent_choices
+        )
 
         problem = vz.ProblemStatement()
         root = problem.search_space.root
@@ -164,6 +172,11 @@ class VizierBranchSampler:
                 min_value=minimum,
                 max_value=maximum,
                 default_value=(minimum + maximum) / 2.0,
+                scale_type=(
+                    vz.ScaleType.LOG
+                    if knob in branch.log_float_ranges
+                    else vz.ScaleType.LINEAR
+                ),
             )
             self._decoders[knob] = float
         for knob, choices in branch.knob_choices.items():
@@ -212,7 +225,9 @@ class VizierBranchSampler:
         # EXPERIMENT (env-gated; default DEFAULT = GP-bandit). The multi-objective GP suggest
         # can spin/hang at low observation counts; RANDOM_SEARCH bypasses the GP (instant
         # suggest, uniform exploration) to cover the curve ends without that stall.
-        study_config.algorithm = _vizier_algorithm()
+        study_config.algorithm = (
+            "RANDOM_SEARCH" if algorithm == "random" else _vizier_algorithm()
+        )
         self._study = clients.Study.from_study_config(
             study_config, owner="sweeper", study_id=study_id
         )
@@ -220,7 +235,10 @@ class VizierBranchSampler:
     def suggest(self, count: int) -> list[Suggestion]:
         suggestions: list[Suggestion] = []
         for trial in self._study.suggest(count=count):
-            params = dict(trial.parameters)
+            params = {
+                name: getattr(value, "value", value)
+                for name, value in dict(trial.parameters).items()
+            }
             # backend is a searched knob now (in knob_choices) -> comes via _constants
             # (single backend) or _decoders (multiple), not a per-branch constant.
             selection: dict[str, Any] = {
@@ -276,12 +294,260 @@ class VizierBranchSampler:
         suggestion.handle.complete(vz.Measurement(), infeasible_reason=reason)
 
 
+class RandomBranchSampler:
+    """Seeded random sampler over the same latent projection used by Vizier."""
+
+    def __init__(self, branch: BranchSpace, *, seed: int) -> None:
+        self.branch = branch
+        self._rng = random.Random(seed)
+        self._projector = ParallelConfigProjector(branch)
+        self._parallel_pinned = (
+            len(branch.parallel_configs) == 1
+            and not branch.parallel_independent_choices
+        )
+
+    def _parameter_value(self, parameter) -> Any:
+        if parameter.kind == "float":
+            if parameter.log_scale:
+                return 2.0 ** self._rng.uniform(
+                    math.log2(parameter.minimum), math.log2(parameter.maximum)
+                )
+            return self._rng.uniform(parameter.minimum, parameter.maximum)
+        return self._rng.choice(parameter.values)
+
+    def suggest(self, count: int) -> list[Suggestion]:
+        suggestions: list[Suggestion] = []
+        for _ in range(count):
+            selection: dict[str, Any] = {"deployment_mode": self.branch.deployment_mode}
+            for knob, choices in self.branch.knob_choices.items():
+                selection[knob] = self._rng.choice(choices)
+            for knob, (minimum, maximum) in self.branch.float_ranges.items():
+                if knob in self.branch.log_float_ranges:
+                    selection[knob] = math.exp(
+                        self._rng.uniform(math.log(minimum), math.log(maximum))
+                    )
+                else:
+                    selection[knob] = self._rng.uniform(minimum, maximum)
+            if self._parallel_pinned:
+                parallel_config = self.branch.parallel_configs[0]
+                projection = None
+            else:
+                params = {
+                    parameter.name: self._parameter_value(parameter)
+                    for parameter in self._projector.parameters
+                    if not parameter.is_constant
+                }
+                projection = self._projector.project(params, selection["backend"])
+                parallel_config = projection.config
+            suggestions.append(
+                Suggestion(
+                    selection=selection,
+                    parallel_config=parallel_config,
+                    handle=None,
+                    projection=projection,
+                )
+            )
+        return suggestions
+
+    def observe(self, suggestion: Suggestion, metrics: dict[str, float]) -> None:
+        del suggestion, metrics
+
+    def observe_infeasible(self, suggestion: Suggestion, reason: str) -> None:
+        del suggestion, reason
+
+
+class SeededBayesianBranchSampler:
+    """Local Vizier GP-UCB-PE designer with an explicit reproducible seed."""
+
+    def __init__(
+        self,
+        branch: BranchSpace,
+        *,
+        objectives: list[tuple[str, bool]] | None,
+        seed: int,
+    ) -> None:
+        configure_vizier_runtime()
+        _, vz = _vizier_modules()
+        import jax
+        from vizier import algorithms as vza
+        from vizier._src.algorithms.designers import gp_ucb_pe
+
+        self.branch = branch
+        self._vz = vz
+        self._vza = vza
+        self._decoders: dict[str, Callable[[Any], Any]] = {}
+        self._constants: dict[str, Any] = {}
+        self._parallel_projector = ParallelConfigProjector(branch)
+        self._parallel_pinned = (
+            len(branch.parallel_configs) == 1
+            and not branch.parallel_independent_choices
+        )
+        self._next_trial_id = 1
+        self._active: dict[int, Any] = {}
+
+        problem = vz.ProblemStatement()
+        root = problem.search_space.root
+        if not self._parallel_pinned:
+            for parameter in self._parallel_projector.parameters:
+                if parameter.is_constant:
+                    continue
+                if parameter.kind == "float":
+                    root.add_float_param(
+                        parameter.name,
+                        min_value=parameter.minimum,
+                        max_value=parameter.maximum,
+                        default_value=parameter.default,
+                    )
+                elif parameter.kind == "discrete":
+                    root.add_discrete_param(
+                        parameter.name,
+                        feasible_values=parameter.values,
+                        default_value=parameter.default,
+                        scale_type=(
+                            vz.ScaleType.LOG
+                            if parameter.log_scale
+                            else vz.ScaleType.LINEAR
+                        ),
+                    )
+                else:
+                    root.add_categorical_param(
+                        parameter.name,
+                        feasible_values=parameter.values,
+                        default_value=parameter.default,
+                    )
+        for knob, (minimum, maximum) in branch.float_ranges.items():
+            root.add_float_param(
+                knob,
+                min_value=minimum,
+                max_value=maximum,
+                default_value=(minimum + maximum) / 2.0,
+                scale_type=(
+                    vz.ScaleType.LOG
+                    if knob in branch.log_float_ranges
+                    else vz.ScaleType.LINEAR
+                ),
+            )
+            self._decoders[knob] = float
+        for knob, raw_choices in branch.knob_choices.items():
+            choices = list(raw_choices)
+            all_strings = all(isinstance(choice, str) for choice in choices)
+            all_numeric = all(
+                isinstance(choice, (int, float)) and not isinstance(choice, bool)
+                for choice in choices
+            )
+            if all_strings or all_numeric:
+                choices = list(dict.fromkeys(choices))
+            if len(choices) <= 1:
+                if choices:
+                    self._constants[knob] = choices[0]
+                continue
+            if all_strings:
+                root.add_categorical_param(knob, choices)
+                self._decoders[knob] = _decoder_for(choices)
+            elif all_numeric:
+                root.add_discrete_param(knob, sorted(float(choice) for choice in choices))
+                self._decoders[knob] = _decoder_for(choices)
+            else:
+                root.add_categorical_param(knob, [str(i) for i in range(len(choices))])
+                self._decoders[knob] = _index_decoder(choices)
+        if problem.search_space.num_parameters() == 0:
+            root.add_categorical_param(_CONSTANT_PARAM, ["0"], default_value="0")
+        for name, maximize in objectives or [(_METRIC, True)]:
+            problem.metric_information.append(
+                vz.MetricInformation(
+                    name=name,
+                    goal=(
+                        vz.ObjectiveMetricGoal.MAXIMIZE
+                        if maximize
+                        else vz.ObjectiveMetricGoal.MINIMIZE
+                    ),
+                )
+            )
+        self._designer = gp_ucb_pe.VizierGPUCBPEBandit(
+            problem,
+            rng=jax.random.PRNGKey(seed),
+        )
+
+    def suggest(self, count: int) -> list[Suggestion]:
+        suggestions: list[Suggestion] = []
+        for raw in self._designer.suggest(count):
+            trial = raw.to_trial(self._next_trial_id)
+            self._next_trial_id += 1
+            self._active[trial.id] = trial
+            params = {
+                name: getattr(value, "value", value)
+                for name, value in dict(trial.parameters).items()
+            }
+            selection: dict[str, Any] = {
+                "deployment_mode": self.branch.deployment_mode,
+                **self._constants,
+            }
+            for knob, decode in self._decoders.items():
+                selection[knob] = decode(params[knob])
+            if self._parallel_pinned:
+                parallel_config = self.branch.parallel_configs[0]
+                projection = None
+            else:
+                projection = self._parallel_projector.project(
+                    params, selection["backend"]
+                )
+                parallel_config = projection.config
+            suggestions.append(
+                Suggestion(
+                    selection=selection,
+                    parallel_config=parallel_config,
+                    handle=trial,
+                    projection=projection,
+                )
+            )
+        return suggestions
+
+    def _complete(self, suggestion: Suggestion, measurement, reason=None) -> None:
+        trial = suggestion.handle
+        if reason is None:
+            trial.complete(measurement)
+        else:
+            trial.complete(measurement, infeasibility_reason=reason)
+        self._active.pop(trial.id, None)
+        self._designer.update(
+            completed=self._vza.CompletedTrials([trial]),
+            all_active=self._vza.ActiveTrials(list(self._active.values())),
+        )
+
+    def observe(self, suggestion: Suggestion, metrics: dict[str, float]) -> None:
+        self._complete(
+            suggestion,
+            self._vz.Measurement(
+                metrics={name: float(value) for name, value in metrics.items()}
+            ),
+        )
+
+    def observe_infeasible(self, suggestion: Suggestion, reason: str) -> None:
+        self._complete(suggestion, self._vz.Measurement(), reason)
+
+
 def make_branch_sampler(
     branch: BranchSpace,
     *,
     study_id: str,
     objectives: list[tuple[str, bool]] | None = None,
+    algorithm: str | None = None,
+    seed: int = 42,
 ) -> BranchSampler:
     """Construct the default (Vizier) sampler for a branch. ``objectives`` (name, maximize)
     pairs default to a single maximized ``"objective"``; pass >=2 for a Pareto study."""
-    return VizierBranchSampler(branch, study_id=study_id, objectives=objectives)
+    if algorithm == "random":
+        return RandomBranchSampler(branch, seed=seed)
+    if algorithm == "bayesian":
+        return SeededBayesianBranchSampler(
+            branch,
+            objectives=objectives,
+            seed=seed,
+        )
+    return VizierBranchSampler(
+        branch,
+        study_id=study_id,
+        objectives=objectives,
+        algorithm="bayesian",
+        seed=seed,
+    )

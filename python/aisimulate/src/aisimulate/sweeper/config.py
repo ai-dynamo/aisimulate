@@ -44,6 +44,7 @@ class OptimizationTarget(str, Enum):
     THROUGHPUT_PER_USER = (
         "throughput_per_user"  # maximize mean per-user output throughput (tok/s/user)
     )
+    TTFT = "ttft"  # minimize mean time to first token
     E2E_LATENCY = "e2e_latency"  # minimize mean end-to-end latency
     GOODPUT = "goodput"  # maximize SLA-satisfying throughput
     GOODPUT_PER_GPU = "goodput_per_gpu"  # maximize goodput / avg GPU (tok/s/gpu)
@@ -58,7 +59,7 @@ class OptimizationTarget(str, Enum):
         """
         if self is OptimizationTarget.PARETO:
             raise ValueError("'pareto' is multi-objective and has no scalar direction")
-        return self is not OptimizationTarget.E2E_LATENCY
+        return self not in {OptimizationTarget.TTFT, OptimizationTarget.E2E_LATENCY}
 
 
 class SLATarget(BaseModel):
@@ -187,6 +188,7 @@ class Workload(BaseModel):
     concurrency: int | None = None
     kv_load_ratio: float | list[float] | None = None
     request_rate: float | None = None
+    request_count: int | None = None
     num_request_ratio: float | None = (
         None  # request count multiplier for concrete concurrency or request_rate
     )
@@ -196,15 +198,27 @@ class Workload(BaseModel):
     num_prefix_groups: int = 0
     turns_per_session: int = 1  # multi-turn sessions
     inter_turn_delay_ms: float = 0.0  # think-time between turns (multi-turn synthetic)
+    arrival_seed: int = 42
+    source_type: str | None = None
+    load_type: str | None = None
+    # Unified-CLI internal search dimension for a public traffic.load field.
+    load_search_field: str | None = None
+    load_choices: list[int | float] | None = None
+    load_range: list[float] | None = None
+    load_integer: bool = False
+    load_log_scale: bool = False
 
     # dynamic trace source (mutually exclusive with the synthetic fields)
     trace_path: str | None = None
+    trace_paths: list[str] | None = None
+    trace_block_size: int | None = None
     trace_format: str = "mooncake"  # replay-ready trace schema
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
     # *synthetic* closed-loop workload use ``concurrency`` or ``kv_load_ratio`` instead.
     replay_concurrency: int | None = None
+    max_sim_time_ms: float | None = None
 
     @field_validator("random_range_ratio", mode="before")
     @classmethod
@@ -316,9 +330,9 @@ class Workload(BaseModel):
                 "a synthetic workload needs exactly one of request_rate, concurrency, or kv_load_ratio "
                 "(or set trace_path for a trace workload)"
             )
-        missing = [
-            n for n in ("isl", "osl", "num_request_ratio") if getattr(self, n) is None
-        ]
+        missing = [n for n in ("isl", "osl") if getattr(self, n) is None]
+        if self.request_count is None and self.num_request_ratio is None:
+            missing.append("request_count or num_request_ratio")
         if missing:
             raise ValueError(f"a synthetic workload requires {missing}")
         if self.replay_concurrency is not None:
@@ -331,6 +345,16 @@ class Workload(BaseModel):
             raise ValueError(
                 f"concurrency must be a positive integer, got {self.concurrency!r}"
             )
+        if self.request_count is not None and (
+            isinstance(self.request_count, bool) or self.request_count <= 0
+        ):
+            raise ValueError("request_count must be a positive integer")
+        if self.load_choices is not None and not self.load_choices:
+            raise ValueError("load_choices must be nonempty")
+        if self.load_range is not None and (
+            len(self.load_range) != 2 or self.load_range[0] >= self.load_range[1]
+        ):
+            raise ValueError("load_range must contain [min, max] with min < max")
         if self.kv_load_ratio is not None:
             ratios = (
                 self.kv_load_ratio
@@ -424,6 +448,13 @@ class SearchSpace(BaseModel):
     parallel_configs: list[dict[str, Any]] = Field(
         default_factory=list
     )  # generated when empty
+    parallel_configs_by_mode: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict
+    )
+    flat_parallel_modes: list[str] = Field(default_factory=list)
+    parallel_independent_by_mode: dict[
+        str, dict[str, list[int] | None]
+    ] = Field(default_factory=dict)
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
@@ -437,25 +468,39 @@ class SearchSpace(BaseModel):
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
     prefill_max_num_seqs: list[int] = [1, 2, 4, 8, 16, 32, 64, 128, 256]
     # pinned
-    prefill_block_size: int = 64
-    prefill_gpu_memory_utilization: float = 0.9
+    prefill_block_size: int | list[int] | None = 64
+    prefill_gpu_memory_utilization: float | list[float] | None = 0.9
     prefill_enable_prefix_caching: bool = True
+    prefill_num_gpu_blocks: int | None = None
+    prefill_timing_model: dict[str, Any] | None = None
+    prefill_startup_time: float | None = None
 
     # decode engine (disagg branch): scheduler batching capacity
     decode_max_num_batched_tokens: list[int] = [8192]
     decode_max_num_seqs: list[int] = [256, 512, 1024]
     # pinned
-    decode_block_size: int = 64
-    decode_gpu_memory_utilization: float = 0.9
+    decode_block_size: int | list[int] | None = 64
+    decode_gpu_memory_utilization: float | list[float] | None = 0.9
     decode_enable_prefix_caching: bool = False  # forced off for decode workers
+    decode_num_gpu_blocks: int | None = None
+    decode_timing_model: dict[str, Any] | None = None
+    decode_startup_time: float | None = None
 
     # agg engine (agg branch): scheduler batching capacity
     agg_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
     agg_max_num_seqs: list[int] = [256, 512, 1024]
     # pinned
-    agg_block_size: int = 64
-    agg_gpu_memory_utilization: float = 0.9
+    agg_block_size: int | list[int] | None = 64
+    agg_gpu_memory_utilization: float | list[float] | None = 0.9
     agg_enable_prefix_caching: bool = True
+    agg_num_gpu_blocks: int | None = None
+    agg_timing_model: dict[str, Any] | None = None
+    agg_startup_time: float | None = None
+    kv_transfer_bytes_per_token: int | str | None = None
+    kv_transfer_bandwidth: float | None = None
+    kv_transfer_timing_mode: str = "destination_missing"
+    engine_float_ranges: dict[str, list[float]] = Field(default_factory=dict)
+    engine_log_ranges: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
@@ -492,33 +537,96 @@ class SearchSpace(BaseModel):
         ``tp``); a disagg entry nests ``prefill`` + ``decode`` shape dicts. Full
         legality (MoE width, KV feasibility, GPU budget) is checked in
         ``enumerate_branches`` against the model+hardware."""
-        if not self.parallel_configs:
-            return self
-
         def validate_shape_dict(value: Any, label: str) -> None:
             if not isinstance(value, dict):
                 raise ValueError(f"{label} parallel_configs shape must be a dict")
             if "tp" not in value:
                 raise ValueError(f"{label} parallel_configs shape needs a 'tp' field")
 
-        if len(self.deployment_mode) != 1:
+        if self.parallel_configs and len(self.deployment_mode) != 1:
             raise ValueError(
                 "pinning parallel_configs requires deployment_mode to list exactly one mode "
                 f"(got {self.deployment_mode}); pin the mode too"
             )
-        mode = self.deployment_mode[0]
-        for entry in self.parallel_configs:
-            if not isinstance(entry, dict):
-                raise ValueError("each parallel_configs entry must be a dict")
-            if mode == "agg":
-                validate_shape_dict(entry, "an agg")
-            else:
-                if "prefill" not in entry or "decode" not in entry:
-                    raise ValueError(
-                        "a disagg parallel_configs entry needs 'prefill' and 'decode' sub-dicts"
+        configured: dict[str, list[dict[str, Any]]] = dict(
+            self.parallel_configs_by_mode
+        )
+        if self.parallel_configs:
+            configured[self.deployment_mode[0]] = self.parallel_configs
+        unknown_modes = set(configured) - {"agg", "disagg"}
+        if unknown_modes:
+            raise ValueError(
+                f"parallel_configs_by_mode has unknown modes {sorted(unknown_modes)}"
+            )
+        inactive_modes = set(configured) - set(self.deployment_mode)
+        if inactive_modes:
+            raise ValueError(
+                f"parallel_configs_by_mode configures inactive modes {sorted(inactive_modes)}"
+            )
+        flat_modes = set(self.flat_parallel_modes)
+        independent_modes = set(self.parallel_independent_by_mode)
+        invalid_special = (flat_modes | independent_modes) - set(self.deployment_mode)
+        if invalid_special:
+            raise ValueError(
+                f"parallel search mode configures inactive modes {sorted(invalid_special)}"
+            )
+        if flat_modes - set(configured):
+            raise ValueError("flat_parallel_modes require pinned configs for each mode")
+        if flat_modes & independent_modes:
+            raise ValueError("parallel mode cannot be both flat and independent")
+        for mode, fields in self.parallel_independent_by_mode.items():
+            if not fields:
+                raise ValueError(f"parallel_independent_by_mode.{mode} must be nonempty")
+            base_names = {
+                "replicas",
+                "tp",
+                "pp",
+                "attention_dp",
+                "moe_tp",
+                "moe_ep",
+            }
+            allowed_names = (
+                base_names
+                if mode == "agg"
+                else {
+                    f"{role}_{name}"
+                    for role in ("prefill", "decode")
+                    for name in base_names
+                }
+            )
+            unknown_names = set(fields) - allowed_names
+            if unknown_names:
+                raise ValueError(
+                    f"parallel_independent_by_mode.{mode} has unknown knobs {sorted(unknown_names)}"
+                )
+            for name, values in fields.items():
+                if values is not None and (
+                    not values
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, int)
+                        or value <= 0
+                        for value in values
                     )
-                validate_shape_dict(entry["prefill"], "a disagg prefill")
-                validate_shape_dict(entry["decode"], "a disagg decode")
+                ):
+                    raise ValueError(
+                        f"parallel_independent_by_mode.{mode}.{name} must contain positive integers"
+                    )
+        for mode, entries in configured.items():
+            if not entries:
+                raise ValueError(f"parallel_configs_by_mode.{mode} must be nonempty")
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise ValueError("each parallel_configs entry must be a dict")
+                if mode == "agg":
+                    validate_shape_dict(entry, "an agg")
+                else:
+                    if "prefill" not in entry or "decode" not in entry:
+                        raise ValueError(
+                            "a disagg parallel_configs entry needs 'prefill' and 'decode' sub-dicts"
+                        )
+                    validate_shape_dict(entry["prefill"], "a disagg prefill")
+                    validate_shape_dict(entry["decode"], "a disagg decode")
         return self
 
 
@@ -539,6 +647,18 @@ class SweepConfig(BaseModel):
     # instead of hanging the sweep (e.g. an over-subscribed config that churns). Only enforced
     # on the worker-pool path (parallel_evals > 1); None disables the cap.
     max_eval_seconds: float | None = Field(default=600.0, gt=0)
+    # Unified-CLI controls. ``None`` preserves the historical round-based SDK
+    # contract; a concrete value is a hard suggestion budget across branches.
+    max_trials: int | None = Field(default=None, ge=1)
+    algorithm: str = "bayesian"
+    seed: int = Field(default=42, ge=0)
+
+    @field_validator("algorithm")
+    @classmethod
+    def _validate_algorithm(cls, value: str) -> str:
+        if value not in {"bayesian", "random"}:
+            raise ValueError("algorithm must be 'bayesian' or 'random'")
+        return value
 
 
 class AdapterSearchConfig(BaseModel):
@@ -562,6 +682,9 @@ class Candidate(BaseModel):
     # OptimizationTarget value (e.g. {"throughput_per_gpu": .., "throughput_per_user": ..});
     # None for a single-objective sweep. Drives Pareto dominance in score.pareto_front.
     objectives: dict[str, float] | None = None
+    # Optional public concrete prediction configuration attached by the unified
+    # CLI. Legacy Sweeper callers keep the historical internal ``config`` only.
+    prediction_config: dict[str, Any] | None = None
 
 
 class SmartSearchConfig(BaseModel):
@@ -615,7 +738,11 @@ class SmartSearchConfig(BaseModel):
             "no_admission_control",
         }
 
-        present_kvbm = sorted(kvbm_fields.intersection(search_space))
+        present_kvbm = sorted(
+            name
+            for name in kvbm_fields.intersection(search_space)
+            if search_space.get(name) is not None
+        )
         if present_kvbm:
             raise ValueError(
                 "KVBM sweep fields are not supported by the AISimulate engine "

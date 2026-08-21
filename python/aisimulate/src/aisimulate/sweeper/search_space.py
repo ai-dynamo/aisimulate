@@ -34,6 +34,7 @@ _DISAGG_ENGINE = (
     "decode_max_num_batched_tokens",
     "decode_max_num_seqs",
 )
+_ROLE_OPTIONAL_ENGINE = ("block_size", "gpu_memory_utilization")
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,30 @@ class BranchSpace:
     # Continuous workload dimensions. Currently only Pareto ``kv_load_ratio`` uses
     # this; list-valued component knobs remain discrete choices above.
     float_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
+    log_float_ranges: frozenset[str] = frozenset()
+    flat_parallel_choices: bool = False
+    parallel_independent_choices: dict[str, tuple[int, ...]] = field(
+        default_factory=dict
+    )
+
+
+def _parallel_leaf_values(config: _ParallelConfig) -> dict[str, int]:
+    def role_values(prefix: str, role: ReplicaParallelConfig) -> dict[str, int]:
+        return {
+            f"{prefix}replicas": role.replicas,
+            f"{prefix}tp": role.shape.tp,
+            f"{prefix}pp": role.shape.pp,
+            f"{prefix}attention_dp": role.shape.dp,
+            f"{prefix}moe_tp": role.shape.moe_tp,
+            f"{prefix}moe_ep": role.shape.moe_ep,
+        }
+
+    if isinstance(config, ReplicaParallelConfig):
+        return role_values("", config)
+    return {
+        **role_values("prefill_", config.prefill),
+        **role_values("decode_", config.decode),
+    }
 
 
 def _engine_knobs(deployment_mode: str) -> tuple[str, ...]:
@@ -93,7 +118,15 @@ def _parse_parallel_entry(entry: dict[str, Any], deployment_mode: str):
 def branch_knob_choices(search_space, deployment_mode: str) -> dict[str, list[Any]]:
     """Backend-owned atomic knobs for one deployment branch."""
     names = _engine_knobs(deployment_mode)
-    return {name: list(getattr(search_space, name)) for name in names}
+    choices = {name: list(getattr(search_space, name)) for name in names}
+    roles = ("agg",) if deployment_mode == "agg" else ("prefill", "decode")
+    for role in roles:
+        for suffix in _ROLE_OPTIONAL_ENGINE:
+            name = f"{role}_{suffix}"
+            value = getattr(search_space, name)
+            if isinstance(value, list):
+                choices[name] = list(value)
+    return choices
 
 
 def _runner_supports_parallel_config(
@@ -139,9 +172,12 @@ def enumerate_branches(
     for deployment_mode in dict.fromkeys(ss.deployment_mode):
         # Pinned configs (if any) are parsed once, then validated per backend; otherwise
         # each backend contributes its full enumerated menu.
+        raw_pinned = ss.parallel_configs_by_mode.get(
+            deployment_mode, ss.parallel_configs
+        )
         pinned = (
-            [_parse_parallel_entry(e, deployment_mode) for e in ss.parallel_configs]
-            if ss.parallel_configs
+            [_parse_parallel_entry(e, deployment_mode) for e in raw_pinned]
+            if raw_pinned
             else None
         )
         support: dict[_ParallelConfig, set[str]] = {}
@@ -227,7 +263,27 @@ def enumerate_branches(
             # A scalar KV load is pinned for both scalar and Pareto goals. Keep it in
             # the constant path so every decoded selection carries the requested ratio.
             knob_choices["kv_load_ratio"] = [float(config.workload.kv_load_ratio)]
+        log_float_ranges: set[str] = set()
+        active_roles = {"agg"} if deployment_mode == "agg" else {"prefill", "decode"}
+        for name, bounds in ss.engine_float_ranges.items():
+            if name.split("_", 1)[0] not in active_roles:
+                continue
+            float_ranges[name] = (float(bounds[0]), float(bounds[1]))
+            if name in ss.engine_log_ranges:
+                log_float_ranges.add(name)
+        if config.workload.load_choices is not None:
+            knob_choices["traffic_load"] = list(config.workload.load_choices)
+        elif config.workload.load_range is not None:
+            float_ranges["traffic_load"] = (
+                float(config.workload.load_range[0]),
+                float(config.workload.load_range[1]),
+            )
+            if config.workload.load_log_scale:
+                log_float_ranges.add("traffic_load")
         branches.append(
+            # Independent mode exposes each YAML leaf as an optimizer dimension.
+            # Omitted ranges are derived from the legal pool; explicit ranges may
+            # still form infeasible Cartesian combinations, which the main loop gates.
             BranchSpace(
                 deployment_mode=deployment_mode,
                 parallel_configs=tuple(support),
@@ -235,6 +291,23 @@ def enumerate_branches(
                 knob_choices=knob_choices,
                 gpu_budget=ss.gpu_budget,
                 float_ranges=float_ranges,
+                log_float_ranges=frozenset(log_float_ranges),
+                flat_parallel_choices=deployment_mode in ss.flat_parallel_modes,
+                parallel_independent_choices={
+                    name: tuple(
+                        sorted(
+                            set(values)
+                            if values is not None
+                            else {
+                                _parallel_leaf_values(config)[name]
+                                for config in support
+                            }
+                        )
+                    )
+                    for name, values in ss.parallel_independent_by_mode.get(
+                        deployment_mode, {}
+                    ).items()
+                },
             )
         )
 

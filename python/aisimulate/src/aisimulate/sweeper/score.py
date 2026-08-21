@@ -82,6 +82,8 @@ def objective_value(report: dict[str, float], target: OptimizationTarget) -> flo
         # per-user interactivity (tok/s/user): mean of per-token-gap 1000/itl. Already a
         # rate, so no GPU/time normalization — this is the InferenceX x-axis.
         return float(report.get("mean_output_token_throughput_per_user", 0.0))
+    if target is OptimizationTarget.TTFT:
+        return float(report.get("mean_ttft_ms", math.inf))
     if target is OptimizationTarget.PARETO:
         raise ValueError(
             "'pareto' is multi-objective; use objective_vector / pareto_front, not objective_value"

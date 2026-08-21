@@ -32,6 +32,33 @@ _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("trtllm", "agg"),
 )
 
+_RUNTIME_TRAFFIC_FIELDS = frozenset(
+    {
+        "source_type",
+        "load_type",
+        "trace_path",
+        "trace_paths",
+        "trace_format",
+        "trace_block_size",
+        "arrival_speedup_ratio",
+        "replay_concurrency",
+        "isl",
+        "osl",
+        "request_count",
+        "turns_per_session",
+        "shared_prefix_ratio",
+        "num_prefix_groups",
+        "inter_turn_delay_ms",
+        "request_rate",
+        "arrival_interval_ms",
+        "arrival_seed",
+        "concurrency",
+        "num_request_ratio",
+        "kv_load_ratio",
+        "max_sim_time_ms",
+    }
+)
+
 _AIC_TIMING_FIELD_ALIASES = {
     "backend_version": ("backend_version", "aic_backend_version"),
     "pp": ("aic_pp_size",),
@@ -286,13 +313,18 @@ def _materialize_engine_execution_spec(
             f"{deployment_mode!r}"
         )
 
-    requests, max_in_flight = _materialize_requests(spec, trace_block_size)
+    use_workload_driver = spec.workload.get("source_type") is not None
+    if use_workload_driver:
+        requests: list[dict[str, JSONValue]] = []
+        max_in_flight = _configured_in_flight_cap(spec)
+    else:
+        requests, max_in_flight = _materialize_requests(spec, trace_block_size)
     sla = _materialize_sla(spec)
     max_sim_time_ms = spec.workload.get("max_sim_time_ms")
     if max_sim_time_ms is not None:
         max_sim_time_ms = _nonnegative_time(max_sim_time_ms, "max_sim_time_ms")
 
-    return {
+    execution_spec: dict[str, JSONValue] = {
         "version": 1,
         "topology": topology,
         "engine": engine,
@@ -312,6 +344,27 @@ def _materialize_engine_execution_spec(
         "sla": sla,
         "requests": requests,
     }
+    if use_workload_driver:
+        traffic = {
+            key: value
+            for key, value in spec.workload.items()
+            if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
+        }
+        if traffic.get("trace_format") != "dynamo":
+            traffic.setdefault("trace_block_size", trace_block_size)
+        return {"spec": execution_spec, "traffic": traffic}
+    return execution_spec
+
+
+def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:
+    workload = spec.workload
+    if workload.get("source_type") == "trace":
+        value = workload.get("replay_concurrency")
+    else:
+        value = spec.concurrency
+        if value is None:
+            value = workload.get("concurrency")
+    return _positive_int(value, "concurrency") if value is not None else None
 
 
 def _required_engine_args(

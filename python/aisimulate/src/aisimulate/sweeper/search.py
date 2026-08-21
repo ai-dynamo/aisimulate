@@ -87,6 +87,7 @@ _ReplayResult = tuple[dict[str, float] | None, str, str]
 class _PreparedCandidate:
     sample: dict[str, Any]
     replay_spec: ReplaySpec
+    prediction_config: dict[str, Any] | None = None
 
 
 _ADAPTER_PARAM_PREFIX = "adapter::"
@@ -368,6 +369,10 @@ def _materialize_one(
     providers: Mapping[str, SweepConfigProvider],
     provider_plans: Mapping[str, AdapterSearchPlan],
     runner_factory: RunnerFactory,
+    prediction_config_factory: Callable[
+        [dict[str, Any], ReplaySpec], dict[str, Any]
+    ]
+    | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
     try:
@@ -384,6 +389,21 @@ def _materialize_one(
         # select a different backend version.
         sample["backend_version"] = backend_version
         concurrency = config.workload.concurrency
+        workload_payload = config.workload.model_dump(mode="json")
+        if "traffic_load" in selection:
+            load_value: int | float
+            if config.workload.load_integer:
+                load_value = max(1, round(float(selection["traffic_load"])))
+            else:
+                load_value = float(selection["traffic_load"])
+            field = config.workload.load_search_field
+            if field is None:
+                raise ValueError("traffic_load selection has no load_search_field")
+            workload_payload[field] = load_value
+            sample["traffic_load"] = load_value
+            sample[field] = load_value
+            if field in {"concurrency", "replay_concurrency"}:
+                concurrency = int(load_value)
         if "kv_load_ratio" in selection:
             ratio = float(selection["kv_load_ratio"])
             resolution = resolve_kv_load(
@@ -428,7 +448,7 @@ def _materialize_one(
             adapter_specs[name] = deepcopy(adapter_spec)
         replay_spec = ReplaySpec(
             backend_deployment=backend_deployment,
-            workload=config.workload.model_dump(mode="json"),
+            workload=workload_payload,
             goal=goal.model_dump(mode="json"),
             concurrency=concurrency,
             adapters=adapter_specs,
@@ -455,7 +475,16 @@ def _materialize_one(
             "failed",
             f"candidate build failed: {type(exc).__name__}: {exc}",
         )
-    return _PreparedCandidate(sample=sample, replay_spec=replay_spec), None
+    prediction_config = (
+        prediction_config_factory(deepcopy(sample), deepcopy(replay_spec))
+        if prediction_config_factory is not None
+        else None
+    )
+    return _PreparedCandidate(
+        sample=sample,
+        replay_spec=replay_spec,
+        prediction_config=prediction_config,
+    ), None
 
 
 def _run_replay(spec: ReplaySpec, runner: Runner) -> _ReplayResult:
@@ -549,6 +578,10 @@ def _score_prepared(
         observe_metrics = {
             "objective": candidate.score
         }  # single metric, pre-signed higher-is-better
+    if prepared.prediction_config is not None:
+        candidate = candidate.model_copy(
+            update={"prediction_config": deepcopy(prepared.prediction_config)}
+        )
     return candidate, observe_metrics, "feasible", ""
 
 
@@ -589,11 +622,16 @@ class Sweeper:
         providers: Mapping[str, SweepConfigProvider] | None = None,
         sampler_factory: Callable[..., BranchSampler] = make_branch_sampler,
         show_progress: bool = True,
+        prediction_config_factory: Callable[
+            [dict[str, Any], ReplaySpec], dict[str, Any]
+        ]
+        | None = None,
     ) -> None:
         self._runner_factory = runner_factory
         self._providers = dict(providers or {})
         self._sampler_factory = sampler_factory
         self._show_progress = show_progress
+        self._prediction_config_factory = prediction_config_factory
 
     def run(
         self,
@@ -613,6 +651,7 @@ class Sweeper:
         providers = self._providers
         sampler_factory = self._sampler_factory
         show_progress = self._show_progress
+        prediction_config_factory = self._prediction_config_factory
 
         goal = config.goal
         capabilities = runner_factory.capabilities()
@@ -648,8 +687,27 @@ class Sweeper:
 
         sweep = config.sweep
         per_round = sweep.candidates_per_round or sweep.parallel_evals
-        # Target number of successful unique replay configurations across all rounds.
-        total = len(branches) * sweep.max_rounds * per_round
+        if sweep.max_trials is not None and sweep.max_trials < len(branches):
+            raise ValueError(
+                "optimizer.max_trials must be at least the number of active "
+                f"deployment branches ({len(branches)})"
+            )
+        # Legacy runs target successful unique evaluations; unified-CLI runs use
+        # an exact global suggestion budget, including failures and cache hits.
+        total = (
+            sweep.max_trials
+            if sweep.max_trials is not None
+            else len(branches) * sweep.max_rounds * per_round
+        )
+        branch_budgets: list[int | None]
+        if sweep.max_trials is None:
+            branch_budgets = [None] * len(branches)
+        else:
+            base, remainder = divmod(sweep.max_trials, len(branches))
+            branch_budgets = [
+                base + (1 if index < remainder else 0)
+                for index in range(len(branches))
+            ]
         candidates: list[Candidate] = []
         tally = {
             "feasible": 0,
@@ -688,7 +746,9 @@ class Sweeper:
 
         # Parallel across worker processes when parallel_evals > 1. Spawn keeps
         # runner runtimes isolated and lets each worker reuse one runner instance.
-        use_pool = sweep.parallel_evals > 1 and per_round > 1
+        use_pool = (sweep.parallel_evals > 1 and per_round > 1) or (
+            sweep.max_trials is not None and sweep.max_eval_seconds is not None
+        )
         max_eval_seconds = sweep.max_eval_seconds
         worker_count = min(sweep.parallel_evals, per_round)
         sequential_runner = None if use_pool else runner_factory.create(0)
@@ -857,15 +917,24 @@ class Sweeper:
                 )
 
             round_no = 0
-            for branch in branches:
+            for branch_index, branch in enumerate(branches):
                 branch_stalled = False
-                sampler = sampler_factory(
-                    branch,
-                    study_id=f"sweeper_{branch.deployment_mode}_{run_nonce}",
-                    objectives=sampler_objectives,
-                )
+                branch_budget = branch_budgets[branch_index]
+                branch_attempts = 0
+                sampler_kwargs: dict[str, Any] = {
+                    "study_id": f"sweeper_{branch.deployment_mode}_{run_nonce}",
+                    "objectives": sampler_objectives,
+                }
+                if sweep.max_trials is not None:
+                    sampler_kwargs.update(
+                        algorithm=sweep.algorithm,
+                        seed=sweep.seed + branch_index,
+                    )
+                sampler = sampler_factory(branch, **sampler_kwargs)
                 bar.set_description(f"Sweeper {branch.deployment_mode}")
                 for _ in range(sweep.max_rounds):
+                    if branch_budget is not None and branch_attempts >= branch_budget:
+                        break
                     unique_this_round = 0
                     trial_attempts = 0
                     max_trial_attempts = (
@@ -879,12 +948,19 @@ class Sweeper:
                             per_round - unique_this_round,
                             max_trial_attempts - trial_attempts,
                         )
+                        if branch_budget is not None:
+                            ask_count = min(
+                                ask_count, branch_budget - branch_attempts
+                            )
+                        if ask_count <= 0:
+                            break
                         suggestions = sampler.suggest(
                             ask_count
                         )  # ask stays on the main process
                         if not suggestions:
                             break
                         trial_attempts += len(suggestions)
+                        branch_attempts += len(suggestions)
 
                         # Deduplicate against completed cache entries and within this ask batch.
                         # A duplicate trial still receives the cached measurement so f(z) remains
@@ -927,6 +1003,7 @@ class Sweeper:
                                 providers=resolved_providers,
                                 provider_plans=provider_plans,
                                 runner_factory=runner_factory,
+                                prediction_config_factory=prediction_config_factory,
                             )
                             if build_result is not None:
                                 (

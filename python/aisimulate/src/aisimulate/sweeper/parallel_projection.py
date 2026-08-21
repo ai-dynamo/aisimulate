@@ -30,6 +30,7 @@ DECODE_ATTENTION_MODE = "decode_attention_mode"
 AGG_FFN_MODE = "agg_ffn_mode"
 PREFILL_FFN_MODE = "prefill_ffn_mode"
 DECODE_FFN_MODE = "decode_ffn_mode"
+PARALLEL_CONFIG_CHOICE = "parallel_config_choice"
 
 _ATTENTION_MODE_ORDER = ("tp", "dp")
 _FFN_MODE_ORDER = ("ep", "tp")
@@ -119,6 +120,8 @@ class ParallelConfigProjector:
             raise ValueError("parallel projection requires at least one valid config")
 
         self.branch = branch
+        self._flat = branch.flat_parallel_choices
+        self._independent = bool(branch.parallel_independent_choices)
         self.gpu_budget = branch.gpu_budget or max(
             config.total_gpus for config in branch.parallel_configs
         )
@@ -194,6 +197,27 @@ class ParallelConfigProjector:
         )
 
     def _build_parameters(self) -> tuple[ParallelParameter, ...]:
+        if self._flat:
+            values = tuple(float(index) for index in range(len(self.branch.parallel_configs)))
+            return (
+                ParallelParameter(
+                    name=PARALLEL_CONFIG_CHOICE,
+                    kind="discrete",
+                    values=values,
+                    default=values[0],
+                ),
+            )
+        if self._independent:
+            return tuple(
+                ParallelParameter(
+                    name=name,
+                    kind="discrete",
+                    values=tuple(float(value) for value in values),
+                    default=float(1 if 1 in values else values[0]),
+                    log_scale=True,
+                )
+                for name, values in self.branch.parallel_independent_choices.items()
+            )
         parameters = [self._float_parameter(USED_GPU_RATIO, default=1.0)]
         if self.branch.deployment_mode == "agg":
             parameters.extend(
@@ -243,6 +267,44 @@ class ParallelConfigProjector:
 
     def project(self, params: dict[str, Any], backend: str) -> ParallelProjection:
         requested = self.requested_features(params)
+        if self._flat:
+            index = round(float(requested[PARALLEL_CONFIG_CHOICE]))
+            selected = self.branch.parallel_configs[index]
+            return ParallelProjection(
+                config=selected,
+                requested_features=requested,
+                actual_features={PARALLEL_CONFIG_CHOICE: float(index)},
+                distance=0.0,
+                mode_projected=False,
+            )
+        if self._independent:
+            def role(prefix: str) -> ReplicaParallelConfig:
+                return ReplicaParallelConfig(
+                    shape=ParallelShape(
+                        tp=round(float(requested[f"{prefix}tp"])),
+                        pp=round(float(requested[f"{prefix}pp"])),
+                        dp=round(float(requested[f"{prefix}attention_dp"])),
+                        moe_tp=round(float(requested[f"{prefix}moe_tp"])),
+                        moe_ep=round(float(requested[f"{prefix}moe_ep"])),
+                    ),
+                    replicas=round(float(requested[f"{prefix}replicas"])),
+                )
+
+            selected: ParallelConfig = (
+                role("")
+                if self.branch.deployment_mode == "agg"
+                else DisaggParallelConfig(
+                    prefill=role("prefill_"),
+                    decode=role("decode_"),
+                )
+            )
+            return ParallelProjection(
+                config=selected,
+                requested_features=requested,
+                actual_features=dict(requested),
+                distance=0.0,
+                mode_projected=False,
+            )
         candidates = [
             config
             for config in self.branch.parallel_configs

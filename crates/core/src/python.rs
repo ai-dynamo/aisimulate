@@ -3,18 +3,119 @@
 
 //! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+};
 
 use crate::engine::{Backend, TimingModel, TimingModelConfig};
 use crate::replay::{
-    ReplayEngineConfig, ReplayRoleConfig, ReplaySpec, ReplayTopology, run_engine_replay,
-    run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
+    ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec,
+    ReplayTopology, Replayer,
+    loadgen::{
+        AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
+        AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope,
+        AgenticMooncakeHeader, AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace,
+        ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
+        WorkloadDriver,
+    },
 };
 use anyhow::{Context, Result, anyhow, ensure};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ExecutionPayload {
+    Configured {
+        spec: ReplaySpec,
+        traffic: RuntimeTraffic,
+    },
+    Legacy(ReplaySpec),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeTraffic {
+    source_type: String,
+    #[serde(default)]
+    load_type: Option<String>,
+    #[serde(default)]
+    trace_path: Option<String>,
+    #[serde(default)]
+    trace_paths: Vec<String>,
+    #[serde(default)]
+    trace_format: Option<String>,
+    #[serde(default)]
+    trace_block_size: Option<usize>,
+    #[serde(default)]
+    arrival_speedup_ratio: Option<f64>,
+    #[serde(default)]
+    replay_concurrency: Option<usize>,
+    #[serde(default)]
+    isl: Option<usize>,
+    #[serde(default)]
+    osl: Option<usize>,
+    #[serde(default)]
+    request_count: Option<usize>,
+    #[serde(default)]
+    turns_per_session: Option<usize>,
+    #[serde(default)]
+    shared_prefix_ratio: Option<f64>,
+    #[serde(default)]
+    num_prefix_groups: Option<usize>,
+    #[serde(default)]
+    inter_turn_delay_ms: Option<f64>,
+    #[serde(default)]
+    request_rate: Option<f64>,
+    #[serde(default)]
+    arrival_interval_ms: Option<f64>,
+    #[serde(default)]
+    arrival_seed: Option<u64>,
+    #[serde(default)]
+    concurrency: Option<usize>,
+    // Fields consumed by the Python-side optimizer before execution.
+    #[serde(default)]
+    num_request_ratio: Option<f64>,
+    #[serde(default)]
+    kv_load_ratio: Option<serde_json::Value>,
+    #[serde(default)]
+    max_sim_time_ms: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyAgenticMooncakeRow {
+    request_id: String,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default, alias = "input_tokens")]
+    input_length: Option<usize>,
+    #[serde(alias = "output_tokens")]
+    output_length: usize,
+    #[serde(default)]
+    output_token_ids: Option<Vec<u32>>,
+    hash_ids: Vec<u64>,
+    #[serde(default, alias = "created_time")]
+    timestamp: Option<f64>,
+    #[serde(default)]
+    delay: Option<f64>,
+    #[serde(default)]
+    delay_ms: Option<f64>,
+    #[serde(default)]
+    tool_wait_ms: f64,
+    #[serde(default)]
+    wait_for: Vec<String>,
+    #[serde(default)]
+    priority: Option<i32>,
+    #[serde(default)]
+    strict_priority: Option<u32>,
+    #[serde(default)]
+    policy_class: Option<String>,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -366,9 +467,400 @@ fn resolve_role_timing(
     Ok(Some(Arc::new(AicTimingModel::build(config)?)))
 }
 
+fn runtime_paths(traffic: &RuntimeTraffic) -> Result<Vec<PathBuf>> {
+    let mut paths = traffic
+        .trace_paths
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    if paths.is_empty()
+        && let Some(path) = traffic.trace_path.as_deref()
+    {
+        paths.push(PathBuf::from(path));
+    }
+    ensure!(
+        !paths.is_empty(),
+        "trace traffic requires at least one path"
+    );
+    Ok(paths)
+}
+
+fn synthetic_arrivals(traffic: &RuntimeTraffic) -> Result<ArrivalSpec> {
+    match traffic.load_type.as_deref().unwrap_or("concurrency") {
+        "concurrency" | "kv_capacity_fraction" => Ok(ArrivalSpec::Burst),
+        "poisson" => {
+            let qps = traffic
+                .request_rate
+                .context("poisson traffic requires request_rate")?;
+            ensure!(
+                qps.is_finite() && qps > 0.0,
+                "request_rate must be positive"
+            );
+            Ok(ArrivalSpec::PoissonQps { qps })
+        }
+        "constant_rate" => {
+            let qps = if let Some(qps) = traffic.request_rate {
+                qps
+            } else {
+                let interval = traffic
+                    .arrival_interval_ms
+                    .context("constant_rate traffic requires an interval or rate")?;
+                ensure!(
+                    interval.is_finite() && interval > 0.0,
+                    "arrival_interval_ms must be positive"
+                );
+                1_000.0 / interval
+            };
+            ensure!(
+                qps.is_finite() && qps > 0.0,
+                "request_rate must be positive"
+            );
+            Ok(ArrivalSpec::ConstantQps { qps })
+        }
+        other => Err(anyhow!("unsupported synthetic load type {other:?}")),
+    }
+}
+
+fn concrete_session_count(traffic: &RuntimeTraffic) -> Result<usize> {
+    if let Some(count) = traffic.request_count {
+        ensure!(count > 0, "request_count must be positive");
+        return Ok(count);
+    }
+    let ratio = traffic
+        .num_request_ratio
+        .context("synthetic traffic requires request_count or num_request_ratio")?;
+    ensure!(
+        ratio.is_finite() && ratio > 0.0,
+        "num_request_ratio must be positive"
+    );
+    let load = traffic
+        .concurrency
+        .map(|value| value as f64)
+        .or(traffic.request_rate)
+        .or_else(|| {
+            traffic
+                .arrival_interval_ms
+                .filter(|value| *value > 0.0)
+                .map(|value| 1_000.0 / value)
+        })
+        .context("relative synthetic stop requires a concrete load")?;
+    Ok(((ratio * load).round() as usize).max(1))
+}
+
+fn resolve_kv_capacity_concurrency(
+    traffic: &mut RuntimeTraffic,
+    role: &ReplayRoleConfig,
+    replicas: usize,
+) -> Result<Option<usize>> {
+    if traffic.load_type.as_deref() != Some("kv_capacity_fraction") {
+        return Ok(None);
+    }
+    let ratio = traffic
+        .kv_load_ratio
+        .as_ref()
+        .and_then(serde_json::Value::as_f64)
+        .context("kv_capacity_fraction requires one concrete ratio")?;
+    ensure!(
+        ratio.is_finite() && ratio > 0.0,
+        "KV load ratio must be positive"
+    );
+    let isl = traffic.isl.context("KV load requires isl")?;
+    let osl = traffic.osl.context("KV load requires osl")?;
+    let expected_tokens = isl
+        .checked_add(osl / 2)
+        .context("KV-load expected token count overflow")?;
+    ensure!(
+        expected_tokens > 0,
+        "KV load requires positive token lengths"
+    );
+    let per_rank_tokens = role
+        .rank
+        .num_gpu_blocks
+        .checked_mul(role.rank.block_size)
+        .context("KV capacity overflow")?;
+    let total_tokens = per_rank_tokens
+        .checked_mul(role.dp_size as usize)
+        .and_then(|value| value.checked_mul(replicas))
+        .context("aggregate KV capacity overflow")?;
+    let capacity = total_tokens / expected_tokens;
+    ensure!(
+        capacity > 0,
+        "candidate KV capacity cannot hold one request"
+    );
+    let concurrency = ((ratio * capacity as f64) as usize).max(1);
+    traffic.concurrency = Some(concurrency);
+    Ok(Some(concurrency))
+}
+
+fn load_agentic_mooncake(path: &PathBuf, trace_block_size: usize) -> Result<AgenticTrace> {
+    let file = File::open(path)
+        .with_context(|| format!("failed to open trace file {}", path.display()))?;
+    let mut lines = BufReader::new(file).lines();
+    let first = loop {
+        let line = lines
+            .next()
+            .transpose()
+            .with_context(|| format!("failed to read trace file {}", path.display()))?
+            .context("agentic trace file is empty")?;
+        if !line.trim().is_empty() {
+            break line;
+        }
+    };
+    let first_json: serde_json::Value =
+        serde_json::from_str(&first).context("failed to parse first agentic trace row")?;
+    if first_json.get("schema").and_then(serde_json::Value::as_str) == Some(AGENTIC_MOONCAKE_SCHEMA)
+    {
+        return AgenticTrace::from_agentic_mooncake(path);
+    }
+
+    let mut raw_rows = vec![
+        serde_json::from_value::<LegacyAgenticMooncakeRow>(first_json)
+            .context("failed to parse first legacy agentic Mooncake row")?,
+    ];
+    for (line_index, line) in lines.enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "failed to read legacy agentic trace line {}",
+                line_index + 2
+            )
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        raw_rows.push(serde_json::from_str(&line).with_context(|| {
+            format!(
+                "failed to parse legacy agentic trace line {}",
+                line_index + 2
+            )
+        })?);
+    }
+    let rows = raw_rows
+        .into_iter()
+        .map(|raw| -> Result<AgenticMooncakeRow> {
+            ensure!(
+                !raw.request_id.trim().is_empty(),
+                "request_id must be nonempty"
+            );
+            ensure!(!raw.hash_ids.is_empty(), "hash_ids must be nonempty");
+            ensure!(
+                raw.tool_wait_ms.is_finite() && raw.tool_wait_ms >= 0.0,
+                "tool_wait_ms must be finite and nonnegative"
+            );
+            ensure!(
+                raw.delay.is_none() || raw.delay_ms.is_none(),
+                "delay and delay_ms cannot both be set"
+            );
+            let delay = raw.delay.or(raw.delay_ms).unwrap_or(0.0) + raw.tool_wait_ms;
+            ensure!(
+                delay.is_finite() && delay >= 0.0,
+                "dependency delay must be finite and nonnegative"
+            );
+            let relation = if raw.wait_for.len() > 1 {
+                AgenticDependencyRelation::Join
+            } else {
+                AgenticDependencyRelation::Sequence
+            };
+            let dependencies = raw
+                .wait_for
+                .into_iter()
+                .map(|request_id| AgenticDependency {
+                    request_id,
+                    trigger: AgenticDependencyTrigger::Completion,
+                    delay_ms: delay,
+                    relation,
+                })
+                .collect::<Vec<_>>();
+            let session_id = raw
+                .session_id
+                .unwrap_or_else(|| "agentic-session".to_string());
+            Ok(AgenticMooncakeRow {
+                request_id: raw.request_id,
+                play_id: "agentic-play".to_string(),
+                session_id,
+                model: "unknown".to_string(),
+                input_length: raw.input_length,
+                output_length: Some(raw.output_length),
+                output_token_ids: raw.output_token_ids,
+                hash_ids: Some(raw.hash_ids),
+                not_before_ms: if dependencies.is_empty() {
+                    raw.timestamp.unwrap_or(0.0)
+                } else {
+                    0.0
+                },
+                priority: raw.priority,
+                strict_priority: raw.strict_priority,
+                policy_class: raw.policy_class,
+                dependencies,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    AgenticTrace::from_agentic_mooncake_rows(
+        AgenticMooncakeHeader {
+            schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
+            version: AGENTIC_MOONCAKE_VERSION,
+            block_size: trace_block_size,
+            hash_id_scope: AgenticHashIdScope::Local,
+            source: AgenticSourceProvenance {
+                format: "legacy_agentic_mooncake".to_string(),
+                digest: format!("{}:{}", path.display(), rows.len()),
+            },
+        },
+        rows,
+    )
+}
+
+fn build_runtime_input(
+    traffic: RuntimeTraffic,
+    engine_block_size: usize,
+    allow_agentic: bool,
+) -> Result<ReplayRuntimeInput> {
+    ensure!(engine_block_size > 0, "engine block size must be positive");
+    if traffic.source_type == "trace" {
+        let paths = runtime_paths(&traffic)?;
+        let trace_block_size = traffic.trace_block_size.unwrap_or(512);
+        let format = traffic.trace_format.as_deref().unwrap_or("mooncake");
+        let speedup = traffic.arrival_speedup_ratio.unwrap_or(1.0);
+        if format == "agentic_mooncake" {
+            ensure!(allow_agentic, "agentic trace requires aggregated topology");
+            ensure!(
+                traffic.max_sim_time_ms.is_none(),
+                "agentic trace does not support max virtual time"
+            );
+            ensure!(
+                paths.len() == 1,
+                "agentic_mooncake requires exactly one path"
+            );
+            let trace = load_agentic_mooncake(&paths[0], trace_block_size)?
+                .normalize_starts()
+                .speed_up_timing(speedup)?;
+            return Ok(ReplayRuntimeInput::Workload(
+                WorkloadDriver::new_agentic_trace(trace, engine_block_size)?,
+            ));
+        }
+        if format == "dynamo" {
+            let loaded =
+                DynamoRequestTrace::from_request_trace_files(&paths, traffic.trace_block_size)?;
+            let driver = match loaded {
+                DynamoRequestTrace::Standard(trace) => {
+                    let trace = trace.normalize_session_starts()?.speed_up_timing(speedup)?;
+                    match traffic.replay_concurrency {
+                        Some(cap) => {
+                            WorkloadDriver::new_concurrency(trace, engine_block_size, cap)?
+                        }
+                        None => WorkloadDriver::new_trace(trace, engine_block_size)?,
+                    }
+                }
+                DynamoRequestTrace::Agentic(trace) => WorkloadDriver::new_agentic_trace(
+                    {
+                        ensure!(
+                            allow_agentic,
+                            "agentic Dynamo trace requires aggregated topology"
+                        );
+                        ensure!(
+                            traffic.max_sim_time_ms.is_none(),
+                            "agentic Dynamo trace does not support max virtual time"
+                        );
+                        trace.normalize_starts().speed_up_timing(speedup)?
+                    },
+                    engine_block_size,
+                )?,
+            };
+            return Ok(ReplayRuntimeInput::Workload(driver));
+        }
+        ensure!(
+            paths.len() == 1,
+            "trace format {format:?} requires exactly one path"
+        );
+        let mut trace = match format {
+            "mooncake" | "mooncake-delta" => Trace::from_mooncake(&paths[0], trace_block_size)?,
+            "applied_compute_agentic" => {
+                Trace::from_applied_compute_agentic(&paths[0], trace_block_size, 0.0, 0)?
+            }
+            other => return Err(anyhow!("unsupported trace format {other:?}")),
+        };
+        trace = trace.normalize_session_starts()?.speed_up_timing(speedup)?;
+        let delta = format == "mooncake-delta";
+        let concurrency = traffic.replay_concurrency;
+        let driver = match (concurrency, delta) {
+            (Some(cap), true) => {
+                WorkloadDriver::new_concurrency_accumulating_deltas(trace, engine_block_size, cap)?
+            }
+            (Some(cap), false) => WorkloadDriver::new_concurrency(trace, engine_block_size, cap)?,
+            (None, true) => {
+                WorkloadDriver::new_trace_accumulating_deltas(trace, engine_block_size)?
+            }
+            (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
+        };
+        return Ok(ReplayRuntimeInput::Workload(driver));
+    }
+
+    ensure!(
+        matches!(
+            traffic.source_type.as_str(),
+            "synthetic" | "synthetic-session"
+        ),
+        "unsupported synthetic source type {:?}",
+        traffic.source_type
+    );
+    let sessions = concrete_session_count(&traffic)?;
+    let turns = if traffic.source_type == "synthetic-session" {
+        traffic.turns_per_session.unwrap_or(4)
+    } else {
+        1
+    };
+    let trace = Trace::synthetic(SyntheticTraceSpec {
+        block_size: engine_block_size,
+        num_sessions: sessions,
+        turns_per_session: turns,
+        input_tokens: LengthSpec {
+            mean: traffic.isl.context("synthetic traffic requires isl")?,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: traffic.osl.context("synthetic traffic requires osl")?,
+            stddev: 0.0,
+        },
+        shared_prefix_ratio: traffic.shared_prefix_ratio.unwrap_or(0.0),
+        num_prefix_groups: traffic.num_prefix_groups.unwrap_or(0),
+        first_turn_arrivals: synthetic_arrivals(&traffic)?,
+        inter_turn_delays: traffic
+            .inter_turn_delay_ms
+            .filter(|delay| *delay > 0.0)
+            .map_or(DelaySpec::None, DelaySpec::ConstantMs),
+        seed: 0,
+        arrival_seed: traffic.arrival_seed.unwrap_or(42),
+    })?;
+    let cap = traffic.concurrency;
+    let accumulate = traffic.source_type == "synthetic-session";
+    let driver = match (cap, accumulate) {
+        (Some(cap), true) => {
+            WorkloadDriver::new_concurrency_accumulating_deltas(trace, engine_block_size, cap)?
+        }
+        (Some(cap), false) => WorkloadDriver::new_concurrency(trace, engine_block_size, cap)?,
+        (None, true) => WorkloadDriver::new_trace_accumulating_deltas(trace, engine_block_size)?,
+        (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
+    };
+    Ok(ReplayRuntimeInput::Workload(driver))
+}
+
+fn run_with_input(
+    spec: ReplaySpec,
+    factory: ReplayEngineFactory,
+    input: Option<ReplayRuntimeInput>,
+) -> crate::replay::ReplayResult<crate::replay::ReplayReport> {
+    let replayer = Replayer::new(spec, factory)?;
+    match input {
+        Some(input) => replayer.with_runtime_input(input).run(),
+        None => replayer.run(),
+    }
+}
+
 fn execute_json(payload: &str) -> Result<String> {
-    let mut spec: ReplaySpec =
-        serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?;
+    let (mut spec, mut traffic) =
+        match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
+            ExecutionPayload::Configured { spec, traffic } => (spec, Some(traffic)),
+            ExecutionPayload::Legacy(spec) => (spec, None),
+        };
     let serialized_engine = spec.engine.clone();
     let mut engine_config: ReplayEngineConfig = if spec.engine.is_null() {
         ReplayEngineConfig::default()
@@ -387,12 +879,30 @@ fn execute_json(payload: &str) -> Result<String> {
             engine_config.dp_size = role.dp_size;
             engine_config.tensor_parallel_size = role.tensor_parallel_size;
             engine_config.rank = role.rank;
+            if let Some(traffic) = traffic.as_mut()
+                && let ReplayTopology::Aggregated { workers } = &spec.topology
+                && let Some(concurrency) = resolve_kv_capacity_concurrency(
+                    traffic,
+                    &ReplayRoleConfig {
+                        dp_size: engine_config.dp_size,
+                        tensor_parallel_size: engine_config.tensor_parallel_size,
+                        rank: engine_config.rank.clone(),
+                    },
+                    workers.initial_workers,
+                )?
+            {
+                spec.max_in_flight = Some(concurrency);
+            }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            match timing {
-                Some(timing) => run_engine_replay_with_timing(spec, timing),
-                None => run_engine_replay(spec),
-            }
+            let input = traffic
+                .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size, true))
+                .transpose()?;
+            let factory = timing.map_or_else(
+                ReplayEngineFactory::new,
+                ReplayEngineFactory::with_timing_model,
+            );
+            run_with_input(spec, factory, input)
         }
         ReplayTopology::Disaggregated { .. } => {
             let mut prefill = engine_config
@@ -413,9 +923,43 @@ fn execute_json(payload: &str) -> Result<String> {
             )?;
             engine_config.prefill = Some(prefill);
             engine_config.decode = Some(decode);
+            if let Some(traffic) = traffic.as_mut()
+                && let ReplayTopology::Disaggregated { decode, .. } = &spec.topology
+                && let Some(concurrency) = resolve_kv_capacity_concurrency(
+                    traffic,
+                    engine_config
+                        .decode
+                        .as_ref()
+                        .expect("decode role was materialized"),
+                    decode.initial_workers,
+                )?
+            {
+                spec.max_in_flight = Some(concurrency);
+            }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            run_engine_replay_with_optional_role_timing(spec, prefill_timing, decode_timing)
+            let input = traffic
+                .map(|traffic| {
+                    build_runtime_input(
+                        traffic,
+                        engine_config
+                            .prefill
+                            .as_ref()
+                            .expect("prefill role was materialized")
+                            .rank
+                            .block_size,
+                        false,
+                    )
+                })
+                .transpose()?;
+            run_with_input(
+                spec,
+                ReplayEngineFactory::with_optional_role_timing_models(
+                    prefill_timing,
+                    decode_timing,
+                ),
+                input,
+            )
         }
     }
     .context("AISimulate replay failed")?;

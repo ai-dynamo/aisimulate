@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
 from .replay import BackendDeploymentSpec
 
 
@@ -25,6 +26,12 @@ def _engine_args_payload(
     moe_tp = int(sample[f"{prefix}moe_tp"])
     moe_ep = int(sample[f"{prefix}moe_ep"])
     backend = sample["backend"]
+    block_size = sample[f"{role}_block_size"]
+    if block_size is None:
+        block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[backend]
+    memory_fraction = sample[f"{role}_gpu_memory_utilization"]
+    if memory_fraction is None:
+        memory_fraction = 0.88 if backend == "sglang" else 0.9
     memory_fraction_field = {
         "vllm": "gpu_memory_utilization",
         "sglang": "mem_fraction_static",
@@ -41,17 +48,57 @@ def _engine_args_payload(
         "aic_attention_dp_size": attention_dp,
         "max_num_batched_tokens": int(sample[f"{role}_max_num_batched_tokens"]),
         "max_num_seqs": int(sample[f"{role}_max_num_seqs"]),
-        "block_size": int(sample[f"{role}_block_size"]),
-        memory_fraction_field: float(sample[f"{role}_gpu_memory_utilization"]),
+        "block_size": int(block_size),
+        memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
+    if backend == "vllm" and sample.get("context_length") is not None:
+        payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
     if sample.get("aic_nextn") is not None:
         payload["aic_nextn"] = int(sample["aic_nextn"])
-    if sample.get("startup_time") is not None:
-        payload["startup_time"] = float(sample["startup_time"])
+    startup = sample.get(f"{role}_startup_time")
+    if startup is None:
+        startup = sample.get("startup_time")
+    if startup is not None:
+        payload["startup_time"] = float(startup)
+    if sample.get(f"{role}_num_gpu_blocks") is not None:
+        payload["num_gpu_blocks"] = int(sample[f"{role}_num_gpu_blocks"])
+        payload.pop(memory_fraction_field, None)
+    if sample.get(f"{role}_timing_model") is not None:
+        payload["timing_model"] = dict(sample[f"{role}_timing_model"])
+        if sample.get(f"{role}_num_gpu_blocks") is None:
+            payload = materialize_aic_num_gpu_blocks(payload)
+        for name in (
+            "aic_backend_version",
+            "aic_system",
+            "aic_model_path",
+            "aic_moe_tp_size",
+            "aic_moe_ep_size",
+            "aic_nextn",
+        ):
+            payload.pop(name, None)
+    if role in {"prefill", "decode"}:
+        if sample.get("kv_transfer_bytes_per_token") is not None:
+            configured_bytes = sample["kv_transfer_bytes_per_token"]
+            payload["kv_bytes_per_token"] = (
+                estimate_kv_bytes_per_token(
+                    str(sample["model_name"]),
+                    tp_size=tp,
+                    pp_size=int(sample[f"{prefix}pp"]),
+                    moe_tp_size=moe_tp,
+                    moe_ep_size=moe_ep,
+                )
+                if configured_bytes == "auto"
+                else int(configured_bytes)
+            )
+        if sample.get("kv_transfer_bandwidth") is not None:
+            payload["kv_transfer_bandwidth"] = float(
+                sample["kv_transfer_bandwidth"]
+            )
+        payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
 
 

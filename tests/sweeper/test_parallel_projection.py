@@ -13,6 +13,7 @@ from aisimulate.sweeper.parallel_projection import (
     DECODE_ATTENTION_MODE,
     DECODE_FFN_MODE,
     DECODE_GPUS_PER_ENGINE,
+    PARALLEL_CONFIG_CHOICE,
     PREFILL_ATTENTION_MODE,
     PREFILL_FFN_MODE,
     PREFILL_GPU_SHARE,
@@ -185,3 +186,68 @@ def test_dense_pool_does_not_expose_ffn_mode():
     projector = ParallelConfigProjector(branch)
 
     assert AGG_FFN_MODE not in {parameter.name for parameter in projector.parameters}
+
+
+def test_custom_parallel_preset_is_one_flat_choice() -> None:
+    first = _role(gpus=1, attention="tp", ffn="tp", replicas=1)
+    second = _role(gpus=4, attention="tp", ffn="tp", replicas=2)
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(first, second),
+        supported_backends={
+            first: frozenset({"vllm"}),
+            second: frozenset({"vllm"}),
+        },
+        knob_choices={"backend": ["vllm"]},
+        flat_parallel_choices=True,
+    )
+
+    projector = ParallelConfigProjector(branch)
+
+    assert [parameter.name for parameter in projector.parameters] == [
+        PARALLEL_CONFIG_CHOICE
+    ]
+    assert projector.project({PARALLEL_CONFIG_CHOICE: 1}, "vllm").config == second
+
+
+def test_preset_off_exposes_independent_parallel_knobs() -> None:
+    legal = _role(gpus=1, attention="tp", ffn="tp", replicas=1)
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(legal,),
+        supported_backends={legal: frozenset({"vllm"})},
+        knob_choices={"backend": ["vllm"]},
+        parallel_independent_choices={
+            "replicas": (1, 2),
+            "tp": (1, 2),
+            "pp": (1,),
+            "attention_dp": (1,),
+            "moe_tp": (1,),
+            "moe_ep": (1,),
+        },
+    )
+
+    projector = ParallelConfigProjector(branch)
+    projection = projector.project(
+        {
+            "replicas": 2,
+            "tp": 2,
+            "pp": 1,
+            "attention_dp": 1,
+            "moe_tp": 1,
+            "moe_ep": 1,
+        },
+        "vllm",
+    )
+
+    assert {parameter.name for parameter in projector.parameters} == {
+        "replicas",
+        "tp",
+        "pp",
+        "attention_dp",
+        "moe_tp",
+        "moe_ep",
+    }
+    assert projection.config == ReplicaParallelConfig(
+        shape=ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=2
+    )

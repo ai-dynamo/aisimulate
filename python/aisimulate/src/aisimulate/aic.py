@@ -9,6 +9,7 @@ rank-local KV capacity is derived from the same defaults and AIC argument set.
 
 from __future__ import annotations
 
+from functools import cache
 from typing import Any
 
 DEFAULT_BACKEND_VERSIONS = {
@@ -182,6 +183,66 @@ def estimate_num_gpu_blocks(
             comm_quant_mode=_quant_mode_name("comm", comm_dtype),
             systems_path=systems_path,
         )
+    )
+
+
+def estimate_kv_bytes_per_token(
+    model_name: str,
+    *,
+    tp_size: int,
+    pp_size: int,
+    moe_tp_size: int = 1,
+    moe_ep_size: int = 1,
+) -> int:
+    """Derive per-rank KV bytes/token from the resolved Hugging Face config."""
+
+    from aiconfigurator_core.sdk.memory import NaiveKVCacheEstimator
+
+    estimator = NaiveKVCacheEstimator.from_model_path(
+        model_name,
+        tp_size=tp_size,
+        pp_size=pp_size,
+        moe_tp_size=moe_tp_size,
+        moe_ep_size=moe_ep_size,
+        allow_hf_config_download=True,
+    )
+    value = estimator.kv_bytes_per_token()
+    if value is None or value <= 0:
+        raise ValueError(
+            f"could not derive KV bytes per token for model {model_name!r}"
+        )
+    return int(value)
+
+
+@cache
+def resolve_model_context_length(model_name: str) -> int:
+    """Resolve ``context_length: max`` from a local, cached, or HF config."""
+
+    from aiconfigurator_core.sdk.memory import NaiveKVCacheEstimator
+
+    # Both modules ship in the same distribution; reuse the canonical loader.
+    config = NaiveKVCacheEstimator._load_config(
+        model_name, allow_hf_config_download=True
+    )
+    if not isinstance(config, dict):
+        raise ValueError(f"could not load Hugging Face config for {model_name!r}")
+    text_config = config.get("text_config")
+    mappings = [config]
+    if isinstance(text_config, dict):
+        mappings.insert(0, text_config)
+    for mapping in mappings:
+        for name in (
+            "max_position_embeddings",
+            "model_max_length",
+            "max_sequence_length",
+            "seq_length",
+            "n_positions",
+        ):
+            value = mapping.get(name)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value
+    raise ValueError(
+        f"Hugging Face config for {model_name!r} does not declare a maximum context length"
     )
 
 

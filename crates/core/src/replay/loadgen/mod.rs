@@ -3,6 +3,7 @@
 
 mod arrival;
 mod driver;
+mod dynamo;
 mod trace;
 mod types;
 
@@ -10,6 +11,7 @@ use rand::Rng;
 use rand::rngs::StdRng;
 
 pub use driver::WorkloadDriver;
+pub use dynamo::DynamoRequestTrace;
 pub use trace::{AgenticGraphBuilder, validate_trace_files};
 #[doc(hidden)]
 pub use types::CompactReadyTurn;
