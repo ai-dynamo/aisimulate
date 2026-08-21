@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import json
 
-import aisimulate.main as cli
 import pytest
 import yaml
+
+import aisimulate.main as cli
 from aisimulate.output import prepare_output_directory
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 

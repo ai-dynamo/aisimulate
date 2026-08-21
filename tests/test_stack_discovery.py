@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pytest
+
 from aisimulate.config_adapter import (
     ConfigAdapterResolutionError,
     resolve_config_adapters,
