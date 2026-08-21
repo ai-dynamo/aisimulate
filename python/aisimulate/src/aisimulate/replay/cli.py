@@ -114,6 +114,8 @@ def parse_config(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     config = parse_config(parser, argv)
+    if config.workload.get("trace_format") == "weka":
+        parser.error("--trace-format=weka requires the Dynamo replay entrypoint")
     if config.replay_mode != "offline":
         parser.error("online replay requires the Dynamo runtime")
 
