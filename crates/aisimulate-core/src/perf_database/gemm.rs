@@ -187,8 +187,12 @@ impl GemmTable {
     /// perf file is sourced solely from `data_root/<basename>` with no
     /// `kernel_source` filter (pre-shared-layer behaviour).
     pub fn new(data_root: PathBuf, system_spec: SystemSpec) -> Self {
-        Self::with_sources(data_root, system_spec, &SourceResolver::fixed(PerfDbSources::default()))
-            .expect("fixed-map resolution is infallible")
+        Self::with_sources(
+            data_root,
+            system_spec,
+            &SourceResolver::fixed(PerfDbSources::default()),
+        )
+        .expect("fixed-map resolution is infallible")
     }
 
     /// Construct with shared-layer (sibling/cross-version) sources supplied by the
@@ -203,8 +207,7 @@ impl GemmTable {
         let gemm_sources = resolver.sources_for("gemm_perf.parquet", &data_root)?;
         let compute_scale_sources =
             resolver.sources_for("computescale_perf.parquet", &data_root)?;
-        let scale_matrix_sources =
-            resolver.sources_for("scale_matrix_perf.parquet", &data_root)?;
+        let scale_matrix_sources = resolver.sources_for("scale_matrix_perf.parquet", &data_root)?;
         Ok(Self {
             data_root,
             system_spec,

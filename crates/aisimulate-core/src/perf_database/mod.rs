@@ -634,8 +634,7 @@ impl PerfDatabase {
         if let Some(tables) = memo.lock().unwrap().get(&key).and_then(Weak::upgrade) {
             return Ok(Self::from_tables(tables));
         }
-        let db =
-            Self::load_with_resolver(systems_root, system, backend, version, resolver, false)?;
+        let db = Self::load_with_resolver(systems_root, system, backend, version, resolver, false)?;
         let mut map = memo.lock().unwrap();
         map.retain(|_, weak| weak.strong_count() > 0);
         map.insert(key, Arc::downgrade(&db.tables));

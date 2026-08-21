@@ -100,22 +100,23 @@ if estimate_ms is None:
 
 ## Stable Rust facade
 
-New embedded consumers should construct engines with `AicEngineBuilder`. The
-flat `build_aic_engine(...)` function is a source-compatibility adapter for
-existing callers: it remains supported through the 0.10 release and is planned
-for removal in version 0.11.0. Both paths normalize into the same private build
-request and enter Python once to compile an engine specification. Calls on the
-returned `AicEngine` are pure Rust and do not re-enter Python.
+Embedded consumers construct engines with `AicEngineBuilder`. It normalizes
+configuration into one private build request and enters Python once to compile
+an engine specification. Calls on the returned `AicEngine` are pure Rust and do
+not re-enter Python.
 
 Standalone binaries must enable the crate's `embed-python` feature; applications
 hosted by an initialized Python interpreter do not. In either case, the matching
 `aisimulate-core` wheel must be importable. See the
 [crate README](crates/aisimulate-core/README.md) for setup and usage examples.
 
+The flat `build_aic_engine` adapter remains available in the 0.11.0 release and
+is removed from `main` for the next minor release. Consumers upgrading past
+0.11.0 must migrate to `AicEngineBuilder`.
+
 The supported root-level Rust surface is grouped as follows:
 
-- compiled engine: `AicEngineBuilder` (preferred), `build_aic_engine`
-  (0.10 compatibility adapter), `AicEngine`, `AicError`;
+- compiled engine: `AicEngineBuilder`, `AicEngine`, `AicError`;
 - forward-pass estimation: `ForwardPassPerfModel`,
   `ForwardPassPerfOptions`, diagnostics/readiness/source types, and the
   `ForwardPassMetrics` telemetry types;
