@@ -23,11 +23,11 @@ use crate::operators::util_empirical::{DeltaLookupCache, ProvenanceTier, UtilGri
 
 /// The five known legacy/framework-agnostic backend directory names. Mirrors the
 /// SDK loader's `KNOWN_BACKEND_DIRS`
-/// (`aic-core/python/aisimulate-core/src/aiconfigurator_core/sdk/perf_database.py`): any other
+/// (`python/aisimulate-core/src/aiconfigurator_core/sdk/perf_database.py`): any other
 /// first-level directory under a system's data dir is a family dir containing
 /// `<backend>/<version>` subtrees.
 /// Keep textually identical to the CANONICAL `_KNOWN_BACKEND_DIRS` in
-/// `aic-core/python/aisimulate-core/src/aiconfigurator_core/sdk/operations/base.py`, which lists
+/// `python/aisimulate-core/src/aiconfigurator_core/sdk/operations/base.py`, which lists
 /// every copy that must stay in sync (Rust cannot import the Python set).
 const KNOWN_BACKEND_DIRS: [&str; 5] = ["trtllm", "sglang", "vllm", "nccl", "oneccl"];
 
