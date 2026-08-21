@@ -3,7 +3,9 @@
 
 import ast
 import csv
+import itertools
 import json
+import random
 import subprocess
 import sys
 from itertools import pairwise
@@ -52,6 +54,33 @@ def _load_gdn_getter(module_path: str):
     namespace = {"get_common_gdn_test_cases": get_common_gdn_test_cases}
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
     return namespace["get_gdn_test_cases"]
+
+
+def _load_moe_getter(module_path: str):
+    from collector.case_generator import (
+        get_common_moe_test_cases,
+        get_moe_quantization_modes,
+        get_sglang_moe_backend,
+        moe_model_allows_quantization,
+    )
+
+    source_path = REPO_ROOT / module_path
+    tree = ast.parse(source_path.read_text(), filename=str(source_path))
+    function = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "get_moe_test_cases"
+    )
+    namespace = {
+        "get_common_moe_test_cases": get_common_moe_test_cases,
+        "get_moe_quantization_modes": get_moe_quantization_modes,
+        "get_sglang_moe_backend": get_sglang_moe_backend,
+        "get_sm_version": lambda: 100,
+        "itertools": itertools,
+        "moe_model_allows_quantization": moe_model_allows_quantization,
+        "random": random,
+        "vllm_version": "0.24.0",
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
+    return namespace["get_moe_test_cases"]
 
 
 def test_model_case_plan_merges_required_base_and_framework_specific_ops():
@@ -218,7 +247,6 @@ def test_added_model_moe_profiles_resolve_targeted_aliases(monkeypatch):
 @pytest.mark.parametrize(
     ("model_path", "quant_mode"),
     [
-        ("nvidia/Qwen3.6-35B-A3B-NVFP4", "w4a16_nvfp4"),
         ("nvidia/Qwen3.5-397B-A17B-NVFP4", "nvfp4"),
         ("nvidia/Qwen3.5-122B-A10B-NVFP4", "nvfp4"),
         ("nvidia/Gemma-4-26B-A4B-NVFP4", "bfloat16"),
@@ -241,6 +269,30 @@ def test_nvfp4_quant_artifacts_have_exact_moe_profiles_and_lanes(monkeypatch, mo
     assert {case.model_name for case in cases} == {model_path}
     for backend in ("sglang", "trtllm", "vllm"):
         assert moe_model_allows_quantization(backend, model_path, quant_mode)
+
+
+@pytest.mark.parametrize(
+    ("backend", "module_path"),
+    [
+        ("sglang", "collector/sglang/collect_moe.py"),
+        ("trtllm", "collector/trtllm/collect_moe.py"),
+        ("vllm", "collector/vllm/collect_moe.py"),
+    ],
+)
+def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypatch, capsys, backend, module_path):
+    from collector.case_generator import get_common_moe_test_cases
+
+    model_path = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
+
+    assert "moe" in build_collection_case_plan(backend=backend, model_path=model_path).selected_ops
+    transferred_shapes = get_common_moe_test_cases(backend=backend)
+    assert transferred_shapes
+    assert {case.model_name for case in transferred_shapes} == {model_path}
+    assert "w4a16_nvfp4" not in {spec.name for spec in get_moe_quantization_specs(backend)}
+
+    assert _load_moe_getter(module_path)() == []
+    assert f"by declared {backend} quantization policy (allowed_modes): {model_path}" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
