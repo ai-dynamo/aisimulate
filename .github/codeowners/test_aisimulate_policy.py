@@ -135,8 +135,10 @@ def test_representative_routing_contract() -> None:
     }
     assert _owners("python/aisimulate/CODEOWNERS") == {INFRA, MAINTAINERS}
     assert _owners("crates/aisimulate-core/deny.toml") == {FPE, MAINTAINERS}
+    assert _owners("deny.toml") == {INFRA, MAINTAINERS}
     assert _owners("CODEOWNERS") == {INFRA, MAINTAINERS}
     assert _owners("README.md") == {MAINTAINERS}
+    assert _owners("CONTRIBUTING.md") == {MAINTAINERS}
 
 
 def test_unclassified_future_path_uses_maintainer_fallback() -> None:

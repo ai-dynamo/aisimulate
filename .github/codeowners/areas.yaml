@@ -11,6 +11,7 @@ areas:
     path_globs:
       - LICENSE
       - README.md
+      - CONTRIBUTING.md
       - CONTRIBUTORS.md
       - docs/
       - python/aisimulate/src/aisimulate/__init__.py
@@ -53,6 +54,7 @@ areas:
       - CODEOWNERS
       - Cargo.lock
       - Cargo.toml
+      - deny.toml
       - crates/python/Cargo.toml
       - pytest.ini
       - scripts/
@@ -123,6 +125,8 @@ shared:
   - glob: Cargo.lock
     owners: [infra, maintainers]
   - glob: Cargo.toml
+    owners: [infra, maintainers]
+  - glob: deny.toml
     owners: [infra, maintainers]
   - glob: pytest.ini
     owners: [infra, maintainers]

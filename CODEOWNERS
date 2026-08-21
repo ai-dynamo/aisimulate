@@ -28,6 +28,7 @@
 /docs/                                               @ai-dynamo/access-aisimulate-maintain
 /LICENSE                                             @ai-dynamo/access-aisimulate-maintain
 /README.md                                           @ai-dynamo/access-aisimulate-maintain
+/CONTRIBUTING.md                                     @ai-dynamo/access-aisimulate-maintain
 /CONTRIBUTORS.md                                     @ai-dynamo/access-aisimulate-maintain
 /tests/conftest.py                                   @ai-dynamo/access-aisimulate-maintain
 
@@ -55,6 +56,7 @@
 # === infra  (@ai-dynamo/aisimulate-infra-codeowners) ===
 /.github/                                            @ai-dynamo/aisimulate-infra-codeowners
 /scripts/                                            @ai-dynamo/aisimulate-infra-codeowners
+/deny.toml                                           @ai-dynamo/aisimulate-infra-codeowners
 /.gitignore                                          @ai-dynamo/aisimulate-infra-codeowners
 /CODEOWNERS                                          @ai-dynamo/aisimulate-infra-codeowners
 /Cargo.lock                                          @ai-dynamo/aisimulate-infra-codeowners
@@ -73,6 +75,7 @@
 
 # --- Shared ownership: multi-team (any one approves; wins via last-match) ---
 /scripts/                                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/deny.toml                                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /CODEOWNERS                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /Cargo.lock                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /Cargo.toml                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
