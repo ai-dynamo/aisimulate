@@ -143,3 +143,13 @@ def test_representative_routing_contract() -> None:
 
 def test_unclassified_future_path_uses_maintainer_fallback() -> None:
     assert _owners("future/unclassified.txt") == {MAINTAINERS}
+
+
+def test_dependency_policy_covers_every_rust_manifest_root() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    for manifest in (
+        "Cargo.toml",
+        "crates/aisimulate-core/Cargo.toml",
+        "crates/tests/public-api/Cargo.toml",
+    ):
+        assert f"--manifest-path {manifest}" in workflow
