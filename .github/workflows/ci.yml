@@ -146,8 +146,8 @@ jobs:
           release-smoke/bin/python -c
           "import importlib.metadata as metadata;
           import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core;
-          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.12.0';
-          assert metadata.version('aisimulate') == '0.12.0';
+          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.13.0';
+          assert metadata.version('aisimulate') == '0.13.0';
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};
           forbidden = {'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
           assert installed.isdisjoint(forbidden), installed & forbidden"

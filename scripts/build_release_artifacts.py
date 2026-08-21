@@ -16,7 +16,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 
 EXPECTED_PYTHON_PROJECTS = {
     ROOT / "python" / "aisimulate" / "pyproject.toml": "aisimulate",
