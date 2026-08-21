@@ -143,6 +143,26 @@ def test_engine_cli_rejects_dynamo_only_online_mode() -> None:
         )
 
 
+def test_engine_cli_rejects_dynamo_only_weka_before_runner(monkeypatch, capsys) -> None:
+    def unexpected_factory():
+        raise AssertionError("standalone Weka replay reached the engine runner")
+
+    monkeypatch.setattr(cli, "EngineReplayRunnerFactory", unexpected_factory)
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(
+            [
+                "trace.json",
+                "--trace-format",
+                "weka",
+                "--extra-engine-args",
+                _engine_args(),
+            ]
+        )
+
+    assert "--trace-format=weka requires the Dynamo replay entrypoint" in capsys.readouterr().err
+
+
 def test_engine_cli_has_no_dynamo_extensions() -> None:
     with pytest.raises(SystemExit, match="2"):
         cli.build_parser().parse_args(["--router-mode", "kv_router"])
