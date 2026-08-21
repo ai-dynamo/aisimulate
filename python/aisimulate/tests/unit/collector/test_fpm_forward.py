@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import multiprocessing
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -451,6 +453,78 @@ def test_git_revision_folds_dirty_tracked_state_into_identity(_pinned_git_revisi
     changed = real_git_revision()
     assert changed.startswith("abc123-dirty-")
     assert changed != dirty
+
+
+def test_source_revision_override_precedes_git_and_installed_metadata(_pinned_git_revision, monkeypatch):
+    monkeypatch.setenv("FPM_COLLECTOR_SOURCE_REVISION", "  release-candidate-17  ")
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("explicit provenance must not inspect Git or installed metadata")
+
+    monkeypatch.setattr(subprocess, "run", unexpected)
+    monkeypatch.setattr(importlib.metadata, "distribution", unexpected)
+
+    assert _pinned_git_revision() == "release-candidate-17"
+
+
+def test_source_revision_falls_back_to_content_addressed_installed_distribution(_pinned_git_revision, monkeypatch):
+    monkeypatch.delenv("FPM_COLLECTOR_SOURCE_REVISION", raising=False)
+
+    def missing_git(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "rev-parse", "HEAD"], stderr="not a git repository")
+
+    class InstalledDistribution:
+        version = "0.12.0"
+        installation = 0
+        planner_hash = "planner-content"
+
+        @classmethod
+        def read_text(cls, filename):
+            assert filename == "RECORD"
+            cls.installation += 1
+            return (
+                f"collector/fpm_forward/planner.py,sha256={cls.planner_hash},1200\n"
+                "collector/fpm_forward/runtime/fpm_exec.sh,sha256=runtime-content,6400\n"
+                "aisimulate-0.12.0.dist-info/METADATA,sha256=metadata-content,900\n"
+                f"../../../bin/aiconfigurator,sha256=install-path-{cls.installation},220\n"
+                f"aisimulate-0.12.0.dist-info/direct_url.json,sha256=checkout-{cls.installation},100\n"
+                "aisimulate-0.12.0.dist-info/RECORD,,\n"
+            )
+
+    monkeypatch.setattr(subprocess, "run", missing_git)
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: InstalledDistribution())
+
+    first = _pinned_git_revision()
+    second = _pinned_git_revision()
+
+    assert first == second
+    assert first.startswith("installed:aisimulate==0.12.0:record-sha256:")
+    assert "/" not in first
+    assert "checkout" not in first
+
+    InstalledDistribution.planner_hash = "changed-planner-content"
+    assert _pinned_git_revision() != first
+
+
+def test_source_revision_fails_when_no_explicit_git_or_installed_identity(_pinned_git_revision, monkeypatch):
+    monkeypatch.delenv("FPM_COLLECTOR_SOURCE_REVISION", raising=False)
+    metadata_attempted = False
+
+    def missing_git(*_args, **_kwargs):
+        raise FileNotFoundError("git")
+
+    def missing_distribution(name):
+        nonlocal metadata_attempted
+        metadata_attempted = True
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(subprocess, "run", missing_git)
+    monkeypatch.setattr(importlib.metadata, "distribution", missing_distribution)
+
+    with pytest.raises(ValueError, match="requires the collector source revision"):
+        _pinned_git_revision()
+
+    assert metadata_attempted is True
 
 
 def test_minimax_m3_keeps_family_dtype_and_parallel_capabilities():

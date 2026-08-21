@@ -5,13 +5,16 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import importlib.metadata
+import io
 import json
 import logging
 import os
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
@@ -22,10 +25,52 @@ from .types import ParallelTopology
 
 logger = logging.getLogger(__name__)
 
+_INSTALLED_DISTRIBUTION = "aisimulate"
+_INSTALLED_PAYLOAD_ROOTS = frozenset(("aiconfigurator", "aisimulate", "collector"))
+_STABLE_DIST_INFO_FILES = frozenset(("METADATA", "WHEEL", "entry_points.txt"))
+
 
 def _canonical_hash(payload: object) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _installed_distribution_revision() -> str:
+    """Return a content-addressed identity for an installed app wheel.
+
+    ``RECORD`` already carries hashes for the wheel payload. Canonicalizing
+    those entries avoids reading checkout paths from editable metadata and
+    excludes installer-generated files such as ``direct_url.json`` and the
+    environment-specific console script.
+    """
+
+    try:
+        distribution = importlib.metadata.distribution(_INSTALLED_DISTRIBUTION)
+        record = distribution.read_text("RECORD")
+    except (importlib.metadata.PackageNotFoundError, OSError) as error:
+        raise ValueError(f"installed {_INSTALLED_DISTRIBUTION!r} metadata is unavailable: {error}") from error
+    if not record:
+        raise ValueError(f"installed {_INSTALLED_DISTRIBUTION!r} metadata has no RECORD")
+
+    hashed_files: list[tuple[str, str, str]] = []
+    for row in csv.reader(io.StringIO(record)):
+        if len(row) != 3:
+            continue
+        raw_path, file_hash, size = row
+        path = PurePosixPath(raw_path)
+        if not file_hash or path.is_absolute() or ".." in path.parts or not path.parts:
+            continue
+        is_payload = path.parts[0] in _INSTALLED_PAYLOAD_ROOTS
+        is_stable_metadata = (
+            len(path.parts) == 2 and path.parts[0].endswith(".dist-info") and path.parts[1] in _STABLE_DIST_INFO_FILES
+        )
+        if is_payload or is_stable_metadata:
+            hashed_files.append((path.as_posix(), file_hash, size))
+
+    if not hashed_files:
+        raise ValueError(f"installed {_INSTALLED_DISTRIBUTION!r} RECORD has no content-addressed payload entries")
+    digest = _canonical_hash(sorted(hashed_files))
+    return f"installed:{_INSTALLED_DISTRIBUTION}=={distribution.version}:record-sha256:{digest}"
 
 
 def _git_revision() -> str:
@@ -70,12 +115,16 @@ def _git_revision() -> str:
         diff = _git("diff-index", "--no-ext-diff", "--full-index", "-p", "HEAD")
         dirty_digest = hashlib.sha256((status + diff).encode()).hexdigest()[:12]
         return f"{head}-dirty-{dirty_digest}"
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        detail = getattr(error, "stderr", "") or str(error)
-        raise ValueError(
-            "FPM plan identity requires the collector source revision, but git "
-            f"failed under {root}: {detail.strip()}. Run the collector from a git checkout"
-        ) from error
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as git_error:
+        try:
+            return _installed_distribution_revision()
+        except ValueError as installed_error:
+            detail = getattr(git_error, "stderr", "") or str(git_error)
+            raise ValueError(
+                "FPM plan identity requires the collector source revision, but neither Git nor installed "
+                f"distribution metadata could provide one. Git failed under {root}: {detail.strip()}; "
+                f"installed metadata failed: {installed_error}"
+            ) from git_error
 
 
 def _hash_stable_admission(decision: TopologyMemoryDecision) -> dict[str, object]:

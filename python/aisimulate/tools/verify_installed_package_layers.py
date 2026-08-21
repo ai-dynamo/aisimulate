@@ -227,6 +227,7 @@ def _verify_fpm_workflow() -> str:
             "collector/__init__.py",
             "collector/model_cases.py",
             "collector/cases/base_ops/mla_module.yaml",
+            "collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
             "collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",
             "collector/fpm_forward/__main__.py",
             "collector/fpm_forward/cli.py",
@@ -236,48 +237,69 @@ def _verify_fpm_workflow() -> str:
     )
 
     runtime = importlib.resources.files("collector.fpm_forward.runtime")
+    runner = importlib.import_module("collector.fpm_forward.runner")
+    runner_runtime = Path(runner.__file__).resolve().parent / "runtime"
+    distribution_root = Path(os.fspath(importlib.metadata.distribution("aisimulate").locate_file(""))).resolve()
+    if not Path(runner.__file__).resolve().is_relative_to(distribution_root):
+        raise RuntimeError(f"FPM runner did not resolve from the installed distribution: {runner.__file__}")
     for name in ("fpm_exec.sh", "preflight.py"):
         asset = runtime / name
         if not asset.is_file():
             raise RuntimeError(f"installed FPM runtime asset is missing: {asset}")
+        if Path(os.fspath(asset)).resolve() != (runner_runtime / name).resolve():
+            raise RuntimeError(f"FPM runner resolves {name} outside the installed runtime package")
 
-    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
-    env["FPM_COLLECTOR_SOURCE_REVISION"] = "installed-wheel-verification"
-    with tempfile.TemporaryDirectory(prefix="aisimulate-installed-fpm-") as workdir:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "collector.fpm_forward",
-                "--model-path",
-                "nvidia/GLM-5.2-NVFP4",
-                "--gpu",
-                "b200_sxm",
-                "--fpm-max-gpus",
-                "4",
-                "--plan-only",
-            ],
-            cwd=workdir,
-            env=env,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-    try:
-        plan = json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        plan = {}
-    if (
-        completed.returncode != 0
-        or plan.get("schema_name") != "aic_fpm_collection_plan"
-        or plan.get("aic_revision") != "installed-wheel-verification"
-        or not plan.get("cells")
-    ):
-        raise RuntimeError(
-            f"installed FPM module entry point failed:\nstdout={completed.stdout}\nstderr={completed.stderr}"
-        )
-    print(f"Verified installed AISimulate {app_version} FPM workflow and runtime assets")
+    env = {
+        key: value for key, value in os.environ.items() if key not in {"FPM_COLLECTOR_SOURCE_REVISION", "PYTHONPATH"}
+    }
+    plans = []
+    with tempfile.TemporaryDirectory(prefix="aisimulate-installed-fpm-") as root:
+        for run_number in (1, 2):
+            workdir = Path(root) / f"run-{run_number}"
+            workdir.mkdir()
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "collector.fpm_forward",
+                    "--model-path",
+                    "nvidia/GLM-5.2-NVFP4",
+                    "--gpu",
+                    "b200_sxm",
+                    "--fpm-max-gpus",
+                    "4",
+                    "--plan-only",
+                ],
+                cwd=workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            try:
+                plan = json.loads(completed.stdout)
+            except json.JSONDecodeError:
+                plan = {}
+            revision = plan.get("aic_revision")
+            if (
+                completed.returncode != 0
+                or plan.get("schema_name") != "aic_fpm_collection_plan"
+                or not isinstance(revision, str)
+                or not revision.startswith(f"installed:aisimulate=={app_version}:record-sha256:")
+                or not plan.get("cells")
+                or str(workdir) in completed.stdout
+            ):
+                raise RuntimeError(
+                    f"installed FPM module entry point failed:\nstdout={completed.stdout}\nstderr={completed.stderr}"
+                )
+            plans.append(plan)
+    if plans[0] != plans[1]:
+        raise RuntimeError("installed FPM plan identity is not stable across outside-checkout working directories")
+    print(
+        f"Verified installed AISimulate {app_version} FPM workflow and runtime assets "
+        f"with revision {plans[0]['aic_revision']}"
+    )
     return app_version
 
 
