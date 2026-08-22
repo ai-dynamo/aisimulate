@@ -12,6 +12,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use flate2::read::MultiGzDecoder;
 use serde::Deserialize;
 
+use super::trace::assign_dependency_component_play_ids;
 use super::{
     AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope, AgenticMooncakeHeader,
@@ -288,7 +289,7 @@ fn lower_agentic(entries: Vec<RequestEntry>, block_size: usize) -> Result<Agenti
             previous[first] = Some(parent);
         }
     }
-    let rows = entries
+    let mut rows = entries
         .iter()
         .enumerate()
         .map(|(index, entry)| -> Result<AgenticMooncakeRow> {
@@ -348,6 +349,7 @@ fn lower_agentic(entries: Vec<RequestEntry>, block_size: usize) -> Result<Agenti
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    assign_dependency_component_play_ids(&mut rows, "dynamo-play");
     AgenticTrace::from_agentic_mooncake_rows(
         AgenticMooncakeHeader {
             schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
@@ -434,5 +436,21 @@ mod tests {
         };
         assert_eq!(trace.node_count(), 2);
         assert_eq!(trace.play_count(), 1);
+    }
+
+    #[test]
+    fn independent_agent_sessions_become_independent_plays() {
+        let file = trace_file(&[
+            request("a", 100, Some("session-a")),
+            request("b", 120, Some("session-b")),
+        ]);
+        let loaded =
+            DynamoRequestTrace::from_request_trace_files(&[file.path().to_path_buf()], Some(4))
+                .unwrap();
+        let DynamoRequestTrace::Agentic(trace) = loaded else {
+            panic!("expected agentic trace");
+        };
+        assert_eq!(trace.node_count(), 2);
+        assert_eq!(trace.play_count(), 2);
     }
 }

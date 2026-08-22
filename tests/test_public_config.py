@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from aisimulate.public_config import PredictionConfig, RecommendationConfig
 from aisimulate.recommend import recommendation_to_sweeper
+from pydantic import ValidationError
 
 
 def _engine() -> dict:
@@ -192,3 +191,45 @@ def test_load_predictor_preset_off_uses_nested_type_knob() -> None:
     )
 
     assert config.planner["load_predictor"]["preset"] is False
+
+
+def test_present_router_and_planner_sections_activate_default_searches() -> None:
+    base = {
+        "engine": {
+            **_engine(),
+            "mode": "aggregated",
+            "context_length": 4096,
+        },
+        "optimization": {},
+    }
+    absent = recommendation_to_sweeper(
+        RecommendationConfig.model_validate(base), stack="dynamo"
+    )
+    present = recommendation_to_sweeper(
+        RecommendationConfig.model_validate(
+            {**base, "router": {}, "planner": {}}
+        ),
+        stack="dynamo",
+    )
+
+    assert absent.adapters == {}
+    assert present.adapters["dynamo.router"].search_space["policy"] == {
+        "choices": ["round_robin", "kv_router"]
+    }
+    assert present.adapters["dynamo.planner"].search_space["policy"] == {
+        "choices": ["disabled", "enabled"]
+    }
+
+
+def test_recommendation_rejects_round_robin_with_kv_router_knobs() -> None:
+    with pytest.raises(ValidationError, match="round_robin rejects"):
+        RecommendationConfig.model_validate(
+            {
+                "engine": {**_engine(), "context_length": 4096},
+                "router": {
+                    "policy": "round_robin",
+                    "prefill_load_model": {"type": "aic"},
+                },
+                "optimization": {},
+            }
+        )

@@ -550,6 +550,7 @@ class RecommendationConfig(_StrictModel):
     def _validate_tree(self) -> RecommendationConfig:
         validate_recommendation_tree(self.model_dump(mode="python"))
         _validate_planner_preset_conflicts(self.planner)
+        _validate_recommendation_router(self.router)
         hardware = self.engine.get("hardware")
         if hardware == "auto" and self.optimization.hardware is None:
             raise ValueError(
@@ -855,6 +856,32 @@ def _validate_planner_preset_conflicts(planner: dict[str, Any] | None) -> None:
             raise ValueError(
                 f"planner.{group}.preset cannot be combined with independent knobs {conflicts}"
             )
+
+
+def _validate_recommendation_router(router: dict[str, Any] | None) -> None:
+    if not isinstance(router, dict):
+        return
+    policy = router.get("policy")
+    if policy != "round_robin":
+        return
+    load_model = router.get("prefill_load_model")
+    load_type = load_model.get("type") if isinstance(load_model, dict) else None
+    kv_fields = [
+        name
+        for name in (
+            "overlap_score_credit",
+            "prefill_load_scale",
+            "temperature",
+        )
+        if name in router
+    ]
+    if load_type not in (None, "none"):
+        kv_fields.append("prefill_load_model.type")
+    if kv_fields:
+        raise ValueError(
+            "router.policy=round_robin rejects KV-router fields "
+            f"{sorted(kv_fields)}"
+        )
 
 
 def validate_recommendation_tree(data: dict[str, Any]) -> None:

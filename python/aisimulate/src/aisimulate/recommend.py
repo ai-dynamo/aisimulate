@@ -103,11 +103,11 @@ def recommendation_to_sweeper(
     workload = _recommendation_workload(config.traffic)
     goal = _goal(config)
     adapters: dict[str, Any] = {}
-    if config.router is not None and not _fixed_round_robin(config.router):
+    if config.router is not None:
         adapters[f"{stack}.router"] = {
             "search_space": _router_search_space(config.router)
         }
-    if config.planner is not None and not _fixed_disabled_planner(config.planner):
+    if config.planner is not None:
         adapters[f"{stack}.planner"] = {
             "search_space": _planner_search_space(config.planner)
         }
@@ -527,31 +527,18 @@ def _goal(config: RecommendationConfig) -> dict[str, Any]:
     return payload
 
 
-def _fixed_round_robin(raw: dict[str, Any]) -> bool:
-    return raw.get("policy", "round_robin") == "round_robin" and not any(
-        isinstance(value, dict) and ("choices" in value or "range" in value)
-        for value in raw.values()
-    )
-
-
-def _fixed_disabled_planner(raw: dict[str, Any]) -> bool:
-    return raw.get("policy", "disabled") == "disabled" and not any(
-        key in raw
-        for key in (
-            "scaling_policy",
-            "fpm_sampling",
-            "load_sensitivity",
-            "load_predictor",
-        )
-    )
-
-
 def _router_search_space(raw: dict[str, Any]) -> dict[str, Any]:
-    return deepcopy(raw)
+    result = deepcopy(raw)
+    result.setdefault(
+        "policy", {"choices": ["round_robin", "kv_router"]}
+    )
+    return result
 
 
 def _planner_search_space(raw: dict[str, Any]) -> dict[str, Any]:
-    return deepcopy(raw)
+    result = deepcopy(raw)
+    result.setdefault("policy", {"choices": ["disabled", "enabled"]})
+    return result
 
 
 def _candidate_prediction(

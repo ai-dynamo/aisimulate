@@ -5,21 +5,14 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-};
 
 use crate::engine::{Backend, TimingModel, TimingModelConfig};
 use crate::replay::{
     ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec,
     ReplayTopology, Replayer,
     loadgen::{
-        AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
-        AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope,
-        AgenticMooncakeHeader, AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace,
         ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
-        WorkloadDriver,
+        WorkloadDriver, load_agentic_mooncake,
     },
 };
 use anyhow::{Context, Result, anyhow, ensure};
@@ -85,36 +78,6 @@ struct RuntimeTraffic {
     kv_load_ratio: Option<serde_json::Value>,
     #[serde(default)]
     max_sim_time_ms: Option<f64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LegacyAgenticMooncakeRow {
-    request_id: String,
-    #[serde(default)]
-    session_id: Option<String>,
-    #[serde(default, alias = "input_tokens")]
-    input_length: Option<usize>,
-    #[serde(alias = "output_tokens")]
-    output_length: usize,
-    #[serde(default)]
-    output_token_ids: Option<Vec<u32>>,
-    hash_ids: Vec<u64>,
-    #[serde(default, alias = "created_time")]
-    timestamp: Option<f64>,
-    #[serde(default)]
-    delay: Option<f64>,
-    #[serde(default)]
-    delay_ms: Option<f64>,
-    #[serde(default)]
-    tool_wait_ms: f64,
-    #[serde(default)]
-    wait_for: Vec<String>,
-    #[serde(default)]
-    priority: Option<i32>,
-    #[serde(default)]
-    strict_priority: Option<u32>,
-    #[serde(default)]
-    policy_class: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -590,123 +553,6 @@ fn resolve_kv_capacity_concurrency(
     let concurrency = ((ratio * capacity as f64) as usize).max(1);
     traffic.concurrency = Some(concurrency);
     Ok(Some(concurrency))
-}
-
-fn load_agentic_mooncake(path: &PathBuf, trace_block_size: usize) -> Result<AgenticTrace> {
-    let file = File::open(path)
-        .with_context(|| format!("failed to open trace file {}", path.display()))?;
-    let mut lines = BufReader::new(file).lines();
-    let first = loop {
-        let line = lines
-            .next()
-            .transpose()
-            .with_context(|| format!("failed to read trace file {}", path.display()))?
-            .context("agentic trace file is empty")?;
-        if !line.trim().is_empty() {
-            break line;
-        }
-    };
-    let first_json: serde_json::Value =
-        serde_json::from_str(&first).context("failed to parse first agentic trace row")?;
-    if first_json.get("schema").and_then(serde_json::Value::as_str) == Some(AGENTIC_MOONCAKE_SCHEMA)
-    {
-        return AgenticTrace::from_agentic_mooncake(path);
-    }
-
-    let mut raw_rows = vec![
-        serde_json::from_value::<LegacyAgenticMooncakeRow>(first_json)
-            .context("failed to parse first legacy agentic Mooncake row")?,
-    ];
-    for (line_index, line) in lines.enumerate() {
-        let line = line.with_context(|| {
-            format!(
-                "failed to read legacy agentic trace line {}",
-                line_index + 2
-            )
-        })?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        raw_rows.push(serde_json::from_str(&line).with_context(|| {
-            format!(
-                "failed to parse legacy agentic trace line {}",
-                line_index + 2
-            )
-        })?);
-    }
-    let rows = raw_rows
-        .into_iter()
-        .map(|raw| -> Result<AgenticMooncakeRow> {
-            ensure!(
-                !raw.request_id.trim().is_empty(),
-                "request_id must be nonempty"
-            );
-            ensure!(!raw.hash_ids.is_empty(), "hash_ids must be nonempty");
-            ensure!(
-                raw.tool_wait_ms.is_finite() && raw.tool_wait_ms >= 0.0,
-                "tool_wait_ms must be finite and nonnegative"
-            );
-            ensure!(
-                raw.delay.is_none() || raw.delay_ms.is_none(),
-                "delay and delay_ms cannot both be set"
-            );
-            let delay = raw.delay.or(raw.delay_ms).unwrap_or(0.0) + raw.tool_wait_ms;
-            ensure!(
-                delay.is_finite() && delay >= 0.0,
-                "dependency delay must be finite and nonnegative"
-            );
-            let relation = if raw.wait_for.len() > 1 {
-                AgenticDependencyRelation::Join
-            } else {
-                AgenticDependencyRelation::Sequence
-            };
-            let dependencies = raw
-                .wait_for
-                .into_iter()
-                .map(|request_id| AgenticDependency {
-                    request_id,
-                    trigger: AgenticDependencyTrigger::Completion,
-                    delay_ms: delay,
-                    relation,
-                })
-                .collect::<Vec<_>>();
-            let session_id = raw
-                .session_id
-                .unwrap_or_else(|| "agentic-session".to_string());
-            Ok(AgenticMooncakeRow {
-                request_id: raw.request_id,
-                play_id: "agentic-play".to_string(),
-                session_id,
-                model: "unknown".to_string(),
-                input_length: raw.input_length,
-                output_length: Some(raw.output_length),
-                output_token_ids: raw.output_token_ids,
-                hash_ids: Some(raw.hash_ids),
-                not_before_ms: if dependencies.is_empty() {
-                    raw.timestamp.unwrap_or(0.0)
-                } else {
-                    0.0
-                },
-                priority: raw.priority,
-                strict_priority: raw.strict_priority,
-                policy_class: raw.policy_class,
-                dependencies,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    AgenticTrace::from_agentic_mooncake_rows(
-        AgenticMooncakeHeader {
-            schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
-            version: AGENTIC_MOONCAKE_VERSION,
-            block_size: trace_block_size,
-            hash_id_scope: AgenticHashIdScope::Local,
-            source: AgenticSourceProvenance {
-                format: "legacy_agentic_mooncake".to_string(),
-                digest: format!("{}:{}", path.display(), rows.len()),
-            },
-        },
-        rows,
-    )
 }
 
 fn build_runtime_input(

@@ -290,6 +290,44 @@ fn test_from_mooncake_defaults_missing_input_length_from_hash_capacity() {
 }
 
 #[test]
+fn compatible_agentic_loader_preserves_legacy_rows_and_independent_plays() {
+    let file = write_trace(&[
+        serde_json::json!({
+            "request_id": "r1",
+            "session_id": "session-a",
+            "timestamp": 100.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [1]
+        }),
+        serde_json::json!({
+            "request_id": "r2",
+            "session_id": "session-a",
+            "wait_for": ["r1"],
+            "delay": 10.0,
+            "tool_wait_ms": 6.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [1]
+        }),
+        serde_json::json!({
+            "request_id": "r3",
+            "session_id": "session-b",
+            "timestamp": 120.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [2]
+        }),
+    ]);
+
+    let trace = load_agentic_mooncake(file.path(), 4).unwrap();
+
+    assert_eq!(trace.node_count(), 3);
+    assert_eq!(trace.play_count(), 2);
+    assert_eq!(trace.nodes()[1].dependencies()[0].delay_ms, 16.0);
+}
+
+#[test]
 fn test_from_agentic_mooncake_builds_typed_graph() {
     let file = write_agentic_trace(&[
         serde_json::json!({

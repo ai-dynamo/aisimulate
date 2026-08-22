@@ -131,21 +131,9 @@ def _adapter_names_for_recommendation(
 ) -> list[str]:
     names = []
     if config.router is not None:
-        policy = config.router.get("policy", "round_robin")
-        if policy != "round_robin" or isinstance(policy, dict):
-            names.append(f"{stack}.router")
+        names.append(f"{stack}.router")
     if config.planner is not None:
-        policy = config.planner.get("policy", "disabled")
-        if policy != "disabled" or isinstance(policy, dict) or any(
-            name in config.planner
-            for name in (
-                "scaling_policy",
-                "fpm_sampling",
-                "load_sensitivity",
-                "load_predictor",
-            )
-        ):
-            names.append(f"{stack}.planner")
+        names.append(f"{stack}.planner")
     return names
 
 
