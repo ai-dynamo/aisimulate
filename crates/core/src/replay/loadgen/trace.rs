@@ -209,14 +209,26 @@ pub(super) fn assign_dependency_component_play_ids(rows: &mut [AgenticMooncakeRo
             }
         }
     }
-    let mut labels = HashMap::new();
+    let mut roots_by_component: HashMap<usize, Vec<usize>> = HashMap::new();
     for (index, row) in rows.iter().enumerate() {
         if row.dependencies.is_empty() {
             let component = find(&mut parent, index);
-            labels
-                .entry(component)
-                .or_insert_with(|| row.request_id.clone());
+            roots_by_component.entry(component).or_default().push(index);
         }
+    }
+    let mut labels = HashMap::new();
+    for (component, roots) in roots_by_component {
+        let canonical = roots
+            .iter()
+            .copied()
+            .min_by(|left, right| {
+                rows[*left]
+                    .not_before_ms
+                    .total_cmp(&rows[*right].not_before_ms)
+                    .then_with(|| rows[*left].request_id.cmp(&rows[*right].request_id))
+            })
+            .expect("a root component is nonempty");
+        labels.insert(component, rows[canonical].request_id.clone());
     }
     for (index, row) in rows.iter_mut().enumerate() {
         let component = find(&mut parent, index);
@@ -1470,16 +1482,16 @@ impl AgenticTraceBuilder {
                 .copied()
                 .filter(|node_index| self.nodes[*node_index].dependencies.is_empty())
                 .collect();
-            let [root_node] = roots.as_slice() else {
+            if roots.is_empty() {
                 bail!(
-                    "play {} must have exactly one root request, found {}",
+                    "play {} must have at least one root request, found {}",
                     play_id,
                     roots.len()
                 );
-            };
+            }
             plays.push(AgenticPlay {
                 play_id,
-                root_node: *root_node,
+                root_nodes: roots,
                 nodes: node_indices,
             });
         }

@@ -83,7 +83,7 @@ impl DynamoRequestTrace {
             .filter(|entry| entry.agent_context.is_some())
             .count();
         if contextual != 0 && contextual != entries.len() {
-            bail!("Dynamo request trace cannot mix standard and agentic requests");
+            bail!("Dynamo request trace cannot mix requests with and without agent_context");
         }
         let block_size = entries[0].request.replay.trace_block_size;
         ensure!(block_size > 0, "embedded trace block size must be positive");
@@ -91,7 +91,7 @@ impl DynamoRequestTrace {
             .iter()
             .any(|entry| entry.request.replay.trace_block_size != block_size)
         {
-            bail!("Dynamo request trace contains mixed trace block sizes");
+            bail!("mixed replay trace_block_size values are not supported");
         }
         if let Some(expected) = expected_block_size {
             ensure!(

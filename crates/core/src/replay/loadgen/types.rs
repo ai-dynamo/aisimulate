@@ -229,7 +229,7 @@ pub struct AgenticNode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgenticPlay {
     pub(super) play_id: String,
-    pub(super) root_node: usize,
+    pub(super) root_nodes: Vec<usize>,
     pub(super) nodes: Vec<usize>,
 }
 
