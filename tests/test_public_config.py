@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
+
 from aisimulate.public_config import PredictionConfig, RecommendationConfig
 from aisimulate.recommend import recommendation_to_sweeper
-from pydantic import ValidationError
 
 
 def _engine() -> dict:
