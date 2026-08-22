@@ -237,17 +237,37 @@ def _verify_fpm_workflow() -> str:
     )
 
     runtime = importlib.resources.files("collector.fpm_forward.runtime")
+    planner = importlib.import_module("collector.fpm_forward.planner")
     runner = importlib.import_module("collector.fpm_forward.runner")
-    runner_runtime = Path(runner.__file__).resolve().parent / "runtime"
-    distribution_root = Path(os.fspath(importlib.metadata.distribution("aisimulate").locate_file(""))).resolve()
-    if not Path(runner.__file__).resolve().is_relative_to(distribution_root):
-        raise RuntimeError(f"FPM runner did not resolve from the installed distribution: {runner.__file__}")
-    for name in ("fpm_exec.sh", "preflight.py"):
-        asset = runtime / name
+    distribution = importlib.metadata.distribution("aisimulate")
+    distribution_files = {str(path): path for path in distribution.files or ()}
+    distribution_root = Path(os.fspath(distribution.locate_file(""))).resolve()
+
+    def exact_distribution_path(relative_path: str) -> Path:
+        record_path = distribution_files.get(relative_path)
+        if record_path is None:
+            raise RuntimeError(f"AISimulate RECORD does not own required FPM path: {relative_path}")
+        located = Path(os.fspath(distribution.locate_file(record_path))).resolve()
+        expected = (distribution_root / Path(*relative_path.split("/"))).resolve()
+        if located != expected or not located.is_relative_to(distribution_root):
+            raise RuntimeError(f"AISimulate RECORD resolves FPM path outside the distribution: {relative_path}")
+        return located
+
+    for module, relative_path in (
+        (planner, "collector/fpm_forward/planner.py"),
+        (runner, "collector/fpm_forward/runner.py"),
+    ):
+        if Path(module.__file__).resolve() != exact_distribution_path(relative_path):
+            raise RuntimeError(f"installed FPM module did not resolve from its exact RECORD path: {module.__file__}")
+    for name, relative_path in (
+        ("fpm_exec.sh", "collector/fpm_forward/runtime/fpm_exec.sh"),
+        ("preflight.py", "collector/fpm_forward/runtime/preflight.py"),
+    ):
+        asset = Path(os.fspath(runtime / name)).resolve()
         if not asset.is_file():
             raise RuntimeError(f"installed FPM runtime asset is missing: {asset}")
-        if Path(os.fspath(asset)).resolve() != (runner_runtime / name).resolve():
-            raise RuntimeError(f"FPM runner resolves {name} outside the installed runtime package")
+        if asset != exact_distribution_path(relative_path):
+            raise RuntimeError(f"installed FPM runtime asset did not resolve from its exact RECORD path: {asset}")
 
     env = {
         key: value for key, value in os.environ.items() if key not in {"FPM_COLLECTOR_SOURCE_REVISION", "PYTHONPATH"}

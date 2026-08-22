@@ -44,12 +44,35 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
     wheels = tuple(wheel_dir.glob("aisimulate-*.whl"))
     assert len(wheels) == 1
 
-    install_root = tmp_path / "installed"
-    _run([sys.executable, "-m", "venv", str(install_root)], cwd=tmp_path)
+    unrelated_repository = tmp_path / "unrelated-git"
+    unrelated_repository.mkdir()
+    _run(["git", "init"], cwd=unrelated_repository)
+    (unrelated_repository / "host-source.txt").write_text("unrelated source\n", encoding="utf-8")
+    _run(["git", "add", "host-source.txt"], cwd=unrelated_repository)
+    _run(
+        [
+            "git",
+            "-c",
+            "user.name=AISimulate Build Test",
+            "-c",
+            "user.email=aisimulate-build-test@example.invalid",
+            "commit",
+            "-m",
+            "unrelated host commit",
+        ],
+        cwd=unrelated_repository,
+    )
+    unrelated_head = _run(["git", "rev-parse", "HEAD"], cwd=unrelated_repository).stdout.strip()
+
+    # Put the complete virtual environment under an unrelated Git checkout.
+    # The installed planner must use wheel provenance before it can observe
+    # this ambient repository and its deliberately different HEAD.
+    install_root = unrelated_repository / "installed"
+    _run([sys.executable, "-m", "venv", str(install_root)], cwd=unrelated_repository)
     installed_python = install_root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     _run(
         [str(installed_python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
-        cwd=tmp_path,
+        cwd=unrelated_repository,
     )
 
     # Reuse the already-installed test dependencies without exposing the app
@@ -65,7 +88,7 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
     installed_purelib = Path(
         _run(
             [str(installed_python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-            cwd=tmp_path,
+            cwd=unrelated_repository,
         ).stdout.strip()
     )
     (installed_purelib / "aisimulate-build-test-dependencies.pth").write_text(
@@ -79,9 +102,11 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
     env["PYTHONNOUSERSITE"] = "1"
     completed = _run(
         [str(installed_python), str(VERIFY_INSTALLED_LAYERS), "--expect", "fpm"],
-        cwd=tmp_path,
+        cwd=unrelated_repository,
         env=env,
     )
 
     assert "Verified installed AISimulate 0.12.0 FPM workflow" in completed.stdout
     assert "installed:aisimulate==0.12.0:record-sha256:" in completed.stdout
+    assert unrelated_head not in completed.stdout
+    assert str(unrelated_repository) not in completed.stdout

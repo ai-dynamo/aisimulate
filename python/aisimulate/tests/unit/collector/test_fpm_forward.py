@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
 import importlib.metadata
+import io
 import json
 import multiprocessing
 import subprocess
@@ -34,6 +37,49 @@ from collector.fpm_forward.topology import enumerate_fpm_topologies
 from collector.fpm_forward.types import ParallelTopology
 
 pytestmark = pytest.mark.unit
+
+_REQUIRED_INSTALLED_FPM_PAYLOAD = {
+    "collector/fpm_forward/planner.py": b"planner-content",
+    "collector/fpm_forward/runner.py": b"runner-content",
+    "collector/fpm_forward/runtime/fpm_exec.sh": b"runtime-content",
+    "collector/fpm_forward/runtime/preflight.py": b"preflight-content",
+}
+
+
+def _record_sha256(payload: bytes) -> str:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b"=").decode()
+    return f"sha256={digest}"
+
+
+def _installed_distribution(tmp_path, *, version="0.12.0", rows=None):
+    root = tmp_path / "site-packages"
+    for relative_path, payload in _REQUIRED_INSTALLED_FPM_PAYLOAD.items():
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    if rows is None:
+        rows = [
+            (relative_path, _record_sha256(payload), str(len(payload)))
+            for relative_path, payload in _REQUIRED_INSTALLED_FPM_PAYLOAD.items()
+        ]
+    stream = io.StringIO(newline="")
+    csv.writer(stream).writerows(rows)
+
+    class InstalledDistribution:
+        @property
+        def version(self):
+            return version
+
+        @staticmethod
+        def locate_file(path):
+            return root / str(path)
+
+        @staticmethod
+        def read_text(filename):
+            assert filename == "RECORD"
+            return stream.getvalue()
+
+    return InstalledDistribution(), root
 
 
 @pytest.fixture(autouse=True)
@@ -467,32 +513,20 @@ def test_source_revision_override_precedes_git_and_installed_metadata(_pinned_gi
     assert _pinned_git_revision() == "release-candidate-17"
 
 
-def test_source_revision_falls_back_to_content_addressed_installed_distribution(_pinned_git_revision, monkeypatch):
+def test_source_revision_prefers_content_addressed_installed_distribution_over_ambient_git(
+    _pinned_git_revision, monkeypatch, tmp_path
+):
     monkeypatch.delenv("FPM_COLLECTOR_SOURCE_REVISION", raising=False)
+    distribution, root = _installed_distribution(tmp_path)
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: distribution)
+    from collector.fpm_forward import planner as fpm_planner
 
-    def missing_git(*_args, **_kwargs):
-        raise subprocess.CalledProcessError(128, ["git", "rev-parse", "HEAD"], stderr="not a git repository")
+    monkeypatch.setattr(fpm_planner, "__file__", str(root / "collector/fpm_forward/planner.py"))
 
-    class InstalledDistribution:
-        version = "0.12.0"
-        installation = 0
-        planner_hash = "planner-content"
+    def ambient_git(*_args, **_kwargs):
+        return SimpleNamespace(stdout="ambient-host-head\n", returncode=0)
 
-        @classmethod
-        def read_text(cls, filename):
-            assert filename == "RECORD"
-            cls.installation += 1
-            return (
-                f"collector/fpm_forward/planner.py,sha256={cls.planner_hash},1200\n"
-                "collector/fpm_forward/runtime/fpm_exec.sh,sha256=runtime-content,6400\n"
-                "aisimulate-0.12.0.dist-info/METADATA,sha256=metadata-content,900\n"
-                f"../../../bin/aiconfigurator,sha256=install-path-{cls.installation},220\n"
-                f"aisimulate-0.12.0.dist-info/direct_url.json,sha256=checkout-{cls.installation},100\n"
-                "aisimulate-0.12.0.dist-info/RECORD,,\n"
-            )
-
-    monkeypatch.setattr(subprocess, "run", missing_git)
-    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: InstalledDistribution())
+    monkeypatch.setattr(subprocess, "run", ambient_git)
 
     first = _pinned_git_revision()
     second = _pinned_git_revision()
@@ -500,10 +534,123 @@ def test_source_revision_falls_back_to_content_addressed_installed_distribution(
     assert first == second
     assert first.startswith("installed:aisimulate==0.12.0:record-sha256:")
     assert "/" not in first
-    assert "checkout" not in first
+    assert "ambient-host-head" not in first
 
-    InstalledDistribution.planner_hash = "changed-planner-content"
-    assert _pinned_git_revision() != first
+
+def test_installed_source_revision_is_stable_across_record_order_quoting_and_installer_noise(
+    _pinned_git_revision, monkeypatch, tmp_path
+):
+    from collector.fpm_forward import planner as fpm_planner
+
+    quoted_path = "collector/fpm_forward/quoted,name.py"
+    quoted_payload = b"quoted-content"
+    base_rows = [
+        (relative_path, _record_sha256(payload), str(len(payload)))
+        for relative_path, payload in _REQUIRED_INSTALLED_FPM_PAYLOAD.items()
+    ] + [(quoted_path, _record_sha256(quoted_payload), str(len(quoted_payload)))]
+    distribution, root = _installed_distribution(tmp_path, rows=base_rows)
+    quoted_file = root / quoted_path
+    quoted_file.write_bytes(quoted_payload)
+    monkeypatch.setattr(fpm_planner, "__file__", str(root / "collector/fpm_forward/planner.py"))
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: distribution)
+    first = _pinned_git_revision()
+
+    noisy_rows = [
+        ("../../../bin/aiconfigurator", "sha256=environment-specific", "123"),
+        ("aisimulate-0.12.0.dist-info/direct_url.json", "sha256=checkout-specific", "99"),
+        *reversed(base_rows),
+    ]
+    noisy_distribution, other_root = _installed_distribution(tmp_path / "other-install", rows=noisy_rows)
+    (other_root / quoted_path).write_bytes(quoted_payload)
+    monkeypatch.setattr(fpm_planner, "__file__", str(other_root / "collector/fpm_forward/planner.py"))
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: noisy_distribution)
+
+    assert _pinned_git_revision() == first
+
+
+@pytest.mark.parametrize(
+    ("case", "match"),
+    (
+        ("tampered", "does not match RECORD"),
+        ("missing_file", "missing or unreadable"),
+        ("missing_version", "has no version"),
+        ("missing_record", "has no RECORD"),
+        ("metadata_only", "no content-addressed payload"),
+        ("missing_required", "missing required payload rows"),
+        ("malformed_row", "malformed row"),
+        ("unhashed", "unhashed payload row"),
+        ("malformed_hash", "malformed SHA-256"),
+        ("malformed_size", "malformed size"),
+        ("duplicate", "duplicates payload row"),
+        ("traversal", "unsafe path"),
+    ),
+)
+def test_installed_source_revision_rejects_untrusted_record_or_payload(
+    _pinned_git_revision, monkeypatch, tmp_path, case, match
+):
+    rows = [
+        (relative_path, _record_sha256(payload), str(len(payload)))
+        for relative_path, payload in _REQUIRED_INSTALLED_FPM_PAYLOAD.items()
+    ]
+    version = "0.12.0"
+    if case == "metadata_only":
+        rows = [("aisimulate-0.12.0.dist-info/METADATA", _record_sha256(b"metadata"), "8")]
+    elif case == "missing_required":
+        rows.pop()
+    elif case == "malformed_row":
+        rows = [rows[0][0:2], *rows[1:]]
+    elif case == "unhashed":
+        rows[0] = (rows[0][0], "", rows[0][2])
+    elif case == "malformed_hash":
+        rows[0] = (rows[0][0], "md5=not-sha256", rows[0][2])
+    elif case == "malformed_size":
+        rows[0] = (rows[0][0], rows[0][1], "12 bytes")
+    elif case == "duplicate":
+        rows.append(rows[0])
+    elif case == "traversal":
+        rows.insert(0, ("collector/../escape.py", _record_sha256(b"escape"), "6"))
+    elif case == "missing_version":
+        version = None
+
+    distribution, root = _installed_distribution(tmp_path, version=version, rows=rows)
+    if case == "tampered":
+        (root / "collector/fpm_forward/planner.py").write_bytes(b"tampered")
+    elif case == "missing_file":
+        (root / "collector/fpm_forward/runner.py").unlink()
+    elif case == "missing_record":
+        monkeypatch.setattr(distribution, "read_text", lambda filename: None)
+
+    from collector.fpm_forward import planner as fpm_planner
+
+    monkeypatch.setattr(fpm_planner, "__file__", str(root / "collector/fpm_forward/planner.py"))
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: distribution)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="ambient-host-head\n", returncode=0),
+    )
+
+    with pytest.raises(ValueError, match=match):
+        _pinned_git_revision()
+
+
+def test_source_checkout_uses_git_even_when_editable_distribution_metadata_exists(
+    _pinned_git_revision, monkeypatch, tmp_path
+):
+    monkeypatch.delenv("FPM_COLLECTOR_SOURCE_REVISION", raising=False)
+    distribution, _ = _installed_distribution(tmp_path)
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: distribution)
+    outputs = {
+        ("rev-parse", "HEAD"): "source-head\n",
+        ("status", "--porcelain", "--untracked-files=no"): "",
+    }
+
+    def source_git(args, **_kwargs):
+        return SimpleNamespace(stdout=outputs[tuple(args[1:])], returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", source_git)
+
+    assert _pinned_git_revision() == "source-head"
 
 
 def test_source_revision_fails_when_no_explicit_git_or_installed_identity(_pinned_git_revision, monkeypatch):
