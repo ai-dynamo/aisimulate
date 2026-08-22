@@ -2628,8 +2628,16 @@ def test_run_manifest_records_collector_phases_and_engine_interface(monkeypatch,
         def cleanup(self):
             pass
 
+    monotonic_seconds = 0.0
+
+    def advancing_monotonic():
+        nonlocal monotonic_seconds
+        monotonic_seconds += 0.01
+        return monotonic_seconds
+
     monkeypatch.setattr(fpm_runner, "_render_cell", render_cell)
     monkeypatch.setattr(fpm_runner, "KubernetesCellRunner", FakeResource)
+    monkeypatch.setattr(fpm_runner.time, "monotonic", advancing_monotonic)
     monkeypatch.setattr(
         fpm_runner,
         "_runtime_collection_summary",
