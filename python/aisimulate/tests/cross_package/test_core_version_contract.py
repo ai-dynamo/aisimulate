@@ -18,6 +18,7 @@ RUST_CRATE = REPOSITORY_ROOT / "crates" / "core"
 RUST_CONFIG = RUST_CRATE / "src" / "perfmodel" / "config.rs"
 SUPPORTED_PYTHON = ">=3.11,<3.14"
 SUPPORTED_NUMPY = "numpy>=2.1,<3"
+SUPPORTED_PLOTEXT = "plotext>=5.3.2,<6"
 
 
 def _project_version(path: Path) -> str:
@@ -44,6 +45,13 @@ def test_python_and_numpy_support_contracts_match() -> None:
     assert project["requires-python"] == SUPPORTED_PYTHON
     assert [dependency for dependency in project["dependencies"] if dependency.startswith("numpy")] == [
         SUPPORTED_NUMPY
+    ]
+
+
+def test_plotext_support_contract_excludes_incompatible_v6() -> None:
+    project = tomllib.loads((APPLICATION_ROOT / "pyproject.toml").read_text())["project"]
+    assert [dependency for dependency in project["dependencies"] if dependency.startswith("plotext")] == [
+        SUPPORTED_PLOTEXT
     ]
 
 
