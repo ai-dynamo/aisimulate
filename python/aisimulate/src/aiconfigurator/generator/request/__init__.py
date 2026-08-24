@@ -21,6 +21,7 @@ from .schema import (
     SlaSpec,
     Topology,
 )
+from .sweeper import SweeperCandidateError, from_sweeper_candidate
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -35,8 +36,10 @@ __all__ = [
     "Platform",
     "RoleSizing",
     "SlaSpec",
+    "SweeperCandidateError",
     "Topology",
     "from_cli",
     "from_legacy_params",
+    "from_sweeper_candidate",
     "to_legacy_params",
 ]
