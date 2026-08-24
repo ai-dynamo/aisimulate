@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the standalone core wheel's supported Python facade."""
+"""Contract tests for the unified wheel's performance-model facade."""
 
 from __future__ import annotations
 

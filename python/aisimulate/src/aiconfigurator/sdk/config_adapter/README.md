@@ -80,7 +80,7 @@ Adaptation follows these rules:
 | `dynamo_ci.py` | Concrete `dynamo-ci` recipe adaptation |
 | `schemas/` | Language-neutral JSON Schema snapshot |
 
-Only the Python package and canonical schema belong in the upper wheel. Agent
+Only the Python package and canonical schema belong in the unified wheel. Agent
 skills, fixtures, datasets, reports, and gap-analysis infrastructure remain
 repository-only.
 

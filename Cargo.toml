@@ -6,13 +6,7 @@ members = [
     "crates/core",
     "crates/python",
 ]
-# Keep the imported AIC estimator workspace independent until its public
-# `aisimulate-core` package is consolidated with the package already on main.
-# Cargo does not allow two packages with the same name in one workspace.
-exclude = [
-    "crates/aisimulate-core",
-    "crates/tests/public-api",
-]
+exclude = ["crates/tests/public-api"]
 resolver = "3"
 
 [workspace.package]

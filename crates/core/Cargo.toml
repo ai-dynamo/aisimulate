@@ -3,7 +3,7 @@
 
 [package]
 name = "aisimulate-core"
-description = "Engine-neutral inference simulation and deterministic replay runtime"
+description = "Engine-neutral inference simulation, deterministic replay, and performance modeling"
 version = "0.12.0"
 edition.workspace = true
 authors.workspace = true
@@ -11,18 +11,24 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 readme = "README.md"
-publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+bincode = "1.3"
 blake3 = { workspace = true }
 ddsketchy = "0.1.7"
 derive_builder = { workspace = true }
 indicatif = "0.18"
+parquet = { version = "55", default-features = false, features = ["zstd", "snap"] }
+pep440_rs = "0.7.3"
+pyo3 = { version = "0.23.4", features = ["abi3-py311"], optional = true }
+quick_cache = "0.7.0"
 rand = { workspace = true }
 rustc-hash = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
+sha2 = "0.10"
 slotmap = "1"
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -31,6 +37,9 @@ xxhash-rust = { workspace = true }
 
 [features]
 default = []
+python = ["dep:pyo3"]
+extension-module = ["python", "pyo3/extension-module"]
+embed-python = ["python", "pyo3/auto-initialize"]
 replay-bench = []
 
 [dev-dependencies]

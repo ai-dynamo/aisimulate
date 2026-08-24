@@ -40,7 +40,6 @@ license-files = ["LICENSE"]
 requires-python = ">=3.11,<3.14"
 
 dependencies = [
-    "aisimulate-core==0.12.0",
     "chex==0.1.87",
     "flax==0.10.0",
     "google-vizier[jax]==0.1.21",
@@ -51,12 +50,13 @@ dependencies = [
     "matplotlib>=3.9.4",
     "numpy>=2.1,<3",
     "pandas>=2.2.3",
-    "plotext>=5.3.2",
+    "plotext>=5.3.2,<6",
     "plotly>=6.0.1",
     "prettytable>=3.16.0",
     "pydantic>=2.5",
     "pyarrow>=15.0.0",
     "pyyaml>=6.0",
+    "scipy>=1.13.1",
     "tqdm>=4.0.0",
     "bokeh",
     "nvidia-ml-py",
@@ -105,7 +105,12 @@ aiconfigurator = "aiconfigurator.main:main"
 manifest-path = "../../crates/python/Cargo.toml"
 module-name = "aisimulate._runtime"
 python-source = "src"
-python-packages = ["aisimulate", "aiconfigurator"]
+python-packages = [
+    "aisimulate",
+    "aisimulate_core",
+    "aiconfigurator",
+    "aiconfigurator_core",
+]
 abi3 = true
 features = ["extension-module"]
 exclude = ["**/__pycache__/**", "**/*.pyc"]
@@ -123,10 +128,19 @@ include = [
     { path = "collector/cases/**/*.yaml", format = "wheel" },
     { path = "collector/fpm_forward/**/*.py", format = "wheel" },
     { path = "collector/fpm_forward/runtime/fpm_exec.sh", format = "wheel" },
+    # Keep the AIConfigurator-owned SDK/data tree intact inside this one wheel.
+    # Its stable directory boundary makes upstream commit syncs mechanical even
+    # though AISimulate is now the sole Python distribution owner.
+    "src/aiconfigurator_core/sdk/**/*.md",
+    "src/aiconfigurator_core/systems/*.yaml",
+    "src/aiconfigurator_core/systems/*.csv",
+    "src/aiconfigurator_core/systems/**/*.csv",
+    "src/aiconfigurator_core/systems/**/*.json",
+    "src/aiconfigurator_core/systems/**/*.txt",
+    "src/aiconfigurator_core/systems/**/*.parquet",
+    "src/aiconfigurator_core/systems/data/**/*.yaml",
+    "src/aiconfigurator_core/model_configs/*.json",
 ]
-
-[tool.uv.sources]
-aisimulate-core = { path = "../aisimulate-core", editable = true }
 
 [tool.ruff]
 line-length = 120

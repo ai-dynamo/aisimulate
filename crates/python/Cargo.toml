@@ -17,10 +17,10 @@ name = "_runtime"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-extension-module = ["pyo3/extension-module"]
+extension-module = ["aisimulate-core/extension-module", "pyo3/extension-module"]
 
 [dependencies]
-aisimulate-core = { workspace = true }
+aisimulate-core = { workspace = true, features = ["python"] }
 anyhow = { workspace = true }
 pyo3 = { version = "0.23.4", features = ["abi3-py311"] }
 serde = { workspace = true }

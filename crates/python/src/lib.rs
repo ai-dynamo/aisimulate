@@ -445,6 +445,7 @@ fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
+    aisimulate_core::perfmodel::register_python(module)?;
     Ok(())
 }
 
