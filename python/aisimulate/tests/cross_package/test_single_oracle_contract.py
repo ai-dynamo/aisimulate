@@ -37,7 +37,7 @@ pytestmark = pytest.mark.unit
 OPERATIONS_DIR = (
     Path(__file__).resolve().parents[4]
     / "python"
-    / "aisimulate-core"
+    / "aisimulate"
     / "src"
     / "aiconfigurator_core"
     / "sdk"

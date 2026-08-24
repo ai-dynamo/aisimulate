@@ -60,7 +60,7 @@ It will also collect nccl allreduce, all_gather, all2all, reduce_scatter using n
 The standalone scripts stage `nccl_perf.txt`, `oneccl_perf.txt`, and
 `custom_allreduce_perf.txt`. Collector finalization converts accepted output
 to parquet under
-`python/aisimulate-core/src/aiconfigurator_core/systems/data/<system>/comm/<backend>/<version>/`.
+`python/aisimulate/src/aiconfigurator_core/systems/data/<system>/comm/<backend>/<version>/`.
 
 # Model-centric cases and healing runs
 
@@ -576,7 +576,7 @@ compute, `moe` family) and `moe_a2a_perf` (dispatch/combine communication,
    in step 1.
 
 4. **Publish with sidecars.** Finalized parquet goes into the family tree
-   (`python/aisimulate-core/src/aiconfigurator_core/systems/data/<system>/moe/<backend>/<version>/moe_expert_compute_perf.parquet`,
+   (`python/aisimulate/src/aiconfigurator_core/systems/data/<system>/moe/<backend>/<version>/moe_expert_compute_perf.parquet`,
    `.../<system>/comm/<backend>/<version>/moe_a2a_perf.parquet`) together
    with its `collection_meta.yaml` entry — never a parquet without its
    provenance. The per-world `moe_a2a` outputs need the cross-job merge
@@ -588,7 +588,7 @@ compute, `moe` family) and `moe_a2a_perf` (dispatch/combine communication,
 
 | table | `latency` column | loader behavior |
 |---|---|---|
-| `moe_a2a_perf` | **microseconds** | `load_moe_a2a_data` divides by 1000 (`python/aisimulate-core/.../sdk/operations/moe_comm.py`: "collector records us; leaves are ms") |
+| `moe_a2a_perf` | **microseconds** | `load_moe_a2a_data` divides by 1000 (`python/aisimulate/.../sdk/operations/moe_comm.py`: "collector records us; leaves are ms") |
 | `moe_expert_compute_perf` | **milliseconds** | `load_moe_expert_compute_data` stores it raw — no conversion |
 
 The µs convention matches the legacy DeepEP tables the a2a loader also

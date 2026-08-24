@@ -3,7 +3,7 @@
 
 //! Compile-time contract tests from an external crate's point of view.
 
-use aisimulate_core::{
+use aiconfigurator_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, ForwardPassPerfModel,
     ForwardPassPerfOptions, KvCacheEstimateRequest,
 };
@@ -47,7 +47,7 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aisimulate_core::{
+    use aiconfigurator_core::{
         ForwardPassMetrics, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
     };
 

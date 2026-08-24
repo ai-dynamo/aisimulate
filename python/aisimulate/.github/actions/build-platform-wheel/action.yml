@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 name: Build and verify a platform wheel
-description: Build and verify one AIConfigurator platform wheel set
+description: Build and verify one unified AISimulate platform wheel
 
 inputs:
   build_method:
@@ -32,7 +32,7 @@ runs:
       uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
       with:
         context: .
-        file: docker/Dockerfile
+        file: python/aisimulate/docker/Dockerfile
         platforms: ${{ inputs.platform }}
         target: wheel-out
         build-args: WHEEL_BUILD_BASE=${{ inputs.wheel_base }}
@@ -69,13 +69,13 @@ runs:
         UV_PYTHON_PREFERENCE: only-managed
         UV_PYTHON_DOWNLOADS: automatic
       run: |
-        uv_cache_dir="${RUNNER_TEMP}/aiconfigurator-uv-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        uv_cache_dir="${RUNNER_TEMP}/aisimulate-uv-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         export UV_CACHE_DIR="${uv_cache_dir}"
         echo "UV_CACHE_DIR=${uv_cache_dir}" >> "${GITHUB_ENV}"
 
-        uv venv --python 3.13 "${RUNNER_TEMP}/aiconfigurator-wheel-venv"
-        echo "${RUNNER_TEMP}/aiconfigurator-wheel-venv/bin" >> "${GITHUB_PATH}"
-        echo "VIRTUAL_ENV=${RUNNER_TEMP}/aiconfigurator-wheel-venv" >> "${GITHUB_ENV}"
+        uv venv --python 3.13 "${RUNNER_TEMP}/aisimulate-wheel-venv"
+        echo "${RUNNER_TEMP}/aisimulate-wheel-venv/bin" >> "${GITHUB_PATH}"
+        echo "VIRTUAL_ENV=${RUNNER_TEMP}/aisimulate-wheel-venv" >> "${GITHUB_ENV}"
 
     - name: Select Rust toolchain for macOS wheel
       if: inputs.build_method == 'native-macos'
@@ -90,32 +90,16 @@ runs:
       env:
         MACOSX_DEPLOYMENT_TARGET: "11.0"
       run: |
-        uv pip install --quiet 'build>=1,<2' 'maturin>=1.12,<2' 'delocate>=0.13,<1'
+        uv pip install --quiet 'maturin>=1.12,<2' 'delocate>=0.13,<1'
         mkdir -p wheelhouse repaired-wheelhouse
-        (cd aic-core && maturin build --release --out ../wheelhouse)
-        python -m build --wheel --outdir wheelhouse
-        delocate-wheel --wheel-dir repaired-wheelhouse --verbose wheelhouse/aiconfigurator_core-*.whl
-        rm wheelhouse/aiconfigurator_core-*.whl
+        (cd python/aisimulate && maturin build --release --out ../../wheelhouse)
+        delocate-wheel --wheel-dir repaired-wheelhouse --verbose wheelhouse/aisimulate-*.whl
+        rm wheelhouse/aisimulate-*.whl
         mv repaired-wheelhouse/*.whl wheelhouse/
-        python tools/verify_release_wheels.py wheelhouse
+        python python/aisimulate/tools/verify_release_wheels.py wheelhouse
 
-    - name: Smoke-test Linux native extension
-      if: inputs.build_method == 'docker'
+    - name: Verify installed unified wheel
       shell: bash
       run: |
-        python -m pip install --quiet --no-deps \
-          wheelhouse/aiconfigurator_core-*.whl \
-          wheelhouse/aiconfigurator-*.whl
-        python -c \
-          'import aiconfigurator_core; assert aiconfigurator_core._build_smoke() == 1'
-
-    - name: Verify installed macOS wheel set
-      if: inputs.build_method == 'native-macos'
-      shell: bash
-      run: |
-        uv pip install --quiet \
-          wheelhouse/aiconfigurator_core-*.whl \
-          wheelhouse/aiconfigurator-*.whl
-        python tools/verify_installed_package_layers.py \
-          --expect full \
-          --exercise-engine
+        python -m pip install --quiet wheelhouse/aisimulate-*.whl
+        python python/aisimulate/tools/verify_installed_package_layers.py --exercise-engine

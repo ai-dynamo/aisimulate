@@ -40,7 +40,7 @@ def test_spica_scan_covers_all_archive_member_types(verifier):
 
 
 def test_release_verifier_rejects_stale_spica_archive_member(verifier, monkeypatch, tmp_path):
-    wheel = tmp_path / "aiconfigurator-1.2.0-py3-none-any.whl"
+    wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"
     required = {
         "aiconfigurator/__init__.py",
         "aiconfigurator/cli/main.py",
@@ -56,15 +56,12 @@ def test_release_verifier_rejects_stale_spica_archive_member(verifier, monkeypat
         for name in required:
             archive.writestr(name, "")
         archive.writestr(
-            "aiconfigurator-1.2.0.dist-info/METADATA",
-            "Metadata-Version: 2.1\nName: aiconfigurator\nVersion: 1.2.0\n",
+            "aisimulate-1.2.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: aisimulate\nVersion: 1.2.0\n",
         )
         archive.writestr("spica/data/model.bin", b"stale")
 
-    # main() resolves both wheel paths before validating the upper wheel. The
-    # core placeholder is never opened because stale Spica content fails first.
-    (tmp_path / "aiconfigurator_core-1.2.0-py3-none-any.whl").touch()
-    monkeypatch.setattr(verifier, "_source_payloads", lambda: (set(), set()))
+    monkeypatch.setattr(verifier, "_source_payloads", set)
     monkeypatch.setattr(sys, "argv", ["verify_release_wheels.py", str(tmp_path)])
 
     with pytest.raises(RuntimeError, match=r"removed Spica payload.*spica/data/model\.bin"):
@@ -93,10 +90,10 @@ def test_infra_scan_rejects_gap_skill_tool_dataset_report_and_web_payloads(verif
 
 
 def test_config_adapter_readme_remains_repository_only(verifier):
-    upper, _ = verifier._source_payloads()
+    payload = verifier._source_payloads()
 
-    assert "aiconfigurator/sdk/config_adapter/README.md" not in upper
-    assert "aiconfigurator/sdk/config_adapter/schemas/estimate-request-v1.schema.json" in upper
+    assert "aiconfigurator/sdk/config_adapter/README.md" not in payload
+    assert "aiconfigurator/sdk/config_adapter/schemas/estimate-request-v1.schema.json" in payload
 
 
 def test_rust_crate_package_rejects_upper_payload(verifier, monkeypatch):
