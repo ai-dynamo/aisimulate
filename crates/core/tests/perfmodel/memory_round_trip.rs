@@ -26,7 +26,7 @@
 //! import `aiconfigurator.sdk.memory` (which imports the maturin-built
 //! `aiconfigurator_core`), plus the perf DB (LFS) for the native SystemSpec
 //! capacity. Run after
-//! `uv run maturin develop -m crates/python/Cargo.toml --release --features extension-module`:
+//! `uv run maturin develop -m crates/core/Cargo.toml --release --features extension-module`:
 //! ```text
 //! AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1 \
 //!   PYTHONPATH="$PWD/aic-core/src:$PWD/.venv/lib/python3.13/site-packages:$PWD/src" \

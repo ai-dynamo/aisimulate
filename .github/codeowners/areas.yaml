@@ -59,7 +59,6 @@ areas:
       - deny.toml
       - crates/core/Cargo.toml
       - crates/core/deny.toml
-      - crates/python/Cargo.toml
       - pytest.ini
       - scripts/
       - tests/test_aic_sync.py
@@ -133,10 +132,8 @@ shared:
     owners: [mocker, replay, maintainers]
   - glob: crates/core/tests/perfmodel/
     owners: [forward-pass-engine, maintainers]
-  - glob: crates/python/src/
+  - glob: crates/core/src/python.rs
     owners: [mocker, replay, forward-pass-engine, maintainers]
-  - glob: crates/python/Cargo.toml
-    owners: [infra, maintainers]
   - glob: Cargo.lock
     owners: [infra, maintainers]
   - glob: Cargo.toml

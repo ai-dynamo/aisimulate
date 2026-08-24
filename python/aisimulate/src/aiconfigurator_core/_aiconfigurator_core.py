@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from aisimulate import _runtime
 
+__all__ = tuple(sorted(name for name in dir(_runtime) if not name.startswith("_")))
+globals().update({name: getattr(_runtime, name) for name in __all__})
+
 
 def __getattr__(name: str) -> object:
     try:

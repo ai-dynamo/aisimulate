@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use aisimulate_core::engine::{Backend, TimingModel, TimingModelConfig};
-use aisimulate_core::replay::{
+use crate::engine::{Backend, TimingModel, TimingModelConfig};
+use crate::replay::{
     ReplayEngineConfig, ReplayRoleConfig, ReplaySpec, ReplayTopology, run_engine_replay,
     run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
 };
@@ -445,14 +445,14 @@ fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
-    aisimulate_core::perfmodel::register_python(module)?;
+    crate::perfmodel::register_python(module)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use aisimulate_core::engine::{EngineConfig, TimingModelConfig};
-    use aisimulate_core::replay::{
+    use crate::engine::{EngineConfig, TimingModelConfig};
+    use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayEngineConfig, ReplayRequest, ReplaySpec,
         ReplayTopology, WorkerPoolSpec,
     };

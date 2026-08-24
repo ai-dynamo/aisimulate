@@ -742,7 +742,7 @@ mod tests {
                 .query_generation(&db, 1, 4097)
                 .expect("generation silicon hit");
             approx(generation.latency_ms, 0.5);
-            assert_eq!(gen.source, Source::Silicon, "{mode:?}");
+            assert_eq!(generation.source, Source::Silicon, "{mode:?}");
             assert_eq!(
                 db.worst_provenance(),
                 crate::operators::util_empirical::ProvenanceTier::Silicon,

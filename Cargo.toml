@@ -4,7 +4,6 @@
 [workspace]
 members = [
     "crates/core",
-    "crates/python",
 ]
 exclude = ["crates/tests/public-api"]
 resolver = "3"
@@ -20,7 +19,6 @@ repository = "https://github.com/ai-dynamo/aisimulate.git"
 keywords = ["llm", "genai", "inference", "simulation", "nvidia"]
 
 [workspace.dependencies]
-aisimulate-core = { path = "crates/core", version = "0.12.0" }
 anyhow = "1"
 blake3 = "1"
 derive_builder = "0.20"

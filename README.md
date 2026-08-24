@@ -116,8 +116,7 @@ including the Dynamo development environment and adapter contracts.
 
 ```text
 crates/
-  core/                 AIC perf-model mirror, Mocker, Replay, and PyO3 runtime
-  python/               internal, non-publishable wheel binding crate
+  core/                 sole product crate: AIC perf model, Mocker, Replay, and PyO3 runtime
   tests/public-api/     external-consumer compile contract
 python/
   aisimulate/           application, AIC core mirror/data, Replay, Sweeper, and native runtime

@@ -7,8 +7,8 @@ AISimulate 0.12.0 has one product version and exactly two release artifacts:
 | `aisimulate` wheel | `python/aisimulate/pyproject.toml` | Application, CLI, estimator SDK, model/performance data, FPM Collector workflow/runtime, Replay, Sweeper, and the unified native runtime |
 | `aisimulate-core` crate | `crates/core/Cargo.toml` | Engine-neutral estimator, simulation, and deterministic Replay for Rust consumers |
 
-The Python binding and workspace test crates are `publish = false`. Imported
-AIConfigurator source does not retain another buildable `aiconfigurator`,
+The external public-API test fixture is `publish = false` and excluded from the
+product workspace. Imported AIConfigurator source does not retain another buildable `aiconfigurator`,
 `aiconfigurator-core`, or Python `aisimulate-core` manifest. The preserved
 `aiconfigurator`, `aiconfigurator_core`, and `aisimulate_core` namespaces all
 live inside the `aisimulate` wheel and therefore do not add artifacts.
@@ -21,7 +21,7 @@ Both artifacts use version `0.12.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
 
-The bundled performance database makes the unified wheel about 161 MiB, above
+The bundled performance database makes the unified wheel about 164 MiB, above
 the default 100 MiB per-file upload limit on PyPI and TestPyPI. Before the first
 unified release, the release owner must obtain a project-specific upload-limit
 increase for `aisimulate` on both indexes and verify the release wheel through

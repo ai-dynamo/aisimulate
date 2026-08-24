@@ -18,13 +18,17 @@ facades belong in `python/aisimulate/src/aisimulate_core/`; Rust composition,
 Replay, and PyO3 integration belong outside `crates/core/src/perfmodel/`.
 
 The machine-readable mapping and synchronization ledger live in
-`scripts/aic_sync.toml`. To generate a binary-safe patch from the recorded AIC
-boundary to a newer AIC commit:
+`scripts/aic_sync.toml`. The manual-path review used to advance the initial
+boundary through `095f58a` is recorded in
+[`aic-sync-ff2be1-to-095f58a-manual.md`](aic-sync-ff2be1-to-095f58a-manual.md).
+To generate a binary-safe patch from the recorded AIC boundary to a newer AIC
+commit:
 
 ```bash
 python scripts/render_aic_sync_patch.py \
   --source ../aiconfigurator \
   --to-ref <new-aic-sha> \
+  --manual-report /tmp/aic-manual-changes.md \
   --output /tmp/aic-sync.patch
 git apply --check /tmp/aic-sync.patch
 git apply /tmp/aic-sync.patch
@@ -33,6 +37,11 @@ git apply /tmp/aic-sync.patch
 Then review and test the result, update `upstream.last_synced` to the exact AIC
 commit, and commit the source changes and ledger update together. The renderer
 uses Git binary patches, so performance data is synchronized along with code.
+
+If any configured `[[manual]]` path changed, the renderer fails unless
+`--manual-report` is provided. Review and adapt every entry in that report
+before advancing `upstream.last_synced`; generating the mirror patch alone is
+not evidence that manifests, workflows, or ownership policy were synchronized.
 
 Packaging and repository policy are intentionally manual. Adapt upstream
 changes to `pyproject.toml`, Cargo manifests and lockfiles, release workflows,

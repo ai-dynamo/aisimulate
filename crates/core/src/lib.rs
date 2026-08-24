@@ -20,6 +20,8 @@ pub mod engine;
 // only from the optional Python surface or parity harnesses.
 #[allow(dead_code)]
 pub mod perfmodel;
+#[cfg(feature = "python")]
+mod python;
 pub mod replay;
 
 pub use engine::{EngineConfig as ReplayEngineConfig, TimingModel, TimingModelConfig};

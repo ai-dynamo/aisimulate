@@ -102,7 +102,7 @@ build-backend = "maturin"
 aiconfigurator = "aiconfigurator.main:main"
 
 [tool.maturin]
-manifest-path = "../../crates/python/Cargo.toml"
+manifest-path = "../../crates/core/Cargo.toml"
 module-name = "aisimulate._runtime"
 python-source = "src"
 python-packages = [

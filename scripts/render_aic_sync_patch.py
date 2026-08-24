@@ -16,6 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 LEDGER = ROOT / "scripts" / "aic_sync.toml"
 
 
+class ManualChangesRequired(RuntimeError):
+    """Raised when a sync range contains changes requiring manual adaptation."""
+
+
 def _git(source: Path, *args: str) -> bytes:
     return subprocess.check_output(("git", "-C", str(source), *args))
 
@@ -31,10 +35,80 @@ def _require_source_path(source: Path, ref: str, path: str) -> None:
         raise ValueError(f"AIC sync source path does not exist at {ref}: {path}")
 
 
-def render(source: Path, from_ref: str, to_ref: str) -> bytes:
+def _manual_changes(
+    config: dict[str, object], source: Path, from_ref: str, to_ref: str
+) -> list[dict[str, object]]:
+    changes: list[dict[str, object]] = []
+    for mapping in config.get("manual", []):
+        upstream = str(mapping["source"]).strip("/")
+        entries = _git(
+            source,
+            "diff",
+            "--name-status",
+            "--find-renames",
+            from_ref,
+            to_ref,
+            "--",
+            upstream,
+        ).decode()
+        lines = tuple(line for line in entries.splitlines() if line)
+        if lines:
+            changes.append(
+                {
+                    "source": upstream,
+                    "reason": str(mapping["reason"]),
+                    "entries": lines,
+                }
+            )
+    return changes
+
+
+def _manual_report(changes: list[dict[str, object]], from_ref: str, to_ref: str) -> str:
+    lines = [
+        "# AIConfigurator manual synchronization report",
+        "",
+        f"- From: `{from_ref}`",
+        f"- To: `{to_ref}`",
+        "",
+    ]
+    if not changes:
+        lines.append("No configured manual paths changed in this range.")
+        return "\n".join(lines) + "\n"
+    for change in changes:
+        lines.extend(
+            (
+                f"## `{change['source']}`",
+                "",
+                f"Reason: {change['reason']}",
+                "",
+            )
+        )
+        lines.extend(f"- `{entry}`" for entry in change["entries"])
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render(
+    source: Path,
+    from_ref: str,
+    to_ref: str,
+    *,
+    manual_report: Path | None = None,
+) -> bytes:
     config = tomllib.loads(LEDGER.read_text())
     _git(source, "rev-parse", "--verify", f"{from_ref}^{{commit}}")
     _git(source, "rev-parse", "--verify", f"{to_ref}^{{commit}}")
+
+    manual_changes = _manual_changes(config, source, from_ref, to_ref)
+    report = _manual_report(manual_changes, from_ref, to_ref)
+    if manual_changes and manual_report is None:
+        changed = ", ".join(str(change["source"]) for change in manual_changes)
+        raise ManualChangesRequired(
+            "manual AIC sync paths changed: "
+            f"{changed}; rerun with --manual-report and review that report before advancing the ledger"
+        )
+    if manual_report is not None:
+        manual_report.write_text(report)
 
     chunks: list[bytes] = []
     for mapping in config["mirror"]:
@@ -71,9 +145,22 @@ def main() -> None:
     )
     parser.add_argument("--to-ref", required=True, help="new AIC ref")
     parser.add_argument("--output", type=Path, help="write patch here (default: stdout)")
+    parser.add_argument(
+        "--manual-report",
+        type=Path,
+        help="required output report when configured manual-adaptation paths changed",
+    )
     args = parser.parse_args()
 
-    patch = render(args.source.resolve(), args.from_ref, args.to_ref)
+    try:
+        patch = render(
+            args.source.resolve(),
+            args.from_ref,
+            args.to_ref,
+            manual_report=args.manual_report,
+        )
+    except ManualChangesRequired as exc:
+        parser.error(str(exc))
     if args.output:
         args.output.write_bytes(patch)
     else:

@@ -55,17 +55,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisimulate-python"
-version = "0.12.0"
-dependencies = [
- "aisimulate-core",
- "anyhow",
- "pyo3",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -103,7 +103,7 @@ def test_representative_routing_contract() -> None:
         FPE,
         MAINTAINERS,
     }
-    assert _owners("crates/python/src/lib.rs") == {
+    assert _owners("crates/core/src/python.rs") == {
         MOCKER,
         REPLAY,
         FPE,

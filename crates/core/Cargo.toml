@@ -12,6 +12,10 @@ homepage.workspace = true
 repository.workspace = true
 readme = "README.md"
 
+[lib]
+name = "aisimulate_core"
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 anyhow = { workspace = true }
 bincode = "1.3"

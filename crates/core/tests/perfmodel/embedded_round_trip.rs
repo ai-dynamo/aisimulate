@@ -26,7 +26,7 @@
 //! and imports `aiconfigurator_core.sdk.engine`, which itself imports the
 //! maturin-built `aiconfigurator_core` extension. The test therefore needs
 //! `aiconfigurator_core` installed into the interpreter
-//! (`uv run maturin develop -m crates/python/Cargo.toml --release --features extension-module`).
+//! (`uv run maturin develop -m crates/core/Cargo.toml --release --features extension-module`).
 //!
 //! The embedded interpreter (the framework libpython the test binary links) is
 //! NOT the uv venv, so it does not see the venv's installed core package or the
@@ -38,7 +38,7 @@
 //!   PYTHONPATH="$PWD/aic-core/src:$PWD/.venv/lib/python3.13/site-packages" \
 //!   cargo test -p aisimulate-core --features embed-python --test perfmodel_embedded_round_trip -- --nocapture
 //! ```
-//! (run after `uv run maturin develop -m crates/python/Cargo.toml --release
+//! (run after `uv run maturin develop -m crates/core/Cargo.toml --release
 //! --features extension-module`, from the repo root; adjust the venv python
 //! version if needed).
 //!

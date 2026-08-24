@@ -65,6 +65,18 @@ def test_native_compatibility_module_forwards_to_the_unified_runtime() -> None:
     assert compatibility_runtime.RustForwardPassPerfModel is runtime.RustForwardPassPerfModel
 
 
+def test_native_compatibility_wildcard_import_preserves_runtime_identity() -> None:
+    runtime = importlib.import_module("aisimulate._runtime")
+    compatibility_runtime = importlib.import_module("aiconfigurator_core._aiconfigurator_core")
+    namespace: dict[str, object] = {}
+
+    exec("from aiconfigurator_core._aiconfigurator_core import *", {}, namespace)
+
+    assert set(namespace) == set(compatibility_runtime.__all__)
+    for name in compatibility_runtime.__all__:
+        assert namespace[name] is getattr(runtime, name)
+
+
 def test_legacy_source_paths_are_non_recursive_views_of_canonical_sources() -> None:
     compatibility_root = APPLICATION_ROOT / "aic-core"
 
