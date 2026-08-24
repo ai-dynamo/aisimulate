@@ -50,7 +50,10 @@
 /tests/test_runner.py                                @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_traffic.py                               @ai-dynamo/aisimulate-replay-codeowners
 /crates/core/src/replay/                             @ai-dynamo/aisimulate-replay-codeowners
-/tests/test_replay_cli.py                            @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_unified_cli.py                           @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_public_config.py                         @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners
 
 # === mocker  (@ai-dynamo/aisimulate-mocker-codeowners) ===
 /crates/core/src/engine/                             @ai-dynamo/aisimulate-mocker-codeowners
@@ -105,19 +108,21 @@
 /crates/core/src/engine/                             @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/replay/                             @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/tests/public-api/                            @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
-/tests/test_replay_cli.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/python.rs                           @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/artifact-contract.md                           @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/docker/                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/uv.lock                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_unified_cli.py                           @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/perfmodel/                          @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/AGENTS.md                         @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_public_config.py                         @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/tests/perfmodel/                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitignore                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/CODEOWNERS                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/pytest.ini                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/SECURITY.md                       @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.dockerignore                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /.github/workflows/codeowners.yml                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/engine/timing.rs                    @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -129,6 +134,7 @@
 /python/aisimulate/eslint.config.js                  @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/parity_tests/perfmodel/                 @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/codeowners/               @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/aic.py             @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/replay/            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.pre-commit-config.yaml           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
