@@ -118,6 +118,11 @@ include = [
     "src/aiconfigurator/generator/facts/**/*.yaml",
     "src/aiconfigurator/generator/environment/*.yaml",
     "src/aiconfigurator/sdk/config_adapter/schemas/*.json",
+    { path = "collector/__init__.py", format = "wheel" },
+    { path = "collector/model_cases.py", format = "wheel" },
+    { path = "collector/cases/**/*.yaml", format = "wheel" },
+    { path = "collector/fpm_forward/**/*.py", format = "wheel" },
+    { path = "collector/fpm_forward/runtime/fpm_exec.sh", format = "wheel" },
 ]
 
 [tool.uv.sources]

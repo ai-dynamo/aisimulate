@@ -25,6 +25,8 @@ There is intentionally no per-case selector or exception rule engine here.
 from __future__ import annotations
 
 import importlib
+import importlib.resources as pkg_resources
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,7 +37,12 @@ COLLECTOR_ROOT = Path(__file__).resolve().parent
 CASE_ROOT = COLLECTOR_ROOT / "cases"
 BASE_OP_CASES_DIR = CASE_ROOT / "base_ops"
 MODEL_CASES_DIR = CASE_ROOT / "models"
-SYSTEMS_DIR = COLLECTOR_ROOT.parent / "src" / "aiconfigurator" / "systems"
+_SOURCE_SYSTEMS_DIR = COLLECTOR_ROOT.parent / "src" / "aiconfigurator" / "systems"
+SYSTEMS_DIR = (
+    _SOURCE_SYSTEMS_DIR
+    if _SOURCE_SYSTEMS_DIR.is_dir()
+    else Path(os.fspath(pkg_resources.files("aiconfigurator_core") / "systems"))
+)
 
 
 @dataclass(slots=True)

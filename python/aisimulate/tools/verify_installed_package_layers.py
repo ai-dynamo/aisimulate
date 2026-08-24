@@ -10,7 +10,11 @@ import importlib
 import importlib.metadata
 import importlib.resources
 import importlib.util
+import json
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Running this file directly prepends ``tools/`` to sys.path. Remove that path
@@ -211,11 +215,123 @@ def _verify_legacy_sdk_compatibility() -> None:
         raise RuntimeError("Task must not be shipped by the standalone core package")
 
 
+def _verify_fpm_workflow() -> str:
+    """Verify the installed application owns a runnable FPM workflow."""
+
+    app_version = _distribution_version("aisimulate")
+    if app_version is None:
+        raise RuntimeError("aisimulate distribution is not installed")
+    _require_distribution_files(
+        "aisimulate",
+        (
+            "collector/__init__.py",
+            "collector/model_cases.py",
+            "collector/cases/base_ops/mla_module.yaml",
+            "collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
+            "collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",
+            "collector/fpm_forward/__main__.py",
+            "collector/fpm_forward/cli.py",
+            "collector/fpm_forward/runtime/fpm_exec.sh",
+            "collector/fpm_forward/runtime/preflight.py",
+        ),
+    )
+
+    runtime = importlib.resources.files("collector.fpm_forward.runtime")
+    planner = importlib.import_module("collector.fpm_forward.planner")
+    runner = importlib.import_module("collector.fpm_forward.runner")
+    distribution = importlib.metadata.distribution("aisimulate")
+    distribution_files = {str(path): path for path in distribution.files or ()}
+    distribution_root = Path(os.fspath(distribution.locate_file(""))).resolve()
+
+    def exact_distribution_path(relative_path: str) -> Path:
+        record_path = distribution_files.get(relative_path)
+        if record_path is None:
+            raise RuntimeError(f"AISimulate RECORD does not own required FPM path: {relative_path}")
+        located = Path(os.fspath(distribution.locate_file(record_path))).resolve()
+        expected = (distribution_root / Path(*relative_path.split("/"))).resolve()
+        if located != expected or not located.is_relative_to(distribution_root):
+            raise RuntimeError(f"AISimulate RECORD resolves FPM path outside the distribution: {relative_path}")
+        return located
+
+    for module, relative_path in (
+        (planner, "collector/fpm_forward/planner.py"),
+        (runner, "collector/fpm_forward/runner.py"),
+    ):
+        if Path(module.__file__).resolve() != exact_distribution_path(relative_path):
+            raise RuntimeError(f"installed FPM module did not resolve from its exact RECORD path: {module.__file__}")
+    for name, relative_path in (
+        ("fpm_exec.sh", "collector/fpm_forward/runtime/fpm_exec.sh"),
+        ("preflight.py", "collector/fpm_forward/runtime/preflight.py"),
+    ):
+        asset = Path(os.fspath(runtime / name)).resolve()
+        if not asset.is_file():
+            raise RuntimeError(f"installed FPM runtime asset is missing: {asset}")
+        if asset != exact_distribution_path(relative_path):
+            raise RuntimeError(f"installed FPM runtime asset did not resolve from its exact RECORD path: {asset}")
+
+    env = {
+        key: value for key, value in os.environ.items() if key not in {"FPM_COLLECTOR_SOURCE_REVISION", "PYTHONPATH"}
+    }
+    plans = []
+    with tempfile.TemporaryDirectory(prefix="aisimulate-installed-fpm-") as root:
+        for run_number in (1, 2):
+            workdir = Path(root) / f"run-{run_number}"
+            workdir.mkdir()
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "collector.fpm_forward",
+                    "--model-path",
+                    "nvidia/GLM-5.2-NVFP4",
+                    "--gpu",
+                    "b200_sxm",
+                    "--fpm-max-gpus",
+                    "4",
+                    "--plan-only",
+                ],
+                cwd=workdir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            try:
+                plan = json.loads(completed.stdout)
+            except json.JSONDecodeError:
+                plan = {}
+            revision = plan.get("aic_revision")
+            if (
+                completed.returncode != 0
+                or plan.get("schema_name") != "aic_fpm_collection_plan"
+                or not isinstance(revision, str)
+                or not revision.startswith(f"installed:aisimulate=={app_version}:record-sha256:")
+                or not plan.get("cells")
+                or str(workdir) in completed.stdout
+            ):
+                raise RuntimeError(
+                    f"installed FPM module entry point failed:\nstdout={completed.stdout}\nstderr={completed.stderr}"
+                )
+            plans.append(plan)
+    if plans[0] != plans[1]:
+        raise RuntimeError("installed FPM plan identity is not stable across outside-checkout working directories")
+    print(
+        f"Verified installed AISimulate {app_version} FPM workflow and runtime assets "
+        f"with revision {plans[0]['aic_revision']}"
+    )
+    return app_version
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--expect", choices=("core", "full", "upper"), required=True)
+    parser.add_argument("--expect", choices=("core", "fpm", "full", "upper"), required=True)
     parser.add_argument("--exercise-engine", action="store_true")
     args = parser.parse_args()
+
+    if args.expect == "fpm":
+        _verify_fpm_workflow()
+        return 0
 
     if args.expect == "core":
         core_version = _verify_core(exercise_engine=args.exercise_engine)

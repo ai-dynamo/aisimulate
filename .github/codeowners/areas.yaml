@@ -132,6 +132,8 @@ shared:
     owners: [infra, maintainers]
   - glob: scripts/
     owners: [infra, maintainers]
+  - glob: .gitattributes
+    owners: [infra, maintainers]
   # Imported AIC repository metadata is inactive in this monorepo, but changes
   # still need Infra visibility. The active policy remains at the repository
   # root and is owned by AISimulate Infra plus maintainers below.

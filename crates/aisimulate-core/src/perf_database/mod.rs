@@ -23,11 +23,11 @@ use crate::operators::util_empirical::{DeltaLookupCache, ProvenanceTier, UtilGri
 
 /// The five known legacy/framework-agnostic backend directory names. Mirrors the
 /// SDK loader's `KNOWN_BACKEND_DIRS`
-/// (`aic-core/python/aisimulate-core/src/aiconfigurator_core/sdk/perf_database.py`): any other
+/// (`python/aisimulate-core/src/aiconfigurator_core/sdk/perf_database.py`): any other
 /// first-level directory under a system's data dir is a family dir containing
 /// `<backend>/<version>` subtrees.
 /// Keep textually identical to the CANONICAL `_KNOWN_BACKEND_DIRS` in
-/// `aic-core/python/aisimulate-core/src/aiconfigurator_core/sdk/operations/base.py`, which lists
+/// `python/aisimulate-core/src/aiconfigurator_core/sdk/operations/base.py`, which lists
 /// every copy that must stay in sync (Rust cannot import the Python set).
 const KNOWN_BACKEND_DIRS: [&str; 5] = ["trtllm", "sglang", "vllm", "nccl", "oneccl"];
 
@@ -198,6 +198,7 @@ pub mod moe;
 pub mod moe_a2a;
 pub mod moe_expert_compute;
 mod moe_index;
+pub mod msa;
 pub mod parquet_loader;
 pub mod perf_interp;
 pub mod source_resolution;
@@ -218,6 +219,7 @@ pub use mla::MlaTable;
 pub use moe::MoeTable;
 pub use moe_a2a::MoeA2aTable;
 pub use moe_expert_compute::MoeExpertComputeTable;
+pub use msa::MsaTable;
 pub use source_resolution::{resolve_one, ResolveCtx, ResolveReport, SourceResolver};
 pub use state_space::StateSpaceTable;
 pub use trtllm_alltoall::TrtllmAlltoallTable;
@@ -241,6 +243,7 @@ pub struct PerfTables {
     pub moe_expert_compute: MoeExpertComputeTable,
     pub communication: CommunicationTable,
     pub dsa: DsaTable,
+    pub msa: MsaTable,
     pub dsv4: Dsv4Table,
     pub dsv4_megamoe: Dsv4MegaMoeTable,
     pub mhc: MhcTable,
@@ -526,6 +529,7 @@ impl PerfDatabase {
                     .map(|PerfSource(path, _)| path)
                     .unwrap_or_else(|| data_root.join("dsv4_megamoe_module_perf.parquet")),
             ),
+            msa: MsaTable::with_sources(data_root.clone(), &resolver)?,
             mhc: MhcTable::with_sources(data_root.clone(), &resolver)?,
             trtllm_alltoall: TrtllmAlltoallTable::with_sources(data_root.clone(), &resolver)?,
             wideep_mla: WideEpMlaTable::with_sources(data_root.clone(), spec.clone(), &resolver)?,
@@ -634,8 +638,7 @@ impl PerfDatabase {
         if let Some(tables) = memo.lock().unwrap().get(&key).and_then(Weak::upgrade) {
             return Ok(Self::from_tables(tables));
         }
-        let db =
-            Self::load_with_resolver(systems_root, system, backend, version, resolver, false)?;
+        let db = Self::load_with_resolver(systems_root, system, backend, version, resolver, false)?;
         let mut map = memo.lock().unwrap();
         map.retain(|_, weak| weak.strong_count() > 0);
         map.insert(key, Arc::downgrade(&db.tables));
