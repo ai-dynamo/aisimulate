@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .public_config import PredictionConfig, public_prediction_mapping
 from .replay.reporting import format_report_table
 
 _RECOMMENDATION_NAME = re.compile(r"^[0-9]{4}\.yaml$")
@@ -63,7 +63,7 @@ def write_requests(root: Path, records: list[dict[str, Any]]) -> Path:
 
 
 def write_recommendations(
-    root: Path, configs: list[PredictionConfig]
+    root: Path, configs: list[Mapping[str, Any]]
 ) -> list[Path]:
     directory = root / "recommendations"
     directory.mkdir(parents=True, exist_ok=True)
@@ -72,7 +72,7 @@ def write_recommendations(
         path = directory / f"{index:04d}.yaml"
         path.write_text(
             yaml.safe_dump(
-                public_prediction_mapping(config),
+                dict(config),
                 sort_keys=False,
                 allow_unicode=True,
             ),

@@ -40,7 +40,17 @@ class _RunnerFactory:
 
 class _Adapter:
     name = "dynamo.router"
+    section = "router"
+    config_adapter_api_version = 2
     api_version = 1
+
+    def validate_prediction_config(self, config, context):
+        del context
+        return dict(config)
+
+    def validate_recommendation_config(self, config, context):
+        del context
+        return dict(config)
 
     def materialize_prediction(self, config, context):
         del config, context
@@ -86,6 +96,8 @@ def test_config_adapter_requires_predict_and_recommend_methods() -> None:
 
     class Incomplete:
         name = "dynamo.router"
+        section = "router"
+        config_adapter_api_version = 2
         api_version = 1
 
     broken = _EntryPoint("dynamo.router", "broken:create", Incomplete)

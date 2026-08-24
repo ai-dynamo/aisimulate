@@ -23,6 +23,7 @@ DEFAULT_FREE_GPU_MEMORY_FRACTION = 0.9
 
 _DEFAULT_AIC_SYSTEM = "h200_sxm"
 _DEFAULT_MAX_NUM_BATCHED_TOKENS = 8192
+_DEFAULT_MAX_NUM_SEQUENCES = 1
 _DEFAULT_BLOCK_SIZES = {"vllm": 64, "sglang": 1, "trtllm": 32}
 
 
@@ -72,6 +73,11 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
             if lowered.get("max_num_batched_tokens") is not None
             else _DEFAULT_MAX_NUM_BATCHED_TOKENS
         ),
+        max_num_sequences=(
+            lowered.get("max_num_seqs")
+            if lowered.get("max_num_seqs") is not None
+            else _DEFAULT_MAX_NUM_SEQUENCES
+        ),
         gpu_memory_utilization=lowered.get("gpu_memory_utilization"),
         mem_fraction_static=lowered.get("mem_fraction_static"),
         free_gpu_memory_fraction=lowered.get("free_gpu_memory_fraction"),
@@ -100,6 +106,7 @@ def estimate_num_gpu_blocks(
     tp_size: int,
     block_size: int,
     max_num_batched_tokens: int,
+    max_num_sequences: int = _DEFAULT_MAX_NUM_SEQUENCES,
     gpu_memory_utilization: float | None = None,
     mem_fraction_static: float | None = None,
     free_gpu_memory_fraction: float | None = None,
@@ -166,7 +173,7 @@ def estimate_num_gpu_blocks(
             ),
             scheduler_block_size=block_size,
             max_num_tokens=max_num_batched_tokens,
-            max_batch_size=1,
+            max_batch_size=max_num_sequences,
             memory_fraction_kind=memory_fraction_kind,
             memory_fraction_value=memory_fraction_value,
             tp_size=tp_size,

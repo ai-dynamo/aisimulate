@@ -6,7 +6,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.public_config import PredictionConfig, RecommendationConfig
+from aisimulate.public_config import (
+    PredictionConfig,
+    RecommendationConfig,
+    WorkerConfig,
+    WorkersConfig,
+    split_config_sections,
+)
 from aisimulate.recommend import recommendation_to_sweeper
 
 
@@ -26,6 +32,37 @@ def test_prediction_uses_reviewed_default_traffic() -> None:
     assert config.traffic.load.concurrency == 10
     assert config.traffic.stop is not None
     assert config.traffic.stop.requests == 100
+
+
+def test_prediction_scheduler_defaults_are_role_aware() -> None:
+    aggregated = PredictionConfig.model_validate({"engine": _engine()})
+    assert aggregated.engine.workers.aggregated is not None
+    assert aggregated.engine.workers.aggregated.scheduler.max_batched_tokens == 8192
+    assert aggregated.engine.workers.aggregated.scheduler.max_sequences == 256
+
+    disaggregated = PredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "workers": {"prefill": {}, "decode": {}},
+            }
+        }
+    )
+    assert disaggregated.engine.workers.prefill is not None
+    assert disaggregated.engine.workers.decode is not None
+    assert disaggregated.engine.workers.prefill.scheduler.max_batched_tokens == 8192
+    assert disaggregated.engine.workers.prefill.scheduler.max_sequences == 1
+    assert disaggregated.engine.workers.decode.scheduler.max_batched_tokens == 8192
+    assert disaggregated.engine.workers.decode.scheduler.max_sequences == 256
+
+    programmatic = WorkersConfig(
+        prefill=WorkerConfig(), decode=WorkerConfig()
+    )
+    assert programmatic.prefill is not None
+    assert programmatic.decode is not None
+    assert programmatic.prefill.scheduler.max_sequences == 1
+    assert programmatic.decode.scheduler.max_sequences == 256
 
 
 def test_prediction_rejects_recommendation_domain() -> None:
@@ -162,39 +199,7 @@ def test_custom_parallel_preset_lowers_as_flat_atomic_choices() -> None:
     ]
 
 
-def test_planner_preset_conflicts_with_independent_knobs() -> None:
-    with pytest.raises(ValidationError, match="cannot be combined"):
-        RecommendationConfig.model_validate(
-            {
-                "engine": {**_engine(), "context_length": 4096},
-                "planner": {
-                    "scaling_policy": {"preset": "default"},
-                    "enable_load_scaling": {"choices": [False, True]},
-                },
-                "optimization": {},
-            }
-        )
-
-
-def test_load_predictor_preset_off_uses_nested_type_knob() -> None:
-    config = RecommendationConfig.model_validate(
-        {
-            "engine": {**_engine(), "context_length": 4096},
-            "planner": {
-                "policy": "enabled",
-                "load_predictor": {
-                    "preset": False,
-                    "type": {"choices": ["constant", "arima"]},
-                },
-            },
-            "optimization": {},
-        }
-    )
-
-    assert config.planner["load_predictor"]["preset"] is False
-
-
-def test_present_router_and_planner_sections_activate_default_searches() -> None:
+def test_present_non_core_section_is_split_for_adapter_validation() -> None:
     base = {
         "engine": {
             **_engine(),
@@ -202,35 +207,40 @@ def test_present_router_and_planner_sections_activate_default_searches() -> None
             "context_length": 4096,
         },
         "optimization": {},
+        "placement": {"policy": {"choices": ["first", "least_loaded"]}},
     }
-    absent = recommendation_to_sweeper(
-        RecommendationConfig.model_validate(base), stack="dynamo"
-    )
-    present = recommendation_to_sweeper(
-        RecommendationConfig.model_validate(
-            {**base, "router": {}, "planner": {}}
-        ),
-        stack="dynamo",
+    core, adapters = split_config_sections(base, command="recommend")
+    config = RecommendationConfig.model_validate(core)
+    lowered = recommendation_to_sweeper(
+        config, adapter_configs=adapters, stack="example"
     )
 
-    assert absent.adapters == {}
-    assert present.adapters["dynamo.router"].search_space["policy"] == {
-        "choices": ["round_robin", "kv_router"]
+    assert "placement" not in core
+    assert adapters == {
+        "placement": {"policy": {"choices": ["first", "least_loaded"]}}
     }
-    assert present.adapters["dynamo.planner"].search_space["policy"] == {
-        "choices": ["disabled", "enabled"]
-    }
+    assert lowered.adapters["example.placement"].search_space == adapters["placement"]
 
 
-def test_recommendation_rejects_round_robin_with_kv_router_knobs() -> None:
-    with pytest.raises(ValidationError, match="round_robin rejects"):
+def test_core_models_reject_stack_owned_sections() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         RecommendationConfig.model_validate(
             {
                 "engine": {**_engine(), "context_length": 4096},
-                "router": {
-                    "policy": "round_robin",
-                    "prefill_load_model": {"type": "aic"},
-                },
+                "placement": {"policy": "first"},
                 "optimization": {},
             }
+        )
+
+
+@pytest.mark.parametrize("section", ["", "nested.section", 7])
+def test_adapter_section_names_are_unambiguous(section) -> None:
+    with pytest.raises(ValueError, match="section names without dots"):
+        split_config_sections(
+            {
+                "engine": {**_engine(), "context_length": 4096},
+                "optimization": {},
+                section: {},
+            },
+            command="recommend",
         )

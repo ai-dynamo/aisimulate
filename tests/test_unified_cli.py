@@ -10,6 +10,7 @@ import yaml
 
 import aisimulate.main as cli
 from aisimulate.output import prepare_output_directory
+from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 
 
@@ -51,6 +52,37 @@ class _Factory:
     def create(self, worker_id: int):
         assert worker_id == 0
         return self.runner
+
+
+class _PlacementAdapter:
+    name = "engine.placement"
+    section = "placement"
+    config_adapter_api_version = 2
+    api_version = 1
+
+    def validate_prediction_config(self, config, context):
+        del context
+        if set(config) != {"policy"} or config["policy"] != "first":
+            raise ValueError("placement.policy must be 'first'")
+        return {"policy": "first"}
+
+    def validate_recommendation_config(self, config, context):
+        del context
+        if config not in ({}, {"policy": "first"}):
+            raise ValueError("placement has unknown fields")
+        return {"policy": "first"}
+
+    def materialize_prediction(self, config, context):
+        del context
+        return AdapterReplaySpec(config=dict(config))
+
+    def generate_search_space(self, search_spec, context):
+        del context
+        return AdapterSearchPlan(state=dict(search_spec))
+
+    def materialize_replay(self, plan, selection, context):
+        del selection, context
+        return AdapterReplaySpec(config=dict(plan.state))
 
 
 def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> None:
@@ -111,7 +143,91 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
     assert "stack unavailable" in capsys.readouterr().err
 
 
-def test_recommendation_yaml_round_trips_into_predict(tmp_path, capsys) -> None:
+def test_set_adapter_path_is_validated_and_materialized_by_adapter(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    runner = _Runner()
+    adapter = _PlacementAdapter()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(runner))
+
+    def resolve(names):
+        assert list(names) == ["engine.placement"]
+        return {"engine.placement": adapter}
+
+    monkeypatch.setattr(cli, "resolve_config_adapters", resolve)
+
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--set",
+                "placement.policy=first",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert runner.spec.adapters["engine.placement"].config == {"policy": "first"}
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
+def test_engine_stack_rejects_explicit_unavailable_component(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                },
+                "router": {"policy": "round_robin"},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_runner_factory",
+        lambda stack: _Factory(_Runner()),
+    )
+
+    def unavailable(names):
+        assert list(names) == ["engine.router"]
+        raise cli.ConfigAdapterResolutionError(
+            "config adapter 'engine.router' is unavailable"
+        )
+
+    monkeypatch.setattr(cli, "resolve_config_adapters", unavailable)
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(["predict", "--config", str(config_path)])
+    assert "engine.router" in capsys.readouterr().err
+
+
+def test_recommendation_yaml_round_trips_into_predict(
+    tmp_path, monkeypatch, capsys
+) -> None:
     config_path = tmp_path / "recommendation.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -157,10 +273,18 @@ def test_recommendation_yaml_round_trips_into_predict(tmp_path, capsys) -> None:
                     "parallelism": 1,
                     "candidate_timeout_seconds": 30,
                 },
+                "placement": {},
             }
         )
     )
     recommendation_output = tmp_path / "recommend-output"
+    adapter = _PlacementAdapter()
+
+    def resolve(names):
+        assert list(names) == ["engine.placement"]
+        return {"engine.placement": adapter}
+
+    monkeypatch.setattr(cli, "resolve_config_adapters", resolve)
 
     assert (
         cli.main(
@@ -179,6 +303,10 @@ def test_recommendation_yaml_round_trips_into_predict(tmp_path, capsys) -> None:
     rows = json.loads(capsys.readouterr().out)
     recommendation = recommendation_output / "recommendations" / "0001.yaml"
     assert rows[0]["config_path"] == str(recommendation)
+    generated = yaml.safe_load(recommendation.read_text())
+    assert "router" not in generated
+    assert "planner" not in generated
+    assert generated["placement"] == {"policy": "first"}
 
     prediction_output = tmp_path / "predict-output"
     assert (

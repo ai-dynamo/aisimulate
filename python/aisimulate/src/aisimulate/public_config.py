@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -298,6 +299,22 @@ class WorkersConfig(_StrictModel):
     prefill: WorkerConfig | None = None
     decode: WorkerConfig | None = None
 
+    @model_validator(mode="after")
+    def _apply_role_scheduler_defaults(self) -> WorkersConfig:
+        for role, max_sequences in (
+            ("aggregated", 256),
+            ("prefill", 1),
+            ("decode", 256),
+        ):
+            worker = getattr(self, role)
+            if worker is None or "max_sequences" in worker.scheduler.model_fields_set:
+                continue
+            scheduler = worker.scheduler.model_copy(
+                update={"max_sequences": max_sequences}
+            )
+            setattr(self, role, worker.model_copy(update={"scheduler": scheduler}))
+        return self
+
 
 class KvTransferConfig(_StrictModel):
     bytes_per_token: int | Literal["auto"] = "auto"
@@ -362,74 +379,6 @@ class EngineConfig(_StrictModel):
         return self
 
 
-class PrefillLoadModel(_StrictModel):
-    type: Literal["none", "aic"] = "none"
-
-
-class RouterConfig(_StrictModel):
-    policy: Literal["round_robin", "kv_router"] = "round_robin"
-    prefill_load_model: PrefillLoadModel = Field(default_factory=PrefillLoadModel)
-    overlap_score_credit: float | None = Field(default=None, ge=0.0)
-    prefill_load_scale: float | None = Field(default=None, ge=0.0)
-    temperature: float | None = Field(default=None, ge=0.0)
-
-    @model_validator(mode="after")
-    def _validate_policy(self) -> RouterConfig:
-        kv_fields = (
-            self.overlap_score_credit,
-            self.prefill_load_scale,
-            self.temperature,
-        )
-        if self.policy == "round_robin" and (
-            self.prefill_load_model.type != "none"
-            or any(value is not None for value in kv_fields)
-        ):
-            raise ValueError(
-                "round_robin requires prefill_load_model.type='none' and "
-                "rejects KV-router knobs"
-            )
-        return self
-
-
-class PlannerConfig(_StrictModel):
-    policy: Literal["disabled", "enabled"] = "disabled"
-    target: Literal["throughput", "latency", "sla", "load"] = "throughput"
-    enable_throughput_scaling: bool = True
-    enable_load_scaling: bool = False
-    throughput_adjustment_interval_seconds: int = Field(default=180, gt=0)
-    load_adjustment_interval_seconds: int = Field(default=5, gt=0)
-    max_num_fpm_samples: int = Field(default=64, gt=0)
-    fpm_sample_bucket_size: int = Field(default=16, gt=0)
-    load_scaling_down_sensitivity: int = Field(default=80, ge=0, le=100)
-    load_min_observations: int = Field(default=5, gt=0)
-    load_predictor: Literal["constant", "arima", "prophet", "kalman"] = "arima"
-    load_predictor_log1p: bool = False
-    prophet_window_size: int = Field(default=50, gt=0)
-    kalman_q_level: float = Field(default=1.0, gt=0)
-    kalman_q_trend: float = Field(default=0.1, gt=0)
-    kalman_r: float = Field(default=10.0, gt=0)
-    kalman_min_points: int = Field(default=5, gt=0)
-    max_num_gpus: int = Field(default=8, gt=0)
-    min_workers: int = Field(default=1, ge=0)
-    prefill_min_workers: int | None = Field(default=None, gt=0)
-    decode_min_workers: int | None = Field(default=None, gt=0)
-
-    @model_validator(mode="after")
-    def _validate_fields(self) -> PlannerConfig:
-        root = math.isqrt(self.fpm_sample_bucket_size)
-        if root * root != self.fpm_sample_bucket_size:
-            raise ValueError("fpm_sample_bucket_size must be a perfect square")
-        if (
-            self.enable_load_scaling
-            and self.load_adjustment_interval_seconds
-            >= self.throughput_adjustment_interval_seconds
-        ):
-            raise ValueError(
-                "load adjustment interval must be shorter than throughput interval"
-            )
-        return self
-
-
 class SlaConfig(_StrictModel):
     ttft_ms: float | None = Field(default=None, gt=0)
     itl_ms: float | None = Field(default=None, gt=0)
@@ -452,33 +401,17 @@ class EvaluationConfig(_StrictModel):
 class PredictionConfig(_StrictModel):
     traffic: TrafficConfig = Field(default_factory=TrafficConfig.default)
     engine: EngineConfig
-    router: RouterConfig = Field(default_factory=RouterConfig)
-    planner: PlannerConfig = Field(default_factory=PlannerConfig)
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
 
     @model_validator(mode="after")
     def _validate_cross_component(self) -> PredictionConfig:
         source = self.traffic.source
-        if isinstance(source, TraceSource) and source.format in {
-            "mooncake-delta",
-            "agentic_mooncake",
-        }:
-            if self.engine.mode != "aggregated":
-                raise ValueError(f"{source.format} requires aggregated engine mode")
-            if self.planner.policy != "disabled":
-                raise ValueError(f"{source.format} requires planner.policy=disabled")
-        if self.planner.policy == "enabled" and self.planner.enable_throughput_scaling:
-            sla = self.evaluation.sla
-            if (
-                self.planner.target != "sla"
-                or sla is None
-                or sla.ttft_ms is None
-                or sla.itl_ms is None
-            ):
-                raise ValueError(
-                    "Planner throughput scaling requires target='sla' and "
-                    "evaluation.sla.ttft_ms/itl_ms"
-                )
+        if (
+            isinstance(source, TraceSource)
+            and source.format in {"mooncake-delta", "agentic_mooncake"}
+            and self.engine.mode != "aggregated"
+        ):
+            raise ValueError(f"{source.format} requires aggregated engine mode")
         return self
 
     @classmethod
@@ -533,15 +466,13 @@ class OptimizerConfig(_StrictModel):
 class RecommendationConfig(_StrictModel):
     """Strict top-level recommendation document.
 
-    Component mappings retain domain objects until the recommendation compiler
-    lowers them to the existing Sweeper model. ``validate_recommendation_tree``
-    performs recursive unknown-field and domain-shape validation.
+    Engine mappings retain domain objects until the recommendation compiler
+    lowers them to the existing Sweeper model. Optional stack components are
+    validated separately by their configuration adapters.
     """
 
     traffic: dict[str, Any] | None = None
     engine: dict[str, Any]
-    router: dict[str, Any] | None = None
-    planner: dict[str, Any] | None = None
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     optimization: OptimizationConfig
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
@@ -549,8 +480,6 @@ class RecommendationConfig(_StrictModel):
     @model_validator(mode="after")
     def _validate_tree(self) -> RecommendationConfig:
         validate_recommendation_tree(self.model_dump(mode="python"))
-        _validate_planner_preset_conflicts(self.planner)
-        _validate_recommendation_router(self.router)
         hardware = self.engine.get("hardware")
         if hardware == "auto" and self.optimization.hardware is None:
             raise ValueError(
@@ -647,44 +576,6 @@ _RECOMMENDATION_TREE: dict[str, Any] = {
             "timing_mode": None,
         },
     },
-    "router": {
-        "policy": None,
-        "prefill_load_model": {"type": None},
-        "overlap_score_credit": None,
-        "prefill_load_scale": None,
-        "temperature": None,
-    },
-    "planner": {
-        "scaling_policy": {"preset": None},
-        "fpm_sampling": {"preset": None},
-        "load_sensitivity": {"preset": None},
-        "load_predictor": {
-            "preset": None,
-            # ``type`` is the independent form of the concrete
-            # ``planner.load_predictor`` knob when this sub-item's preset is off.
-            "type": None,
-        },
-        "policy": None,
-        "target": None,
-        "enable_throughput_scaling": None,
-        "enable_load_scaling": None,
-        "throughput_adjustment_interval_seconds": None,
-        "load_adjustment_interval_seconds": None,
-        "max_num_fpm_samples": None,
-        "fpm_sample_bucket_size": None,
-        "load_scaling_down_sensitivity": None,
-        "load_min_observations": None,
-        "load_predictor_log1p": None,
-        "prophet_window_size": None,
-        "kalman_q_level": None,
-        "kalman_q_trend": None,
-        "kalman_r": None,
-        "kalman_min_points": None,
-        "max_num_gpus": None,
-        "min_workers": None,
-        "prefill_min_workers": None,
-        "decode_min_workers": None,
-    },
     "evaluation": {"sla": {"ttft_ms": None, "itl_ms": None, "e2e_ms": None}},
     "optimization": {
         "target": None,
@@ -716,31 +607,6 @@ _DOMAIN_PATHS = {
     "engine.workers.*.scheduler.max_sequences",
     "engine.workers.*.kv_cache.block_size",
     "engine.workers.*.kv_cache.capacity.memory_fraction",
-    "router.policy",
-    "router.prefill_load_model.type",
-    "router.overlap_score_credit",
-    "router.prefill_load_scale",
-    "router.temperature",
-    "planner.policy",
-    "planner.enable_throughput_scaling",
-    "planner.enable_load_scaling",
-    "planner.throughput_adjustment_interval_seconds",
-    "planner.load_adjustment_interval_seconds",
-    "planner.max_num_fpm_samples",
-    "planner.fpm_sample_bucket_size",
-    "planner.load_scaling_down_sensitivity",
-    "planner.load_min_observations",
-    "planner.load_predictor",
-    "planner.load_predictor.type",
-    "planner.load_predictor_log1p",
-    "planner.prophet_window_size",
-    "planner.kalman_q_level",
-    "planner.kalman_q_trend",
-    "planner.kalman_r",
-    "planner.kalman_min_points",
-    "planner.min_workers",
-    "planner.prefill_min_workers",
-    "planner.decode_min_workers",
     "traffic.load.concurrency",
     "traffic.load.requests_per_second",
     "traffic.load.sessions_per_second",
@@ -750,10 +616,6 @@ _DOMAIN_PATHS = {
 
 _PRESET_PATHS = {
     "engine.workers.*.parallelism.preset",
-    "planner.scaling_policy.preset",
-    "planner.fpm_sampling.preset",
-    "planner.load_sensitivity.preset",
-    "planner.load_predictor.preset",
 }
 
 
@@ -819,71 +681,6 @@ def _validate_preset(value: Any, path: str) -> None:
             raise ValueError(f"{path}[{index}] cannot contain a search domain")
 
 
-def _validate_planner_preset_conflicts(planner: dict[str, Any] | None) -> None:
-    if not isinstance(planner, dict):
-        return
-    groups = {
-        "scaling_policy": {
-            "enable_throughput_scaling",
-            "enable_load_scaling",
-            "throughput_adjustment_interval_seconds",
-            "load_adjustment_interval_seconds",
-        },
-        "fpm_sampling": {"max_num_fpm_samples", "fpm_sample_bucket_size"},
-        "load_sensitivity": {
-            "load_scaling_down_sensitivity",
-            "load_min_observations",
-        },
-        "load_predictor": {
-            "load_predictor_log1p",
-            "prophet_window_size",
-            "kalman_q_level",
-            "kalman_q_trend",
-            "kalman_r",
-            "kalman_min_points",
-        },
-    }
-    for group, knobs in groups.items():
-        control = planner.get(group)
-        if not isinstance(control, dict) or "preset" not in control:
-            continue
-        preset = control["preset"]
-        active = preset not in (False, {})
-        conflicts = sorted(knobs.intersection(planner))
-        if group == "load_predictor" and "type" in control:
-            conflicts.append("load_predictor.type")
-        if active and conflicts:
-            raise ValueError(
-                f"planner.{group}.preset cannot be combined with independent knobs {conflicts}"
-            )
-
-
-def _validate_recommendation_router(router: dict[str, Any] | None) -> None:
-    if not isinstance(router, dict):
-        return
-    policy = router.get("policy")
-    if policy != "round_robin":
-        return
-    load_model = router.get("prefill_load_model")
-    load_type = load_model.get("type") if isinstance(load_model, dict) else None
-    kv_fields = [
-        name
-        for name in (
-            "overlap_score_credit",
-            "prefill_load_scale",
-            "temperature",
-        )
-        if name in router
-    ]
-    if load_type not in (None, "none"):
-        kv_fields.append("prefill_load_model.type")
-    if kv_fields:
-        raise ValueError(
-            "router.policy=round_robin rejects KV-router fields "
-            f"{sorted(kv_fields)}"
-        )
-
-
 def validate_recommendation_tree(data: dict[str, Any]) -> None:
     """Reject unknown nested fields and malformed domains/presets."""
 
@@ -919,7 +716,7 @@ def validate_recommendation_tree(data: dict[str, Any]) -> None:
             else:
                 visit(item, child, child_parts)
 
-    for section in ("traffic", "engine", "router", "planner", "evaluation"):
+    for section in ("traffic", "engine", "evaluation"):
         value = data.get(section)
         if value is not None:
             visit(value, _RECOMMENDATION_TREE[section], [section])
@@ -933,6 +730,10 @@ def known_config_path(path: str, *, command: str) -> bool:
         return False
     if command == "predict" and parts[0] in {"optimization", "optimizer"}:
         return False
+    if parts[0] not in _RECOMMENDATION_TREE:
+        # Optional stack sections are validated by the adapter selected from
+        # ``<stack>.<section>`` after all overrides have been applied.
+        return True
     schema: Any = _RECOMMENDATION_TREE
     for index, part in enumerate(parts):
         if not isinstance(schema, dict):
@@ -950,17 +751,48 @@ def known_config_path(path: str, *, command: str) -> bool:
     return True
 
 
-def public_prediction_mapping(config: PredictionConfig) -> dict[str, Any]:
-    """Return concrete public YAML with inactive component details omitted."""
+def public_prediction_mapping(
+    config: PredictionConfig,
+    adapter_configs: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Return concrete public YAML with validated adapter sections included."""
 
     data = config.model_dump(mode="python", exclude_none=True)
-    planner = data.get("planner")
-    if isinstance(planner, dict) and planner.get("policy") == "disabled":
-        data["planner"] = {"policy": "disabled"}
-    router = data.get("router")
-    if isinstance(router, dict) and router.get("policy") == "round_robin":
-        data["router"] = {
-            "policy": "round_robin",
-            "prefill_load_model": {"type": "none"},
-        }
+    data.update(deepcopy(adapter_configs or {}))
     return data
+
+
+PREDICTION_CORE_SECTIONS = frozenset({"traffic", "engine", "evaluation"})
+RECOMMENDATION_CORE_SECTIONS = frozenset(
+    {*PREDICTION_CORE_SECTIONS, "optimization", "optimizer"}
+)
+
+
+def split_config_sections(
+    data: dict[str, Any], *, command: Literal["predict", "recommend"]
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Split public core fields from present adapter-owned top-level sections."""
+
+    core_names = (
+        PREDICTION_CORE_SECTIONS
+        if command == "predict"
+        else RECOMMENDATION_CORE_SECTIONS
+    )
+    if command == "predict":
+        forbidden = sorted(set(data).intersection({"optimization", "optimizer"}))
+        if forbidden:
+            raise ValueError(f"predict does not accept {forbidden}")
+    core = {name: value for name, value in data.items() if name in core_names}
+    adapters: dict[str, dict[str, Any]] = {}
+    for section, value in data.items():
+        if not isinstance(section, str) or not section or "." in section:
+            raise ValueError(
+                "top-level configuration keys must be nonempty section names "
+                f"without dots; got {section!r}"
+            )
+        if section in core_names or section in {"optimization", "optimizer"}:
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(f"adapter section {section!r} must be a mapping")
+        adapters[section] = deepcopy(value)
+    return core, adapters

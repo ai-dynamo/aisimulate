@@ -594,8 +594,8 @@ engine:
 | `engine.workers.<role>.parallelism.attention_data` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.parallelism.moe_tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.parallelism.moe_expert` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
-| `engine.workers.<role>.scheduler.max_batched_tokens` | `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
-| `engine.workers.<role>.scheduler.max_sequences` | `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
+| `engine.workers.<role>.scheduler.max_batched_tokens` | Aggregated/prefill/decode: `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
+| `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
 | `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. TODO: align with backend- and version-specific defaults. |
 | `engine.workers.<role>.kv_cache.prefix_caching` | `true` | `x` | `-` | Backend-supported. |
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
@@ -678,7 +678,12 @@ only the prompt KV not already present at the selected decode worker. `kv_transf
 aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range is `x`, and
 `recommend` rejects domains on them.
 
-## Router
+## Router (Dynamo Adapter)
+
+Router is not part of the AISimulate core schema. The `dynamo.router` config adapter owns this
+section's concrete model, defaults, recommendation domains, validation, and runtime lowering. The
+section is accepted only when the selected stack provides that adapter; omitting it keeps an
+engine-only configuration engine-only.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
@@ -693,7 +698,11 @@ aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range
 1 contract. Replacing the legacy `aic` load-model name with an implementation-neutral public name is
 deferred until the Router exposes that name.
 
-## Planner
+## Planner (Dynamo Adapter)
+
+Planner is not part of the AISimulate core schema. The `dynamo.planner` config adapter owns this
+section's concrete model, presets, recommendation domains, validation, and runtime lowering. The
+section is accepted only when the selected stack provides that adapter.
 
 ```yaml
 planner:

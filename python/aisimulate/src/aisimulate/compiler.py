@@ -30,6 +30,7 @@ def prediction_to_replay_spec(
     config: PredictionConfig,
     *,
     stack: str,
+    adapter_configs: Mapping[str, Mapping[str, JSONValue]] | None = None,
     adapters: Mapping[str, SimulationConfigAdapter] | None = None,
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
@@ -41,13 +42,6 @@ def prediction_to_replay_spec(
         "sla": evaluation.get("sla") if evaluation else None,
     }
     adapter_specs: dict[str, AdapterReplaySpec] = {}
-    requested: list[tuple[str, dict[str, JSONValue]]] = []
-    router = config.router.model_dump(mode="json", exclude_none=True)
-    if config.router.policy != "round_robin":
-        requested.append(("router", router))
-    planner = config.planner.model_dump(mode="json", exclude_none=True)
-    if config.planner.policy != "disabled":
-        requested.append(("planner", planner))
 
     available = dict(adapters or {})
     context = PredictionAdapterContext(
@@ -55,7 +49,7 @@ def prediction_to_replay_spec(
         traffic=config.traffic.model_dump(mode="json", exclude_none=True),
         evaluation=evaluation,
     )
-    for section, section_config in requested:
+    for section, section_config in (adapter_configs or {}).items():
         name = f"{stack}.{section}"
         adapter = available.get(name)
         if adapter is None:

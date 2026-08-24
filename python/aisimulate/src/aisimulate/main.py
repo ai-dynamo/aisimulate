@@ -17,6 +17,9 @@ from pydantic import ValidationError
 from .compiler import prediction_to_replay_spec
 from .config_adapter import (
     ConfigAdapterResolutionError,
+    PredictionAdapterContext,
+    RecommendationAdapterContext,
+    SimulationConfigAdapter,
     resolve_config_adapters,
 )
 from .output import (
@@ -27,7 +30,13 @@ from .output import (
     write_recommendations,
     write_requests,
 )
-from .public_config import PredictionConfig, RecommendationConfig, known_config_path
+from .public_config import (
+    PredictionConfig,
+    RecommendationConfig,
+    known_config_path,
+    public_prediction_mapping,
+    split_config_sections,
+)
 from .stack import StackResolutionError, resolve_runner_factory
 from .sweeper.replay import ReplayOutputRequirements
 
@@ -117,31 +126,62 @@ def _apply_overrides(
             ) from exc
 
 
-def _adapter_names_for_prediction(config: PredictionConfig, stack: str) -> list[str]:
-    names = []
-    if config.router.policy != "round_robin":
-        names.append(f"{stack}.router")
-    if config.planner.policy != "disabled":
-        names.append(f"{stack}.planner")
-    return names
+def _resolve_section_adapters(
+    sections: dict[str, dict[str, Any]], stack: str
+) -> dict[str, SimulationConfigAdapter]:
+    adapters = resolve_config_adapters(f"{stack}.{section}" for section in sections)
+    for name, adapter in adapters.items():
+        if adapter.section not in sections:
+            raise ConfigAdapterResolutionError(
+                f"config adapter {name!r} does not match a configured section"
+            )
+    return adapters
 
 
-def _adapter_names_for_recommendation(
-    config: RecommendationConfig, stack: str
-) -> list[str]:
-    names = []
-    if config.router is not None:
-        names.append(f"{stack}.router")
-    if config.planner is not None:
-        names.append(f"{stack}.planner")
-    return names
+def _prediction_adapter_context(config: PredictionConfig) -> PredictionAdapterContext:
+    return PredictionAdapterContext(
+        engine=config.engine.model_dump(mode="json", exclude_none=True),
+        traffic=config.traffic.model_dump(mode="json", exclude_none=True),
+        evaluation=config.evaluation.model_dump(mode="json", exclude_none=True),
+    )
+
+
+def _validate_prediction_adapters(
+    configs: dict[str, dict[str, Any]],
+    adapters: dict[str, SimulationConfigAdapter],
+    *,
+    stack: str,
+    context: PredictionAdapterContext,
+) -> dict[str, dict[str, Any]]:
+    validated: dict[str, dict[str, Any]] = {}
+    for section, raw in configs.items():
+        adapter = adapters[f"{stack}.{section}"]
+        value = adapter.validate_prediction_config(raw, context)
+        if not isinstance(value, dict):
+            raise TypeError(
+                f"config adapter {adapter.name!r} returned a non-mapping "
+                "prediction config"
+            )
+        validated[section] = value
+    return validated
 
 
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
-    config = PredictionConfig.model_validate(raw)
-    names = _adapter_names_for_prediction(config, args.stack)
-    adapters = resolve_config_adapters(names)
-    spec = prediction_to_replay_spec(config, stack=args.stack, adapters=adapters)
+    core_raw, adapter_raw = split_config_sections(raw, command="predict")
+    config = PredictionConfig.model_validate(core_raw)
+    adapters = _resolve_section_adapters(adapter_raw, args.stack)
+    adapter_configs = _validate_prediction_adapters(
+        adapter_raw,
+        adapters,
+        stack=args.stack,
+        context=_prediction_adapter_context(config),
+    )
+    spec = prediction_to_replay_spec(
+        config,
+        stack=args.stack,
+        adapter_configs=adapter_configs,
+        adapters=adapters,
+    )
     factory.capabilities().require_compatible(spec)
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
     runner = factory.create(0)
@@ -188,12 +228,29 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     from .recommend import run_recommendation
 
-    config = RecommendationConfig.model_validate(raw)
-    names = _adapter_names_for_recommendation(config, args.stack)
-    adapters = resolve_config_adapters(names)
+    core_raw, adapter_raw = split_config_sections(raw, command="recommend")
+    config = RecommendationConfig.model_validate(core_raw)
+    adapters = _resolve_section_adapters(adapter_raw, args.stack)
+    adapter_context = RecommendationAdapterContext(
+        engine=config.engine,
+        traffic=config.traffic or {},
+        evaluation=config.evaluation.model_dump(mode="json", exclude_none=True),
+        optimization=config.optimization.model_dump(mode="json", exclude_none=True),
+    )
+    adapter_configs: dict[str, dict[str, Any]] = {}
+    for section, value in adapter_raw.items():
+        adapter = adapters[f"{args.stack}.{section}"]
+        validated = adapter.validate_recommendation_config(value, adapter_context)
+        if not isinstance(validated, dict):
+            raise TypeError(
+                f"config adapter {adapter.name!r} returned a non-mapping "
+                "recommendation config"
+            )
+        adapter_configs[section] = validated
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
     candidates = run_recommendation(
         config,
+        adapter_configs=adapter_configs,
         stack=args.stack,
         runner_factory=factory,
         providers=adapters,
@@ -202,11 +259,27 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     if not candidates:
         sys.stderr.write("no feasible candidate found\n")
         return 1
-    concrete: list[PredictionConfig] = []
+    concrete: list[dict[str, Any]] = []
     for candidate in candidates:
         if candidate.prediction_config is None:
             raise RuntimeError("recommendation candidate has no concrete public config")
-        concrete.append(PredictionConfig.model_validate(candidate.prediction_config))
+        candidate_core, candidate_adapters = split_config_sections(
+            candidate.prediction_config, command="predict"
+        )
+        prediction = PredictionConfig.model_validate(candidate_core)
+        unknown_sections = set(candidate_adapters) - set(adapter_configs)
+        if unknown_sections:
+            raise RuntimeError(
+                "recommendation produced unconfigured adapter sections "
+                f"{sorted(unknown_sections)}"
+            )
+        validated_adapters = _validate_prediction_adapters(
+            candidate_adapters,
+            adapters,
+            stack=args.stack,
+            context=_prediction_adapter_context(prediction),
+        )
+        concrete.append(public_prediction_mapping(prediction, validated_adapters))
     paths = write_recommendations(root, concrete)
     rows = [
         {

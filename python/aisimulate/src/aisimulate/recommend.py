@@ -20,6 +20,7 @@ from .sweeper.replay import ReplaySpec, RunnerFactory
 def run_recommendation(
     config: RecommendationConfig,
     *,
+    adapter_configs: Mapping[str, Mapping[str, Any]] | None = None,
     stack: str,
     runner_factory: RunnerFactory,
     providers: Mapping[str, Any] | None = None,
@@ -29,20 +30,29 @@ def run_recommendation(
 
     from .sweeper.search import Sweeper
 
-    smart = recommendation_to_sweeper(config, stack=stack)
+    smart = recommendation_to_sweeper(
+        config, adapter_configs=adapter_configs, stack=stack
+    )
+    adapter_sections = {
+        name: provider.section
+        for name, provider in (providers or {}).items()
+    }
     sweeper = Sweeper(
         runner_factory=runner_factory,
         providers=providers,
         show_progress=show_progress,
         prediction_config_factory=lambda sample, spec: _candidate_prediction(
-            config, sample, spec
-        ).model_dump(mode="python", exclude_none=True),
+            config, sample, spec, adapter_sections=adapter_sections
+        ),
     )
     return sweeper.run(smart)
 
 
 def recommendation_to_sweeper(
-    config: RecommendationConfig, *, stack: str = "engine"
+    config: RecommendationConfig,
+    *,
+    adapter_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    stack: str = "engine",
 ) -> SmartSearchConfig:
     engine = deepcopy(config.engine)
     optimization = config.optimization
@@ -102,15 +112,10 @@ def recommendation_to_sweeper(
 
     workload = _recommendation_workload(config.traffic)
     goal = _goal(config)
-    adapters: dict[str, Any] = {}
-    if config.router is not None:
-        adapters[f"{stack}.router"] = {
-            "search_space": _router_search_space(config.router)
-        }
-    if config.planner is not None:
-        adapters[f"{stack}.planner"] = {
-            "search_space": _planner_search_space(config.planner)
-        }
+    adapters = {
+        f"{stack}.{section}": {"search_space": deepcopy(dict(search_spec))}
+        for section, search_spec in (adapter_configs or {}).items()
+    }
 
     parallelism = config.optimizer.parallelism
     # New exact-global controls are carried alongside the legacy fields. The
@@ -527,25 +532,13 @@ def _goal(config: RecommendationConfig) -> dict[str, Any]:
     return payload
 
 
-def _router_search_space(raw: dict[str, Any]) -> dict[str, Any]:
-    result = deepcopy(raw)
-    result.setdefault(
-        "policy", {"choices": ["round_robin", "kv_router"]}
-    )
-    return result
-
-
-def _planner_search_space(raw: dict[str, Any]) -> dict[str, Any]:
-    result = deepcopy(raw)
-    result.setdefault("policy", {"choices": ["disabled", "enabled"]})
-    return result
-
-
 def _candidate_prediction(
     source: RecommendationConfig,
     sample: dict[str, Any],
     replay_spec: ReplaySpec,
-) -> PredictionConfig:
+    *,
+    adapter_sections: Mapping[str, str],
+) -> dict[str, Any]:
     deployment = replay_spec.backend_deployment
     engine: dict[str, Any] = {
         "mode": "aggregated" if deployment.deployment_mode == "agg" else "disaggregated",
@@ -612,28 +605,24 @@ def _candidate_prediction(
         engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 
     traffic = _candidate_traffic(source.traffic, sample)
-    router: dict[str, Any] = {
-        "policy": "round_robin",
-        "prefill_load_model": {"type": "none"},
-    }
-    planner: dict[str, Any] = {"policy": "disabled"}
+    concrete_adapters: dict[str, dict[str, Any]] = {}
     for name, adapter in replay_spec.adapters.items():
-        if name.endswith(".router"):
-            router = deepcopy(adapter.config)
-            router.setdefault("policy", router.pop("mode", "round_robin"))
-            router.setdefault("prefill_load_model", {"type": "none"})
-        elif name.endswith(".planner"):
-            planner = deepcopy(adapter.config)
-            planner.setdefault("policy", "enabled" if adapter.runtime_hooks else "disabled")
-    return PredictionConfig.model_validate(
+        section = adapter_sections.get(name)
+        if section is None:
+            raise ValueError(
+                f"recommendation candidate used unknown config adapter {name!r}"
+            )
+        concrete_adapters[section] = deepcopy(adapter.config)
+    prediction = PredictionConfig.model_validate(
         {
             "traffic": traffic,
             "engine": engine,
-            "router": router,
-            "planner": planner,
             "evaluation": source.evaluation.model_dump(mode="python", exclude_none=True),
         }
     )
+    public = prediction.model_dump(mode="python", exclude_none=True)
+    public.update(concrete_adapters)
+    return public
 
 
 def _candidate_traffic(

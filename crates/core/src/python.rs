@@ -307,7 +307,7 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("backend_version", config.resolved_backend_version())?;
         kwargs.set_item("scheduler_block_size", role.rank.block_size)?;
         kwargs.set_item("max_num_tokens", role.rank.max_num_batched_tokens)?;
-        kwargs.set_item("max_batch_size", 1)?;
+        kwargs.set_item("max_batch_size", role.rank.max_num_seqs)?;
         kwargs.set_item("memory_fraction_kind", memory_fraction_kind)?;
         kwargs.set_item("memory_fraction_value", memory_fraction_value)?;
         kwargs.set_item("tp_size", config.tp)?;

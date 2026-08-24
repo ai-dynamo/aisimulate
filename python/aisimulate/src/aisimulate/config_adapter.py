@@ -19,7 +19,7 @@ from .sweeper.provider import (
     SweepContext,
 )
 
-CONFIG_ADAPTER_API_VERSION = 1
+CONFIG_ADAPTER_API_VERSION = 2
 CONFIG_ADAPTER_ENTRY_POINT_GROUP = "aisimulate.config_adapters"
 
 
@@ -32,12 +32,38 @@ class PredictionAdapterContext:
     evaluation: Mapping[str, JSONValue]
 
 
+@dataclass(frozen=True)
+class RecommendationAdapterContext:
+    """Recommendation core configuration supplied for adapter validation."""
+
+    engine: Mapping[str, JSONValue]
+    traffic: Mapping[str, JSONValue]
+    evaluation: Mapping[str, JSONValue]
+    optimization: Mapping[str, JSONValue]
+
+
 @runtime_checkable
 class SimulationConfigAdapter(Protocol):
     """Optional component integration used by both public CLI commands."""
 
     name: str
+    section: str
+    config_adapter_api_version: int
     api_version: int
+
+    def validate_prediction_config(
+        self,
+        config: Mapping[str, JSONValue],
+        context: PredictionAdapterContext,
+    ) -> dict[str, JSONValue]:
+        """Validate and normalize one concrete public component mapping."""
+
+    def validate_recommendation_config(
+        self,
+        config: Mapping[str, JSONValue],
+        context: RecommendationAdapterContext,
+    ) -> dict[str, JSONValue]:
+        """Validate and normalize one public component search mapping."""
 
     def materialize_prediction(
         self,
@@ -74,15 +100,43 @@ def validate_config_adapter(
             f"config adapter {requested_name!r} returned name "
             f"{getattr(adapter, 'name', None)!r}"
         )
-    version = getattr(adapter, "api_version", None)
-    if type(version) is not int or version != CONFIG_ADAPTER_API_VERSION:
+    section = getattr(adapter, "section", None)
+    expected_section = requested_name.rsplit(".", 1)[-1]
+    if (
+        not isinstance(section, str)
+        or not section
+        or "." in section
+        or section != expected_section
+    ):
         raise ConfigAdapterResolutionError(
-            f"config adapter {requested_name!r} uses API version {version!r}; "
+            f"config adapter {requested_name!r} returned section {section!r}; "
+            f"expected {expected_section!r}"
+        )
+    config_version = getattr(adapter, "config_adapter_api_version", None)
+    if (
+        type(config_version) is not int
+        or config_version != CONFIG_ADAPTER_API_VERSION
+    ):
+        raise ConfigAdapterResolutionError(
+            f"config adapter {requested_name!r} uses config API version "
+            f"{config_version!r}; "
             f"AISimulate requires {CONFIG_ADAPTER_API_VERSION}"
+        )
+    provider_version = getattr(adapter, "api_version", None)
+    if (
+        type(provider_version) is not int
+        or provider_version != SWEEP_PROVIDER_API_VERSION
+    ):
+        raise ConfigAdapterResolutionError(
+            f"config adapter {requested_name!r} uses Sweeper API version "
+            f"{provider_version!r}; AISimulate requires "
+            f"{SWEEP_PROVIDER_API_VERSION}"
         )
     missing = [
         method
         for method in (
+            "validate_prediction_config",
+            "validate_recommendation_config",
             "materialize_prediction",
             "generate_search_space",
             "materialize_replay",
