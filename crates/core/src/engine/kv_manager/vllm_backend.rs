@@ -916,6 +916,135 @@ mod tests {
     }
 
     #[test]
+    fn vllm_prefix_cache_example_covers_the_full_block_lifecycle() {
+        let sink = Arc::new(CapturingNativeSink::default());
+        let publishers = KvEventPublishers::new(Some(sink.clone()));
+        let mut manager = VllmKvManager::new_with_event_sink(10, 4, true, publishers, 0);
+
+        // Time 1 in vLLM's prefix-caching example: three complete prompt
+        // blocks plus one partial tail occupy four physical blocks.
+        let first = Uuid::from_u128(1);
+        let first_tokens = (0..15).collect::<Vec<u32>>();
+        let (mut first_sequence, first_identities) =
+            RequestSequence::new(first_tokens, 2, 2, 4, true, true, false, Some(vec![15, 16]));
+        let mut first_lease = BlockRequestLease::new(first, first_identities);
+        ready(manager.allocate_lease(first, &mut first_lease, 15, 0));
+        manager.finalize_lease_computed_prefix(first, &mut first_sequence, &mut first_lease, 0, 15);
+        assert_eq!(manager.num_active_blocks(), 4);
+        assert_eq!(manager.num_inactive_blocks(), 0);
+
+        // Time 2: output completes the partial block and opens a new partial
+        // tail. Only the completed block becomes prefix-cache visible.
+        let (_, opened_partial) = first_sequence.generate_token();
+        assert!(!opened_partial);
+        ready(manager.allocate_lease(first, &mut first_lease, 16, 0));
+        manager.finalize_lease_computed_prefix(
+            first,
+            &mut first_sequence,
+            &mut first_lease,
+            15,
+            16,
+        );
+        let (_, opened_partial) = first_sequence.generate_token();
+        assert!(opened_partial);
+        first_lease.append_partial();
+        ready(manager.allocate_lease(first, &mut first_lease, 17, 0));
+        manager.finalize_lease_computed_prefix(
+            first,
+            &mut first_sequence,
+            &mut first_lease,
+            16,
+            17,
+        );
+        assert_eq!(manager.num_active_blocks(), 5);
+        assert_eq!(manager.num_inactive_blocks(), 0);
+
+        let first_hashes = first_lease.entries[..4]
+            .iter()
+            .map(|entry| entry.identity.sequence_hash.unwrap())
+            .collect::<Vec<_>>();
+
+        // Time 3: the second request shares ten prompt tokens with the first.
+        // Only its first two complete blocks hit; its divergent complete block
+        // and partial tail consume two additional physical blocks.
+        let second = Uuid::from_u128(2);
+        let mut second_tokens = (0..10).collect::<Vec<u32>>();
+        second_tokens.extend([100, 101, 102, 103]);
+        let (mut second_sequence, second_identities) =
+            RequestSequence::new(second_tokens, 0, 0, 4, true, true, false, None);
+        let mut second_lease = BlockRequestLease::new(second, second_identities);
+        let prefill = manager.get_lease_prefill_cost(&second_sequence, &second_lease);
+        assert_eq!(prefill.cached_tokens, 8);
+        assert_eq!(prefill.active_cached_tokens, 8);
+        assert_eq!(prefill.new_blocks, 2);
+        assert_eq!(prefill.new_tokens, 6);
+        ready(manager.allocate_lease(second, &mut second_lease, 14, 2));
+        manager.finalize_lease_computed_prefix(
+            second,
+            &mut second_sequence,
+            &mut second_lease,
+            0,
+            14,
+        );
+        let second_divergent_hash = second_lease.entries[2].identity.sequence_hash.unwrap();
+        assert_eq!(manager.num_active_blocks(), 7);
+        assert_eq!(manager.num_inactive_blocks(), 0);
+
+        // Time 4: finishing request 0 frees its private tail and makes its
+        // unique cached suffix inactive. Shared prefix blocks remain active.
+        manager.finish_lease(first, first_lease);
+        assert_eq!(manager.num_active_blocks(), 4);
+        assert_eq!(manager.num_inactive_blocks(), 2);
+        assert!(manager.pool.prefix_hit(first_hashes[0]).unwrap().is_active);
+        assert!(manager.pool.prefix_hit(first_hashes[1]).unwrap().is_active);
+        assert!(!manager.pool.prefix_hit(first_hashes[2]).unwrap().is_active);
+        assert!(!manager.pool.prefix_hit(first_hashes[3]).unwrap().is_active);
+
+        // Time 5: finishing request 1 frees its private tail and leaves all
+        // five complete blocks cached but inactive.
+        manager.finish_lease(second, second_lease);
+        assert_eq!(manager.num_active_blocks(), 0);
+        assert_eq!(manager.num_inactive_blocks(), 5);
+        sink.take();
+
+        // Five unused slots satisfy the next request first. Its four
+        // remaining blocks evict the oldest release batch first, with each
+        // request's suffixes preceding its prefixes.
+        let pressure_owner = Uuid::from_u128(3);
+        let pressure_hashes = (30..39).collect::<Vec<_>>();
+        let (mut pressure_sequence, mut pressure_lease) =
+            request(pressure_owner, &pressure_hashes, false);
+        ready(manager.allocate_lease(pressure_owner, &mut pressure_lease, 36, 0));
+        let events = sink.take();
+        assert_eq!(events.len(), 1);
+        let KvEventData::Removed { block_hashes } = &events[0].data else {
+            panic!("capacity pressure must emit one removal event")
+        };
+        assert_eq!(
+            block_hashes,
+            &vec![
+                first_hashes[3],
+                first_hashes[2],
+                second_divergent_hash,
+                first_hashes[1],
+            ]
+        );
+        assert_eq!(manager.num_active_blocks(), 9);
+        assert_eq!(manager.num_inactive_blocks(), 1);
+
+        manager.finalize_lease_computed_prefix(
+            pressure_owner,
+            &mut pressure_sequence,
+            &mut pressure_lease,
+            0,
+            36,
+        );
+        manager.finish_lease(pressure_owner, pressure_lease);
+        assert_eq!(manager.num_active_blocks(), 0);
+        assert_eq!(manager.num_inactive_blocks(), 10);
+    }
+
+    #[test]
     fn event_enabled_finalization_preserves_store_payload() {
         let sink = Arc::new(CapturingNativeSink::default());
         let publishers = KvEventPublishers::new(Some(sink.clone()));
