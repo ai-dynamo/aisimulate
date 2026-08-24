@@ -147,7 +147,7 @@ def test_selector_cross_backend_donor_expands_to_all_system_backends():
     # selector must not narrow to the collecting backend.
     combos = _combos_from_changed_paths(
         [
-            "python/aisimulate-core/src/aiconfigurator_core/systems/data/gb200/"
+            "python/aisimulate/src/aiconfigurator_core/systems/data/gb200/"
             "linear_attention/sglang/0.5.14/gdn_perf.parquet"
         ],
         _FAKE_SUPPORTED,
@@ -157,7 +157,7 @@ def test_selector_cross_backend_donor_expands_to_all_system_backends():
 
 def test_selector_system_yaml_expands_to_all_system_backends():
     combos = _combos_from_changed_paths(
-        ["python/aisimulate-core/src/aiconfigurator_core/systems/l40s.yaml"],
+        ["python/aisimulate/src/aiconfigurator_core/systems/l40s.yaml"],
         _FAKE_SUPPORTED,
     )
     assert combos == {("l40s", backend) for backend in _FAKE_SUPPORTED["l40s"]}
@@ -168,8 +168,8 @@ def test_selector_ignores_unrelated_and_unknown_paths():
         [
             "python/aisimulate/src/aiconfigurator/cli/main.py",
             "README.md",
-            "python/aisimulate-core/src/aiconfigurator_core/systems/support_matrix/foo.yaml",
-            "python/aisimulate-core/src/aiconfigurator_core/systems/data/"
+            "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/foo.yaml",
+            "python/aisimulate/src/aiconfigurator_core/systems/data/"
             "unknown_system/gemm/trtllm/1.0/gemm_perf.parquet",
         ],
         _FAKE_SUPPORTED,
@@ -193,27 +193,27 @@ def test_selected_combos_unset_and_all_run_full_matrix(monkeypatch):
 FULL_MATRIX_TRIGGER_PATHS = [
     # Global reuse/source manifests govern cross-backend/cross-system fill
     # routing.
-    "python/aisimulate-core/src/aiconfigurator_core/systems/perf_data_reuse_manifest.yaml",
+    "python/aisimulate/src/aiconfigurator_core/systems/perf_data_reuse_manifest.yaml",
     # compiled Rust database, engine, operator, and Python-binding paths
-    "crates/aisimulate-core/src/perf_database/interpolation.rs",
-    "crates/aisimulate-core/src/engine/runtime.rs",
-    "crates/aisimulate-core/src/operators/attention.rs",
-    "crates/aisimulate-core/src/common/system_spec.rs",
-    "crates/aisimulate-core/src/py.rs",
+    "crates/core/src/perfmodel/perf_database/interpolation.rs",
+    "crates/core/src/perfmodel/engine/runtime.rs",
+    "crates/core/src/perfmodel/operators/attention.rs",
+    "crates/core/src/perfmodel/common/system_spec.rs",
+    "crates/core/src/perfmodel/py.rs",
     # Python loader facade + shared SDK types used by the notebook
-    "python/aisimulate-core/src/aiconfigurator_core/sdk/perf_database.py",
-    "python/aisimulate-core/src/aiconfigurator_core/sdk/engine.py",
-    "python/aisimulate-core/src/aiconfigurator_core/sdk/common.py",
-    "python/aisimulate-core/src/aiconfigurator_core/sdk/system_spec.py",
-    "python/aisimulate-core/src/aiconfigurator_core/sdk/operations/base.py",
+    "python/aisimulate/src/aiconfigurator_core/sdk/perf_database.py",
+    "python/aisimulate/src/aiconfigurator_core/sdk/engine.py",
+    "python/aisimulate/src/aiconfigurator_core/sdk/common.py",
+    "python/aisimulate/src/aiconfigurator_core/sdk/system_spec.py",
+    "python/aisimulate/src/aiconfigurator_core/sdk/operations/base.py",
     # the sanity tooling and this selector itself
     "python/aisimulate/tools/sanity_check/create_charts.py",
     "python/aisimulate/tools/sanity_check/sanity_full_matrix_triggers.txt",
     "python/aisimulate/tests/e2e/tools/test_sanity_check.py",
 ]
 DIFF_SCOPED_PATHS = [
-    "python/aisimulate-core/src/aiconfigurator_core/systems/data/gb200/gemm/trtllm/1.3.0rc20/gemm_perf.parquet",
-    "python/aisimulate-core/src/aiconfigurator_core/systems/gb200.yaml",
+    "python/aisimulate/src/aiconfigurator_core/systems/data/gb200/gemm/trtllm/1.3.0rc20/gemm_perf.parquet",
+    "python/aisimulate/src/aiconfigurator_core/systems/gb200.yaml",
     "python/aisimulate/src/aiconfigurator/cli/main.py",
 ]
 

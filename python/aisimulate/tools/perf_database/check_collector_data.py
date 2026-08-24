@@ -53,7 +53,7 @@ that is now the only layout on disk.
 Usage:
     python3 tools/perf_database/check_collector_data.py
     python3 tools/perf_database/check_collector_data.py \\
-        --data-root ../aisimulate-core/src/aiconfigurator_core/systems/data \\
+        --data-root src/aiconfigurator_core/systems/data \\
         --catalog collector/op_backend_catalog.yaml
 
 Exit codes: 0 = every rule OK. 1 = at least one failure (printed, grouped by
@@ -94,7 +94,7 @@ from collector.op_catalog import (
     load_family_map,
 )
 
-DATA_ROOT_DEFAULT = REPO_ROOT.parent / "aisimulate-core" / "src" / "aiconfigurator_core" / "systems" / "data"
+DATA_ROOT_DEFAULT = REPO_ROOT / "src" / "aiconfigurator_core" / "systems" / "data"
 
 REUSE_YAML = "reuse.yaml"
 COLLECTION_META_YAML = "collection_meta.yaml"

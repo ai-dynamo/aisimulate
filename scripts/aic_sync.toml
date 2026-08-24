@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[upstream]
+repository = "https://github.com/ai-dynamo/aiconfigurator.git"
+last_synced = "095f58a51c4ca8e61b66ec108d86f223f8d559ce"
+
+# These are stable mirror boundaries. Keep AISimulate-specific integration
+# changes outside them so an upstream diff can be path-rewritten mechanically.
+[[mirror]]
+source = "src/aiconfigurator"
+target = "python/aisimulate/src/aiconfigurator"
+
+[[mirror]]
+source = "aic-core/src/aiconfigurator_core"
+target = "python/aisimulate/src/aiconfigurator_core"
+
+[[mirror]]
+source = "tests"
+target = "python/aisimulate/tests"
+
+[[mirror]]
+source = "collector"
+target = "python/aisimulate/collector"
+
+[[mirror]]
+source = "tools"
+target = "python/aisimulate/tools"
+
+[[mirror]]
+source = "docs"
+target = "python/aisimulate/docs"
+
+[[mirror]]
+source = "aic-core/rust/aiconfigurator-core/src"
+target = "crates/core/src/perfmodel"
+
+[[mirror]]
+source = "aic-core/rust/aiconfigurator-core/tests"
+target = "crates/core/tests/perfmodel"
+
+[[mirror]]
+source = "aic-core/rust/aiconfigurator-core/parity_tests"
+target = "crates/core/parity_tests/perfmodel"
+
+# Changes under these upstream paths affect the combined build or repository
+# policy and must be adapted deliberately instead of copied into a mirror.
+[[manual]]
+source = "pyproject.toml"
+reason = "AISimulate has one wheel manifest and a combined dependency set."
+
+[[manual]]
+source = "aic-core/pyproject.toml"
+reason = "The former core wheel is folded into the combined AISimulate manifest."
+
+[[manual]]
+source = "uv.lock"
+reason = "Regenerate from the combined AISimulate manifest."
+
+[[manual]]
+source = "Cargo.toml"
+reason = "AISimulate owns the combined Rust workspace."
+
+[[manual]]
+source = "Cargo.lock"
+reason = "Regenerate from the combined AISimulate workspace."
+
+[[manual]]
+source = "aic-core/rust/aiconfigurator-core/Cargo.toml"
+reason = "Adapt dependency and feature changes into crates/core/Cargo.toml."
+
+[[manual]]
+source = ".github"
+reason = "Only AISimulate repository-root workflows are active."
+
+[[manual]]
+source = "CODEOWNERS"
+reason = "AISimulate generates CODEOWNERS from .github/codeowners/areas.yaml."

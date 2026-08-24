@@ -1,16 +1,18 @@
 # `aisimulate-core` public API contract
 
-`aisimulate-core` is released as two artifacts at the same version:
+The core API is delivered through the repository's two release artifacts at
+the same version:
 
-- the `aisimulate-core` Python wheel, imported as `aisimulate_core`;
+- the `aisimulate` Python wheel, imported as `aisimulate_core` or through the
+  compatibility namespace `aiconfigurator_core`;
 - the `aisimulate-core` Rust crate, imported as `aisimulate_core`.
 
-The wheel owns the estimator SDK, model and system data, and the native PyO3
-extension. It does not depend on the upper `aiconfigurator` distribution or on
-Dynamo. The crate owns the compiled engine, forward-pass model, KV-cache
-request/response types, and the embedded Rust-to-Python construction path.
-The legacy `aiconfigurator_core` Python namespace remains available during the
-AIC 0.12.0 compatibility window.
+The single wheel owns the application, estimator SDK, model and system data,
+and unified native PyO3 extension. It does not depend on another core
+distribution or on Dynamo. The crate owns the compiled engine, forward-pass
+model, Replay runtime, KV-cache request/response types, and the embedded
+Rust-to-Python construction path. The legacy `aiconfigurator_core` Python
+namespace remains available during the AIC 0.12.0 compatibility window.
 
 ## Stable Python facade
 
@@ -100,21 +102,23 @@ if estimate_ms is None:
 
 ## Stable Rust facade
 
-Embedded consumers construct engines with `AicEngineBuilder`. It normalizes
-configuration into one private build request and enters Python once to compile
-an engine specification. Calls on the returned `AicEngine` are pure Rust and do
-not re-enter Python.
+New embedded consumers should construct engines with
+`aisimulate_core::perfmodel::AicEngineBuilder`. The
+builder normalizes configuration into one private build request and enters
+Python once to compile an engine specification. Calls on the returned
+`AicEngine` are pure Rust and do not re-enter Python. Selected former AIC
+crate-root types remain re-exported during the migration window, but the
+`perfmodel` namespace is canonical for new code.
 
 Standalone binaries must enable the crate's `embed-python` feature; applications
 hosted by an initialized Python interpreter do not. In either case, the matching
-`aisimulate-core` wheel must be importable. See the
-[crate README](crates/aisimulate-core/README.md) for setup and usage examples.
+`aisimulate` wheel must be importable. See the
+[crate README](../crates/core/README.md) for setup and usage examples.
 
-The flat `build_aic_engine` adapter remains available in the 0.11.0 release and
-is removed from `main` for the next minor release. Consumers upgrading past
-0.11.0 must migrate to `AicEngineBuilder`.
+The flat `build_aic_engine` adapter was removed from `main`; consumers must use
+`AicEngineBuilder`.
 
-The supported root-level Rust surface is grouped as follows:
+The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
 
 - compiled engine: `AicEngineBuilder`, `AicEngine`, `AicError`;
 - forward-pass estimation: `ForwardPassPerfModel`,
@@ -128,7 +132,7 @@ The supported root-level Rust surface is grouped as follows:
 - schema gates: `ENGINE_CONFIG_SCHEMA_VERSION`,
   `ENGINE_SPEC_SCHEMA_VERSION`, and `FPM_VERSION`.
 
-Advanced consumers may use `engine::{Engine, RuntimeConfig, StaticMode,
+Advanced consumers may use `perfmodel::engine::{Engine, RuntimeConfig, StaticMode,
 StaticResult, PerOpValue}` and `engine::spec::{EngineSpec, OpSpec}` to load and
 execute a previously compiled specification directly. `PerOpValue` is the
 per-op result tuple `(name, latency_ms, energy_wms, source)` returned by the
@@ -137,7 +141,8 @@ energy is 0.0 wherever the perf tables carry no power columns.
 
 ## Compatibility rules
 
-- The wheel and crate versions must match for every `aisimulate-core` release.
+- The `aisimulate` wheel and `aisimulate-core` crate versions must match for
+  every release.
 - A breaking `EngineConfig`, `EngineSpec`, or `ForwardPassMetrics` wire change
   must bump its corresponding schema constant. Consumers reject unsupported
   schema versions before using the payload.

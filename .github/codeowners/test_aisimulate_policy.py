@@ -40,11 +40,15 @@ def test_subsystem_teams_retain_maintainer_coownership() -> None:
 
 def test_representative_routing_contract() -> None:
     # Migrated AIC estimator and full application surface.
-    assert _owners("crates/aisimulate-core/src/fpm/model.rs") == {
+    assert _owners("crates/core/src/perfmodel/fpm/model.rs") == {
         FPE,
         MAINTAINERS,
     }
-    assert _owners("python/aisimulate-core/src/aisimulate_core/sdk/engine.py") == {
+    assert _owners("crates/core/tests/perfmodel/memory_round_trip.rs") == {
+        FPE,
+        MAINTAINERS,
+    }
+    assert _owners("python/aisimulate/src/aiconfigurator_core/sdk/engine.py") == {
         FPE,
         MAINTAINERS,
     }
@@ -99,7 +103,7 @@ def test_representative_routing_contract() -> None:
         FPE,
         MAINTAINERS,
     }
-    assert _owners("crates/python/src/lib.rs") == {
+    assert _owners("crates/core/src/python.rs") == {
         MOCKER,
         REPLAY,
         FPE,
@@ -108,6 +112,7 @@ def test_representative_routing_contract() -> None:
     assert _owners("crates/core/Cargo.toml") == {
         MOCKER,
         REPLAY,
+        FPE,
         INFRA,
         MAINTAINERS,
     }
@@ -135,7 +140,13 @@ def test_representative_routing_contract() -> None:
         MAINTAINERS,
     }
     assert _owners("python/aisimulate/CODEOWNERS") == {INFRA, MAINTAINERS}
-    assert _owners("crates/aisimulate-core/deny.toml") == {FPE, MAINTAINERS}
+    assert _owners("crates/core/deny.toml") == {
+        FPE,
+        MOCKER,
+        REPLAY,
+        INFRA,
+        MAINTAINERS,
+    }
     assert _owners("deny.toml") == {INFRA, MAINTAINERS}
     assert _owners("CODEOWNERS") == {INFRA, MAINTAINERS}
     assert _owners("README.md") == {MAINTAINERS}
@@ -150,7 +161,6 @@ def test_dependency_policy_covers_every_rust_manifest_root() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     for manifest in (
         "Cargo.toml",
-        "crates/aisimulate-core/Cargo.toml",
         "crates/tests/public-api/Cargo.toml",
     ):
         assert f"--manifest-path {manifest}" in workflow

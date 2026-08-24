@@ -1766,7 +1766,11 @@ def test_formal_database_serializes_concurrent_publishers(tmp_path):
         for index in range(4)
     ]
     systems_root = tmp_path / "systems"
-    context = multiprocessing.get_context("spawn")
+    # The publisher uses ``fcntl`` and is therefore POSIX-only. Use the
+    # matching process model here so the child inherits the already-loaded
+    # extension from the wheel under test instead of re-importing a source
+    # checkout that intentionally contains no in-tree native artifact.
+    context = multiprocessing.get_context("fork")
     start_event = context.Event()
     processes = [
         context.Process(
