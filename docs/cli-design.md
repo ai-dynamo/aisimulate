@@ -888,7 +888,7 @@ optimizer:
 | `optimizer.candidate_timeout_seconds` | `600` | `x` | `-` | Positive wall-clock limit per candidate. |
 | `optimizer.seed` | `42` | `x` | `-` | Nonnegative. |
 
-## Complete Prediction Example
+## Complete Dynamo Prediction Example
 
 ```yaml
 traffic:
@@ -945,7 +945,7 @@ evaluation:
     itl_ms: 50
 ```
 
-## Scalar Recommendation Example
+## Dynamo Scalar Recommendation Example
 
 ```yaml
 traffic:
