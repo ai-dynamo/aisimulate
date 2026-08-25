@@ -1,0 +1,66 @@
+name: FPE Support Matrix
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily at 14:00 UTC (07:00 PT during daylight time).
+    - cron: "0 14 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpe-support-matrix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  discover-systems:
+    name: Discover matrix systems
+    runs-on: ubuntu-latest
+    outputs:
+      systems: ${{ steps.systems.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: systems
+        name: Read the curated system manifest
+        run: |
+          value=$(jq -c '[.files[] | sub("\\.csv$"; "")]' \
+            python/aisimulate/src/aiconfigurator_core/systems/support_matrix/index.json)
+          echo "value=${value}" >> "${GITHUB_OUTPUT}"
+
+  generate:
+    name: FPE matrix (${{ matrix.system }})
+    needs: discover-systems
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        system: ${{ fromJSON(needs.discover-systems.outputs.systems) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          lfs: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install stable Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - name: Install AISimulate from this source SHA
+        run: |
+          python -m pip install 'maturin>=1.12,<2'
+          python -m pip install './python/aisimulate'
+      - name: Generate strict-native FPE coverage
+        run: |
+          python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
+            --system "${{ matrix.system }}" \
+            --output-dir "fpe-support-matrix/${{ matrix.system }}" \
+            --max-workers 8
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fpe-support-matrix-${{ matrix.system }}
+          path: fpe-support-matrix/${{ matrix.system }}
+          if-no-files-found: error
