@@ -345,7 +345,11 @@ def _parallel_mapping(value: Any, path: str) -> dict[str, int]:
         raise ValueError(
             f"{path} entry must cover exactly {_PARALLEL_KEYS}; missing={sorted(missing)}, unknown={sorted(unknown)}"
         )
-    return {key: int(value[key]) for key in _PARALLEL_KEYS}
+    for key in _PARALLEL_KEYS:
+        leaf = value[key]
+        if type(leaf) is not int or leaf <= 0:
+            raise ValueError(f"{path}.{key} must be a positive integer")
+    return {key: value[key] for key in _PARALLEL_KEYS}
 
 
 def _legacy_parallel(entry: dict[str, int]) -> dict[str, int]:

@@ -181,6 +181,39 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     assert factory.runner.closed
 
 
+def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
+    branch = _branch(_pc())
+    monkeypatch.setattr(
+        search_mod,
+        "enumerate_branches",
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+    )
+    monkeypatch.setattr(
+        search_mod,
+        "resolve_backend_version",
+        lambda *args: (_ for _ in ()).throw(AssertionError("must not resolve latest")),
+    )
+    config = _config()
+    config.search_space.backend_version = "0.18.0"
+    factory = _FakeRunnerFactory()
+
+    candidates = _run_sweep(
+        config,
+        runner_factory=factory,
+        sampler_factory=_FakeSampler,
+        show_progress=False,
+    )
+
+    assert candidates
+    assert all(
+        candidate.config["backend_version"] == "0.18.0" for candidate in candidates
+    )
+    assert all(
+        spec.backend_deployment.backend_version == "0.18.0"
+        for spec in factory.runner.specs
+    )
+
+
 def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
     branch = _branch(_pc())
     _stub(monkeypatch, branch)

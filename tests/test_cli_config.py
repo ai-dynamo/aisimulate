@@ -257,6 +257,30 @@ def test_parallel_custom_preset_requires_complete_strict_mapping() -> None:
         CoreRecommendationConfig.model_validate(base)
 
 
+@pytest.mark.parametrize("invalid", [1.9, True, "2"])
+def test_parallel_custom_preset_rejects_coercible_leaves(invalid) -> None:
+    mapping = {
+        "replicas": 1,
+        "tensor": invalid,
+        "pipeline": 1,
+        "attention_data": 1,
+        "moe_tensor": 1,
+        "moe_expert": 1,
+    }
+    with pytest.raises(ValidationError):
+        CoreRecommendationConfig.model_validate(
+            {
+                "engine": {
+                    **_engine(),
+                    "mode": "aggregated",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {"parallelism": {"preset": [mapping]}}},
+                },
+                "optimization": {},
+            }
+        )
+
+
 def test_engine_scheduler_domains_replace_defaults_and_preserve_log_scale() -> None:
     config = CoreRecommendationConfig.model_validate(
         {
