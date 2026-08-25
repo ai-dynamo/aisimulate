@@ -5,6 +5,7 @@
 
 import pytest
 
+import aisimulate.sweeper.deploy as deploy_module
 from aisimulate.sweeper.config import SearchSpace
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.parallel_enum import (
@@ -183,3 +184,43 @@ def test_backend_deployment_contains_no_dynamo_policy_fields():
     assert not hasattr(deployment, "planner_config")
     assert not hasattr(deployment, "router_config")
     assert not hasattr(deployment, "is_static")
+
+
+def test_fixed_timing_preserves_aic_identity_for_stack_adapters(monkeypatch):
+    monkeypatch.setattr(
+        deploy_module,
+        "materialize_aic_num_gpu_blocks",
+        lambda payload: {**payload, "num_gpu_blocks": 321},
+    )
+    deployment = _agg_deployment(
+        selection=_agg_selection(
+            agg_timing_model={
+                "type": "fixed",
+                "prefill_ms": 1.0,
+                "decode_ms": 1.0,
+            }
+        )
+    )
+    engine = deployment.agg_engine_args
+
+    assert engine["timing_model"]["type"] == "fixed"
+    assert engine["num_gpu_blocks"] == 321
+    assert "aic_backend_version" not in engine
+    assert "aic_system" not in engine
+    assert "aic_model_path" not in engine
+    assert deployment.performance_model_metadata == {
+        "aggregated": {
+            "provider": "aic",
+            "config": {
+                "backend": "trtllm",
+                "backend_version": BACKEND_VERSION,
+                "system": "example_sku",
+                "model_path": "example/model",
+                "tp_size": 4,
+                "attention_dp_size": 1,
+                "moe_tp_size": 1,
+                "moe_ep_size": 4,
+                "nextn": None,
+            },
+        }
+    }

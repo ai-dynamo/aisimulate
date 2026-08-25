@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -214,7 +215,8 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     if not candidates:
         sys.stderr.write("no feasible candidate found\n")
         return 1
-    concrete: list[dict[str, Any]] = []
+    selected: list[tuple[Any, dict[str, Any]]] = []
+    seen_configs: set[str] = set()
     for candidate in candidates:
         if candidate.prediction_config is None:
             raise RuntimeError("recommendation candidate has no concrete public config")
@@ -229,14 +231,17 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             stack=args.stack,
             context=_prediction_adapter_context(prediction),
         )
-        concrete.append(
-            prediction_mapping(
-                prediction,
-                {adapters[name].section: spec.config for name, spec in compiled_adapters.items()},
-            )
+        concrete = prediction_mapping(
+            prediction,
+            {adapters[name].section: spec.config for name, spec in compiled_adapters.items()},
         )
+        config_key = json.dumps(concrete, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if config_key in seen_configs:
+            continue
+        seen_configs.add(config_key)
+        selected.append((candidate, concrete))
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
-    paths = write_recommendations(root, concrete)
+    paths = write_recommendations(root, [config for _, config in selected])
     rows = [
         {
             "rank": index,
@@ -245,7 +250,7 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             "used_gpus": candidate.used_gpus,
             "config_path": str(path),
         }
-        for index, (candidate, path) in enumerate(zip(candidates, paths, strict=True), start=1)
+        for index, ((candidate, _), path) in enumerate(zip(selected, paths, strict=True), start=1)
     ]
     sys.stdout.write(format_recommendation_stdout(rows, args.format))
     sys.stdout.write("\n")
