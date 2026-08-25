@@ -918,7 +918,6 @@ impl SiteIndex {
             .iter()
             .map(|&p| coords[p].max(1e-12).log2())
             .collect();
-        let q_site: Vec<f64> = site_axes.iter().map(|&p| coords[p]).collect();
         let dist = |logs: &[f64]| -> f64 {
             logs.iter()
                 .zip(&q_log)
@@ -973,11 +972,11 @@ impl SiteIndex {
                 let Some(&(axis, raw_limit)) = site_axis_abs_distance_fallback.as_ref() else {
                     return false;
                 };
-                if axis >= q_site.len() || !raw_limit.is_finite() || raw_limit < 0.0 {
+                if axis >= site_axes.len() || !raw_limit.is_finite() || raw_limit < 0.0 {
                     return false;
                 }
                 let (site, logs) = &self.site_logs[i];
-                let raw_delta = ((site[axis] as f64) - q_site[axis]).abs();
+                let raw_delta = ((site[axis] as f64) - coords[site_axes[axis]]).abs();
                 let residual_log_distance = logs
                     .iter()
                     .zip(&q_log)
@@ -1000,6 +999,7 @@ impl SiteIndex {
                 // pass the gate on the non-overflow axes, and SOL(query)
                 // carries the growth. Interior holes, scale-down / mixed
                 // queries, and sparse-stub multi-axis overflow keep the miss.
+                let q_site: Vec<f64> = site_axes.iter().map(|&p| coords[p]).collect();
                 match self.frontier_waiver_anchors(&ranked, &q_site, &q_log, *gate) {
                     Some(admissible) => ranked = admissible,
                     None => return Err(miss(cfg, coords, "no site within max_site_distance")),
