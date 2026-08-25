@@ -130,7 +130,7 @@ second top-level executable. Future CLI actions must evolve the retained
 command identity and do not add another release artifact.
 
 For features already implemented by the standalone Sweeper, see
-[Migrate from AIConfigurator](sweeper/migrate-from-aiconfigurator.md) for explicit legacy
+[Migrate from AIConfigurator](cli/migrate-from-aiconfigurator.md) for explicit legacy
 command-to-configuration examples and current execution boundaries.
 
 ## Dynamo-to-AISimulate package migration

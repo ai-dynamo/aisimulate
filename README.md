@@ -66,7 +66,7 @@ engine:
     aggregated: {}
 ```
 
-See [`docs/cli-design.md`](docs/cli-design.md) for the complete schema and search-domain contract.
+See [`docs/cli/design.md`](docs/cli/design.md) for the complete schema and search-domain contract.
 
 Install AISimulate by itself for engine-only development:
 
@@ -119,6 +119,10 @@ crates/
 python/
   aisimulate/           application, AIC core mirror/data, Replay, Sweeper, and native runtime
 docs/
+  cli/
+    design.md           public CLI schema and output contract
+    migrate-from-aiconfigurator.md
+                        AIConfigurator-to-AISimulate CLI translation
   artifact-contract.md  two-artifact release boundary
   aic-sync.md           deterministic AIC source synchronization workflow
   core-api.md           public core API and compatibility contract
