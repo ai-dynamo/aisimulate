@@ -524,8 +524,10 @@ def _materialize_engine_role(
     # The shared CLI/Sweeper form is flat. Nested rank descriptors are already
     # execution-level input and retain the native runtime's compatibility
     # fallback after their structure has been validated below.
+    capacity_materialized = False
     if "rank" not in role_config:
         role_config = materialize_aic_num_gpu_blocks(role_config)
+        capacity_materialized = role_config.get("num_gpu_blocks") is not None
     for name in ("engine_type", "aic_backend"):
         configured = role_config.pop(name, None)
         if configured is not None and configured != deployment_backend:
@@ -622,7 +624,9 @@ def _materialize_engine_role(
             raise ValueError(
                 f"engine provider {role} {memory_field} must be between 0 and 1"
             )
-        memory_fraction_overrides[memory_field] = float(value)
+        # Capacity estimation consumes memory fraction independently of timing.
+        if not capacity_materialized:
+            memory_fraction_overrides[memory_field] = float(value)
 
     aic_timing_overrides: dict[str, JSONValue] = {}
     for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
