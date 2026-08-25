@@ -97,13 +97,9 @@ opt-in: it filters aggregate mean metrics before scalar ranking or Pareto domina
 | `ttft_ms` | time-to-first-token bound — pair with `itl_ms` |
 | `itl_ms` | inter-token-latency bound — pair with `ttft_ms` |
 | `e2e_ms` | end-to-end bound — standalone alternative |
-| `request_latency_ms` | aggregate-only `mean_ttft_ms + mean_tpot_ms * (osl - 1)` bound |
 
 Strict aggregate comparisons are inclusive (`value <= bound`). A configured bound with
-a missing or non-finite report metric rejects the candidate. Request-latency gating
-requires a synthetic workload with fixed `osl`; the public
-`enumerate_request_latency_constraints` helper returns the same deterministic TTFT/TPOT
-constraint pairs used by legacy AIC.
+a missing or non-finite report metric rejects the candidate.
 
 ## Pareto
 
@@ -133,9 +129,7 @@ tradeoff between the scalar targets in `pareto_objectives`.
   `_dominates(a, b)` is true iff `a` is at least as good as `b` on **every** objective (in
   that objective's own `maximize` direction) and strictly better on at least one. The
   front is **sorted by the last objective ascending** — the x-axis — so the list traces
-  the frontier left-to-right (e.g. low→high per-user throughput). Non-finite objective
-  vectors are excluded. Equal points are ordered by the remaining objectives, fewer
-  GPUs, and a canonical configuration key. `Sweeper.run`
+  the frontier left-to-right (e.g. low→high per-user throughput). `Sweeper.run`
   returns this front for a Pareto goal, and `rank` (best score, ties → fewer GPUs) for
   every scalar goal.
 

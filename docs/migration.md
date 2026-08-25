@@ -72,6 +72,10 @@ the `aisimulate` executable delegates to the full AIC command implementation.
 The legacy `aiconfigurator` executable is an alias in the same wheel, not a
 fourth release artifact.
 
+For features already implemented by the standalone Sweeper, see
+[Migrate from AIConfigurator](sweeper/migrate-from-aiconfigurator.md) for explicit legacy
+command-to-configuration examples and current execution boundaries.
+
 ## Dynamo-to-AISimulate package migration
 
 The standalone Replay and Sweeper package migration is tracked by

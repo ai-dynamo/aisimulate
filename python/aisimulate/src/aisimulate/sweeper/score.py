@@ -30,10 +30,8 @@ InferenceX tok/s/gpu vs tok/s/user frontier.
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
 
 from .config import (
     Candidate,
@@ -114,90 +112,9 @@ def is_feasible(used_gpus: int, gpu_budget: int) -> bool:
     return used_gpus <= gpu_budget
 
 
-def request_latency_ms(report: Mapping[str, float], *, osl: int) -> float:
-    """Return the legacy aggregate request-latency metric.
-
-    Legacy AIC combines mean TTFT with one mean TPOT for every output token
-    after the first: ``ttft + tpot * (osl - 1)``. A missing/non-finite input
-    returns ``math.inf`` so strict filtering fails closed.
-    """
-    if osl < 1:
-        raise ValueError(f"osl must be >= 1, got {osl}")
-    try:
-        ttft = float(report["mean_ttft_ms"])
-        tpot = float(report["mean_tpot_ms"])
-    except (KeyError, TypeError, ValueError):
-        return math.inf
-    if not math.isfinite(ttft) or not math.isfinite(tpot):
-        return math.inf
-    return ttft + tpot * max(osl - 1, 0)
-
-
-def enumerate_request_latency_constraints(
-    *,
-    osl: int,
-    request_latency_ms: float,
-    ttft_ms: float | None = None,
-) -> list[tuple[float, float]]:
-    """Enumerate legacy-compatible ``(TTFT, TPOT)`` constraint pairs.
-
-    Every returned pair lies exactly on
-    ``ttft + tpot * (osl - 1) == request_latency_ms``. The deterministic
-    anchors match legacy AIC while keeping this standalone module independent
-    of the ``aiconfigurator`` package.
-    """
-    if osl <= 1:
-        raise ValueError("request-latency constraint enumeration requires osl > 1")
-    if not math.isfinite(request_latency_ms) or request_latency_ms <= 0:
-        raise ValueError("request_latency_ms must be finite and positive")
-    if ttft_ms is not None and (
-        not math.isfinite(ttft_ms) or ttft_ms <= 0
-    ):
-        raise ValueError("ttft_ms must be finite and positive when provided")
-
-    preferred_ttft = (
-        request_latency_ms * 0.95 if ttft_ms is None else float(ttft_ms)
-    )
-    base_values = [
-        300.0,
-        400.0,
-        500.0,
-        600.0,
-        800.0,
-        1000.0,
-        1200.0,
-        1400.0,
-        1600.0,
-        2000.0,
-        3000.0,
-        5000.0,
-        8000.0,
-    ]
-    interval_values = [
-        request_latency_ms * fraction
-        for fraction in (0.1, 0.2, 0.3, 0.5, 0.7)
-    ]
-    supplemental = [
-        value
-        for value in interval_values
-        if value < base_values[0] or value > base_values[-1]
-    ]
-    ttft_values = sorted(
-        value
-        for value in {*base_values, *supplemental, preferred_ttft}
-        if value < request_latency_ms
-    )
-    return [
-        (ttft, (request_latency_ms - ttft) / (osl - 1))
-        for ttft in ttft_values
-    ]
-
-
 def aggregate_sla_violations(
     report: Mapping[str, float],
     sla: SLATarget,
-    *,
-    osl: int,
 ) -> tuple[str, ...]:
     """Describe strict aggregate SLA violations using inclusive bounds.
 
@@ -223,27 +140,15 @@ def aggregate_sla_violations(
         elif value > bound:
             violations.append(f"{label} {value:g}ms > {bound:g}ms")
 
-    if sla.request_latency_ms is not None:
-        value = request_latency_ms(report, osl=osl)
-        if not math.isfinite(value):
-            violations.append(
-                "request latency needs finite mean_ttft_ms and mean_tpot_ms"
-            )
-        elif value > sla.request_latency_ms:
-            violations.append(
-                f"request_latency {value:g}ms > {sla.request_latency_ms:g}ms"
-            )
     return tuple(violations)
 
 
 def meets_aggregate_sla(
     report: Mapping[str, float],
     sla: SLATarget,
-    *,
-    osl: int,
 ) -> bool:
     """Whether aggregate mean metrics satisfy every configured SLA bound."""
-    return not aggregate_sla_violations(report, sla, osl=osl)
+    return not aggregate_sla_violations(report, sla)
 
 
 def objective_vector(
@@ -271,22 +176,6 @@ def _dominates(
     return strictly_better
 
 
-def _config_tie_key(config: Mapping[str, Any]) -> str:
-    """Stable last-resort ordering without importing a deployment adapter."""
-    return json.dumps(config, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _has_finite_objectives(
-    candidate: Candidate, objectives: Sequence[OptimizationTarget]
-) -> bool:
-    values = candidate.objectives
-    return values is not None and all(
-        objective.value in values
-        and math.isfinite(float(values[objective.value]))
-        for objective in objectives
-    )
-
-
 def pareto_front(
     candidates: list[Candidate], objectives: list[OptimizationTarget]
 ) -> list[Candidate]:
@@ -294,7 +183,7 @@ def pareto_front(
     ``objectives`` vector), sorted by the **last** objective ascending — the x-axis — so the
     returned list traces the frontier left-to-right (e.g. low->high per-user throughput).
     """
-    pool = [c for c in candidates if _has_finite_objectives(c, objectives)]
+    pool = [c for c in candidates if c.objectives is not None]
     front = [
         c
         for c in pool
@@ -305,23 +194,7 @@ def pareto_front(
         )
     ]
     x_axis = objectives[-1].value
-
-    def _sort_key(candidate: Candidate) -> tuple[Any, ...]:
-        assert candidate.objectives is not None
-        secondary = tuple(
-            -candidate.objectives[objective.value]
-            if objective.maximize
-            else candidate.objectives[objective.value]
-            for objective in objectives[:-1]
-        )
-        return (
-            candidate.objectives[x_axis],
-            secondary,
-            candidate.used_gpus,
-            _config_tie_key(candidate.config),
-        )
-
-    return sorted(front, key=_sort_key)
+    return sorted(front, key=lambda c: c.objectives.get(x_axis, 0.0))
 
 
 def make_candidate(
@@ -358,28 +231,13 @@ def make_candidate(
 
 
 def rank(candidates: list[Candidate]) -> list[Candidate]:
-    """Best-first with deterministic legacy-compatible tie breaking.
-
-    Non-finite scores are not rankable. Finite ties prefer fewer GPUs, then
-    the canonical configuration key so engine-only and adapter-backed inputs
-    produce the same order regardless of evaluation completion order.
-    """
-    finite = [candidate for candidate in candidates if math.isfinite(candidate.score)]
-    return sorted(
-        finite,
-        key=lambda candidate: (
-            -candidate.score,
-            candidate.used_gpus,
-            _config_tie_key(candidate.config),
-        ),
-    )
+    """Best-first: highest score, ties broken toward fewer GPUs."""
+    return sorted(candidates, key=lambda c: (-c.score, c.used_gpus))
 
 
 def analyze_candidates(
     candidates: Sequence[Candidate],
     goal: OptimizationGoal,
-    *,
-    osl: int,
 ) -> list[Candidate]:
     """Apply one SLA/ranking contract to engine-only or adapter results.
 
@@ -393,7 +251,7 @@ def analyze_candidates(
         pool = [
             candidate
             for candidate in pool
-            if meets_aggregate_sla(candidate.metrics, goal.sla, osl=osl)
+            if meets_aggregate_sla(candidate.metrics, goal.sla)
         ]
     return (
         pareto_front(pool, goal.resolved_pareto_objectives)

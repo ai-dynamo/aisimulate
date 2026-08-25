@@ -40,9 +40,8 @@ candidate contains:
 
 For `goal.target: pareto`, the result contains only non-dominated candidates and preserves each
 objective's natural direction. Engine-only and adapter-backed candidates share the public
-`analyze_candidates` path for strict aggregate SLA filtering, Pareto dominance, scalar ranking,
-and deterministic ties. This keeps cross-mode/backend comparison independent of result arrival
-order while preserving each candidate's full configuration and metrics.
+`analyze_candidates` path so strict aggregate SLA filtering happens before Pareto dominance or
+scalar ranking.
 
 ```python
 candidates = sweeper.run(config)

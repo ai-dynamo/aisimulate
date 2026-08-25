@@ -68,6 +68,41 @@ sweep:
     assert config.sweep.max_rounds == 2
 
 
+def test_aic_strict_sla_migration_yaml_loads(tmp_path):
+    """Keep the command-migration guide's strict-SLA example executable."""
+    path = tmp_path / "sweep.yaml"
+    path.write_text(
+        """
+search_space:
+  model_name: meta-llama/Meta-Llama-3.1-8B
+  hardware_sku: gb200
+  backend: [trtllm]
+  deployment_mode: [agg]
+  gpu_budget: 8
+workload:
+  isl: 1024
+  osl: 128
+  request_rate: 4
+  num_request_ratio: 10
+goal:
+  target: throughput
+  strict_sla: true
+  sla:
+    ttft_ms: 800
+    itl_ms: 30
+sweep:
+  max_rounds: 10
+  candidates_per_round: 8
+  parallel_evals: 4
+"""
+    )
+
+    config = SmartSearchConfig.from_yaml(path)
+
+    assert config.goal.strict_sla
+    assert config.goal.sla == SLATarget(ttft_ms=800, itl_ms=30)
+
+
 def test_defaults_are_backend_only():
     config = SmartSearchConfig(
         search_space=_search_space(),
@@ -360,17 +395,17 @@ def test_strict_sla_requires_a_bound_but_does_not_change_goodput_requirement():
 
     goal = OptimizationGoal(
         target=OptimizationTarget.THROUGHPUT,
-        sla=SLATarget(request_latency_ms=10_000),
+        sla=SLATarget(itl_ms=30),
         strict_sla=True,
     )
     assert goal.strict_sla
 
-    # Aggregate request latency cannot substitute for replay's per-request
-    # goodput SLA contract.
+    # One aggregate bound is enough for strict filtering, but it cannot
+    # substitute for replay's complete per-request goodput SLA contract.
     with pytest.raises(ValidationError, match="require an SLA"):
         OptimizationGoal(
             target=OptimizationTarget.GOODPUT,
-            sla=SLATarget(request_latency_ms=10_000),
+            sla=SLATarget(itl_ms=30),
             strict_sla=True,
         )
 
@@ -494,48 +529,10 @@ def test_invalid_kv_load_ratio_is_rejected(value):
         )
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"ttft_ms": 0},
-        {"itl_ms": -1},
-        {"e2e_ms": -5},
-        {"request_latency_ms": 0},
-    ],
-)
+@pytest.mark.parametrize("kwargs", [{"ttft_ms": 0}, {"itl_ms": -1}, {"e2e_ms": -5}])
 def test_non_positive_sla_is_rejected(kwargs):
     with pytest.raises(ValidationError):
         SLATarget(**kwargs)
-
-
-def test_strict_request_latency_requires_synthetic_fixed_osl():
-    with pytest.raises(ValidationError, match="fixed osl"):
-        SmartSearchConfig(
-            search_space=_search_space(),
-            workload={"trace_path": "/tmp/trace.jsonl"},
-            goal={
-                "target": "throughput",
-                "strict_sla": True,
-                "sla": {"request_latency_ms": 10_000},
-            },
-        )
-
-    config = SmartSearchConfig(
-        search_space=_search_space(),
-        workload={
-            "isl": 1024,
-            "osl": 256,
-            "concurrency": 16,
-            "num_request_ratio": 2,
-        },
-        goal={
-            "target": "throughput",
-            "strict_sla": True,
-            "sla": {"request_latency_ms": 10_000},
-        },
-    )
-    assert config.goal.sla is not None
-    assert config.goal.sla.request_latency_ms == 10_000
 
 
 @pytest.mark.parametrize(

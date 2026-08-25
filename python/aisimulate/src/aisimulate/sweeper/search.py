@@ -126,8 +126,7 @@ def _prepare_providers(
     ]
     if invalid_names:
         raise ValueError(
-            f"adapter names cannot contain reserved separator "
-            f"{_ADAPTER_PARAM_SEPARATOR!r}: {invalid_names}"
+            f"adapter names cannot contain reserved separator {_ADAPTER_PARAM_SEPARATOR!r}: {invalid_names}"
         )
     providers = resolve_providers(config.adapters, injected=injected)
     base_context = SweepContext(
@@ -159,8 +158,7 @@ def _prepare_providers(
         ) - configured_modes
         if unknown:
             raise ValueError(
-                f"adapter {name!r} returned unknown deployment branch(es): "
-                f"{sorted(unknown)}"
+                f"adapter {name!r} returned unknown deployment branch(es): {sorted(unknown)}"
             )
     return providers, plans
 
@@ -291,8 +289,7 @@ def _merge_adapter_spaces(
             overlap = set(local_choices).intersection(local_ranges)
             if overlap:
                 raise ValueError(
-                    f"adapter {name!r} defined parameters as both categorical and "
-                    f"continuous: {sorted(overlap)}"
+                    f"adapter {name!r} defined parameters as both categorical and continuous: {sorted(overlap)}"
                 )
             for local_name, values in local_choices.items():
                 if _ADAPTER_PARAM_SEPARATOR in local_name:
@@ -315,8 +312,7 @@ def _merge_adapter_spaces(
                 low, high = bounds
                 if low >= high:
                     raise ValueError(
-                        f"adapter {name!r} search parameter {local_name!r} needs "
-                        f"low < high, got {bounds!r}"
+                        f"adapter {name!r} search parameter {local_name!r} needs low < high, got {bounds!r}"
                     )
                 float_ranges[_adapter_param(name, local_name)] = (low, high)
         merged.append(replace(branch, knob_choices=choices, float_ranges=float_ranges))
@@ -545,7 +541,6 @@ def _score_prepared(
         violations = aggregate_sla_violations(
             report,
             goal.sla,
-            osl=config.workload.osl or 1,
         )
         if violations:
             return (
@@ -659,8 +654,7 @@ class Sweeper:
                     for hook in unsupported
                 )
                 raise ValueError(
-                    f"runner is incompatible with configured adapter {name!r}; "
-                    f"unsupported runtime hook(s): {labels}"
+                    f"runner is incompatible with configured adapter {name!r}; unsupported runtime hook(s): {labels}"
                 )
 
         branches = _merge_adapter_spaces(branches, provider_plans)
@@ -1026,7 +1020,6 @@ class Sweeper:
         result = analyze_candidates(
             candidates,
             goal,
-            osl=config.workload.osl or 1,
         )
         if show_progress:
             replay_attempts = tally["feasible"] + tally["infeasible"] + tally["failed"]

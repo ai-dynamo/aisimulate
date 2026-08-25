@@ -107,12 +107,6 @@ The default SLA behavior is replay goodput: requests are individually counted ag
 the aggregate candidate means to stay within every configured bound before scalar
 ranking or Pareto dominance. Bounds are inclusive. Missing metrics fail closed.
 
-`sla.request_latency_ms` preserves the legacy aggregate formula
-`mean_ttft_ms + mean_tpot_ms * (osl - 1)`. It is valid only for a synthetic workload
-with one fixed `osl`. `enumerate_request_latency_constraints` exposes the deterministic
-legacy TTFT/TPOT constraint pairs without adding an AIConfigurator dependency to the
-standalone Sweeper package.
-
 ## Sampler Algorithm Override
 
 The experimental `AISIMULATE_SWEEPER_VIZIER_ALGO` environment variable overrides the Vizier

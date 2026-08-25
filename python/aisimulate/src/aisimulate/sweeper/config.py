@@ -67,8 +67,6 @@ class SLATarget(BaseModel):
     ``ttft_ms`` + ``itl_ms`` and ``e2e_ms`` are understood by replay as
     per-request goodput bounds. The same fields can also be applied to the
     aggregate mean metrics when :attr:`OptimizationGoal.strict_sla` is enabled.
-    ``request_latency_ms`` is aggregate-only and uses the legacy definition
-    ``mean_ttft_ms + mean_tpot_ms * (osl - 1)``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -76,19 +74,12 @@ class SLATarget(BaseModel):
     ttft_ms: float | None = Field(default=None, gt=0)
     itl_ms: float | None = Field(default=None, gt=0)
     e2e_ms: float | None = Field(default=None, gt=0)
-    request_latency_ms: float | None = Field(default=None, gt=0)
 
     @property
     def has_aggregate_bound(self) -> bool:
         """Whether at least one strict aggregate bound is configured."""
         return any(
-            value is not None
-            for value in (
-                self.ttft_ms,
-                self.itl_ms,
-                self.e2e_ms,
-                self.request_latency_ms,
-            )
+            value is not None for value in (self.ttft_ms, self.itl_ms, self.e2e_ms)
         )
 
 
@@ -171,9 +162,7 @@ class OptimizationGoal(BaseModel):
             raise ValueError(
                 f"{culprits} require an SLA target (ttft_ms+itl_ms or e2e_ms)"
             )
-        if self.strict_sla and (
-            self.sla is None or not self.sla.has_aggregate_bound
-        ):
+        if self.strict_sla and (self.sla is None or not self.sla.has_aggregate_bound):
             raise ValueError("strict_sla requires at least one SLA bound")
         return self
 
@@ -391,15 +380,13 @@ class Workload(BaseModel):
             or self.random_range_ratio > 1.0
         ):
             raise ValueError(
-                "random_range_ratio must be finite and in (0.0, 1.0], got "
-                f"{self.random_range_ratio!r}"
+                f"random_range_ratio must be finite and in (0.0, 1.0], got {self.random_range_ratio!r}"
             )
         for name in ("isl", "osl"):
             length = getattr(self, name)
             if length is not None and int(length * self.random_range_ratio) == 0:
                 raise ValueError(
-                    f"random_range_ratio={self.random_range_ratio} gives a zero-token "
-                    f"lower bound for {name}={length}"
+                    f"random_range_ratio={self.random_range_ratio} gives a zero-token lower bound for {name}={length}"
                 )
         if (
             isinstance(self.random_seed, bool)
@@ -407,13 +394,11 @@ class Workload(BaseModel):
             or self.random_seed > 0xFFFF_FFFF_FFFF_FFFF
         ):
             raise ValueError(
-                "random_seed must be an unsigned 64-bit integer, got "
-                f"{self.random_seed!r}"
+                f"random_seed must be an unsigned 64-bit integer, got {self.random_seed!r}"
             )
         if self.random_range_ratio != 1.0 and self.turns_per_session != 1:
             raise ValueError(
-                "random_range_ratio currently only supports single-turn "
-                "synthetic workloads"
+                "random_range_ratio currently only supports single-turn synthetic workloads"
             )
         return self
 
@@ -647,8 +632,7 @@ class SmartSearchConfig(BaseModel):
         present_kvbm = sorted(kvbm_fields.intersection(search_space))
         if present_kvbm:
             raise ValueError(
-                "KVBM sweep fields are not supported by the AISimulate engine "
-                f"and replay path; remove {present_kvbm}"
+                f"KVBM sweep fields are not supported by the AISimulate engine and replay path; remove {present_kvbm}"
             )
         present_planner = sorted(planner_fields.intersection(search_space))
         if present_planner:
@@ -705,21 +689,6 @@ class SmartSearchConfig(BaseModel):
             raise ValueError(
                 "a ranged workload.kv_load_ratio is only allowed when goal.target is 'pareto' "
                 f"(got target={self.goal.target.value}); use one scalar kv_load_ratio"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _validate_request_latency_sla(self) -> SmartSearchConfig:
-        """Aggregate request latency needs one fixed output length."""
-        sla = self.goal.sla
-        if (
-            self.goal.strict_sla
-            and sla is not None
-            and sla.request_latency_ms is not None
-            and self.workload.osl is None
-        ):
-            raise ValueError(
-                "strict request_latency_ms requires a synthetic workload with a fixed osl"
             )
         return self
 
