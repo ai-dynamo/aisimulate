@@ -596,6 +596,7 @@ fn gemm_engine_config<'a>(sol: &'a dyn Fn(&[f64]) -> f64) -> OpInterpConfig<'a> 
             curve_axis: 0,
             nn_sites: 4,
             max_site_distance: Some(2.0),
+            site_axis_abs_distance_fallback: None,
             require_curve_coverage: true,
             k_tail: 3,
             own_curve_coverage_fallback: false,

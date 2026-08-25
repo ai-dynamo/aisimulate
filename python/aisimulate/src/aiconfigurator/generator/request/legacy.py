@@ -151,7 +151,14 @@ def to_legacy_params(req: GeneratorRequest) -> dict[str, Any]:
     sflow = _section_from_raw(raw, "SflowConfig", {})
     node = _section_from_raw(raw, "NodeConfig", {})
     worker = _section_from_raw(raw, "WorkerConfig", {})
-    model_cfg = _section_from_raw(raw, "ModelConfig", {})
+    model_seed: dict[str, Any] = {}
+    if req.model_facts is not None:
+        model_seed.update(req.model_facts.extra)
+        for key in ("is_moe", "nextn", "prefix", "architecture"):
+            value = getattr(req.model_facts, key)
+            if value is not None:
+                model_seed[key] = value
+    model_cfg = _section_from_raw(raw, "ModelConfig", model_seed)
     llmd = _section_from_raw(raw, "LlmdConfig", {})
 
     role_params = {r: rs.to_params() for r, rs in req.topology.roles.items()}

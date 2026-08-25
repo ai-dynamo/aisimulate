@@ -52,3 +52,15 @@ print(best.metrics)
 
 Exact repeated suggestions reuse a result from the current `run` call. The cache does not persist
 between calls, even when the same `Sweeper` instance is reused.
+
+## Deployment Artifact Generation
+
+A `Candidate` is a ranked simulation result, not a deployment manifest. The downstream
+AIConfigurator generator owns artifact rendering. In the unified AISimulate application, pass the
+selected candidate and its matching workload to
+`aiconfigurator.generator.request.from_sweeper_candidate`, then render the resulting typed request
+with `aiconfigurator.generator.api.generate_from_request`.
+
+The bridge preserves evaluated engine limits and supported adapter configuration, and rejects
+candidate data it cannot lower without loss. Pareto output has no implicit winner: callers must
+select one point before requesting deployment artifacts.
