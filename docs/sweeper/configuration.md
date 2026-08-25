@@ -36,26 +36,10 @@ goal:
   target: throughput_per_gpu
 
 sweep:
-  policy: rapid
-  seed: 0
   max_rounds: 10
   candidates_per_round: 8
   parallel_evals: 4
 ```
-
-## Search Policy Fields
-
-| Field | Default | Purpose |
-|---|---|---|
-| `policy` | `rapid` | `rapid` bounded optimization or `thorough` complete finite enumeration |
-| `seed` | `0` | unsigned 32-bit rapid optimizer seed; provenance-only for canonical thorough order |
-| `max_rounds` | `20` | rapid optimizer rounds; ignored as a stop rule by thorough |
-| `candidates_per_round` | `parallel_evals` | rapid success target or thorough evaluation/callback batch size |
-| `parallel_evals` | `16` | replay worker fan-out |
-| `max_eval_seconds` | `600` | per-candidate timeout on the worker-pool path |
-
-Thorough search rejects continuous ranges because they do not form a finite candidate set. See
-[Search Policies](search-policies.md) for ordering, completion, and reporting semantics.
 
 The adapter value is a search space, not one concrete runtime configuration. Its provider validates
 the whole mapping, contributes optimizer dimensions, and later materializes one concrete adapter

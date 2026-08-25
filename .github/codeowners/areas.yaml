@@ -11,6 +11,7 @@ areas:
     path_globs:
       - LICENSE
       - README.md
+      - CONTRIBUTING.md
       - CONTRIBUTORS.md
       - docs/
       - python/aisimulate/src/aisimulate/__init__.py
@@ -18,9 +19,11 @@ areas:
   - label: forward-pass-engine
     github_team: "@ai-dynamo/aisimulate-forward-pass-engine-codeowners"
     path_globs:
-      - crates/aisimulate-core/
+      - crates/core/src/perfmodel/
+      - crates/core/tests/perfmodel/
+      - crates/core/parity_tests/perfmodel/
+      - crates/core/perfmodel/
       - crates/tests/public-api/
-      - python/aisimulate-core/
       - python/aisimulate/
       - python/aisimulate/src/aisimulate/aic.py
       - tests/test_aic.py
@@ -38,7 +41,10 @@ areas:
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
       - python/aisimulate/src/aisimulate/traffic.py
-      - tests/test_replay_cli.py
+      - tests/test_cli_config.py
+      - tests/test_stack_discovery.py
+      - tests/test_unified_cli.py
+      - tests/test_unified_traffic_runtime.py
       - tests/test_runner.py
       - tests/test_traffic.py
   - label: mocker
@@ -53,9 +59,12 @@ areas:
       - CODEOWNERS
       - Cargo.lock
       - Cargo.toml
-      - crates/python/Cargo.toml
+      - deny.toml
+      - crates/core/Cargo.toml
+      - crates/core/deny.toml
       - pytest.ini
       - scripts/
+      - tests/test_aic_sync.py
 
 # More-specific shared entries are emitted after base area rules, preserving
 # GitHub's last-match-wins behavior. As in AIConfigurator, the maintainer team
@@ -64,16 +73,22 @@ areas:
 shared:
   # The full AIC product and estimator migration belongs to the Forward Pass
   # Engine area. Maintainers remain co-owners across the compatibility window.
-  - glob: crates/aisimulate-core/
+  - glob: crates/core/src/perfmodel/
+    owners: [forward-pass-engine, maintainers]
+  - glob: crates/core/perfmodel/
+    owners: [forward-pass-engine, maintainers]
+  - glob: crates/core/parity_tests/perfmodel/
     owners: [forward-pass-engine, maintainers]
   - glob: crates/tests/public-api/
-    owners: [forward-pass-engine, maintainers]
-  - glob: python/aisimulate-core/
     owners: [forward-pass-engine, maintainers]
   - glob: python/aisimulate/
     owners: [forward-pass-engine, maintainers]
   - glob: docs/artifact-contract.md
     owners: [forward-pass-engine, maintainers]
+  - glob: docs/aic-sync.md
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: tests/test_aic_sync.py
+    owners: [infra, maintainers]
   - glob: docs/core-api.md
     owners: [forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/__init__.py
@@ -98,7 +113,13 @@ shared:
     owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/traffic.py
     owners: [replay, maintainers]
-  - glob: tests/test_replay_cli.py
+  - glob: tests/test_cli_config.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_stack_discovery.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_unified_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_unified_traffic_runtime.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
@@ -109,24 +130,30 @@ shared:
   - glob: crates/core/src/engine/timing.rs
     owners: [mocker, forward-pass-engine, maintainers]
   - glob: crates/core/Cargo.toml
-    owners: [mocker, replay, infra, maintainers]
+    owners: [mocker, replay, forward-pass-engine, infra, maintainers]
+  - glob: crates/core/deny.toml
+    owners: [mocker, replay, forward-pass-engine, infra, maintainers]
   - glob: crates/core/README.md
-    owners: [mocker, replay, maintainers]
+    owners: [mocker, replay, forward-pass-engine, maintainers]
   - glob: crates/core/src/lib.rs
-    owners: [mocker, replay, maintainers]
+    owners: [mocker, replay, forward-pass-engine, maintainers]
   - glob: crates/core/tests/
     owners: [mocker, replay, maintainers]
-  - glob: crates/python/src/
+  - glob: crates/core/tests/perfmodel/
+    owners: [forward-pass-engine, maintainers]
+  - glob: crates/core/src/python.rs
     owners: [mocker, replay, forward-pass-engine, maintainers]
-  - glob: crates/python/Cargo.toml
-    owners: [infra, maintainers]
   - glob: Cargo.lock
     owners: [infra, maintainers]
   - glob: Cargo.toml
     owners: [infra, maintainers]
+  - glob: deny.toml
+    owners: [infra, maintainers]
   - glob: pytest.ini
     owners: [infra, maintainers]
   - glob: scripts/
+    owners: [infra, maintainers]
+  - glob: .gitattributes
     owners: [infra, maintainers]
   # Imported AIC repository metadata is inactive in this monorepo, but changes
   # still need Infra visibility. The active policy remains at the repository
@@ -159,10 +186,6 @@ shared:
     owners: [infra, maintainers]
   - glob: python/aisimulate/uv.lock
     owners: [infra, maintainers]
-  - glob: python/aisimulate-core/pyproject.toml
-    owners: [forward-pass-engine, infra, maintainers]
-  - glob: crates/aisimulate-core/Cargo.toml
-    owners: [forward-pass-engine, infra, maintainers]
   - glob: crates/tests/public-api/Cargo.toml
     owners: [forward-pass-engine, infra, maintainers]
   # Ownership policy changes are reviewed within AISimulate. DevOps is not a

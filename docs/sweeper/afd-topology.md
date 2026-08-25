@@ -6,8 +6,8 @@ subtitle: Attention-FFN disaggregation, pipeline evaluation, and P/D rate matchi
 ---
 
 > [!WARNING]
-> **Experimental.** The AFD contract is available as a Sweeper-core Python API. The generic rapid
-> search projector does not yet place AFD topologies in a `SmartSearchConfig` study. That wiring
+> **Experimental.** The AFD contract is available as a Sweeper-core Python API. The generic search
+> domain does not yet place AFD topologies in a `SmartSearchConfig` study. That wiring
 > depends on the shared execution-dimension work tracked by AIC-1773.
 
 Attention-FFN Disaggregation (AFD) places attention operations on an A-worker pool and FFN/MoE
@@ -46,8 +46,9 @@ When that tuple is empty, `enumerate_afd_topologies` searches:
 - microbatch count and pipeline model; and
 - A:F node ratio.
 
-The enumerator preserves the legacy canonical order. `candidate_overflow="error"` is the default;
-explicit `"truncate"` returns a deterministic prefix and records `complete=false` in provenance.
+The enumerator preserves the legacy canonical order and evaluates the complete finite domain.
+If the domain exceeds `max_candidates`, it fails with `candidate_limit` instead of returning a
+partial result.
 
 ```python
 from aisimulate.sweeper import AFDSearchConfig, enumerate_afd_topologies
@@ -84,8 +85,10 @@ prefill, decode, or both. When both phases use the same A/F pools, GPU count is 
 considers every companion worker count through the rate-matched count, caps end-to-end sequence
 rate at the slower phase, applies prefill/decode degradation and latency corrections, and selects
 the highest output-tokens/s/GPU feasible combination. The result reports A, F, and companion GPU
-counts separately. The companion domain is bounded at 256 options by default; like the topology
-domain, exceeding that limit errors unless deterministic truncation is requested explicitly.
+counts separately. The companion domain is bounded at 256 candidates by default; like the topology
+domain, exceeding that limit fails instead of returning a partial result. The bound counts each
+concrete `(option, worker-count)` combination, so the exhaustive search cannot expand into an
+unbounded worker loop.
 
 Adapters fail closed. A pure AFD topology requires an explicit `afd` capability; combined AFD+P/D
 requires `afd+pd`. An adapter that advertises only `agg` or `disagg` cannot consume or generate an

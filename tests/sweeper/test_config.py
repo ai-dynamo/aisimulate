@@ -110,77 +110,6 @@ def test_extra_fields_are_forbidden_at_each_boundary():
         )
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "min_endpoint",
-        "prefill_min_endpoint",
-        "decode_min_endpoint",
-        "planner_scaling_policy",
-        "planner_fpm_sampling",
-        "planner_load_sensitivity",
-        "load_predictor_candidates",
-    ],
-)
-def test_legacy_planner_fields_point_to_adapter_migration(field):
-    with pytest.raises(
-        ValidationError,
-        match=r"adapters\['dynamo\.planner'\]\.search_space",
-    ):
-        SmartSearchConfig(
-            search_space=_search_space(**{field: 1}),
-            workload=_workload(),
-        )
-
-
-@pytest.mark.parametrize(
-    "field",
-    [
-        "router_mode",
-        "overlap_score_credit",
-        "prefill_load_scale",
-        "router_temperature",
-        "active_decode_blocks_threshold",
-        "active_decode_tokens_threshold",
-        "active_prefill_tokens_threshold",
-        "active_prefill_tokens_threshold_frac",
-        "no_admission_control",
-    ],
-)
-def test_legacy_router_fields_point_to_adapter_migration(field):
-    with pytest.raises(
-        ValidationError,
-        match=r"adapters\['dynamo\.router'\]\.search_space",
-    ):
-        SmartSearchConfig(
-            search_space=_search_space(**{field: 1}),
-            workload=_workload(),
-        )
-
-
-@pytest.mark.parametrize(
-    "field",
-    [
-        "num_g2_blocks",
-        "kv_bytes_per_token",
-        "bandwidth_g1_to_g2_gbps",
-        "bandwidth_g2_to_g1_gbps",
-        "offload_batch_size",
-        "host_cache_hit_weight",
-        "disk_cache_hit_weight",
-    ],
-)
-def test_legacy_kvbm_fields_are_deprecated_without_migration(field):
-    with pytest.raises(
-        ValidationError,
-        match="not supported by the AISimulate engine and replay path",
-    ):
-        SmartSearchConfig(
-            search_space=_search_space(**{field: 1}),
-            workload=_workload(),
-        )
-
-
 def test_backend_choice_subset_is_accepted():
     config = SmartSearchConfig(
         search_space=_search_space(deployment_mode=["agg"], backend=["vllm", "sglang"]),
@@ -196,8 +125,8 @@ def test_backend_choice_subset_is_accepted():
     [
         ("backend", ["bogus"]),
         ("deployment_mode", ["bogus"]),
-        ("prefill_max_num_seqs", [1, 999]),
-        ("agg_max_num_batched_tokens", [8192, 999]),
+        ("prefill_max_num_seqs", [0]),
+        ("agg_max_num_batched_tokens", [-1]),
         ("backend", []),
     ],
 )
@@ -338,7 +267,7 @@ def test_invalid_workloads_are_rejected(workload):
 def test_goodput_requires_complete_sla():
     with pytest.raises(ValidationError, match="require an SLA"):
         OptimizationGoal(target=OptimizationTarget.GOODPUT)
-    with pytest.raises(ValidationError, match="require an SLA"):
+    with pytest.raises(ValidationError, match="supplied together"):
         OptimizationGoal(
             target=OptimizationTarget.GOODPUT,
             sla=SLATarget(ttft_ms=2000),
@@ -491,26 +420,6 @@ def test_non_positive_sla_is_rejected(kwargs):
 def test_non_positive_sweep_control_is_rejected(kwargs):
     with pytest.raises(ValidationError):
         SweepConfig(**kwargs)
-
-
-def test_search_policy_defaults_to_bounded_rapid():
-    config = SweepConfig()
-
-    assert config.policy.value == "rapid"
-    assert config.seed == 0
-
-
-@pytest.mark.parametrize("seed", [-1, 2**32, True, 1.5])
-def test_invalid_search_seed_is_rejected(seed):
-    with pytest.raises(ValidationError):
-        SweepConfig(seed=seed)
-
-
-def test_thorough_policy_is_explicitly_selectable():
-    config = SweepConfig(policy="thorough", seed=19)
-
-    assert config.policy.value == "thorough"
-    assert config.seed == 19
 
 
 @pytest.mark.parametrize(

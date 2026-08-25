@@ -8,7 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 > This directory contains the complete AIConfigurator application migrated to
 > the standalone AISimulate repository. It builds the `aisimulate` 0.12.0
 > wheel, not a separate `aiconfigurator` wheel. The legacy import namespace and
-> executable remain compatibility surfaces inside that wheel. The original AIC
+> `aiconfigurator` executable remain compatibility surfaces alongside the public
+> `aisimulate` prediction CLI. The original AIC
 > documentation below is retained so existing workflows remain discoverable
 > during the CLI parity and deprecation window.
 
@@ -36,77 +37,38 @@ Let's get started.
 
 ### Install from PyPI
 
-> **Public PyPI support: Linux x86-64 only.** The required
-> `aiconfigurator-core` wheel bundles a native Rust/PyO3 extension and is
-> published to PyPI as a `manylinux_2_28_x86_64` wheel (Linux x86-64,
-> glibc >= 2.28).
->
-> **Release wheel coverage:** The
-> [platform-wheel workflow](.github/workflows/build-platform-wheels.yml) also
-> builds, installs, and verifies `manylinux_2_28_aarch64` and
-> `macosx_11_0_arm64` core wheels. Release-branch runs stage the complete wheel
-> set to Artifactory when platform-wheel staging is enabled. These Artifactory
-> artifacts are separate from public PyPI: Linux aarch64 and macOS arm64 users
-> with access to the release artifacts can install the matching wheel set.
-> Each staged set publishes `_MANIFEST.json` with immutable wheel SHA-256 and
-> size metadata, then writes `_COMPLETE.json` last with the manifest checksum.
-> Consumers must verify both files before installing a wheel.
-> Copied pull-request workflows validate wheels only on isolated GitHub-hosted
-> runners. They do not use the persistent release runners, receive Artifactory
-> credentials, or publish wheel artifacts.
-> Windows has no supported installation path.
-
 ```bash
-pip3 install aiconfigurator
+pip3 install aisimulate
 ```
 
-The upper `aiconfigurator` wheel contains the CLI, generator, and versioned
-server-config adapter.
-It depends on the exact matching `aiconfigurator-core` wheel, which independently
-owns the SDK, model/system data, and native extension. Installing
-`aiconfigurator` therefore installs the complete product, while core-only
-consumers can install `aiconfigurator-core` without pulling in the upper layer.
+One `aisimulate` wheel contains the compatibility CLI and application, the
+estimator SDK, model/system data, Replay, Sweeper, and the native extension.
+It installs no separate `aiconfigurator`, `aiconfigurator-core`, or Python
+`aisimulate-core` distribution. The `aiconfigurator`, `aiconfigurator_core`,
+and `aisimulate_core` import namespaces remain available from this wheel.
 
-`Task` and the orchestration APIs live in the application wheel only:
+`Task` and the orchestration APIs remain available:
 
 ```python
 from aiconfigurator.sdk.task_v2 import Task
 ```
 
-The core wheel intentionally does not expose `task_v2`; the standalone core
-never depends back on the application package.
-
-#### Upgrading from 0.9
-
-Version 0.9 shipped core files inside `aiconfigurator`. Package installers cannot
-safely transfer those same paths to the new dependency during a normal in-place
-upgrade because dependencies are installed before dependents. Remove the old
-owner first when crossing this package boundary:
+When upgrading from standalone AIConfigurator, remove the old distributions so
+only the new owner provides the compatibility paths:
 
 ```bash
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
-python3 -m pip install 'aiconfigurator==0.11.0'
-```
-
-If a normal upgrade was already attempted, repair the core payload with:
-
-```bash
-python3 -m pip install --force-reinstall --no-deps 'aiconfigurator-core==0.11.0'
+python3 -m pip install aisimulate
 ```
 
 ### Build and Install from Source
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/ai-dynamo/aiconfigurator.git
-cd aiconfigurator
-
-# 2. Create and activate a virtual environment
-python3 -m venv myenv && source myenv/bin/activate # (requires Python 3.11-3.13)
-
-# 3. Install the standalone core, then the upper package
-pip3 install ./aic-core
-pip3 install .
+git clone https://github.com/ai-dynamo/aisimulate.git
+cd aisimulate
+python3 -m venv myenv
+source myenv/bin/activate
+pip3 install ./python/aisimulate
 ```
 
 Current performance profiles are checked-in Parquet files, so normal builds
@@ -114,15 +76,27 @@ and usage do not require Git LFS. Install Git LFS and run `git lfs pull` only
 when working with retained legacy `*.txt` perf assets or their compatibility
 tests.
 
-### Build with Docker
+## Run
+
+### AISimulate prediction and recommendation
+
+AISimulate uses one strict YAML surface for a concrete prediction and a configuration search:
 
 ```bash
-# This creates disjoint upper AIC and standalone core wheels
-docker build -f docker/Dockerfile --no-cache --target build -t aiconfigurator:latest .
-docker create --name aic aiconfigurator:latest && docker cp aic:/workspace/dist dist/ && docker rm aic
+aisimulate predict --config prediction.yaml
+aisimulate recommend --config recommendation.yaml
 ```
 
-## Run
+The built-in `engine` stack is the default. Optional packages can register another runner, such as
+Dynamo, without creating another CLI:
+
+```bash
+aisimulate predict --stack dynamo --config prediction.yaml
+```
+
+See [the unified CLI design](../../docs/cli-design.md) for the complete field, domain, preset, and
+traffic contract. The `aiconfigurator` command below remains available for its existing AIC
+estimation and deployment-generation workflows.
 
 ### CLI
 
@@ -135,11 +109,8 @@ aiconfigurator cli support --model-path Qwen/Qwen3-32B-FP8 --system h200_sxm
 ```
 - We have six modes: `default`, `estimate`, `recommend`, `exp`, `generate`, and `support`.
 - Use `default` to find the estimated best deployment by searching the configuration space.
-- The experimental Spica smart sweeper now lives in Dynamo's standalone
-  [AI Simulate distribution](https://docs.nvidia.com/dynamo/dev/knowledge-base/modular-components/ai-simulate/spica/overview).
-  From a matching Dynamo checkout, install it with `python -m pip install ./aisimulate`, then use
-  `python -m aisimulate.spica` for Spica searches. Runnable configurations and tools live under
-  `examples/aisimulate/spica`.
+- The former standalone Replay and Sweeper module CLIs are replaced by `aisimulate predict` and
+  `aisimulate recommend`; their Python SDKs remain available for embedded callers.
 - Use `exp` to run customized experiments defined in a YAML file.
 - Use `generate` to quickly create a naive configuration without a parameter sweep.
 - Use `recommend` to find the minimum GPU count and optimal deployment configuration needed to meet a performance target. This mode is designed as a procurement sizing tool -- specify exactly one load target (`--target-request-rate` or `--target-concurrency` — mutually exclusive) along with SLA constraints, and the system calculates the minimum GPUs required. You can also omit `--total-gpus` in default mode with a load target for the same behavior.

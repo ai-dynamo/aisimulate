@@ -181,88 +181,37 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     assert factory.runner.closed
 
 
-def test_rapid_policy_is_bounded_seeded_and_reported_as_approximate(monkeypatch):
+def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     branch = _branch(_pc())
-    _stub(monkeypatch, branch)
-    seen = {}
-
-    def sampler_factory(branch, study_id, objectives=None, seed=None):
-        seen["seed"] = seed
-        return _FakeSampler(branch, study_id, objectives)
-
-    sweeper = Sweeper(
-        runner_factory=_FakeRunnerFactory(),
-        sampler_factory=sampler_factory,
-        show_progress=False,
+    monkeypatch.setattr(
+        search_mod,
+        "enumerate_branches",
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
-    candidates = sweeper.run(_config(seed=17))
-
-    assert len(candidates) == 3
-    assert seen["seed"] == 17
-    assert sweeper.last_report is not None
-    assert sweeper.last_report.as_dict() == {
-        "policy": "rapid",
-        "complete": False,
-        "approximate": True,
-        "seed": 17,
-        "candidate_budget": 33,
-        "finite_candidate_count": None,
-        "suggested_candidates": 3,
-        "evaluated_candidates": 3,
-        "feasible_candidates": 3,
-        "infeasible_candidates": 0,
-        "failed_candidates": 0,
-        "unsupported_candidates": 0,
-        "cache_hits": 0,
-        "stopping_reason": "candidate_budget_reached",
-        "elapsed_seconds": sweeper.last_report.elapsed_seconds,
-    }
-
-
-def test_thorough_policy_visits_every_finite_candidate_and_reports_completion(
-    monkeypatch,
-):
-    pc = _pc()
-    branch = BranchSpace(
-        deployment_mode="agg",
-        parallel_configs=(pc,),
-        supported_backends={pc: frozenset({"trtllm"})},
-        knob_choices={
-            "backend": ["trtllm"],
-            "agg_max_num_batched_tokens": [8192],
-            "agg_max_num_seqs": [768, 256, 512],
-        },
+    monkeypatch.setattr(
+        search_mod,
+        "resolve_backend_version",
+        lambda *args: (_ for _ in ()).throw(AssertionError("must not resolve latest")),
     )
-    _stub(monkeypatch, branch)
-    rounds = []
-    runner = _FakeRunner()
-    sweeper = Sweeper(
-        runner_factory=_FakeRunnerFactory(runner),
+    config = _config()
+    config.search_space.backend_version = "0.18.0"
+    factory = _FakeRunnerFactory()
+
+    candidates = _run_sweep(
+        config,
+        runner_factory=factory,
+        sampler_factory=_FakeSampler,
         show_progress=False,
     )
 
-    candidates = sweeper.run(
-        _config(
-            policy="thorough",
-            seed=29,
-            max_rounds=1,
-            candidates_per_round=2,
-        ),
-        on_round=lambda round_no, current: rounds.append((round_no, len(current))),
+    assert candidates
+    assert all(
+        candidate.config["backend_version"] == "0.18.0" for candidate in candidates
     )
-
-    assert runner.calls == 3
-    assert [candidate.score for candidate in candidates] == [768.0, 512.0, 256.0]
-    assert rounds == [(1, 2), (2, 3)]
-    assert sweeper.last_report is not None
-    assert sweeper.last_report.complete
-    assert not sweeper.last_report.approximate
-    assert sweeper.last_report.seed == 29
-    assert sweeper.last_report.candidate_budget == 3
-    assert sweeper.last_report.finite_candidate_count == 3
-    assert sweeper.last_report.suggested_candidates == 3
-    assert sweeper.last_report.evaluated_candidates == 3
-    assert sweeper.last_report.stopping_reason == "space_exhausted"
+    assert all(
+        spec.backend_deployment.backend_version == "0.18.0"
+        for spec in factory.runner.specs
+    )
 
 
 def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):

@@ -10,9 +10,9 @@ adapters.  The formulas and default candidate order intentionally follow the
 imported legacy AIC implementation in ``Task.build_afd_parallel_lists`` and
 ``AFDInferenceSession``.
 
-The generic rapid-search parallel projector is integrated separately.  Keeping
-these contracts independent lets exhaustive callers and future projectors share
-one fail-closed source of truth for AFD legality and accounting.
+Generic search-domain integration is separate. Keeping these contracts
+independent lets exhaustive callers and future integration code share one
+fail-closed source of truth for AFD legality and accounting.
 """
 
 from __future__ import annotations
@@ -49,13 +49,6 @@ class AFDPipelineModel(str, Enum):
     OPTIMISTIC = "optimistic"
     CONSERVATIVE = "conservative"
     SERIAL = "serial"
-
-
-class AFDOverflowPolicy(str, Enum):
-    """Behavior when a finite AFD domain exceeds its configured bound."""
-
-    ERROR = "error"
-    TRUNCATE = "truncate"
 
 
 class AFDReasonCategory(str, Enum):
@@ -290,7 +283,10 @@ class AFDTopology:
                 "pipeline_model": self.pipeline_model.value,
                 "phase": self.phase.value,
                 "combined_with_pd": self.combined_with_pd,
+                "comm_overhead_factor": self.comm_overhead_factor,
                 "boundary_on_attn": self.boundary_on_attn,
+                "is_moe": self.is_moe,
+                "num_experts": self.num_experts,
             },
             "gpu_accounting": {
                 "attention_gpus": self.attention_gpus,
@@ -329,7 +325,6 @@ class AFDSearchConfig:
     min_gpu_budget: int | None = None
     max_af_ratio: float = 4.0
     max_candidates: int = 10_000
-    candidate_overflow: AFDOverflowPolicy | str = AFDOverflowPolicy.ERROR
 
     def __post_init__(self) -> None:
         _positive_int("total_gpus", self.total_gpus)
@@ -339,6 +334,11 @@ class AFDSearchConfig:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
                 f"is_moe must be a boolean, got {self.is_moe!r}",
+            )
+        if type(self.combined_with_pd) is not bool or type(self.boundary_on_attn) is not bool:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "combined_with_pd and boundary_on_attn must be booleans",
             )
         if isinstance(self.num_experts, bool) or not isinstance(self.num_experts, int) or self.num_experts < 0:
             raise AFDInfeasible(
@@ -355,7 +355,6 @@ class AFDSearchConfig:
         _positive_finite("max_af_ratio", self.max_af_ratio)
         _positive_finite("comm_overhead_factor", self.comm_overhead_factor)
         phase = _enum_value(AFDPhase, self.phase, "phase")
-        overflow = _enum_value(AFDOverflowPolicy, self.candidate_overflow, "candidate_overflow")
         pipelines = tuple(
             _enum_value(AFDPipelineModel, item, "pipeline_model_candidates") for item in self.pipeline_model_candidates
         )
@@ -365,18 +364,31 @@ class AFDSearchConfig:
                 "pipeline_model_candidates must not be empty",
             )
         for name, values in (
+            ("tp_a_candidates", self.tp_a_candidates),
             ("a_batch_size_candidates", self.a_batch_size_candidates),
             ("microbatch_candidates", self.microbatch_candidates),
         ):
-            if not values:
+            if name != "tp_a_candidates" and not values:
                 raise AFDInfeasible(
                     AFDReasonCategory.INVALID_TOPOLOGY,
                     f"{name} must not be empty",
                 )
             for value in values:
                 _positive_int(name, value)
+        for value in self.f_moe_ep_size_candidates:
+            if type(value) is int:
+                _positive_int("f_moe_ep_size_candidates", value)
+            elif type(value) is not str or value not in {"n_f_nodes", "ffn_tp", "tp_f"}:
+                raise AFDInfeasible(
+                    AFDReasonCategory.EXPERT_DIVISIBILITY,
+                    f"f_moe_ep_size_candidates accepts positive integers, 'n_f_nodes', or 'ffn_tp'; got {value!r}",
+                )
+        if any(not isinstance(topology, AFDTopology) for topology in self.pinned_topologies):
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "pinned_topologies must contain only AFDTopology objects",
+            )
         object.__setattr__(self, "phase", phase)
-        object.__setattr__(self, "candidate_overflow", overflow)
         object.__setattr__(self, "pipeline_model_candidates", pipelines)
 
 
@@ -387,7 +399,6 @@ class AFDEnumeration:
     candidates: tuple[AFDTopology, ...]
     generated_count: int
     rejection_counts: Mapping[str, int]
-    truncated: bool
     provenance: Mapping[str, Any]
 
     def __post_init__(self) -> None:
@@ -416,14 +427,7 @@ def _resolve_ep_candidates(config: AFDSearchConfig, *, n_f_nodes: int) -> tuple[
         elif value in {"ffn_tp", "tp_f"}:
             resolved.add(ffn_tp)
         else:
-            try:
-                parsed = int(value)
-            except (TypeError, ValueError) as exc:
-                raise AFDInfeasible(
-                    AFDReasonCategory.EXPERT_DIVISIBILITY,
-                    f"f_moe_ep_size_candidates accepts integers, 'n_f_nodes', or 'ffn_tp'; got {value!r}",
-                ) from exc
-            resolved.add(parsed)
+            resolved.add(value)
     return tuple(ep for ep in sorted(resolved) if _valid_ep(ep, ffn_tp=ffn_tp, num_experts=config.num_experts))
 
 
@@ -487,7 +491,6 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
             candidates=pinned,
             generated_count=len(pinned),
             rejection_counts=rejections,
-            truncated=False,
             provenance={
                 "schema_version": AFD_SCHEMA_VERSION,
                 "source": _LEGACY_SOURCE,
@@ -508,15 +511,7 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
             },
         )
     if config.tp_a_candidates:
-        tp_candidates = tuple(
-            sorted(
-                {
-                    value
-                    for value in config.tp_a_candidates
-                    if type(value) is int and value > 0 and config.gpus_per_node % value == 0
-                }
-            )
-        )
+        tp_candidates = tuple(sorted({value for value in config.tp_a_candidates if config.gpus_per_node % value == 0}))
     else:
         tp_candidates = tuple(
             sorted({value for value in (1, 2, 4, config.gpus_per_node) if config.gpus_per_node % value == 0})
@@ -571,6 +566,20 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
                                         num_experts=config.num_experts,
                                     )
                                 )
+                                if len(candidates) > config.max_candidates:
+                                    raise AFDInfeasible(
+                                        AFDReasonCategory.CANDIDATE_LIMIT,
+                                        "AFD search produced at least "
+                                        f"{len(candidates)} candidates, exceeding "
+                                        f"max_candidates={config.max_candidates}; narrow "
+                                        "the domain or increase the limit so the complete "
+                                        "domain can be evaluated",
+                                        provenance={
+                                            "generated_count": len(candidates),
+                                            "count_is_lower_bound": True,
+                                            "max_candidates": config.max_candidates,
+                                        },
+                                    )
 
     if not candidates:
         raise AFDInfeasible(
@@ -580,31 +589,16 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
             provenance={"rejection_counts": dict(rejections)},
         )
     generated_count = len(candidates)
-    truncated = generated_count > config.max_candidates
-    if truncated and config.candidate_overflow is AFDOverflowPolicy.ERROR:
-        raise AFDInfeasible(
-            AFDReasonCategory.CANDIDATE_LIMIT,
-            f"AFD search produced {generated_count} candidates, exceeding "
-            f"max_candidates={config.max_candidates}; narrow the domain, increase the "
-            "limit, or explicitly select candidate_overflow='truncate'",
-            provenance={
-                "generated_count": generated_count,
-                "max_candidates": config.max_candidates,
-            },
-        )
-    if truncated:
-        candidates = candidates[: config.max_candidates]
 
     return AFDEnumeration(
         candidates=tuple(candidates),
         generated_count=generated_count,
         rejection_counts=rejections,
-        truncated=truncated,
         provenance={
             "schema_version": AFD_SCHEMA_VERSION,
             "source": _LEGACY_SOURCE,
             "domain": "searched",
-            "complete": not truncated,
+            "complete": True,
             "candidate_order": [
                 "n_a_nodes",
                 "n_f_nodes",
@@ -913,7 +907,10 @@ def evaluate_pure_afd(
     )
     tpot = evaluated[AFDPhase.DECODE.value].step_latency_ms if AFDPhase.DECODE.value in evaluated else 0.0
     request_latency = ttft + tpot * max(output_length - 1, 0)
-    tokens_per_second = sequence_rate * output_length
+    # A prefill-only pool has request capacity but cannot produce output tokens
+    # without a decode phase. Keep its phase rate in ``phase_evaluations`` and
+    # avoid presenting it as end-to-end generation throughput.
+    tokens_per_second = 0.0 if topology.phase is AFDPhase.PREFILL else sequence_rate * output_length
     return AFDDeploymentEvaluation(
         sequence_rate=sequence_rate,
         tokens_per_second=tokens_per_second,
@@ -960,7 +957,6 @@ def rate_match_afd_with_pd(
     ttft_correction_factor: float = AFD_TTFT_CORRECTION_FACTOR,
     decode_latency_correction: float = AFD_DECODE_LATENCY_CORRECTION,
     max_companion_candidates: int = AFD_COMPANION_MAX_CANDIDATES,
-    companion_candidate_overflow: AFDOverflowPolicy | str = AFDOverflowPolicy.ERROR,
     target_ttft_ms: float | None = None,
     target_request_latency_ms: float | None = None,
 ) -> AFDDeploymentEvaluation:
@@ -992,28 +988,7 @@ def rate_match_afd_with_pd(
     ):
         _positive_finite(name, factor)
     _positive_int("max_companion_candidates", max_companion_candidates)
-    companion_overflow = _enum_value(
-        AFDOverflowPolicy,
-        companion_candidate_overflow,
-        "companion_candidate_overflow",
-    )
-    generated_companion_count = len(companion_options)
-    companion_domain_truncated = generated_companion_count > max_companion_candidates
-    if companion_domain_truncated:
-        if companion_overflow is AFDOverflowPolicy.ERROR:
-            raise AFDInfeasible(
-                AFDReasonCategory.CANDIDATE_LIMIT,
-                f"AFD companion search received {generated_companion_count} options, exceeding "
-                f"max_companion_candidates={max_companion_candidates}; narrow the companion "
-                "domain, increase the limit, or explicitly select "
-                "companion_candidate_overflow='truncate'",
-                provenance={
-                    "generated_count": generated_companion_count,
-                    "max_companion_candidates": max_companion_candidates,
-                    "domain": "companion",
-                },
-            )
-        companion_options = companion_options[:max_companion_candidates]
+    generated_companion_options = len(companion_options)
     for name, value in (
         ("target_ttft_ms", target_ttft_ms),
         ("target_request_latency_ms", target_request_latency_ms),
@@ -1051,6 +1026,7 @@ def rate_match_afd_with_pd(
         AFDReasonCategory.GPU_BUDGET.value: 0,
         AFDReasonCategory.LATENCY_SLA.value: 0,
     }
+    evaluated_companion_candidates = 0
     best: tuple[tuple[float, int, int, float], AFDCompanionOption, int, float, float, float] | None = None
 
     for option in companion_options:
@@ -1063,18 +1039,61 @@ def rate_match_afd_with_pd(
         else:
             companion_rate_per_worker = option.sequence_rate_per_worker * decode_degradation
             companion_latency = option.latency_ms * decode_latency_correction
-        required_workers = max(1, math.ceil(afd_rate / companion_rate_per_worker))
-        max_workers = required_workers
+        rate_ratio = afd_rate / companion_rate_per_worker
+        required_workers = None if not math.isfinite(rate_ratio) else max(1, math.ceil(rate_ratio))
+        configured_worker_limit: int | None = None
         if max_companion_workers is not None:
-            max_workers = min(max_workers, max_companion_workers)
+            configured_worker_limit = max_companion_workers
         if max_companion_gpus is not None:
-            max_workers = min(max_workers, max_companion_gpus // option.gpus_per_worker)
+            gpu_worker_limit = max_companion_gpus // option.gpus_per_worker
+            configured_worker_limit = (
+                gpu_worker_limit if configured_worker_limit is None else min(configured_worker_limit, gpu_worker_limit)
+            )
         if total_gpu_budget is not None:
             available = total_gpu_budget - topology.total_gpus
-            max_workers = min(max_workers, available // option.gpus_per_worker)
+            budget_worker_limit = available // option.gpus_per_worker
+            configured_worker_limit = (
+                budget_worker_limit
+                if configured_worker_limit is None
+                else min(configured_worker_limit, budget_worker_limit)
+            )
+        if required_workers is None:
+            if configured_worker_limit is None:
+                raise AFDInfeasible(
+                    AFDReasonCategory.CANDIDATE_LIMIT,
+                    "AFD companion rate matching requires more workers than its finite "
+                    "candidate bound can represent; set a GPU/worker bound or use a "
+                    "larger per-worker rate",
+                    provenance={
+                        "domain": "companion",
+                        "max_companion_candidates": max_companion_candidates,
+                        "sequence_rate_per_worker": option.sequence_rate_per_worker,
+                    },
+                )
+            max_workers = configured_worker_limit
+        else:
+            max_workers = (
+                required_workers if configured_worker_limit is None else min(required_workers, configured_worker_limit)
+            )
         if max_workers < 1:
             rejection_counts[AFDReasonCategory.GPU_BUDGET.value] += 1
             continue
+        if evaluated_companion_candidates + max_workers > max_companion_candidates:
+            raise AFDInfeasible(
+                AFDReasonCategory.CANDIDATE_LIMIT,
+                "AFD companion search would evaluate "
+                f"{evaluated_companion_candidates + max_workers} (option, worker-count) "
+                f"candidates, exceeding max_companion_candidates={max_companion_candidates}; "
+                "narrow the companion domain or increase the limit",
+                provenance={
+                    "domain": "companion",
+                    "generated_options": generated_companion_options,
+                    "evaluated_candidates_before_option": evaluated_companion_candidates,
+                    "option_candidates": max_workers,
+                    "max_companion_candidates": max_companion_candidates,
+                },
+            )
+        evaluated_companion_candidates += max_workers
 
         for workers in range(1, max_workers + 1):
             companion_gpus = workers * option.gpus_per_worker
@@ -1114,7 +1133,7 @@ def rate_match_afd_with_pd(
             provenance={
                 "rejection_counts": rejection_counts,
                 "afd_topology": topology.provenance(),
-                "companion_options": len(companion_options),
+                "companion_options": generated_companion_options,
             },
         )
 
@@ -1155,11 +1174,10 @@ def rate_match_afd_with_pd(
             },
             "rejection_counts": rejection_counts,
             "companion_domain": {
-                "generated_candidates": generated_companion_count,
-                "evaluated_candidates": len(companion_options),
+                "generated_options": generated_companion_options,
+                "evaluated_candidates": evaluated_companion_candidates,
                 "max_candidates": max_companion_candidates,
-                "overflow_policy": companion_overflow.value,
-                "complete": not companion_domain_truncated,
+                "complete": True,
             },
             "topology": topology.provenance(),
             "companion": dict(companion.provenance),
@@ -1217,7 +1235,6 @@ __all__ = [
     "AFDEnumeration",
     "AFDInfeasible",
     "AFDLayerTimes",
-    "AFDOverflowPolicy",
     "AFDPhase",
     "AFDPhaseEvaluation",
     "AFDPipelineModel",

@@ -5,15 +5,17 @@ SPDX-License-Identifier: Apache-2.0
 
 # Developer Guide
 
-This guide will help you get started with developing `aiconfigurator`. We welcome contributions from the community!
+This guide will help you get started with developing the unified `aisimulate`
+wheel and its AIConfigurator compatibility surface. We welcome contributions
+from the community!
 
 ## Initial Setup
 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/ai-dynamo/aiconfigurator
-cd aiconfigurator
+git clone https://github.com/ai-dynamo/aisimulate
+cd aisimulate
 ```
 
 Current performance profiles are checked-in Parquet files. Git LFS is only
@@ -34,22 +36,30 @@ source .venv/bin/activate
 ### 3. Install Development Dependencies
 
 ```bash
-# Install the standalone core and upper package in editable mode
-pip install -e ./aic-core
-pip install -e ".[dev]"
+# Build the unified native extension and install the sole Python distribution
+pip install -e "./python/aisimulate[dev]"
 ```
 
-### 5. Install Pre-Commit Hooks
+### 4. Install Pre-Commit Hooks
 
 ```bash
 pre-commit install
 ```
 
 This installs:
-- The upper `aiconfigurator` package in editable mode
-- The standalone SDK/data/native `aiconfigurator-core` package in editable mode
+- The `aisimulate` package and its `aiconfigurator`, `aiconfigurator_core`, and
+  `aisimulate_core` compatibility namespaces in editable mode
 - All runtime dependencies
 - Development tools: `ruff`, `pre-commit`, `pytest` and related plugins
+
+## AIConfigurator mirror boundaries
+
+Keep upstream AIC Python code/data in `src/aiconfigurator/` and
+`src/aiconfigurator_core/`. AISimulate-specific compatibility glue belongs in
+`src/aisimulate_core/`, not in those mirrors. The corresponding Rust mirror is
+`../../crates/core/src/perfmodel/`. See the repository's
+[AIC synchronization guide](../../docs/aic-sync.md) before applying an upstream
+AIC commit; packaging and CI changes are adapted manually rather than mirrored.
 
 ### Optional: Install Ruff Extension
 

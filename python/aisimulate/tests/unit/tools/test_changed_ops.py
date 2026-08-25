@@ -440,11 +440,11 @@ class TestTablesAndSystems:
         _changed, unchanged = mod.compute_changed_ops(repo, base_sha, base_sha)
         assert _diff_for(unchanged, "sglang", "gemm").systems == ()
 
-    def test_nested_source_root_resolves_sibling_core_data(self, mod, repo):
+    def test_nested_source_root_resolves_unified_package_data(self, mod, repo):
         source_root = repo / "python" / "aisimulate"
         files = {f"python/aisimulate/{path}": content for path, content in _default_files().items()}
         files[
-            "python/aisimulate-core/src/aiconfigurator_core/systems/data/h200_sxm/gemm/sglang/0.5.14/gemm_perf.parquet"
+            "python/aisimulate/src/aiconfigurator_core/systems/data/h200_sxm/gemm/sglang/0.5.14/gemm_perf.parquet"
         ] = "x"
         _write_tree(repo, files)
         base_sha = _commit_all(repo, "nested source root")

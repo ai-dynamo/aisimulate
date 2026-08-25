@@ -68,6 +68,9 @@ def test_topology_derives_workers_batch_and_gpu_accounting():
     assert topology.total_batch_size == 260
     assert topology.total_microbatch_size == 88
     assert topology.provenance()["gpu_accounting"]["afd_total_gpus"] == 40
+    assert topology.provenance()["topology"]["comm_overhead_factor"] == 1.0
+    assert topology.provenance()["topology"]["is_moe"] is False
+    assert topology.provenance()["topology"]["num_experts"] == 0
 
 
 def test_topology_rejects_invalid_phase_and_ep_contracts():
@@ -162,6 +165,28 @@ def test_moe_domain_resolves_symbolic_ep_and_filters_expert_divisibility():
     assert actual == expected
 
 
+def test_search_candidate_types_are_strict():
+    with pytest.raises(
+        AFDInfeasible, match="tp_a_candidates must be a positive integer"
+    ):
+        AFDSearchConfig(
+            total_gpus=16,
+            gpus_per_node=8,
+            is_moe=False,
+            tp_a_candidates=("8",),
+        )
+
+    with pytest.raises(
+        AFDInfeasible, match="f_moe_ep_size_candidates accepts positive integers"
+    ):
+        AFDSearchConfig(
+            total_gpus=16,
+            gpus_per_node=8,
+            is_moe=True,
+            f_moe_ep_size_candidates=(True,),
+        )
+
+
 def test_pinned_domain_is_lossless_and_honors_budget():
     pinned = _topology(n_a_nodes=1, n_f_nodes=2)
     result = enumerate_afd_topologies(
@@ -187,7 +212,7 @@ def test_pinned_domain_is_lossless_and_honors_budget():
     assert budget_error.value.category is AFDReasonCategory.GPU_BUDGET
 
 
-def test_candidate_overflow_is_actionable_or_explicitly_truncated():
+def test_candidate_limit_requires_a_complete_domain():
     error_config = AFDSearchConfig(
         total_gpus=32,
         gpus_per_node=8,
@@ -198,20 +223,7 @@ def test_candidate_overflow_is_actionable_or_explicitly_truncated():
         enumerate_afd_topologies(error_config)
     assert overflow.value.category is AFDReasonCategory.CANDIDATE_LIMIT
     assert overflow.value.provenance["generated_count"] > 2
-
-    result = enumerate_afd_topologies(
-        AFDSearchConfig(
-            total_gpus=32,
-            gpus_per_node=8,
-            is_moe=False,
-            max_candidates=2,
-            candidate_overflow="truncate",
-        )
-    )
-    assert len(result.candidates) == 2
-    assert result.generated_count > 2
-    assert result.truncated is True
-    assert result.provenance["complete"] is False
+    assert overflow.value.provenance["count_is_lower_bound"] is True
 
 
 def test_search_requires_two_node_minimum_with_actionable_budget_reason():
@@ -293,6 +305,21 @@ def test_pure_both_phase_rate_matches_without_double_counting_gpus():
         min((256 / 0.0135) * 0.9, ((256 / (0.0135 * 1.2)) / 16) * 0.95)
     )
     json.dumps(result.as_dict(), sort_keys=True)
+
+
+def test_pure_prefill_does_not_report_generation_throughput():
+    topology = _topology(phase="prefill", combined_with_pd=False)
+    result = evaluate_pure_afd(
+        topology,
+        [_times("prefill")],
+        input_length=128,
+        output_length=16,
+    )
+
+    assert result.sequence_rate > 0
+    assert result.phase_evaluations["prefill"].tokens_per_second > 0
+    assert result.tokens_per_second == 0
+    assert result.tokens_per_second_per_gpu == 0
 
 
 def test_decode_afd_rate_matches_static_prefill_and_accounts_all_gpus():
@@ -378,7 +405,7 @@ def test_rate_match_reports_rejection_counts_when_no_companion_is_feasible():
     assert error.value.provenance["rejection_counts"]["latency_sla"] > 0
 
 
-def test_companion_candidate_bound_requires_explicit_truncation():
+def test_companion_candidate_limit_requires_a_complete_domain():
     topology = _topology(combined_with_pd=True)
     option = AFDCompanionOption(
         phase="prefill",
@@ -400,22 +427,36 @@ def test_companion_candidate_bound_requires_explicit_truncation():
     assert overflow.value.category is AFDReasonCategory.CANDIDATE_LIMIT
     assert overflow.value.provenance["domain"] == "companion"
 
-    result = rate_match_afd_with_pd(
+
+def test_companion_worker_expansion_is_bounded_and_never_overflows():
+    topology = _topology(combined_with_pd=True)
+    option = AFDCompanionOption(
+        phase="prefill",
+        sequence_rate_per_worker=5e-324,
+        latency_ms=10,
+        gpus_per_worker=1,
+    )
+
+    with pytest.raises(AFDInfeasible) as overflow:
+        rate_match_afd_with_pd(
+            topology,
+            _times(),
+            [option],
+            input_length=128,
+            output_length=16,
+        )
+    assert overflow.value.category is AFDReasonCategory.CANDIDATE_LIMIT
+
+    bounded = rate_match_afd_with_pd(
         topology,
         _times(),
-        options,
+        [option],
         input_length=128,
         output_length=16,
-        max_companion_candidates=1,
-        companion_candidate_overflow="truncate",
+        max_companion_workers=2,
     )
-    assert result.provenance["companion_domain"] == {
-        "generated_candidates": 2,
-        "evaluated_candidates": 1,
-        "max_candidates": 1,
-        "overflow_policy": "truncate",
-        "complete": False,
-    }
+    assert bounded.companion_workers == 2
+    assert bounded.provenance["companion_domain"]["evaluated_candidates"] == 2
 
 
 def test_unsupported_adapters_and_runners_fail_closed():

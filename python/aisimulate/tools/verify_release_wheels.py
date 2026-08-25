@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verify the release wheel boundary and ensure every payload has one owner."""
+"""Verify that one ``aisimulate`` wheel owns every Python runtime payload."""
 
 from __future__ import annotations
 
@@ -95,33 +95,22 @@ def _add_source_tree(expected: set[str], source_root: Path, package_root: str) -
             expected.add((Path(package_root) / path.relative_to(source_root)).as_posix())
 
 
-def _source_payloads() -> tuple[set[str], set[str]]:
-    """Return ``(upper, core)`` payload paths expected from the source tree."""
-    repo_root = Path(__file__).resolve().parents[1]
-    upper_source = repo_root / "src"
-    core_source = repo_root / "aic-core" / "src"
-    upper: set[str] = set()
-    core: set[str] = set()
-
-    upper_package = upper_source / "aiconfigurator"
-    for path in upper_package.iterdir():
-        if path.is_file() and path.suffix in PAYLOAD_SUFFIXES:
-            upper.add((Path("aiconfigurator") / path.name).as_posix())
-    for package in ("cli", "generator", "sdk"):
-        _add_source_tree(upper, upper_package / package, f"aiconfigurator/{package}")
-    # Package-level developer documentation remains repository-only. The upper
-    # wheel intentionally owns adapter Python modules and its canonical schema.
-    upper.discard("aiconfigurator/sdk/config_adapter/README.md")
-    _add_source_tree(core, core_source / "aiconfigurator_core", "aiconfigurator_core")
-    return upper, core
+def _source_payloads() -> set[str]:
+    """Return package payloads that the sole wheel must own."""
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    expected: set[str] = set()
+    for package in ("aisimulate", "aisimulate_core", "aiconfigurator", "aiconfigurator_core"):
+        _add_source_tree(expected, source_root / package, package)
+    expected.discard("aiconfigurator/sdk/config_adapter/README.md")
+    return expected
 
 
 def _verify_rust_crate_package() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    manifest = repo_root / "aic-core" / "rust" / "aiconfigurator-core" / "Cargo.toml"
+    repository_root = Path(__file__).resolve().parents[3]
+    manifest = repository_root / "crates" / "core" / "Cargo.toml"
     result = subprocess.run(
         ["cargo", "package", "--list", "--allow-dirty", "--manifest-path", str(manifest)],
-        cwd=repo_root,
+        cwd=repository_root,
         check=True,
         capture_output=True,
         text=True,
@@ -136,7 +125,7 @@ def _verify_rust_crate_package() -> None:
         or "auto-gap-analysis" in entry
     )
     if forbidden:
-        raise RuntimeError(f"Rust crate contains upper or infra payload: {forbidden}")
+        raise RuntimeError(f"Rust crate contains Python application or infra payload: {forbidden}")
     if not any(entry.startswith("src/") for entry in entries):
         raise RuntimeError("Rust crate package list contains no core source files")
 
@@ -148,100 +137,41 @@ def _requirement_name(requirement: str) -> str:
     return re.sub(r"[-_.]+", "-", match.group(0)).lower()
 
 
-def _verify_main_wheel(wheel: Path, expected_payload: set[str]) -> tuple[str, set[str]]:
+def _verify_wheel(wheel: Path, expected_payload: set[str]) -> set[str]:
     names, metadata = _wheel_files(wheel)
     payload = _payload_files(names)
-    required = {
-        "aiconfigurator/__init__.py",
-        "aiconfigurator/cli/main.py",
-        "aiconfigurator/generator/api.py",
-        "aiconfigurator/logging_utils.py",
-        "aiconfigurator/sdk/_compat.py",
-        "aiconfigurator/sdk/engine.py",
-        "aiconfigurator/sdk/config_adapter/__init__.py",
-        "aiconfigurator/sdk/config_adapter/schemas/estimate-request-v1.schema.json",
-        "aiconfigurator/sdk/task_v2.py",
-    }
-    missing = sorted(required - payload)
-    if missing:
-        raise RuntimeError(f"{wheel.name}: missing upper-layer payload: {missing}")
-
-    missing_source = sorted(expected_payload - payload)
-    if missing_source:
-        raise RuntimeError(f"{wheel.name}: missing upper source-tree payload: {missing_source}")
-
-    misplaced = sorted(name for name in payload if name.startswith("aiconfigurator_core/"))
-    if misplaced:
-        raise RuntimeError(f"{wheel.name}: upper wheel must not own core payload: {misplaced}")
-
-    # Scan every archive member, not only recognized source payload suffixes: a
-    # stale Spica binary, data file, or directory entry must also fail the boundary.
     removed = _spica_entries(names)
     if removed:
         raise RuntimeError(f"{wheel.name}: removed Spica payload is still present: {removed}")
-
     infra = _infra_entries(names)
     if infra:
         raise RuntimeError(f"{wheel.name}: infra-only payload must not be packaged: {infra}")
 
-    if "spica" in metadata.get_all("Provides-Extra", []):
-        raise RuntimeError(f"{wheel.name}: removed Spica extra is still present in metadata")
-
-    with zipfile.ZipFile(wheel) as archive:
-        entry_point_paths = [name for name in names if name.endswith(".dist-info/entry_points.txt")]
-        if len(entry_point_paths) != 1:
-            raise RuntimeError(f"{wheel.name}: expected one entry_points.txt, found {entry_point_paths}")
-        entry_points = archive.read(entry_point_paths[0]).decode()
-    if re.search(r"(?m)^spica\s*=", entry_points):
-        raise RuntimeError(f"{wheel.name}: removed Spica console script is still present")
-
-    version = metadata.get("Version")
-    if not version:
-        raise RuntimeError(f"{wheel.name}: missing distribution version")
-    expected_requirement = f"aiconfigurator-core=={version}"
-    requirements = metadata.get_all("Requires-Dist", [])
-    if expected_requirement not in requirements:
-        raise RuntimeError(f"{wheel.name}: expected Requires-Dist {expected_requirement!r}, found {requirements}")
-    return version, payload
-
-
-def _verify_core_wheel(wheel: Path, aic_version: str, expected_payload: set[str]) -> set[str]:
-    names, metadata = _wheel_files(wheel)
-    payload = _payload_files(names)
     required = {
+        "aisimulate/__init__.py",
+        "aisimulate_core/__init__.py",
+        "aiconfigurator/__init__.py",
+        "aiconfigurator/cli/main.py",
+        "aiconfigurator/generator/api.py",
+        "aiconfigurator/sdk/config_adapter/schemas/estimate-request-v1.schema.json",
         "aiconfigurator_core/__init__.py",
+        "aiconfigurator_core/_aiconfigurator_core.py",
         "aiconfigurator_core/_aiconfigurator_core.pyi",
         "aiconfigurator_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
-        "aiconfigurator_core/py.typed",
-        "aiconfigurator_core/sdk/__init__.py",
-        "aiconfigurator_core/sdk/common.py",
         "aiconfigurator_core/sdk/engine.py",
-        "aiconfigurator_core/sdk/memory.py",
         "aiconfigurator_core/systems/h100_sxm.yaml",
     }
     missing = sorted(required - payload)
     if missing:
-        raise RuntimeError(f"{wheel.name}: missing standalone core payload: {missing}")
+        raise RuntimeError(f"{wheel.name}: missing unified package payload: {missing}")
 
     missing_source = sorted(expected_payload - payload)
     if missing_source:
-        raise RuntimeError(f"{wheel.name}: missing core source-tree payload: {missing_source}")
-
-    misplaced = sorted(name for name in payload if name.startswith("aiconfigurator/") or name.startswith("spica/"))
-    if misplaced:
-        raise RuntimeError(f"{wheel.name}: core wheel must not own upper-layer payload: {misplaced}")
-
-    infra = _infra_entries(names)
-    if infra or any("config_adapter" in name for name in names):
-        raise RuntimeError(
-            f"{wheel.name}: core wheel contains upper or infra payload: "
-            f"{sorted(infra + [name for name in names if 'config_adapter' in name])}"
-        )
+        raise RuntimeError(f"{wheel.name}: missing source-tree payload: {missing_source}")
 
     checks = {
-        "native core extension": any(
-            name.startswith("aiconfigurator_core/_aiconfigurator_core.") and name.endswith((".so", ".pyd"))
-            for name in payload
+        "unified native extension": any(
+            name.startswith("aisimulate/_runtime.") and name.endswith((".so", ".pyd")) for name in payload
         ),
         "nested performance data": any(
             name.startswith("aiconfigurator_core/systems/data/") and name.endswith(".parquet") for name in payload
@@ -252,13 +182,14 @@ def _verify_core_wheel(wheel: Path, aic_version: str, expected_payload: set[str]
     if failed:
         raise RuntimeError(f"{wheel.name}: missing {', '.join(failed)}")
 
-    if metadata.get("Version") != aic_version:
-        raise RuntimeError(
-            f"{wheel.name}: version {metadata.get('Version')!r} does not match aiconfigurator {aic_version!r}"
-        )
     requirements = metadata.get_all("Requires-Dist", [])
-    if any(_requirement_name(requirement) == "aiconfigurator" for requirement in requirements):
-        raise RuntimeError(f"{wheel.name}: standalone core must not depend on aiconfigurator: {requirements}")
+    split_dependencies = sorted(
+        requirement
+        for requirement in requirements
+        if _requirement_name(requirement) in {"aisimulate-core", "aiconfigurator-core"}
+    )
+    if split_dependencies:
+        raise RuntimeError(f"{wheel.name}: split Python core dependency remains: {split_dependencies}")
     return payload
 
 
@@ -267,22 +198,10 @@ def main() -> int:
     parser.add_argument("dist_dir", type=Path)
     args = parser.parse_args()
 
-    main_wheel = _one_wheel(args.dist_dir, "aiconfigurator-*.whl")
-    core_wheel = _one_wheel(args.dist_dir, "aiconfigurator_core-*.whl")
-    expected_main, expected_core = _source_payloads()
-    aic_version, main_payload = _verify_main_wheel(main_wheel, expected_main)
-    core_payload = _verify_core_wheel(core_wheel, aic_version, expected_core)
-
-    overlap = sorted(main_payload & core_payload)
-    if overlap:
-        raise RuntimeError(f"release wheels have overlapping payload ownership: {overlap}")
-
+    wheel = _one_wheel(args.dist_dir, "aisimulate-*.whl")
+    payload = _verify_wheel(wheel, _source_payloads())
     _verify_rust_crate_package()
-
-    print(
-        f"Verified upper {main_wheel.name} and standalone {core_wheel.name}: "
-        f"{len(main_payload)} + {len(core_payload)} disjoint payload files"
-    )
+    print(f"Verified unified {wheel.name}: {len(payload)} application, SDK, data, and native payload files")
     return 0
 
 

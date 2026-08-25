@@ -26,7 +26,6 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [Configuration](configuration.md) describes core and adapter-owned search spaces.
 - [Traffic](traffic.md) defines trace, request-rate, concurrency, and KV-load workloads.
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
-- [Search Policies](search-policies.md) defines bounded rapid search and complete finite thorough search.
 - [AFD Topology Contract](afd-topology.md) defines Attention-FFN shapes, pipeline evaluation, and
   P/D companion rate matching.
 - [Results](results.md) describes `ReplaySpec` and `Candidate` output.
@@ -45,8 +44,9 @@ config = SmartSearchConfig.from_yaml("sweep.yaml")
 candidates = Sweeper(runner_factory=my_runner_factory).run(config)
 ```
 
-The standalone `python -m aisimulate.sweeper` command validates configuration but deliberately does
-not choose a replay implementation.
+The public `aisimulate recommend --config ...` command validates the unified schema and selects a
+runner through `--stack`. The `Sweeper` Python API remains available for callers that inject a
+`RunnerFactory` directly.
 
 ## Compatibility
 
