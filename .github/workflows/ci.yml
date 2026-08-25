@@ -151,5 +151,5 @@ jobs:
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};
           forbidden = {'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
           assert installed.isdisjoint(forbidden), installed & forbidden"
-      - run: test ! -e release-smoke/bin/aisimulate
+      - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version

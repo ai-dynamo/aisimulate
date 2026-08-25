@@ -98,7 +98,8 @@ build-backend = "maturin"
 [project.scripts]
 # AISimulate owns and ships the application, but preserves the established
 # AIConfigurator command identity. The distribution name is not a second
-# top-level application command.
+# top-level application command for AIC workflows.
+aisimulate = "aisimulate.main:main"
 aiconfigurator = "aiconfigurator.main:main"
 
 [tool.maturin]

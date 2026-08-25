@@ -119,6 +119,25 @@ def test_score_defaults_on_missing_report_keys():
     assert score_report({}, OptimizationTarget.THROUGHPUT) == 0.0
 
 
+def test_rank_and_pareto_ties_use_stable_config_order() -> None:
+    b = Candidate(config={"name": "b"}, used_gpus=2, score=10.0, metrics={})
+    a = Candidate(config={"name": "a"}, used_gpus=2, score=10.0, metrics={})
+    assert [candidate.config["name"] for candidate in rank([b, a])] == ["a", "b"]
+
+    objectives = [
+        OptimizationTarget.THROUGHPUT_PER_GPU,
+        OptimizationTarget.THROUGHPUT_PER_USER,
+    ]
+    a.objectives = {
+        "throughput_per_gpu": 1.0,
+        "throughput_per_user": 1.0,
+    }
+    b.objectives = dict(a.objectives)
+    assert [
+        candidate.config["name"] for candidate in pareto_front([b, a], objectives)
+    ] == ["a", "b"]
+
+
 def test_objective_value_unknown_target_raises():
     # A target that is none of the handled enum members hits the final guard.
     sentinel = object()

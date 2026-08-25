@@ -69,10 +69,12 @@ def check_manifests() -> None:
         for dep in dependencies
     )
     assert not any(
-        str(dep).lower().startswith(("dynamo", "ai-dynamo"))
-        for dep in dependencies
+        str(dep).lower().startswith(("dynamo", "ai-dynamo")) for dep in dependencies
     )
-    assert app["scripts"] == {"aiconfigurator": "aiconfigurator.main:main"}
+    assert app["scripts"] == {
+        "aiconfigurator": "aiconfigurator.main:main",
+        "aisimulate": "aisimulate.main:main",
+    }
 
 
 def _run(

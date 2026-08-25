@@ -47,6 +47,7 @@ pub struct ValidatedAgenticGraph {
 pub type AgenticTrace = ValidatedAgenticGraph;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TraceFileFormat {
     Mooncake,
     /// Mooncake-shaped rows where follow-up turns contain new input deltas.
@@ -228,7 +229,7 @@ pub struct AgenticNode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgenticPlay {
     pub(super) play_id: String,
-    pub(super) root_node: usize,
+    pub(super) root_nodes: Vec<usize>,
     pub(super) nodes: Vec<usize>,
 }
 
