@@ -60,7 +60,7 @@ It will also collect nccl allreduce, all_gather, all2all, reduce_scatter using n
 The standalone scripts stage `nccl_perf.txt`, `oneccl_perf.txt`, and
 `custom_allreduce_perf.txt`. Collector finalization converts accepted output
 to parquet under
-`aic-core/src/aiconfigurator_core/systems/data/<system>/comm/<backend>/<version>/`.
+`python/aisimulate/src/aiconfigurator_core/systems/data/<system>/comm/<backend>/<version>/`.
 
 # Model-centric cases and healing runs
 
@@ -115,6 +115,67 @@ capabilities.py                        — generation-time capability/denylist f
 
 The plan is one equation: cases = dedup(base grid ∪ model shapes), then
 intersected with hardware capability floors and minus the hang denylist.
+
+## Whole-forward FPM campaign
+
+Use the dedicated `python3 -m collector.fpm_forward` entry point for vLLM
+whole-forward campaigns. The compatibility route
+`python3 collector/collect.py --ops fpm_forward` remains supported and must be
+selected alone. Both routes require a resolved model, `--gpu`, and
+`--fpm-max-gpus`. The campaign derives a latency-blind prefill/decode
+design from the model's AIC attention cases, asks Generator for three rendered
+artifacts per cell — a keepalive Pod, LeaderWorkerSet, or Grove PodCliqueSet
+manifest plus `fpm_env.sh` and a thin engine-launch `run.sh` — stages them with
+its own in-pod runtime `fpm_exec.sh` (etcd lifecycle, result gate and checker,
+completion barrier, exit-code policy), and publishes the formal table only
+after every frozen cell passes.
+For multinode runs, select the installed controller with
+`--fpm-orchestrator lws|grove`. Start with `--plan-only` or a one-cell
+`--smoke --limit 1` run.
+
+```bash
+python3 -m collector.fpm_forward \
+  --model-path nvidia/GLM-5.2-NVFP4 \
+  --gpu b200_sxm \
+  --fpm-max-gpus 8 \
+  --plan-only
+```
+
+Generation-time admission may omit a topology only when a concrete AIC
+size-vs-capacity estimate proves its configured token envelope cannot fit.
+Missing performance data, bootstrap architectures, and structural estimator
+errors remain runnable so the target runtime supplies the observation.
+
+Model identity is resolved from a local checkpoint/config, the packaged AIC
+config cache, or Hugging Face. A real model architecture that is not registered
+by AIC uses a config-derived bootstrap template; an unresolved or empty config
+fails before planning. When the checkpoint exists only inside the runtime Pod,
+pass its real local metadata explicitly with
+`--fpm-model-config /path/to/config.json` (a directory containing `config.json`
+is also accepted). The resolved config snapshot and SHA-256 are frozen into the
+collection plan.
+
+Generator and Collector share the Dynamo-native benchmark result schema
+version through the rendered `fpm_env.sh`; the staged `fpm_exec.sh` validates
+that contract in-pod without a Collector-side text patch. Formal
+`fpm_forward_perf.parquet` output uses metadata schema v6 and records
+`collector_attempt_id`, `runtime_run_id`, `runtime_grid_digest`, and
+`kv_seed_regime` on every row. The seed regime is `real_kv`, `fake_fallback`,
+an approved `skip:<reason>`, `legacy`, or `n/a`; non-benign warm-up skips
+remain `fake_fallback` rather than acceptable evidence. Republishing the same
+attempt is idempotent. If a cell already exists under a different attempt or
+runtime identity, first publisher wins: that entire cell is skipped while
+non-overlapping cells in the same publication still land.
+
+The default publication gate requires every frozen cell to pass.
+`--fpm-publish-partial` explicitly publishes passed cells, records the exact
+`missing_cells` in the checkpoint, and still returns a nonzero incomplete-run
+result. The database checkpoint also records
+`skipped_first_publisher_wins`. A validated completed schema-v6 database is
+terminal on resume even if raw cell artifacts have since been pruned.
+`run-manifest.json` schema v2 is invocation-scoped: its `attempts` include the
+attempt ID, timestamps, final status, and partial phase timings for failed
+attempts; a no-op resume writes no historical attempts.
 
 ## Failure philosophy: observe, don't predict
 
@@ -515,7 +576,7 @@ compute, `moe` family) and `moe_a2a_perf` (dispatch/combine communication,
    in step 1.
 
 4. **Publish with sidecars.** Finalized parquet goes into the family tree
-   (`aic-core/src/aiconfigurator_core/systems/data/<system>/moe/<backend>/<version>/moe_expert_compute_perf.parquet`,
+   (`python/aisimulate/src/aiconfigurator_core/systems/data/<system>/moe/<backend>/<version>/moe_expert_compute_perf.parquet`,
    `.../<system>/comm/<backend>/<version>/moe_a2a_perf.parquet`) together
    with its `collection_meta.yaml` entry — never a parquet without its
    provenance. The per-world `moe_a2a` outputs need the cross-job merge
@@ -527,7 +588,7 @@ compute, `moe` family) and `moe_a2a_perf` (dispatch/combine communication,
 
 | table | `latency` column | loader behavior |
 |---|---|---|
-| `moe_a2a_perf` | **microseconds** | `load_moe_a2a_data` divides by 1000 (`aic-core/.../sdk/operations/moe_comm.py`: "collector records us; leaves are ms") |
+| `moe_a2a_perf` | **microseconds** | `load_moe_a2a_data` divides by 1000 (`python/aisimulate/.../sdk/operations/moe_comm.py`: "collector records us; leaves are ms") |
 | `moe_expert_compute_perf` | **milliseconds** | `load_moe_expert_compute_data` stores it raw — no conversion |
 
 The µs convention matches the legacy DeepEP tables the a2a loader also

@@ -127,6 +127,25 @@ def test_score_defaults_on_missing_report_keys():
     assert score_report({}, OptimizationTarget.THROUGHPUT) == 0.0
 
 
+def test_rank_and_pareto_ties_use_stable_config_order() -> None:
+    b = Candidate(config={"name": "b"}, used_gpus=2, score=10.0, metrics={})
+    a = Candidate(config={"name": "a"}, used_gpus=2, score=10.0, metrics={})
+    assert [candidate.config["name"] for candidate in rank([b, a])] == ["a", "b"]
+
+    objectives = [
+        OptimizationTarget.THROUGHPUT_PER_GPU,
+        OptimizationTarget.THROUGHPUT_PER_USER,
+    ]
+    a.objectives = {
+        "throughput_per_gpu": 1.0,
+        "throughput_per_user": 1.0,
+    }
+    b.objectives = dict(a.objectives)
+    assert [
+        candidate.config["name"] for candidate in pareto_front([b, a], objectives)
+    ] == ["a", "b"]
+
+
 def test_objective_value_unknown_target_raises():
     # A target that is none of the handled enum members hits the final guard.
     sentinel = object()
@@ -152,10 +171,10 @@ def test_aggregate_sla_bounds_are_inclusive_and_missing_metrics_fail_closed():
     exact = SLATarget(
         ttft_ms=800.0,
         itl_ms=20.0,
-        e2e_ms=1200.0,
     )
     assert meets_aggregate_sla(REPORT, exact)
     assert aggregate_sla_violations(REPORT, exact) == ()
+    assert meets_aggregate_sla(REPORT, SLATarget(e2e_ms=1200.0))
 
     violations = aggregate_sla_violations(
         {"mean_ttft_ms": 801.0},
@@ -163,7 +182,9 @@ def test_aggregate_sla_bounds_are_inclusive_and_missing_metrics_fail_closed():
     )
     assert any("ttft 801ms > 800ms" in item for item in violations)
     assert any("mean_tpot_ms is missing" in item for item in violations)
-    assert any("mean_e2e_latency_ms is missing" in item for item in violations)
+    assert aggregate_sla_violations({}, SLATarget(e2e_ms=1200.0)) == (
+        "e2e metric mean_e2e_latency_ms is missing",
+    )
 
 
 def test_throughput_per_user_objective():

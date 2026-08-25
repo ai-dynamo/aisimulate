@@ -37,6 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = REPO_ROOT / "tools" / "perf_database" / "evidence_check.py"
 CHANGED_OPS_MODULE_PATH = REPO_ROOT / "tools" / "perf_database" / "changed_ops.py"
 REAL_POLICY_PATH = REPO_ROOT / "collector" / "evidence_policy.yaml"
+REAL_EXCEPTIONS_PATH = REPO_ROOT / "collector" / "evidence_exceptions.yaml"
 
 
 def _load_module(path: Path, name: str):
@@ -557,3 +558,62 @@ def test_real_repo_no_change_means_no_evidence_required(mod, changed_ops_mod, tm
     rc = mod.main(["--manifest", str(manifest_path), "--policy", str(REAL_POLICY_PATH)])
     assert rc == 0
     assert "no evidence required" in capsys.readouterr().err
+
+
+def test_pr1486_shared_file_noop_waiver_scope_is_complete_and_exact():
+    policy = yaml.safe_load(REAL_EXCEPTIONS_PATH.read_text(encoding="utf-8"))
+    [waiver] = [
+        item
+        for item in policy["evidence_exceptions"]
+        if item["reason"] == "shared-file no-op fan-out; plan-preserving refactors (see scope note)"
+    ]
+
+    assert waiver["scope"] == {
+        "reasons": ["collector_code", "case_plan"],
+        "pairs": {
+            "sglang": [
+                "attention",
+                "encoder_attention",
+                "gemm",
+                "kda",
+                "linear_attention",
+                "mhc",
+                "mla",
+                "mla_bmm",
+                "moe",
+                "msa",
+                "quantize",
+                "sparse_attention",
+            ],
+            "trtllm": [
+                "attention",
+                "encoder_attention",
+                "gemm",
+                "linear_attention",
+                "mhc",
+                "mla",
+                "mla_bmm",
+                "msa",
+                "quantize",
+            ],
+            "vllm": [
+                "attention",
+                "encoder_attention",
+                "gemm",
+                "kda",
+                "linear_attention",
+                "mhc",
+                "mla",
+                "mla_bmm",
+                "moe",
+                "msa",
+                "quantize",
+                "sparse_attention",
+            ],
+            "wideep_sglang": ["comm", "moe"],
+            "wideep_trtllm": ["moe"],
+        },
+    }
+    assert waiver["requirements_waived"] == ["before_after_diff", "collect_new_cases_only"]
+    assert waiver["approved_by"] == "tianhaox"
+    assert waiver["expires"].isoformat() == "2026-10-31"

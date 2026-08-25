@@ -1,0 +1,221 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Models package — one file per model family with a decorator-based registry.
+
+Two mechanisms expose model classes:
+
+1. **Registry** — populated automatically. ``pkgutil.iter_modules`` imports
+   every ``.py`` file in this package (except ``base`` and ``helpers``) at
+   package import time, which fires their ``@register_model(...)`` decorators
+   and adds the class to ``_MODEL_REGISTRY``. ``get_model()`` reads from the
+   registry. **Adding a new model only needs the new file** — no edits here.
+
+2. **Re-exports** at the bottom of this file (``from .gpt import GPTModel``
+   and the ``__all__`` list). These exist so callers can write
+   ``from aiconfigurator_core.sdk.models import GPTModel`` directly, matching the
+   pre-refactor monolithic-module import style. **Adding a new public class
+   to this list IS a manual edit**, but only if the class needs to be
+   importable by name from the package root. Skipping it has no functional
+   impact — the registry lookup via ``get_model()`` will find the class
+   either way.
+"""
+
+from __future__ import annotations
+
+import importlib
+import pkgutil
+
+from aiconfigurator_core.sdk import config
+from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY, BaseModel
+from aiconfigurator_core.sdk.models.helpers import (
+    _apply_model_quant_defaults,
+    _architecture_to_model_family,
+    _get_model_info,
+    _infer_quant_modes_from_raw_config,
+    attention_op_keys,
+    check_is_moe,
+    get_model_family,
+    mtp_scale_factor,
+    resolve_context_fmha_by_data,
+    resolve_dsv4_moe_arch,
+    resolve_dsv4_moe_arch_mode,
+    resolve_kimi_k3_moe_arch_mode,
+    resolve_nvfp4_for_system,
+)
+
+# Auto-import every other module in this package so ``@register_model``
+# decorators populate ``_MODEL_REGISTRY``. New model files become discoverable
+# without editing this __init__.
+_SKIP = {"base", "helpers"}
+for _, _name, _ in pkgutil.iter_modules(__path__):
+    if _name not in _SKIP:
+        importlib.import_module(f".{_name}", __name__)
+del _SKIP
+
+
+_FORWARD_MODELS = ("op_level", "fpm")
+
+
+def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
+    """Centralized fpm rewrite: each phase list becomes exactly one whole-model
+    op. No model class rewrites its own lists; metadata, parallelism, and the
+    public model type are unchanged."""
+    from aiconfigurator_core.sdk.operations.fpm_forward import FPMForwardOp
+
+    if model.encoder_ops:
+        raise NotImplementedError(
+            f"forward_model='fpm' does not support encoder/multimodal models "
+            f"(model_family={model.model_family!r} has encoder ops). Use forward_model='op_level'."
+        )
+    if getattr(model, "_nextn", 0):
+        # The collected whole-model curves carry neither the MTP-head cost nor
+        # the acceptance amortization that op_level encodes in
+        # mtp_scale_factor, so fpm would silently price MTP as plain decode.
+        raise NotImplementedError(
+            f"forward_model='fpm' does not support MTP speculative decoding (nextn={model._nextn}). "
+            "Use forward_model='op_level'."
+        )
+    # The ORIGINAL op-level lists stay alive inside the FPM ops as the
+    # whole-model roofline (queried in DatabaseMode.SOL at interpolation
+    # time) and as the weight-bytes inventory for memory estimation.
+    context_ops = list(model.context_ops)
+    generation_ops = list(model.generation_ops)
+    weight_bytes = float(sum(op.get_weights() for op in context_ops))
+    model.context_ops = [
+        FPMForwardOp("prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes)
+    ]
+    model.generation_ops = [
+        FPMForwardOp("decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes)
+    ]
+    model.forward_model = "fpm"
+    return model
+
+
+def get_model(
+    model_path: str,
+    model_config: config.ModelConfig,
+    backend_name: str,
+) -> BaseModel:
+    """Build a model from a HuggingFace model path.
+
+    Resolves the model family from the architecture, applies quantization
+    defaults, then dispatches to the registered class's ``create()``
+    classmethod. Per-family construction details (MoE prefix args, WideEP
+    dispatch, post-construction hooks) live inside each model's
+    ``create()``.
+
+    ``model_config.forward_model`` selects the forward-pass modeling mode:
+    the default "op_level" returns the granular op lists unchanged; "fpm"
+    rewrites each phase list to a single whole-model ``FPMForwardOp``.
+    """
+    forward_model = getattr(model_config, "forward_model", "op_level") or "op_level"
+    if forward_model not in _FORWARD_MODELS:
+        raise ValueError(f"Unknown forward_model: {forward_model!r}. Valid values: {', '.join(_FORWARD_MODELS)}")
+
+    # Shallow-copy so mutations below don't poison the @cache'd original.
+    model_info = dict(_get_model_info(model_path))
+    raw_config = model_info.get("raw_config", {})
+    architecture = model_info["architecture"]
+    model_family = _architecture_to_model_family(architecture)
+
+    # Preserve caller intent before checkpoint defaults fill unset modes.
+    # Model-specific mixed-precision splitters use this provenance rather than
+    # trying to infer explicitness by comparing enum values after mutation.
+    gemm_explicit = getattr(model_config, "_gemm_quant_mode_is_explicit", None)
+    model_info["gemm_quant_mode_is_explicit"] = (
+        model_config.gemm_quant_mode is not None if gemm_explicit is None else gemm_explicit
+    )
+    _apply_model_quant_defaults(model_config, raw_config, architecture, backend_name)
+    if check_is_moe(model_path, model_info=model_info):
+        model_config.resolve_moe_parallelism()
+
+    if model_config.overwrite_num_layers > 0:
+        model_info["layers"] = model_config.overwrite_num_layers
+
+    # Enrich model_info with derived fields so create() doesn't need to repeat the work.
+    model_info["model_path"] = model_path
+    model_info["model_family"] = model_family
+
+    cls = _MODEL_REGISTRY.get(model_family)
+    if cls is None:
+        raise ValueError(
+            f"Unknown model family: {model_family}. Registered families: {', '.join(sorted(_MODEL_REGISTRY.keys()))}"
+        )
+
+    # Gate context parallelism BEFORE construction. ``supports_cp`` defaults to
+    # False; each CP-capable model class overrides it to declare which backends
+    # it supports. GLM-5 DSA handles CP inside ContextDSAModule; dense models
+    # use the 1145-style skeleton (seq_split + _cp_attn_comm_ops + zigzag FMHA).
+    if model_config.cp_size > 1:
+        if not cls.supports_cp(backend_name):
+            raise NotImplementedError(
+                f"Context parallelism (cp_size={model_config.cp_size}) is not supported for "
+                f"model_family={model_family!r} on backend={backend_name!r}. The model class "
+                f"must override ``supports_cp`` and implement CP in its op pipeline."
+            )
+        # sglang CP requires the attention side to be pure CP (no concurrent attn TP/DP).
+        if backend_name == "sglang" and (model_config.tp_size != 1 or model_config.attention_dp_size != 1):
+            raise ValueError(
+                f"sglang CP requires tp_size=1 and attention_dp_size=1 when cp_size>1 "
+                f"(CP and attention TP/DP are mutually exclusive on sglang). Got "
+                f"tp_size={model_config.tp_size}, attention_dp_size={model_config.attention_dp_size}, "
+                f"cp_size={model_config.cp_size}."
+            )
+        model_config.cp_style = cls._resolve_cp_style(backend_name)
+    else:
+        model_config.cp_style = "none"
+
+    model = cls.create(model_info, model_config, backend_name)
+    if forward_model == "fpm":
+        model = _apply_forward_model_fpm(model)
+    return model
+
+
+# Re-export concrete model classes for backward compatibility. Auto-discovery
+# above already imported them; we list them here for static analysis / IDE
+# support and so wildcard imports work.
+from aiconfigurator_core.sdk.models.deepseek import DeepSeekModel
+from aiconfigurator_core.sdk.models.deepseek_v4 import DeepSeekV4Model
+from aiconfigurator_core.sdk.models.deepseek_v32 import DeepSeekV32Model
+from aiconfigurator_core.sdk.models.gemma4 import Gemma4MixModel
+from aiconfigurator_core.sdk.models.gpt import GPTModel
+from aiconfigurator_core.sdk.models.hybrid_moe import HybridMoEModel
+from aiconfigurator_core.sdk.models.llama import LLAMAModel
+from aiconfigurator_core.sdk.models.moe import MOEModel
+from aiconfigurator_core.sdk.models.nemotron_h import NemotronHModel
+from aiconfigurator_core.sdk.models.nemotron_nas import NemotronNas
+from aiconfigurator_core.sdk.models.qwen3vl import Qwen3VLModel, Qwen3VLMoEModel
+from aiconfigurator_core.sdk.models.qwen35 import Qwen35Model
+
+__all__ = [
+    "BaseModel",
+    "DeepSeekModel",
+    "DeepSeekV4Model",
+    "DeepSeekV32Model",
+    "GPTModel",
+    "Gemma4MixModel",
+    "HybridMoEModel",
+    "LLAMAModel",
+    "MOEModel",
+    "NemotronHModel",
+    "NemotronNas",
+    "Qwen3VLMoEModel",
+    "Qwen3VLModel",
+    "Qwen35Model",
+    "_apply_model_quant_defaults",
+    "_architecture_to_model_family",
+    "_get_model_info",
+    "_infer_quant_modes_from_raw_config",
+    "attention_op_keys",
+    "check_is_moe",
+    "get_model",
+    "get_model_family",
+    "mtp_scale_factor",
+    "resolve_context_fmha_by_data",
+    "resolve_dsv4_moe_arch",
+    "resolve_dsv4_moe_arch_mode",
+    "resolve_kimi_k3_moe_arch_mode",
+    "resolve_nvfp4_for_system",
+]

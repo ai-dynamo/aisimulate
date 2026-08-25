@@ -47,9 +47,12 @@ from .discovery import resolve_providers
 from .kv_estimate import resolve_backend_version
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
+    SEARCH_SPACE_FRAGMENT_API_VERSION,
     AdapterReplaySpec,
     AdapterSearchPlan,
     CandidateContext,
+    ConditionalSearchSpace,
+    InfeasibleCandidate,
     RuntimeHookSpec,
     SearchSpaceFragment,
     SweepConfigProvider,
@@ -72,7 +75,7 @@ from .score import (
     is_feasible,
     make_candidate,
 )
-from .search_space import BranchSpace, enumerate_branches
+from .search_space import BranchSpace, ConditionalDimensionSpace, enumerate_branches
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +95,26 @@ _ReplayResult = tuple[dict[str, float] | None, str, str]
 class _PreparedCandidate:
     sample: dict[str, Any]
     replay_spec: ReplaySpec
+    prediction_config: dict[str, Any] | None = None
+
+
+@dataclass
+class _BranchSearchState:
+    branch: BranchSpace
+    sampler: BranchSampler
+    budget: int | None
+    attempts: int = 0
+    stalled: bool = False
+
+
+def _branch_sampler_seed(seed: int, deployment_mode: str) -> int:
+    """Derive a stable seed from branch identity, independent of active-branch order."""
+
+    offsets = {"agg": 0, "disagg": 1}
+    try:
+        return seed + offsets[deployment_mode]
+    except KeyError as exc:  # SearchSpace validation currently makes this unreachable.
+        raise ValueError(f"unsupported deployment branch {deployment_mode!r}") from exc
 
 
 _ADAPTER_PARAM_PREFIX = "adapter::"
@@ -99,20 +122,12 @@ _ADAPTER_PARAM_SEPARATOR = "::"
 
 
 def _adapter_param(adapter_name: str, local_name: str) -> str:
-    return (
-        f"{_ADAPTER_PARAM_PREFIX}{adapter_name}{_ADAPTER_PARAM_SEPARATOR}{local_name}"
-    )
+    return f"{_ADAPTER_PARAM_PREFIX}{adapter_name}{_ADAPTER_PARAM_SEPARATOR}{local_name}"
 
 
-def _adapter_selection(
-    selection: Mapping[str, Any], adapter_name: str
-) -> dict[str, Any]:
+def _adapter_selection(selection: Mapping[str, Any], adapter_name: str) -> dict[str, Any]:
     prefix = _adapter_param(adapter_name, "")
-    return {
-        key.removeprefix(prefix): deepcopy(value)
-        for key, value in selection.items()
-        if key.startswith(prefix)
-    }
+    return {key.removeprefix(prefix): deepcopy(value) for key, value in selection.items() if key.startswith(prefix)}
 
 
 def _prepare_providers(
@@ -121,9 +136,7 @@ def _prepare_providers(
     injected: Mapping[str, SweepConfigProvider] | None,
     show_progress: bool,
 ) -> tuple[dict[str, SweepConfigProvider], dict[str, AdapterSearchPlan]]:
-    invalid_names = [
-        name for name in config.adapters if _ADAPTER_PARAM_SEPARATOR in name
-    ]
+    invalid_names = [name for name in config.adapters if _ADAPTER_PARAM_SEPARATOR in name]
     if invalid_names:
         raise ValueError(
             f"adapter names cannot contain reserved separator {_ADAPTER_PARAM_SEPARATOR!r}: {invalid_names}"
@@ -143,9 +156,7 @@ def _prepare_providers(
             goal=deepcopy(base_context.goal),
             show_progress=base_context.show_progress,
         )
-        plan = provider.generate_search_space(
-            deepcopy(config.adapters[name].search_space), context
-        )
+        plan = provider.generate_search_space(deepcopy(config.adapters[name].search_space), context)
         _validate_search_plan(name, plan)
         # The adapter owns the object it returned and may reuse internal buffers
         # later. Take a complete core-owned snapshot at the ABI boundary.
@@ -155,19 +166,16 @@ def _prepare_providers(
         unknown = (
             set(plan.fragment.choices_by_branch)
             | set(plan.fragment.float_ranges_by_branch)
+            | set(plan.fragment.conditional_by_branch)
         ) - configured_modes
         if unknown:
-            raise ValueError(
-                f"adapter {name!r} returned unknown deployment branch(es): {sorted(unknown)}"
-            )
+            raise ValueError(f"adapter {name!r} returned unknown deployment branch(es): {sorted(unknown)}")
     return providers, plans
 
 
 def _validate_search_plan(name: str, plan: Any) -> None:
     if not isinstance(plan, AdapterSearchPlan):
-        raise TypeError(
-            f"adapter {name!r} generate_search_space must return AdapterSearchPlan"
-        )
+        raise TypeError(f"adapter {name!r} generate_search_space must return AdapterSearchPlan")
     if not isinstance(plan.fragment, SearchSpaceFragment):
         raise TypeError(f"adapter {name!r} returned an invalid SearchSpaceFragment")
     try:
@@ -177,9 +185,7 @@ def _validate_search_plan(name: str, plan: Any) -> None:
             raise TypeError("potential_runtime_hooks must be a tuple")
         _validate_search_fragment(plan.fragment)
         validate_json_value(plan.state, path=f"adapter {name!r} search plan state")
-        validate_json_value(
-            plan.diagnostics, path=f"adapter {name!r} search diagnostics"
-        )
+        validate_json_value(plan.diagnostics, path=f"adapter {name!r} search diagnostics")
         for index, hook in enumerate(plan.potential_runtime_hooks):
             _validate_runtime_hook(
                 hook,
@@ -187,12 +193,15 @@ def _validate_search_plan(name: str, plan: Any) -> None:
             )
         canonical_json(plan)
     except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"adapter {name!r} returned an invalid/non-JSON search plan: {exc}"
-        ) from exc
+        raise TypeError(f"adapter {name!r} returned an invalid/non-JSON search plan: {exc}") from exc
 
 
 def _validate_search_fragment(fragment: SearchSpaceFragment) -> None:
+    if type(fragment.api_version) is not int or fragment.api_version != SEARCH_SPACE_FRAGMENT_API_VERSION:
+        raise ValueError(
+            f"search-space fragment uses API version {fragment.api_version!r}; "
+            f"aisimulate requires version {SEARCH_SPACE_FRAGMENT_API_VERSION}"
+        )
     if type(fragment.choices_by_branch) is not dict:
         raise TypeError("choices_by_branch must be a dictionary")
     for branch, parameters in fragment.choices_by_branch.items():
@@ -204,12 +213,8 @@ def _validate_search_fragment(fragment: SearchSpaceFragment) -> None:
             if type(parameter) is not str or not parameter:
                 raise TypeError("categorical parameter names must be non-empty strings")
             if type(values) is not list:
-                raise TypeError(
-                    f"categorical parameter {parameter!r} choices must be a list"
-                )
-            validate_json_value(
-                values, path=f"categorical parameter {parameter!r} choices"
-            )
+                raise TypeError(f"categorical parameter {parameter!r} choices must be a list")
+            validate_json_value(values, path=f"categorical parameter {parameter!r} choices")
 
     if type(fragment.float_ranges_by_branch) is not dict:
         raise TypeError("float_ranges_by_branch must be a dictionary")
@@ -222,15 +227,100 @@ def _validate_search_fragment(fragment: SearchSpaceFragment) -> None:
             if type(parameter) is not str or not parameter:
                 raise TypeError("continuous parameter names must be non-empty strings")
             if type(bounds) is not tuple or len(bounds) != 2:
-                raise TypeError(
-                    f"continuous parameter {parameter!r} bounds must be a pair"
-                )
+                raise TypeError(f"continuous parameter {parameter!r} bounds must be a pair")
             if any(type(bound) not in (int, float) for bound in bounds) or not all(
                 math.isfinite(float(bound)) for bound in bounds
             ):
+                raise ValueError(f"continuous parameter {parameter!r} bounds must be finite numbers")
+    if type(fragment.log_float_ranges_by_branch) is not dict:
+        raise TypeError("log_float_ranges_by_branch must be a dictionary")
+    for branch, parameters in fragment.log_float_ranges_by_branch.items():
+        if type(branch) is not str or not branch:
+            raise TypeError("log-range branch names must be non-empty strings")
+        if type(parameters) is not list or any(type(parameter) is not str or not parameter for parameter in parameters):
+            raise TypeError("log-range parameters must be non-empty string lists")
+        unknown = set(parameters) - set(fragment.float_ranges_by_branch.get(branch, {}))
+        if unknown:
+            raise ValueError(f"log-range parameters need float bounds in branch {branch!r}: {sorted(unknown)}")
+    if type(fragment.log_discrete_choices_by_branch) is not dict:
+        raise TypeError("log_discrete_choices_by_branch must be a dictionary")
+    for branch, parameters in fragment.log_discrete_choices_by_branch.items():
+        if type(branch) is not str or not branch:
+            raise TypeError("log-discrete branch names must be non-empty strings")
+        if type(parameters) is not list or any(type(parameter) is not str or not parameter for parameter in parameters):
+            raise TypeError("log-discrete parameters must be non-empty string lists")
+        unknown = set(parameters) - set(fragment.choices_by_branch.get(branch, {}))
+        if unknown:
+            raise ValueError(f"log-discrete parameters need choices in branch {branch!r}: {sorted(unknown)}")
+
+    if type(fragment.conditional_by_branch) is not dict:
+        raise TypeError("conditional_by_branch must be a dictionary")
+    for branch, conditions in fragment.conditional_by_branch.items():
+        if type(branch) is not str or not branch:
+            raise TypeError("conditional branch names must be non-empty strings")
+        if type(conditions) is not list:
+            raise TypeError(f"conditional branch {branch!r} must be a list")
+        root_choices = fragment.choices_by_branch.get(branch, {})
+        child_names: set[str] = set()
+        for index, condition in enumerate(conditions):
+            path = f"conditional branch {branch!r} entry {index}"
+            if not isinstance(condition, ConditionalSearchSpace):
+                raise TypeError(f"{path} must be a ConditionalSearchSpace")
+            if type(condition.selector) is not str or not condition.selector:
+                raise TypeError(f"{path} selector must be a non-empty string")
+            if condition.selector not in root_choices:
+                raise ValueError(f"{path} selector {condition.selector!r} is not a root categorical parameter")
+            if type(condition.values) is not list or not condition.values:
+                raise TypeError(f"{path} values must be a non-empty list")
+            validate_json_value(condition.values, path=f"{path} values")
+            unknown_values = [value for value in condition.values if value not in root_choices[condition.selector]]
+            if unknown_values:
                 raise ValueError(
-                    f"continuous parameter {parameter!r} bounds must be finite numbers"
+                    f"{path} values are outside selector {condition.selector!r} choices: {unknown_values!r}"
                 )
+            if type(condition.choices) is not dict:
+                raise TypeError(f"{path} choices must be a dictionary")
+            if type(condition.float_ranges) is not dict:
+                raise TypeError(f"{path} float_ranges must be a dictionary")
+            overlap = set(condition.choices).intersection(condition.float_ranges)
+            if overlap:
+                raise ValueError(f"{path} children are both categorical and continuous: {sorted(overlap)}")
+            names = set(condition.choices) | set(condition.float_ranges)
+            root_overlap = names.intersection(root_choices)
+            if root_overlap:
+                raise ValueError(f"{path} children collide with root parameters: {sorted(root_overlap)}")
+            duplicate_children = names.intersection(child_names)
+            if duplicate_children:
+                raise ValueError(f"{path} repeats conditional children: {sorted(duplicate_children)}")
+            child_names.update(names)
+            for parameter, values in condition.choices.items():
+                if type(parameter) is not str or not parameter:
+                    raise TypeError(f"{path} categorical child names must be non-empty strings")
+                if type(values) is not list or not values:
+                    raise TypeError(f"{path} categorical child {parameter!r} choices must be a non-empty list")
+                validate_json_value(values, path=f"{path} categorical child {parameter!r} choices")
+            for parameter, bounds in condition.float_ranges.items():
+                if type(parameter) is not str or not parameter:
+                    raise TypeError(f"{path} continuous child names must be non-empty strings")
+                if type(bounds) is not tuple or len(bounds) != 2:
+                    raise TypeError(f"{path} continuous child {parameter!r} bounds must be a pair")
+                if any(type(bound) not in (int, float) for bound in bounds) or not all(
+                    math.isfinite(float(bound)) for bound in bounds
+                ):
+                    raise ValueError(f"{path} continuous child {parameter!r} bounds must be finite numbers")
+                if bounds[0] >= bounds[1]:
+                    raise ValueError(f"{path} continuous child {parameter!r} needs low < high")
+            for field_name, parameters, available in (
+                ("log_float_ranges", condition.log_float_ranges, condition.float_ranges),
+                ("log_discrete_choices", condition.log_discrete_choices, condition.choices),
+            ):
+                if type(parameters) is not list or any(
+                    type(parameter) is not str or not parameter for parameter in parameters
+                ):
+                    raise TypeError(f"{path} {field_name} must be a non-empty string list")
+                unknown = set(parameters) - set(available)
+                if unknown:
+                    raise ValueError(f"{path} {field_name} references unknown children: {sorted(unknown)}")
 
 
 def _validate_runtime_hook(hook: Any, *, path: str) -> None:
@@ -249,9 +339,7 @@ def _validate_runtime_hook(hook: Any, *, path: str) -> None:
 
 def _validate_provider_replay_spec(name: str, spec: Any) -> None:
     if not isinstance(spec, AdapterReplaySpec):
-        raise TypeError(
-            f"adapter {name!r} materialize_replay must return AdapterReplaySpec"
-        )
+        raise TypeError(f"adapter {name!r} materialize_replay must return AdapterReplaySpec")
     try:
         if type(spec.config) is not dict:
             raise TypeError("replay config must be a dictionary")
@@ -265,9 +353,7 @@ def _validate_provider_replay_spec(name: str, spec: Any) -> None:
             )
         canonical_json(spec)
     except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"adapter {name!r} returned an invalid/non-JSON replay spec: {exc}"
-        ) from exc
+        raise TypeError(f"adapter {name!r} returned an invalid/non-JSON replay spec: {exc}") from exc
 
 
 def _merge_adapter_spaces(
@@ -279,13 +365,16 @@ def _merge_adapter_spaces(
     for branch in branches:
         choices = dict(branch.knob_choices)
         float_ranges = dict(branch.float_ranges)
+        integer_ranges = dict(branch.integer_ranges)
+        log_float_ranges = set(branch.log_float_ranges)
+        log_integer_ranges = set(branch.log_integer_ranges)
+        log_discrete_choices = set(branch.log_discrete_choices)
+        conditional_dimensions = list(branch.conditional_dimensions)
         for name, plan in plans.items():
-            local_choices = plan.fragment.choices_by_branch.get(
-                branch.deployment_mode, {}
-            )
-            local_ranges = plan.fragment.float_ranges_by_branch.get(
-                branch.deployment_mode, {}
-            )
+            local_choices = plan.fragment.choices_by_branch.get(branch.deployment_mode, {})
+            local_ranges = plan.fragment.float_ranges_by_branch.get(branch.deployment_mode, {})
+            local_log_ranges = set(plan.fragment.log_float_ranges_by_branch.get(branch.deployment_mode, []))
+            local_log_discrete = set(plan.fragment.log_discrete_choices_by_branch.get(branch.deployment_mode, []))
             overlap = set(local_choices).intersection(local_ranges)
             if overlap:
                 raise ValueError(
@@ -303,6 +392,8 @@ def _merge_adapter_spaces(
                         f"has no choices in branch {branch.deployment_mode!r}"
                     )
                 choices[_adapter_param(name, local_name)] = list(values)
+                if local_name in local_log_discrete:
+                    log_discrete_choices.add(_adapter_param(name, local_name))
             for local_name, bounds in local_ranges.items():
                 if _ADAPTER_PARAM_SEPARATOR in local_name:
                     raise ValueError(
@@ -315,7 +406,56 @@ def _merge_adapter_spaces(
                         f"adapter {name!r} search parameter {local_name!r} needs low < high, got {bounds!r}"
                     )
                 float_ranges[_adapter_param(name, local_name)] = (low, high)
-        merged.append(replace(branch, knob_choices=choices, float_ranges=float_ranges))
+                if local_name in local_log_ranges:
+                    log_float_ranges.add(_adapter_param(name, local_name))
+            for condition in plan.fragment.conditional_by_branch.get(branch.deployment_mode, []):
+                local_names = {condition.selector} | set(condition.choices) | set(condition.float_ranges)
+                invalid_local_names = sorted(
+                    local_name for local_name in local_names if _ADAPTER_PARAM_SEPARATOR in local_name
+                )
+                if invalid_local_names:
+                    raise ValueError(
+                        f"adapter {name!r} conditional search parameters contain reserved separator "
+                        f"{_ADAPTER_PARAM_SEPARATOR!r}: {invalid_local_names}"
+                    )
+                selector = _adapter_param(name, condition.selector)
+                if selector not in choices:
+                    raise ValueError(
+                        f"adapter {name!r} conditional selector {condition.selector!r} "
+                        f"is not present in branch {branch.deployment_mode!r}"
+                    )
+                conditional_dimensions.append(
+                    ConditionalDimensionSpace(
+                        selector=selector,
+                        values=tuple(deepcopy(condition.values)),
+                        knob_choices={
+                            _adapter_param(name, local_name): list(values)
+                            for local_name, values in condition.choices.items()
+                        },
+                        float_ranges={
+                            _adapter_param(name, local_name): bounds
+                            for local_name, bounds in condition.float_ranges.items()
+                        },
+                        log_float_ranges=frozenset(
+                            _adapter_param(name, local_name) for local_name in condition.log_float_ranges
+                        ),
+                        log_discrete_choices=frozenset(
+                            _adapter_param(name, local_name) for local_name in condition.log_discrete_choices
+                        ),
+                    )
+                )
+        merged.append(
+            replace(
+                branch,
+                knob_choices=choices,
+                float_ranges=float_ranges,
+                integer_ranges=integer_ranges,
+                log_float_ranges=frozenset(log_float_ranges),
+                log_integer_ranges=frozenset(log_integer_ranges),
+                log_discrete_choices=frozenset(log_discrete_choices),
+                conditional_dimensions=tuple(conditional_dimensions),
+            )
+        )
     return merged
 
 
@@ -328,10 +468,7 @@ def _freeze(value: Any) -> Any:
     if isinstance(value, dict):
         return (
             "dict",
-            tuple(
-                (_freeze(key), _freeze(item))
-                for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
-            ),
+            tuple((_freeze(key), _freeze(item)) for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))),
         )
     if isinstance(value, list):
         return ("list", tuple(_freeze(item) for item in value))
@@ -369,6 +506,7 @@ def _materialize_one(
     providers: Mapping[str, SweepConfigProvider],
     provider_plans: Mapping[str, AdapterSearchPlan],
     runner_factory: RunnerFactory,
+    prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
     try:
@@ -377,7 +515,7 @@ def _materialize_one(
             selection=selection,
             parallel_config=parallel_config,
         )
-        backend_version = resolve_backend_version(
+        backend_version = config.search_space.backend_version or resolve_backend_version(
             config.search_space.hardware_sku, selection["backend"]
         )
         # The resolved perf-model version is part of the evaluated contract. Keep it
@@ -385,8 +523,26 @@ def _materialize_one(
         # select a different backend version.
         sample["backend_version"] = backend_version
         concurrency = config.workload.concurrency
-        if "kv_load_ratio" in selection:
-            ratio = float(selection["kv_load_ratio"])
+        workload_payload = config.workload.model_dump(mode="json")
+        if "traffic_load" in selection:
+            load_value: int | float
+            if config.workload.load_integer:
+                load_value = max(1, round(float(selection["traffic_load"])))
+            else:
+                load_value = float(selection["traffic_load"])
+            field = config.workload.load_search_field
+            if field is None:
+                raise ValueError("traffic_load selection has no load_search_field")
+            workload_payload[field] = load_value
+            sample["traffic_load"] = load_value
+            sample[field] = load_value
+            if field in {"concurrency", "replay_concurrency"}:
+                concurrency = int(load_value)
+        ratio_value = selection.get("kv_load_ratio")
+        if ratio_value is None and config.workload.load_search_field == "kv_load_ratio":
+            ratio_value = sample.get("kv_load_ratio")
+        if ratio_value is not None:
+            ratio = float(ratio_value)
             resolution = resolve_kv_load(
                 sample,
                 workload=config.workload,
@@ -398,18 +554,14 @@ def _materialize_one(
             sample["kv_load_ratio"] = resolution.ratio
             sample["kv_load_concurrency_capacity"] = resolution.concurrency_capacity
             load_role = "decode" if sample["deployment_mode"] == "disagg" else "agg"
-            sample["kv_load_capacity_tokens"] = resolution.role_capacity_tokens[
-                load_role
-            ]
+            sample["kv_load_capacity_tokens"] = resolution.role_capacity_tokens[load_role]
             for role, tokens in resolution.role_capacity_tokens.items():
                 sample[f"{role}_kv_capacity_tokens"] = tokens
         if concurrency is not None:
             # Preserve the concrete load on every candidate, including a fixed absolute
             # concurrency and one derived from kv_load_ratio.
             sample["concurrency"] = concurrency
-        backend_deployment = build_backend_deployment(
-            sample, backend_version=backend_version
-        )
+        backend_deployment = build_backend_deployment(sample, backend_version=backend_version)
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
             candidate_context = CandidateContext(
@@ -429,7 +581,7 @@ def _materialize_one(
             adapter_specs[name] = deepcopy(adapter_spec)
         replay_spec = ReplaySpec(
             backend_deployment=backend_deployment,
-            workload=config.workload.model_dump(mode="json"),
+            workload=workload_payload,
             goal=goal.model_dump(mode="json"),
             concurrency=concurrency,
             adapters=adapter_specs,
@@ -437,16 +589,25 @@ def _materialize_one(
         canonical_json(replay_spec)
         runner_factory.capabilities().require_compatible(replay_spec)
         if adapter_specs:
-            sample["adapters"] = {
-                name: deepcopy(adapter_spec.config)
-                for name, adapter_spec in adapter_specs.items()
-            }
+            sample["adapters"] = {name: deepcopy(adapter_spec.config) for name, adapter_spec in adapter_specs.items()}
+        prediction_config = (
+            prediction_config_factory(deepcopy(sample), deepcopy(replay_spec))
+            if prediction_config_factory is not None
+            else None
+        )
     except InfeasibleKVCapacity as exc:
         return None, (
             None,
             None,
             "infeasible",
             f"candidate KV capacity infeasible: {exc}",
+        )
+    except InfeasibleCandidate as exc:
+        return None, (
+            None,
+            None,
+            "infeasible",
+            f"candidate adapter selection infeasible: {exc}",
         )
     except Exception as exc:
         logger.exception("Sweeper candidate build failed")
@@ -456,7 +617,11 @@ def _materialize_one(
             "failed",
             f"candidate build failed: {type(exc).__name__}: {exc}",
         )
-    return _PreparedCandidate(sample=sample, replay_spec=replay_spec), None
+    return _PreparedCandidate(
+        sample=sample,
+        replay_spec=replay_spec,
+        prediction_config=prediction_config,
+    ), None
 
 
 def _run_replay(spec: ReplaySpec, runner: Runner) -> _ReplayResult:
@@ -464,9 +629,7 @@ def _run_replay(spec: ReplaySpec, runner: Runner) -> _ReplayResult:
     try:
         report = runner.run(spec)
         if not isinstance(report, ReplayReport):
-            raise TypeError(
-                f"runner.run must return ReplayReport, got {type(report).__name__}"
-            )
+            raise TypeError(f"runner.run must return ReplayReport, got {type(report).__name__}")
         if type(report.metrics) is not dict:
             raise TypeError("runner report metrics must be a dictionary")
         if type(report.metadata) is not dict:
@@ -506,13 +669,9 @@ def _score_prepared(
             "failed",
             "runner contract violation: a successful replay returned no metrics",
         )
-    effective_targets = (
-        set(goal.resolved_pareto_objectives) if goal.is_pareto else {goal.target}
-    )
+    effective_targets = set(goal.resolved_pareto_objectives) if goal.is_pareto else {goal.target}
     if (
-        effective_targets.intersection(
-            {OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU}
-        )
+        effective_targets.intersection({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})
         and "goodput_output_throughput_tok_s" not in report
     ):
         return (
@@ -560,9 +719,9 @@ def _score_prepared(
         observe_metrics: dict[str, float] = dict(candidate.objectives or {})
     else:
         candidate = make_candidate(sample, report, goal.target)
-        observe_metrics = {
-            "objective": candidate.score
-        }  # single metric, pre-signed higher-is-better
+        observe_metrics = {"objective": candidate.score}  # single metric, pre-signed higher-is-better
+    if prepared.prediction_config is not None:
+        candidate = candidate.model_copy(update={"prediction_config": deepcopy(prepared.prediction_config)})
     return candidate, observe_metrics, "feasible", ""
 
 
@@ -603,11 +762,13 @@ class Sweeper:
         providers: Mapping[str, SweepConfigProvider] | None = None,
         sampler_factory: Callable[..., BranchSampler] = make_branch_sampler,
         show_progress: bool = True,
+        prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
     ) -> None:
         self._runner_factory = runner_factory
         self._providers = dict(providers or {})
         self._sampler_factory = sampler_factory
         self._show_progress = show_progress
+        self._prediction_config_factory = prediction_config_factory
 
     def run(
         self,
@@ -627,6 +788,7 @@ class Sweeper:
         providers = self._providers
         sampler_factory = self._sampler_factory
         show_progress = self._show_progress
+        prediction_config_factory = self._prediction_config_factory
 
         goal = config.goal
         capabilities = runner_factory.capabilities()
@@ -639,20 +801,11 @@ class Sweeper:
             max_seq_len=config.search_space.context_length,
             runner_capabilities=capabilities,
         )
-        resolved_providers, provider_plans = _prepare_providers(
-            config, injected=providers, show_progress=show_progress
-        )
+        resolved_providers, provider_plans = _prepare_providers(config, injected=providers, show_progress=show_progress)
         for name, plan in provider_plans.items():
-            unsupported = [
-                hook
-                for hook in plan.potential_runtime_hooks
-                if not capabilities.supports_hook(hook)
-            ]
+            unsupported = [hook for hook in plan.potential_runtime_hooks if not capabilities.supports_hook(hook)]
             if unsupported:
-                labels = ", ".join(
-                    f"{hook.provider}:{hook.kind}@{hook.api_version}"
-                    for hook in unsupported
-                )
+                labels = ", ".join(f"{hook.provider}:{hook.kind}@{hook.api_version}" for hook in unsupported)
                 raise ValueError(
                     f"runner is incompatible with configured adapter {name!r}; unsupported runtime hook(s): {labels}"
                 )
@@ -661,8 +814,19 @@ class Sweeper:
 
         sweep = config.sweep
         per_round = sweep.candidates_per_round or sweep.parallel_evals
-        # Target number of successful unique replay configurations across all rounds.
-        total = len(branches) * sweep.max_rounds * per_round
+        if sweep.max_trials is not None and sweep.max_trials < len(branches):
+            raise ValueError(
+                f"optimizer.max_trials must be at least the number of active deployment branches ({len(branches)})"
+            )
+        # Legacy runs target successful unique evaluations; unified-CLI runs use
+        # an exact global suggestion budget, including failures and cache hits.
+        total = sweep.max_trials if sweep.max_trials is not None else len(branches) * sweep.max_rounds * per_round
+        branch_budgets: list[int | None]
+        if sweep.max_trials is None:
+            branch_budgets = [None] * len(branches)
+        else:
+            base, remainder = divmod(sweep.max_trials, len(branches))
+            branch_budgets = [base + (1 if index < remainder else 0) for index in range(len(branches))]
         candidates: list[Candidate] = []
         tally = {
             "feasible": 0,
@@ -678,17 +842,12 @@ class Sweeper:
         # Multi-objective (pareto) -> one Vizier metric per objective (each with its own
         # direction); single-objective -> the sampler's default single maximized "objective".
         sampler_objectives = (
-            [(t.value, t.maximize) for t in goal.resolved_pareto_objectives]
-            if goal.is_pareto
-            else None
+            [(t.value, t.maximize) for t in goal.resolved_pareto_objectives] if goal.is_pareto else None
         )
         cache_context = _freeze(
             {
                 "search_space": config.search_space.model_dump(mode="python"),
-                "adapters": {
-                    name: request.model_dump(mode="python")
-                    for name, request in config.adapters.items()
-                },
+                "adapters": {name: request.model_dump(mode="python") for name, request in config.adapters.items()},
                 "workload": config.workload.model_dump(mode="python"),
                 "goal": goal.model_dump(mode="python"),
                 "provider_plans": provider_plans,
@@ -701,7 +860,9 @@ class Sweeper:
 
         # Parallel across worker processes when parallel_evals > 1. Spawn keeps
         # runner runtimes isolated and lets each worker reuse one runner instance.
-        use_pool = sweep.parallel_evals > 1 and per_round > 1
+        use_pool = (sweep.parallel_evals > 1 and per_round > 1) or (
+            sweep.max_trials is not None and sweep.max_eval_seconds is not None
+        )
         max_eval_seconds = sweep.max_eval_seconds
         worker_count = min(sweep.parallel_evals, per_round)
         sequential_runner = None if use_pool else runner_factory.create(0)
@@ -801,18 +962,10 @@ class Sweeper:
                     raise _pool_error("submitting a candidate wave") from exc
 
                 pending = set(futures)
-                deadline = (
-                    time.monotonic() + max_eval_seconds if max_eval_seconds else None
-                )
+                deadline = time.monotonic() + max_eval_seconds if max_eval_seconds else None
                 while pending:
-                    remaining = (
-                        None
-                        if deadline is None
-                        else max(0.0, deadline - time.monotonic())
-                    )
-                    done, pending = wait(
-                        pending, timeout=remaining, return_when=FIRST_COMPLETED
-                    )
+                    remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                    done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
                     if not done:
                         break
                     for future in done:
@@ -821,9 +974,7 @@ class Sweeper:
                         except BrokenProcessPool as exc:
                             raise _pool_error("collecting a candidate result") from exc
                         except Exception as exc:
-                            raise _pool_error(
-                                f"collecting a candidate result ({type(exc).__name__}: {exc})"
-                            ) from exc
+                            raise _pool_error(f"collecting a candidate result ({type(exc).__name__}: {exc})") from exc
                         suggestion, prepared = futures[future]
                         yield (
                             suggestion,
@@ -852,9 +1003,7 @@ class Sweeper:
 
         with (
             _pool_lifecycle(),
-            tqdm(
-                total=total, desc="sweeper", unit="eval", disable=not show_progress
-            ) as bar,
+            tqdm(total=total, desc="sweeper", unit="eval", disable=not show_progress) as bar,
         ):
 
             def _record(outcome: str, candidate: Candidate | None) -> None:
@@ -869,158 +1018,189 @@ class Sweeper:
                     best=("-" if best is None else f"{best:.4g}"),
                 )
 
-            round_no = 0
-            for branch in branches:
-                branch_stalled = False
-                sampler = sampler_factory(
-                    branch,
-                    study_id=f"sweeper_{branch.deployment_mode}_{run_nonce}",
-                    objectives=sampler_objectives,
+            branch_states: list[_BranchSearchState] = []
+            for branch_index, branch in enumerate(branches):
+                sampler_kwargs: dict[str, Any] = {
+                    "study_id": f"sweeper_{branch.deployment_mode}_{run_nonce}",
+                    "objectives": sampler_objectives,
+                }
+                if sweep.max_trials is not None:
+                    sampler_kwargs.update(
+                        algorithm=sweep.algorithm,
+                        seed=_branch_sampler_seed(sweep.seed, branch.deployment_mode),
+                    )
+                branch_states.append(
+                    _BranchSearchState(
+                        branch=branch,
+                        sampler=sampler_factory(branch, **sampler_kwargs),
+                        budget=branch_budgets[branch_index],
+                    )
                 )
+
+            round_no = 0
+
+            def _run_branch_round(state: _BranchSearchState) -> None:
+                nonlocal round_no
+
+                branch = state.branch
+                sampler = state.sampler
                 bar.set_description(f"Sweeper {branch.deployment_mode}")
-                for _ in range(sweep.max_rounds):
-                    unique_this_round = 0
-                    trial_attempts = 0
-                    max_trial_attempts = (
-                        per_round * 11
-                    )  # requested batch + at most 10x replacement trials
-                    while (
-                        unique_this_round < per_round
-                        and trial_attempts < max_trial_attempts
-                    ):
-                        ask_count = min(
-                            per_round - unique_this_round,
-                            max_trial_attempts - trial_attempts,
-                        )
-                        suggestions = sampler.suggest(
-                            ask_count
-                        )  # ask stays on the main process
-                        if not suggestions:
-                            break
-                        trial_attempts += len(suggestions)
+                remaining_budget = None if state.budget is None else state.budget - state.attempts
+                round_target = per_round if remaining_budget is None else min(per_round, remaining_budget)
+                if round_target <= 0:
+                    return
 
-                        # Deduplicate against completed cache entries and within this ask batch.
-                        # A duplicate trial still receives the cached measurement so f(z) remains
-                        # deterministic, but only the first full sample reaches replay.
-                        todo: list[tuple[Suggestion, _PreparedCandidate]] = []
-                        primary_by_key: dict[Any, Suggestion] = {}
-                        duplicates_by_key: dict[Any, list[Suggestion]] = {}
-                        for suggestion in suggestions:
-                            backend = suggestion.selection["backend"]
-                            if backend not in branch.supported_backends.get(
-                                suggestion.parallel_config, frozenset()
-                            ):
-                                sampler.observe_infeasible(
-                                    suggestion,
-                                    f"backend {backend!r} does not support this parallel config",
-                                )
-                                _record("unsupported", None)
-                                continue
-
-                            key = _suggestion_cache_key(suggestion, cache_context)
-                            cached = replay_cache.get(key)
-                            if cached is not None:
-                                _, cached_metrics = cached
-                                sampler.observe(suggestion, cached_metrics)
-                                tally["cache_hit"] += 1
-                                continue
-                            if key in primary_by_key:
-                                duplicates_by_key.setdefault(key, []).append(suggestion)
-                                continue
-                            primary_by_key[key] = suggestion
-
-                        # Materialization stays on the main process: adapters see the
-                        # resolved backend candidate and workers receive ReplaySpec only.
-                        for key, suggestion in primary_by_key.items():
-                            prepared, build_result = _materialize_one(
-                                suggestion.selection,
-                                suggestion.parallel_config,
-                                config=config,
-                                goal=goal,
-                                providers=resolved_providers,
-                                provider_plans=provider_plans,
-                                runner_factory=runner_factory,
-                            )
-                            if build_result is not None:
-                                (
-                                    candidate,
-                                    observe_metrics,
-                                    outcome,
-                                    reason,
-                                ) = build_result
-                                assert candidate is None and observe_metrics is None
-                                duplicates = duplicates_by_key.get(key, [])
-                                sampler.observe_infeasible(suggestion, reason)
-                                for duplicate in duplicates:
-                                    sampler.observe_infeasible(duplicate, reason)
-                                if outcome == "failed":
-                                    failure_reasons[reason] = (
-                                        failure_reasons.get(reason, 0)
-                                        + 1
-                                        + len(duplicates)
-                                    )
-                                _record(outcome, None)
-                                for _duplicate in duplicates:
-                                    _record(outcome, None)
-                                continue
-                            assert prepared is not None
-                            todo.append((suggestion, prepared))
-
-                        for suggestion, (
-                            candidate,
-                            observe_metrics,
-                            outcome,
-                            reason,
-                        ) in _eval_batch(todo):
-                            key = _suggestion_cache_key(suggestion, cache_context)
-                            duplicates = duplicates_by_key.get(key, [])
-                            if outcome in ("failed", "infeasible"):
-                                sampler.observe_infeasible(suggestion, reason)
-                                for duplicate in duplicates:
-                                    sampler.observe_infeasible(duplicate, reason)
-                                if outcome == "failed":
-                                    failure_reasons[reason] = (
-                                        failure_reasons.get(reason, 0)
-                                        + 1
-                                        + len(duplicates)
-                                    )
-                                _record(outcome, None)
-                                for _duplicate in duplicates:
-                                    _record(outcome, None)
-                                continue
-
-                            if candidate is None or observe_metrics is None:
-                                raise RuntimeError(
-                                    "Sweeper runner contract violation: a feasible outcome "
-                                    "must include both a candidate and observation metrics"
-                                )
-                            sampler.observe(suggestion, observe_metrics)
-                            replay_cache[key] = (candidate, dict(observe_metrics))
-                            for duplicate in duplicates:
-                                sampler.observe(duplicate, observe_metrics)
-                                tally["cache_hit"] += 1
-                            _record(outcome, candidate)
-                            unique_this_round += 1
-                    round_no += 1
-                    if on_round is not None:
-                        on_round(round_no, list(candidates))
-                    if unique_this_round < per_round:
-                        branch_stalled = True
-                        if show_progress:
-                            tqdm.write(
-                                f"Sweeper {branch.deployment_mode} stopped early: projection stalled after "
-                                f"{trial_attempts} Vizier trial(s), with {unique_this_round}/{per_round} "
-                                "new replay configuration(s) in the round"
-                            )
+                unique_this_round = 0
+                trial_attempts = 0
+                max_trial_attempts = per_round * 11  # requested batch + at most 10x replacement trials
+                while unique_this_round < round_target and trial_attempts < max_trial_attempts:
+                    ask_count = min(
+                        round_target - unique_this_round,
+                        max_trial_attempts - trial_attempts,
+                    )
+                    if state.budget is not None:
+                        ask_count = min(ask_count, state.budget - state.attempts)
+                    if ask_count <= 0:
                         break
-                if branch_stalled:
-                    continue
+                    suggestions = sampler.suggest(ask_count)  # ask stays on the main process
+                    if not suggestions:
+                        break
+                    trial_attempts += len(suggestions)
+                    state.attempts += len(suggestions)
 
-        # Single-objective -> rank best-first by score; pareto -> the non-dominated front.
-        result = analyze_candidates(
-            candidates,
-            goal,
-        )
+                    # Deduplicate against completed cache entries and within this ask batch.
+                    # A duplicate trial still receives the cached measurement so f(z) remains
+                    # deterministic, but only the first full sample reaches replay.
+                    todo: list[tuple[Suggestion, _PreparedCandidate]] = []
+                    primary_by_key: dict[Any, Suggestion] = {}
+                    duplicates_by_key: dict[Any, list[Suggestion]] = {}
+                    for suggestion in suggestions:
+                        if suggestion.infeasible_reason is not None:
+                            sampler.observe_infeasible(suggestion, suggestion.infeasible_reason)
+                            _record("infeasible", None)
+                            continue
+                        backend = suggestion.selection["backend"]
+                        if backend not in branch.supported_backends.get(suggestion.parallel_config, frozenset()):
+                            sampler.observe_infeasible(
+                                suggestion,
+                                f"backend {backend!r} does not support this parallel config",
+                            )
+                            _record("unsupported", None)
+                            continue
+
+                        key = _suggestion_cache_key(suggestion, cache_context)
+                        cached = replay_cache.get(key)
+                        if cached is not None:
+                            _, cached_metrics = cached
+                            sampler.observe(suggestion, cached_metrics)
+                            tally["cache_hit"] += 1
+                            continue
+                        if key in primary_by_key:
+                            duplicates_by_key.setdefault(key, []).append(suggestion)
+                            continue
+                        primary_by_key[key] = suggestion
+
+                    # Materialization stays on the main process: adapters see the
+                    # resolved backend candidate and workers receive ReplaySpec only.
+                    for key, suggestion in primary_by_key.items():
+                        prepared, build_result = _materialize_one(
+                            suggestion.selection,
+                            suggestion.parallel_config,
+                            config=config,
+                            goal=goal,
+                            providers=resolved_providers,
+                            provider_plans=provider_plans,
+                            runner_factory=runner_factory,
+                            prediction_config_factory=prediction_config_factory,
+                        )
+                        if build_result is not None:
+                            (
+                                candidate,
+                                observe_metrics,
+                                outcome,
+                                reason,
+                            ) = build_result
+                            assert candidate is None and observe_metrics is None
+                            duplicates = duplicates_by_key.get(key, [])
+                            sampler.observe_infeasible(suggestion, reason)
+                            for duplicate in duplicates:
+                                sampler.observe_infeasible(duplicate, reason)
+                            if outcome == "failed":
+                                failure_reasons[reason] = failure_reasons.get(reason, 0) + 1 + len(duplicates)
+                            _record(outcome, None)
+                            for _duplicate in duplicates:
+                                _record(outcome, None)
+                            continue
+                        assert prepared is not None
+                        todo.append((suggestion, prepared))
+
+                    for suggestion, (
+                        candidate,
+                        observe_metrics,
+                        outcome,
+                        reason,
+                    ) in _eval_batch(todo):
+                        key = _suggestion_cache_key(suggestion, cache_context)
+                        duplicates = duplicates_by_key.get(key, [])
+                        if outcome in ("failed", "infeasible"):
+                            sampler.observe_infeasible(suggestion, reason)
+                            for duplicate in duplicates:
+                                sampler.observe_infeasible(duplicate, reason)
+                            if outcome == "failed":
+                                failure_reasons[reason] = failure_reasons.get(reason, 0) + 1 + len(duplicates)
+                            _record(outcome, None)
+                            for _duplicate in duplicates:
+                                _record(outcome, None)
+                            continue
+
+                        if candidate is None or observe_metrics is None:
+                            raise RuntimeError(
+                                "Sweeper runner contract violation: a feasible outcome "
+                                "must include both a candidate and observation metrics"
+                            )
+                        sampler.observe(suggestion, observe_metrics)
+                        replay_cache[key] = (candidate, dict(observe_metrics))
+                        for duplicate in duplicates:
+                            sampler.observe(duplicate, observe_metrics)
+                            tally["cache_hit"] += 1
+                        _record(outcome, candidate)
+                        unique_this_round += 1
+
+                round_no += 1
+                if on_round is not None:
+                    on_round(round_no, list(candidates))
+                if unique_this_round < round_target:
+                    state.stalled = True
+                    if show_progress:
+                        tqdm.write(
+                            f"Sweeper {branch.deployment_mode} stopped early: projection stalled after "
+                            f"{trial_attempts} Vizier trial(s), with {unique_this_round}/{round_target} "
+                            "new replay configuration(s) in the round"
+                        )
+
+            if sweep.max_trials is None:
+                # Preserve the legacy SDK's branch-major round ordering.
+                for state in branch_states:
+                    for _ in range(sweep.max_rounds):
+                        if state.stalled:
+                            break
+                        _run_branch_round(state)
+            else:
+                # Unified CLI: give each active branch one batch per cycle. This
+                # prevents either study from consuming its full allocation before
+                # the other receives suggestions while retaining parallel fan-out.
+                for _ in range(sweep.max_rounds):
+                    progressed = False
+                    for state in branch_states:
+                        if state.stalled or (state.budget is not None and state.attempts >= state.budget):
+                            continue
+                        _run_branch_round(state)
+                        progressed = True
+                    if not progressed:
+                        break
+
+        # Strict filtering precedes scalar ranking or Pareto dominance.
+        result = analyze_candidates(candidates, goal)
         if show_progress:
             replay_attempts = tally["feasible"] + tally["infeasible"] + tally["failed"]
             summary = (
@@ -1041,7 +1221,5 @@ class Sweeper:
                     displayed.append(f"{reason} (x{count})" if count > 1 else reason)
                 remaining = len(failure_reasons) - len(displayed)
                 suffix = f" | +{remaining} more distinct reason(s)" if remaining else ""
-                tqdm.write(
-                    f"Sweeper failure reason(s): {' | '.join(displayed)}{suffix}"
-                )
+                tqdm.write(f"Sweeper failure reason(s): {' | '.join(displayed)}{suffix}")
         return result

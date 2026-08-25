@@ -1,0 +1,431 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Base class and shared infrastructure for the operations package.
+
+This module defines the ``Operation`` ABC plus two pieces of shared
+infrastructure that future op classes will rely on:
+
+- **Class-level ``_data_cache``** — each Operation subclass that owns CSV data
+  overrides this in its own class. Keyed by ``(system_path, db_mode)`` so the
+  same op type can serve multiple databases in one process.
+- **``_load_data_call_count`` instrumentation** — used by tests to assert
+  which op classes actually loaded data during a model run. The expected set
+  for Minimax M2.5 NVFP4 is the canonical lazy-load success assertion
+  (see ``~/forks/sdk-refactor-regression/tests/test_load_data_counts.py``).
+- **``supported_quant_modes`` classmethod** — placeholder API used by
+  ``inference_session`` post-Phase-4 to build the support-matrix warning.
+  Default returns the empty set; ops with quant-mode-keyed CSVs override.
+
+``clear_all_op_caches()`` is a module-level utility that walks every
+``Operation`` subclass and clears both its data cache and any LRU on
+``query``. Exported from the ``aiconfigurator_core.sdk.operations`` package — same
+function powers a pytest ``autouse`` fixture and serves as a manual eviction
+lever for long-running webapps.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from collections import defaultdict
+from typing import TYPE_CHECKING, ClassVar
+
+import yaml
+
+from aiconfigurator_core.sdk.performance_result import PerformanceResult
+
+if TYPE_CHECKING:
+    from aiconfigurator_core.sdk.perf_database import PerfDatabase
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_perf_data_path(perf_file: str) -> str:
+    if os.path.exists(perf_file):
+        return perf_file
+    stem, suffix = os.path.splitext(perf_file)
+    if suffix.lower() == ".parquet":
+        legacy_file = f"{stem}.txt"
+        if os.path.exists(legacy_file):
+            return legacy_file
+    return perf_file
+
+
+# CANONICAL definition of the first-level dirs under <system>/ that are
+# backend dirs (legacy layout) rather than family dirs. The SDK loader
+# imports this (perf_database.KNOWN_BACKEND_DIRS is an alias); the standalone
+# copies that cannot import aic-core must stay textually identical and each
+# cross-reference this site:
+#   tools/perf_database/migrate_family_layout.py  (KNOWN_BACKEND_DIRS)
+#   tools/sanity_check/create_charts.py           (_KNOWN_BACKEND_DIRS)
+#   aic-core/rust/aiconfigurator-core/src/perf_database/mod.rs (KNOWN_BACKEND_DIRS)
+# (tools/perf_database/perf_data_layout.py's LEGACY_BACKEND_DIRS is a
+# deliberate 3-entry variant — consumer backends only, no comm pseudo-backends.)
+_KNOWN_BACKEND_DIRS = frozenset({"trtllm", "sglang", "vllm", "nccl", "oneccl"})
+
+
+def _version_dir_is_partial(version_dir: str) -> bool:
+    """Yaml-first partial-dir check: collection_meta.yaml status:partial, with
+    INCOMPLETE.txt as the legacy fallback.
+
+    Duplicated (not imported) from aiconfigurator_core.sdk.perf_database
+    ._version_dir_state, the source of truth for this semantic — perf_database
+    imports this module at load time, so importing it back here would be
+    circular. Keep in sync with that function's partial-detection rule.
+
+    CONTRACT NOTE — the lenient/strict split is intentional design, not drift:
+    this RESOLVER-side copy deliberately swallows read/parse errors and
+    returns False, because its only job is cheap candidate skipping on the
+    path-resolution hot path. Strictness is owned by the ADMISSION layer:
+    perf_database's _version_dir_state (via _load_collection_meta_yaml) raises
+    ValueError naming the file on a malformed sidecar, so bad metadata still
+    surfaces loudly when the database is loaded. The copies of this predicate
+    and their strictness (mirroring the _KNOWN_BACKEND_DIRS copy list above):
+      aic-core/src/aiconfigurator_core/sdk/perf_database.py
+                                       (_version_dir_state — strict, canonical)
+      tools/prediction_regression_gate/grid.py  (_dir_is_incomplete — strict)
+      tools/sanity_check/create_charts.py       (_dir_is_incomplete — strict)
+    """
+    meta_path = os.path.join(version_dir, "collection_meta.yaml")
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = yaml.safe_load(f)
+        except Exception:
+            return False
+        tables = meta.get("tables") if isinstance(meta, dict) else None
+        if not isinstance(tables, dict):
+            return False
+        return any(isinstance(t, dict) and t.get("status") == "partial" for t in tables.values())
+    return os.path.isfile(os.path.join(version_dir, "INCOMPLETE.txt"))
+
+
+def _version_dir_is_unusable(version_dir: str) -> bool:
+    """Whether the whole directory must be excluded from data loading.
+
+    ``collection_meta.yaml`` with ``status: partial`` is structured coverage
+    metadata: successfully collected rows are valid and must remain primary,
+    while older versions fill missing coordinates. Only legacy
+    ``INCOMPLETE.txt`` lacks enough granularity to admit any of its rows.
+
+    A structured sidecar supersedes a stale legacy marker. Parse validation is
+    owned by perf_database's admission layer; this hot-path resolver only needs
+    to know that the structured sidecar exists.
+    """
+    if os.path.isfile(os.path.join(version_dir, "collection_meta.yaml")):
+        return False
+    return os.path.isfile(os.path.join(version_dir, "INCOMPLETE.txt"))
+
+
+def resolve_op_data_path(system_data_root: str, backend: str, version: str, op_filename: str) -> str:
+    """Resolve one op table under the family-first layout, legacy fallback.
+
+    Family dirs are discovered structurally (any first-level dir that is not
+    a known backend dir). Structured partial tables are loadable and use
+    older-version shape fill; only legacy whole-dir-incomplete directories
+    (see ``_version_dir_is_unusable``) are skipped. Candidates run through the
+    .parquet->.txt fallback. When nothing exists, returns the legacy-shaped
+    path so callers keep their missing-file semantics.
+    """
+    op_filename = str(op_filename)
+    try:
+        entries = os.listdir(system_data_root)
+    except Exception:
+        entries = []
+    for entry in entries:
+        if entry.startswith(".") or entry in _KNOWN_BACKEND_DIRS:
+            continue
+        version_dir = os.path.join(system_data_root, entry, backend, version)
+        if not os.path.isdir(version_dir) or _version_dir_is_unusable(version_dir):
+            continue
+        candidate = _resolve_perf_data_path(os.path.join(version_dir, op_filename))
+        if os.path.exists(candidate):
+            return candidate
+    legacy = _resolve_perf_data_path(os.path.join(system_data_root, backend, version, op_filename))
+    return legacy
+
+
+# The op base class IS the compiled engine's: every engine-backed op family
+# is a Rust ``#[pyclass]`` (``aiconfigurator_core._aiconfigurator_core``,
+# see ``rust/aiconfigurator-core/src/py_ops.rs``) holding the typed ``Op``
+# value — construction-time schema has a single owner. The Python family
+# classes in this package are thin SHELLS subclassing those Rust classes,
+# keeping only the class-level data-plane surface (``OpShellKit``).
+from aiconfigurator_core._aiconfigurator_core import Operation
+
+# Compatibility data attributes referenced through ``Operation`` by tests and
+# the helpers below (the Rust type is a heap type, so class attributes attach
+# normally). ``_load_data_call_count`` is the SHARED load-instrumentation
+# registry; ``_data_cache`` is the legacy fallback slot for shells that never
+# declared their own.
+Operation._data_cache = {}
+Operation._load_data_call_count = defaultdict(int)
+
+
+class OpShellKit:
+    """The class-level kit every op SHELL mixes in next to its Rust base.
+
+    Two halves:
+
+    - the DATA-PLANE surface: class-level ``_data_cache`` + ``load_data`` /
+      ``clear_cache`` / ``supported_quant_modes`` / ``_record_load`` — the
+      engine-table-view binding conventions (see the package README);
+    - the ``_engine_query`` kwarg mapping: how the Python-side ORCHESTRATION
+      callers (the ``_sum_latency`` fallback loop, the AFD comm ops, the
+      pareto A/F probe) express legacy phase kwargs as one engine
+      evaluation. Declared per shell via ``_ENGINE_QUERY_SHAPE``.
+    """
+
+    # The call-shape label ``_ENGINE_QUERY_SHAPE`` ("tokens" / "context" /
+    # "generation" / "module") is a Rust ``#[classattr]`` on each family class
+    # (base ``Operation`` carries ``None``) so composite phase inference sees
+    # it on Rust-wrapped children too; shells do not redeclare it.
+
+    # How ``_engine_query`` maps this op's legacy kwargs onto the engine's
+    # op-list evaluation shape. Subclasses declare one of:
+    #   "tokens"     — token-major: x=<num tokens>  (GEMM, MoE, comm, ...)
+    #   "context"    — batch-major prefill: batch_size=, s=, prefix=
+    #   "generation" — batch-major decode:  batch_size=, s=
+    #   "module"     — phase carried by the instance (``_is_context`` /
+    #                  ``_phase``) or the ``is_context=`` kwarg
+    # ``None`` (default) = not reachable through the kwarg mapping.
+    _ENGINE_QUERY_SHAPE: ClassVar[str | None] = None
+
+    def _engine_query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
+        """Evaluate this op through the compiled engine's single-op plumbing.
+
+        The permanent internal surface behind the Python-side ORCHESTRATION
+        callers (the ``_sum_latency`` fallback loop, the AFD comm ops, the
+        pareto A/F balance probe). The public deprecated ``query()`` wrapper
+        that used to front this was removed after its one-release window;
+        external callers use ``EngineHandle.evaluate_ops_json`` (op-list) or
+        the phase/run surface."""
+        from aiconfigurator_core.sdk.engine import _evaluate_single_op
+
+        op, eval_kwargs = self._engine_query_plan(kwargs)
+        return _evaluate_single_op(database, op, **eval_kwargs)
+
+    def _engine_query_plan(self, kwargs: dict):
+        """Map legacy ``query(**kwargs)`` onto ``(op_to_evaluate, eval_kwargs)``
+        per the class's ``_ENGINE_QUERY_SHAPE``. Subclasses with per-call
+        overrides (MoE's ``quant_mode``) override this and rebuild the op.
+        Unrecognized kwargs are ignored, matching the legacy ``kwargs.get``
+        behavior (e.g. ``model_name``)."""
+        shape = self._ENGINE_QUERY_SHAPE
+        if shape is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} has no engine-backed query shim; evaluate it via "
+                "EngineHandle.evaluate_ops_json (op-list FFI)."
+            )
+        if shape == "tokens":
+            x = kwargs.get("x")
+            if x is None:
+                raise ValueError(f"{type(self).__name__}.query requires 'x' (num tokens).")
+            return self, {"is_context": True, "batch_size": 1, "s": 1, "x": int(x)}
+        if shape == "context":
+            is_context = True
+        elif shape == "generation":
+            is_context = False
+        else:
+            is_context = self._engine_query_is_context(kwargs)
+        beam_width = kwargs.get("beam_width", 1)
+        if not is_context and beam_width != 1:
+            raise ValueError(f"{type(self).__name__} only supports beam_width=1, got {beam_width}")
+        batch_size = kwargs.get("batch_size")
+        s = kwargs.get("s")
+        if batch_size is None or s is None:
+            raise ValueError(f"{type(self).__name__}.query requires 'batch_size' and 's'.")
+        if is_context:
+            scale = kwargs.get("seq_imbalance_correction_scale")
+        else:
+            scale = kwargs.get(
+                "gen_seq_imbalance_correction_scale",
+                kwargs.get("seq_imbalance_correction_scale"),
+            )
+        x = kwargs.get("x")
+        return self, {
+            "is_context": is_context,
+            "batch_size": int(batch_size),
+            "s": int(s),
+            "prefix": int(kwargs.get("prefix") or 0),
+            "x": None if x is None else int(x),
+            "imbalance_correction_scale": 1.0 if scale is None else float(scale),
+        }
+
+    def _engine_query_is_context(self, kwargs: dict) -> bool:
+        """Phase for ``_ENGINE_QUERY_SHAPE = "module"`` ops: explicit
+        ``is_context=`` kwarg wins, then the instance's own phase marker.
+        Composites (Overlap/Fallback) override to infer from children."""
+        hint = kwargs.get("is_context")
+        if hint is not None:
+            return bool(hint)
+        is_context = getattr(self, "_is_context", None)
+        if is_context is not None:
+            return bool(is_context)
+        # Instance phase markers: the mamba/gdn kernels use context/generation
+        # (KDA adds "verify" — speculative multi-token decode, generation-like
+        # for evaluation-context routing; the serialized spec keeps the verify
+        # phase + draft_tokens), FPMForwardOp uses prefill/decode.
+        phase = getattr(self, "_phase", None)
+        if phase in ("context", "prefill"):
+            return True
+        if phase in ("generation", "decode", "verify"):
+            return False
+        raise ValueError(f"{type(self).__name__}.query cannot infer the evaluation phase; pass is_context=True/False.")
+
+    @classmethod
+    def load_data(cls, database: PerfDatabase) -> None:
+        """Idempotent. Subclasses with CSV data override; default no-op for
+        ops like ``ElementWise`` that compute analytically from system spec.
+
+        The full ``database`` is passed (not just ``system_path``/``system_spec``)
+        so subclasses can derive their own cache key plus reuse PerfDatabase
+        helpers like ``_build_op_sources`` for HYBRID-mode source discovery."""
+        return None
+
+    @classmethod
+    def clear_cache(cls):
+        """Clear this op's data cache and any LRU on ``query``. Subclasses
+        with their own ``_data_cache`` override the class attribute; if a
+        subclass never declared one, fall back to evicting the shared
+        ``Operation._data_cache`` so ``clear_all_op_caches()`` doesn't
+        silently skip it."""
+        cache = cls.__dict__.get("_data_cache")
+        if cache is None:
+            cache = Operation._data_cache
+        cache.clear()
+        # query may be wrapped in functools.lru_cache — clear if present.
+        query = cls.__dict__.get("query")
+        if query is not None and hasattr(query, "cache_clear"):
+            query.cache_clear()
+
+    @classmethod
+    def supported_quant_modes(cls, database: PerfDatabase) -> set:
+        """Return the quant modes for which this op has CSV data on the
+        given database. Default empty — ops with quant-mode-keyed data
+        override. Used by ``_update_support_matrix`` (moves to
+        ``inference_session`` in ISSUE-16).
+
+        Takes the full ``database`` for symmetry with ``load_data``."""
+        return set()
+
+    @classmethod
+    def _record_load(cls):
+        """Subclasses call this from load_data() after a successful parse,
+        NOT on a cache hit. The instrumentation lets tests assert which op
+        classes loaded for a given model run."""
+        Operation._load_data_call_count[cls] += 1
+
+
+class PythonOperation(OpShellKit):
+    """Base for the PYTHON-side orchestration ops (the AFD comm ops,
+    ``FPMForwardOp``) — the only op classes that are not Rust-backed: their
+    state includes things the engine wire cannot carry (a Python config
+    object, a retired callable slot) or their surface is pinned by the
+    public-SDK import contract. Carries the retired base class's
+    construction contract (audit gate + ``_name``/``_scale_factor``/
+    ``_seq_split``) without any engine identity."""
+
+    # Context-parallel opt-in (the retired audit gate): constructing with
+    # ``seq_split > 1`` on a class that has NOT opted in raises.
+    _CP_AWARE: ClassVar[bool] = False
+
+    def __init__(self, name: str, scale_factor: float, *, seq_split: int = 1) -> None:
+        if seq_split > 1 and not self._CP_AWARE:
+            raise NotImplementedError(
+                f"{type(self).__name__} has not been audited for context parallelism "
+                f"(seq_split={seq_split}). Set ``_CP_AWARE = True`` on the class after "
+                f"verifying its token-count treatment (or handle CP at the model "
+                f"construction site)."
+            )
+        self._name = name
+        self._scale_factor = scale_factor
+        self._seq_split: int = seq_split
+
+    def get_weights(self, **kwargs):
+        raise NotImplementedError(f"{type(self).__name__} must define get_weights")
+
+
+def _all_operation_subclasses(root: type | None = None) -> set[type]:
+    """Recursively collect every op subclass currently imported: everything
+    under the Rust ``Operation`` base (the shells AND the raw Rust family
+    classes) plus the Python orchestration ops under ``PythonOperation``.
+    Callers guard with ``getattr`` — the raw Rust classes carry none of the
+    shell kit."""
+    roots = [root] if root is not None else [Operation, PythonOperation]
+    seen: set[type] = set()
+    stack: list[type] = list(roots)
+    while stack:
+        cls = stack.pop()
+        for sub in cls.__subclasses__():
+            if sub not in seen:
+                seen.add(sub)
+                stack.append(sub)
+    return seen
+
+
+def clear_all_op_caches() -> None:
+    """Walk every imported Operation subclass and call its ``clear_cache()``.
+
+    Used by:
+    - production callers (long-running webapps) that need a manual eviction
+      lever; the per-op ``_data_cache`` is process-wide and never auto-evicts
+    - test helpers that need a fully clean slate (the conftest autouse
+      fixture clears only the counter, not data caches — clearing the
+      caches would force a fresh-disk reload mid-suite)
+
+    Also clears empirical utilization grids, the shared instrumentation
+    counter, and the compiled-engine handle LRU (each ``EngineHandle`` pins a
+    Rust-side perf-DB load, so it belongs to the same eviction contract).
+    Util grids are derived from per-op data, so retaining them after
+    their source caches are evicted can mix an old custom ``systems_root`` or
+    shared-layer view into newly loaded data.
+
+    Note: this does NOT clear the ``@functools.lru_cache`` on the
+    ``PerfDatabase.query_*`` wrappers — those caches live on each database
+    instance and must be cleared separately via
+    ``database.clear_runtime_caches()`` if callers also want to invalidate
+    interpolated/extrapolated query results."""
+    for cls in _all_operation_subclasses():
+        clear = getattr(cls, "clear_cache", None)
+        if callable(clear):
+            clear()
+    # Import lazily to avoid a base <-> util_empirical module cycle at import
+    # time. This is part of the same eviction contract as the per-op caches.
+    from aiconfigurator_core.sdk.operations import util_empirical
+
+    util_empirical.clear_grid_cache()
+    Operation._load_data_call_count.clear()
+    # Lazy for the same cycle reason (rust_engine_step is imported by engine.py,
+    # which imports operation modules).
+    from aiconfigurator_core.sdk import engine, rust_engine_step
+
+    rust_engine_step._engine_handle_cache_clear()
+    engine._clear_probe_handle_cache()
+
+
+def warm_all_op_data(database: PerfDatabase) -> None:
+    """Eagerly call ``load_data`` on every ``Operation`` subclass against
+    ``database``.
+
+    The lazy-load contract (lazy per-op data ownership) defers per-op CSV reads until the
+    first query (or the first read of ``database.supported_quant_mode``
+    for the op's key). Diagnostic tooling that walks every op's instance
+    attribute directly — notebooks, sanity-check scripts, support-matrix
+    dumpers — wants the legacy "everything loaded" semantics; this
+    helper restores them in one call.
+
+    Idempotent: every ``load_data`` is cache-key gated, so calling this
+    repeatedly is cheap. Op classes that don't own CSV data inherit the
+    base ``Operation.load_data`` no-op and are walked without effect.
+
+    Production callers that read ``database.supported_quant_mode[<key>]``
+    or call ``database.query_<op>(...)`` should NOT use this — those
+    paths trigger the lazy load on the ops they actually need, which is
+    the whole point of lazy per-op data ownership."""
+    for cls in _all_operation_subclasses():
+        load = getattr(cls, "load_data", None)
+        if callable(load):
+            load(database)
