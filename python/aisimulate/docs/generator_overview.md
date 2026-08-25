@@ -165,6 +165,38 @@ You can use the generator in two ways: AIConfigurator CLI or standalone (code/CL
       osl: 1000
     ```
 
+#### Generating from an AISimulate Sweeper candidate
+
+Sweeper search and deployment rendering remain separate ownership boundaries. After selecting a
+ranked scalar candidate or an explicit Pareto point, lower that candidate and its matching workload
+into the generator's typed request:
+
+```python
+from aiconfigurator.generator.api import generate_from_request
+from aiconfigurator.generator.request import from_sweeper_candidate
+
+candidates = sweeper.run(sweep_config)
+request = from_sweeper_candidate(
+    candidates[0],
+    workload=sweep_config.workload,
+    deployment_target="dynamo-j2",
+    output_dir="./results/disagg/top1",
+    generator_overrides={
+        "K8sConfig": {
+            "k8s_namespace": "dynamo",
+            "k8s_image_pull_secret": "ngc-secret",
+        }
+    },
+)
+artifacts = generate_from_request(request)
+```
+
+The bridge pins the evaluated backend version, topology, worker counts, batching and KV-cache
+limits, workload lengths, and supported Dynamo Router, Planner, and KVBM adapter configurations.
+It selects benchmark-aligned rules with engine-limit preservation. Cluster-specific values remain
+generator overrides or an environment profile. A GPU-count mismatch or an adapter without a
+generator mapping fails closed rather than producing an artifact that contradicts the recommendation.
+
 ### Generated Outputs
 - [vllm & sglang] CLI argument strings per role (prefill/decode/agg) for debugging or manual runs.
 - [trtllm] Engine config files (`agg_config.yaml`, `prefill_config.yaml`, `decode_config.yaml`) when the backend provides `extra_engine_args*.j2`.
