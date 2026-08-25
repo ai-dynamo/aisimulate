@@ -293,6 +293,9 @@ qualification remain.
   `ScatteredSites` (prefill sites = `(batch, kv)` owning the new-token curve; decode
   sites = `batch` owning the KV curve) with `own_curve_coverage_fallback=True` and
   `max_site_distance=2.0`, validated by the LOO/holdout harness on GLM-5.2 cells.
+  The compiled prefill resolver additionally accepts a site within 32 raw KV tokens
+  when the residual batch log2 distance still passes the normal gate. This prevents
+  zero/first-block sparsity from rejecting small positive-prefix replay queries.
 - **D3 — energy. RESOLVED (shipped).** Zero-energy convention, matching the Rust
   engine-step precedent.
 - **D4 — schema bump timing.** Still open: bump `ENGINE_SPEC_SCHEMA_VERSION` in M2 only

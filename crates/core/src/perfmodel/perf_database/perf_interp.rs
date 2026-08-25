@@ -206,6 +206,13 @@ pub enum Resolver {
         curve_axis: usize,
         nn_sites: usize,
         max_site_distance: Option<f64>,
+        /// Optional `(site-axis position, raw-unit limit)` fallback for the
+        /// log2 distance gate. A candidate outside `max_site_distance` may
+        /// pass when this axis is within the raw-unit limit and the residual
+        /// log2 distance across every other site axis remains within the
+        /// normal gate. This is intended for small coordinates around zero,
+        /// where log distance exaggerates a small absolute difference.
+        site_axis_abs_distance_fallback: Option<(usize, f64)>,
         require_curve_coverage: bool,
         k_tail: usize,
         /// A collected site whose own curve does NOT cover the query defers to
@@ -876,6 +883,7 @@ impl SiteIndex {
             curve_axis,
             nn_sites,
             max_site_distance,
+            site_axis_abs_distance_fallback,
             require_curve_coverage,
             own_curve_coverage_fallback,
             ..
@@ -910,6 +918,7 @@ impl SiteIndex {
             .iter()
             .map(|&p| coords[p].max(1e-12).log2())
             .collect();
+        let q_site: Vec<f64> = site_axes.iter().map(|&p| coords[p]).collect();
         let dist = |logs: &[f64]| -> f64 {
             logs.iter()
                 .zip(&q_log)
@@ -960,8 +969,30 @@ impl SiteIndex {
         let cmp =
             |a: &(f64, usize), b: &(f64, usize)| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1));
         if let Some(gate) = max_site_distance {
-            if ranked.iter().any(|&(d, _)| d <= *gate) {
-                ranked.retain(|&(d, _)| d <= *gate);
+            let abs_fallback_admits = |i: usize| {
+                let Some(&(axis, raw_limit)) = site_axis_abs_distance_fallback.as_ref() else {
+                    return false;
+                };
+                if axis >= q_site.len() || !raw_limit.is_finite() || raw_limit < 0.0 {
+                    return false;
+                }
+                let (site, logs) = &self.site_logs[i];
+                let raw_delta = ((site[axis] as f64) - q_site[axis]).abs();
+                let residual_log_distance = logs
+                    .iter()
+                    .zip(&q_log)
+                    .enumerate()
+                    .filter(|(a, _)| *a != axis)
+                    .map(|(_, (a, b))| (a - b) * (a - b))
+                    .sum::<f64>()
+                    .sqrt();
+                raw_delta <= raw_limit && residual_log_distance <= *gate
+            };
+            if ranked
+                .iter()
+                .any(|&(d, i)| d <= *gate || abs_fallback_admits(i))
+            {
+                ranked.retain(|&(d, i)| d <= *gate || abs_fallback_admits(i));
             } else {
                 // The gate is waived for a query site beyond the collected
                 // frontier in the scale-up direction (big-vocab LM heads at
@@ -969,7 +1000,6 @@ impl SiteIndex {
                 // pass the gate on the non-overflow axes, and SOL(query)
                 // carries the growth. Interior holes, scale-down / mixed
                 // queries, and sparse-stub multi-axis overflow keep the miss.
-                let q_site: Vec<f64> = site_axes.iter().map(|&p| coords[p]).collect();
                 match self.frontier_waiver_anchors(&ranked, &q_site, &q_log, *gate) {
                     Some(admissible) => ranked = admissible,
                     None => return Err(miss(cfg, coords, "no site within max_site_distance")),
@@ -1396,6 +1426,7 @@ mod tests {
                 curve_axis: 0,
                 nn_sites: 4,
                 max_site_distance: Some(2.0),
+                site_axis_abs_distance_fallback: None,
                 require_curve_coverage: true,
                 k_tail: 3,
                 own_curve_coverage_fallback,
@@ -1532,6 +1563,7 @@ mod tests {
                 curve_axis: 1,
                 nn_sites: 4,
                 max_site_distance: Some(2.0),
+                site_axis_abs_distance_fallback: None,
                 require_curve_coverage: true,
                 k_tail: 3,
                 own_curve_coverage_fallback: true,
@@ -1846,6 +1878,7 @@ mod tests {
                 curve_axis: 0,
                 nn_sites: 1,
                 max_site_distance: Some(2.0),
+                site_axis_abs_distance_fallback: None,
                 require_curve_coverage: true,
                 own_curve_coverage_fallback: false,
                 k_tail: 3,
