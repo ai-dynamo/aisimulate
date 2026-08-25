@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# actionlint configuration: declare the repository-specific Velonix runner
+# labels (provisioned via OPS-8249) so workflow linting recognizes them.
+self-hosted-runner:
+  labels:
+    - prod-aisimulate-default-amd64-v1
+    - prod-aisimulate-default-arm64-v1
