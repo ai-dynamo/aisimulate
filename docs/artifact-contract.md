@@ -1,6 +1,6 @@
 # AISimulate artifact contract
 
-AISimulate 0.13.0 has one product version and exactly two release artifacts:
+AISimulate 0.12.0 has one product version and exactly two release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ live inside the `aisimulate` wheel and therefore do not add artifacts.
 builds and validates the output directory afterward. A release build fails if
 an additional wheel, source distribution, or crate appears.
 
-Both artifacts use version `0.13.0`. The wheel builds its native extension from
+Both artifacts use version `0.12.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
 

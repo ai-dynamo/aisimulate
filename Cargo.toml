@@ -9,7 +9,7 @@ exclude = ["crates/tests/public-api"]
 resolver = "3"
 
 [workspace.package]
-version = "0.13.0"
+version = "0.12.0"
 edition = "2024"
 description = "Backend-neutral inference simulation and deployment configuration search"
 authors = ["NVIDIA Inc. <sw-dl-dynamo@nvidia.com>"]

@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # AISimulate application (AIConfigurator compatibility source)
 
 > This directory contains the complete AIConfigurator application migrated to
-> the standalone AISimulate repository. It builds the `aisimulate` 0.13.0
+> the standalone AISimulate repository. It builds the `aisimulate` 0.12.0
 > wheel, not a separate `aiconfigurator` wheel. The legacy import namespace and
 > `aiconfigurator` executable remain compatibility surfaces alongside the public
 > `aisimulate` prediction CLI. The original AIC

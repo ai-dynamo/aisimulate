@@ -43,7 +43,7 @@ crate's `embed-python` feature, which enables PyO3's `auto-initialize` support:
 
 ```toml
 [dependencies]
-aisimulate-core = { version = "0.13.0", features = ["embed-python"] }
+aisimulate-core = { version = "0.12.0", features = ["embed-python"] }
 ```
 
 Applications that embed Python in an existing host may initialize the
