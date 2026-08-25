@@ -133,10 +133,7 @@ class VizierBranchSampler:
         self._decoders: dict[str, Callable[[Any], Any]] = {}
         self._constants: dict[str, Any] = {}
         self._parallel_projector = ParallelConfigProjector(branch)
-        self._parallel_pinned = (
-            len(branch.parallel_configs) == 1
-            and not branch.parallel_independent_choices
-        )
+        self._parallel_pinned = len(branch.parallel_configs) == 1 and not branch.parallel_independent_choices
 
         problem = vz.ProblemStatement()
         root = problem.search_space.root
@@ -156,9 +153,7 @@ class VizierBranchSampler:
                         parameter.name,
                         feasible_values=parameter.values,
                         default_value=parameter.default,
-                        scale_type=vz.ScaleType.LOG
-                        if parameter.log_scale
-                        else vz.ScaleType.LINEAR,
+                        scale_type=vz.ScaleType.LOG if parameter.log_scale else vz.ScaleType.LINEAR,
                     )
                 else:
                     root.add_categorical_param(
@@ -172,11 +167,7 @@ class VizierBranchSampler:
                 min_value=minimum,
                 max_value=maximum,
                 default_value=(minimum + maximum) / 2.0,
-                scale_type=(
-                    vz.ScaleType.LOG
-                    if knob in branch.log_float_ranges
-                    else vz.ScaleType.LINEAR
-                ),
+                scale_type=(vz.ScaleType.LOG if knob in branch.log_float_ranges else vz.ScaleType.LINEAR),
             )
             self._decoders[knob] = float
         for knob, choices in branch.knob_choices.items():
@@ -184,10 +175,7 @@ class VizierBranchSampler:
             # heterogeneous choices are encoded by index below, so duplicate decoded
             # values are harmless and do not need hashing.
             all_strings = all(isinstance(choice, str) for choice in choices)
-            all_numeric = all(
-                isinstance(choice, (int, float)) and not isinstance(choice, bool)
-                for choice in choices
-            )
+            all_numeric = all(isinstance(choice, (int, float)) and not isinstance(choice, bool) for choice in choices)
             if all_strings or all_numeric:
                 choices = list(dict.fromkeys(choices))
             if len(choices) <= 1:
@@ -199,7 +187,11 @@ class VizierBranchSampler:
                 root.add_categorical_param(knob, list(choices), **kwargs)
                 self._decoders[knob] = _decoder_for(choices)
             elif all_numeric:
-                root.add_discrete_param(knob, sorted(float(c) for c in choices))
+                root.add_discrete_param(
+                    knob,
+                    sorted(float(c) for c in choices),
+                    scale_type=(vz.ScaleType.LOG if knob in branch.log_discrete_choices else vz.ScaleType.LINEAR),
+                )
                 self._decoders[knob] = _decoder_for(choices)
             else:
                 # Preserve arbitrary JSON choices (including booleans, null, lists,
@@ -213,32 +205,19 @@ class VizierBranchSampler:
             root.add_categorical_param(_CONSTANT_PARAM, ["0"], default_value="0")
 
         for name, maximize in self._objectives:
-            goal = (
-                vz.ObjectiveMetricGoal.MAXIMIZE
-                if maximize
-                else vz.ObjectiveMetricGoal.MINIMIZE
-            )
-            problem.metric_information.append(
-                vz.MetricInformation(name=name, goal=goal)
-            )
+            goal = vz.ObjectiveMetricGoal.MAXIMIZE if maximize else vz.ObjectiveMetricGoal.MINIMIZE
+            problem.metric_information.append(vz.MetricInformation(name=name, goal=goal))
         study_config = vz.StudyConfig.from_problem(problem)
         # EXPERIMENT (env-gated; default DEFAULT = GP-bandit). The multi-objective GP suggest
         # can spin/hang at low observation counts; RANDOM_SEARCH bypasses the GP (instant
         # suggest, uniform exploration) to cover the curve ends without that stall.
-        study_config.algorithm = (
-            "RANDOM_SEARCH" if algorithm == "random" else _vizier_algorithm()
-        )
-        self._study = clients.Study.from_study_config(
-            study_config, owner="sweeper", study_id=study_id
-        )
+        study_config.algorithm = "RANDOM_SEARCH" if algorithm == "random" else _vizier_algorithm()
+        self._study = clients.Study.from_study_config(study_config, owner="sweeper", study_id=study_id)
 
     def suggest(self, count: int) -> list[Suggestion]:
         suggestions: list[Suggestion] = []
         for trial in self._study.suggest(count=count):
-            params = {
-                name: getattr(value, "value", value)
-                for name, value in dict(trial.parameters).items()
-            }
+            params = {name: getattr(value, "value", value) for name, value in dict(trial.parameters).items()}
             # backend is a searched knob now (in knob_choices) -> comes via _constants
             # (single backend) or _decoders (multiple), not a per-branch constant.
             selection: dict[str, Any] = {
@@ -251,9 +230,7 @@ class VizierBranchSampler:
                 parallel_config = self.branch.parallel_configs[0]
                 projection = None
             else:
-                projection = self._parallel_projector.project(
-                    params, selection["backend"]
-                )
+                projection = self._parallel_projector.project(params, selection["backend"])
                 parallel_config = projection.config
             suggestions.append(
                 Suggestion(
@@ -272,18 +249,14 @@ class VizierBranchSampler:
         _, vz = _vizier_modules()
 
         metadata = vz.Metadata()
-        metadata["sweeper_projection"] = json.dumps(
-            suggestion.projection.metadata(), sort_keys=True
-        )
+        metadata["sweeper_projection"] = json.dumps(suggestion.projection.metadata(), sort_keys=True)
         suggestion.handle.update_metadata(metadata)
 
     def observe(self, suggestion: Suggestion, metrics: dict[str, float]) -> None:
         _, vz = _vizier_modules()
 
         self._update_projection_metadata(suggestion)
-        suggestion.handle.complete(
-            vz.Measurement(metrics={k: float(v) for k, v in metrics.items()})
-        )
+        suggestion.handle.complete(vz.Measurement(metrics={k: float(v) for k, v in metrics.items()}))
 
     def observe_infeasible(self, suggestion: Suggestion, reason: str) -> None:
         """Mark a candidate that could not be evaluated (e.g. replay error) so the
@@ -301,17 +274,12 @@ class RandomBranchSampler:
         self.branch = branch
         self._rng = random.Random(seed)
         self._projector = ParallelConfigProjector(branch)
-        self._parallel_pinned = (
-            len(branch.parallel_configs) == 1
-            and not branch.parallel_independent_choices
-        )
+        self._parallel_pinned = len(branch.parallel_configs) == 1 and not branch.parallel_independent_choices
 
     def _parameter_value(self, parameter) -> Any:
         if parameter.kind == "float":
             if parameter.log_scale:
-                return 2.0 ** self._rng.uniform(
-                    math.log2(parameter.minimum), math.log2(parameter.maximum)
-                )
+                return 2.0 ** self._rng.uniform(math.log2(parameter.minimum), math.log2(parameter.maximum))
             return self._rng.uniform(parameter.minimum, parameter.maximum)
         return self._rng.choice(parameter.values)
 
@@ -320,12 +288,15 @@ class RandomBranchSampler:
         for _ in range(count):
             selection: dict[str, Any] = {"deployment_mode": self.branch.deployment_mode}
             for knob, choices in self.branch.knob_choices.items():
-                selection[knob] = self._rng.choice(choices)
+                if knob in self.branch.log_discrete_choices and len(choices) > 1:
+                    positive = sorted(float(choice) for choice in choices)
+                    sampled = math.exp(self._rng.uniform(math.log(positive[0]), math.log(positive[-1])))
+                    selection[knob] = min(choices, key=lambda choice: abs(float(choice) - sampled))
+                else:
+                    selection[knob] = self._rng.choice(choices)
             for knob, (minimum, maximum) in self.branch.float_ranges.items():
                 if knob in self.branch.log_float_ranges:
-                    selection[knob] = math.exp(
-                        self._rng.uniform(math.log(minimum), math.log(maximum))
-                    )
+                    selection[knob] = math.exp(self._rng.uniform(math.log(minimum), math.log(maximum)))
                 else:
                     selection[knob] = self._rng.uniform(minimum, maximum)
             if self._parallel_pinned:
@@ -378,10 +349,7 @@ class SeededBayesianBranchSampler:
         self._decoders: dict[str, Callable[[Any], Any]] = {}
         self._constants: dict[str, Any] = {}
         self._parallel_projector = ParallelConfigProjector(branch)
-        self._parallel_pinned = (
-            len(branch.parallel_configs) == 1
-            and not branch.parallel_independent_choices
-        )
+        self._parallel_pinned = len(branch.parallel_configs) == 1 and not branch.parallel_independent_choices
         self._next_trial_id = 1
         self._active: dict[int, Any] = {}
 
@@ -403,11 +371,7 @@ class SeededBayesianBranchSampler:
                         parameter.name,
                         feasible_values=parameter.values,
                         default_value=parameter.default,
-                        scale_type=(
-                            vz.ScaleType.LOG
-                            if parameter.log_scale
-                            else vz.ScaleType.LINEAR
-                        ),
+                        scale_type=(vz.ScaleType.LOG if parameter.log_scale else vz.ScaleType.LINEAR),
                     )
                 else:
                     root.add_categorical_param(
@@ -421,20 +385,13 @@ class SeededBayesianBranchSampler:
                 min_value=minimum,
                 max_value=maximum,
                 default_value=(minimum + maximum) / 2.0,
-                scale_type=(
-                    vz.ScaleType.LOG
-                    if knob in branch.log_float_ranges
-                    else vz.ScaleType.LINEAR
-                ),
+                scale_type=(vz.ScaleType.LOG if knob in branch.log_float_ranges else vz.ScaleType.LINEAR),
             )
             self._decoders[knob] = float
         for knob, raw_choices in branch.knob_choices.items():
             choices = list(raw_choices)
             all_strings = all(isinstance(choice, str) for choice in choices)
-            all_numeric = all(
-                isinstance(choice, (int, float)) and not isinstance(choice, bool)
-                for choice in choices
-            )
+            all_numeric = all(isinstance(choice, (int, float)) and not isinstance(choice, bool) for choice in choices)
             if all_strings or all_numeric:
                 choices = list(dict.fromkeys(choices))
             if len(choices) <= 1:
@@ -445,7 +402,11 @@ class SeededBayesianBranchSampler:
                 root.add_categorical_param(knob, choices)
                 self._decoders[knob] = _decoder_for(choices)
             elif all_numeric:
-                root.add_discrete_param(knob, sorted(float(choice) for choice in choices))
+                root.add_discrete_param(
+                    knob,
+                    sorted(float(choice) for choice in choices),
+                    scale_type=(vz.ScaleType.LOG if knob in branch.log_discrete_choices else vz.ScaleType.LINEAR),
+                )
                 self._decoders[knob] = _decoder_for(choices)
             else:
                 root.add_categorical_param(knob, [str(i) for i in range(len(choices))])
@@ -456,11 +417,7 @@ class SeededBayesianBranchSampler:
             problem.metric_information.append(
                 vz.MetricInformation(
                     name=name,
-                    goal=(
-                        vz.ObjectiveMetricGoal.MAXIMIZE
-                        if maximize
-                        else vz.ObjectiveMetricGoal.MINIMIZE
-                    ),
+                    goal=(vz.ObjectiveMetricGoal.MAXIMIZE if maximize else vz.ObjectiveMetricGoal.MINIMIZE),
                 )
             )
         self._designer = gp_ucb_pe.VizierGPUCBPEBandit(
@@ -474,10 +431,7 @@ class SeededBayesianBranchSampler:
             trial = raw.to_trial(self._next_trial_id)
             self._next_trial_id += 1
             self._active[trial.id] = trial
-            params = {
-                name: getattr(value, "value", value)
-                for name, value in dict(trial.parameters).items()
-            }
+            params = {name: getattr(value, "value", value) for name, value in dict(trial.parameters).items()}
             selection: dict[str, Any] = {
                 "deployment_mode": self.branch.deployment_mode,
                 **self._constants,
@@ -488,9 +442,7 @@ class SeededBayesianBranchSampler:
                 parallel_config = self.branch.parallel_configs[0]
                 projection = None
             else:
-                projection = self._parallel_projector.project(
-                    params, selection["backend"]
-                )
+                projection = self._parallel_projector.project(params, selection["backend"])
                 parallel_config = projection.config
             suggestions.append(
                 Suggestion(
@@ -517,9 +469,7 @@ class SeededBayesianBranchSampler:
     def observe(self, suggestion: Suggestion, metrics: dict[str, float]) -> None:
         self._complete(
             suggestion,
-            self._vz.Measurement(
-                metrics={name: float(value) for name, value in metrics.items()}
-            ),
+            self._vz.Measurement(metrics={name: float(value) for name, value in metrics.items()}),
         )
 
     def observe_infeasible(self, suggestion: Suggestion, reason: str) -> None:

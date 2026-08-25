@@ -38,12 +38,8 @@ class OptimizationTarget(str, Enum):
     """
 
     THROUGHPUT = "throughput"  # maximize replay throughput
-    THROUGHPUT_PER_GPU = (
-        "throughput_per_gpu"  # maximize throughput / avg GPU (tok/s/gpu)
-    )
-    THROUGHPUT_PER_USER = (
-        "throughput_per_user"  # maximize mean per-user output throughput (tok/s/user)
-    )
+    THROUGHPUT_PER_GPU = "throughput_per_gpu"  # maximize throughput / avg GPU (tok/s/gpu)
+    THROUGHPUT_PER_USER = "throughput_per_user"  # maximize mean per-user output throughput (tok/s/user)
     TTFT = "ttft"  # minimize mean time to first token
     E2E_LATENCY = "e2e_latency"  # minimize mean end-to-end latency
     GOODPUT = "goodput"  # maximize SLA-satisfying throughput
@@ -67,17 +63,24 @@ class SLATarget(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ttft_ms: float | None = Field(default=None, gt=0)
-    itl_ms: float | None = Field(default=None, gt=0)
-    e2e_ms: float | None = Field(default=None, gt=0)
+    ttft_ms: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
+    itl_ms: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
+    e2e_ms: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _validate_form(self) -> SLATarget:
+        token_form = self.ttft_ms is not None or self.itl_ms is not None
+        if token_form and (self.ttft_ms is None or self.itl_ms is None):
+            raise ValueError("ttft_ms and itl_ms must be supplied together")
+        if token_form and self.e2e_ms is not None:
+            raise ValueError("e2e_ms is mutually exclusive with ttft_ms/itl_ms")
+        return self
 
 
 # Goodput-based scalar targets — the only ones that need an SLA (their metric counts
 # only SLA-satisfying requests). Used to gate the SLA requirement on both the scalar
 # target and the per-objective list under a pareto goal.
-_SLA_TARGETS = frozenset(
-    {OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU}
-)
+_SLA_TARGETS = frozenset({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})
 
 # Default Pareto objectives: throughput per GPU (y) vs mean per-user throughput (x) —
 # the InferenceX tok/s/gpu vs tok/s/user frontier.
@@ -93,9 +96,7 @@ class OptimizationGoal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target: OptimizationTarget = OptimizationTarget.THROUGHPUT
-    sla: SLATarget | None = (
-        None  # required for goodput / goodput_per_gpu (scalar or pareto objective)
-    )
+    sla: SLATarget | None = None  # required for goodput / goodput_per_gpu (scalar or pareto objective)
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
     pareto_objectives: list[OptimizationTarget] | None = None
@@ -106,11 +107,7 @@ class OptimizationGoal(BaseModel):
         when unset (``None``). An explicitly-supplied empty/short list is kept as-is so the
         validator's ``len < 2`` guard rejects it (rather than silently using the default).
         """
-        return (
-            list(_DEFAULT_PARETO_OBJECTIVES)
-            if self.pareto_objectives is None
-            else list(self.pareto_objectives)
-        )
+        return list(_DEFAULT_PARETO_OBJECTIVES) if self.pareto_objectives is None else list(self.pareto_objectives)
 
     @property
     def is_pareto(self) -> bool:
@@ -126,27 +123,20 @@ class OptimizationGoal(BaseModel):
             if len(objs) < 2:
                 raise ValueError("a pareto goal needs at least 2 objectives")
             if OptimizationTarget.PARETO in objs:
-                raise ValueError(
-                    "pareto_objectives cannot contain 'pareto' itself (objectives must be scalar)"
-                )
+                raise ValueError("pareto_objectives cannot contain 'pareto' itself (objectives must be scalar)")
             if len(set(objs)) != len(objs):
-                raise ValueError(
-                    f"pareto_objectives must be distinct, got {[o.value for o in objs]}"
-                )
+                raise ValueError(f"pareto_objectives must be distinct, got {[o.value for o in objs]}")
             effective = set(objs)
         else:
             effective = {self.target}
         # Any goodput-based objective (scalar target or pareto objective) needs an SLA.
         needs_sla = bool(effective & _SLA_TARGETS)
         has_sla = self.sla is not None and (
-            self.sla.e2e_ms is not None
-            or (self.sla.ttft_ms is not None and self.sla.itl_ms is not None)
+            self.sla.e2e_ms is not None or (self.sla.ttft_ms is not None and self.sla.itl_ms is not None)
         )
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
-            raise ValueError(
-                f"{culprits} require an SLA target (ttft_ms+itl_ms or e2e_ms)"
-            )
+            raise ValueError(f"{culprits} require an SLA target (ttft_ms+itl_ms or e2e_ms)")
         return self
 
 
@@ -189,9 +179,7 @@ class Workload(BaseModel):
     kv_load_ratio: float | list[float] | None = None
     request_rate: float | None = None
     request_count: int | None = None
-    num_request_ratio: float | None = (
-        None  # request count multiplier for concrete concurrency or request_rate
-    )
+    num_request_ratio: float | None = None  # request count multiplier for concrete concurrency or request_rate
     random_range_ratio: float = 1.0
     random_seed: int = 0
     shared_prefix_ratio: float = 0.0  # cache-locality / prefix sharing
@@ -231,9 +219,7 @@ class Workload(BaseModel):
     @classmethod
     def _validate_random_seed_type(cls, value: Any) -> Any:
         if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(
-                f"random_seed must be an unsigned 64-bit integer, got {value!r}"
-            )
+            raise ValueError(f"random_seed must be an unsigned 64-bit integer, got {value!r}")
         return value
 
     @property
@@ -251,9 +237,7 @@ class Workload(BaseModel):
             return float(self.kv_load_ratio[0]), float(self.kv_load_ratio[1])
         return None
 
-    def effective_in_flight_cap(
-        self, concurrency_override: int | None = None
-    ) -> int | None:
+    def effective_in_flight_cap(self, concurrency_override: int | None = None) -> int | None:
         """Closed-loop in-flight cap (``None`` = open-loop). ``concurrency_override`` (the
         per-trial value derived from KV load) wins; then ``replay_concurrency`` for a
         trace, then the fixed ``concurrency`` for a synthetic workload. KV-load mode always
@@ -278,9 +262,7 @@ class Workload(BaseModel):
         elif self.request_rate is not None:
             load = self.request_rate
         else:
-            raise ValueError(
-                "resolved_request_count needs a concurrency_override for a kv_load_ratio workload"
-            )
+            raise ValueError("resolved_request_count needs a concurrency_override for a kv_load_ratio workload")
         return max(1, round((self.num_request_ratio or 0.0) * load))
 
     @property
@@ -311,20 +293,12 @@ class Workload(BaseModel):
             if self.random_seed != 0:
                 set_syn.append("random_seed")
             if set_syn:
-                raise ValueError(
-                    f"trace workload (trace_path set) must not set synthetic fields {set_syn}"
-                )
+                raise ValueError(f"trace workload (trace_path set) must not set synthetic fields {set_syn}")
             if self.replay_concurrency is not None and self.replay_concurrency <= 0:
-                raise ValueError(
-                    f"replay_concurrency must be a positive integer, got {self.replay_concurrency}"
-                )
+                raise ValueError(f"replay_concurrency must be a positive integer, got {self.replay_concurrency}")
             return self
         # synthetic: exactly one load mode, plus isl/osl/num_request_ratio
-        loads = [
-            n
-            for n in ("request_rate", "concurrency", "kv_load_ratio")
-            if getattr(self, n) is not None
-        ]
+        loads = [n for n in ("request_rate", "concurrency", "kv_load_ratio") if getattr(self, n) is not None]
         if len(loads) != 1:
             raise ValueError(
                 "a synthetic workload needs exactly one of request_rate, concurrency, or kv_load_ratio "
@@ -336,46 +310,23 @@ class Workload(BaseModel):
         if missing:
             raise ValueError(f"a synthetic workload requires {missing}")
         if self.replay_concurrency is not None:
-            raise ValueError(
-                "replay_concurrency is for trace workloads; use 'concurrency' for synthetic closed-loop"
-            )
-        if self.concurrency is not None and (
-            isinstance(self.concurrency, bool) or self.concurrency <= 0
-        ):
-            raise ValueError(
-                f"concurrency must be a positive integer, got {self.concurrency!r}"
-            )
-        if self.request_count is not None and (
-            isinstance(self.request_count, bool) or self.request_count <= 0
-        ):
+            raise ValueError("replay_concurrency is for trace workloads; use 'concurrency' for synthetic closed-loop")
+        if self.concurrency is not None and (isinstance(self.concurrency, bool) or self.concurrency <= 0):
+            raise ValueError(f"concurrency must be a positive integer, got {self.concurrency!r}")
+        if self.request_count is not None and (isinstance(self.request_count, bool) or self.request_count <= 0):
             raise ValueError("request_count must be a positive integer")
         if self.load_choices is not None and not self.load_choices:
             raise ValueError("load_choices must be nonempty")
-        if self.load_range is not None and (
-            len(self.load_range) != 2 or self.load_range[0] >= self.load_range[1]
-        ):
+        if self.load_range is not None and (len(self.load_range) != 2 or self.load_range[0] >= self.load_range[1]):
             raise ValueError("load_range must contain [min, max] with min < max")
         if self.kv_load_ratio is not None:
-            ratios = (
-                self.kv_load_ratio
-                if isinstance(self.kv_load_ratio, list)
-                else [self.kv_load_ratio]
-            )
+            ratios = self.kv_load_ratio if isinstance(self.kv_load_ratio, list) else [self.kv_load_ratio]
             if isinstance(self.kv_load_ratio, list) and len(ratios) != 2:
                 raise ValueError("kv_load_ratio range must contain exactly [min, max]")
-            if any(
-                not math.isfinite(float(value)) or float(value) < 0.0
-                for value in ratios
-            ):
-                raise ValueError(
-                    f"kv_load_ratio values must be finite and non-negative, got {self.kv_load_ratio!r}"
-                )
-            if isinstance(self.kv_load_ratio, list) and float(ratios[0]) >= float(
-                ratios[1]
-            ):
-                raise ValueError(
-                    f"kv_load_ratio range needs min < max, got {self.kv_load_ratio!r}"
-                )
+            if any(not math.isfinite(float(value)) or float(value) < 0.0 for value in ratios):
+                raise ValueError(f"kv_load_ratio values must be finite and non-negative, got {self.kv_load_ratio!r}")
+            if isinstance(self.kv_load_ratio, list) and float(ratios[0]) >= float(ratios[1]):
+                raise ValueError(f"kv_load_ratio range needs min < max, got {self.kv_load_ratio!r}")
         for name in ("request_rate", "isl", "osl", "num_request_ratio"):
             v = getattr(self, name)
             if v is not None and v <= 0:
@@ -385,31 +336,17 @@ class Workload(BaseModel):
             or self.random_range_ratio <= 0.0
             or self.random_range_ratio > 1.0
         ):
-            raise ValueError(
-                "random_range_ratio must be finite and in (0.0, 1.0], got "
-                f"{self.random_range_ratio!r}"
-            )
+            raise ValueError(f"random_range_ratio must be finite and in (0.0, 1.0], got {self.random_range_ratio!r}")
         for name in ("isl", "osl"):
             length = getattr(self, name)
             if length is not None and int(length * self.random_range_ratio) == 0:
                 raise ValueError(
-                    f"random_range_ratio={self.random_range_ratio} gives a zero-token "
-                    f"lower bound for {name}={length}"
+                    f"random_range_ratio={self.random_range_ratio} gives a zero-token lower bound for {name}={length}"
                 )
-        if (
-            isinstance(self.random_seed, bool)
-            or self.random_seed < 0
-            or self.random_seed > 0xFFFF_FFFF_FFFF_FFFF
-        ):
-            raise ValueError(
-                "random_seed must be an unsigned 64-bit integer, got "
-                f"{self.random_seed!r}"
-            )
+        if isinstance(self.random_seed, bool) or self.random_seed < 0 or self.random_seed > 0xFFFF_FFFF_FFFF_FFFF:
+            raise ValueError(f"random_seed must be an unsigned 64-bit integer, got {self.random_seed!r}")
         if self.random_range_ratio != 1.0 and self.turns_per_session != 1:
-            raise ValueError(
-                "random_range_ratio currently only supports single-turn "
-                "synthetic workloads"
-            )
+            raise ValueError("random_range_ratio currently only supports single-turn synthetic workloads")
         return self
 
 
@@ -421,12 +358,6 @@ class Workload(BaseModel):
 SEARCH_CHOICES: dict[str, tuple] = {
     "deployment_mode": ("disagg", "agg"),
     "backend": ("vllm", "sglang", "trtllm"),
-    "prefill_max_num_batched_tokens": (8192, 16384, 32768),
-    "prefill_max_num_seqs": (1, 2, 4, 8, 16, 32, 64, 128, 256),
-    "decode_max_num_batched_tokens": (8192,),
-    "decode_max_num_seqs": (256, 512, 1024),
-    "agg_max_num_batched_tokens": (8192, 16384, 32768),
-    "agg_max_num_seqs": (256, 512, 1024),
 }
 
 
@@ -445,16 +376,11 @@ class SearchSpace(BaseModel):
     # deployment: branch + backend + legal parallel shapes
     deployment_mode: list[str] = ["disagg", "agg"]  # branches to explore; pin with one
     backend: list[str] = ["vllm"]  # vllm | sglang | trtllm
-    parallel_configs: list[dict[str, Any]] = Field(
-        default_factory=list
-    )  # generated when empty
-    parallel_configs_by_mode: dict[str, list[dict[str, Any]]] = Field(
-        default_factory=dict
-    )
+    backend_version: str | None = None
+    parallel_configs: list[dict[str, Any]] = Field(default_factory=list)  # generated when empty
+    parallel_configs_by_mode: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     flat_parallel_modes: list[str] = Field(default_factory=list)
-    parallel_independent_by_mode: dict[
-        str, dict[str, list[int] | None]
-    ] = Field(default_factory=dict)
+    parallel_independent_by_mode: dict[str, dict[str, list[int] | None]] = Field(default_factory=dict)
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
@@ -501,6 +427,7 @@ class SearchSpace(BaseModel):
     kv_transfer_timing_mode: str = "destination_missing"
     engine_float_ranges: dict[str, list[float]] = Field(default_factory=dict)
     engine_log_ranges: list[str] = Field(default_factory=list)
+    engine_log_discrete: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
@@ -508,22 +435,29 @@ class SearchSpace(BaseModel):
         for field_name, allowed in SEARCH_CHOICES.items():
             values = getattr(self, field_name)
             if not values:
-                raise ValueError(
-                    f"{field_name} must list at least one choice; allowed: {list(allowed)}"
-                )
+                raise ValueError(f"{field_name} must list at least one choice; allowed: {list(allowed)}")
             for v in values:
                 if v not in allowed:
-                    raise ValueError(
-                        f"{field_name} has invalid choice {v!r}; allowed: {list(allowed)}"
-                    )
+                    raise ValueError(f"{field_name} has invalid choice {v!r}; allowed: {list(allowed)}")
+        for field_name in (
+            "prefill_max_num_batched_tokens",
+            "prefill_max_num_seqs",
+            "decode_max_num_batched_tokens",
+            "decode_max_num_seqs",
+            "agg_max_num_batched_tokens",
+            "agg_max_num_seqs",
+        ):
+            values = getattr(self, field_name)
+            if not values or any(
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values
+            ):
+                raise ValueError(f"{field_name} must contain positive integers")
         return self
 
     @model_validator(mode="after")
     def _validate_gpu_budget(self) -> SearchSpace:
         """A minimum GPU budget must be positive and within the maximum budget."""
-        if self.min_gpu_budget is not None and not (
-            0 < self.min_gpu_budget <= self.gpu_budget
-        ):
+        if self.min_gpu_budget is not None and not (0 < self.min_gpu_budget <= self.gpu_budget):
             raise ValueError(
                 f"min_gpu_budget must satisfy 0 < min_gpu_budget <= gpu_budget "
                 f"(got min_gpu_budget={self.min_gpu_budget}, gpu_budget={self.gpu_budget})"
@@ -537,6 +471,7 @@ class SearchSpace(BaseModel):
         ``tp``); a disagg entry nests ``prefill`` + ``decode`` shape dicts. Full
         legality (MoE width, KV feasibility, GPU budget) is checked in
         ``enumerate_branches`` against the model+hardware."""
+
         def validate_shape_dict(value: Any, label: str) -> None:
             if not isinstance(value, dict):
                 raise ValueError(f"{label} parallel_configs shape must be a dict")
@@ -548,28 +483,20 @@ class SearchSpace(BaseModel):
                 "pinning parallel_configs requires deployment_mode to list exactly one mode "
                 f"(got {self.deployment_mode}); pin the mode too"
             )
-        configured: dict[str, list[dict[str, Any]]] = dict(
-            self.parallel_configs_by_mode
-        )
+        configured: dict[str, list[dict[str, Any]]] = dict(self.parallel_configs_by_mode)
         if self.parallel_configs:
             configured[self.deployment_mode[0]] = self.parallel_configs
         unknown_modes = set(configured) - {"agg", "disagg"}
         if unknown_modes:
-            raise ValueError(
-                f"parallel_configs_by_mode has unknown modes {sorted(unknown_modes)}"
-            )
+            raise ValueError(f"parallel_configs_by_mode has unknown modes {sorted(unknown_modes)}")
         inactive_modes = set(configured) - set(self.deployment_mode)
         if inactive_modes:
-            raise ValueError(
-                f"parallel_configs_by_mode configures inactive modes {sorted(inactive_modes)}"
-            )
+            raise ValueError(f"parallel_configs_by_mode configures inactive modes {sorted(inactive_modes)}")
         flat_modes = set(self.flat_parallel_modes)
         independent_modes = set(self.parallel_independent_by_mode)
         invalid_special = (flat_modes | independent_modes) - set(self.deployment_mode)
         if invalid_special:
-            raise ValueError(
-                f"parallel search mode configures inactive modes {sorted(invalid_special)}"
-            )
+            raise ValueError(f"parallel search mode configures inactive modes {sorted(invalid_special)}")
         if flat_modes - set(configured):
             raise ValueError("flat_parallel_modes require pinned configs for each mode")
         if flat_modes & independent_modes:
@@ -588,30 +515,17 @@ class SearchSpace(BaseModel):
             allowed_names = (
                 base_names
                 if mode == "agg"
-                else {
-                    f"{role}_{name}"
-                    for role in ("prefill", "decode")
-                    for name in base_names
-                }
+                else {f"{role}_{name}" for role in ("prefill", "decode") for name in base_names}
             )
             unknown_names = set(fields) - allowed_names
             if unknown_names:
-                raise ValueError(
-                    f"parallel_independent_by_mode.{mode} has unknown knobs {sorted(unknown_names)}"
-                )
+                raise ValueError(f"parallel_independent_by_mode.{mode} has unknown knobs {sorted(unknown_names)}")
             for name, values in fields.items():
                 if values is not None and (
                     not values
-                    or any(
-                        isinstance(value, bool)
-                        or not isinstance(value, int)
-                        or value <= 0
-                        for value in values
-                    )
+                    or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values)
                 ):
-                    raise ValueError(
-                        f"parallel_independent_by_mode.{mode}.{name} must contain positive integers"
-                    )
+                    raise ValueError(f"parallel_independent_by_mode.{mode}.{name} must contain positive integers")
         for mode, entries in configured.items():
             if not entries:
                 raise ValueError(f"parallel_configs_by_mode.{mode} must be nonempty")
@@ -622,9 +536,7 @@ class SearchSpace(BaseModel):
                     validate_shape_dict(entry, "an agg")
                 else:
                     if "prefill" not in entry or "decode" not in entry:
-                        raise ValueError(
-                            "a disagg parallel_configs entry needs 'prefill' and 'decode' sub-dicts"
-                        )
+                        raise ValueError("a disagg parallel_configs entry needs 'prefill' and 'decode' sub-dicts")
                     validate_shape_dict(entry["prefill"], "a disagg prefill")
                     validate_shape_dict(entry["decode"], "a disagg decode")
         return self
@@ -636,9 +548,7 @@ class SweepConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_rounds: int = Field(default=20, ge=1)  # total Vizier/replay barrier rounds
-    parallel_evals: int = Field(
-        default=16, ge=1
-    )  # replay worker fan-out and default candidates per round
+    parallel_evals: int = Field(default=16, ge=1)  # replay worker fan-out and default candidates per round
     # Successful unique replay configs per round; duplicate projections are told from
     # cache and replaced. Defaults to parallel_evals.
     candidates_per_round: int | None = Field(default=None, ge=1)
@@ -715,16 +625,9 @@ class SmartSearchConfig(BaseModel):
         else:
             is_pareto = False
         workload = data.get("workload")
-        if (
-            not is_pareto
-            or not isinstance(workload, dict)
-            or workload.get("trace_path") is not None
-        ):
+        if not is_pareto or not isinstance(workload, dict) or workload.get("trace_path") is not None:
             return data
-        if any(
-            workload.get(name) is not None
-            for name in ("request_rate", "concurrency", "kv_load_ratio")
-        ):
+        if any(workload.get(name) is not None for name in ("request_rate", "concurrency", "kv_load_ratio")):
             return data
         updated = dict(data)
         updated_workload = dict(workload)
@@ -735,7 +638,7 @@ class SmartSearchConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_kv_load_ratio_range(self) -> SmartSearchConfig:
         """Only a Pareto study may search a KV-load range; scalar ratios work for any goal."""
-        if self.workload.kv_load_ratio_range is not None and not self.goal.is_pareto:
+        if self.workload.kv_load_ratio_range is not None and not self.goal.is_pareto and self.sweep.max_trials is None:
             raise ValueError(
                 "a ranged workload.kv_load_ratio is only allowed when goal.target is 'pareto' "
                 f"(got target={self.goal.target.value}); use one scalar kv_load_ratio"

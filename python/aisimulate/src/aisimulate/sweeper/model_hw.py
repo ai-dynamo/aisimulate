@@ -64,9 +64,7 @@ class ModelHardware:
     max_context: int | None  # model's max context length (the default max_seq_len)
 
 
-def resolve_model_hardware(
-    model_name: str, hardware_sku: str, *, backend: str
-) -> ModelHardware:
+def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) -> ModelHardware:
     """Read the model weights + SKU spec (via AIC) to derive is_moe / mla / wideep
     and the model's max context length."""
     model_config = get_model_config_from_model_path(model_name)
@@ -79,8 +77,7 @@ def resolve_model_hardware(
     system_spec = perf_database.load_system_spec(hardware_sku)
     if not system_spec:
         raise ValueError(
-            f"unknown hardware_sku {hardware_sku!r}: no system config found on "
-            "AIConfigurator Core's systems path"
+            f"unknown hardware_sku {hardware_sku!r}: no system config found on AIConfigurator Core's systems path"
         )
     vram_per_gpu = int(system_spec["gpu"]["mem_capacity"])
     gpus_per_node = int(system_spec["node"]["num_gpus_per_node"])
@@ -110,11 +107,13 @@ def parallel_configs_for(
     gpu_budget: int,
     deployment_mode: str,
     backend: str,
+    backend_version: str | None = None,
     max_seq_len: int | None = None,
     min_gpu_budget: int | None = None,
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
+    role_runtime: dict[str, tuple[int, int, float]] | None = None,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
     the GPU budget and can hold a ``max_seq_len``-token sequence.
@@ -137,9 +136,7 @@ def parallel_configs_for(
     mh = resolve_model_hardware(model_name, hardware_sku, backend=backend)
     seq_len = max_seq_len if max_seq_len is not None else mh.max_context
     if seq_len is None:
-        raise ValueError(
-            f"max_seq_len is required: {model_name} config exposes no max context length"
-        )
+        raise ValueError(f"max_seq_len is required: {model_name} config exposes no max context length")
 
     # Enumerate from 1 GPU/worker; the KV estimate is the sole feasibility filter.
     # MoE tensor-parallel (moe_ep == 1) is enabled for every MoE model, MLA
@@ -158,33 +155,32 @@ def parallel_configs_for(
     elif deployment_mode == "agg":
         configs = enumerate_parallel_configs(**common)
     else:
-        raise ValueError(
-            f"deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}"
-        )
+        raise ValueError(f"deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}")
 
     # KV-cache validity: keep configs whose every role-shape holds a max_seq_len sequence.
+    def feasible_for(role: str, shapes):
+        role_tokens, role_batch, role_memory = (role_runtime or {}).get(
+            role, (max_num_tokens, max_batch_size, memory_fraction)
+        )
+        return feasible_shape_tokens(
+            shapes,
+            model_name=model_name,
+            hardware_sku=hardware_sku,
+            backend=backend,
+            backend_version=backend_version,
+            max_seq_len=seq_len,
+            max_num_tokens=role_tokens,
+            max_batch_size=role_batch,
+            memory_fraction=role_memory,
+        )
+
     if deployment_mode == "agg":
-        shapes = [c.shape for c in configs]
-    else:
-        shapes = [c.prefill.shape for c in configs] + [c.decode.shape for c in configs]
-    feasible = feasible_shape_tokens(
-        shapes,
-        model_name=model_name,
-        hardware_sku=hardware_sku,
-        backend=backend,
-        max_seq_len=seq_len,
-        max_num_tokens=max_num_tokens,
-        max_batch_size=max_batch_size,
-        memory_fraction=memory_fraction,
-    )
-    if deployment_mode == "agg":
+        feasible = feasible_for("agg", [c.shape for c in configs])
         kept = [c for c in configs if c.shape in feasible]
     else:
-        kept = [
-            c
-            for c in configs
-            if c.prefill.shape in feasible and c.decode.shape in feasible
-        ]
+        prefill_feasible = feasible_for("prefill", [c.prefill.shape for c in configs])
+        decode_feasible = feasible_for("decode", [c.decode.shape for c in configs])
+        kept = [c for c in configs if c.prefill.shape in prefill_feasible and c.decode.shape in decode_feasible]
     if not kept:
         raise NoViableParallelConfig(
             f"{model_name} on {hardware_sku}: no parallel config holds a {seq_len}-token "

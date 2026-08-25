@@ -66,6 +66,10 @@ class CoreRecommendationConfig(StrictModel):
             and "disaggregated" in modes
         ):
             raise ValueError(f"{source.format} requires aggregated engine mode")
+        if self.optimization.target in {"goodput", "goodput_per_gpu"}:
+            sla = self.evaluation.sla
+            if sla is None or (sla.e2e_ms is None and (sla.ttft_ms is None or sla.itl_ms is None)):
+                raise ValueError(f"optimization target {self.optimization.target!r} requires a complete evaluation.sla")
         return self
 
     @classmethod

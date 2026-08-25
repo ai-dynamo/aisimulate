@@ -11,9 +11,9 @@ from pydantic import Field, field_validator, model_validator
 
 from .common import Choices, IntegerRange, NumericRange, StrictModel
 
-PositiveInt = Annotated[int, Field(gt=0)]
-PositiveFloat = Annotated[float, Field(gt=0)]
-Fraction = Annotated[float, Field(gt=0, le=1)]
+PositiveInt = Annotated[int, Field(strict=True, gt=0)]
+PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
+Fraction = Annotated[float, Field(strict=True, gt=0, le=1, allow_inf_nan=False)]
 EngineMode = Literal["aggregated", "disaggregated"]
 Backend = Literal["vllm", "sglang", "trtllm"]
 
@@ -121,6 +121,13 @@ class EnginePredictionConfig(StrictModel):
             raise ValueError("value must be nonempty")
         return value
 
+    @field_validator("hardware")
+    @classmethod
+    def _reject_auto_hardware(cls, value: str) -> str:
+        if value == "auto":
+            raise ValueError("engine.hardware='auto' is recommendation-only")
+        return value
+
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
         _validate_worker_roles(
@@ -144,6 +151,36 @@ class ParallelismRecommendationConfig(StrictModel):
     attention_data: ParallelDomain | None = None
     moe_tensor: ParallelDomain | None = None
     moe_expert: ParallelDomain | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_custom_preset_entries(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        preset = value.get("preset")
+        if not isinstance(preset, list):
+            return value
+        required = {
+            "replicas",
+            "tensor",
+            "pipeline",
+            "attention_data",
+            "moe_tensor",
+            "moe_expert",
+        }
+        if not preset:
+            raise ValueError("parallelism preset list must be nonempty")
+        for index, entry in enumerate(preset):
+            if not isinstance(entry, dict):
+                raise ValueError(f"parallelism preset entry {index} must be a mapping")
+            missing = required - set(entry)
+            unknown = set(entry) - required
+            if missing or unknown:
+                raise ValueError(
+                    "parallelism preset entries must cover exactly all knobs; "
+                    f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+                )
+        return value
 
     @model_validator(mode="after")
     def _validate_preset(self) -> ParallelismRecommendationConfig:

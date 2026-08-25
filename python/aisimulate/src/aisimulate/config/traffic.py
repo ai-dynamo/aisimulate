@@ -11,9 +11,9 @@ from pydantic import Field, field_validator, model_validator
 
 from .common import Choices, IntegerRange, NumericRange, StrictModel
 
-PositiveInt = Annotated[int, Field(gt=0)]
-PositiveFloat = Annotated[float, Field(gt=0)]
-NonNegativeInt = Annotated[int, Field(ge=0)]
+PositiveInt = Annotated[int, Field(strict=True, gt=0)]
+PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
+NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 
 
 class SyntheticSource(StrictModel):
@@ -68,6 +68,8 @@ class TraceSource(StrictModel):
     def _validate_path_count(self) -> TraceSource:
         if self.format != "dynamo" and len(self.paths) != 1:
             raise ValueError(f"trace format {self.format!r} requires exactly one path")
+        if self.format != "dynamo" and self.block_size is None:
+            self.block_size = 512
         return self
 
 
@@ -90,15 +92,21 @@ class TrafficPredictionLoad(StrictModel):
         "concurrency",
         "poisson",
         "constant_rate",
-        "kv_capacity_fraction",
         "trace_timestamps",
     ] = "concurrency"
     concurrency: PositiveInt | None = None
     requests_per_second: PositiveFloat | None = None
     sessions_per_second: PositiveFloat | None = None
     seed: NonNegativeInt | None = None
-    fraction: PositiveFloat | None = None
     speedup: PositiveFloat | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_concurrency(cls, value):
+        if isinstance(value, dict) and value.get("type", "concurrency") == "concurrency":
+            value = dict(value)
+            value.setdefault("concurrency", 10)
+        return value
 
     @model_validator(mode="after")
     def _validate_fields_for_type(self) -> TrafficPredictionLoad:
@@ -120,6 +128,14 @@ class TrafficRecommendationLoad(StrictModel):
     seed: NonNegativeInt | None = None
     fraction: PositiveFloat | Choices[PositiveFloat] | NumericRange | None = None
     speedup: PositiveFloat | Choices[PositiveFloat] | NumericRange | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_concurrency(cls, value):
+        if isinstance(value, dict) and value.get("type", "concurrency") == "concurrency":
+            value = dict(value)
+            value.setdefault("concurrency", 10)
+        return value
 
     @model_validator(mode="after")
     def _validate_fields_for_type(self) -> TrafficRecommendationLoad:
@@ -148,7 +164,7 @@ def _validate_load_fields(load) -> None:
             "fraction",
             "speedup",
         )
-        if getattr(load, name) is not None
+        if getattr(load, name, None) is not None
     }
     allowed = {
         "concurrency": {"concurrency"},
@@ -167,7 +183,7 @@ def _validate_load_fields(load) -> None:
         "kv_capacity_fraction": ("fraction",),
         "trace_timestamps": (),
     }[load.type]
-    missing = [name for name in required if getattr(load, name) is None]
+    missing = [name for name in required if getattr(load, name, None) is None]
     if missing:
         raise ValueError(f"traffic.load.type={load.type!r} requires {', '.join(missing)}")
 

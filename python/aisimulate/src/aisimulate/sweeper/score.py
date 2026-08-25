@@ -30,6 +30,7 @@ InferenceX tok/s/gpu vs tok/s/user frontier.
 
 from __future__ import annotations
 
+import json
 import math
 
 from .config import Candidate, OptimizationTarget
@@ -85,9 +86,7 @@ def objective_value(report: dict[str, float], target: OptimizationTarget) -> flo
     if target is OptimizationTarget.TTFT:
         return float(report.get("mean_ttft_ms", math.inf))
     if target is OptimizationTarget.PARETO:
-        raise ValueError(
-            "'pareto' is multi-objective; use objective_vector / pareto_front, not objective_value"
-        )
+        raise ValueError("'pareto' is multi-objective; use objective_vector / pareto_front, not objective_value")
     raise ValueError(f"unknown optimization target: {target!r}")
 
 
@@ -108,17 +107,13 @@ def is_feasible(used_gpus: int, gpu_budget: int) -> bool:
     return used_gpus <= gpu_budget
 
 
-def objective_vector(
-    report: dict[str, float], objectives: list[OptimizationTarget]
-) -> dict[str, float]:
+def objective_vector(report: dict[str, float], objectives: list[OptimizationTarget]) -> dict[str, float]:
     """Raw value (natural units, NOT signed) for each Pareto objective, keyed by target
     value. Dominance uses each objective's own direction (``target.maximize``)."""
     return {t.value: objective_value(report, t) for t in objectives}
 
 
-def _dominates(
-    a: dict[str, float], b: dict[str, float], objectives: list[OptimizationTarget]
-) -> bool:
+def _dominates(a: dict[str, float], b: dict[str, float], objectives: list[OptimizationTarget]) -> bool:
     """True iff ``a`` Pareto-dominates ``b``: at least as good on every objective (in that
     objective's own direction) and strictly better on at least one."""
     strictly_better = False
@@ -133,25 +128,29 @@ def _dominates(
     return strictly_better
 
 
-def pareto_front(
-    candidates: list[Candidate], objectives: list[OptimizationTarget]
-) -> list[Candidate]:
+def pareto_front(candidates: list[Candidate], objectives: list[OptimizationTarget]) -> list[Candidate]:
     """The non-dominated subset of ``candidates`` over ``objectives`` (each carrying an
     ``objectives`` vector), sorted by the **last** objective ascending — the x-axis — so the
     returned list traces the frontier left-to-right (e.g. low->high per-user throughput).
     """
     pool = [c for c in candidates if c.objectives is not None]
-    front = [
-        c
-        for c in pool
-        if not any(
-            _dominates(o.objectives, c.objectives, objectives)
-            for o in pool
-            if o is not c
-        )
-    ]
+    front = [c for c in pool if not any(_dominates(o.objectives, c.objectives, objectives) for o in pool if o is not c)]
     x_axis = objectives[-1].value
-    return sorted(front, key=lambda c: c.objectives.get(x_axis, 0.0))
+
+    def stable_key(candidate: Candidate):
+        assert candidate.objectives is not None
+        remaining = tuple(
+            -candidate.objectives[target.value] if target.maximize else candidate.objectives[target.value]
+            for target in objectives[:-1]
+        )
+        return (
+            candidate.objectives.get(x_axis, 0.0),
+            remaining,
+            candidate.used_gpus,
+            json.dumps(candidate.config, sort_keys=True, separators=(",", ":")),
+        )
+
+    return sorted(front, key=stable_key)
 
 
 def make_candidate(
@@ -189,4 +188,11 @@ def make_candidate(
 
 def rank(candidates: list[Candidate]) -> list[Candidate]:
     """Best-first: highest score, ties broken toward fewer GPUs."""
-    return sorted(candidates, key=lambda c: (-c.score, c.used_gpus))
+    return sorted(
+        candidates,
+        key=lambda c: (
+            -c.score,
+            c.used_gpus,
+            json.dumps(c.config, sort_keys=True, separators=(",", ":")),
+        ),
+    )

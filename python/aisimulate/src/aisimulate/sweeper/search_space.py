@@ -55,10 +55,9 @@ class BranchSpace:
     # this; list-valued component knobs remain discrete choices above.
     float_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     log_float_ranges: frozenset[str] = frozenset()
+    log_discrete_choices: frozenset[str] = frozenset()
     flat_parallel_choices: bool = False
-    parallel_independent_choices: dict[str, tuple[int, ...]] = field(
-        default_factory=dict
-    )
+    parallel_independent_choices: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 def _parallel_leaf_values(config: _ParallelConfig) -> dict[str, int]:
@@ -99,9 +98,7 @@ def _shape_from_dict(d: dict[str, Any]) -> ParallelShape:
 
 
 def _replica_from_dict(d: dict[str, Any]) -> ReplicaParallelConfig:
-    return ReplicaParallelConfig(
-        shape=_shape_from_dict(d), replicas=int(d.get("replicas", 1))
-    )
+    return ReplicaParallelConfig(shape=_shape_from_dict(d), replicas=int(d.get("replicas", 1)))
 
 
 def _parse_parallel_entry(entry: dict[str, Any], deployment_mode: str):
@@ -167,34 +164,41 @@ def enumerate_branches(
     ss = config.search_space
     branches: list[BranchSpace] = []
     skipped: list[str] = []  # modes dropped because no backend was viable
+
+    def role_runtime(backend: str, mode: str) -> dict[str, tuple[int, int, float]]:
+        roles = ("agg",) if mode == "agg" else ("prefill", "decode")
+        result: dict[str, tuple[int, int, float]] = {}
+        for role in roles:
+            tokens = getattr(ss, f"{role}_max_num_batched_tokens")
+            sequences = getattr(ss, f"{role}_max_num_seqs")
+            memory = getattr(ss, f"{role}_gpu_memory_utilization")
+            memory_values = memory if isinstance(memory, list) else [memory]
+            concrete_memory = [float(value) for value in memory_values if value is not None]
+            default_memory = 0.88 if backend == "sglang" else 0.9
+            result[role] = (
+                max(int(value) for value in tokens),
+                max(int(value) for value in sequences),
+                min(concrete_memory) if concrete_memory else default_memory,
+            )
+        return result
+
     # Dedupe modes (preserving order): a repeated deployment_mode would yield duplicate
     # branches and hence colliding Vizier study_ids (one study per mode).
     for deployment_mode in dict.fromkeys(ss.deployment_mode):
         # Pinned configs (if any) are parsed once, then validated per backend; otherwise
         # each backend contributes its full enumerated menu.
-        raw_pinned = ss.parallel_configs_by_mode.get(
-            deployment_mode, ss.parallel_configs
-        )
-        pinned = (
-            [_parse_parallel_entry(e, deployment_mode) for e in raw_pinned]
-            if raw_pinned
-            else None
-        )
+        raw_pinned = ss.parallel_configs_by_mode.get(deployment_mode, ss.parallel_configs)
+        pinned = [_parse_parallel_entry(e, deployment_mode) for e in raw_pinned] if raw_pinned else None
         support: dict[_ParallelConfig, set[str]] = {}
         runner_incompatible = [
             backend
             for backend in ss.backend
             if runner_capabilities is not None
-            and not runner_capabilities.supports_backend_topology(
-                backend, deployment_mode
-            )
+            and not runner_capabilities.supports_backend_topology(backend, deployment_mode)
         ]
         for backend in ss.backend:
-            if (
-                runner_capabilities is not None
-                and not runner_capabilities.supports_backend_topology(
-                    backend, deployment_mode
-                )
+            if runner_capabilities is not None and not runner_capabilities.supports_backend_topology(
+                backend, deployment_mode
             ):
                 continue
             try:
@@ -204,17 +208,15 @@ def enumerate_branches(
                     gpu_budget=ss.gpu_budget,
                     deployment_mode=deployment_mode,
                     backend=backend,
+                    backend_version=ss.backend_version,
                     min_gpu_budget=ss.min_gpu_budget,
                     max_seq_len=max_seq_len,
+                    role_runtime=role_runtime(backend, deployment_mode),
                 )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search
             legal = [
-                cfg
-                for cfg in legal
-                if _runner_supports_parallel_config(
-                    runner_capabilities, deployment_mode, cfg
-                )
+                cfg for cfg in legal if _runner_supports_parallel_config(runner_capabilities, deployment_mode, cfg)
             ]
             legal_set = set(legal)
             for cfg in pinned if pinned is not None else legal:
@@ -232,11 +234,7 @@ def enumerate_branches(
             warnings.warn(
                 f"smart-sweep: deployment_mode={deployment_mode!r} skipped — no configured backend "
                 f"has a viable parallel config within gpu_budget={ss.gpu_budget}"
-                + (
-                    f"; runner-incompatible backends={runner_incompatible}"
-                    if runner_incompatible
-                    else ""
-                ),
+                + (f"; runner-incompatible backends={runner_incompatible}" if runner_incompatible else ""),
                 stacklevel=2,
             )
             skipped.append(deployment_mode)
@@ -250,20 +248,18 @@ def enumerate_branches(
 
         knob_choices = branch_knob_choices(ss, deployment_mode)
         viable_backends = set().union(*support.values())
-        knob_choices["backend"] = [
-            backend
-            for backend in dict.fromkeys(ss.backend)
-            if backend in viable_backends
-        ]
+        knob_choices["backend"] = [backend for backend in dict.fromkeys(ss.backend) if backend in viable_backends]
         float_ranges: dict[str, tuple[float, float]] = {}
         kv_load_range = config.workload.kv_load_ratio_range
-        if kv_load_range is not None:
+        generic_kv_load = config.workload.load_search_field == "kv_load_ratio"
+        if kv_load_range is not None and not generic_kv_load:
             float_ranges["kv_load_ratio"] = kv_load_range
-        elif config.workload.kv_load_ratio is not None:
+        elif config.workload.kv_load_ratio is not None and not generic_kv_load:
             # A scalar KV load is pinned for both scalar and Pareto goals. Keep it in
             # the constant path so every decoded selection carries the requested ratio.
             knob_choices["kv_load_ratio"] = [float(config.workload.kv_load_ratio)]
         log_float_ranges: set[str] = set()
+        log_discrete_choices = {name for name in ss.engine_log_discrete if name in knob_choices}
         active_roles = {"agg"} if deployment_mode == "agg" else {"prefill", "decode"}
         for name, bounds in ss.engine_float_ranges.items():
             if name.split("_", 1)[0] not in active_roles:
@@ -292,21 +288,17 @@ def enumerate_branches(
                 gpu_budget=ss.gpu_budget,
                 float_ranges=float_ranges,
                 log_float_ranges=frozenset(log_float_ranges),
+                log_discrete_choices=frozenset(log_discrete_choices),
                 flat_parallel_choices=deployment_mode in ss.flat_parallel_modes,
                 parallel_independent_choices={
                     name: tuple(
                         sorted(
                             set(values)
                             if values is not None
-                            else {
-                                _parallel_leaf_values(config)[name]
-                                for config in support
-                            }
+                            else {_parallel_leaf_values(config)[name] for config in support}
                         )
                     )
-                    for name, values in ss.parallel_independent_by_mode.get(
-                        deployment_mode, {}
-                    ).items()
+                    for name, values in ss.parallel_independent_by_mode.get(deployment_mode, {}).items()
                 },
             )
         )

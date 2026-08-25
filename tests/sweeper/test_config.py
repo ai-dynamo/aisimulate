@@ -125,8 +125,8 @@ def test_backend_choice_subset_is_accepted():
     [
         ("backend", ["bogus"]),
         ("deployment_mode", ["bogus"]),
-        ("prefill_max_num_seqs", [1, 999]),
-        ("agg_max_num_batched_tokens", [8192, 999]),
+        ("prefill_max_num_seqs", [0]),
+        ("agg_max_num_batched_tokens", [-1]),
         ("backend", []),
     ],
 )
@@ -267,7 +267,7 @@ def test_invalid_workloads_are_rejected(workload):
 def test_goodput_requires_complete_sla():
     with pytest.raises(ValidationError, match="require an SLA"):
         OptimizationGoal(target=OptimizationTarget.GOODPUT)
-    with pytest.raises(ValidationError, match="require an SLA"):
+    with pytest.raises(ValidationError, match="supplied together"):
         OptimizationGoal(
             target=OptimizationTarget.GOODPUT,
             sla=SLATarget(ttft_ms=2000),

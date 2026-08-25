@@ -64,12 +64,10 @@ class SearchSpaceFragment:
     merging them into a sampler study.
     """
 
-    choices_by_branch: dict[str, dict[str, list[JSONValue]]] = field(
-        default_factory=dict
-    )
-    float_ranges_by_branch: dict[str, dict[str, tuple[float, float]]] = field(
-        default_factory=dict
-    )
+    choices_by_branch: dict[str, dict[str, list[JSONValue]]] = field(default_factory=dict)
+    float_ranges_by_branch: dict[str, dict[str, tuple[float, float]]] = field(default_factory=dict)
+    log_float_ranges_by_branch: dict[str, list[str]] = field(default_factory=dict)
+    log_discrete_choices_by_branch: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -125,8 +123,7 @@ def validate_provider(provider: Any, *, requested_name: str) -> SweepConfigProvi
     api_version = getattr(provider, "api_version", None)
     if type(api_version) is not int or api_version != API_VERSION:
         raise ValueError(
-            f"provider {requested_name!r} uses API version {api_version!r}; "
-            f"aisimulate requires version {API_VERSION}"
+            f"provider {requested_name!r} uses API version {api_version!r}; aisimulate requires version {API_VERSION}"
         )
     missing = [
         method
@@ -134,8 +131,5 @@ def validate_provider(provider: Any, *, requested_name: str) -> SweepConfigProvi
         if not callable(getattr(provider, method, None))
     ]
     if missing:
-        raise TypeError(
-            f"provider {requested_name!r} does not implement required callable(s): "
-            f"{', '.join(missing)}"
-        )
+        raise TypeError(f"provider {requested_name!r} does not implement required callable(s): {', '.join(missing)}")
     return provider

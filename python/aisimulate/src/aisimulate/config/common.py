@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -19,6 +19,9 @@ class StrictModel(BaseModel):
 
 
 T = TypeVar("T")
+PositiveFiniteFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
+PositiveStrictInt = Annotated[int, Field(strict=True, gt=0)]
+NonNegativeStrictInt = Annotated[int, Field(strict=True, ge=0)]
 
 
 class Choices(StrictModel, Generic[T]):
@@ -44,6 +47,8 @@ class NumericRangeSpec(StrictModel):
     def _validate_bounds(self) -> NumericRangeSpec:
         if not math.isfinite(self.min) or not math.isfinite(self.max):
             raise ValueError("range bounds must be finite")
+        if self.step is not None and not math.isfinite(self.step):
+            raise ValueError("range step must be finite")
         if self.min > self.max:
             raise ValueError("range requires min <= max")
         if self.scale == "log":
@@ -59,15 +64,22 @@ class NumericRange(StrictModel):
 
 
 class IntegerRangeSpec(StrictModel):
-    min: int
-    max: int
-    step: int = Field(gt=0)
-    scale: Literal["linear"] = "linear"
+    min: int = Field(strict=True)
+    max: int = Field(strict=True)
+    step: int | None = Field(default=None, strict=True, gt=0)
+    scale: Literal["linear", "log"] = "linear"
 
     @model_validator(mode="after")
     def _validate_bounds(self) -> IntegerRangeSpec:
         if self.min > self.max:
             raise ValueError("range requires min <= max")
+        if self.scale == "linear" and self.step is None:
+            raise ValueError("integer linear range requires step")
+        if self.scale == "log":
+            if self.min <= 0:
+                raise ValueError("integer log range requires min > 0")
+            if self.step is not None:
+                raise ValueError("integer log range rejects step")
         return self
 
 
@@ -76,9 +88,9 @@ class IntegerRange(StrictModel):
 
 
 class SlaConfig(StrictModel):
-    ttft_ms: float | None = Field(default=None, gt=0)
-    itl_ms: float | None = Field(default=None, gt=0)
-    e2e_ms: float | None = Field(default=None, gt=0)
+    ttft_ms: PositiveFiniteFloat | None = None
+    itl_ms: PositiveFiniteFloat | None = None
+    e2e_ms: PositiveFiniteFloat | None = None
 
     @model_validator(mode="after")
     def _validate_form(self) -> SlaConfig:
@@ -95,8 +107,8 @@ class EvaluationConfig(StrictModel):
 
 
 class CandidateConstraints(StrictModel):
-    min_candidate_gpus: int | None = Field(default=None, gt=0)
-    max_candidate_gpus: int = Field(default=32, gt=0)
+    min_candidate_gpus: PositiveStrictInt | None = None
+    max_candidate_gpus: PositiveStrictInt = 32
 
     @model_validator(mode="after")
     def _validate_bounds(self) -> CandidateConstraints:
@@ -122,17 +134,20 @@ class OptimizationConfig(StrictModel):
     @field_validator("hardware")
     @classmethod
     def _validate_hardware(cls, value: str | None) -> str | None:
-        if value is not None and not value:
-            raise ValueError("optimization.hardware must be nonempty")
-        return value
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or normalized == "auto":
+            raise ValueError("optimization.hardware must be a concrete nonempty identifier")
+        return normalized
 
 
 class OptimizerConfig(StrictModel):
     algorithm: Literal["bayesian", "random"] = "bayesian"
-    max_trials: int = Field(default=320, gt=0)
-    parallelism: int = Field(default=16, gt=0)
-    candidate_timeout_seconds: float = Field(default=600.0, gt=0)
-    seed: int = Field(default=42, ge=0)
+    max_trials: PositiveStrictInt = 320
+    parallelism: PositiveStrictInt = 16
+    candidate_timeout_seconds: PositiveFiniteFloat = 600.0
+    seed: NonNegativeStrictInt = 42
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:

@@ -596,20 +596,26 @@ fn build_runtime_input(
                         None => WorkloadDriver::new_trace(trace, engine_block_size)?,
                     }
                 }
-                DynamoRequestTrace::Agentic(trace) => WorkloadDriver::new_agentic_trace(
-                    {
-                        ensure!(
-                            allow_agentic,
-                            "agentic Dynamo trace requires aggregated topology"
-                        );
-                        ensure!(
-                            traffic.max_sim_time_ms.is_none(),
-                            "agentic Dynamo trace does not support max virtual time"
-                        );
-                        trace.normalize_starts().speed_up_timing(speedup)?
-                    },
-                    engine_block_size,
-                )?,
+                DynamoRequestTrace::Agentic(trace) => {
+                    ensure!(
+                        traffic.replay_concurrency.is_none(),
+                        "agentic Dynamo trace does not support concurrency load"
+                    );
+                    WorkloadDriver::new_agentic_trace(
+                        {
+                            ensure!(
+                                allow_agentic,
+                                "agentic Dynamo trace requires aggregated topology"
+                            );
+                            ensure!(
+                                traffic.max_sim_time_ms.is_none(),
+                                "agentic Dynamo trace does not support max virtual time"
+                            );
+                            trace.normalize_starts().speed_up_timing(speedup)?
+                        },
+                        engine_block_size,
+                    )?
+                }
             };
             return Ok(ReplayRuntimeInput::Workload(driver));
         }

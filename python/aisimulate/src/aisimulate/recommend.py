@@ -100,6 +100,7 @@ def recommendation_to_sweeper(
     search_space: dict[str, Any] = {
         "deployment_mode": modes,
         "backend": [str(value) for value in backend_values],
+        "backend_version": engine.get("backend_version"),
         "model_name": model,
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
@@ -164,8 +165,10 @@ def _choices(value: Any, *, default: list[Any]) -> list[Any]:
     if isinstance(value, dict) and set(value) == {"range"}:
         raw = value["range"]
         step = raw.get("step")
-        if raw.get("scale", "linear") != "linear" or step is None:
-            raise ValueError("this engine field requires choices or a stepped linear range")
+        if raw.get("scale", "linear") == "log":
+            return list(range(int(raw["min"]), int(raw["max"]) + 1))
+        if step is None:
+            raise ValueError("integer linear engine ranges require step")
         values: list[Any] = []
         current = raw["min"]
         while current <= raw["max"]:
@@ -183,6 +186,7 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
     result: dict[str, Any] = {
         "engine_float_ranges": {},
         "engine_log_ranges": [],
+        "engine_log_discrete": [],
     }
     specifications = (
         ("aggregated", "agg", "agg" in modes),
@@ -204,6 +208,17 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
             scheduler.get("max_batched_tokens"), default=tokens_default
         )
         result[f"{legacy_role}_max_num_seqs"] = _choices(scheduler.get("max_sequences"), default=sequences_default)
+        for public_name, internal_name in (
+            ("max_batched_tokens", f"{legacy_role}_max_num_batched_tokens"),
+            ("max_sequences", f"{legacy_role}_max_num_seqs"),
+        ):
+            value = scheduler.get(public_name)
+            if (
+                isinstance(value, dict)
+                and isinstance(value.get("range"), dict)
+                and value["range"].get("scale") == "log"
+            ):
+                result["engine_log_discrete"].append(internal_name)
         cache = raw.get("kv_cache") or {}
         capacity = cache.get("capacity") or {}
         block_value = cache.get("block_size")
@@ -214,6 +229,12 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
             if isinstance(block_value, dict)
             else block_value
         )
+        if (
+            isinstance(block_value, dict)
+            and isinstance(block_value.get("range"), dict)
+            and block_value["range"].get("scale") == "log"
+        ):
+            result["engine_log_discrete"].append(f"{legacy_role}_block_size")
         memory_value = capacity.get("memory_fraction")
         memory_name = f"{legacy_role}_gpu_memory_utilization"
         if isinstance(memory_value, dict) and "range" in memory_value:
@@ -253,6 +274,8 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
         result.pop("engine_float_ranges")
     if not result["engine_log_ranges"]:
         result.pop("engine_log_ranges")
+    if not result["engine_log_discrete"]:
+        result.pop("engine_log_discrete")
     return result
 
 
@@ -346,15 +369,13 @@ def _parallel_config_choices(
     if "disagg" in modes:
         prefill_kind, prefill = role_specs["prefill"]
         decode_kind, decode = role_specs["decode"]
-        if prefill_kind != decode_kind:
-            raise ValueError("disaggregated parallelism roles must use the same preset mode")
-        if prefill_kind == "flat":
+        if prefill_kind == decode_kind == "flat":
             pinned["disagg"] = [
                 {"prefill": _legacy_parallel(p), "decode": _legacy_parallel(d)}
                 for p, d in itertools.product(prefill, decode)
             ]
             flat_modes.append("disagg")
-        elif prefill_kind == "independent":
+        elif {prefill_kind, decode_kind}.issubset({"default", "independent"}):
             combined: dict[str, list[int] | None] = {}
             mapping = {
                 "replicas": "replicas",
@@ -364,10 +385,20 @@ def _parallel_config_choices(
                 "moe_tensor": "moe_tp",
                 "moe_expert": "moe_ep",
             }
-            for role, values in (("prefill", prefill), ("decode", decode)):
+            for role, kind, values in (
+                ("prefill", prefill_kind, prefill),
+                ("decode", decode_kind, decode),
+            ):
+                if kind == "default":
+                    values = dict.fromkeys(_PARALLEL_KEYS)
                 for name, choices in values.items():
                     combined[f"{role}_{mapping[name]}"] = choices
             independent["disagg"] = combined
+        elif prefill_kind != decode_kind:
+            raise ValueError(
+                "a custom parallelism mapping list cannot currently be mixed "
+                "with default/off on the other disaggregated role"
+            )
     return pinned, flat_modes, independent
 
 
@@ -453,12 +484,12 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
         if load_type == "poisson":
             result["arrival_seed"] = load.get("seed", 42)
     elif load_type == "kv_capacity_fraction":
-        value = load.get("fraction")
-        if isinstance(value, dict) and "range" in value:
-            bounds = value["range"]
-            result["kv_load_ratio"] = [bounds["min"], bounds["max"]]
-        else:
-            result["kv_load_ratio"] = _single_value(value)
+        _configure_load_domain(
+            result,
+            load.get("fraction"),
+            field="kv_load_ratio",
+            integer=False,
+        )
     else:
         raise ValueError(f"unsupported synthetic load type {load_type!r}")
     if count is not None:
@@ -466,13 +497,6 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
     else:
         result["num_request_ratio"] = ratio
     return result
-
-
-def _single_value(value: Any) -> Any:
-    values = _choices(value, default=[])
-    if len(values) != 1:
-        raise ValueError("this traffic domain is not yet representable as one Sweeper load")
-    return values[0]
 
 
 def _configure_load_domain(
@@ -584,7 +608,23 @@ def _candidate_prediction(
             else raw_worker.get("startup_seconds", 0),
         }
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
-        engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
+        transfer = deepcopy(raw_engine["kv_transfer"])
+        if transfer.get("bytes_per_token") == "auto":
+            values = {
+                args.get("kv_bytes_per_token")
+                for args in (
+                    deployment.prefill_engine_args,
+                    deployment.decode_engine_args,
+                )
+                if isinstance(args, dict) and args.get("kv_bytes_per_token") is not None
+            }
+            if len(values) != 1:
+                raise ValueError(
+                    "kv_transfer.bytes_per_token auto resolved differently across "
+                    "prefill/decode roles; provide one concrete value"
+                )
+            transfer["bytes_per_token"] = values.pop()
+        engine["kv_transfer"] = transfer
 
     traffic = _candidate_traffic(
         source.traffic.model_dump(mode="python", exclude_none=True) if source.traffic is not None else None,
@@ -613,6 +653,10 @@ def _candidate_traffic(raw: dict[str, Any] | None, sample: dict[str, Any]) -> di
         return TrafficPredictionConfig.default().model_dump(mode="python", exclude_none=True)
     traffic = deepcopy(raw)
     load = traffic["load"]
+    if load.get("type") == "kv_capacity_fraction":
+        load.clear()
+        load.update(type="concurrency", concurrency=sample["concurrency"])
+        return traffic
     for name in (
         "concurrency",
         "requests_per_second",
@@ -630,11 +674,6 @@ def _candidate_traffic(raw: dict[str, Any] | None, sample: dict[str, Any]) -> di
             }.get(name)
             if internal is not None and sample.get(internal) is not None:
                 load[name] = sample[internal]
-            elif name == "fraction" and sample.get("kv_load_ratio") is not None:
-                # Recommendation output must be directly replayable and therefore
-                # materializes capacity-relative load as concrete concurrency.
-                load.clear()
-                load.update(type="concurrency", concurrency=sample["concurrency"])
             else:
                 raise ValueError(f"candidate did not materialize traffic.load.{name}")
     return traffic

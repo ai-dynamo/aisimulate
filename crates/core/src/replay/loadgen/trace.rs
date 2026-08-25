@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rustc_hash::FxHashMap;
@@ -432,17 +432,18 @@ impl MooncakeTraceBuilder {
         let hash_ids = raw
             .hash_ids
             .ok_or_else(|| anyhow!("trace line {} is missing hash_ids", line_idx + 1))?;
-        // Clamp input_length to the synthesizable capacity: in the mooncake
-        // trace format, input_length is the full prompt token count which may
-        // exceed hash_ids.len() * block_size (cached portion only).
         let synthesizable_capacity = hash_ids
             .len()
             .checked_mul(self.trace_block_size)
             .ok_or_else(|| anyhow!("trace line {} synthesized capacity overflow", line_idx + 1))?;
-        let input_length = raw
-            .input_length
-            .unwrap_or(synthesizable_capacity)
-            .min(synthesizable_capacity);
+        let input_length = raw.input_length.unwrap_or(synthesizable_capacity);
+        ensure!(
+            input_length <= synthesizable_capacity,
+            "trace line {} input_length {} exceeds hash_ids capacity {}",
+            line_idx + 1,
+            input_length,
+            synthesizable_capacity
+        );
         let output_length = raw
             .output_length
             .ok_or_else(|| anyhow!("trace line {} is missing output_length", line_idx + 1))?;

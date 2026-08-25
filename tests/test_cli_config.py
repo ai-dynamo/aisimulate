@@ -241,3 +241,174 @@ def test_adapter_section_names_are_unambiguous(section) -> None:
             },
             command="recommend",
         )
+
+
+def test_parallel_custom_preset_requires_complete_strict_mapping() -> None:
+    base = {
+        "engine": {
+            **_engine(),
+            "mode": "aggregated",
+            "context_length": 4096,
+            "workers": {"aggregated": {"parallelism": {"preset": [{"replicas": 2}]}}},
+        },
+        "optimization": {},
+    }
+    with pytest.raises(ValidationError, match="cover exactly all knobs"):
+        CoreRecommendationConfig.model_validate(base)
+
+
+def test_engine_scheduler_domains_replace_defaults_and_preserve_log_scale() -> None:
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "aggregated",
+                "backend_version": "0.19.0",
+                "context_length": 4096,
+                "workers": {
+                    "aggregated": {
+                        "parallelism": {"preset": "default"},
+                        "scheduler": {
+                            "max_batched_tokens": {"choices": [4096]},
+                            "max_sequences": {
+                                "range": {"min": 1, "max": 8, "scale": "log"}
+                            },
+                        },
+                    }
+                },
+            },
+            "optimization": {},
+        }
+    )
+    lowered = recommendation_to_sweeper(config)
+    assert lowered.search_space.agg_max_num_batched_tokens == [4096]
+    assert lowered.search_space.agg_max_num_seqs == list(range(1, 9))
+    assert "agg_max_num_seqs" in lowered.search_space.engine_log_discrete
+    assert lowered.search_space.backend_version == "0.19.0"
+
+
+def test_prediction_rejects_auto_hardware_and_kv_relative_load() -> None:
+    with pytest.raises(ValidationError, match="recommendation-only"):
+        CorePredictionConfig.model_validate(
+            {"engine": {**_engine(), "hardware": "auto"}}
+        )
+    with pytest.raises(ValidationError):
+        CorePredictionConfig.model_validate(
+            {
+                "engine": _engine(),
+                "traffic": {
+                    "source": {"type": "synthetic"},
+                    "load": {"type": "kv_capacity_fraction", "fraction": 1.2},
+                    "stop": {"requests": 10},
+                },
+            }
+        )
+
+
+def test_traffic_and_optimizer_strict_defaults_and_finite_values() -> None:
+    prediction = CorePredictionConfig.model_validate(
+        {
+            "engine": _engine(),
+            "traffic": {
+                "source": {"type": "synthetic"},
+                "load": {},
+                "stop": {"requests": 10},
+            },
+        }
+    )
+    assert prediction.traffic.load.concurrency == 10
+    with pytest.raises(ValidationError):
+        CoreRecommendationConfig.model_validate(
+            {
+                "engine": {
+                    **_engine(),
+                    "mode": "aggregated",
+                    "context_length": 4096,
+                },
+                "optimization": {"hardware": "auto"},
+            }
+        )
+
+
+def test_goodput_requires_complete_sla_in_typed_cli_config() -> None:
+    base = {
+        "engine": {
+            **_engine(),
+            "mode": "aggregated",
+            "context_length": 4096,
+        },
+        "optimization": {"target": "goodput"},
+    }
+    with pytest.raises(ValidationError, match="requires a complete evaluation.sla"):
+        CoreRecommendationConfig.model_validate(base)
+    accepted = CoreRecommendationConfig.model_validate(
+        {**base, "evaluation": {"sla": {"e2e_ms": 1000}}}
+    )
+    assert accepted.evaluation.sla.e2e_ms == 1000
+
+
+def test_kv_relative_load_choices_lower_as_generic_search_dimension() -> None:
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "traffic": {
+                "source": {"type": "synthetic"},
+                "load": {
+                    "type": "kv_capacity_fraction",
+                    "fraction": {"choices": [0.5, 1.5]},
+                },
+                "stop": {"requests": 10},
+            },
+            "engine": {
+                **_engine(),
+                "mode": "aggregated",
+                "context_length": 4096,
+            },
+            "optimization": {},
+        }
+    )
+    lowered = recommendation_to_sweeper(config)
+    assert lowered.workload.load_search_field == "kv_load_ratio"
+    assert lowered.workload.load_choices == [0.5, 1.5]
+
+
+def test_trace_block_default_and_finite_rate_contract() -> None:
+    config = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {
+                    "type": "trace",
+                    "paths": ["trace.jsonl"],
+                    "format": "mooncake",
+                },
+                "load": {"type": "trace_timestamps"},
+            },
+            "engine": _engine(),
+        }
+    )
+    assert config.traffic.source.block_size == 512
+    with pytest.raises(ValidationError):
+        CorePredictionConfig.model_validate(
+            {
+                "traffic": {
+                    "source": {"type": "synthetic"},
+                    "load": {
+                        "type": "constant_rate",
+                        "requests_per_second": float("inf"),
+                    },
+                    "stop": {"requests": 10},
+                },
+                "engine": _engine(),
+            }
+        )
+    with pytest.raises(ValidationError):
+        CoreRecommendationConfig.model_validate(
+            {
+                "engine": {
+                    **_engine(),
+                    "mode": "aggregated",
+                    "context_length": 4096,
+                },
+                "optimization": {},
+                "optimizer": {"candidate_timeout_seconds": float("inf")},
+            }
+        )
