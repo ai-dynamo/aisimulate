@@ -6,12 +6,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.public_config import (
-    PredictionConfig,
-    RecommendationConfig,
-    WorkerConfig,
-    WorkersConfig,
-    split_config_sections,
+from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
+from aisimulate.config.common import split_config_sections
+from aisimulate.config.engine import (
+    EngineRecommendationConfig,
+    WorkerPredictionConfig,
+    WorkersPredictionConfig,
 )
 from aisimulate.recommend import recommendation_to_sweeper
 
@@ -25,7 +25,7 @@ def _engine() -> dict:
 
 
 def test_prediction_uses_reviewed_default_traffic() -> None:
-    config = PredictionConfig.model_validate({"engine": _engine()})
+    config = CorePredictionConfig.model_validate({"engine": _engine()})
 
     assert config.traffic.source.type == "synthetic"
     assert config.traffic.load.type == "concurrency"
@@ -35,12 +35,12 @@ def test_prediction_uses_reviewed_default_traffic() -> None:
 
 
 def test_prediction_scheduler_defaults_are_role_aware() -> None:
-    aggregated = PredictionConfig.model_validate({"engine": _engine()})
+    aggregated = CorePredictionConfig.model_validate({"engine": _engine()})
     assert aggregated.engine.workers.aggregated is not None
     assert aggregated.engine.workers.aggregated.scheduler.max_batched_tokens == 8192
     assert aggregated.engine.workers.aggregated.scheduler.max_sequences == 256
 
-    disaggregated = PredictionConfig.model_validate(
+    disaggregated = CorePredictionConfig.model_validate(
         {
             "engine": {
                 **_engine(),
@@ -56,8 +56,8 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert disaggregated.engine.workers.decode.scheduler.max_batched_tokens == 8192
     assert disaggregated.engine.workers.decode.scheduler.max_sequences == 256
 
-    programmatic = WorkersConfig(
-        prefill=WorkerConfig(), decode=WorkerConfig()
+    programmatic = WorkersPredictionConfig(
+        prefill=WorkerPredictionConfig(), decode=WorkerPredictionConfig()
     )
     assert programmatic.prefill is not None
     assert programmatic.decode is not None
@@ -67,7 +67,7 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
 
 def test_prediction_rejects_recommendation_domain() -> None:
     with pytest.raises(ValidationError):
-        PredictionConfig.model_validate(
+        CorePredictionConfig.model_validate(
             {
                 "engine": {
                     **_engine(),
@@ -78,7 +78,7 @@ def test_prediction_rejects_recommendation_domain() -> None:
 
 
 def test_synthetic_session_rate_uses_session_units() -> None:
-    config = PredictionConfig.model_validate(
+    config = CorePredictionConfig.model_validate(
         {
             "engine": _engine(),
             "traffic": {
@@ -102,8 +102,8 @@ def test_synthetic_session_rate_uses_session_units() -> None:
 
 
 def test_recommendation_rejects_unknown_nested_field() -> None:
-    with pytest.raises(ValidationError, match="unknown fields"):
-        RecommendationConfig.model_validate(
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        CoreRecommendationConfig.model_validate(
             {
                 "engine": {**_engine(), "mystery": 1},
                 "optimization": {},
@@ -112,7 +112,7 @@ def test_recommendation_rejects_unknown_nested_field() -> None:
 
 
 def test_recommendation_accepts_domains_and_parallel_preset() -> None:
-    config = RecommendationConfig.model_validate(
+    config = CoreRecommendationConfig.model_validate(
         {
             "engine": {
                 "mode": {"choices": ["aggregated", "disaggregated"]},
@@ -129,6 +129,7 @@ def test_recommendation_accepts_domains_and_parallel_preset() -> None:
     )
 
     assert config.optimization.hardware == "h200_sxm"
+    assert isinstance(config.engine, EngineRecommendationConfig)
 
 
 def test_parallel_preset_modes_lower_without_conflating_semantics() -> None:
@@ -136,7 +137,7 @@ def test_parallel_preset_modes_lower_without_conflating_semantics() -> None:
         "preset": False,
         "replicas": {"range": {"min": 1, "max": 2, "step": 1}},
     }
-    config = RecommendationConfig.model_validate(
+    config = CoreRecommendationConfig.model_validate(
         {
             "engine": {
                 "mode": "aggregated",
@@ -168,7 +169,7 @@ def test_custom_parallel_preset_lowers_as_flat_atomic_choices() -> None:
         "moe_tensor": 1,
         "moe_expert": 1,
     }
-    config = RecommendationConfig.model_validate(
+    config = CoreRecommendationConfig.model_validate(
         {
             "engine": {
                 "mode": "aggregated",
@@ -176,9 +177,7 @@ def test_custom_parallel_preset_lowers_as_flat_atomic_choices() -> None:
                 "hardware": "h200_sxm",
                 "backend": "vllm",
                 "context_length": 4096,
-                "workers": {
-                    "aggregated": {"parallelism": {"preset": [mapping]}}
-                },
+                "workers": {"aggregated": {"parallelism": {"preset": [mapping]}}},
             },
             "optimization": {},
         }
@@ -210,21 +209,19 @@ def test_present_non_core_section_is_split_for_adapter_validation() -> None:
         "placement": {"policy": {"choices": ["first", "least_loaded"]}},
     }
     core, adapters = split_config_sections(base, command="recommend")
-    config = RecommendationConfig.model_validate(core)
+    config = CoreRecommendationConfig.model_validate(core)
     lowered = recommendation_to_sweeper(
         config, adapter_configs=adapters, stack="example"
     )
 
     assert "placement" not in core
-    assert adapters == {
-        "placement": {"policy": {"choices": ["first", "least_loaded"]}}
-    }
+    assert adapters == {"placement": {"policy": {"choices": ["first", "least_loaded"]}}}
     assert lowered.adapters["example.placement"].search_space == adapters["placement"]
 
 
 def test_core_models_reject_stack_owned_sections() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        RecommendationConfig.model_validate(
+        CoreRecommendationConfig.model_validate(
             {
                 "engine": {**_engine(), "context_length": 4096},
                 "placement": {"policy": "first"},

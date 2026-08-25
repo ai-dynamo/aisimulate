@@ -50,8 +50,8 @@
 /tests/test_runner.py                                @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_traffic.py                               @ai-dynamo/aisimulate-replay-codeowners
 /crates/core/src/replay/                             @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_cli_config.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_cli.py                           @ai-dynamo/aisimulate-replay-codeowners
-/tests/test_public_config.py                         @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners
 
@@ -108,6 +108,7 @@
 /crates/core/src/engine/                             @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/replay/                             @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/tests/public-api/                            @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_cli_config.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/python.rs                           @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/artifact-contract.md                           @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/docker/                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -116,7 +117,6 @@
 /crates/core/src/perfmodel/                          @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/AGENTS.md                         @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
-/tests/test_public_config.py                         @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/tests/perfmodel/                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitignore                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/CODEOWNERS                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain

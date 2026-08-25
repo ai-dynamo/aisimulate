@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 
 from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.public_config import PredictionConfig
+from aisimulate.config import CorePredictionConfig
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 
@@ -26,14 +26,18 @@ def _engine() -> dict:
 
 
 def _run(config: dict):
-    parsed = PredictionConfig.model_validate(config)
-    spec = prediction_to_replay_spec(parsed, stack="engine")
-    return EngineReplayRunnerFactory().create(0).run(
-        spec,
-        output_requirements=ReplayOutputRequirements(
-            include_raw_report=True,
-            capture_per_request=True,
-        ),
+    parsed = CorePredictionConfig.model_validate(config)
+    spec = prediction_to_replay_spec(parsed)
+    return (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(
+            spec,
+            output_requirements=ReplayOutputRequirements(
+                include_raw_report=True,
+                capture_per_request=True,
+            ),
+        )
     )
 
 

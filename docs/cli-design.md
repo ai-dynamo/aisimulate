@@ -89,6 +89,14 @@ Optional component configuration is discovered separately through
 search dimensions plus per-candidate runtime hooks for `recommend`; it never starts replay itself.
 The selected runner factory combines all hooks and invokes the underlying runtime exactly once.
 
+Every section owner defines separate typed prediction and recommendation models. AISimulate owns
+`TrafficPredictionConfig` / `TrafficRecommendationConfig` and `EnginePredictionConfig` /
+`EngineRecommendationConfig`; optional packages own the corresponding models for their sections.
+Internal runtime config is a third, fully resolved layer and is never used as the CLI search schema.
+The config-adapter ABI has three operations: compile a concrete prediction section, compile a
+recommendation section into a search plan, and materialize one candidate. The legacy Sweeper
+provider ABI remains a separate SDK compatibility surface.
+
 If a requested optional stack is not installed, the CLI exits with code `2` before loading the
 configuration and reports an actionable error:
 

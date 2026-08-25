@@ -12,34 +12,57 @@ from copy import deepcopy
 from typing import Any
 
 from .aic import resolve_model_context_length
-from .public_config import PredictionConfig, RecommendationConfig, TrafficConfig
+from .config.cli import CorePredictionConfig, CoreRecommendationConfig
+from .config.traffic import TrafficPredictionConfig
+from .config_adapter import (
+    CompiledSweepProvider,
+    RecommendationAdapterContext,
+    SimulationConfigAdapter,
+)
 from .sweeper.config import SmartSearchConfig
+from .sweeper.provider import SweepContext
 from .sweeper.replay import ReplaySpec, RunnerFactory
 
 
 def run_recommendation(
-    config: RecommendationConfig,
+    config: CoreRecommendationConfig,
     *,
     adapter_configs: Mapping[str, Mapping[str, Any]] | None = None,
     stack: str,
     runner_factory: RunnerFactory,
-    providers: Mapping[str, Any] | None = None,
+    providers: Mapping[str, SimulationConfigAdapter] | None = None,
     show_progress: bool = True,
 ):
     """Run a public recommendation through the existing Sweeper core."""
 
     from .sweeper.search import Sweeper
 
-    smart = recommendation_to_sweeper(
-        config, adapter_configs=adapter_configs, stack=stack
+    smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
+    sweep_context = SweepContext(
+        core_search_space=smart.search_space.model_dump(mode="json"),
+        workload=smart.workload.model_dump(mode="json"),
+        goal=smart.goal.model_dump(mode="json"),
+        show_progress=show_progress,
     )
-    adapter_sections = {
-        name: provider.section
-        for name, provider in (providers or {}).items()
-    }
+    compiled_providers: dict[str, CompiledSweepProvider] = {}
+    for section, raw in (adapter_configs or {}).items():
+        name = f"{stack}.{section}"
+        adapter = (providers or {})[name]
+        context = RecommendationAdapterContext(
+            engine=config.engine.model_dump(mode="json", exclude_none=True),
+            traffic=(config.traffic.model_dump(mode="json", exclude_none=True) if config.traffic is not None else {}),
+            evaluation=config.evaluation.model_dump(mode="json", exclude_none=True),
+            optimization=config.optimization.model_dump(mode="json", exclude_none=True),
+            sweep=sweep_context,
+        )
+        compiled_providers[name] = CompiledSweepProvider(
+            adapter=adapter,
+            plan=adapter.compile_recommendation(raw, context),
+        )
+    adapter_sections = {name: provider.section for name, provider in (providers or {}).items()}
     sweeper = Sweeper(
         runner_factory=runner_factory,
-        providers=providers,
+        providers=compiled_providers,
         show_progress=show_progress,
         prediction_config_factory=lambda sample, spec: _candidate_prediction(
             config, sample, spec, adapter_sections=adapter_sections
@@ -49,16 +72,14 @@ def run_recommendation(
 
 
 def recommendation_to_sweeper(
-    config: RecommendationConfig,
+    config: CoreRecommendationConfig,
     *,
     adapter_configs: Mapping[str, Mapping[str, Any]] | None = None,
     stack: str = "engine",
 ) -> SmartSearchConfig:
-    engine = deepcopy(config.engine)
+    engine = config.engine.model_dump(mode="python", exclude_none=True)
     optimization = config.optimization
-    mode_values = _choices(
-        engine.get("mode"), default=["aggregated", "disaggregated"]
-    )
+    mode_values = _choices(engine.get("mode"), default=["aggregated", "disaggregated"])
     modes = [_legacy_mode(str(value)) for value in mode_values]
     backend_values = _choices(engine.get("backend"), default=["vllm", "sglang"])
     model = engine.get("model")
@@ -70,9 +91,7 @@ def recommendation_to_sweeper(
     if not isinstance(hardware, str) or not hardware:
         raise ValueError("engine.hardware must resolve to one concrete identifier")
     context = engine.get("context_length", "max")
-    if context != "max" and (
-        not isinstance(context, int) or isinstance(context, bool) or context <= 0
-    ):
+    if context != "max" and (not isinstance(context, int) or isinstance(context, bool) or context <= 0):
         raise ValueError("engine.context_length must be 'max' or a positive integer")
 
     workers = engine.get("workers")
@@ -85,24 +104,16 @@ def recommendation_to_sweeper(
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
-        "context_length": (
-            resolve_model_context_length(model) if context == "max" else context
-        ),
+        "context_length": (resolve_model_context_length(model) if context == "max" else context),
     }
     search_space.update(_role_search_space(workers, modes))
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
         bytes_per_token = transfer.get("bytes_per_token", "auto")
         search_space["kv_transfer_bytes_per_token"] = bytes_per_token
-        search_space["kv_transfer_bandwidth"] = transfer.get(
-            "bandwidth_gb_per_second"
-        )
-        search_space["kv_transfer_timing_mode"] = transfer.get(
-            "timing_mode", "destination_missing"
-        )
-    pinned_parallel, flat_modes, independent_parallel = _parallel_config_choices(
-        workers, modes
-    )
+        search_space["kv_transfer_bandwidth"] = transfer.get("bandwidth_gb_per_second")
+        search_space["kv_transfer_timing_mode"] = transfer.get("timing_mode", "destination_missing")
+    pinned_parallel, flat_modes, independent_parallel = _parallel_config_choices(workers, modes)
     if pinned_parallel:
         search_space["parallel_configs_by_mode"] = pinned_parallel
     if flat_modes:
@@ -110,7 +121,9 @@ def recommendation_to_sweeper(
     if independent_parallel:
         search_space["parallel_independent_by_mode"] = independent_parallel
 
-    workload = _recommendation_workload(config.traffic)
+    workload = _recommendation_workload(
+        config.traffic.model_dump(mode="python", exclude_none=True) if config.traffic is not None else None
+    )
     goal = _goal(config)
     adapters = {
         f"{stack}.{section}": {"search_space": deepcopy(dict(search_spec))}
@@ -123,10 +136,7 @@ def recommendation_to_sweeper(
     sweep = {
         "max_rounds": max(
             1,
-            math.ceil(
-                config.optimizer.max_trials
-                / max(1, min(parallelism, config.optimizer.max_trials))
-            ),
+            math.ceil(config.optimizer.max_trials / max(1, min(parallelism, config.optimizer.max_trials))),
         ),
         "parallel_evals": parallelism,
         "candidates_per_round": min(parallelism, config.optimizer.max_trials),
@@ -189,17 +199,11 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
         if not isinstance(scheduler, dict):
             raise ValueError(f"engine.workers.{public_role}.scheduler must be a mapping")
         tokens_default = [8192] if legacy_role == "decode" else [8192, 16384, 32768]
-        sequences_default = (
-            [1, 2, 4, 8, 16, 32, 64, 128, 256]
-            if legacy_role == "prefill"
-            else [256, 512, 1024]
-        )
+        sequences_default = [1, 2, 4, 8, 16, 32, 64, 128, 256] if legacy_role == "prefill" else [256, 512, 1024]
         result[f"{legacy_role}_max_num_batched_tokens"] = _choices(
             scheduler.get("max_batched_tokens"), default=tokens_default
         )
-        result[f"{legacy_role}_max_num_seqs"] = _choices(
-            scheduler.get("max_sequences"), default=sequences_default
-        )
+        result[f"{legacy_role}_max_num_seqs"] = _choices(scheduler.get("max_sequences"), default=sequences_default)
         cache = raw.get("kv_cache") or {}
         capacity = cache.get("capacity") or {}
         block_value = cache.get("block_size")
@@ -228,13 +232,9 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
             result[memory_name] = _choices(memory_value, default=[])
         else:
             result[memory_name] = memory_value
-        result[f"{legacy_role}_enable_prefix_caching"] = cache.get(
-            "prefix_caching", True
-        )
+        result[f"{legacy_role}_enable_prefix_caching"] = cache.get("prefix_caching", True)
         capacity_type = capacity.get("type", "default")
-        result[f"{legacy_role}_num_gpu_blocks"] = (
-            capacity.get("blocks") if capacity_type == "fixed" else None
-        )
+        result[f"{legacy_role}_num_gpu_blocks"] = capacity.get("blocks") if capacity_type == "fixed" else None
         timing = raw.get("timing") or {}
         timing_type = timing.get("type", "default")
         if timing_type == "fixed":
@@ -274,25 +274,16 @@ def _parallel_entries(role: str, raw: dict[str, Any]) -> tuple[str, Any]:
     independent = [key for key in _PARALLEL_KEYS if key in parallel]
     if preset not in (False, {}) and independent:
         raise ValueError(
-            f"engine.workers.{role}.parallelism cannot combine preset with "
-            f"independent knobs {independent}"
+            f"engine.workers.{role}.parallelism cannot combine preset with independent knobs {independent}"
         )
     if preset == "default":
         return "default", None
     if isinstance(preset, list):
-        return "flat", [
-            _parallel_mapping(
-                entry, f"engine.workers.{role}.parallelism.preset"
-            )
-            for entry in preset
-        ]
+        return "flat", [_parallel_mapping(entry, f"engine.workers.{role}.parallelism.preset") for entry in preset]
     if preset not in (False, {}):
         raise ValueError(f"invalid parallelism preset for role {role}")
     return "independent", {
-        key: _choices(parallel[key], default=[])
-        if key in parallel
-        else None
-        for key in _PARALLEL_KEYS
+        key: _choices(parallel[key], default=[]) if key in parallel else None for key in _PARALLEL_KEYS
     }
 
 
@@ -303,8 +294,7 @@ def _parallel_mapping(value: Any, path: str) -> dict[str, int]:
     unknown = set(value) - set(_PARALLEL_KEYS)
     if missing or unknown:
         raise ValueError(
-            f"{path} entry must cover exactly {_PARALLEL_KEYS}; "
-            f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+            f"{path} entry must cover exactly {_PARALLEL_KEYS}; missing={sorted(missing)}, unknown={sorted(unknown)}"
         )
     return {key: int(value[key]) for key in _PARALLEL_KEYS}
 
@@ -357,9 +347,7 @@ def _parallel_config_choices(
         prefill_kind, prefill = role_specs["prefill"]
         decode_kind, decode = role_specs["decode"]
         if prefill_kind != decode_kind:
-            raise ValueError(
-                "disaggregated parallelism roles must use the same preset mode"
-            )
+            raise ValueError("disaggregated parallelism roles must use the same preset mode")
         if prefill_kind == "flat":
             pinned["disagg"] = [
                 {"prefill": _legacy_parallel(p), "decode": _legacy_parallel(d)}
@@ -427,9 +415,7 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 integer=False,
             )
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
-            result["max_sim_time_ms"] = 1_000.0 * float(
-                stop["max_virtual_time_seconds"]
-            )
+            result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
     if source_type == "synthetic":
         result.update(isl=source.get("input_tokens", 1024), osl=source.get("output_tokens", 128))
@@ -523,7 +509,7 @@ def _configure_load_domain(
     result[field] = value
 
 
-def _goal(config: RecommendationConfig) -> dict[str, Any]:
+def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
     target = config.optimization.target
     payload: dict[str, Any] = {"target": target}
     sla = config.evaluation.sla
@@ -533,7 +519,7 @@ def _goal(config: RecommendationConfig) -> dict[str, Any]:
 
 
 def _candidate_prediction(
-    source: RecommendationConfig,
+    source: CoreRecommendationConfig,
     sample: dict[str, Any],
     replay_spec: ReplaySpec,
     *,
@@ -549,20 +535,17 @@ def _candidate_prediction(
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
+    raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
     roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
     for role in roles:
         prefix = "" if role == "agg" else f"{role}_"
         public_role = "aggregated" if role == "agg" else role
         raw_worker = (
-            source.engine.get("workers", {}).get(public_role, {})
-            if isinstance(source.engine.get("workers"), dict)
-            else {}
+            raw_engine.get("workers", {}).get(public_role, {}) if isinstance(raw_engine.get("workers"), dict) else {}
         )
         block_size = sample[f"{role}_block_size"]
         if block_size is None:
-            block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[
-                sample["backend"]
-            ]
+            block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[sample["backend"]]
         memory_fraction = sample[f"{role}_gpu_memory_utilization"]
         if memory_fraction is None:
             memory_fraction = 0.88 if sample["backend"] == "sglang" else 0.9
@@ -600,20 +583,20 @@ def _candidate_prediction(
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
-    raw_engine = source.engine
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
         engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 
-    traffic = _candidate_traffic(source.traffic, sample)
+    traffic = _candidate_traffic(
+        source.traffic.model_dump(mode="python", exclude_none=True) if source.traffic is not None else None,
+        sample,
+    )
     concrete_adapters: dict[str, dict[str, Any]] = {}
     for name, adapter in replay_spec.adapters.items():
         section = adapter_sections.get(name)
         if section is None:
-            raise ValueError(
-                f"recommendation candidate used unknown config adapter {name!r}"
-            )
+            raise ValueError(f"recommendation candidate used unknown config adapter {name!r}")
         concrete_adapters[section] = deepcopy(adapter.config)
-    prediction = PredictionConfig.model_validate(
+    prediction = CorePredictionConfig.model_validate(
         {
             "traffic": traffic,
             "engine": engine,
@@ -625,11 +608,9 @@ def _candidate_prediction(
     return public
 
 
-def _candidate_traffic(
-    raw: dict[str, Any] | None, sample: dict[str, Any]
-) -> dict[str, Any]:
+def _candidate_traffic(raw: dict[str, Any] | None, sample: dict[str, Any]) -> dict[str, Any]:
     if raw is None:
-        return TrafficConfig.default().model_dump(mode="python", exclude_none=True)
+        return TrafficPredictionConfig.default().model_dump(mode="python", exclude_none=True)
     traffic = deepcopy(raw)
     load = traffic["load"]
     for name in (

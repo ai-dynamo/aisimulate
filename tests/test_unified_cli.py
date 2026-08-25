@@ -45,9 +45,7 @@ class _Factory:
         self.runner = runner
 
     def capabilities(self):
-        return RunnerCapabilities(
-            supported_backend_topologies=(("vllm", "agg"),)
-        )
+        return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),))
 
     def create(self, worker_id: int):
         assert worker_id == 0
@@ -57,30 +55,22 @@ class _Factory:
 class _PlacementAdapter:
     name = "engine.placement"
     section = "placement"
-    config_adapter_api_version = 2
+    config_adapter_api_version = 3
     api_version = 1
 
-    def validate_prediction_config(self, config, context):
+    def compile_prediction(self, config, context):
         del context
         if set(config) != {"policy"} or config["policy"] != "first":
             raise ValueError("placement.policy must be 'first'")
-        return {"policy": "first"}
+        return AdapterReplaySpec(config={"policy": "first"})
 
-    def validate_recommendation_config(self, config, context):
+    def compile_recommendation(self, config, context):
         del context
         if config not in ({}, {"policy": "first"}):
             raise ValueError("placement has unknown fields")
-        return {"policy": "first"}
+        return AdapterSearchPlan(state={"policy": "first"})
 
-    def materialize_prediction(self, config, context):
-        del context
-        return AdapterReplaySpec(config=dict(config))
-
-    def generate_search_space(self, search_spec, context):
-        del context
-        return AdapterSearchPlan(state=dict(search_spec))
-
-    def materialize_replay(self, plan, selection, context):
+    def materialize_candidate(self, plan, selection, context):
         del selection, context
         return AdapterReplaySpec(config=dict(plan.state))
 
@@ -122,10 +112,16 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
     assert runner.spec.workload["concurrency"] == 10
     assert runner.spec.workload["request_count"] == 100
     assert runner.closed is True
-    assert json.loads((output / "prediction.json").read_text())["summary"][
-        "completed_requests"
-    ] == 1
-    assert json.loads((output / "requests.jsonl").read_text())["request_id"] == "synthetic-0"
+    assert (
+        json.loads((output / "prediction.json").read_text())["summary"][
+            "completed_requests"
+        ]
+        == 1
+    )
+    assert (
+        json.loads((output / "requests.jsonl").read_text())["request_id"]
+        == "synthetic-0"
+    )
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
@@ -252,9 +248,7 @@ def test_recommendation_yaml_round_trips_into_predict(
                                 "max_batched_tokens": 8192,
                                 "max_sequences": 256,
                             },
-                            "kv_cache": {
-                                "capacity": {"type": "fixed", "blocks": 256}
-                            },
+                            "kv_cache": {"capacity": {"type": "fixed", "blocks": 256}},
                             "timing": {
                                 "type": "fixed",
                                 "prefill_ms": 1,

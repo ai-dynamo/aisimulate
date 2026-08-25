@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 from .aic import (
@@ -13,25 +12,17 @@ from .aic import (
     materialize_aic_num_gpu_blocks,
     resolve_model_context_length,
 )
-from .config_adapter import PredictionAdapterContext, SimulationConfigAdapter
-from .public_config import (
-    EngineConfig,
-    PredictionConfig,
-    SyntheticSessionSource,
-    SyntheticSource,
-    TraceSource,
-    WorkerConfig,
-)
+from .config.cli import CorePredictionConfig
+from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
+from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .sweeper.provider import AdapterReplaySpec, JSONValue
 from .sweeper.replay import BackendDeploymentSpec, ReplaySpec
 
 
 def prediction_to_replay_spec(
-    config: PredictionConfig,
+    config: CorePredictionConfig,
     *,
-    stack: str,
-    adapter_configs: Mapping[str, Mapping[str, JSONValue]] | None = None,
-    adapters: Mapping[str, SimulationConfigAdapter] | None = None,
+    adapter_specs: dict[str, AdapterReplaySpec] | None = None,
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
@@ -41,35 +32,16 @@ def prediction_to_replay_spec(
     goal: dict[str, JSONValue] = {
         "sla": evaluation.get("sla") if evaluation else None,
     }
-    adapter_specs: dict[str, AdapterReplaySpec] = {}
-
-    available = dict(adapters or {})
-    context = PredictionAdapterContext(
-        engine=config.engine.model_dump(mode="json", exclude_none=True),
-        traffic=config.traffic.model_dump(mode="json", exclude_none=True),
-        evaluation=evaluation,
-    )
-    for section, section_config in (adapter_configs or {}).items():
-        name = f"{stack}.{section}"
-        adapter = available.get(name)
-        if adapter is None:
-            raise ValueError(
-                f"stack {stack!r} does not provide the active {section} adapter {name!r}"
-            )
-        adapter_specs[name] = adapter.materialize_prediction(
-            section_config, context
-        )
-
     return ReplaySpec(
         backend_deployment=deployment,
         workload=workload,
         goal=goal,
         concurrency=concurrency,
-        adapters=adapter_specs,
+        adapters=dict(adapter_specs or {}),
     )
 
 
-def _deployment(engine: EngineConfig) -> BackendDeploymentSpec:
+def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
     mode = "agg" if engine.mode == "aggregated" else "disagg"
     common: dict[str, Any] = {
         "deployment_mode": mode,
@@ -103,7 +75,7 @@ def _deployment(engine: EngineConfig) -> BackendDeploymentSpec:
     )
 
 
-def _parallel_mapping(worker: WorkerConfig, *, prefix: str) -> dict[str, JSONValue]:
+def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[str, JSONValue]:
     parallel = worker.parallelism
     return {
         f"{prefix}replicas": parallel.replicas,
@@ -116,7 +88,7 @@ def _parallel_mapping(worker: WorkerConfig, *, prefix: str) -> dict[str, JSONVal
 
 
 def _worker_engine_args(
-    engine: EngineConfig, worker: WorkerConfig, role: str
+    engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str
 ) -> dict[str, JSONValue]:
     backend = engine.backend
     parallel = worker.parallelism
@@ -205,7 +177,9 @@ def _worker_engine_args(
     return payload
 
 
-def _traffic(config: PredictionConfig) -> tuple[dict[str, JSONValue], int | None]:
+def _traffic(
+    config: CorePredictionConfig,
+) -> tuple[dict[str, JSONValue], int | None]:
     traffic = config.traffic
     source = traffic.source
     load = traffic.load

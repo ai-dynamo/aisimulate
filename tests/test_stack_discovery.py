@@ -41,26 +41,18 @@ class _RunnerFactory:
 class _Adapter:
     name = "dynamo.router"
     section = "router"
-    config_adapter_api_version = 2
+    config_adapter_api_version = 3
     api_version = 1
 
-    def validate_prediction_config(self, config, context):
-        del context
-        return dict(config)
-
-    def validate_recommendation_config(self, config, context):
-        del context
-        return dict(config)
-
-    def materialize_prediction(self, config, context):
+    def compile_prediction(self, config, context):
         del config, context
         return AdapterReplaySpec()
 
-    def generate_search_space(self, search_spec, context):
+    def compile_recommendation(self, search_spec, context):
         del search_spec, context
         return AdapterSearchPlan()
 
-    def materialize_replay(self, plan, selection, context):
+    def materialize_candidate(self, plan, selection, context):
         del plan, selection, context
         return AdapterReplaySpec()
 
@@ -97,7 +89,7 @@ def test_config_adapter_requires_predict_and_recommend_methods() -> None:
     class Incomplete:
         name = "dynamo.router"
         section = "router"
-        config_adapter_api_version = 2
+        config_adapter_api_version = 3
         api_version = 1
 
     broken = _EntryPoint("dynamo.router", "broken:create", Incomplete)

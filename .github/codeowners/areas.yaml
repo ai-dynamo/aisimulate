@@ -41,7 +41,7 @@ areas:
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
       - python/aisimulate/src/aisimulate/traffic.py
-      - tests/test_public_config.py
+      - tests/test_cli_config.py
       - tests/test_stack_discovery.py
       - tests/test_unified_cli.py
       - tests/test_unified_traffic_runtime.py
@@ -113,7 +113,7 @@ shared:
     owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/traffic.py
     owners: [replay, maintainers]
-  - glob: tests/test_public_config.py
+  - glob: tests/test_cli_config.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py
     owners: [replay, sweeper, maintainers]

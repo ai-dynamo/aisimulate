@@ -15,11 +15,11 @@ except PackageNotFoundError:
 
 _LAZY_EXPORTS = {
     "BackendDeploymentSpec": ("aisimulate.sweeper.replay", "BackendDeploymentSpec"),
+    "CorePredictionConfig": ("aisimulate.config", "CorePredictionConfig"),
+    "CoreRecommendationConfig": ("aisimulate.config", "CoreRecommendationConfig"),
     "EngineReplayRunner": ("aisimulate.runner", "EngineReplayRunner"),
     "EngineReplayRunnerFactory": ("aisimulate.runner", "EngineReplayRunnerFactory"),
     "InvalidRunnerError": ("aisimulate.runner", "InvalidRunnerError"),
-    "PredictionConfig": ("aisimulate.public_config", "PredictionConfig"),
-    "RecommendationConfig": ("aisimulate.public_config", "RecommendationConfig"),
     "ReplayOutputRequirements": ("aisimulate.sweeper.replay", "ReplayOutputRequirements"),
     "ReplayReport": ("aisimulate.sweeper.replay", "ReplayReport"),
     "ReplaySpec": ("aisimulate.sweeper.replay", "ReplaySpec"),
@@ -45,13 +45,14 @@ def __getattr__(name: str) -> object:
 def __dir__() -> list[str]:
     return sorted({*globals(), *_LAZY_EXPORTS})
 
+
 __all__ = [
     "BackendDeploymentSpec",
+    "CorePredictionConfig",
+    "CoreRecommendationConfig",
     "EngineReplayRunner",
     "EngineReplayRunnerFactory",
     "InvalidRunnerError",
-    "PredictionConfig",
-    "RecommendationConfig",
     "ReplayOutputRequirements",
     "ReplayReport",
     "ReplaySpec",
