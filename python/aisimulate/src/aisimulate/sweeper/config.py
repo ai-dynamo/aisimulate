@@ -381,6 +381,8 @@ class SearchSpace(BaseModel):
     parallel_configs_by_mode: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     flat_parallel_modes: list[str] = Field(default_factory=list)
     parallel_independent_by_mode: dict[str, dict[str, list[int] | None]] = Field(default_factory=dict)
+    parallel_independent_log_ranges_by_mode: dict[str, dict[str, list[int]]] = Field(default_factory=dict)
+    parallel_custom_configs_by_mode: dict[str, dict[str, list[dict[str, Any]]]] = Field(default_factory=dict)
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
@@ -428,6 +430,7 @@ class SearchSpace(BaseModel):
     engine_float_ranges: dict[str, list[float]] = Field(default_factory=dict)
     engine_log_ranges: list[str] = Field(default_factory=list)
     engine_log_discrete: list[str] = Field(default_factory=list)
+    engine_integer_log_ranges: dict[str, list[int]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
@@ -494,13 +497,19 @@ class SearchSpace(BaseModel):
             raise ValueError(f"parallel_configs_by_mode configures inactive modes {sorted(inactive_modes)}")
         flat_modes = set(self.flat_parallel_modes)
         independent_modes = set(self.parallel_independent_by_mode)
-        invalid_special = (flat_modes | independent_modes) - set(self.deployment_mode)
+        independent_log_modes = set(self.parallel_independent_log_ranges_by_mode)
+        custom_modes = set(self.parallel_custom_configs_by_mode)
+        invalid_special = (flat_modes | independent_modes | independent_log_modes | custom_modes) - set(
+            self.deployment_mode
+        )
         if invalid_special:
             raise ValueError(f"parallel search mode configures inactive modes {sorted(invalid_special)}")
         if flat_modes - set(configured):
             raise ValueError("flat_parallel_modes require pinned configs for each mode")
         if flat_modes & independent_modes:
             raise ValueError("parallel mode cannot be both flat and independent")
+        if flat_modes & (independent_log_modes | custom_modes):
+            raise ValueError("flat parallel mode cannot also configure mixed-role search")
         for mode, fields in self.parallel_independent_by_mode.items():
             if not fields:
                 raise ValueError(f"parallel_independent_by_mode.{mode} must be nonempty")
@@ -526,6 +535,35 @@ class SearchSpace(BaseModel):
                     or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values)
                 ):
                     raise ValueError(f"parallel_independent_by_mode.{mode}.{name} must contain positive integers")
+        for mode, fields in self.parallel_independent_log_ranges_by_mode.items():
+            independent = self.parallel_independent_by_mode.get(mode, {})
+            unknown_names = set(fields) - set(independent)
+            if unknown_names:
+                raise ValueError(
+                    f"parallel_independent_log_ranges_by_mode.{mode} has knobs that are not "
+                    f"independent: {sorted(unknown_names)}"
+                )
+            for name, bounds in fields.items():
+                if (
+                    len(bounds) != 2
+                    or any(isinstance(value, bool) or not isinstance(value, int) for value in bounds)
+                    or bounds[0] <= 0
+                    or bounds[0] > bounds[1]
+                ):
+                    raise ValueError(
+                        f"parallel_independent_log_ranges_by_mode.{mode}.{name} "
+                        "must be positive integer [min, max] bounds"
+                    )
+        for mode, roles in self.parallel_custom_configs_by_mode.items():
+            allowed_roles = {"agg"} if mode == "agg" else {"prefill", "decode"}
+            unknown_roles = set(roles) - allowed_roles
+            if unknown_roles:
+                raise ValueError(f"parallel_custom_configs_by_mode.{mode} has unknown roles {sorted(unknown_roles)}")
+            for role, entries in roles.items():
+                if not entries:
+                    raise ValueError(f"parallel_custom_configs_by_mode.{mode}.{role} must be nonempty")
+                for entry in entries:
+                    validate_shape_dict(entry, f"a {mode} {role}")
         for mode, entries in configured.items():
             if not entries:
                 raise ValueError(f"parallel_configs_by_mode.{mode} must be nonempty")
@@ -539,6 +577,14 @@ class SearchSpace(BaseModel):
                         raise ValueError("a disagg parallel_configs entry needs 'prefill' and 'decode' sub-dicts")
                     validate_shape_dict(entry["prefill"], "a disagg prefill")
                     validate_shape_dict(entry["decode"], "a disagg decode")
+        for name, bounds in self.engine_integer_log_ranges.items():
+            if (
+                len(bounds) != 2
+                or any(isinstance(value, bool) or not isinstance(value, int) for value in bounds)
+                or bounds[0] <= 0
+                or bounds[0] > bounds[1]
+            ):
+                raise ValueError(f"engine_integer_log_ranges.{name} must be positive integer [min, max] bounds")
         return self
 
 

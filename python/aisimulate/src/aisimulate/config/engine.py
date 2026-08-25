@@ -137,6 +137,7 @@ class EnginePredictionConfig(StrictModel):
         )
         if self.mode == "disaggregated" and self.backend == "trtllm":
             raise ValueError("TensorRT-LLM disaggregated mode is unsupported")
+        _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         return self
 
 
@@ -278,6 +279,8 @@ class EngineRecommendationConfig(StrictModel):
             workers=self.workers,
             has_transfer=self.kv_transfer is not None,
         )
+        backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
+        _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
 
 
@@ -293,3 +296,39 @@ def _validate_worker_roles(*, modes: set[str], workers, has_transfer: bool) -> N
             raise ValueError("aggregated mode rejects kv_transfer")
     if modes == {"disaggregated"} and workers.aggregated is not None:
         raise ValueError("disaggregated mode rejects aggregated workers")
+
+
+def _validate_backend_block_sizes(*, backends: set[str], modes: set[str], workers) -> None:
+    """Reject public domains with no backend-supported KV block size.
+
+    The replay runtime accepts positive SGLang page sizes, while its vLLM-style
+    schedulers (vLLM and TensorRT-LLM) require at least two tokens per block.
+    Mixed backend domains may retain ``1`` because it is feasible for SGLang;
+    the concrete prediction validation filters incompatible candidates.
+    """
+
+    if "sglang" in backends:
+        return
+    roles = []
+    if "aggregated" in modes:
+        roles.append("aggregated")
+    if "disaggregated" in modes:
+        roles.extend(("prefill", "decode"))
+    for role in roles:
+        worker = getattr(workers, role)
+        if worker is None:
+            continue
+        value = worker.kv_cache.block_size
+        if value is None:
+            continue
+        if isinstance(value, Choices):
+            maximum = max(value.choices)
+        elif isinstance(value, IntegerRange):
+            maximum = value.range.max
+        else:
+            maximum = value
+        if maximum < 2:
+            raise ValueError(
+                f"{role} KV block_size has no value supported by vLLM/TensorRT-LLM; "
+                "those backends require block_size >= 2"
+            )

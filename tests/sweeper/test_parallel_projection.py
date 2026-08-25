@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
+
 from aisimulate.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
@@ -19,6 +21,7 @@ from aisimulate.sweeper.parallel_projection import (
     PREFILL_GPU_SHARE,
     PREFILL_GPUS_PER_ENGINE,
     USED_GPU_RATIO,
+    InfeasibleParallelSelection,
     ParallelConfigProjector,
 )
 from aisimulate.sweeper.search_space import BranchSpace
@@ -251,3 +254,102 @@ def test_preset_off_exposes_independent_parallel_knobs() -> None:
     assert projection.config == ReplicaParallelConfig(
         shape=ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=2
     )
+
+
+def test_independent_parallel_domain_preserves_explicit_scale() -> None:
+    legal = _role(gpus=1, attention="tp", ffn="tp", replicas=1)
+    linear = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(legal,),
+        supported_backends={legal: frozenset({"vllm"})},
+        knob_choices={"backend": ["vllm"]},
+        parallel_independent_choices={"replicas": (1, 2, 4)},
+    )
+    logarithmic = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(legal,),
+        supported_backends={legal: frozenset({"vllm"})},
+        knob_choices={"backend": ["vllm"]},
+        parallel_independent_choices={"replicas": (1,)},
+        parallel_independent_log_ranges={"replicas": (1, 1_000_000)},
+    )
+
+    linear_parameter = ParallelConfigProjector(linear).parameters[0]
+    log_parameter = ParallelConfigProjector(logarithmic).parameters[0]
+
+    assert not linear_parameter.log_scale
+    assert log_parameter.kind == "integer"
+    assert log_parameter.log_scale
+    assert (log_parameter.minimum, log_parameter.maximum) == (1.0, 1_000_000.0)
+
+
+def test_disagg_custom_and_default_roles_remain_atomic_and_correlated() -> None:
+    prefill_one = _role(gpus=1, attention="tp", ffn="tp", replicas=1)
+    prefill_two = _role(gpus=2, attention="tp", ffn="tp", replicas=1)
+    decode_one = _role(gpus=1, attention="tp", ffn="tp", replicas=1)
+    decode_two = _role(gpus=2, attention="tp", ffn="tp", replicas=2)
+    first = DisaggParallelConfig(prefill=prefill_one, decode=decode_one)
+    second = DisaggParallelConfig(prefill=prefill_two, decode=decode_two)
+    branch = BranchSpace(
+        deployment_mode="disagg",
+        parallel_configs=(first, second),
+        supported_backends={
+            first: frozenset({"vllm"}),
+            second: frozenset({"vllm"}),
+        },
+        knob_choices={"backend": ["vllm"]},
+        gpu_budget=8,
+        parallel_custom_choices={"prefill": (prefill_one, prefill_two)},
+    )
+    projector = ParallelConfigProjector(branch)
+
+    names = {parameter.name for parameter in projector.parameters}
+    assert f"prefill_{PARALLEL_CONFIG_CHOICE}" in names
+    assert DECODE_GPUS_PER_ENGINE in names
+    assert "prefill_tp" not in names
+    projection = projector.project(
+        {
+            f"prefill_{PARALLEL_CONFIG_CHOICE}": 1,
+            USED_GPU_RATIO: 0.75,
+            PREFILL_GPU_SHARE: 1 / 3,
+            DECODE_GPUS_PER_ENGINE: 2,
+            DECODE_ATTENTION_MODE: "tp",
+        },
+        "vllm",
+    )
+    assert projection.config == second
+
+
+def test_infeasible_independent_parallel_combination_is_typed() -> None:
+    prefill = _role(gpus=1, attention="tp", ffn="tp", replicas=1)
+    decode = _role(gpus=1, attention="tp", ffn="tp", replicas=1)
+    legal = DisaggParallelConfig(prefill=prefill, decode=decode)
+    branch = BranchSpace(
+        deployment_mode="disagg",
+        parallel_configs=(legal,),
+        supported_backends={legal: frozenset({"vllm"})},
+        knob_choices={"backend": ["vllm"]},
+        parallel_custom_choices={"prefill": (prefill,)},
+        parallel_independent_choices={
+            "decode_replicas": (2,),
+            "decode_tp": (1,),
+            "decode_pp": (1,),
+            "decode_attention_dp": (1,),
+            "decode_moe_tp": (1,),
+            "decode_moe_ep": (1,),
+        },
+    )
+
+    with pytest.raises(InfeasibleParallelSelection, match="infeasible"):
+        ParallelConfigProjector(branch).project(
+            {
+                f"prefill_{PARALLEL_CONFIG_CHOICE}": 0,
+                "decode_replicas": 2,
+                "decode_tp": 1,
+                "decode_pp": 1,
+                "decode_attention_dp": 1,
+                "decode_moe_tp": 1,
+                "decode_moe_ep": 1,
+            },
+            "vllm",
+        )

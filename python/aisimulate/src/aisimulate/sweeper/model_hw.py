@@ -113,7 +113,7 @@ def parallel_configs_for(
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
-    role_runtime: dict[str, tuple[int, int, float]] | None = None,
+    role_runtime: dict[str, tuple[int, int, float] | tuple[int, int, float, int | None]] | None = None,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
     the GPU budget and can hold a ``max_seq_len``-token sequence.
@@ -159,9 +159,18 @@ def parallel_configs_for(
 
     # KV-cache validity: keep configs whose every role-shape holds a max_seq_len sequence.
     def feasible_for(role: str, shapes):
-        role_tokens, role_batch, role_memory = (role_runtime or {}).get(
-            role, (max_num_tokens, max_batch_size, memory_fraction)
-        )
+        runtime = (role_runtime or {}).get(role, (max_num_tokens, max_batch_size, memory_fraction))
+        if len(runtime) == 3:
+            role_tokens, role_batch, role_memory = runtime
+            fixed_tokens = None
+        elif len(runtime) == 4:
+            role_tokens, role_batch, role_memory, fixed_tokens = runtime
+        else:
+            raise ValueError(
+                "role_runtime values must be (tokens, batch, memory) or (tokens, batch, memory, fixed_tokens)"
+            )
+        if fixed_tokens is not None:
+            return {shape: fixed_tokens for shape in dict.fromkeys(shapes) if fixed_tokens > seq_len}
         return feasible_shape_tokens(
             shapes,
             model_name=model_name,

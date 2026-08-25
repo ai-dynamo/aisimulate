@@ -14,6 +14,8 @@ from .common import Choices, IntegerRange, NumericRange, StrictModel
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
+NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
+Ratio = Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]
 
 
 class SyntheticSource(StrictModel):
@@ -23,10 +25,10 @@ class SyntheticSource(StrictModel):
 
 
 class SessionShape(StrictModel):
-    turns: int = Field(default=4, ge=2)
-    shared_prefix_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
-    prefix_groups: int = Field(default=0, ge=0)
-    inter_turn_delay_ms: float = Field(default=0.0, ge=0.0)
+    turns: int = Field(default=4, strict=True, ge=2)
+    shared_prefix_ratio: Ratio = 0.0
+    prefix_groups: NonNegativeInt = 0
+    inter_turn_delay_ms: NonNegativeFloat = 0.0
 
     @model_validator(mode="after")
     def _validate_prefix_groups(self) -> SessionShape:

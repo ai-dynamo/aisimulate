@@ -20,9 +20,14 @@ if TYPE_CHECKING:
 
 
 API_VERSION = 1
+SEARCH_SPACE_FRAGMENT_API_VERSION = 1
 
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
+
+
+class InfeasibleCandidate(ValueError):
+    """A materialized provider selection is outside its feasible subspace."""
 
 
 @dataclass(frozen=True)
@@ -55,19 +60,41 @@ class CandidateContext:
 
 
 @dataclass(frozen=True)
+class ConditionalSearchSpace:
+    """Child dimensions enabled only for selected values of a root choice.
+
+    ``selector`` names a parameter in the enclosing branch's
+    :attr:`SearchSpaceFragment.choices_by_branch`.  A sampler includes the child
+    parameters in a suggestion only when the decoded selector value is one of
+    ``values``.
+    """
+
+    selector: str
+    values: list[JSONValue]
+    choices: dict[str, list[JSONValue]] = field(default_factory=dict)
+    float_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
+    log_float_ranges: list[str] = field(default_factory=list)
+    log_discrete_choices: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class SearchSpaceFragment:
     """Provider-owned search dimensions, grouped by core deployment branch.
 
-    Keys in ``choices_by_branch`` and ``float_ranges_by_branch`` are deployment
-    branch names such as ``"agg"`` and ``"disagg"``.  Parameter names inside a
-    branch are local to the provider; the core adds the adapter namespace before
-    merging them into a sampler study.
+    Keys in the ``*_by_branch`` fields are deployment branch names such as
+    ``"agg"`` and ``"disagg"``. Parameter names inside a branch are local to the
+    provider; the core adds the adapter namespace before merging them into a
+    sampler study. ``api_version`` versions this JSON-serializable fragment
+    independently from provider discovery.
     """
 
     choices_by_branch: dict[str, dict[str, list[JSONValue]]] = field(default_factory=dict)
     float_ranges_by_branch: dict[str, dict[str, tuple[float, float]]] = field(default_factory=dict)
     log_float_ranges_by_branch: dict[str, list[str]] = field(default_factory=dict)
     log_discrete_choices_by_branch: dict[str, list[str]] = field(default_factory=dict)
+    conditional_by_branch: dict[str, list[ConditionalSearchSpace]] = field(default_factory=dict)
+    # Appended to preserve positional compatibility with the original four fields.
+    api_version: int = SEARCH_SPACE_FRAGMENT_API_VERSION
 
 
 @dataclass(frozen=True)

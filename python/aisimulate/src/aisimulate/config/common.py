@@ -38,9 +38,9 @@ class Choices(StrictModel, Generic[T]):
 
 
 class NumericRangeSpec(StrictModel):
-    min: float
-    max: float
-    step: float | None = Field(default=None, gt=0)
+    min: float = Field(strict=True, allow_inf_nan=False)
+    max: float = Field(strict=True, allow_inf_nan=False)
+    step: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
     scale: Literal["linear", "log"] = "linear"
 
     @model_validator(mode="after")

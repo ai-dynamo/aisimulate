@@ -20,7 +20,7 @@ from .config_adapter import (
     SimulationConfigAdapter,
 )
 from .sweeper.config import SmartSearchConfig
-from .sweeper.provider import SweepContext
+from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplaySpec, RunnerFactory
 
 
@@ -114,13 +114,23 @@ def recommendation_to_sweeper(
         search_space["kv_transfer_bytes_per_token"] = bytes_per_token
         search_space["kv_transfer_bandwidth"] = transfer.get("bandwidth_gb_per_second")
         search_space["kv_transfer_timing_mode"] = transfer.get("timing_mode", "destination_missing")
-    pinned_parallel, flat_modes, independent_parallel = _parallel_config_choices(workers, modes)
+    (
+        pinned_parallel,
+        flat_modes,
+        independent_parallel,
+        independent_parallel_log_ranges,
+        custom_parallel,
+    ) = _parallel_config_choices(workers, modes)
     if pinned_parallel:
         search_space["parallel_configs_by_mode"] = pinned_parallel
     if flat_modes:
         search_space["flat_parallel_modes"] = flat_modes
     if independent_parallel:
         search_space["parallel_independent_by_mode"] = independent_parallel
+    if independent_parallel_log_ranges:
+        search_space["parallel_independent_log_ranges_by_mode"] = independent_parallel_log_ranges
+    if custom_parallel:
+        search_space["parallel_custom_configs_by_mode"] = custom_parallel
 
     workload = _recommendation_workload(
         config.traffic.model_dump(mode="python", exclude_none=True) if config.traffic is not None else None
@@ -166,7 +176,7 @@ def _choices(value: Any, *, default: list[Any]) -> list[Any]:
         raw = value["range"]
         step = raw.get("step")
         if raw.get("scale", "linear") == "log":
-            return list(range(int(raw["min"]), int(raw["max"]) + 1))
+            raise ValueError("integer log ranges must be lowered as compact bounds")
         if step is None:
             raise ValueError("integer linear engine ranges require step")
         values: list[Any] = []
@@ -178,6 +188,19 @@ def _choices(value: Any, *, default: list[Any]) -> list[Any]:
     return [value]
 
 
+def _integer_domain(value: Any, *, default: list[int]) -> tuple[list[int], list[int] | None]:
+    """Lower an integer domain without eagerly expanding a log-scale interval."""
+
+    if isinstance(value, dict) and set(value) == {"range"}:
+        raw = value["range"]
+        if raw.get("scale", "linear") == "log":
+            minimum, maximum = int(raw["min"]), int(raw["max"])
+            if minimum == maximum:
+                return [minimum], None
+            return [minimum], [minimum, maximum]
+    return [int(choice) for choice in _choices(value, default=default)], None
+
+
 def _legacy_mode(mode: str) -> str:
     return {"aggregated": "agg", "disaggregated": "disagg"}.get(mode, mode)
 
@@ -187,6 +210,7 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
         "engine_float_ranges": {},
         "engine_log_ranges": [],
         "engine_log_discrete": [],
+        "engine_integer_log_ranges": {},
     }
     specifications = (
         ("aggregated", "agg", "agg" in modes),
@@ -204,37 +228,29 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
             raise ValueError(f"engine.workers.{public_role}.scheduler must be a mapping")
         tokens_default = [8192] if legacy_role == "decode" else [8192, 16384, 32768]
         sequences_default = [1, 2, 4, 8, 16, 32, 64, 128, 256] if legacy_role == "prefill" else [256, 512, 1024]
-        result[f"{legacy_role}_max_num_batched_tokens"] = _choices(
-            scheduler.get("max_batched_tokens"), default=tokens_default
-        )
-        result[f"{legacy_role}_max_num_seqs"] = _choices(scheduler.get("max_sequences"), default=sequences_default)
-        for public_name, internal_name in (
-            ("max_batched_tokens", f"{legacy_role}_max_num_batched_tokens"),
-            ("max_sequences", f"{legacy_role}_max_num_seqs"),
-        ):
-            value = scheduler.get(public_name)
-            if (
-                isinstance(value, dict)
-                and isinstance(value.get("range"), dict)
-                and value["range"].get("scale") == "log"
-            ):
-                result["engine_log_discrete"].append(internal_name)
+        tokens_name = f"{legacy_role}_max_num_batched_tokens"
+        sequences_name = f"{legacy_role}_max_num_seqs"
+        tokens, tokens_log_range = _integer_domain(scheduler.get("max_batched_tokens"), default=tokens_default)
+        sequences, sequences_log_range = _integer_domain(scheduler.get("max_sequences"), default=sequences_default)
+        result[tokens_name] = tokens
+        result[sequences_name] = sequences
+        if tokens_log_range is not None:
+            result["engine_integer_log_ranges"][tokens_name] = tokens_log_range
+        if sequences_log_range is not None:
+            result["engine_integer_log_ranges"][sequences_name] = sequences_log_range
         cache = raw.get("kv_cache") or {}
         capacity = cache.get("capacity") or {}
         block_value = cache.get("block_size")
-        result[f"{legacy_role}_block_size"] = (
-            None
-            if block_value is None
-            else _choices(block_value, default=[])
-            if isinstance(block_value, dict)
-            else block_value
-        )
-        if (
-            isinstance(block_value, dict)
-            and isinstance(block_value.get("range"), dict)
-            and block_value["range"].get("scale") == "log"
-        ):
-            result["engine_log_discrete"].append(f"{legacy_role}_block_size")
+        block_name = f"{legacy_role}_block_size"
+        if block_value is None:
+            result[block_name] = None
+        elif isinstance(block_value, dict):
+            block_choices, block_log_range = _integer_domain(block_value, default=[])
+            result[block_name] = block_choices
+            if block_log_range is not None:
+                result["engine_integer_log_ranges"][block_name] = block_log_range
+        else:
+            result[block_name] = block_value
         memory_value = capacity.get("memory_fraction")
         memory_name = f"{legacy_role}_gpu_memory_utilization"
         if isinstance(memory_value, dict) and "range" in memory_value:
@@ -276,6 +292,8 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
         result.pop("engine_log_ranges")
     if not result["engine_log_discrete"]:
         result.pop("engine_log_discrete")
+    if not result["engine_integer_log_ranges"]:
+        result.pop("engine_integer_log_ranges")
     return result
 
 
@@ -305,9 +323,17 @@ def _parallel_entries(role: str, raw: dict[str, Any]) -> tuple[str, Any]:
         return "flat", [_parallel_mapping(entry, f"engine.workers.{role}.parallelism.preset") for entry in preset]
     if preset not in (False, {}):
         raise ValueError(f"invalid parallelism preset for role {role}")
-    return "independent", {
-        key: _choices(parallel[key], default=[]) if key in parallel else None for key in _PARALLEL_KEYS
-    }
+    choices: dict[str, list[int] | None] = {}
+    log_ranges: dict[str, list[int]] = {}
+    for key in _PARALLEL_KEYS:
+        if key not in parallel:
+            choices[key] = None
+            continue
+        values, log_range = _integer_domain(parallel[key], default=[])
+        choices[key] = values
+        if log_range is not None:
+            log_ranges[key] = log_range
+    return "independent", {"choices": choices, "log_ranges": log_ranges}
 
 
 def _parallel_mapping(value: Any, path: str) -> dict[str, int]:
@@ -339,6 +365,8 @@ def _parallel_config_choices(
     dict[str, list[dict[str, Any]]],
     list[str],
     dict[str, dict[str, list[int] | None]],
+    dict[str, dict[str, list[int]]],
+    dict[str, dict[str, list[dict[str, int]]]],
 ]:
     role_specs: dict[str, tuple[str, Any]] = {}
     if "agg" in modes:
@@ -349,6 +377,8 @@ def _parallel_config_choices(
     pinned: dict[str, list[dict[str, Any]]] = {}
     flat_modes: list[str] = []
     independent: dict[str, dict[str, list[int] | None]] = {}
+    independent_log_ranges: dict[str, dict[str, list[int]]] = {}
+    custom: dict[str, dict[str, list[dict[str, int]]]] = {}
     if "agg" in modes:
         kind, value = role_specs["agg"]
         if kind == "flat":
@@ -364,7 +394,18 @@ def _parallel_config_choices(
                     "moe_tensor": "moe_tp",
                     "moe_expert": "moe_ep",
                 }[name]: choices
-                for name, choices in value.items()
+                for name, choices in value["choices"].items()
+            }
+            independent_log_ranges["agg"] = {
+                {
+                    "replicas": "replicas",
+                    "tensor": "tp",
+                    "pipeline": "pp",
+                    "attention_data": "attention_dp",
+                    "moe_tensor": "moe_tp",
+                    "moe_expert": "moe_ep",
+                }[name]: bounds
+                for name, bounds in value["log_ranges"].items()
             }
     if "disagg" in modes:
         prefill_kind, prefill = role_specs["prefill"]
@@ -375,8 +416,9 @@ def _parallel_config_choices(
                 for p, d in itertools.product(prefill, decode)
             ]
             flat_modes.append("disagg")
-        elif {prefill_kind, decode_kind}.issubset({"default", "independent"}):
+        elif prefill_kind != "default" or decode_kind != "default":
             combined: dict[str, list[int] | None] = {}
+            combined_log_ranges: dict[str, list[int]] = {}
             mapping = {
                 "replicas": "replicas",
                 "tensor": "tp",
@@ -389,17 +431,19 @@ def _parallel_config_choices(
                 ("prefill", prefill_kind, prefill),
                 ("decode", decode_kind, decode),
             ):
-                if kind == "default":
-                    values = dict.fromkeys(_PARALLEL_KEYS)
-                for name, choices in values.items():
-                    combined[f"{role}_{mapping[name]}"] = choices
-            independent["disagg"] = combined
-        elif prefill_kind != decode_kind:
-            raise ValueError(
-                "a custom parallelism mapping list cannot currently be mixed "
-                "with default/off on the other disaggregated role"
-            )
-    return pinned, flat_modes, independent
+                if kind == "independent":
+                    for name, choices in values["choices"].items():
+                        combined[f"{role}_{mapping[name]}"] = choices
+                    for name, bounds in values["log_ranges"].items():
+                        combined_log_ranges[f"{role}_{mapping[name]}"] = bounds
+                elif kind == "flat":
+                    custom.setdefault("disagg", {})[role] = [_legacy_parallel(entry) for entry in values]
+            if combined:
+                independent["disagg"] = combined
+            if combined_log_ranges:
+                independent_log_ranges["disagg"] = combined_log_ranges
+    independent_log_ranges = {mode: fields for mode, fields in independent_log_ranges.items() if fields}
+    return pinned, flat_modes, independent, independent_log_ranges, custom
 
 
 def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -515,6 +559,9 @@ def _configure_load_domain(
         return
     if isinstance(value, dict) and set(value) == {"range"}:
         bounds = value["range"]
+        if bounds["min"] == bounds["max"]:
+            result[field] = bounds["min"]
+            return
         step = bounds.get("step")
         if bounds.get("scale", "linear") == "linear" and step is not None:
             choices = _choices(value, default=[])
@@ -636,13 +683,16 @@ def _candidate_prediction(
         if section is None:
             raise ValueError(f"recommendation candidate used unknown config adapter {name!r}")
         concrete_adapters[section] = deepcopy(adapter.config)
-    prediction = CorePredictionConfig.model_validate(
-        {
-            "traffic": traffic,
-            "engine": engine,
-            "evaluation": source.evaluation.model_dump(mode="python", exclude_none=True),
-        }
-    )
+    try:
+        prediction = CorePredictionConfig.model_validate(
+            {
+                "traffic": traffic,
+                "engine": engine,
+                "evaluation": source.evaluation.model_dump(mode="python", exclude_none=True),
+            }
+        )
+    except ValueError as exc:
+        raise InfeasibleCandidate(f"generated prediction config is infeasible: {exc}") from exc
     public = prediction.model_dump(mode="python", exclude_none=True)
     public.update(concrete_adapters)
     return public

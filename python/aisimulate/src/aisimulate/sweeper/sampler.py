@@ -23,17 +23,23 @@ optimizer can replace Vizier without touching orchestration.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import random
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from itertools import product
 from typing import Any, Protocol
 
 from ._quiet import configure_vizier_runtime
 from .parallel_enum import DisaggParallelConfig, ReplicaParallelConfig
-from .parallel_projection import ParallelConfigProjector, ParallelProjection
+from .parallel_projection import (
+    InfeasibleParallelSelection,
+    ParallelConfigProjector,
+    ParallelProjection,
+)
 from .search_space import BranchSpace
 
 _CONSTANT_PARAM = "_sweeper_constant"
@@ -58,6 +64,35 @@ class Suggestion:
     parallel_config: ReplicaParallelConfig | DisaggParallelConfig
     handle: Any = field(repr=False)
     projection: ParallelProjection | None = field(default=None, repr=False)
+    infeasible_reason: str | None = None
+
+
+def _project_parallel(
+    projector: ParallelConfigProjector,
+    params: dict[str, Any],
+    backend: str,
+) -> tuple[
+    ReplicaParallelConfig | DisaggParallelConfig,
+    ParallelProjection | None,
+    str | None,
+]:
+    """Project a suggestion while preserving infeasible samples for ask/tell."""
+
+    try:
+        projection = projector.project(params, backend)
+        return projection.config, projection, None
+    except InfeasibleParallelSelection as exc:
+        fallback = next(
+            (
+                config
+                for config in projector.branch.parallel_configs
+                if backend in projector.branch.supported_backends.get(config, frozenset())
+            ),
+            None,
+        )
+        if fallback is None:
+            raise
+        return fallback, None, str(exc)
 
 
 class BranchSampler(Protocol):
@@ -148,6 +183,14 @@ class VizierBranchSampler:
                         max_value=parameter.maximum,
                         default_value=parameter.default,
                     )
+                elif parameter.kind == "integer":
+                    root.add_int_param(
+                        parameter.name,
+                        min_value=round(parameter.minimum),
+                        max_value=round(parameter.maximum),
+                        default_value=round(parameter.default),
+                        scale_type=(vz.ScaleType.LOG if parameter.log_scale else vz.ScaleType.LINEAR),
+                    )
                 elif parameter.kind == "discrete":
                     root.add_discrete_param(
                         parameter.name,
@@ -170,6 +213,15 @@ class VizierBranchSampler:
                 scale_type=(vz.ScaleType.LOG if knob in branch.log_float_ranges else vz.ScaleType.LINEAR),
             )
             self._decoders[knob] = float
+        for knob, (minimum, maximum) in branch.integer_ranges.items():
+            root.add_int_param(
+                knob,
+                min_value=minimum,
+                max_value=maximum,
+                default_value=minimum,
+                scale_type=(vz.ScaleType.LOG if knob in branch.log_integer_ranges else vz.ScaleType.LINEAR),
+            )
+            self._decoders[knob] = lambda value: round(float(value))
         for knob, choices in branch.knob_choices.items():
             # Dedupe scalar choices before passing them to Vizier. Structured and
             # heterogeneous choices are encoded by index below, so duplicate decoded
@@ -229,15 +281,18 @@ class VizierBranchSampler:
             if self._parallel_pinned:
                 parallel_config = self.branch.parallel_configs[0]
                 projection = None
+                infeasible_reason = None
             else:
-                projection = self._parallel_projector.project(params, selection["backend"])
-                parallel_config = projection.config
+                parallel_config, projection, infeasible_reason = _project_parallel(
+                    self._parallel_projector, params, selection["backend"]
+                )
             suggestions.append(
                 Suggestion(
                     selection=selection,
                     parallel_config=parallel_config,
                     handle=trial,
                     projection=projection,
+                    infeasible_reason=infeasible_reason,
                 )
             )
         return suggestions
@@ -281,6 +336,11 @@ class RandomBranchSampler:
             if parameter.log_scale:
                 return 2.0 ** self._rng.uniform(math.log2(parameter.minimum), math.log2(parameter.maximum))
             return self._rng.uniform(parameter.minimum, parameter.maximum)
+        if parameter.kind == "integer":
+            if parameter.log_scale:
+                sampled = math.exp(self._rng.uniform(math.log(parameter.minimum), math.log(parameter.maximum)))
+                return min(round(parameter.maximum), max(round(parameter.minimum), round(sampled)))
+            return self._rng.randint(round(parameter.minimum), round(parameter.maximum))
         return self._rng.choice(parameter.values)
 
     def suggest(self, count: int) -> list[Suggestion]:
@@ -299,23 +359,32 @@ class RandomBranchSampler:
                     selection[knob] = math.exp(self._rng.uniform(math.log(minimum), math.log(maximum)))
                 else:
                     selection[knob] = self._rng.uniform(minimum, maximum)
+            for knob, (minimum, maximum) in self.branch.integer_ranges.items():
+                if knob in self.branch.log_integer_ranges:
+                    sampled = math.exp(self._rng.uniform(math.log(minimum), math.log(maximum)))
+                    selection[knob] = min(maximum, max(minimum, round(sampled)))
+                else:
+                    selection[knob] = self._rng.randint(minimum, maximum)
             if self._parallel_pinned:
                 parallel_config = self.branch.parallel_configs[0]
                 projection = None
+                infeasible_reason = None
             else:
                 params = {
                     parameter.name: self._parameter_value(parameter)
                     for parameter in self._projector.parameters
                     if not parameter.is_constant
                 }
-                projection = self._projector.project(params, selection["backend"])
-                parallel_config = projection.config
+                parallel_config, projection, infeasible_reason = _project_parallel(
+                    self._projector, params, selection["backend"]
+                )
             suggestions.append(
                 Suggestion(
                     selection=selection,
                     parallel_config=parallel_config,
                     handle=None,
                     projection=projection,
+                    infeasible_reason=infeasible_reason,
                 )
             )
         return suggestions
@@ -366,6 +435,14 @@ class SeededBayesianBranchSampler:
                         max_value=parameter.maximum,
                         default_value=parameter.default,
                     )
+                elif parameter.kind == "integer":
+                    root.add_int_param(
+                        parameter.name,
+                        min_value=round(parameter.minimum),
+                        max_value=round(parameter.maximum),
+                        default_value=round(parameter.default),
+                        scale_type=(vz.ScaleType.LOG if parameter.log_scale else vz.ScaleType.LINEAR),
+                    )
                 elif parameter.kind == "discrete":
                     root.add_discrete_param(
                         parameter.name,
@@ -388,6 +465,15 @@ class SeededBayesianBranchSampler:
                 scale_type=(vz.ScaleType.LOG if knob in branch.log_float_ranges else vz.ScaleType.LINEAR),
             )
             self._decoders[knob] = float
+        for knob, (minimum, maximum) in branch.integer_ranges.items():
+            root.add_int_param(
+                knob,
+                min_value=minimum,
+                max_value=maximum,
+                default_value=minimum,
+                scale_type=(vz.ScaleType.LOG if knob in branch.log_integer_ranges else vz.ScaleType.LINEAR),
+            )
+            self._decoders[knob] = lambda value: round(float(value))
         for knob, raw_choices in branch.knob_choices.items():
             choices = list(raw_choices)
             all_strings = all(isinstance(choice, str) for choice in choices)
@@ -441,15 +527,18 @@ class SeededBayesianBranchSampler:
             if self._parallel_pinned:
                 parallel_config = self.branch.parallel_configs[0]
                 projection = None
+                infeasible_reason = None
             else:
-                projection = self._parallel_projector.project(params, selection["backend"])
-                parallel_config = projection.config
+                parallel_config, projection, infeasible_reason = _project_parallel(
+                    self._parallel_projector, params, selection["backend"]
+                )
             suggestions.append(
                 Suggestion(
                     selection=selection,
                     parallel_config=parallel_config,
                     handle=trial,
                     projection=projection,
+                    infeasible_reason=infeasible_reason,
                 )
             )
         return suggestions
@@ -476,6 +565,116 @@ class SeededBayesianBranchSampler:
         self._complete(suggestion, self._vz.Measurement(), reason)
 
 
+@dataclass(frozen=True)
+class _ConditionalSuggestionHandle:
+    arm_index: int
+    inner_suggestion: Suggestion = field(repr=False)
+
+
+def _conditional_arm_id(assignments: dict[str, Any]) -> str:
+    payload = json.dumps(assignments, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _expand_conditional_arms(branch: BranchSpace) -> list[tuple[str, BranchSpace]]:
+    """Expand conditional selectors into flat sampler-compatible branch arms."""
+
+    selectors = tuple(dict.fromkeys(condition.selector for condition in branch.conditional_dimensions))
+    arms: list[tuple[str, BranchSpace]] = []
+    for raw_values in product(*(branch.knob_choices[selector] for selector in selectors)):
+        assignments = dict(zip(selectors, raw_values, strict=True))
+        choices = {name: list(values) for name, values in branch.knob_choices.items()}
+        for selector, value in assignments.items():
+            choices[selector] = [value]
+        float_ranges = dict(branch.float_ranges)
+        log_float_ranges = set(branch.log_float_ranges)
+        log_discrete_choices = set(branch.log_discrete_choices)
+        for condition in branch.conditional_dimensions:
+            if assignments[condition.selector] not in condition.values:
+                continue
+            choices.update({name: list(values) for name, values in condition.knob_choices.items()})
+            float_ranges.update(condition.float_ranges)
+            log_float_ranges.update(condition.log_float_ranges)
+            log_discrete_choices.update(condition.log_discrete_choices)
+        arms.append(
+            (
+                _conditional_arm_id(assignments),
+                replace(
+                    branch,
+                    knob_choices=choices,
+                    float_ranges=float_ranges,
+                    log_float_ranges=frozenset(log_float_ranges),
+                    log_discrete_choices=frozenset(log_discrete_choices),
+                    conditional_dimensions=(),
+                ),
+            )
+        )
+    return arms
+
+
+class ConditionalBranchSampler:
+    """Stable round-robin facade over flat conditional selector arms.
+
+    The installed Vizier designers reject hierarchical search spaces.  Each
+    selector assignment therefore owns a normal flat sampler study, while this
+    facade preserves the external one-branch lifecycle and delegates observations
+    to the arm that produced the suggestion.
+    """
+
+    def __init__(
+        self,
+        branch: BranchSpace,
+        *,
+        sampler_factory: Callable[[BranchSpace, str, int], BranchSampler],
+        study_id: str,
+        seed: int,
+    ) -> None:
+        self.branch = branch
+        self._cursor = 0
+        self._samplers: list[BranchSampler] = []
+        for arm_id, arm in _expand_conditional_arms(branch):
+            arm_seed = (seed + int(arm_id[:8], 16)) % (2**31 - 1)
+            self._samplers.append(sampler_factory(arm, f"{study_id}_conditional_{arm_id}", arm_seed))
+        if not self._samplers:
+            raise ValueError("a conditional branch must produce at least one selector arm")
+
+    def suggest(self, count: int) -> list[Suggestion]:
+        if count <= 0:
+            return []
+        arm_order = [(self._cursor + index) % len(self._samplers) for index in range(count)]
+        self._cursor = (self._cursor + count) % len(self._samplers)
+        counts = [arm_order.count(index) for index in range(len(self._samplers))]
+        batches = [iter(sampler.suggest(counts[index])) for index, sampler in enumerate(self._samplers)]
+        suggestions: list[Suggestion] = []
+        for arm_index in arm_order:
+            inner = next(batches[arm_index])
+            suggestions.append(
+                Suggestion(
+                    selection=inner.selection,
+                    parallel_config=inner.parallel_config,
+                    handle=_ConditionalSuggestionHandle(arm_index, inner),
+                    projection=inner.projection,
+                    infeasible_reason=inner.infeasible_reason,
+                )
+            )
+        return suggestions
+
+    @staticmethod
+    def _inner(suggestion: Suggestion) -> _ConditionalSuggestionHandle:
+        handle = suggestion.handle
+        if not isinstance(handle, _ConditionalSuggestionHandle):
+            raise TypeError("suggestion was not created by this conditional sampler")
+        return handle
+
+    def observe(self, suggestion: Suggestion, metrics: dict[str, float]) -> None:
+        handle = self._inner(suggestion)
+        self._samplers[handle.arm_index].observe(handle.inner_suggestion, metrics)
+
+    def observe_infeasible(self, suggestion: Suggestion, reason: str) -> None:
+        handle = self._inner(suggestion)
+        self._samplers[handle.arm_index].observe_infeasible(handle.inner_suggestion, reason)
+
+
 def make_branch_sampler(
     branch: BranchSpace,
     *,
@@ -486,18 +685,29 @@ def make_branch_sampler(
 ) -> BranchSampler:
     """Construct the default (Vizier) sampler for a branch. ``objectives`` (name, maximize)
     pairs default to a single maximized ``"objective"``; pass >=2 for a Pareto study."""
-    if algorithm == "random":
-        return RandomBranchSampler(branch, seed=seed)
-    if algorithm == "bayesian":
-        return SeededBayesianBranchSampler(
-            branch,
+
+    def construct(flat_branch: BranchSpace, flat_study_id: str, flat_seed: int) -> BranchSampler:
+        if algorithm == "random":
+            return RandomBranchSampler(flat_branch, seed=flat_seed)
+        if algorithm == "bayesian":
+            return SeededBayesianBranchSampler(
+                flat_branch,
+                objectives=objectives,
+                seed=flat_seed,
+            )
+        return VizierBranchSampler(
+            flat_branch,
+            study_id=flat_study_id,
             objectives=objectives,
+            algorithm="bayesian",
+            seed=flat_seed,
+        )
+
+    if branch.conditional_dimensions:
+        return ConditionalBranchSampler(
+            branch,
+            sampler_factory=construct,
+            study_id=study_id,
             seed=seed,
         )
-    return VizierBranchSampler(
-        branch,
-        study_id=study_id,
-        objectives=objectives,
-        algorithm="bayesian",
-        seed=seed,
-    )
+    return construct(branch, study_id, seed)

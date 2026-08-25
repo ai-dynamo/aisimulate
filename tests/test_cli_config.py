@@ -282,9 +282,126 @@ def test_engine_scheduler_domains_replace_defaults_and_preserve_log_scale() -> N
     )
     lowered = recommendation_to_sweeper(config)
     assert lowered.search_space.agg_max_num_batched_tokens == [4096]
-    assert lowered.search_space.agg_max_num_seqs == list(range(1, 9))
-    assert "agg_max_num_seqs" in lowered.search_space.engine_log_discrete
+    assert lowered.search_space.agg_max_num_seqs == [1]
+    assert lowered.search_space.engine_integer_log_ranges["agg_max_num_seqs"] == [
+        1,
+        8,
+    ]
     assert lowered.search_space.backend_version == "0.19.0"
+
+
+def test_large_integer_log_ranges_lower_as_compact_bounds() -> None:
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "aggregated",
+                "context_length": 4096,
+                "workers": {
+                    "aggregated": {
+                        "parallelism": {
+                            "preset": False,
+                            "replicas": {
+                                "range": {"min": 1, "max": 1_000_000, "scale": "log"}
+                            },
+                        }
+                    }
+                },
+            },
+            "optimization": {},
+        }
+    )
+
+    lowered = recommendation_to_sweeper(config)
+
+    assert lowered.search_space.parallel_independent_by_mode["agg"]["replicas"] == [1]
+    assert lowered.search_space.parallel_independent_log_ranges_by_mode["agg"][
+        "replicas"
+    ] == [
+        1,
+        1_000_000,
+    ]
+
+
+def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
+    mapping = {
+        "replicas": 1,
+        "tensor": 1,
+        "pipeline": 1,
+        "attention_data": 1,
+        "moe_tensor": 1,
+        "moe_expert": 1,
+    }
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "mode": "disaggregated",
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 4096,
+                "workers": {
+                    "prefill": {"parallelism": {"preset": [mapping]}},
+                    "decode": {
+                        "parallelism": {
+                            "preset": False,
+                            "replicas": {"choices": [1, 2]},
+                        }
+                    },
+                },
+            },
+            "optimization": {},
+        }
+    )
+
+    lowered = recommendation_to_sweeper(config)
+
+    assert lowered.search_space.parallel_custom_configs_by_mode["disagg"][
+        "prefill"
+    ] == [
+        {
+            "replicas": 1,
+            "tp": 1,
+            "pp": 1,
+            "attention_dp": 1,
+            "moe_tp": 1,
+            "moe_ep": 1,
+        }
+    ]
+    assert lowered.search_space.parallel_independent_by_mode["disagg"][
+        "decode_replicas"
+    ] == [
+        1,
+        2,
+    ]
+    assert not any(
+        name.startswith("prefill_")
+        for name in lowered.search_space.parallel_independent_by_mode["disagg"]
+    )
+
+
+def test_backend_specific_block_size_validation() -> None:
+    with pytest.raises(ValidationError, match="require block_size >= 2"):
+        CorePredictionConfig.model_validate(
+            {
+                "engine": {
+                    **_engine(),
+                    "backend": "vllm",
+                    "workers": {"aggregated": {"kv_cache": {"block_size": 1}}},
+                }
+            }
+        )
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "backend": "sglang",
+                "workers": {"aggregated": {"kv_cache": {"block_size": 1}}},
+            }
+        }
+    )
+    assert config.engine.workers.aggregated.kv_cache.block_size == 1
 
 
 def test_prediction_rejects_auto_hardware_and_kv_relative_load() -> None:

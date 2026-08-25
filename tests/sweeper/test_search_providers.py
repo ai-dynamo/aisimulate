@@ -13,6 +13,8 @@ from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfi
 from aisimulate.sweeper.provider import (
     AdapterReplaySpec,
     AdapterSearchPlan,
+    ConditionalSearchSpace,
+    InfeasibleCandidate,
     RuntimeHookSpec,
     SearchSpaceFragment,
 )
@@ -248,6 +250,90 @@ def _stub_branch(monkeypatch) -> None:
     )
 
 
+def test_conditional_adapter_fragment_is_validated_namespaced_and_merged() -> None:
+    parallel = ReplicaParallelConfig(
+        shape=ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1),
+        replicas=1,
+    )
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel,),
+        supported_backends={parallel: frozenset({"vllm"})},
+        knob_choices={"backend": ["vllm"]},
+    )
+    fragment = SearchSpaceFragment(
+        choices_by_branch={"agg": {"mode": ["round_robin", "kv_router"]}},
+        conditional_by_branch={
+            "agg": [
+                ConditionalSearchSpace(
+                    selector="mode",
+                    values=["kv_router"],
+                    choices={"load_model": ["none", "aic"]},
+                    float_ranges={"kv_weight": (0.01, 10.0)},
+                    log_float_ranges=["kv_weight"],
+                )
+            ]
+        },
+    )
+
+    search_module._validate_search_fragment(fragment)
+    merged = search_module._merge_adapter_spaces(
+        [branch],
+        {"test.feature": AdapterSearchPlan(fragment=fragment)},
+    )[0]
+
+    assert merged.knob_choices["adapter::test.feature::mode"] == [
+        "round_robin",
+        "kv_router",
+    ]
+    assert "adapter::test.feature::kv_weight" not in merged.float_ranges
+    assert merged.conditional_dimensions == (
+        search_module.ConditionalDimensionSpace(
+            selector="adapter::test.feature::mode",
+            values=("kv_router",),
+            knob_choices={"adapter::test.feature::load_model": ["none", "aic"]},
+            float_ranges={"adapter::test.feature::kv_weight": (0.01, 10.0)},
+            log_float_ranges=frozenset({"adapter::test.feature::kv_weight"}),
+        ),
+    )
+
+
+def test_search_space_fragment_preserves_legacy_positional_field_order() -> None:
+    fragment = SearchSpaceFragment(
+        {"agg": {"mode": ["one"]}},
+        {"agg": {"weight": (0.1, 1.0)}},
+        {"agg": ["weight"]},
+        {"agg": []},
+    )
+
+    assert fragment.choices_by_branch == {"agg": {"mode": ["one"]}}
+    assert fragment.float_ranges_by_branch == {"agg": {"weight": (0.1, 1.0)}}
+    assert fragment.api_version == 1
+    search_module._validate_search_fragment(fragment)
+
+
+def test_conditional_adapter_fragment_rejects_non_root_selector() -> None:
+    fragment = SearchSpaceFragment(
+        conditional_by_branch={
+            "agg": [
+                ConditionalSearchSpace(
+                    selector="mode",
+                    values=["kv_router"],
+                    float_ranges={"kv_weight": (0.01, 10.0)},
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(ValueError, match="is not a root categorical parameter"):
+        search_module._validate_search_fragment(fragment)
+
+
+def test_search_fragment_rejects_unknown_api_version() -> None:
+    with pytest.raises(ValueError, match="requires version 1"):
+        search_module._validate_search_fragment(SearchSpaceFragment(api_version=2))
+
+
 def test_adapter_accepts_search_space_and_materializes_spec_on_main(
     monkeypatch,
 ) -> None:
@@ -271,6 +357,45 @@ def test_adapter_accepts_search_space_and_materializes_spec_on_main(
     assert spec.adapters["test.feature"].config == {"mode": "fast"}
     assert spec.runtime_hooks[0].config == {"mode": "fast"}
     assert candidates[0].config["adapters"] == {"test.feature": {"mode": "fast"}}
+
+
+def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> None:
+    config = _config()
+    parallel = ReplicaParallelConfig(
+        shape=ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1),
+        replicas=1,
+    )
+
+    class InfeasibleAdapter(_Adapter):
+        def materialize_replay(self, plan, selection, context):
+            del plan, selection, context
+            raise InfeasibleCandidate("invalid correlated leaves")
+
+    monkeypatch.setattr(
+        search_module,
+        "resolve_backend_version",
+        lambda hardware, backend: "0.11.0",
+    )
+    prepared, result = search_module._materialize_one(
+        {
+            "deployment_mode": "agg",
+            "backend": "vllm",
+            "agg_max_num_batched_tokens": 8192,
+            "agg_max_num_seqs": 256,
+            "adapter::test.feature::mode": "fast",
+        },
+        parallel,
+        config=config,
+        goal=config.goal,
+        providers={"test.feature": InfeasibleAdapter()},
+        provider_plans={"test.feature": AdapterSearchPlan()},
+        runner_factory=_RunnerFactory(),
+    )
+
+    assert prepared is None
+    assert result is not None
+    assert result[2] == "infeasible"
+    assert "invalid correlated leaves" in result[3]
 
 
 def test_runner_hook_capability_is_checked_before_runner_creation(monkeypatch) -> None:

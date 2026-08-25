@@ -16,9 +16,7 @@ def _role_prefix(role: str) -> str:
     return "" if role == "agg" else f"{role}_"
 
 
-def _engine_args_payload(
-    sample: dict[str, Any], role: str, *, backend_version: str
-) -> dict[str, Any]:
+def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: str) -> dict[str, Any]:
     """Build the runner-neutral engine argument payload for one role."""
     prefix = _role_prefix(role)
     tp = int(sample[f"{prefix}tp"])
@@ -95,16 +93,12 @@ def _engine_args_payload(
                 else int(configured_bytes)
             )
         if sample.get("kv_transfer_bandwidth") is not None:
-            payload["kv_transfer_bandwidth"] = float(
-                sample["kv_transfer_bandwidth"]
-            )
+            payload["kv_transfer_bandwidth"] = float(sample["kv_transfer_bandwidth"])
         payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
 
 
-def build_backend_deployment(
-    sample: dict[str, Any], *, backend_version: str
-) -> BackendDeploymentSpec:
+def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
     common = {
@@ -142,19 +136,22 @@ def build_backend_deployment(
     }
     if mode == "agg":
         return BackendDeploymentSpec(
-            agg_engine_args=_engine_args_payload(
-                sample, "agg", backend_version=backend_version
-            ),
+            agg_engine_args=_engine_args_payload(sample, "agg", backend_version=backend_version),
             num_workers=int(sample["replicas"]),
             **common,
         )
+    prefill_args = _engine_args_payload(sample, "prefill", backend_version=backend_version)
+    decode_args = _engine_args_payload(sample, "decode", backend_version=backend_version)
+    if sample.get("kv_transfer_bytes_per_token") == "auto":
+        resolved = max(
+            int(prefill_args["kv_bytes_per_token"]),
+            int(decode_args["kv_bytes_per_token"]),
+        )
+        prefill_args["kv_bytes_per_token"] = resolved
+        decode_args["kv_bytes_per_token"] = resolved
     return BackendDeploymentSpec(
-        prefill_engine_args=_engine_args_payload(
-            sample, "prefill", backend_version=backend_version
-        ),
-        decode_engine_args=_engine_args_payload(
-            sample, "decode", backend_version=backend_version
-        ),
+        prefill_engine_args=prefill_args,
+        decode_engine_args=decode_args,
         num_prefill_workers=int(sample["prefill_replicas"]),
         num_decode_workers=int(sample["decode_replicas"]),
         **common,
