@@ -1,4 +1,4 @@
-name: FPM Support Matrix
+name: FPE Supermatrix
 
 on:
   workflow_dispatch:
@@ -53,18 +53,18 @@ jobs:
         run: |
           python -m pip install 'maturin>=1.12,<2'
           python -m pip install './python/aisimulate'
-      - name: Generate strict-native FPM coverage through the FPE SDK
+      - name: Generate strict-native op-level coverage through the FPE SDK
         run: |
           python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
             --system "${{ matrix.system }}" \
             --output-dir "fpe-support-matrix/${{ matrix.system }}" \
-            --forward-model fpm \
+            --forward-model op_level \
             --max-workers 8
       - name: Build this system's web CSV
         run: |
-          python python/aisimulate/tools/support_matrix/build_fpm_supermatrix.py \
+          python python/aisimulate/tools/support_matrix/build_fpe_supermatrix.py \
             "fpe-support-matrix/${{ matrix.system }}" \
-            --output-dir "fpm-support-matrix-web/${{ matrix.system }}"
+            --output-dir "fpe-support-matrix-web/${{ matrix.system }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fpe-support-matrix-${{ matrix.system }}
@@ -73,29 +73,29 @@ jobs:
           retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fpm-support-matrix-web-${{ matrix.system }}
-          path: fpm-support-matrix-web/${{ matrix.system }}/${{ matrix.system }}.csv
+          name: fpe-support-matrix-web-${{ matrix.system }}
+          path: fpe-support-matrix-web/${{ matrix.system }}/${{ matrix.system }}.csv
           if-no-files-found: error
 
   build-web-matrix:
-    name: Build FPM supermatrix CSVs
+    name: Build FPE supermatrix CSVs
     needs: generate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: fpm-support-matrix-web-*
-          path: python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix
+          pattern: fpe-support-matrix-web-*
+          path: python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
           merge-multiple: true
       - name: Add the deterministic system index
         run: |
           cp python/aisimulate/src/aiconfigurator_core/systems/support_matrix/index.json \
-            python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix/index.json
+            python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/index.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fpm-support-matrix-web
+          name: fpe-support-matrix-web
           path: |
             python/aisimulate/docs/support-matrix/index.html
-            python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix
+            python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
           if-no-files-found: error

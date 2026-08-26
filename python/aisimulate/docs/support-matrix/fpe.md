@@ -12,7 +12,7 @@ own evidence.
 ## Row identity
 
 Each row records the model and architecture, system, backend and version,
-forward model (`op_level` or `fpm`), resolved quantization, parallel topology,
+the `op_level` forward model, resolved quantization, parallel topology,
 role, probe phase, provenance, exact package version and source SHA, and a
 machine-readable SDK reproducer.
 
@@ -49,13 +49,13 @@ failures. Error text is diagnostic evidence, not a stable API.
 
 ## Run it
 
-Install the repository package, then generate one FPM-only shard per system:
+Install the repository package, then generate one op-level FPE shard per system:
 
 ```bash
 python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
   --output-dir fpe-support-matrix/b200_sxm \
   --system b200_sxm \
-  --forward-model fpm \
+  --forward-model op_level \
   --max-workers 8
 ```
 
@@ -63,9 +63,9 @@ After all system shards finish, build the split CSV files consumed by the
 interactive page:
 
 ```bash
-python python/aisimulate/tools/support_matrix/build_fpm_supermatrix.py \
+python python/aisimulate/tools/support_matrix/build_fpe_supermatrix.py \
   fpe-support-matrix \
-  --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix
+  --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
 ```
 
 Use filters and a deterministic topology cap for a focused smoke run:
@@ -96,6 +96,6 @@ but Python-backed model compilation and database memory still limit scaling.
 Increase `--max-workers` only with measured memory headroom.
 
 The scheduled workflow shards systems across the repository-specific CPU
-runner set, runs only `forward_model=fpm`, and publishes the raw artifacts plus
+runner set, runs only `forward_model=op_level`, and publishes the raw artifacts plus
 the split web CSV artifact. Refresh-time claims must name the worker count and
 source SHA from the measured run.

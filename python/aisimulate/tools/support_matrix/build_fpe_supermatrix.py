@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Roll strict-native FPM probe artifacts into the web support-matrix schema."""
+"""Roll strict-native op-level FPE probe artifacts into the web support-matrix schema."""
 
 from __future__ import annotations
 
@@ -48,10 +48,10 @@ WEB_FIELDNAMES = (
     "ErrMsg",
     "Command",
     "Source",
-    "FPMProbeCount",
-    "FPMTopologyCount",
-    "FPMStatusCounts",
-    "FPMPhaseLatencyMs",
+    "FPEProbeCount",
+    "FPETopologyCount",
+    "FPEStatusCounts",
+    "FPEPhaseLatencyMs",
     "SourceSHA",
 )
 TOPOLOGY_FIELDS = (
@@ -86,7 +86,7 @@ def _artifact_paths(inputs: Sequence[str | Path]) -> list[Path]:
 
 
 def load_artifacts(inputs: Sequence[str | Path]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Load compatible FPM-only shard artifacts and reject mixed source identities."""
+    """Load compatible op-level FPE shard artifacts and reject mixed source identities."""
     rows: list[dict[str, Any]] = []
     metadata: dict[str, Any] | None = None
     for path in _artifact_paths(inputs):
@@ -98,8 +98,8 @@ def load_artifacts(inputs: Sequence[str | Path]) -> tuple[list[dict[str, Any]], 
         elif identity != metadata:
             raise ValueError(f"artifact metadata does not match the first shard: {path}")
         for row in payload["results"]:
-            if row.get("forward_model") != "fpm":
-                raise ValueError(f"non-FPM result in {path}: {row.get('forward_model')!r}")
+            if row.get("forward_model") != "op_level":
+                raise ValueError(f"non-op-level result in {path}: {row.get('forward_model')!r}")
             rows.append(row)
     assert metadata is not None
     return rows, metadata
@@ -179,7 +179,7 @@ def _failure_summary(rows: Sequence[dict[str, Any]], *, metadata: dict[str, Any]
         }
     )
     summary = (
-        f"Strict-native FPM probes: {_status_counts(rows)}; "
+        f"Strict-native op-level FPE probes: {_status_counts(rows)}; "
         f"raw probes={len(rows)}; topologies={len(_by_topology(rows))}; "
         f"source_sha={metadata['source_sha']}"
     )
@@ -199,7 +199,7 @@ def _command(key: tuple[str, str, str, str, str]) -> str:
     args = ["python", "python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py"]
     for name, value in values.items():
         args.extend((f"--{name}", json.dumps(value)))
-    args.extend(("--forward-model", "fpm", "--max-workers", "8"))
+    args.extend(("--forward-model", "op_level", "--max-workers", "8"))
     return " ".join(args)
 
 
@@ -243,10 +243,10 @@ def build_web_rows(raw_rows: Sequence[dict[str, Any]], metadata: dict[str, Any])
                     "ErrMsg": "" if passes else _failure_summary(relevant, metadata=metadata),
                     "Command": _command(key),
                     "Source": source,
-                    "FPMProbeCount": str(len(relevant)),
-                    "FPMTopologyCount": str(len(_by_topology(relevant))),
-                    "FPMStatusCounts": _status_counts(relevant),
-                    "FPMPhaseLatencyMs": latency,
+                    "FPEProbeCount": str(len(relevant)),
+                    "FPETopologyCount": str(len(_by_topology(relevant))),
+                    "FPEStatusCounts": _status_counts(relevant),
+                    "FPEPhaseLatencyMs": latency,
                     "SourceSHA": str(metadata["source_sha"]),
                 }
             )
@@ -276,7 +276,7 @@ def write_web_matrix(rows: Sequence[dict[str, str]], output_dir: str | Path) -> 
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build split FPM CSVs for the existing support-matrix page")
+    parser = argparse.ArgumentParser(description="Build split FPE CSVs for the existing support-matrix page")
     parser.add_argument("inputs", nargs="+", help="Probe JSON files or directories containing shard artifacts")
     parser.add_argument("--output-dir", required=True, help="Destination for index.json and per-system CSVs")
     return parser

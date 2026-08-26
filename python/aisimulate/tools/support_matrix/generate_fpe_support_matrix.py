@@ -76,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--forward-model",
         action="append",
         choices=("op_level", "fpm"),
-        help="Estimator mode to probe; defaults to both op_level and fpm",
+        help="Estimator mode to probe; defaults to op_level for the FPE supermatrix",
     )
     parser.add_argument(
         "--max-topologies-per-role",
@@ -114,7 +114,7 @@ def main() -> None:
         systems=_optional_set(args.system),
         backends=_optional_set(args.backend),
         backend_versions=_optional_set(args.backend_version),
-        forward_models=tuple(args.forward_model or ("op_level", "fpm")),
+        forward_models=tuple(args.forward_model or ("op_level",)),
         max_topologies_per_role=args.max_topologies_per_role,
     )
     if not plans:

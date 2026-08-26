@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AISimulate — FPM Support Matrix</title>
+<title>AISimulate — FPE Supermatrix</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
@@ -52,9 +52,9 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 // ── Constants ───────────────────────────────────────────────────────
 const REPO = 'ai-dynamo/aisimulate';
 const SUPPORT_MATRIX_PATHS = [
-  'python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix',
+  'python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix',
 ];
-const LEGACY_CSV_PATH = 'python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix.csv';
+const LEGACY_CSV_PATH = 'python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix.csv';
 const STATUS_HW_INCOMPATIBLE = 'HW_INCOMPATIBLE';
 const STATUS_FRAMEWORK_INCOMPATIBLE = 'FRAMEWORK_INCOMPATIBLE';
 const PREFERRED_DEFAULT_SYSTEM = 'b200_sxm';
@@ -215,7 +215,7 @@ function supportMatrixCommand(model, system, backend, version, mode) {
     '--system', system,
     '--backend', backend,
     '--backend-version', version,
-    '--forward-model', 'fpm',
+    '--forward-model', 'op_level',
     '--max-workers', '8',
   ].map(shellQuote).join(' ');
 }
@@ -240,10 +240,10 @@ function rowDetails(row) {
     'Command:',
     rowCommand(row),
   ];
-  if (row.FPMProbeCount) lines.push('', `FPM probes: ${row.FPMProbeCount}`);
-  if (row.FPMTopologyCount) lines.push(`FPM topologies: ${row.FPMTopologyCount}`);
-  if (row.FPMStatusCounts) lines.push(`Native statuses: ${row.FPMStatusCounts}`);
-  if (row.FPMPhaseLatencyMs) lines.push(`Phase latency (ms): ${row.FPMPhaseLatencyMs}`);
+  if (row.FPEProbeCount) lines.push('', `FPE probes: ${row.FPEProbeCount}`);
+  if (row.FPETopologyCount) lines.push(`FPE topologies: ${row.FPETopologyCount}`);
+  if (row.FPEStatusCounts) lines.push(`Native statuses: ${row.FPEStatusCounts}`);
+  if (row.FPEPhaseLatencyMs) lines.push(`Phase latency (ms): ${row.FPEPhaseLatencyMs}`);
   if (row.SourceSHA) lines.push(`Source SHA: ${row.SourceSHA}`);
   if (errorMsg) lines.push('', 'Details:', errorMsg);
   return lines.join('\n');
@@ -791,7 +791,7 @@ function Header({ activeBranch, onSelectBranch, releaseBranches, branchesLoading
         <a href="https://github.com/ai-dynamo/aisimulate"><img src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" className="rounded-full" /></a>
         <div className="min-w-0 mr-auto">
           <h1 className="text-lg font-bold leading-tight"><a href="https://github.com/ai-dynamo/aisimulate">AISimulate</a>
-          <span className="text-sm text-slate-500 dark:text-slate-400"> - FPM Support Matrix</span></h1>
+          <span className="text-sm text-slate-500 dark:text-slate-400"> - FPE Supermatrix</span></h1>
         </div>
         <BranchSelector
           activeBranch={activeBranch}
@@ -1632,7 +1632,7 @@ function ErrorBanner({ message, onRetry }) {
 function Footer() {
   return (
     <div className="text-center py-6 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-200 dark:border-slate-700 mt-8">
-      AISimulate FPM Support Matrix &middot; Data from <code className="text-xs">fpm_support_matrix/*.csv</code>
+      AISimulate FPE Supermatrix &middot; Data from <code className="text-xs">fpe_support_matrix/*.csv</code>
     </div>
   );
 }

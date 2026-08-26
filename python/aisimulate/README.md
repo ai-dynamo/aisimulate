@@ -501,10 +501,10 @@ To go through the process, refer to the [guidance](collector/README.md) under th
 
 For a comprehensive, interactive view of which model/system/backend/version combinations are supported in both aggregated and disaggregated modes, visit the **[Support Matrix on GitHub Pages](https://ai-dynamo.github.io/aiconfigurator/support-matrix/)**. The page fetches the split support matrix CSV files directly from GitHub at load time and supports filtering by system, mode, model search, and switching between branches.
 
-AISimulate also has a separate [interactive FPM support matrix](docs/support-matrix/index.html) and
+AISimulate also has a separate [interactive FPE supermatrix](docs/support-matrix/index.html) and
 [strict-native probe documentation](docs/support-matrix/fpe.md). It keeps the existing support-matrix page contract
 and split per-system CSV layout, but refreshes coverage through the public Forward Pass Engine with
-`forward_model=fpm`. FPM/FPE coverage is not evidence that the CLI, Sweeper, scheduler, Replay, disaggregated rate
+`forward_model=op_level`. FPE coverage is not evidence that the CLI, Sweeper, scheduler, Replay, disaggregated rate
 matching, deployment configuration, or prediction accuracy is supported.
 
 The raw data is also available as [per-system CSV files](aic-core/src/aiconfigurator_core/systems/support_matrix).

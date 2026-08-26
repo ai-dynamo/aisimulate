@@ -336,7 +336,7 @@ def build_probe_plans(
     systems: set[str] | None = None,
     backends: set[str] | None = None,
     backend_versions: set[str] | None = None,
-    forward_models: Sequence[str] = ("op_level", "fpm"),
+    forward_models: Sequence[str] = ("op_level",),
     max_topologies_per_role: int | None = None,
     matrix: Any | None = None,
     create_task: Callable[..., Any] | None = None,
