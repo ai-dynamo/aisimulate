@@ -60,10 +60,21 @@ jobs:
             --output-dir "fpe-support-matrix/${{ matrix.system }}" \
             --forward-model fpm \
             --max-workers 8
+      - name: Build this system's web CSV
+        run: |
+          python python/aisimulate/tools/support_matrix/build_fpm_supermatrix.py \
+            "fpe-support-matrix/${{ matrix.system }}" \
+            --output-dir "fpm-support-matrix-web/${{ matrix.system }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fpe-support-matrix-${{ matrix.system }}
           path: fpe-support-matrix/${{ matrix.system }}
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fpm-support-matrix-web-${{ matrix.system }}
+          path: fpm-support-matrix-web/${{ matrix.system }}/${{ matrix.system }}.csv
           if-no-files-found: error
 
   build-web-matrix:
@@ -74,13 +85,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: fpe-support-matrix-*
-          path: fpe-support-matrix-shards
-      - name: Roll native probes into the existing support-matrix schema
+          pattern: fpm-support-matrix-web-*
+          path: python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix
+          merge-multiple: true
+      - name: Add the deterministic system index
         run: |
-          python python/aisimulate/tools/support_matrix/build_fpm_supermatrix.py \
-            fpe-support-matrix-shards \
-            --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix
+          cp python/aisimulate/src/aiconfigurator_core/systems/support_matrix/index.json \
+            python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix/index.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fpm-support-matrix-web
