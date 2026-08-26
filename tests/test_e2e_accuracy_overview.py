@@ -203,6 +203,12 @@ def test_summary_matches_existing_mape_and_shape_error_semantics() -> None:
     assert alpha["aisimulate"]["tpot_shape_error_pct"] == pytest.approx(0.0)
 
 
+def test_workload_labels_match_the_overview_dashboard() -> None:
+    assert OVERVIEW._workload_label("1024:1024") == "1k1k"
+    assert OVERVIEW._workload_label("1024:8192") == "1k8k"
+    assert OVERVIEW._workload_label("8192:1024") == "8k1k"
+
+
 def test_public_summary_omits_raw_measurements_and_internal_provenance() -> None:
     serialized = str(_summary())
 
