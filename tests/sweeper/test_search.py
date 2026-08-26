@@ -144,16 +144,18 @@ def _branch(parallel_config):
 
 def _forward_pass_estimator_spec(backend="trtllm", version="1.3.0rc10"):
     return ForwardPassEstimatorSpec(
-        model_path="deepseek-ai/DeepSeek-V3",
-        model_architecture="DeepseekV3ForCausalLM",
-        system="gb200",
-        backend=backend,
-        backend_version=version,
-        database_mode="SILICON",
-        transfer_policy=("xshape", "xquant", "xprofile", "xop"),
-        forward_model="op_level",
-        systems_paths=("/systems",),
-        performance_data_root="/systems",
+        config={
+            "model": "deepseek-ai/DeepSeek-V3",
+            "system": "gb200",
+            "backend": backend,
+            "backend_version": version,
+            "database_mode": "SILICON",
+            "transfer_policy": ["xshape", "xquant", "xprofile", "xop"],
+            "forward_model": "op_level",
+            "systems_paths": ["/systems"],
+            "fallback_policy": "error",
+        },
+        diagnostics={"provenance": {"selected_systems_root": "/systems"}},
     )
 
 
@@ -196,8 +198,8 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
         candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates
     )
     assert all(
-        candidate.config["forward_pass_estimator"]["model_architecture"]
-        == "DeepseekV3ForCausalLM"
+        candidate.config["forward_pass_estimator"]["config"]["model"]
+        == "deepseek-ai/DeepSeek-V3"
         for candidate in candidates
     )
     assert candidates[0].metrics["gpu_hours"] == 1.0

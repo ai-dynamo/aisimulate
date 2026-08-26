@@ -33,11 +33,13 @@ pub use replay::{ReplayReport, ReplaySpec, Replayer};
 pub use perfmodel::EngineConfig;
 pub use perfmodel::{
     AicError, BackendKind, DataType, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION,
-    EstimateSource, FPM_VERSION, ForwardPassMetrics, ForwardPassPerfDiagnostics,
-    ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassPerfReadiness, ForwardPassPerfSource,
-    KvCacheEstimate, KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions,
-    KvCacheEstimateRequest, KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping,
-    QuantizationConfig, QueuedRequestMetrics, ScheduledRequestMetrics, SpeculativeConfig,
+    EstimateSource, FPM_VERSION, ForwardPassFallbackPolicy, ForwardPassMetrics,
+    ForwardPassModelKind, ForwardPassPerfDiagnostics, ForwardPassPerfModel,
+    ForwardPassPerfModelConfig, ForwardPassPerfOptions, ForwardPassPerfProvenance,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, KvCacheEstimate, KvCacheEstimateAdjusted,
+    KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction,
+    MemoryBreakdown, ParallelMapping, QuantizationConfig, QueuedRequestMetrics,
+    ScheduledRequestMetrics, SpeculativeConfig,
 };
 
 #[cfg(feature = "python")]

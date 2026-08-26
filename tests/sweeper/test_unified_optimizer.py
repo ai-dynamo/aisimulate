@@ -150,16 +150,17 @@ def _branches():
 def _forward_pass_estimator_specs(search_space):
     return {
         backend: ForwardPassEstimatorSpec(
-            model_path=search_space.model_name,
-            model_architecture="TestForCausalLM",
-            system=search_space.hardware_sku,
-            backend=backend,
-            backend_version="test",
-            database_mode="SILICON",
-            transfer_policy=("xshape", "xquant", "xprofile", "xop"),
-            forward_model="op_level",
-            systems_paths=("/systems",),
-            performance_data_root="/systems",
+            config={
+                "model": search_space.model_name,
+                "system": search_space.hardware_sku,
+                "backend": backend,
+                "backend_version": "test",
+                "database_mode": "SILICON",
+                "transfer_policy": ["xshape", "xquant", "xprofile", "xop"],
+                "forward_model": "op_level",
+                "systems_paths": ["/systems"],
+            },
+            diagnostics={"provenance": {"selected_systems_root": "/systems"}},
         )
         for backend in search_space.backend
     }

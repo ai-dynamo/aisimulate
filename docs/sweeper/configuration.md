@@ -26,6 +26,9 @@ search_space:
   database_mode: HYBRID
   transfer_policy: balanced
   forward_model: op_level
+  forward_pass_fallback_policy: error
+  forward_pass_options:
+    min_observations: 5
   systems_paths: [default]
 
 adapters:
@@ -70,6 +73,8 @@ configuration for each candidate.
 | `database_mode` | `SILICON` | forward-pass estimator data-source policy; see below |
 | `transfer_policy` | `None` (all) | Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
 | `forward_model` | `op_level` | granular `op_level` or exact-data `fpm` forward estimation |
+| `forward_pass_fallback_policy` | `error` | fail closed, or explicitly use observation-gated `regression` when native construction is unsupported |
+| `forward_pass_options` | `None` (Core defaults) | runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
 | `systems_paths` | `[default]` | ordered request-scoped system/data roots; `default` is the packaged Core root |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
@@ -81,11 +86,12 @@ configuration for each candidate.
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
 
-Estimator controls resolve before branch enumeration. `latest` becomes one concrete
+Estimator controls resolve through Core before branch enumeration. `latest` becomes one concrete
 backend/performance-data version per run, custom system paths remain request-scoped, and every
-`ReplaySpec` plus returned candidate records the same model architecture, system, backend/version,
-data root/mode, normalized transfer policy, and forward model. Unavailable versions and incomplete
-FPM data pairs fail before a sampler study is created.
+`ReplaySpec` plus returned candidate records the same resolved config, options, and provenance.
+Unavailable identities fail before a sampler study is created. Regression is never an implicit
+degradation: it must be requested with `forward_pass_fallback_policy: regression`, and it remains
+unready until `tune_with_fpms` supplies enough observations for the workload kind.
 
 Database modes choose the source of each operation estimate:
 

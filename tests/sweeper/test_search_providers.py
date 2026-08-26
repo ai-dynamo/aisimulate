@@ -249,16 +249,17 @@ def _stub_branch(monkeypatch) -> None:
         lambda config, *, max_seq_len=None, runner_capabilities=None, forward_pass_estimator_specs=None: [branch],
     )
     forward_pass_estimator = ForwardPassEstimatorSpec(
-        model_path="model",
-        model_architecture="TestForCausalLM",
-        system="h200_sxm",
-        backend="vllm",
-        backend_version="0.11.0",
-        database_mode="SILICON",
-        transfer_policy=("xshape", "xquant", "xprofile", "xop"),
-        forward_model="op_level",
-        systems_paths=("/systems",),
-        performance_data_root="/systems",
+        config={
+            "model": "model",
+            "system": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "0.11.0",
+            "database_mode": "SILICON",
+            "transfer_policy": ["xshape", "xquant", "xprofile", "xop"],
+            "forward_model": "op_level",
+            "systems_paths": ["/systems"],
+        },
+        diagnostics={"provenance": {"selected_systems_root": "/systems"}},
     )
     monkeypatch.setattr(
         search_module,
@@ -404,16 +405,17 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
         runner_factory=_RunnerFactory(),
         forward_pass_estimator_specs={
             "vllm": ForwardPassEstimatorSpec(
-                model_path="model",
-                model_architecture="TestForCausalLM",
-                system="h200_sxm",
-                backend="vllm",
-                backend_version="0.11.0",
-                database_mode="SILICON",
-                transfer_policy=("xshape", "xquant", "xprofile", "xop"),
-                forward_model="op_level",
-                systems_paths=("/systems",),
-                performance_data_root="/systems",
+                config={
+                    "model": "model",
+                    "system": "h200_sxm",
+                    "backend": "vllm",
+                    "backend_version": "0.11.0",
+                    "database_mode": "SILICON",
+                    "transfer_policy": ["xshape", "xquant", "xprofile", "xop"],
+                    "forward_model": "op_level",
+                    "systems_paths": ["/systems"],
+                },
+                diagnostics={"provenance": {"selected_systems_root": "/systems"}},
             )
         },
     )

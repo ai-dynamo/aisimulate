@@ -8,17 +8,17 @@
 //! through [`crate::perfmodel::engine::Engine::forward_pass_time_ms`]. The online
 //! correction / regression / diagnostics / readiness logic is engine-agnostic.
 
-#[cfg(feature = "python")]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "python")]
-use crate::perfmodel::EngineConfig;
 use crate::perfmodel::engine::Engine;
 use crate::{AicError, ForwardPassMetrics};
 
+#[cfg(feature = "python")]
+use super::config::ForwardPassFallbackPolicy;
+use super::config::ForwardPassPerfModelConfig;
 use super::correction::CorrectionBuckets;
 use super::metrics::validate_forward_pass_metrics;
 use super::options::{ForwardPassPerfOptions, validate_options};
@@ -41,6 +41,17 @@ pub struct ForwardPassPerfDiagnostics {
     pub correction_ready_buckets: usize,
     /// Fallback reason when `best_available` had to use regression instead of native AIC.
     pub last_warning: Option<String>,
+    /// Exact immutable configuration and selected systems root used at construction.
+    pub provenance: Option<ForwardPassPerfProvenance>,
+}
+
+/// Resolved construction provenance pinned by Replay, Sweeper, and Planner.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ForwardPassPerfProvenance {
+    /// Canonical config with the exact backend version and explicit transfer policy.
+    pub config: ForwardPassPerfModelConfig,
+    /// Root that supplied the native engine, or `None` for regression fallback.
+    pub selected_systems_root: Option<PathBuf>,
 }
 
 /// Prediction backend currently used by `ForwardPassPerfModel`.
@@ -109,6 +120,7 @@ pub struct ForwardPassPerfModel {
     mode: ForwardPassPerfMode,
     options: ForwardPassPerfOptions,
     last_warning: Option<String>,
+    provenance: Option<ForwardPassPerfProvenance>,
 }
 
 #[derive(Clone, Debug)]
@@ -126,48 +138,10 @@ enum ForwardPassPerfMode {
 }
 
 impl ForwardPassPerfModel {
-    /// API:
-    /// `ForwardPassPerfModel::from_native(config, options) -> Result<Self, AicError>`
-    ///
-    /// Description: create a strict native AIC forward-pass model.
-    ///
-    /// Compiles `config` into an [`Engine`] by crossing into Python once
-    /// (mirroring [`crate::AicEngineBuilder`]): `compile_engine` walks the model
-    /// and returns bincoded spec bytes, then [`Engine::from_spec_bytes`] loads
-    /// the matching perf database. This constructor fails if `config` cannot be
-    /// compiled. Use `best_available` when unsupported native configs should
-    /// fall back to the learned regression model.
-    #[cfg(feature = "python")]
-    pub fn from_native(
-        config: EngineConfig,
-        options: ForwardPassPerfOptions,
-    ) -> Result<Self, AicError> {
-        validate_options(&options)?;
-        let engine = build_engine_via_python(&config, None)?;
-        Ok(Self::from_engine(Arc::new(engine), options))
-    }
-
-    /// API:
-    /// `ForwardPassPerfModel::from_native_with_roots(config, options, systems_root) -> Result<Self, AicError>`
-    ///
-    /// Description: create a strict native AIC forward-pass model with an
-    /// explicit `systems/` data root (forwarded to `compile_engine` and used to
-    /// load the perf database). Same tuning and failure behavior as
-    /// `from_native`.
-    #[cfg(feature = "python")]
-    pub fn from_native_with_roots(
-        config: EngineConfig,
-        options: ForwardPassPerfOptions,
-        systems_root: impl AsRef<Path>,
-    ) -> Result<Self, AicError> {
-        validate_options(&options)?;
-        let engine = build_engine_via_python(&config, Some(systems_root.as_ref()))?;
-        Ok(Self::from_engine(Arc::new(engine), options))
-    }
-
     /// Internal: build a native model directly from an already-compiled
-    /// [`Engine`]. Holds the actual native-mode logic; the public `from_native`
-    /// constructors compile the `Engine` (crossing into Python) and call this.
+    /// [`Engine`]. Holds the actual native-mode logic; the public
+    /// [`Self::best_available`] constructor compiles the `Engine` (crossing
+    /// into Python) and calls this.
     /// Used by the `#[cfg(test)]` suite to construct a native model from a
     /// hand-built fixture `Engine` without Python.
     pub(crate) fn from_engine(engine: Arc<Engine>, options: ForwardPassPerfOptions) -> Self {
@@ -178,6 +152,7 @@ impl ForwardPassPerfModel {
             },
             options,
             last_warning: None,
+            provenance: None,
         }
     }
 
@@ -190,7 +165,7 @@ impl ForwardPassPerfModel {
     /// `estimate_forward_pass_time_ms` for non-empty iterations until the
     /// inferred workload kind has at least `options.min_observations` tuning samples.
     /// Correction factor getters always return `None` in this mode.
-    pub fn from_regression(options: ForwardPassPerfOptions) -> Result<Self, AicError> {
+    pub(crate) fn from_regression(options: ForwardPassPerfOptions) -> Result<Self, AicError> {
         validate_options(&options)?;
         Ok(Self {
             mode: ForwardPassPerfMode::Regression {
@@ -198,54 +173,69 @@ impl ForwardPassPerfModel {
             },
             options,
             last_warning: None,
+            provenance: None,
         })
     }
 
     /// API:
     /// `ForwardPassPerfModel::best_available(config, options) -> Result<Self, AicError>`
     ///
-    /// Description: create a native model when possible, otherwise fall back to
-    /// regression.
+    /// Description: create a native model when possible. Regression fallback
+    /// occurs only when `config.fallback_policy` explicitly requests it.
     ///
     /// Fallback reason is preserved in `diagnostics().last_warning`. The
     /// resulting model still uses the same FPM workload-kind inference and
-    /// tuning input contract as `from_native` and `from_regression`.
+    /// tuning input contract as native mode.
     #[cfg(feature = "python")]
     pub fn best_available(
-        config: EngineConfig,
-        options: ForwardPassPerfOptions,
+        config: ForwardPassPerfModelConfig,
+        options: Option<ForwardPassPerfOptions>,
     ) -> Result<Self, AicError> {
-        match Self::from_native(config, options.clone()) {
-            Ok(model) => Ok(model),
-            Err(err) if can_fallback_to_regression(&err) => {
-                Self::regression_with_warning(options, err)
-            }
-            Err(err) => Err(err),
-        }
-    }
+        config.validate()?;
+        let options = options.unwrap_or_default();
+        validate_options(&options)?;
 
-    /// API:
-    /// `ForwardPassPerfModel::best_available_with_roots(config, options, systems_root) -> Result<Self, AicError>`
-    ///
-    /// Description: create a `best_available` model with an explicit `systems/`
-    /// data root.
-    #[cfg(feature = "python")]
-    pub fn best_available_with_roots(
-        config: EngineConfig,
-        options: ForwardPassPerfOptions,
-        systems_root: impl AsRef<Path>,
-    ) -> Result<Self, AicError> {
-        match Self::from_native_with_roots(config, options.clone(), systems_root) {
-            Ok(model) => Ok(model),
-            Err(err) if can_fallback_to_regression(&err) => {
-                Self::regression_with_warning(options, err)
+        let roots = resolve_systems_roots(&config)?;
+        let mut failures = Vec::new();
+        for systems_root in roots {
+            match build_engine_via_python(&config, &systems_root) {
+                Ok(engine) => match engine.validate_forward_pass_readiness() {
+                    Ok(()) => {
+                        let mut resolved_config = config.clone();
+                        resolved_config.backend_version = Some(engine.database().version.clone());
+                        resolved_config.database_mode = engine.database().database_mode;
+                        resolved_config.transfer_policy =
+                            Some(transfer_policy_tokens(engine.database().transfer_policy));
+                        let provenance = ForwardPassPerfProvenance {
+                            config: resolved_config,
+                            selected_systems_root: Some(systems_root),
+                        };
+                        let mut model = Self::from_engine(Arc::new(engine), options);
+                        model.provenance = Some(provenance);
+                        return Ok(model);
+                    }
+                    Err(err) if can_fallback_to_regression(&err) => failures.push(err),
+                    Err(err) => return Err(err),
+                },
+                Err(err) if can_fallback_to_regression(&err) => failures.push(err),
+                Err(err) => return Err(err),
             }
-            Err(err) => Err(err),
+        }
+
+        let err = failures.pop().unwrap_or_else(|| {
+            AicError::DataRoot("no systems root was available for forward-pass construction".into())
+        });
+        match config.fallback_policy {
+            ForwardPassFallbackPolicy::Regression => {
+                Self::regression_with_warning(config, options, err)
+            }
+            ForwardPassFallbackPolicy::Error => Err(err),
         }
     }
 
     #[cfg(feature = "python")]
     fn regression_with_warning(
+        config: ForwardPassPerfModelConfig,
         options: ForwardPassPerfOptions,
         err: AicError,
     ) -> Result<Self, AicError> {
@@ -253,6 +243,10 @@ impl ForwardPassPerfModel {
         model.last_warning = Some(format!(
             "native forward-pass estimator unavailable; using fallback regression: {err}"
         ));
+        model.provenance = Some(ForwardPassPerfProvenance {
+            config,
+            selected_systems_root: None,
+        });
         Ok(model)
     }
 
@@ -378,6 +372,7 @@ impl ForwardPassPerfModel {
                     retained_observations: corrections.observation_count(),
                     correction_ready_buckets: ready_buckets,
                     last_warning: self.last_warning.clone(),
+                    provenance: self.provenance.clone(),
                 }
             }
             ForwardPassPerfMode::Regression { regressions } => {
@@ -394,6 +389,7 @@ impl ForwardPassPerfModel {
                     retained_observations: regressions.observation_count(),
                     correction_ready_buckets: 0,
                     last_warning: self.last_warning.clone(),
+                    provenance: self.provenance.clone(),
                 }
             }
         }
@@ -452,6 +448,11 @@ impl ForwardPassPerfModel {
         &self.options
     }
 
+    /// Exact immutable construction identity and selected systems root.
+    pub fn provenance(&self) -> Option<&ForwardPassPerfProvenance> {
+        self.provenance.as_ref()
+    }
+
     fn correction_factors(&self) -> Vec<f64> {
         match &self.mode {
             ForwardPassPerfMode::Native { corrections, .. } => corrections.correction_factors(),
@@ -460,37 +461,43 @@ impl ForwardPassPerfModel {
     }
 }
 
-/// Build a compiled [`Engine`] from an [`EngineConfig`] by crossing into Python
-/// once to run `aiconfigurator.sdk.engine.compile_engine`, then loading the
-/// matching perf database via [`Engine::from_spec_bytes`]. This is the internal
-/// `EngineConfig` counterpart to [`crate::AicEngineBuilder`] and maps its
-/// modular fields onto the flat `compile_engine` kwargs.
-///
-/// `systems_root` overrides the bundled `systems/` dir for BOTH the
-/// `compile_engine` call (`systems_path` kwarg) and the Rust-side perf-DB load.
 #[cfg(feature = "python")]
 fn build_engine_via_python(
-    config: &EngineConfig,
-    systems_root: Option<&Path>,
+    config: &ForwardPassPerfModelConfig,
+    systems_root: &std::path::Path,
 ) -> Result<Engine, AicError> {
-    // `compile_engine`'s `systems_path` kwarg: explicit override -> config's
-    // own `systems_path` -> None (Python resolves it).
-    let systems_path: Option<PathBuf> = systems_root
-        .map(PathBuf::from)
-        .or_else(|| config.systems_path.clone());
-    // A non-UTF-8 override path cannot be passed through the Python kwarg; fail
-    // loudly rather than silently dropping the override.
-    let systems_path_str = match systems_path.as_ref() {
-        Some(p) => Some(p.to_str().ok_or_else(|| {
-            AicError::InvalidEngineConfig(format!(
-                "systems_path is not valid UTF-8: {}",
-                p.display()
-            ))
-        })?),
-        None => None,
-    };
+    let systems_path = systems_root.to_str().ok_or_else(|| {
+        AicError::InvalidEngineConfig(format!(
+            "systems_path is not valid UTF-8: {}",
+            systems_root.display()
+        ))
+    })?;
+    crate::py::compile_forward_pass_model_to_engine(config, systems_path)
+}
 
-    crate::py::compile_engine_to_engine(config, systems_path_str)
+#[cfg(feature = "python")]
+fn resolve_systems_roots(config: &ForwardPassPerfModelConfig) -> Result<Vec<PathBuf>, AicError> {
+    if !config.systems_paths.is_empty() {
+        return Ok(config.systems_paths.clone());
+    }
+    crate::py::resolve_systems_root(None)
+        .map(|root| vec![root])
+        .map_err(|err| AicError::DataRoot(format!("resolve systems path: {err}")))
+}
+
+#[cfg(feature = "python")]
+fn transfer_policy_tokens(policy: crate::common::enums::TransferPolicy) -> Vec<String> {
+    use crate::common::enums::TransferKind;
+    [
+        (TransferKind::XShape, "xshape"),
+        (TransferKind::XQuant, "xquant"),
+        (TransferKind::XProfile, "xprofile"),
+        (TransferKind::XOp, "xop"),
+    ]
+    .into_iter()
+    .filter(|(kind, _)| policy.contains(*kind))
+    .map(|(_, token)| token.to_string())
+    .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

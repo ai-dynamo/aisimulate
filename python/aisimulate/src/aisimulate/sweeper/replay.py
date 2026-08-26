@@ -21,23 +21,55 @@ REPLAY_SPEC_API_VERSION = 1
 
 @dataclass(frozen=True)
 class ForwardPassEstimatorSpec:
-    """Resolved, request-scoped forward-pass estimator and performance-data identity.
+    """Resolved output of Core's canonical forward-pass constructor.
 
-    This contract is deliberately concrete: a runner never resolves ``latest``
-    independently, consults process-global system paths, or guesses an empirical
-    transfer policy after the search has begun.
+    The config is the sole estimator identity carried by Sweeper and Replay.
+    Convenience properties below are projections, never independently authored
+    values. Diagnostics preserve Core's selection result for artifacts.
     """
 
-    model_path: str
-    model_architecture: str
-    system: str
-    backend: str
-    backend_version: str
-    database_mode: str
-    transfer_policy: tuple[str, ...]
-    forward_model: str
-    systems_paths: tuple[str, ...]
-    performance_data_root: str
+    config: dict[str, JSONValue]
+    options: dict[str, JSONValue] | None = None
+    diagnostics: dict[str, JSONValue] = field(default_factory=dict)
+
+    @property
+    def model_path(self) -> str:
+        return str(self.config["model"])
+
+    @property
+    def system(self) -> str:
+        return str(self.config["system"])
+
+    @property
+    def backend(self) -> str:
+        return str(self.config["backend"])
+
+    @property
+    def backend_version(self) -> str:
+        return str(self.config["backend_version"])
+
+    @property
+    def database_mode(self) -> str:
+        return str(self.config["database_mode"])
+
+    @property
+    def transfer_policy(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.config.get("transfer_policy") or ())
+
+    @property
+    def forward_model(self) -> str:
+        return str(self.config["forward_model"])
+
+    @property
+    def systems_paths(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.config.get("systems_paths") or ())
+
+    @property
+    def performance_data_root(self) -> str:
+        provenance = self.diagnostics.get("provenance")
+        if isinstance(provenance, dict):
+            return str(provenance.get("selected_systems_root") or "")
+        return ""
 
 
 @dataclass(frozen=True)

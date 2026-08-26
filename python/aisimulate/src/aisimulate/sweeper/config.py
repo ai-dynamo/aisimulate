@@ -79,6 +79,13 @@ class ForwardModel(str, Enum):
     FPM = "fpm"
 
 
+class ForwardPassFallbackPolicy(str, Enum):
+    """Behavior when Core cannot construct the requested native estimator."""
+
+    ERROR = "error"
+    REGRESSION = "regression"
+
+
 class SLATarget(BaseModel):
     """Latency bounds in milliseconds.
 
@@ -426,6 +433,8 @@ class SearchSpace(BaseModel):
     # a canonical explicit policy before search. None means Core's default (all).
     transfer_policy: str | list[str] | None = None
     forward_model: ForwardModel = ForwardModel.OP_LEVEL
+    forward_pass_fallback_policy: ForwardPassFallbackPolicy = ForwardPassFallbackPolicy.ERROR
+    forward_pass_options: dict[str, Any] | None = None
     # Request-scoped system-definition/data roots. ``default`` expands to the
     # packaged AISimulate Core systems directory without mutating process globals.
     systems_paths: list[str] = Field(default_factory=lambda: ["default"])

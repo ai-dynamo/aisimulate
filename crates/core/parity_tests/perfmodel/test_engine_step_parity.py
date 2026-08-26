@@ -2455,7 +2455,7 @@ class TestRustEngineStepFpmParity:
         assert abs(rs - frozen) <= allowed, f"{point}: frozen={frozen} rs={rs} delta={abs(rs - frozen)}"
 
     def test_fpm_arena_selects_the_fpm_engine(self, fpm_systems_root, monkeypatch):
-        # Review finding (#1461): from_native() dropped forward_model, so the
+        # Review finding (#1461): the former constructor dropped forward_model, so the
         # FPM arena always compiled the op_level engine. A decode-only
         # estimate hitting the fpm_forward table's exact row proves the
         # whole-model engine was selected through the supported predictor API.
@@ -2463,26 +2463,25 @@ class TestRustEngineStepFpmParity:
         from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
         config = {
-            "schema_version": 1,
-            "model_name": _FPM_MODEL,
-            "system_name": "b200_sxm",
+            "model": _FPM_MODEL,
+            "system": "b200_sxm",
             "backend": "vllm",
             "backend_version": _FPM_VERSION,
-            "systems_path": str(fpm_systems_root),
-            "tp_size": 2,
-            "pp_size": 1,
-            "attention_dp_size": 1,
+            "systems_paths": [str(fpm_systems_root)],
+            "tp": 2,
+            "pp": 1,
+            "attention_dp": 1,
             "moe_tp_size": 1,
             "moe_ep_size": 2,
-            "weight_dtype": "fp8_block",
-            "moe_dtype": "fp8_block",
-            "activation_dtype": "bfloat16",
-            "kv_cache_dtype": "fp8",
+            "gemm_quant_mode": "fp8_block",
+            "moe_quant_mode": "fp8_block",
+            "fmha_quant_mode": "bfloat16",
+            "kvcache_quant_mode": "fp8",
             "kv_block_size": None,
-            "nextn": None,
             "forward_model": "fpm",
+            "fallback_policy": "error",
         }
-        model = RustForwardPassPerfModel.from_native(config)
+        model = RustForwardPassPerfModel.best_available(config)
         decode_only = [
             {
                 "version": 1,

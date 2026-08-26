@@ -360,6 +360,13 @@ fn options_default_directional_correction_factors() {
 }
 
 #[test]
+fn options_reject_unknown_fields() {
+    let err =
+        serde_json::from_str::<ForwardPassPerfOptions>(r#"{"min_observation": 5}"#).unwrap_err();
+    assert!(err.to_string().contains("unknown field"), "{err}");
+}
+
+#[test]
 fn options_validate_directional_correction_factors() {
     let model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
         min_faster_correction_factor: Some(0.5),

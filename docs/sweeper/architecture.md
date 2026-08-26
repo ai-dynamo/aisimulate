@@ -43,11 +43,17 @@ Provider code runs in the main process. Worker tasks receive only a serializable
 do not import or pickle provider objects. Each worker creates one runner and reuses it for candidate
 replays.
 
-The `ReplaySpec.backend_deployment.forward_pass_estimator` contract pins the model path and architecture,
-system, backend and performance-data version, database mode, normalized empirical-transfer policy,
-forward model, and resolved system roots. Resolution is request-scoped and happens once before
-search, so worker processes never consult mutable global system paths or choose a newer data version
-independently.
+AIConfigurator Core owns the typed `ForwardPassPerfModelConfig` (immutable identity and selection
+policy), `ForwardPassPerfOptions` (tuning behavior), and the sole production constructor,
+`ForwardPassPerfModel::best_available`. Sweeper parses YAML into those types and calls the Core
+constructor before branch enumeration; it does not load databases or select versions itself.
+
+`ReplaySpec.backend_deployment.forward_pass_estimator` stores Core's resolved config, options, and
+diagnostics/provenance. Candidate topology is the only per-role derivation. The resulting exact
+role config is used both as Replay's AIC timing-provider config and as performance-model metadata,
+so worker processes never consult mutable global system paths or choose a newer data version
+independently. Planner and other consumers use the same public Core facade instead of defining a
+parallel constructor schema.
 
 ## Provider Preparation
 

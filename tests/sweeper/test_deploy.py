@@ -179,18 +179,31 @@ def test_optional_backend_runtime_values_are_forwarded():
     assert engine["aic_nextn"] == 2
 
 
-def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_into_engine_args():
+def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_into_engine_args(monkeypatch):
+    monkeypatch.setattr(
+        deploy_module,
+        "materialize_aic_num_gpu_blocks",
+        lambda payload: {**payload, "num_gpu_blocks": 321},
+    )
     forward_pass_estimator = ForwardPassEstimatorSpec(
-        model_path="example/model",
-        model_architecture="ExampleForCausalLM",
-        system="example_sku",
-        backend="trtllm",
-        backend_version=BACKEND_VERSION,
-        database_mode="HYBRID",
-        transfer_policy=("xshape", "xquant"),
-        forward_model="fpm",
-        systems_paths=("/custom/systems",),
-        performance_data_root="/custom/systems",
+        config={
+            "model": "example/model",
+            "system": "example_sku",
+            "backend": "trtllm",
+            "backend_version": BACKEND_VERSION,
+            "tp": 1,
+            "pp": 1,
+            "attention_dp": 1,
+            "database_mode": "HYBRID",
+            "transfer_policy": ["xshape", "xquant"],
+            "forward_model": "fpm",
+            "systems_paths": ["/custom/systems"],
+            "fallback_policy": "error",
+        },
+        diagnostics={
+            "source": "aic",
+            "provenance": {"selected_systems_root": "/custom/systems"},
+        },
     )
     sample = unroll_sample(
         search_space=_space(),
@@ -214,22 +227,27 @@ def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_i
         "aic_systems_paths",
         "aic_engine_step_backend",
     }.isdisjoint(engine)
-    assert deployment.performance_model_metadata["aggregated"]["config"] == {
+    expected_config = {
+        "model": "example/model",
+        "system": "example_sku",
         "backend": "trtllm",
         "backend_version": BACKEND_VERSION,
-        "system": "example_sku",
-        "model_path": "example/model",
-        "tp_size": 4,
-        "attention_dp_size": 1,
+        "tp": 4,
+        "pp": 1,
+        "attention_dp": 1,
         "moe_tp_size": 1,
         "moe_ep_size": 4,
-        "nextn": None,
+        "nextn": 0,
+        "kv_block_size": 64,
         "database_mode": "HYBRID",
         "transfer_policy": ["xshape", "xquant"],
         "forward_model": "fpm",
         "systems_paths": ["/custom/systems"],
-        "performance_data_root": "/custom/systems",
+        "fallback_policy": "error",
     }
+    assert deployment.performance_model_metadata["aggregated"]["config"] == expected_config
+    assert engine["timing_model"]["config"] == expected_config
+    assert deployment.performance_model_metadata["aggregated"]["selection"]["source"] == "aic"
 
 
 def test_backend_deployment_contains_no_dynamo_policy_fields():

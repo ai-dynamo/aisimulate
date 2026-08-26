@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import os
 from importlib import resources
-from pathlib import Path
+from typing import Any
 
-from aiconfigurator_core.sdk import common, perf_database
-from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
+from aiconfigurator_core.sdk import (
+    ForwardPassPerfModelConfig,
+    ForwardPassPerfOptions,
+    RustForwardPassPerfModel,
+)
 
-from .config import ForwardModel, SearchSpace
+from .config import SearchSpace
 from .replay import ForwardPassEstimatorSpec
 
 
@@ -34,137 +37,66 @@ def resolve_systems_paths(configured: list[str]) -> tuple[str, ...]:
     return tuple(resolved)
 
 
-def _require_fpm_data(
-    *,
-    systems_root: str,
-    system_spec: dict,
-    system: str,
-    backend: str,
-    version: str,
-) -> None:
-    data_dir = system_spec.get("data_dir")
-    if not data_dir:
-        raise ForwardPassEstimatorResolutionError(f"system {system!r} has no data_dir in its system definition")
-    data_root = Path(systems_root, str(data_dir))
-    version_dirs = list(data_root.glob(f"**/{backend}/{version}"))
-    complete = [
-        path
-        for path in version_dirs
-        if (path / "fpm_forward_perf.parquet").is_file() and (path / "fpm_forward_perf.metadata.json").is_file()
-    ]
-    if not complete:
-        raise ForwardPassEstimatorResolutionError(
-            "forward_model='fpm' requires fpm_forward_perf.parquet and its "
-            f"metadata sidecar for model/system/backend/version; no FPM data found "
-            f"under {data_root} for {system}/{backend}/{version}"
-        )
-
-
 def resolve_forward_pass_estimator_specs(search_space: SearchSpace) -> dict[str, ForwardPassEstimatorSpec]:
-    """Resolve every searched backend to one immutable forward-pass estimator contract.
+    """Ask Core to resolve each searched backend before branch enumeration.
 
-    Resolution happens once before branch enumeration. A bad model, system path,
-    backend version, database mode, or FPM data identity therefore fails before
-    the sampler creates a study or spends a trial.
+    Sweeper deliberately owns no model/database selection logic. It supplies the
+    typed request, then persists Core's exact config and provenance unchanged.
     """
 
     systems_paths = resolve_systems_paths(search_space.systems_paths)
+    raw_options = search_space.forward_pass_options
     try:
-        enabled_transfers = common.resolve_transfer_policy(search_space.transfer_policy)
-    except (TypeError, ValueError) as exc:
-        raise ForwardPassEstimatorResolutionError(
-            f"cannot resolve transfer_policy {search_space.transfer_policy!r}: {exc}"
-        ) from exc
-    transfer_policy = tuple(
-        kind.value for kind in common.TransferKind if kind in enabled_transfers
-    )
-    try:
-        model_config = get_model_config_from_model_path(search_space.model_name)
-    except Exception as exc:
-        raise ForwardPassEstimatorResolutionError(f"cannot resolve model {search_space.model_name!r}: {exc}") from exc
-    architecture = str(model_config.get("architecture") or "").strip()
-    if not architecture:
-        raise ForwardPassEstimatorResolutionError(f"model {search_space.model_name!r} exposes no architecture")
-
-    system_spec = perf_database.load_system_spec(search_space.hardware_sku, systems_paths=systems_paths)
-    if not system_spec:
-        raise ForwardPassEstimatorResolutionError(
-            f"unknown system {search_space.hardware_sku!r} under systems_paths={list(systems_paths)!r}"
-        )
-
-    available = perf_database.get_supported_databases(systems_paths=list(systems_paths))
-    available_by_backend = available.get(search_space.hardware_sku, {})
-    mode = search_space.database_mode.value
-    allow_missing_data = mode != "SILICON"
+        options = None if raw_options is None else ForwardPassPerfOptions(**raw_options)
+    except TypeError as exc:
+        raise ForwardPassEstimatorResolutionError(f"invalid forward_pass_options: {exc}") from exc
 
     resolved: dict[str, ForwardPassEstimatorSpec] = {}
     for backend in dict.fromkeys(search_space.backend):
-        versions = available_by_backend.get(backend, [])
-        requested = search_space.requested_backend_version(backend)
-        if requested is not None:
-            if requested not in versions:
-                raise ForwardPassEstimatorResolutionError(
-                    f"unsupported backend_version {requested!r} for "
-                    f"{search_space.hardware_sku}/{backend}; available versions: {versions}"
-                )
-            version = requested
-        else:
-            version = perf_database.get_latest_database_version(
-                search_space.hardware_sku,
-                backend,
-                systems_paths=list(systems_paths),
-            )
-            if version is None:
-                raise ForwardPassEstimatorResolutionError(
-                    f"no performance-data version for "
-                    f"{search_space.hardware_sku}/{backend} under systems_paths="
-                    f"{list(systems_paths)!r}"
-                )
-
-        try:
-            database = perf_database.get_database_view(
-                search_space.hardware_sku,
-                backend,
-                version,
-                systems_paths=list(systems_paths),
-                allow_missing_data=allow_missing_data,
-                database_mode=mode,
-                transfer_policy=list(transfer_policy),
-            )
-        except Exception as exc:
-            raise ForwardPassEstimatorResolutionError(
-                "cannot load forward-pass estimator data for "
-                f"{search_space.hardware_sku}/{backend}/{version} in {mode} mode: {exc}"
-            ) from exc
-        if database is None:
-            raise ForwardPassEstimatorResolutionError(
-                f"performance data unavailable for {search_space.hardware_sku}/{backend}/{version} in {mode} mode"
-            )
-
-        systems_root = os.path.abspath(str(database.systems_root))
-        if search_space.forward_model is ForwardModel.FPM:
-            if search_space.aic_nextn:
-                raise ForwardPassEstimatorResolutionError(
-                    "forward_model='fpm' does not support aic_nextn/MTP; use forward_model='op_level'"
-                )
-            _require_fpm_data(
-                systems_root=systems_root,
-                system_spec=dict(database.system_spec),
-                system=search_space.hardware_sku,
-                backend=backend,
-                version=version,
-            )
-
-        resolved[backend] = ForwardPassEstimatorSpec(
-            model_path=search_space.model_name,
-            model_architecture=architecture,
+        transfer_policy: Any = search_space.transfer_policy
+        if isinstance(transfer_policy, list):
+            transfer_policy = tuple(transfer_policy)
+        request = ForwardPassPerfModelConfig(
+            model=search_space.model_name,
             system=search_space.hardware_sku,
             backend=backend,
-            backend_version=version,
-            database_mode=mode,
-            transfer_policy=transfer_policy,
+            backend_version=search_space.requested_backend_version(backend),
+            nextn=int(search_space.aic_nextn or 0),
             forward_model=search_space.forward_model.value,
+            database_mode=search_space.database_mode.value,
+            transfer_policy=transfer_policy,
             systems_paths=systems_paths,
-            performance_data_root=systems_root,
+            fallback_policy=search_space.forward_pass_fallback_policy.value,
+        )
+        model: RustForwardPassPerfModel | None = None
+        try:
+            model = RustForwardPassPerfModel.best_available(request, options)
+            diagnostics = model.diagnostics()
+        except Exception as exc:
+            raise ForwardPassEstimatorResolutionError(
+                "Core cannot construct the forward-pass estimator for "
+                f"{search_space.model_name}/{search_space.hardware_sku}/{backend}: {exc}"
+            ) from exc
+        finally:
+            if model is not None:
+                model.close()
+
+        provenance = diagnostics.get("provenance")
+        if not isinstance(provenance, dict) or not isinstance(provenance.get("config"), dict):
+            raise ForwardPassEstimatorResolutionError(
+                f"Core returned no resolved provenance for {search_space.hardware_sku}/{backend}"
+            )
+        resolved_config = dict(provenance["config"])
+        selected_root = provenance.get("selected_systems_root")
+        if selected_root:
+            resolved_config["systems_paths"] = [str(selected_root)]
+        if not resolved_config.get("backend_version"):
+            raise ForwardPassEstimatorResolutionError(
+                f"Core did not resolve an exact backend version for {search_space.hardware_sku}/{backend}"
+            )
+        resolved[backend] = ForwardPassEstimatorSpec(
+            config=resolved_config,
+            options=None if options is None else options.to_dict(),
+            diagnostics=diagnostics,
         )
     return resolved

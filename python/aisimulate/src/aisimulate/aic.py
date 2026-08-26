@@ -31,10 +31,19 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
     """Return engine arguments with rank-local AIC KV capacity materialized."""
 
     lowered = dict(raw)
-    attention_dp = lowered.get("aic_attention_dp_size")
+    timing_model = lowered.get("timing_model")
+    timing_config = (
+        timing_model.get("config")
+        if isinstance(timing_model, dict)
+        and timing_model.get("type") == "external"
+        and timing_model.get("provider") == "aic"
+        and isinstance(timing_model.get("config"), dict)
+        else {}
+    )
+    attention_dp = lowered.get("aic_attention_dp_size", timing_config.get("attention_dp"))
     dp = attention_dp or 1
     configured_dp = lowered.get("dp_size") or 1
-    has_aic_config = lowered.get("aic_backend") is not None or attention_dp is not None
+    has_aic_config = lowered.get("aic_backend") is not None or bool(timing_config)
     if has_aic_config and configured_dp > 1 and configured_dp != dp:
         raise ValueError(
             "dp_size must match aic_attention_dp_size for AIC-backed replay "
@@ -45,7 +54,7 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
 
     if lowered.get("num_gpu_blocks") is not None:
         return lowered
-    backend = lowered.get("aic_backend")
+    backend = lowered.get("aic_backend", timing_config.get("backend"))
     if backend is None:
         return lowered
     if not isinstance(backend, str) or backend not in DEFAULT_BACKEND_VERSIONS:
@@ -54,7 +63,7 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
             f"AIC KV cache capacity estimation does not support {backend!r}; "
             f"supported backends: {supported}"
         )
-    model = lowered.get("aic_model_path")
+    model = lowered.get("aic_model_path", timing_config.get("model"))
     if not model:
         raise ValueError(
             "AIC KV cache capacity estimation requires aic_model_path in engine args"
@@ -62,11 +71,9 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
 
     lowered["num_gpu_blocks"] = estimate_num_gpu_blocks(
         backend_name=backend,
-        system=lowered.get("aic_system") or _DEFAULT_AIC_SYSTEM,
+        system=lowered.get("aic_system", timing_config.get("system")) or _DEFAULT_AIC_SYSTEM,
         model_path=model,
-        tp_size=(
-            lowered.get("aic_tp_size") if lowered.get("aic_tp_size") is not None else 1
-        ),
+        tp_size=lowered.get("aic_tp_size", timing_config.get("tp", 1)),
         block_size=_resolve_block_size(lowered, backend),
         max_num_batched_tokens=(
             lowered.get("max_num_batched_tokens")
@@ -78,22 +85,29 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
             if lowered.get("max_num_seqs") is not None
             else _DEFAULT_MAX_NUM_SEQUENCES
         ),
-        gpu_memory_utilization=lowered.get("gpu_memory_utilization"),
-        mem_fraction_static=lowered.get("mem_fraction_static"),
-        free_gpu_memory_fraction=lowered.get("free_gpu_memory_fraction"),
-        backend_version=lowered.get("aic_backend_version"),
-        pp_size=(
-            lowered.get("aic_pp_size") if lowered.get("aic_pp_size") is not None else 1
+        gpu_memory_utilization=lowered.get(
+            "gpu_memory_utilization", timing_config.get("gpu_memory_utilization")
         ),
-        moe_tp_size=lowered.get("aic_moe_tp_size"),
-        moe_ep_size=lowered.get("aic_moe_ep_size"),
+        mem_fraction_static=lowered.get(
+            "mem_fraction_static", timing_config.get("mem_fraction_static")
+        ),
+        free_gpu_memory_fraction=lowered.get(
+            "free_gpu_memory_fraction", timing_config.get("free_gpu_memory_fraction")
+        ),
+        backend_version=lowered.get("aic_backend_version", timing_config.get("backend_version")),
+        pp_size=lowered.get("aic_pp_size", timing_config.get("pp", 1)),
+        moe_tp_size=lowered.get("aic_moe_tp_size", timing_config.get("moe_tp_size")),
+        moe_ep_size=lowered.get("aic_moe_ep_size", timing_config.get("moe_ep_size")),
         attention_dp_size=attention_dp,
-        gemm_dtype=lowered.get("aic_gemm_dtype"),
-        moe_dtype=lowered.get("aic_moe_dtype"),
-        fmha_dtype=lowered.get("aic_fmha_dtype"),
-        kv_cache_dtype=lowered.get("aic_kv_cache_dtype"),
-        comm_dtype=lowered.get("aic_comm_dtype"),
-        systems_path=lowered.get("systems_path"),
+        gemm_dtype=lowered.get("aic_gemm_dtype", timing_config.get("gemm_quant_mode")),
+        moe_dtype=lowered.get("aic_moe_dtype", timing_config.get("moe_quant_mode")),
+        fmha_dtype=lowered.get("aic_fmha_dtype", timing_config.get("fmha_quant_mode")),
+        kv_cache_dtype=lowered.get("aic_kv_cache_dtype", timing_config.get("kvcache_quant_mode")),
+        comm_dtype=lowered.get("aic_comm_dtype", timing_config.get("comm_quant_mode")),
+        systems_path=(
+            lowered.get("systems_path")
+            or next(iter(timing_config.get("systems_paths") or ()), None)
+        ),
     )
     return lowered
 

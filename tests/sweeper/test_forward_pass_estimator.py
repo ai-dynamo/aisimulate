@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Golden forward-pass estimator resolution for Sweeper candidates."""
+"""Golden Core-owned forward-pass estimator resolution for Sweeper candidates."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from dataclasses import asdict
 
 import pytest
 
@@ -30,46 +30,66 @@ def _space(systems_root, **overrides):
 
 def _stub_core(monkeypatch, systems_root, *, versions=("0.10.0", "0.11.0")):
     calls = []
-    system_spec = {"data_dir": "data/example_system"}
-    monkeypatch.setattr(
-        forward_pass_estimator_mod,
-        "get_model_config_from_model_path",
-        lambda model: {"architecture": "ExampleForCausalLM"},
-    )
-    monkeypatch.setattr(
-        forward_pass_estimator_mod.perf_database,
-        "load_system_spec",
-        lambda system, systems_paths=None: system_spec,
-    )
-    monkeypatch.setattr(
-        forward_pass_estimator_mod.perf_database,
-        "get_supported_databases",
-        lambda systems_paths=None: {"example_system": {"vllm": list(versions)}},
-    )
-    monkeypatch.setattr(
-        forward_pass_estimator_mod.perf_database,
-        "get_latest_database_version",
-        lambda system, backend, systems_paths=None: versions[-1] if versions else None,
-    )
 
-    def get_database_view(system, backend, version, **kwargs):
-        calls.append((system, backend, version, kwargs))
-        return SimpleNamespace(
-            systems_root=str(systems_root),
-            system_spec=system_spec,
-        )
+    class _Model:
+        def __init__(self, diagnostics):
+            self._diagnostics = diagnostics
 
-    monkeypatch.setattr(forward_pass_estimator_mod.perf_database, "get_database_view", get_database_view)
+        def diagnostics(self):
+            return self._diagnostics
+
+        def close(self):
+            return None
+
+    class _Core:
+        @staticmethod
+        def best_available(config, options):
+            calls.append((config, options))
+            if config.backend_version is not None and config.backend_version not in versions:
+                raise ValueError(f"unsupported backend_version {config.backend_version!r}")
+            if config.transfer_policy == "mystery":
+                raise ValueError("invalid transfer_policy 'mystery'")
+            if config.forward_model == "fpm" and config.nextn:
+                raise ValueError("forward_model='fpm' does not support aic_nextn/MTP")
+            if config.forward_model == "fpm":
+                complete = any(
+                    path.name == "fpm_forward_perf.parquet"
+                    and (path.parent / "fpm_forward_perf.metadata.json").is_file()
+                    for path in systems_root.rglob("fpm_forward_perf.parquet")
+                )
+                if not complete:
+                    raise ValueError("forward_model='fpm' requires fpm_forward_perf data")
+
+            resolved = asdict(config)
+            resolved["backend_version"] = config.backend_version or (versions[-1] if versions else None)
+            if config.transfer_policy is None:
+                resolved["transfer_policy"] = ["xshape", "xquant", "xprofile", "xop"]
+            elif config.transfer_policy == "balanced,xop":
+                resolved["transfer_policy"] = ["xshape", "xquant", "xop"]
+            else:
+                resolved["transfer_policy"] = list(config.transfer_policy)
+            resolved["systems_paths"] = [str(systems_root)]
+            return _Model(
+                {
+                    "source": "aic",
+                    "readiness": "ready",
+                    "provenance": {
+                        "config": resolved,
+                        "selected_systems_root": str(systems_root),
+                    },
+                }
+            )
+
+    monkeypatch.setattr(forward_pass_estimator_mod, "RustForwardPassPerfModel", _Core)
     return calls
 
 
-def test_default_resolution_is_concrete_and_reproducible(monkeypatch, tmp_path):
+def test_default_resolution_is_core_owned_concrete_and_reproducible(monkeypatch, tmp_path):
     calls = _stub_core(monkeypatch, tmp_path)
 
     spec = resolve_forward_pass_estimator_specs(_space(tmp_path))["vllm"]
 
     assert spec.model_path == "example/model"
-    assert spec.model_architecture == "ExampleForCausalLM"
     assert spec.system == "example_system"
     assert spec.backend == "vllm"
     assert spec.backend_version == "0.11.0"
@@ -78,62 +98,52 @@ def test_default_resolution_is_concrete_and_reproducible(monkeypatch, tmp_path):
     assert spec.forward_model == "op_level"
     assert spec.systems_paths == (str(tmp_path),)
     assert spec.performance_data_root == str(tmp_path)
-    assert calls[0][3]["database_mode"] == "SILICON"
-    assert calls[0][3]["allow_missing_data"] is False
+    assert calls[0][0].backend_version is None
+    assert spec.config == spec.diagnostics["provenance"]["config"]
 
 
-def test_pinned_version_mode_and_transfer_policy_reach_database_view(monkeypatch, tmp_path):
+def test_pinned_policy_and_options_reach_the_canonical_constructor(monkeypatch, tmp_path):
     calls = _stub_core(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        forward_pass_estimator_mod.perf_database,
-        "get_latest_database_version",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("a pinned backend version must not resolve latest")
-        ),
-    )
     search = _space(
         tmp_path,
         backend_version="0.10.0",
         database_mode="HYBRID",
         transfer_policy="balanced,xop",
+        forward_pass_options={"min_observations": 3},
     )
 
     spec = resolve_forward_pass_estimator_specs(search)["vllm"]
 
-    assert spec.backend_version == "0.10.0"
-    assert spec.database_mode == "HYBRID"
+    request, options = calls[0]
+    assert request.backend_version == "0.10.0"
+    assert request.database_mode == "HYBRID"
+    assert request.transfer_policy == "balanced,xop"
+    assert options is not None and options.min_observations == 3
     assert spec.transfer_policy == ("xshape", "xquant", "xop")
-    assert calls[0][2] == "0.10.0"
-    assert calls[0][3]["database_mode"] == "HYBRID"
-    assert calls[0][3]["transfer_policy"] == ["xshape", "xquant", "xop"]
-    assert calls[0][3]["allow_missing_data"] is True
+    assert spec.options is not None and spec.options["min_observations"] == 3
 
 
-def test_invalid_transfer_policy_fails_before_database_load(monkeypatch, tmp_path):
+def test_invalid_transfer_policy_fails_through_core(monkeypatch, tmp_path):
     calls = _stub_core(monkeypatch, tmp_path)
 
     with pytest.raises(ForwardPassEstimatorResolutionError, match="transfer_policy"):
         resolve_forward_pass_estimator_specs(_space(tmp_path, transfer_policy="mystery"))
 
-    assert calls == []
+    assert len(calls) == 1
 
 
-def test_unknown_pinned_version_fails_before_database_load(monkeypatch, tmp_path):
+def test_unknown_pinned_version_fails_through_core(monkeypatch, tmp_path):
     calls = _stub_core(monkeypatch, tmp_path)
 
     with pytest.raises(ForwardPassEstimatorResolutionError, match="unsupported backend_version"):
         resolve_forward_pass_estimator_specs(_space(tmp_path, backend_version="9.9.9"))
 
-    assert calls == []
+    assert len(calls) == 1
 
 
-def test_fpm_requires_exact_data_pair(monkeypatch, tmp_path):
+def test_fpm_support_is_validated_by_core_before_search(monkeypatch, tmp_path):
     _stub_core(monkeypatch, tmp_path)
-    search = _space(
-        tmp_path,
-        backend_version="0.11.0",
-        forward_model="fpm",
-    )
+    search = _space(tmp_path, backend_version="0.11.0", forward_model="fpm")
 
     with pytest.raises(ForwardPassEstimatorResolutionError, match="requires fpm_forward_perf"):
         resolve_forward_pass_estimator_specs(search)
@@ -147,12 +157,8 @@ def test_fpm_requires_exact_data_pair(monkeypatch, tmp_path):
     assert spec.forward_model == "fpm"
 
 
-def test_fpm_rejects_mtp_before_search(monkeypatch, tmp_path):
+def test_fpm_rejects_mtp_through_core_before_search(monkeypatch, tmp_path):
     _stub_core(monkeypatch, tmp_path)
-    version_dir = tmp_path / "data/example_system/dense/vllm/0.11.0"
-    version_dir.mkdir(parents=True)
-    (version_dir / "fpm_forward_perf.parquet").touch()
-    (version_dir / "fpm_forward_perf.metadata.json").write_text("{}")
 
     with pytest.raises(ForwardPassEstimatorResolutionError, match="does not support aic_nextn"):
         resolve_forward_pass_estimator_specs(
