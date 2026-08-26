@@ -1,4 +1,4 @@
-name: FPE Support Matrix
+name: FPM Support Matrix
 
 on:
   workflow_dispatch:
@@ -53,7 +53,7 @@ jobs:
         run: |
           python -m pip install 'maturin>=1.12,<2'
           python -m pip install './python/aisimulate'
-      - name: Generate strict-native FPE coverage
+      - name: Generate strict-native FPM coverage through the FPE SDK
         run: |
           python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
             --system "${{ matrix.system }}" \
