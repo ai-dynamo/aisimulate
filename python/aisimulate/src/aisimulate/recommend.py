@@ -101,6 +101,8 @@ def recommendation_to_sweeper(
         "deployment_mode": modes,
         "backend": [str(value) for value in backend_values],
         "backend_version": engine.get("backend_version"),
+        "forward_model": engine.get("forward_model", "op_level"),
+        "systems_path": engine.get("systems_path"),
         "model_name": model,
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
@@ -601,16 +603,18 @@ def _candidate_prediction(
     adapter_sections: Mapping[str, str],
 ) -> dict[str, Any]:
     deployment = replay_spec.backend_deployment
+    raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
     engine: dict[str, Any] = {
         "mode": "aggregated" if deployment.deployment_mode == "agg" else "disaggregated",
         "model": sample["model_name"],
         "hardware": sample["hardware_sku"],
         "backend": sample["backend"],
         "backend_version": sample.get("backend_version") or None,
+        "forward_model": raw_engine.get("forward_model", "op_level"),
+        "systems_path": raw_engine.get("systems_path"),
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
-    raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
     roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
     for role in roles:
         prefix = "" if role == "agg" else f"{role}_"

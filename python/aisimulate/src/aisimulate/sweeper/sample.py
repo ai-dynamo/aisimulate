@@ -19,6 +19,8 @@ _DEPLOYMENT_PINNED = (
     "context_length",
     "startup_time",
     "aic_nextn",
+    "forward_model",
+    "systems_path",
 )
 
 # engine knobs per branch: searched batching + pinned scalars.

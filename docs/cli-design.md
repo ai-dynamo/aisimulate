@@ -558,6 +558,8 @@ engine:
   hardware: H100-SXM-80GB
   backend: vllm
   backend_version: null
+  forward_model: op_level
+  systems_path: null
   context_length: max
   workers:
     aggregated:
@@ -593,6 +595,8 @@ engine:
 | `engine.hardware` | Required | `auto` | `-` | One hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
+| `engine.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`. `fpm` uses a formal whole-model forward-pass database and is fixed during recommendation. |
+| `engine.systems_path` | `null` | `x` | `-` | Optional nonempty AIC systems-tree path. The self-service support workflow sets this to its validated FPM overlay. |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
 | `engine.workers` | Required | `x` | `-` | Aggregated role or prefill plus decode roles. |
 | `engine.workers.<role>.parallelism.preset` | `default` in `recommend` | `auto` | `-` | Generated default space, complete mapping list, `false`, or `{}`. |

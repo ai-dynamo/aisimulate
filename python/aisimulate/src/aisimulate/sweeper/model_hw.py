@@ -114,6 +114,7 @@ def parallel_configs_for(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     role_runtime: dict[str, tuple[int, int, float] | tuple[int, int, float, int | None]] | None = None,
+    systems_path: str | None = None,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
     the GPU budget and can hold a ``max_seq_len``-token sequence.
@@ -171,6 +172,9 @@ def parallel_configs_for(
             )
         if fixed_tokens is not None:
             return {shape: fixed_tokens for shape in dict.fromkeys(shapes) if fixed_tokens > seq_len}
+        systems_kwargs: dict[str, str] = {}
+        if systems_path is not None:
+            systems_kwargs["systems_path"] = systems_path
         return feasible_shape_tokens(
             shapes,
             model_name=model_name,
@@ -181,6 +185,7 @@ def parallel_configs_for(
             max_num_tokens=role_tokens,
             max_batch_size=role_batch,
             memory_fraction=role_memory,
+            **systems_kwargs,
         )
 
     if deployment_mode == "agg":

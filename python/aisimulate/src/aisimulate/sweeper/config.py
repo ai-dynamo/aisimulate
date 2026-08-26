@@ -391,6 +391,8 @@ class SearchSpace(BaseModel):
     context_length: int | None = None
     startup_time: float | None = None
     aic_nextn: int | None = None  # speculative-decode (MTP) depth, 1..5
+    forward_model: str = "op_level"
+    systems_path: str | None = None
 
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
@@ -455,6 +457,14 @@ class SearchSpace(BaseModel):
                 isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values
             ):
                 raise ValueError(f"{field_name} must contain positive integers")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_forward_model(self) -> SearchSpace:
+        if self.forward_model not in {"op_level", "fpm"}:
+            raise ValueError("forward_model must be 'op_level' or 'fpm'")
+        if self.systems_path is not None and not self.systems_path.strip():
+            raise ValueError("systems_path must be a nonempty path")
         return self
 
     @model_validator(mode="after")

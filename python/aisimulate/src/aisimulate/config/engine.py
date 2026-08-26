@@ -16,6 +16,7 @@ PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 Fraction = Annotated[float, Field(strict=True, gt=0, le=1, allow_inf_nan=False)]
 EngineMode = Literal["aggregated", "disaggregated"]
 Backend = Literal["vllm", "sglang", "trtllm"]
+ForwardModel = Literal["op_level", "fpm"]
 
 
 class ParallelismPredictionConfig(StrictModel):
@@ -110,6 +111,8 @@ class EnginePredictionConfig(StrictModel):
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
+    forward_model: ForwardModel = "op_level"
+    systems_path: str | None = None
     context_length: PositiveInt | Literal["max"] = "max"
     workers: WorkersPredictionConfig
     kv_transfer: KvTransferConfig | None = None
@@ -120,6 +123,16 @@ class EnginePredictionConfig(StrictModel):
         if not value:
             raise ValueError("value must be nonempty")
         return value
+
+    @field_validator("systems_path")
+    @classmethod
+    def _validate_systems_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("engine.systems_path must be a nonempty path")
+        return normalized
 
     @field_validator("hardware")
     @classmethod
@@ -260,6 +273,8 @@ class EngineRecommendationConfig(StrictModel):
     hardware: str
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | None = None
+    forward_model: ForwardModel = "op_level"
+    systems_path: str | None = None
     context_length: PositiveInt | Literal["max"] = "max"
     workers: WorkersRecommendationConfig
     kv_transfer: KvTransferConfig | None = None
@@ -270,6 +285,16 @@ class EngineRecommendationConfig(StrictModel):
         if not value:
             raise ValueError("value must be nonempty")
         return value
+
+    @field_validator("systems_path")
+    @classmethod
+    def _validate_systems_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("engine.systems_path must be a nonempty path")
+        return normalized
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EngineRecommendationConfig:

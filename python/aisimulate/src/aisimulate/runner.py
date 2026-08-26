@@ -70,6 +70,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "kv_cache_dtype": ("kv_cache_dtype", "aic_kv_cache_dtype"),
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
+    "forward_model": ("forward_model", "aic_forward_model"),
 }
 
 

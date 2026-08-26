@@ -510,9 +510,19 @@ def _materialize_one(
             selection=selection,
             parallel_config=parallel_config,
         )
-        backend_version = config.search_space.backend_version or resolve_backend_version(
-            config.search_space.hardware_sku, selection["backend"]
-        )
+        if config.search_space.backend_version:
+            backend_version = config.search_space.backend_version
+        elif config.search_space.systems_path is not None:
+            backend_version = resolve_backend_version(
+                config.search_space.hardware_sku,
+                selection["backend"],
+                systems_path=config.search_space.systems_path,
+            )
+        else:
+            backend_version = resolve_backend_version(
+                config.search_space.hardware_sku,
+                selection["backend"],
+            )
         # The resolved perf-model version is part of the evaluated contract. Keep it
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.

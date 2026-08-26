@@ -37,6 +37,9 @@ from .output import (
     write_requests,
 )
 from .stack import StackResolutionError, resolve_runner_factory
+from .support.cli import add_support_parser, run_support_command
+from .support.errors import SupportWorkflowError
+from .support.guidance import is_support_gap, self_service_hint
 from .sweeper.provider import AdapterReplaySpec
 from .sweeper.replay import ReplayOutputRequirements
 
@@ -70,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
+    add_support_parser(subparsers)
     return parser
 
 
@@ -214,6 +218,7 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     )
     if not candidates:
         sys.stderr.write("no feasible candidate found\n")
+        sys.stderr.write(self_service_hint() + "\n")
         return 1
     selected: list[tuple[Any, dict[str, Any]]] = []
     seen_configs: set[str] = set()
@@ -260,6 +265,16 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.command == "support":
+        try:
+            return run_support_command(args)
+        except (SupportWorkflowError, ValidationError, ValueError) as exc:
+            parser.error(f"support {args.support_action}: {exc}")
+        except KeyboardInterrupt:
+            return 130
+        except Exception as exc:
+            sys.stderr.write(f"aisimulate support {args.support_action} failed: {type(exc).__name__}: {exc}\n")
+            return 1
     # Stack resolution deliberately precedes opening the configuration file.
     try:
         factory = resolve_runner_factory(args.stack)
@@ -277,11 +292,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ValidationError,
         ValueError,
     ) as exc:
-        parser.error(f"{args.config}: {exc}")
+        message = f"{args.config}: {exc}"
+        if is_support_gap(exc):
+            message += "\n" + self_service_hint()
+        parser.error(message)
     except KeyboardInterrupt:
         return 130
     except _CliExecutionError as exc:
         sys.stderr.write(f"aisimulate {args.command} failed: {exc}\n")
+        if is_support_gap(exc):
+            sys.stderr.write(self_service_hint() + "\n")
         return 1
     except Exception as exc:
         sys.stderr.write(f"aisimulate {args.command} failed: {type(exc).__name__}: {exc}\n")

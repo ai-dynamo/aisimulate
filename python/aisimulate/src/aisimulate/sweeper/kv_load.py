@@ -40,7 +40,11 @@ def _per_rank_capacity_tokens(
     max_batch_size: int,
     memory_fraction: float,
     nextn: int,
+    systems_path: str | None,
 ) -> int:
+    systems_kwargs: dict[str, str] = {}
+    if systems_path is not None:
+        systems_kwargs["systems_path"] = systems_path
     tokens = estimate_kv_tokens(
         shape,
         model_name=model_name,
@@ -51,6 +55,7 @@ def _per_rank_capacity_tokens(
         max_batch_size=max_batch_size,
         memory_fraction=memory_fraction,
         nextn=nextn,
+        **systems_kwargs,
     )
     if tokens is None:
         raise InfeasibleKVCapacity(
@@ -85,6 +90,7 @@ def _role_capacity_tokens(
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),
             nextn=int(sample.get("aic_nextn") or 0),
+            systems_path=sample.get("systems_path"),
         )
     # Dynamo's AIC estimator returns per-rank blocks. Offline replay models one
     # engine-wide KV pool, so attention-DP ranks contribute independent capacity;

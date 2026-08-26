@@ -140,6 +140,10 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    if engine.forward_model != "op_level":
+        payload["aic_forward_model"] = engine.forward_model
+    if engine.systems_path is not None:
+        payload["systems_path"] = engine.systems_path
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
     if parallel.pipeline != 1:

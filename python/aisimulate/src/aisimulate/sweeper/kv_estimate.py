@@ -46,9 +46,17 @@ def memory_fraction_kind(backend: str) -> str:
     return "of_free" if backend == "trtllm" else "of_total"
 
 
-def resolve_backend_version(hardware_sku: str, backend: str) -> str:
+def resolve_backend_version(
+    hardware_sku: str,
+    backend: str,
+    *,
+    systems_path: str | None = None,
+) -> str:
     """Latest perf-DB version for the SKU/backend (required by the native estimate)."""
-    version = get_latest_database_version(hardware_sku, backend)
+    if systems_path is None:
+        version = get_latest_database_version(hardware_sku, backend)
+    else:
+        version = get_latest_database_version(hardware_sku, backend, systems_paths=systems_path)
     if version is None:
         raise NoPerfDatabase(
             f"no perf database for hardware_sku={hardware_sku!r}, backend={backend!r}; "
@@ -68,6 +76,7 @@ def estimate_kv_tokens(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     nextn: int = 0,
+    systems_path: str | None = None,
 ) -> int | None:
     """Per-rank KV-cache capacity (in tokens) for ``shape``, or ``None`` when the
     shape leaves no KV budget (weights + activations already fill VRAM -> OOM).
@@ -75,6 +84,9 @@ def estimate_kv_tokens(
     Genuine estimation errors (bad inputs, unsupported model) propagate.
     """
     try:
+        systems_kwargs: dict[str, str] = {}
+        if systems_path is not None:
+            systems_kwargs["systems_path"] = systems_path
         est = estimate_kv_cache(
             model_name,
             hardware_sku,
@@ -91,6 +103,7 @@ def estimate_kv_tokens(
             moe_ep_size=shape.moe_ep,
             nextn=nextn,
             allow_naive_fallback=False,
+            **systems_kwargs,
         )
     except ValueError as exc:
         msg = str(exc)
@@ -117,6 +130,7 @@ def feasible_shape_tokens(
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
+    systems_path: str | None = None,
 ) -> dict[ParallelShape, int]:
     """Map each *feasible* shape to its KV-cache token capacity.
 
@@ -125,9 +139,19 @@ def feasible_shape_tokens(
     per distinct shape, so repeated shapes across replica counts are free.
     """
     if backend_version is None:
-        backend_version = resolve_backend_version(hardware_sku, backend)
+        if systems_path is None:
+            backend_version = resolve_backend_version(hardware_sku, backend)
+        else:
+            backend_version = resolve_backend_version(
+                hardware_sku,
+                backend,
+                systems_path=systems_path,
+            )
     feasible: dict[ParallelShape, int] = {}
     for shape in dict.fromkeys(shapes):  # dedup, preserve first-seen order
+        systems_kwargs: dict[str, str] = {}
+        if systems_path is not None:
+            systems_kwargs["systems_path"] = systems_path
         tokens = estimate_kv_tokens(
             shape,
             model_name=model_name,
@@ -137,6 +161,7 @@ def feasible_shape_tokens(
             max_num_tokens=max_num_tokens,
             max_batch_size=max_batch_size,
             memory_fraction=memory_fraction,
+            **systems_kwargs,
         )
         if tokens is not None and tokens > max_seq_len:
             feasible[shape] = tokens

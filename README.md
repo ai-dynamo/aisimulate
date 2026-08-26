@@ -67,6 +67,9 @@ engine:
 ```
 
 See [`docs/cli-design.md`](docs/cli-design.md) for the complete schema and search-domain contract.
+When an exact model/GPU cell is not published, use the bounded
+[`aisimulate support` self-service workflow](docs/self-service-support.md) to collect FPM data,
+validate matched GPU evidence, and generate FPM-connected recommendation configs.
 
 Install AISimulate by itself for engine-only development:
 

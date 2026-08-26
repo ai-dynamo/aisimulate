@@ -243,6 +243,9 @@ def enumerate_branches(
             ):
                 continue
             try:
+                systems_kwargs: dict[str, Any] = {}
+                if ss.systems_path is not None:
+                    systems_kwargs["systems_path"] = ss.systems_path
                 legal = parallel_configs_for(
                     ss.model_name,
                     ss.hardware_sku,
@@ -253,6 +256,7 @@ def enumerate_branches(
                     min_gpu_budget=ss.min_gpu_budget,
                     max_seq_len=max_seq_len,
                     role_runtime=role_runtime(backend, deployment_mode),
+                    **systems_kwargs,
                 )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search
