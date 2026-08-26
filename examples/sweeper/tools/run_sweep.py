@@ -8,9 +8,10 @@ from __future__ import annotations
 import argparse
 
 import yaml
-from aisimulate.sweeper import SmartSearchConfig, Sweeper
 from dynamo.replay.simulation import DynamoReplayRunnerFactory
 from pydantic import ValidationError
+
+from aisimulate.sweeper import SmartSearchConfig, Sweeper
 
 
 def main() -> None:
@@ -22,21 +23,20 @@ def main() -> None:
 
     try:
         config = SmartSearchConfig.from_yaml(args.config)
-        candidates = Sweeper(
+        result = Sweeper(
             runner_factory=DynamoReplayRunnerFactory(),
-        ).run(config)
+        ).run_result(config, top_n=None)
     except OSError as exc:
         parser.error(f"could not read {args.config}: {exc}")
     except yaml.YAMLError as exc:
         parser.error(f"malformed YAML in {args.config}: {exc}")
     except ValidationError as exc:
         parser.error(f"invalid config {args.config}: {exc}")
+    candidates = result.selected_candidates
     if not candidates:
         parser.exit(1, "no feasible candidate found\n")
     for index, candidate in enumerate(candidates):
-        print(
-            f"{index}: score={candidate.score} used_gpus={candidate.used_gpus}"
-        )
+        print(f"{index}: score={candidate.score} used_gpus={candidate.used_gpus}")
 
 
 if __name__ == "__main__":

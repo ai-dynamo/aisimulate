@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -14,6 +15,26 @@ from aisimulate.output import prepare_output_directory
 from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
+
+
+class _RecommendationResult:
+    def __init__(self, selected_candidates, *, failed: int = 0) -> None:
+        self.selected_candidates = selected_candidates
+        self._failed = failed
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "schema_version": "1.0",
+                "counts": {
+                    "feasible": len(self.selected_candidates),
+                    "failed": self._failed,
+                },
+                "candidates": [],
+                "views": {"top_n": [], "pareto_front": []},
+            },
+            sort_keys=True,
+        )
 
 
 class _Runner:
@@ -324,6 +345,11 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert "planner" not in generated
     assert generated["placement"] == {"policy": "first"}
     assert generated["evaluation"]["sla"] == {sla_field: bound}
+    result = json.loads((recommendation_output / "recommendation.json").read_text())
+    assert result["schema_version"] == "1.0"
+    assert result["counts"]["feasible"] == 1
+    assert result["views"]["top_n"] == ["candidate-000001"]
+    assert result["candidates"][0]["prediction_config"] == generated
 
     prediction_output = tmp_path / "predict-output"
     assert (
@@ -391,9 +417,7 @@ def test_recommendation_outputs_each_concrete_prediction_once(
     recommendation_input = deepcopy(concrete)
     recommendation_input["engine"]["workers"]["aggregated"]["parallelism"] = {
         "preset": False,
-        **recommendation_input["engine"]["workers"]["aggregated"][
-            "parallelism"
-        ],
+        **recommendation_input["engine"]["workers"]["aggregated"]["parallelism"],
     }
     config_path = tmp_path / "recommend.yaml"
     config_path.write_text(
@@ -422,10 +446,12 @@ def test_recommendation_outputs_each_concrete_prediction_once(
         )
         for selection, score in (("first", 2.0), ("second", 1.0))
     ]
-    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    monkeypatch.setattr(
+        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
+    )
     monkeypatch.setattr(
         "aisimulate.recommend.run_recommendation",
-        lambda *args, **kwargs: candidates,
+        lambda *args, **kwargs: _RecommendationResult(candidates),
     )
 
     output = tmp_path / "out"
@@ -459,6 +485,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     unrelated = root / "keep.txt"
     unrelated.write_text("keep")
     (root / "prediction.json").write_text("old")
+    (root / "recommendation.json").write_text("old")
     (recommendations / "0001.yaml").write_text("old")
     (recommendations / "notes.txt").write_text("keep")
 
@@ -470,4 +497,42 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert unrelated.read_text() == "keep"
     assert (recommendations / "notes.txt").read_text() == "keep"
     assert not (root / "prediction.json").exists()
+    assert not (root / "recommendation.json").exists()
     assert not (recommendations / "0001.yaml").exists()
+
+
+def test_recommendation_writes_an_empty_result_before_returning_failure(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    import aisimulate.recommend as recommendation_module
+
+    monkeypatch.setattr(
+        cli.CoreRecommendationConfig,
+        "model_validate",
+        staticmethod(lambda raw: object()),
+    )
+    monkeypatch.setattr(cli, "_resolve_section_adapters", lambda sections, stack: {})
+    monkeypatch.setattr(
+        recommendation_module,
+        "run_recommendation",
+        lambda *args, **kwargs: _RecommendationResult([], failed=1),
+    )
+    output = tmp_path / "empty-result"
+
+    status = cli._recommend(
+        SimpleNamespace(
+            stack="engine",
+            format="json",
+            output_dir=str(output),
+            overwrite=False,
+        ),
+        {},
+        object(),
+    )
+
+    assert status == 1
+    assert json.loads((output / "recommendation.json").read_text())["counts"] == {
+        "failed": 1,
+        "feasible": 0,
+    }
+    assert "saved full result" in capsys.readouterr().err

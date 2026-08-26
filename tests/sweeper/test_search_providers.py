@@ -19,6 +19,7 @@ from aisimulate.sweeper.provider import (
     SearchSpaceFragment,
 )
 from aisimulate.sweeper.replay import HookCapability, ReplayReport, RunnerCapabilities
+from aisimulate.sweeper.result import ReasonCategory
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search_space import BranchSpace
 
@@ -394,8 +395,9 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
 
     assert prepared is None
     assert result is not None
-    assert result[2] == "infeasible"
-    assert "invalid correlated leaves" in result[3]
+    assert result.outcome == "infeasible"
+    assert result.reason_category is ReasonCategory.ADAPTER_CONSTRAINT
+    assert "invalid correlated leaves" in result.reason
 
 
 def test_runner_hook_capability_is_checked_before_runner_creation(monkeypatch) -> None:

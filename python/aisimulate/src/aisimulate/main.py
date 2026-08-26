@@ -33,6 +33,7 @@ from .output import (
     format_recommendation_stdout,
     prepare_output_directory,
     write_prediction_report,
+    write_recommendation_result,
     write_recommendations,
     write_requests,
 )
@@ -204,7 +205,7 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
-    candidates = run_recommendation(
+    result = run_recommendation(
         config,
         adapter_configs=adapter_raw,
         stack=args.stack,
@@ -212,9 +213,7 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         providers=adapters,
         show_progress=args.format == "table",
     )
-    if not candidates:
-        sys.stderr.write("no feasible candidate found\n")
-        return 1
+    candidates = result.selected_candidates
     selected: list[tuple[Any, dict[str, Any]]] = []
     seen_configs: set[str] = set()
     for candidate in candidates:
@@ -241,6 +240,10 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         seen_configs.add(config_key)
         selected.append((candidate, concrete))
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
+    result_path = write_recommendation_result(root, result)
+    if not candidates:
+        sys.stderr.write(f"no feasible candidate found; saved full result to: {result_path}\n")
+        return 1
     paths = write_recommendations(root, [config for _, config in selected])
     rows = [
         {
@@ -254,6 +257,8 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     ]
     sys.stdout.write(format_recommendation_stdout(rows, args.format))
     sys.stdout.write("\n")
+    if args.format == "table":
+        sys.stdout.write(f"Saved full result to: {result_path}\n")
     return 0
 
 
