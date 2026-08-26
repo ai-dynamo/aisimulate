@@ -290,6 +290,77 @@ fn test_from_mooncake_defaults_missing_input_length_from_hash_capacity() {
 }
 
 #[test]
+fn compatible_agentic_loader_preserves_legacy_rows_and_independent_plays() {
+    let file = write_trace(&[
+        serde_json::json!({
+            "request_id": "r1",
+            "session_id": "session-a",
+            "timestamp": 100.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [1]
+        }),
+        serde_json::json!({
+            "request_id": "r2",
+            "session_id": "session-a",
+            "wait_for": ["r1"],
+            "delay": 10.0,
+            "tool_wait_ms": 6.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [1]
+        }),
+        serde_json::json!({
+            "request_id": "r3",
+            "session_id": "session-b",
+            "timestamp": 120.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [2]
+        }),
+    ]);
+
+    let trace = load_agentic_mooncake(file.path(), 4).unwrap();
+
+    assert_eq!(trace.node_count(), 3);
+    assert_eq!(trace.play_count(), 2);
+    assert_eq!(trace.nodes()[1].dependencies()[0].delay_ms, 16.0);
+}
+
+#[test]
+fn compatible_agentic_loader_lowers_multi_root_join_to_one_typed_play() {
+    let file = write_trace(&[
+        serde_json::json!({
+            "request_id": "r1", "timestamp": 0.0,
+            "input_length": 4, "output_length": 1, "hash_ids": [1]
+        }),
+        serde_json::json!({
+            "request_id": "r2", "timestamp": 5.0,
+            "input_length": 4, "output_length": 1, "hash_ids": [2]
+        }),
+        serde_json::json!({
+            "request_id": "r3", "wait_for": ["r1", "r2"],
+            "input_length": 4, "output_length": 1, "hash_ids": [3]
+        }),
+    ]);
+
+    let trace = load_agentic_mooncake(file.path(), 4).unwrap();
+
+    assert_eq!(trace.play_count(), 1);
+    assert_eq!(trace.node_count(), 3);
+    assert!(trace.nodes()[1].dependencies().is_empty());
+    assert_eq!(trace.nodes()[2].dependencies().len(), 2);
+
+    let mut driver = WorkloadDriver::new_agentic_trace(trace, 4).unwrap();
+    let first = driver.pop_ready(0.0, usize::MAX);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].authored_request_id.as_deref(), Some("r1"));
+    let second = driver.pop_ready(5.0, usize::MAX);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].authored_request_id.as_deref(), Some("r2"));
+}
+
+#[test]
 fn test_from_agentic_mooncake_builds_typed_graph() {
     let file = write_agentic_trace(&[
         serde_json::json!({
@@ -334,7 +405,7 @@ fn test_from_agentic_mooncake_builds_typed_graph() {
     );
     assert_eq!(trace.nodes[1].dependencies[0].delay_ms, 12.0);
     assert_eq!(trace.plays.len(), 1);
-    assert_eq!(trace.plays[0].root_node, 0);
+    assert_eq!(trace.plays[0].root_nodes, vec![0]);
 }
 
 #[test]

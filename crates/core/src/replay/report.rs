@@ -659,16 +659,27 @@ impl SlaThresholds {
     }
 
     pub(crate) fn validate(&self) -> crate::replay::ReplayResult<()> {
+        let token_form = self.ttft_ms.is_some() || self.itl_ms.is_some();
+        if token_form && (self.ttft_ms.is_none() || self.itl_ms.is_none()) {
+            return Err(crate::replay::ReplayError::InvalidSpec(
+                "sla.ttft_ms and sla.itl_ms must be supplied together".to_string(),
+            ));
+        }
+        if token_form && self.e2e_ms.is_some() {
+            return Err(crate::replay::ReplayError::InvalidSpec(
+                "sla.e2e_ms is mutually exclusive with sla.ttft_ms/itl_ms".to_string(),
+            ));
+        }
         for (name, value) in [
             ("sla.ttft_ms", self.ttft_ms),
             ("sla.itl_ms", self.itl_ms),
             ("sla.e2e_ms", self.e2e_ms),
         ] {
             if let Some(value) = value
-                && (!value.is_finite() || value < 0.0)
+                && (!value.is_finite() || value <= 0.0)
             {
                 return Err(crate::replay::ReplayError::InvalidSpec(format!(
-                    "{name} must be finite and non-negative, got {value}"
+                    "{name} must be finite and positive, got {value}"
                 )));
             }
         }

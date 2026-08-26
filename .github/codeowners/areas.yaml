@@ -41,9 +41,13 @@ areas:
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
       - python/aisimulate/src/aisimulate/traffic.py
-      - tests/test_replay_cli.py
+      - tests/test_cli_config.py
+      - tests/test_stack_discovery.py
+      - tests/test_unified_cli.py
+      - tests/test_unified_traffic_runtime.py
       - tests/test_runner.py
       - tests/test_traffic.py
+      - tests/e2e/
   - label: mocker
     github_team: "@ai-dynamo/aisimulate-mocker-codeowners"
     path_globs:
@@ -110,12 +114,20 @@ shared:
     owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/traffic.py
     owners: [replay, maintainers]
-  - glob: tests/test_replay_cli.py
+  - glob: tests/test_cli_config.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_stack_discovery.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_unified_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_unified_traffic_runtime.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
   - glob: tests/test_traffic.py
     owners: [replay, maintainers]
+  - glob: tests/e2e/
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: crates/core/src/engine/
     owners: [mocker, maintainers]
   - glob: crates/core/src/engine/timing.rs

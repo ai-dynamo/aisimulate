@@ -65,7 +65,7 @@ struct AgenticDependentEdge {
 #[derive(Debug)]
 struct AgenticPlayState {
     nodes: Vec<usize>,
-    root_node: usize,
+    root_nodes: Vec<usize>,
     lane_index: Option<usize>,
     emitted_in_flight: usize,
     completed_nodes: usize,
@@ -298,18 +298,25 @@ impl AgenticState {
         ready_sessions: &mut BinaryHeap<ReadySession>,
     ) {
         let play = &self.plays[play_index];
-        let root_not_before_ms = self.authored_not_before_ms[play.root_node];
+        let root_not_before_ms = play
+            .root_nodes
+            .iter()
+            .map(|root| self.authored_not_before_ms[*root])
+            .min_by(f64::total_cmp)
+            .expect("validated agentic play has a root");
         for &node_index in &play.nodes {
             self.ready_after_ms[node_index] =
                 start_ms + (self.authored_not_before_ms[node_index] - root_not_before_ms).max(0.0);
         }
-        Self::schedule_node(
-            play.root_node,
-            start_ms,
-            &mut self.node_states,
-            sessions,
-            ready_sessions,
-        );
+        for &root_node in &play.root_nodes {
+            Self::schedule_node(
+                root_node,
+                self.ready_after_ms[root_node],
+                &mut self.node_states,
+                sessions,
+                ready_sessions,
+            );
+        }
     }
 
     fn release_dispatch_dependents(
@@ -408,8 +415,11 @@ impl AgenticState {
         self.node_states[node_index] = AgenticNodeState::Emitted;
         let play = &mut self.plays[self.node_to_play[node_index]];
         play.emitted_in_flight += 1;
-        if node_index == play.root_node {
-            play.root_dispatch_ms = Some(now_ms);
+        if play.root_nodes.contains(&node_index) {
+            play.root_dispatch_ms = Some(
+                play.root_dispatch_ms
+                    .map_or(now_ms, |seen| seen.min(now_ms)),
+            );
         }
     }
 
@@ -767,7 +777,7 @@ impl WorkloadDriver {
                 }
                 AgenticPlayState {
                     nodes: play.nodes,
-                    root_node: play.root_node,
+                    root_nodes: play.root_nodes,
                     lane_index: None,
                     emitted_in_flight: 0,
                     completed_nodes: 0,
@@ -809,13 +819,15 @@ impl WorkloadDriver {
         let mut ready_sessions = BinaryHeap::new();
         if state.lanes.is_empty() {
             for play in &state.plays {
-                AgenticState::schedule_node(
-                    play.root_node,
-                    state.ready_after_ms[play.root_node],
-                    &mut state.node_states,
-                    &mut sessions,
-                    &mut ready_sessions,
-                );
+                for &root_node in &play.root_nodes {
+                    AgenticState::schedule_node(
+                        root_node,
+                        state.ready_after_ms[root_node],
+                        &mut state.node_states,
+                        &mut sessions,
+                        &mut ready_sessions,
+                    );
+                }
             }
         } else {
             let initial_plays = state
@@ -1465,10 +1477,11 @@ mod tests {
         let mut plays = play_nodes
             .into_iter()
             .map(|(play_id, node_indices)| AgenticPlay {
-                root_node: *node_indices
+                root_nodes: node_indices
                     .iter()
-                    .find(|node_index| nodes[**node_index].dependencies.is_empty())
-                    .unwrap(),
+                    .copied()
+                    .filter(|node_index| nodes[*node_index].dependencies.is_empty())
+                    .collect(),
                 play_id,
                 nodes: node_indices,
             })

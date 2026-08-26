@@ -12,6 +12,8 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def test_aisimulate_has_no_top_level_application_cli_modules() -> None:
-    assert importlib.util.find_spec("aisimulate.main") is None
-    assert importlib.util.find_spec("aisimulate.__main__") is None
+def test_aisimulate_owns_the_single_simulation_cli() -> None:
+    assert importlib.util.find_spec("aisimulate.main") is not None
+    assert importlib.util.find_spec("aisimulate.__main__") is not None
+    assert importlib.util.find_spec("aisimulate.replay.__main__") is None
+    assert importlib.util.find_spec("aisimulate.sweeper.__main__") is None

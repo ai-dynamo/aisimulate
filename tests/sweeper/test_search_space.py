@@ -98,8 +98,10 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
         gpu_budget,
         deployment_mode,
         backend,
+        backend_version=None,
         min_gpu_budget=None,
         max_seq_len=None,
+        role_runtime=None,
     ):
         calls.append((deployment_mode, backend))
         return [_DISAGG_DP1_CFG]
@@ -200,8 +202,10 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
         gpu_budget,
         deployment_mode,
         backend,
+        backend_version=None,
         min_gpu_budget=None,
         max_seq_len=None,
+        role_runtime=None,
     ):
         if deployment_mode == "disagg":
             raise NoViableParallelConfig("disagg does not fit")
@@ -251,8 +255,10 @@ def test_backend_without_perf_database_is_dropped(monkeypatch):
         gpu_budget,
         deployment_mode,
         backend,
+        backend_version=None,
         min_gpu_budget=None,
         max_seq_len=None,
+        role_runtime=None,
     ):
         if backend == "vllm":
             raise NoPerfDatabase("no vLLM perf database")

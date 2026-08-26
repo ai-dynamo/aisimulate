@@ -8,7 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 > This directory contains the complete AIConfigurator application migrated to
 > the standalone AISimulate repository. It builds the `aisimulate` 0.12.0
 > wheel, not a separate `aiconfigurator` wheel. The legacy import namespace and
-> executable remain compatibility surfaces inside that wheel. The original AIC
+> `aiconfigurator` executable remain compatibility surfaces alongside the public
+> `aisimulate` prediction CLI. The original AIC
 > documentation below is retained so existing workflows remain discoverable
 > during the CLI parity and deprecation window.
 
@@ -77,6 +78,26 @@ tests.
 
 ## Run
 
+### AISimulate prediction and recommendation
+
+AISimulate uses one strict YAML surface for a concrete prediction and a configuration search:
+
+```bash
+aisimulate predict --config prediction.yaml
+aisimulate recommend --config recommendation.yaml
+```
+
+The built-in `engine` stack is the default. Optional packages can register another runner, such as
+Dynamo, without creating another CLI:
+
+```bash
+aisimulate predict --stack dynamo --config prediction.yaml
+```
+
+See [the unified CLI design](../../docs/cli-design.md) for the complete field, domain, preset, and
+traffic contract. The `aiconfigurator` command below remains available for its existing AIC
+estimation and deployment-generation workflows.
+
 ### CLI
 
 ```bash
@@ -88,11 +109,8 @@ aiconfigurator cli support --model-path Qwen/Qwen3-32B-FP8 --system h200_sxm
 ```
 - We have six modes: `default`, `estimate`, `recommend`, `exp`, `generate`, and `support`.
 - Use `default` to find the estimated best deployment by searching the configuration space.
-- The experimental Spica smart sweeper now lives in Dynamo's standalone
-  [AI Simulate distribution](https://docs.nvidia.com/dynamo/dev/knowledge-base/modular-components/ai-simulate/spica/overview).
-  From a matching Dynamo checkout, install it with `python -m pip install ./aisimulate`, then use
-  `python -m aisimulate.spica` for Spica searches. Runnable configurations and tools live under
-  `examples/aisimulate/spica`.
+- The former standalone Replay and Sweeper module CLIs are replaced by `aisimulate predict` and
+  `aisimulate recommend`; their Python SDKs remain available for embedded callers.
 - Use `exp` to run customized experiments defined in a YAML file.
 - Use `generate` to quickly create a naive configuration without a parameter sweep.
 - Use `recommend` to find the minimum GPU count and optimal deployment configuration needed to meet a performance target. This mode is designed as a procurement sizing tool -- specify exactly one load target (`--target-request-rate` or `--target-concurrency` — mutually exclusive) along with SLA constraints, and the system calculates the minimum GPUs required. You can also omit `--total-gpus` in default mode with a load target for the same behavior.

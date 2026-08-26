@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rustc_hash::FxHashMap;
@@ -15,10 +15,11 @@ use uuid::Uuid;
 
 use super::driver::WorkloadDriver;
 use super::types::{
-    AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependencyRelation,
-    AgenticDependencyTrigger, AgenticMooncakeHeader, AgenticMooncakeRow, AgenticNode, AgenticPlay,
-    AgenticTrace, DelaySpec, LengthSpec, MooncakeRow, ReplayRequestHashes, SessionPartitionSpec,
-    SessionTrace, SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace, effective_replay_key,
+    AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
+    AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope, AgenticMooncakeHeader,
+    AgenticMooncakeRow, AgenticNode, AgenticPlay, AgenticSourceProvenance, AgenticTrace, DelaySpec,
+    LengthSpec, MooncakeRow, ReplayRequestHashes, SessionPartitionSpec, SessionTrace,
+    SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace, effective_replay_key,
 };
 use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
 use crate::replay::protocol::DirectRequest;
@@ -31,6 +32,211 @@ struct RawAppliedComputeAgenticRecord {
     tool_call_output_length: Vec<usize>,
     tool_call_latency: Vec<f64>,
     final_assistant_response_length: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyAgenticMooncakeRow {
+    request_id: String,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default, alias = "input_tokens")]
+    input_length: Option<usize>,
+    #[serde(alias = "output_tokens")]
+    output_length: usize,
+    #[serde(default)]
+    output_token_ids: Option<Vec<u32>>,
+    hash_ids: Vec<u64>,
+    #[serde(default, alias = "created_time")]
+    timestamp: Option<f64>,
+    #[serde(default)]
+    delay: Option<f64>,
+    #[serde(default)]
+    delay_ms: Option<f64>,
+    #[serde(default)]
+    tool_wait_ms: f64,
+    #[serde(default)]
+    wait_for: Vec<String>,
+    #[serde(default)]
+    priority: Option<i32>,
+    #[serde(default)]
+    strict_priority: Option<u32>,
+    #[serde(default)]
+    policy_class: Option<String>,
+}
+
+/// Load either the versioned agentic-Mooncake graph or the legacy flat rows.
+///
+/// The versioned header owns its block size. ``legacy_trace_block_size`` is
+/// consulted only when lowering headerless legacy rows.
+pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Result<AgenticTrace> {
+    let file = File::open(path)
+        .with_context(|| format!("failed to open trace file {}", path.display()))?;
+    let mut lines = BufReader::new(file).lines();
+    let first = loop {
+        let line = lines
+            .next()
+            .transpose()
+            .with_context(|| format!("failed to read trace file {}", path.display()))?
+            .context("agentic trace file is empty")?;
+        if !line.trim().is_empty() {
+            break line;
+        }
+    };
+    let first_json: serde_json::Value =
+        serde_json::from_str(&first).context("failed to parse first agentic trace row")?;
+    if first_json.get("schema").and_then(serde_json::Value::as_str) == Some(AGENTIC_MOONCAKE_SCHEMA)
+    {
+        return AgenticTrace::from_agentic_mooncake(path);
+    }
+
+    let mut raw_rows = vec![
+        serde_json::from_value::<LegacyAgenticMooncakeRow>(first_json)
+            .context("failed to parse first legacy agentic Mooncake row")?,
+    ];
+    for (line_index, line) in lines.enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "failed to read legacy agentic trace line {}",
+                line_index + 2
+            )
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        raw_rows.push(serde_json::from_str(&line).with_context(|| {
+            format!(
+                "failed to parse legacy agentic trace line {}",
+                line_index + 2
+            )
+        })?);
+    }
+    let mut rows = raw_rows
+        .into_iter()
+        .map(|raw| -> Result<AgenticMooncakeRow> {
+            if raw.request_id.trim().is_empty() {
+                bail!("request_id must be nonempty");
+            }
+            if raw.hash_ids.is_empty() {
+                bail!("hash_ids must be nonempty");
+            }
+            if !raw.tool_wait_ms.is_finite() || raw.tool_wait_ms < 0.0 {
+                bail!("tool_wait_ms must be finite and nonnegative");
+            }
+            if raw.delay.is_some() && raw.delay_ms.is_some() {
+                bail!("delay and delay_ms cannot both be set");
+            }
+            let delay = raw.delay.or(raw.delay_ms).unwrap_or(0.0) + raw.tool_wait_ms;
+            if !delay.is_finite() || delay < 0.0 {
+                bail!("dependency delay must be finite and nonnegative");
+            }
+            let relation = if raw.wait_for.len() > 1 {
+                AgenticDependencyRelation::Join
+            } else {
+                AgenticDependencyRelation::Sequence
+            };
+            let dependencies = raw
+                .wait_for
+                .into_iter()
+                .map(|request_id| AgenticDependency {
+                    request_id,
+                    trigger: AgenticDependencyTrigger::Completion,
+                    delay_ms: delay,
+                    relation,
+                })
+                .collect::<Vec<_>>();
+            Ok(AgenticMooncakeRow {
+                request_id: raw.request_id,
+                play_id: "agentic-play".to_string(),
+                session_id: raw
+                    .session_id
+                    .unwrap_or_else(|| "agentic-session".to_string()),
+                model: "unknown".to_string(),
+                input_length: raw.input_length,
+                output_length: Some(raw.output_length),
+                output_token_ids: raw.output_token_ids,
+                hash_ids: Some(raw.hash_ids),
+                not_before_ms: if dependencies.is_empty() {
+                    raw.timestamp.unwrap_or(0.0)
+                } else {
+                    0.0
+                },
+                priority: raw.priority,
+                strict_priority: raw.strict_priority,
+                policy_class: raw.policy_class,
+                dependencies,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assign_dependency_component_play_ids(&mut rows, "legacy-play");
+    AgenticTrace::from_agentic_mooncake_rows(
+        AgenticMooncakeHeader {
+            schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
+            version: AGENTIC_MOONCAKE_VERSION,
+            block_size: legacy_trace_block_size,
+            hash_id_scope: AgenticHashIdScope::Local,
+            source: AgenticSourceProvenance {
+                format: "legacy_agentic_mooncake".to_string(),
+                digest: format!("{}:{}", path.display(), rows.len()),
+            },
+        },
+        rows,
+    )
+}
+
+pub(super) fn assign_dependency_component_play_ids(rows: &mut [AgenticMooncakeRow], prefix: &str) {
+    fn find(parent: &mut [usize], value: usize) -> usize {
+        if parent[value] != value {
+            parent[value] = find(parent, parent[value]);
+        }
+        parent[value]
+    }
+
+    let by_id = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.request_id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut parent = (0..rows.len()).collect::<Vec<_>>();
+    for (index, row) in rows.iter().enumerate() {
+        for dependency in &row.dependencies {
+            let Some(&source) = by_id.get(&dependency.request_id) else {
+                continue;
+            };
+            let left = find(&mut parent, index);
+            let right = find(&mut parent, source);
+            if left != right {
+                parent[left] = right;
+            }
+        }
+    }
+    let mut roots_by_component: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        if row.dependencies.is_empty() {
+            let component = find(&mut parent, index);
+            roots_by_component.entry(component).or_default().push(index);
+        }
+    }
+    let mut labels = HashMap::new();
+    for (component, roots) in roots_by_component {
+        let canonical = roots
+            .iter()
+            .copied()
+            .min_by(|left, right| {
+                rows[*left]
+                    .not_before_ms
+                    .total_cmp(&rows[*right].not_before_ms)
+                    .then_with(|| rows[*left].request_id.cmp(&rows[*right].request_id))
+            })
+            .expect("a root component is nonempty");
+        labels.insert(component, rows[canonical].request_id.clone());
+    }
+    for (index, row) in rows.iter_mut().enumerate() {
+        let component = find(&mut parent, index);
+        let label = labels
+            .entry(component)
+            .or_insert_with(|| row.request_id.clone());
+        row.play_id = format!("{prefix}:{label}");
+    }
 }
 
 #[derive(Debug, Default)]
@@ -226,17 +432,18 @@ impl MooncakeTraceBuilder {
         let hash_ids = raw
             .hash_ids
             .ok_or_else(|| anyhow!("trace line {} is missing hash_ids", line_idx + 1))?;
-        // Clamp input_length to the synthesizable capacity: in the mooncake
-        // trace format, input_length is the full prompt token count which may
-        // exceed hash_ids.len() * block_size (cached portion only).
         let synthesizable_capacity = hash_ids
             .len()
             .checked_mul(self.trace_block_size)
             .ok_or_else(|| anyhow!("trace line {} synthesized capacity overflow", line_idx + 1))?;
-        let input_length = raw
-            .input_length
-            .unwrap_or(synthesizable_capacity)
-            .min(synthesizable_capacity);
+        let input_length = raw.input_length.unwrap_or(synthesizable_capacity);
+        ensure!(
+            input_length <= synthesizable_capacity,
+            "trace line {} input_length {} exceeds hash_ids capacity {}",
+            line_idx + 1,
+            input_length,
+            synthesizable_capacity
+        );
         let output_length = raw
             .output_length
             .ok_or_else(|| anyhow!("trace line {} is missing output_length", line_idx + 1))?;
@@ -1276,16 +1483,16 @@ impl AgenticTraceBuilder {
                 .copied()
                 .filter(|node_index| self.nodes[*node_index].dependencies.is_empty())
                 .collect();
-            let [root_node] = roots.as_slice() else {
+            if roots.is_empty() {
                 bail!(
-                    "play {} must have exactly one root request, found {}",
+                    "play {} must have at least one root request, found {}",
                     play_id,
                     roots.len()
                 );
-            };
+            }
             plays.push(AgenticPlay {
                 play_id,
-                root_node: *root_node,
+                root_nodes: roots,
                 nodes: node_indices,
             });
         }

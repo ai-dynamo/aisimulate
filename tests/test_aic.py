@@ -36,6 +36,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
             "aic_nextn": 3,
             "systems_path": "/tmp/custom-systems.yaml",
             "block_size": 64,
+            "max_num_seqs": 37,
         }
     )
 
@@ -44,6 +45,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
     assert calls[0]["attention_dp_size"] == 2
     assert calls[0]["pp_size"] == 3
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
+    assert calls[0]["max_num_sequences"] == 37
     assert "nextn" not in calls[0]
 
 
@@ -66,6 +68,7 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
         tp_size=1,
         block_size=64,
         max_num_batched_tokens=4096,
+        max_num_sequences=17,
         pp_size=3,
         gemm_dtype="int4",
         fmha_dtype="auto",
@@ -79,6 +82,7 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
     assert kwargs["memory_fraction_kind"] == "of_total"
     assert kwargs["memory_fraction_value"] == 0.9
     assert kwargs["pp_size"] == 3
+    assert kwargs["max_batch_size"] == 17
     assert kwargs["systems_path"] == "/tmp/custom-systems.yaml"
     assert kwargs["gemm_quant_mode"] == "int4_wo"
     assert kwargs["fmha_quant_mode"] is None

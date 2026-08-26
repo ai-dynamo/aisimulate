@@ -66,8 +66,11 @@ def _is_installer_console_script(path: PurePosixPath) -> bool:
     target = parts[parent_count:]
     return parent_count > 0 and target in {
         ("bin", "aiconfigurator"),
+        ("bin", "aisimulate"),
         ("Scripts", "aiconfigurator.exe"),
         ("Scripts", "aiconfigurator-script.py"),
+        ("Scripts", "aisimulate.exe"),
+        ("Scripts", "aisimulate-script.py"),
     }
 
 

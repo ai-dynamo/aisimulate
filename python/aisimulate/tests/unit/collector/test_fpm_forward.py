@@ -557,6 +557,11 @@ def test_installed_source_revision_is_stable_across_record_order_quoting_and_ins
 
     noisy_rows = [
         ("../../../bin/aiconfigurator", "sha256=environment-specific", "123"),
+        ("../../../bin/aisimulate", "sha256=environment-specific", "123"),
+        ("../../../Scripts/aiconfigurator.exe", "sha256=environment-specific", "123"),
+        ("../../../Scripts/aiconfigurator-script.py", "sha256=environment-specific", "123"),
+        ("../../../Scripts/aisimulate.exe", "sha256=environment-specific", "123"),
+        ("../../../Scripts/aisimulate-script.py", "sha256=environment-specific", "123"),
         ("aisimulate-0.12.0.dist-info/direct_url.json", "sha256=checkout-specific", "99"),
         *reversed(base_rows),
     ]
@@ -583,6 +588,7 @@ def test_installed_source_revision_is_stable_across_record_order_quoting_and_ins
         ("malformed_size", "malformed size"),
         ("duplicate", "duplicates payload row"),
         ("traversal", "unsafe path"),
+        ("unknown_console_script", "unsafe path"),
     ),
 )
 def test_installed_source_revision_rejects_untrusted_record_or_payload(
@@ -609,6 +615,8 @@ def test_installed_source_revision_rejects_untrusted_record_or_payload(
         rows.append(rows[0])
     elif case == "traversal":
         rows.insert(0, ("collector/../escape.py", _record_sha256(b"escape"), "6"))
+    elif case == "unknown_console_script":
+        rows.insert(0, ("../../../bin/untrusted", _record_sha256(b"escape"), "6"))
     elif case == "missing_version":
         version = None
 

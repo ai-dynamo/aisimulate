@@ -15,8 +15,10 @@
 //! - decode coords `(B, B*s)` — one new token per request, `s` the per-request
 //!   KV length at this decode step;
 //! - hard per-axis domain gate BEFORE interpolation (FPM never extrapolates);
-//! - ScatteredSites resolution with the exact Python config
-//!   (`own_curve_coverage_fallback=true`, `max_site_distance=2.0`).
+//! - ScatteredSites resolution with `own_curve_coverage_fallback=true` and
+//!   `max_site_distance=2.0`; prefill additionally admits sites within 32 raw
+//!   KV tokens while retaining the normal log2 gate on batch, so small
+//!   block-aligned coordinates around zero remain connected.
 //!
 //! The SOL roofline anchoring the interpolation is the model's ORIGINAL
 //! op-level list (carried as `sol_ops` on the wire) queried in SOL mode with
@@ -399,9 +401,9 @@ impl FpmForwardOp {
     }
 }
 
-/// The exact Python interp configs (`fpm_prefill_config` / `fpm_decode_config`
-/// + `ScatteredSites` defaults): prefill sites `(batch, kv)` owning the
-/// new-token curve; decode sites `(batch,)` owning the KV curve.
+/// FPM interpolation configs: prefill sites `(batch, kv)` own the new-token
+/// curve; decode sites `(batch,)` own the KV curve. Prefill adds a raw-KV
+/// fallback around zero to the shared `ScatteredSites` defaults.
 fn interp_config<'a>(phase: FpmPhase, sol: &'a dyn Fn(&[f64]) -> f64) -> OpInterpConfig<'a> {
     let (axes, site_axes, curve_axis): (&'static [&'static str], Vec<usize>, usize) = match phase {
         FpmPhase::Prefill => (&FPM_PREFILL_AXES, vec![0, 2], 1),
@@ -414,6 +416,15 @@ fn interp_config<'a>(phase: FpmPhase, sol: &'a dyn Fn(&[f64]) -> f64) -> OpInter
             curve_axis,
             nn_sites: 4,
             max_site_distance: Some(2.0),
+            site_axis_abs_distance_fallback: match phase {
+                // Prefill sites are (batch, total KV). Around zero, the
+                // log2 metric turns a small token difference into many
+                // octaves (0/1 versus the first block-aligned site at 16).
+                // Admit raw-KV neighbours within two 16-token blocks while
+                // retaining the normal log2 gate on batch.
+                FpmPhase::Prefill => Some((1, 32.0)),
+                FpmPhase::Decode => None,
+            },
             require_curve_coverage: true,
             k_tail: 3,
             own_curve_coverage_fallback: true,
@@ -623,6 +634,81 @@ mod tests {
             (high.latency_ms - 40.0 * 1.04 * 1.8).abs() < 1e-9,
             "{}",
             high.latency_ms
+        );
+    }
+
+    #[test]
+    fn prefill_low_kv_uses_nearby_raw_kv_sites() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |total: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: "prefill",
+            batch_size: 1,
+            total_prefill_tokens: total,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        let rows = vec![
+            mk(4096, 0, 40.0),
+            mk(8192, 0, 80.0),
+            mk(4096, 16, 40.0),
+            mk(8192, 16, 80.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        let mut prefill = op(FpmPhase::Prefill);
+        prefill.sol_ops = vec![Op::Elementwise(crate::operators::ElementwiseOp {
+            name: "elementwise".to_string(),
+            scale_factor: 1.0,
+            bytes_per_token: 4096.0,
+            scale_num_tokens: 1,
+            seq_split: 0,
+        })];
+
+        // The real replay asks for (B=1, P=8066, KV=1). Its nearest raw-KV
+        // sites are 0 and 16: both are numerically close even though log2(0)
+        // is floored far away and log2(16/1)=4 exceeds the normal gate of 2.
+        let got = prefill.query_totals(&db, &[1.0, 8066.0, 1.0]).unwrap();
+        let expected = 40.0 + (80.0 - 40.0) * (8066.0 - 4096.0) / (8192.0 - 4096.0);
+        assert!(
+            (got.latency_ms - expected).abs() < 1e-9,
+            "{}",
+            got.latency_ms
+        );
+    }
+
+    #[test]
+    fn prefill_raw_kv_fallback_preserves_the_batch_gate() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |batch: u32, total: u32, kv: u32| RowSpec {
+            workload_kind: "prefill",
+            batch_size: batch,
+            total_prefill_tokens: total,
+            total_kv_read_tokens: kv,
+            latency_ms: total as f64 / 100.0,
+            ..RowSpec::default()
+        };
+        let rows = vec![
+            mk(1, 4096, 1024),
+            mk(1, 8192, 1024),
+            mk(16, 4096, 0),
+            mk(16, 8192, 0),
+            mk(16, 4096, 16),
+            mk(16, 8192, 16),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+
+        // KV=0/16 are within 32 raw tokens, but only at batch 16. They stay
+        // inadmissible because batch 16 is four log2 units from batch 1.
+        let err = op(FpmPhase::Prefill)
+            .query_totals(&db, &[1.0, 8066.0, 1.0])
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no site within max_site_distance"),
+            "{err}"
         );
     }
 

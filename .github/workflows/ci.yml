@@ -30,7 +30,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     container:
-      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -67,7 +67,7 @@ jobs:
         arch: [amd64, arm64]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     container:
-      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -96,7 +96,7 @@ jobs:
         arch: [amd64, arm64]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     container:
-      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -122,7 +122,7 @@ jobs:
         arch: [amd64, arm64]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     container:
-      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -154,7 +154,7 @@ jobs:
         arch: [amd64, arm64]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     container:
-      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -197,7 +197,7 @@ jobs:
         arch: [amd64, arm64]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     container:
-      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -222,7 +222,7 @@ jobs:
         arch: [amd64, arm64]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     container:
-      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
@@ -255,5 +255,5 @@ jobs:
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};
           forbidden = {'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
           assert installed.isdisjoint(forbidden), installed & forbidden"
-      - run: test ! -e release-smoke/bin/aisimulate
+      - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version

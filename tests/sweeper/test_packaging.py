@@ -49,6 +49,8 @@ def test_aisimulate_distribution_publishes_aisimulate_sweeper_package():
     assert distribution.metadata["Name"] == "aisimulate"
     assert importlib.util.find_spec("aisimulate.replay") is not None
     assert importlib.util.find_spec("aisimulate.sweeper") is not None
+    assert importlib.util.find_spec("aisimulate.replay.__main__") is None
+    assert importlib.util.find_spec("aisimulate.sweeper.__main__") is None
     # Editable installs expose only their .pth/dist-info records. In wheel-based
     # Planner CI, assert the artifact contains the canonical package and no alias.
     if any(path.startswith("aisimulate/") for path in packaged_files):
@@ -66,7 +68,7 @@ def test_aisimulate_native_runtime_imports_from_installed_distribution():
     assert callable(runtime.run_replay_json)
 
 
-def test_aisimulate_preserves_only_the_aiconfigurator_console_script():
+def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():
     distribution = importlib.metadata.distribution("aisimulate")
 
     scripts = {
@@ -74,7 +76,10 @@ def test_aisimulate_preserves_only_the_aiconfigurator_console_script():
         for entry in distribution.entry_points
         if entry.group == "console_scripts"
     }
-    assert scripts == {"aiconfigurator": "aiconfigurator.main:main"}
+    assert scripts == {
+        "aiconfigurator": "aiconfigurator.main:main",
+        "aisimulate": "aisimulate.main:main",
+    }
 
 
 def test_ai_dynamo_has_no_aisimulate_extra():
