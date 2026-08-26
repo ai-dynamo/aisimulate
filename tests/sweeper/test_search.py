@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import aisimulate.sweeper.search as search_mod
-from aisimulate.sweeper.config import OptimizationGoal, SmartSearchConfig
+from aisimulate.sweeper.config import OptimizationGoal, SLATarget, SmartSearchConfig
 from aisimulate.sweeper.kv_load import KVLoadResolution
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import (
@@ -515,6 +515,9 @@ def test_strict_aggregate_sla_gates_before_sampler_observation_and_ranking(
             max_seqs = float(args["max_num_seqs"])
             return ReplayReport(
                 metrics={
+                    "completed_requests": 1.0,
+                    "num_ttft_samples": 1.0,
+                    "num_tpot_samples": 1.0,
                     "output_throughput_tok_s": max_seqs,
                     "mean_ttft_ms": 100.0,
                     "mean_tpot_ms": max_seqs / 32.0,
@@ -549,6 +552,55 @@ def test_strict_aggregate_sla_gates_before_sampler_observation_and_ranking(
         isinstance(item, tuple)
         and item[0] == "infeasible"
         and "strict aggregate SLA violation" in item[1]
+        for item in sampler_seen["sampler"].scored
+    )
+
+
+def test_strict_aggregate_sla_rejects_reports_without_latency_samples(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    sampler_seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        sampler_seen["sampler"] = sampler
+        return sampler
+
+    class EmptyLatencyRunner(_FakeRunner):
+        def run(self, spec: ReplaySpec) -> ReplayReport:
+            self.calls += 1
+            self.specs.append(spec)
+            return ReplayReport(
+                metrics={
+                    "completed_requests": 0.0,
+                    "num_e2e_latency_samples": 0.0,
+                    "output_throughput_tok_s": 0.0,
+                    "mean_e2e_latency_ms": 0.0,
+                }
+            )
+
+    base = _config(candidates_per_round=1)
+    config = base.model_copy(
+        update={
+            "goal": OptimizationGoal(
+                target="throughput",
+                sla=SLATarget(e2e_ms=100.0),
+                strict_sla=True,
+            )
+        }
+    )
+    candidates = _run_sweep(
+        config,
+        runner_factory=_FakeRunnerFactory(runner=EmptyLatencyRunner()),
+        sampler_factory=sampler_factory,
+        show_progress=False,
+    )
+
+    assert candidates == []
+    assert any(
+        isinstance(item, tuple)
+        and item[0] == "infeasible"
+        and "no qualifying samples" in item[1]
         for item in sampler_seen["sampler"].scored
     )
 

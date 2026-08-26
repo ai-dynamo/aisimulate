@@ -44,8 +44,9 @@ for it (and raises for `pareto`, which has no single direction). `score_report` 
 minimized targets so **higher is always better** internally; for a Pareto goal the raw
 (unsigned) value is kept and `_dominates` applies each objective's own direction.
 Missing-key defaults differ by direction: a maximized target reads `0.0` when its key is
-absent, but `e2e_latency` defaults to `+inf` — so a report missing `mean_e2e_latency_ms`
-scores worst-possible (`-inf` after negation) rather than best.
+absent, but `ttft` and `e2e_latency` default to `+inf` when their metric is missing or has
+no qualifying samples. Such a latency report scores worst-possible (`-inf` after negation)
+rather than best.
 
 The `*_per_user` metric is already a rate (mean of per-token-gap `1000/itl`), so it gets
 **no** GPU/time normalization — it is the InferenceX x-axis (tok/s/user).
@@ -99,7 +100,7 @@ opt-in: it filters aggregate mean metrics before scalar ranking or Pareto domina
 | `e2e_ms` | end-to-end bound — standalone alternative |
 
 Strict aggregate comparisons are inclusive (`value <= bound`). A configured bound with
-a missing or non-finite report metric rejects the candidate.
+a missing/non-finite report metric or no qualifying latency samples rejects the candidate.
 
 ## Pareto
 

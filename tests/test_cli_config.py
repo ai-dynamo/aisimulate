@@ -516,12 +516,18 @@ def test_strict_sla_is_public_and_lowers_to_sweeper_goal() -> None:
         )
 
 
-def test_partial_token_sla_is_strict_recommendation_only() -> None:
-    with pytest.raises(ValidationError, match="requires ttft_ms and itl_ms together"):
-        CorePredictionConfig.model_validate(
-            {"engine": _engine(), "evaluation": {"sla": {"ttft_ms": 800}}}
-        )
+@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
+def test_prediction_accepts_independent_token_sla_bounds(
+    field: str, bound: float
+) -> None:
+    config = CorePredictionConfig.model_validate(
+        {"engine": _engine(), "evaluation": {"sla": {field: bound}}}
+    )
 
+    assert getattr(config.evaluation.sla, field) == bound
+
+
+def test_partial_token_sla_is_strict_recommendation_only() -> None:
     with pytest.raises(ValidationError, match="unless optimization.strict_sla"):
         CoreRecommendationConfig.model_validate(
             {

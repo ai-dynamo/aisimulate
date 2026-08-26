@@ -114,6 +114,9 @@ pub struct TraceDistributionStats {
 
 #[derive(Debug, Clone)]
 pub struct TraceLatencyStats {
+    pub num_ttft_samples: usize,
+    pub num_tpot_samples: usize,
+    pub num_e2e_latency_samples: usize,
     pub ttft: TraceDistributionStats,
     pub ttst: TraceDistributionStats,
     pub tpot: TraceDistributionStats,
@@ -289,6 +292,12 @@ impl Serialize for ReplayReport {
         map.serialize_entry(
             "first_admission_prefix_cache_reused_ratio",
             &self.first_admission_prefix_cache_reused_ratio,
+        )?;
+        map.serialize_entry("num_ttft_samples", &self.latency.num_ttft_samples)?;
+        map.serialize_entry("num_tpot_samples", &self.latency.num_tpot_samples)?;
+        map.serialize_entry(
+            "num_e2e_latency_samples",
+            &self.latency.num_e2e_latency_samples,
         )?;
         serialize_distribution(&mut map, "ttft", &self.latency.ttft)?;
         serialize_distribution(&mut map, "ttst", &self.latency.ttst)?;
@@ -637,11 +646,9 @@ pub(crate) struct TraceRequestStatsSnapshot {
     pub first_admission_reused_input_tokens: usize,
 }
 
-/// SLA thresholds used to classify requests for goodput. Mirrors Sweeper's
-/// `SLATarget` shape: set `ttft_ms` + `itl_ms` together, or `e2e_ms` alone.
-/// Only the thresholds that are set are checked, so an e2e-only SLA gates on
-/// e2e and a ttft+itl SLA gates on both. All-`None` (the default) means "no
-/// SLA", which suppresses goodput entirely.
+/// SLA thresholds used to classify requests for goodput. Every configured
+/// field is enforced independently; an unset field is unbounded. All-`None`
+/// (the default) means "no SLA", which suppresses goodput entirely.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, serde::Deserialize)]
 pub struct SlaThresholds {
     pub ttft_ms: Option<f64>,
@@ -660,11 +667,6 @@ impl SlaThresholds {
 
     pub(crate) fn validate(&self) -> crate::replay::ReplayResult<()> {
         let token_form = self.ttft_ms.is_some() || self.itl_ms.is_some();
-        if token_form && (self.ttft_ms.is_none() || self.itl_ms.is_none()) {
-            return Err(crate::replay::ReplayError::InvalidSpec(
-                "sla.ttft_ms and sla.itl_ms must be supplied together".to_string(),
-            ));
-        }
         if token_form && self.e2e_ms.is_some() {
             return Err(crate::replay::ReplayError::InvalidSpec(
                 "sla.e2e_ms is mutually exclusive with sla.ttft_ms/itl_ms".to_string(),
@@ -1389,6 +1391,9 @@ impl TraceCollector {
             }
         }
 
+        let num_ttft_samples = ttfts.len();
+        let num_tpot_samples = tpots.len();
+        let num_e2e_latency_samples = e2e_latencies.len();
         let duration_s = (duration_ms / 1000.0).max(1e-9);
         // Provisioned worker-seconds: static count × duration for an externally
         // clocked runtime, else the runtime-integrated accumulator.
@@ -1442,6 +1447,9 @@ impl TraceCollector {
                 total_first_admission_reused_tokens as f64 / total_input_tokens as f64
             },
             latency: TraceLatencyStats {
+                num_ttft_samples,
+                num_tpot_samples,
+                num_e2e_latency_samples,
                 ttft: build_distribution_stats(ttfts),
                 ttst: build_distribution_stats(ttsts),
                 tpot: build_distribution_stats(tpots),
@@ -1805,8 +1813,16 @@ mod tests {
         assert_eq!(report.throughput.duration_ms, 25.0);
         assert_eq!(report.throughput.decode_worker_seconds, 0.025);
         assert!((report.throughput.gpu_hours - 0.1 / 3600.0).abs() < 1e-12);
+        assert_eq!(report.latency.num_ttft_samples, 0);
+        assert_eq!(report.latency.num_tpot_samples, 0);
+        assert_eq!(report.latency.num_e2e_latency_samples, 0);
         assert_eq!(report.latency.ttft.mean_ms, 0.0);
         assert_eq!(report.latency.e2e.mean_ms, 0.0);
+
+        let summary = serde_json::to_value(&report).unwrap();
+        assert_eq!(summary["num_ttft_samples"], 0);
+        assert_eq!(summary["num_tpot_samples"], 0);
+        assert_eq!(summary["num_e2e_latency_samples"], 0);
     }
 
     #[test]
@@ -2003,6 +2019,22 @@ mod tests {
         // duration = max last token = 200ms → 0.2s; good output tokens = 3 (B) + 1 (C) = 4.
         assert!((goodput.output_throughput_tok_s - 4.0 / 0.2).abs() < 1e-6);
         assert!((goodput.request_throughput_rps - 2.0 / 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sla_validation_accepts_independent_token_bounds() {
+        for sla in [
+            SlaThresholds {
+                ttft_ms: Some(150.0),
+                ..Default::default()
+            },
+            SlaThresholds {
+                itl_ms: Some(30.0),
+                ..Default::default()
+            },
+        ] {
+            sla.validate().unwrap();
+        }
     }
 
     /// A request straddling the ITL bound flips good↔bad at the boundary.

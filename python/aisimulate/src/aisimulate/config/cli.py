@@ -40,9 +40,6 @@ class CorePredictionConfig(StrictModel):
             and self.engine.mode != "aggregated"
         ):
             raise ValueError(f"{source.format} requires aggregated engine mode")
-        sla = self.evaluation.sla
-        if sla is not None and ((sla.ttft_ms is None) != (sla.itl_ms is None)):
-            raise ValueError("prediction evaluation.sla requires ttft_ms and itl_ms together")
         return self
 
     @classmethod

@@ -61,9 +61,10 @@ class OptimizationTarget(str, Enum):
 class SLATarget(BaseModel):
     """Latency bounds in milliseconds.
 
-    ``ttft_ms`` + ``itl_ms`` and ``e2e_ms`` are understood by replay as
-    per-request goodput bounds. The same fields can also be applied to the
-    aggregate mean metrics when :attr:`OptimizationGoal.strict_sla` is enabled.
+    Replay treats every configured field as an independent per-request
+    goodput bound. Sweeper normally requires ``ttft_ms`` + ``itl_ms`` together;
+    :attr:`OptimizationGoal.strict_sla` permits either token bound to stand alone
+    because the same field also gates the corresponding aggregate mean.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -149,6 +150,8 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require an SLA target (ttft_ms+itl_ms or e2e_ms)")
+        if not self.strict_sla and self.sla is not None and ((self.sla.ttft_ms is None) != (self.sla.itl_ms is None)):
+            raise ValueError("ttft_ms and itl_ms must be supplied together unless strict_sla is true")
         if self.strict_sla and (self.sla is None or not self.sla.has_aggregate_bound):
             raise ValueError("strict_sla requires at least one SLA bound")
         return self

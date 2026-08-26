@@ -27,7 +27,13 @@ by the unified command surface. A legacy command becomes an AISimulate recommend
 | `--tpot` | `evaluation.sla.itl_ms` | Per-request goodput uses average ITL; strict mode compares aggregate mean TPOT |
 | `--strict-sla` | `optimization.strict_sla: true` | Reject before scalar ranking or Pareto dominance |
 
-## Strict SLA filtering
+## Illustrative strict SLA translation
+
+The examples below demonstrate how the strict-SLA fields map, but they are not behaviorally
+equivalent workloads. The legacy `cli default` command capacity-sweeps aggregated and
+disaggregated configurations under the eight-GPU budget without a fixed offered load. The
+AISimulate example makes the additional choices of aggregated mode and a constant 4 RPS so its
+traffic and replay behavior are explicit.
 
 Legacy command:
 
@@ -78,7 +84,7 @@ optimization:
     max_candidate_gpus: 8
 ```
 
-Run the matching AISimulate command:
+Run the illustrative AISimulate command:
 
 ```bash
 aisimulate recommend --config recommendation.yaml
@@ -88,7 +94,8 @@ Without `optimization.strict_sla`, the configured thresholds classify individual
 goodput; a slow request contributes no tokens to goodput, but does not reject the whole candidate.
 With `strict_sla: true`, AISimulate additionally compares every configured bound with the
 candidate's aggregate mean metrics and removes a violation before ranking or Pareto analysis.
-Comparisons are inclusive, and missing or non-finite aggregate metrics reject the candidate.
+Comparisons are inclusive, and missing/non-finite aggregate metrics or zero qualifying latency
+samples reject the candidate.
 
 Strict filtering can use `ttft_ms` or `itl_ms` independently. A `goodput` or `goodput_per_gpu`
 optimization still requires either both fields or `e2e_ms`, because those targets also need a

@@ -330,6 +330,9 @@ def test_strict_sla_requires_a_bound_but_does_not_change_goodput_requirement():
     with pytest.raises(ValidationError, match="strict_sla requires"):
         OptimizationGoal(strict_sla=True)
 
+    with pytest.raises(ValidationError, match="unless strict_sla is true"):
+        OptimizationGoal(sla=SLATarget(itl_ms=30))
+
     goal = OptimizationGoal(
         target=OptimizationTarget.THROUGHPUT,
         sla=SLATarget(itl_ms=30),

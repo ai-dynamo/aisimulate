@@ -44,6 +44,10 @@ from .config import (
 # trace_report keys the report always carries (goodput_* only when an SLA was
 # supplied to the replay). Surfaced into Candidate.metrics for inspection.
 _METRIC_KEYS = (
+    "completed_requests",
+    "num_ttft_samples",
+    "num_tpot_samples",
+    "num_e2e_latency_samples",
     "output_throughput_tok_s",
     "mean_ttft_ms",
     "mean_tpot_ms",
@@ -54,6 +58,22 @@ _METRIC_KEYS = (
     "duration_ms",
     "planner_total_ticks",
 )
+
+
+def _qualified_latency_value(
+    report: Mapping[str, float],
+    metric: str,
+    sample_metric: str,
+) -> float:
+    """Return a latency metric only when at least one sample qualified it."""
+    try:
+        samples = float(report[sample_metric])
+        value = float(report[metric])
+    except (KeyError, TypeError, ValueError):
+        return math.inf
+    if not math.isfinite(samples) or samples <= 0.0 or not math.isfinite(value):
+        return math.inf
+    return value
 
 
 def _avg_gpu(report: dict[str, float]) -> float:
@@ -74,7 +94,11 @@ def objective_value(report: dict[str, float], target: OptimizationTarget) -> flo
     if target is OptimizationTarget.THROUGHPUT:
         return float(report.get("output_throughput_tok_s", 0.0))
     if target is OptimizationTarget.E2E_LATENCY:
-        return float(report.get("mean_e2e_latency_ms", math.inf))
+        return _qualified_latency_value(
+            report,
+            "mean_e2e_latency_ms",
+            "num_e2e_latency_samples",
+        )
     if target is OptimizationTarget.GOODPUT:
         return float(report.get("goodput_output_throughput_tok_s", 0.0))
     if target is OptimizationTarget.GOODPUT_PER_GPU:
@@ -90,7 +114,7 @@ def objective_value(report: dict[str, float], target: OptimizationTarget) -> flo
         # rate, so no GPU/time normalization — this is the InferenceX x-axis.
         return float(report.get("mean_output_token_throughput_per_user", 0.0))
     if target is OptimizationTarget.TTFT:
-        return float(report.get("mean_ttft_ms", math.inf))
+        return _qualified_latency_value(report, "mean_ttft_ms", "num_ttft_samples")
     if target is OptimizationTarget.PARETO:
         raise ValueError("'pareto' is multi-objective; use objective_vector / pareto_front, not objective_value")
     raise ValueError(f"unknown optimization target: {target!r}")
@@ -119,18 +143,38 @@ def aggregate_sla_violations(
 ) -> tuple[str, ...]:
     """Describe strict aggregate SLA violations using inclusive bounds.
 
-    A value equal to its bound is feasible. Missing and non-finite metrics
-    fail closed instead of silently admitting an unqualified candidate.
+    A value equal to its bound is feasible. Missing/non-finite metrics and
+    absent qualifying samples fail closed instead of silently admitting an
+    unqualified candidate.
     """
     checks = (
-        ("ttft", "mean_ttft_ms", sla.ttft_ms),
-        ("tpot", "mean_tpot_ms", sla.itl_ms),
-        ("e2e", "mean_e2e_latency_ms", sla.e2e_ms),
+        ("ttft", "mean_ttft_ms", "num_ttft_samples", sla.ttft_ms),
+        ("tpot", "mean_tpot_ms", "num_tpot_samples", sla.itl_ms),
+        ("e2e", "mean_e2e_latency_ms", "num_e2e_latency_samples", sla.e2e_ms),
     )
     violations: list[str] = []
-    for label, metric, bound in checks:
+    try:
+        completed_requests = float(report["completed_requests"])
+    except (KeyError, TypeError, ValueError):
+        violations.append("completed_requests is missing")
+    else:
+        if not math.isfinite(completed_requests):
+            violations.append("completed_requests is non-finite")
+        elif completed_requests <= 0.0:
+            violations.append("completed_requests is zero")
+
+    for label, metric, sample_metric, bound in checks:
         if bound is None:
             continue
+        try:
+            samples = float(report[sample_metric])
+        except (KeyError, TypeError, ValueError):
+            violations.append(f"{label} sample count {sample_metric} is missing")
+        else:
+            if not math.isfinite(samples):
+                violations.append(f"{label} sample count {sample_metric} is non-finite")
+            elif samples <= 0.0:
+                violations.append(f"{label} has no qualifying samples ({sample_metric}={samples:g})")
         try:
             value = float(report[metric])
         except (KeyError, TypeError, ValueError):
