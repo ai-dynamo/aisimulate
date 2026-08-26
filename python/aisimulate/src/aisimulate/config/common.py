@@ -91,7 +91,6 @@ class SlaConfig(StrictModel):
     ttft_ms: PositiveFiniteFloat | None = None
     itl_ms: PositiveFiniteFloat | None = None
     e2e_ms: PositiveFiniteFloat | None = None
-    request_latency_ms: PositiveFiniteFloat | None = None
 
     @model_validator(mode="after")
     def _validate_form(self) -> SlaConfig:
@@ -103,10 +102,6 @@ class SlaConfig(StrictModel):
     @property
     def has_bound(self) -> bool:
         return any(value is not None for value in (self.ttft_ms, self.itl_ms, self.e2e_ms))
-
-    @property
-    def has_aggregate_bound(self) -> bool:
-        return self.has_bound or self.request_latency_ms is not None
 
 
 class EvaluationConfig(StrictModel):

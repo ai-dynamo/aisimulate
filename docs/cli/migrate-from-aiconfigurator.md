@@ -25,7 +25,7 @@ by the unified command surface. A legacy command becomes an AISimulate recommend
 | `--osl` | `traffic.source.output_tokens` | Synthetic output length |
 | `--ttft` | `evaluation.sla.ttft_ms` | Time-to-first-token bound in milliseconds |
 | `--tpot` | `evaluation.sla.itl_ms` | Per-request goodput uses average ITL; strict mode compares aggregate mean TPOT |
-| `--request-latency` | `evaluation.sla.request_latency_ms` | Aggregate TTFT plus TPOT across the fixed output length |
+| `--request-latency` | `evaluation.sla.e2e_ms` plus `optimization.strict_sla: true` | Fixed-output synthetic migration; applies per-request E2E and filters aggregate mean E2E |
 | `--strict-sla` | `optimization.strict_sla: true` | Reject before scalar ranking or Pareto dominance |
 
 ## Illustrative strict SLA translation
@@ -102,7 +102,10 @@ Request-level goodput and strict filtering both accept `ttft_ms` or `itl_ms` ind
 field is unbounded. `strict_sla` changes only whether the configured bounds additionally reject a
 candidate based on its aggregate means.
 
-## Request-latency SLA
+## Request-latency translation
+
+For a fixed-output-length synthetic workload, translate AIConfigurator's `--request-latency` to
+AISimulate's existing end-to-end SLA and enable strict candidate filtering.
 
 Legacy command:
 
@@ -114,8 +117,7 @@ aiconfigurator cli default \
   --total-gpus 8 \
   --isl 1024 \
   --osl 128 \
-  --request-latency 12000 \
-  --strict-sla
+  --request-latency 12000
 ```
 
 Save this AISimulate configuration as `recommendation.yaml`:
@@ -142,7 +144,7 @@ engine:
 
 evaluation:
   sla:
-    request_latency_ms: 12000
+    e2e_ms: 12000
 
 optimization:
   target: throughput
@@ -151,23 +153,26 @@ optimization:
     max_candidate_gpus: 8
 ```
 
-Run the matching AISimulate command:
+Run the AISimulate command:
 
 ```bash
 aisimulate recommend --config recommendation.yaml
 ```
 
-For every candidate, AISimulate evaluates the combined aggregate bound directly:
+With a fixed output length, the aggregate values satisfy:
 
 ```text
-mean_ttft_ms + mean_tpot_ms * (output_tokens - 1) <= request_latency_ms
+mean_e2e_latency_ms = mean_ttft_ms + mean_tpot_ms * (output_tokens - 1)
 ```
 
-Legacy AIC internally enumerates TTFT/TPOT constraint pairs and ignores `--tpot` when
-`--request-latency` is present. AISimulate applies the combined formula directly to each replay
-report. Do not also set `evaluation.sla.itl_ms` unless you want an independent mean-TPOT bound.
-`request_latency_ms` alone does not define the per-request SLA required by a `goodput` or
-`goodput_per_gpu` optimization target.
+The existing `e2e_ms` field therefore expresses the same numerical bound without introducing a
+second request-latency alias. It is a per-request E2E bound when computing goodput, and
+`strict_sla: true` additionally rejects candidates whose aggregate mean E2E latency exceeds the
+bound. `e2e_ms` is mutually exclusive with `ttft_ms` and `itl_ms`.
+
+This translation is not an aggregate-only constraint. AISimulate does not currently expose a
+public mapping for a bound that filters aggregate mean E2E latency but must not participate in
+request-level goodput.
 
 ## Migration limits
 

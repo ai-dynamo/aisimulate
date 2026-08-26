@@ -700,7 +700,6 @@ def _score_prepared(
         violations = aggregate_sla_violations(
             report,
             goal.sla,
-            osl=config.workload.osl,
         )
         if violations:
             return (
@@ -1201,7 +1200,7 @@ class Sweeper:
                         break
 
         # Strict filtering precedes scalar ranking or Pareto dominance.
-        result = analyze_candidates(candidates, goal, osl=config.workload.osl)
+        result = analyze_candidates(candidates, goal)
         if show_progress:
             replay_attempts = tally["feasible"] + tally["infeasible"] + tally["failed"]
             summary = (

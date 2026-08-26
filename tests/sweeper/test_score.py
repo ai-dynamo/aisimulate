@@ -23,7 +23,6 @@ from aisimulate.sweeper.score import (
     objective_vector,
     pareto_front,
     rank,
-    request_latency_ms,
     score_report,
 )
 
@@ -195,25 +194,6 @@ def test_aggregate_sla_bounds_are_inclusive_and_missing_metrics_fail_closed():
     assert "completed_requests is missing" in missing
     assert "e2e sample count num_e2e_latency_samples is missing" in missing
     assert "e2e metric mean_e2e_latency_ms is missing" in missing
-
-
-def test_request_latency_uses_legacy_formula_and_fails_closed():
-    assert request_latency_ms(REPORT, osl=21) == 1200.0
-    assert request_latency_ms({}, osl=21) == math.inf
-    with pytest.raises(ValueError, match="osl must be"):
-        request_latency_ms(REPORT, osl=0)
-
-    exact = SLATarget(request_latency_ms=1200.0)
-    assert meets_aggregate_sla(REPORT, exact, osl=21)
-    assert not meets_aggregate_sla(REPORT, exact, osl=22)
-    assert not meets_aggregate_sla(REPORT, exact)
-
-    unsampled = {
-        **REPORT,
-        "num_ttft_samples": 0.0,
-        "num_tpot_samples": 0.0,
-    }
-    assert not meets_aggregate_sla(unsampled, exact, osl=21)
 
 
 def test_zero_sample_latency_fails_strict_sla_and_cannot_win_latency_ranking():

@@ -62,10 +62,8 @@ class SLATarget(BaseModel):
     """Latency bounds in milliseconds.
 
     Replay treats every configured field as an independent per-request goodput
-    bound except ``request_latency_ms``, which is aggregate-only and uses the
-    legacy definition ``mean_ttft_ms + mean_tpot_ms * (osl - 1)``. An unset
-    field is unbounded. :attr:`OptimizationGoal.strict_sla` controls only the
-    additional aggregate-mean filter.
+    bound; an unset field is unbounded. :attr:`OptimizationGoal.strict_sla`
+    controls only the additional aggregate-mean filter.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -73,7 +71,6 @@ class SLATarget(BaseModel):
     ttft_ms: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
     itl_ms: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
     e2e_ms: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
-    request_latency_ms: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _validate_form(self) -> SLATarget:
@@ -84,13 +81,8 @@ class SLATarget(BaseModel):
 
     @property
     def has_bound(self) -> bool:
-        """Whether at least one per-request SLA bound is configured."""
+        """Whether at least one SLA bound is configured."""
         return any(value is not None for value in (self.ttft_ms, self.itl_ms, self.e2e_ms))
-
-    @property
-    def has_aggregate_bound(self) -> bool:
-        """Whether at least one strict aggregate bound is configured."""
-        return self.has_bound or self.request_latency_ms is not None
 
 
 # Goodput-based scalar targets — the only ones that need an SLA (their metric counts
@@ -155,9 +147,7 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require at least one SLA bound")
-        if self.sla is not None and self.sla.request_latency_ms is not None and not self.strict_sla:
-            raise ValueError("request_latency_ms requires strict_sla: true")
-        if self.strict_sla and (self.sla is None or not self.sla.has_aggregate_bound):
+        if self.strict_sla and (self.sla is None or not self.sla.has_bound):
             raise ValueError("strict_sla requires at least one SLA bound")
         return self
 
@@ -711,16 +701,6 @@ class SmartSearchConfig(BaseModel):
                 "a ranged workload.kv_load_ratio is only allowed when goal.target is 'pareto' "
                 f"(got target={self.goal.target.value}); use one scalar kv_load_ratio"
             )
-        return self
-
-    @model_validator(mode="after")
-    def _validate_request_latency_sla(self) -> SmartSearchConfig:
-        """Aggregate request latency needs one fixed synthetic output length."""
-        sla = self.goal.sla
-        if sla is None or sla.request_latency_ms is None:
-            return self
-        if self.workload.osl is None:
-            raise ValueError("request_latency_ms requires a synthetic workload with a fixed osl")
         return self
 
     @classmethod
