@@ -1,6 +1,6 @@
 # Support-matrix model roster
 
-The default support-matrix generation roster is curated separately from the
+The legacy AIC support-matrix generation roster is curated separately from the
 model configurations bundled with AISimulate.
 
 A bundled model remains available for explicit SDK and CLI use even after it
