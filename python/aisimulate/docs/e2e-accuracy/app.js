@@ -5,19 +5,22 @@
 
 const state = {
   data: null,
-  series: "aisimulate",
   sortKey: "model",
   sortDirection: "asc",
-  filter: "",
+  expandedWorkloads: new Set(),
 };
 
-const metricGrid = document.getElementById("metric-grid");
+const summaryGrid = document.getElementById("summary-grid");
 const matrixBody = document.getElementById("matrix-body");
-const modelFilter = document.getElementById("model-filter");
-const snapshotLine = document.getElementById("snapshot-line");
+const identityLine = document.getElementById("identity-line");
+const releaseLabel = document.getElementById("release-label");
+const multinodeLabel = document.getElementById("multinode-label");
+const measurementSourceLink = document.getElementById("measurement-source-link");
+const scopeClaim = document.getElementById("scope-claim");
 const provenanceContent = document.getElementById("provenance-content");
-const tableNote = document.getElementById("table-note");
 const errorBanner = document.getElementById("error-banner");
+const themeToggle = document.getElementById("theme-toggle");
+const themeIcon = document.getElementById("theme-icon");
 
 function escapeHtml(value) {
   return String(value)
@@ -29,12 +32,13 @@ function escapeHtml(value) {
 }
 
 function formatPercent(value) {
-  return value == null || !Number.isFinite(value) ? "N/A" : `${value.toFixed(2)}%`;
+  return value == null || !Number.isFinite(value) ? "—" : `${value.toFixed(1)}%`;
 }
 
 function formatDate(value) {
   if (!value) return "unknown date";
-  const date = new Date(value);
+  const normalized = value.includes("T") ? value : `${value}T00:00:00Z`;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en", {
     year: "numeric",
@@ -44,29 +48,59 @@ function formatDate(value) {
   }).format(date);
 }
 
-function metricCard(label, value, detail, accent = false) {
+function basicCard(label, value, accent = false) {
   return `
-    <article class="metric-card">
-      <div class="metric-label">${escapeHtml(label)}</div>
-      <div class="metric-value${accent ? " metric-accent" : ""}">${escapeHtml(value)}</div>
-      <div class="metric-detail">${escapeHtml(detail)}</div>
+    <article class="summary-card">
+      <div class="summary-label">${escapeHtml(label)}</div>
+      <div class="summary-value${accent ? " accent" : ""}">${escapeHtml(value)}</div>
     </article>`;
 }
 
-function renderSnapshot() {
-  const { snapshot, scope } = state.data;
-  snapshotLine.innerHTML = [
-    `<strong>${escapeHtml(snapshot.release_tag)}</strong>`,
-    `measured through ${escapeHtml(formatDate(scopeDate(snapshot.measurement_date_through)))}`,
-    `AISimulate ${escapeHtml(snapshot.aisimulate_packages.aisimulate)}`,
-  ].join("<span aria-hidden=\"true\">•</span>");
+function accuracyMetric(name, mape, shape) {
+  return `
+    <div class="accuracy-metric">
+      <span class="accuracy-name">${escapeHtml(name)}</span>
+      <div><span class="accuracy-number">${escapeHtml(formatPercent(mape))}</span><span class="accuracy-kind">MAPE</span></div>
+      <div><span class="accuracy-number">${escapeHtml(formatPercent(shape))}</span><span class="accuracy-kind">shape</span></div>
+    </div>`;
+}
 
+function accuracyCard(label, metrics, className) {
+  return `
+    <article class="summary-card accuracy-card ${escapeHtml(className)}">
+      <div class="summary-label">${escapeHtml(label)}</div>
+      <div class="accuracy-grid">
+        ${accuracyMetric("TPOT", metrics.tpot_mape_pct, metrics.tpot_shape_error_pct)}
+        ${accuracyMetric("TTFT", metrics.ttft_mape_pct, metrics.ttft_shape_error_pct)}
+      </div>
+    </article>`;
+}
+
+function renderSummary() {
+  const totals = state.data.totals;
+  summaryGrid.innerHTML = [
+    basicCard("Models", String(totals.models), true),
+    basicCard("Data Points (AIC)", totals.aic.points.toLocaleString()),
+    basicCard("Data Points (AISimulate)", totals.aisimulate.points.toLocaleString()),
+    basicCard("GPU SKUs", String(totals.gpu_skus.length)),
+    accuracyCard("Average AISimulate Error", totals.aisimulate, "aisimulate"),
+    accuracyCard("Average AIC Error", totals.aic, "aic"),
+  ].join("");
+}
+
+function renderSnapshot() {
+  const { snapshot, scope, totals } = state.data;
+  releaseLabel.textContent = `release: ${snapshot.release_tag}`;
+  multinodeLabel.textContent = `Exclude multi-node predictions (${scope.excluded_multinode_rows.toLocaleString()} hidden)`;
+  identityLine.textContent = `GPU SKUs: ${totals.gpu_skus.join(", ")} · Precisions: ${totals.precisions.join(", ")}`;
+  measurementSourceLink.href = snapshot.measurement_source_url;
+  scopeClaim.textContent = scope.claim;
   provenanceContent.innerHTML = `
     <p>
       Measurements: <a href="${escapeHtml(snapshot.measurement_source_url)}">${escapeHtml(
         snapshot.measurement_source,
       )} ${escapeHtml(snapshot.release_tag)}</a><br />
-      Measured through: ${escapeHtml(formatDate(scopeDate(snapshot.measurement_date_through)))}<br />
+      Measured through: ${escapeHtml(formatDate(snapshot.measurement_date_through))}<br />
       AISimulate run completed: ${escapeHtml(formatDate(snapshot.aisimulate_completed_at))}<br />
       Packages: ${escapeHtml(
         Object.entries(snapshot.aisimulate_packages)
@@ -74,66 +108,30 @@ function renderSnapshot() {
           .join(", "),
       )}
     </p>
-    <p>Predictions input SHA-256</p>
-    <code>${escapeHtml(snapshot.predictions_sha256)}</code>
-    <p>AISimulate evidence SHA-256</p>
-    <code>${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>
-  `;
-}
-
-function scopeDate(value) {
-  return value && !value.includes("T") ? `${value}T00:00:00Z` : value;
-}
-
-function renderMetrics() {
-  const totals = state.data.totals;
-  const metrics = totals[state.series];
-  const cards = [];
-  if (state.series === "aisimulate") {
-    const statuses = metrics.status_counts;
-    cards.push(
-      metricCard(
-        "Evidence coverage",
-        formatPercent(metrics.coverage_pct),
-        `${metrics.points} successful of ${totals.rows} selected points; ${statuses.failed} failed`,
-        true,
-      ),
-    );
-  } else {
-    cards.push(
-      metricCard(
-        "Matched points",
-        String(metrics.points),
-        `${totals.models} models across ${totals.gpu_skus.length} GPU SKUs`,
-        true,
-      ),
-    );
-  }
-  cards.push(
-    metricCard("TPOT MAPE", formatPercent(metrics.tpot_mape_pct), "Mean error across matched points"),
-    metricCard("TTFT MAPE", formatPercent(metrics.ttft_mape_pct), "Mean error across matched points"),
-    metricCard(
-      "Curve shape",
-      `${formatPercent(metrics.tpot_shape_error_pct)} TPOT`,
-      `${formatPercent(metrics.ttft_shape_error_pct)} TTFT after per-topology normalization`,
-    ),
-  );
-  metricGrid.innerHTML = cards.join("");
+    <code>Predictions SHA-256: ${escapeHtml(snapshot.predictions_sha256)}</code>
+    <code>AISimulate evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
 }
 
 function sortValue(model) {
-  const metrics = model[state.series];
   switch (state.sortKey) {
-    case "coverage":
-      return state.series === "aisimulate" ? metrics.coverage_pct : metrics.points / model.rows;
-    case "tpot":
-      return metrics.tpot_mape_pct;
-    case "ttft":
-      return metrics.ttft_mape_pct;
-    case "tpotShape":
-      return metrics.tpot_shape_error_pct;
-    case "ttftShape":
-      return metrics.ttft_shape_error_pct;
+    case "aicPoints":
+      return model.aic.points;
+    case "aisimulatePoints":
+      return model.aisimulate.points;
+    case "gpuSkus":
+      return model.gpu_skus.length;
+    case "hardware":
+      return model.gpu_skus.join(",");
+    case "precisions":
+      return model.precisions.join(",");
+    case "aisimulateTpot":
+      return model.aisimulate.tpot_mape_pct;
+    case "aisimulateTtft":
+      return model.aisimulate.ttft_mape_pct;
+    case "aicTpot":
+      return model.aic.tpot_mape_pct;
+    case "aicTtft":
+      return model.aic.ttft_mape_pct;
     default:
       return model.model;
   }
@@ -145,88 +143,76 @@ function compareValues(left, right) {
   const compared =
     typeof left === "number" && typeof right === "number"
       ? left - right
-      : String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: "base" });
+      : String(left).localeCompare(String(right), undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
   return state.sortDirection === "asc" ? compared : -compared;
 }
 
-function workloadCards(model) {
-  return model.workloads
-    .map((workload) => {
-      const metrics = workload[state.series];
-      const evidence =
-        state.series === "aisimulate"
-          ? `${metrics.points}/${workload.rows} successful (${formatPercent(metrics.coverage_pct)})`
-          : `${metrics.points} matched points`;
-      return `
-        <div class="workload-card">
-          <strong>${escapeHtml(workload.label)} · ${escapeHtml(workload.gpu_skus.join(", "))}</strong>
-          <span>${escapeHtml(evidence)}</span>
-          <span>TPOT MAPE ${escapeHtml(formatPercent(metrics.tpot_mape_pct))}</span>
-          <span>TTFT MAPE ${escapeHtml(formatPercent(metrics.ttft_mape_pct))}</span>
-        </div>`;
-    })
-    .join("");
+function metricCells(item) {
+  return `
+    <td class="points-cell">${escapeHtml(item.aic.points.toLocaleString())}</td>
+    <td class="points-cell">${escapeHtml(item.aisimulate.points.toLocaleString())}</td>
+    <td class="count-cell">${escapeHtml(item.gpu_skus.length.toLocaleString())}</td>
+    <td class="mono">${escapeHtml(item.gpu_skus.join(", "))}</td>
+    <td>${escapeHtml(item.precisions.join(", "))}</td>
+    <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.tpot_mape_pct))}</td>
+    <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.ttft_mape_pct))}</td>
+    <td class="metric-cell">${escapeHtml(formatPercent(item.aic.tpot_mape_pct))}</td>
+    <td class="metric-cell">${escapeHtml(formatPercent(item.aic.ttft_mape_pct))}</td>`;
+}
+
+function gpuRow(gpu) {
+  const item = { ...gpu, gpu_skus: [gpu.gpu] };
+  return `
+    <tr class="gpu-row">
+      <td><span class="gpu-label"><span aria-hidden="true">↳</span><span class="mono">${escapeHtml(
+        gpu.gpu,
+      )}</span></span></td>
+      ${metricCells(item)}
+    </tr>`;
+}
+
+function workloadRow(model, workload) {
+  const key = `${model.model}::${workload.identity}`;
+  const expanded = state.expandedWorkloads.has(key);
+  return `
+    <tr
+      class="workload-row"
+      tabindex="0"
+      role="button"
+      aria-expanded="${String(expanded)}"
+      data-workload-key="${escapeHtml(key)}"
+      aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(model.model)} ${escapeHtml(
+        workload.label,
+      )} GPU rows"
+    >
+      <td><span class="workload-label"><span class="row-caret" aria-hidden="true">${
+        expanded ? "▾" : "▸"
+      }</span><span class="mono">${escapeHtml(workload.label)}</span></span></td>
+      ${metricCells(workload)}
+    </tr>
+    ${expanded ? workload.gpus.map(gpuRow).join("") : ""}`;
+}
+
+function modelRows(model) {
+  return `
+    <tr class="model-row">
+      <td><span class="model-name">${escapeHtml(model.model)}</span></td>
+      ${metricCells(model)}
+    </tr>
+    ${model.workloads.map((workload) => workloadRow(model, workload)).join("")}`;
 }
 
 function renderMatrix() {
-  const normalizedFilter = state.filter.trim().toLowerCase();
-  const models = state.data.models
-    .filter((model) => model.model.toLowerCase().includes(normalizedFilter))
-    .sort((left, right) => compareValues(sortValue(left), sortValue(right)));
-
-  if (!models.length) {
-    matrixBody.innerHTML = '<tr><td colspan="7" class="empty-cell">No matching models.</td></tr>';
-    tableNote.textContent = "0 models shown";
-    return;
-  }
-
-  matrixBody.innerHTML = models
-    .map((model) => {
-      const metrics = model[state.series];
-      const evidence =
-        state.series === "aisimulate"
-          ? `${metrics.points}/${model.rows}`
-          : `${metrics.points}`;
-      const evidenceDetail =
-        state.series === "aisimulate"
-          ? `${formatPercent(metrics.coverage_pct)} successful`
-          : "matched points";
-      const failed = state.series === "aisimulate" ? metrics.status_counts.failed : 0;
-      return `
-        <tr>
-          <td>
-            <span class="model-name">${escapeHtml(model.model)}</span>
-            <span class="model-meta">${escapeHtml(model.frameworks.join(", "))} · ${escapeHtml(
-              model.precisions.join(", "),
-            )}</span>
-          </td>
-          <td>
-            <span class="evidence-value">${escapeHtml(evidence)}</span>
-            <span class="evidence-meta${failed ? " status-warning" : ""}">${escapeHtml(
-              `${evidenceDetail}${failed ? ` · ${failed} failed` : ""}`,
-            )}</span>
-          </td>
-          <td><div class="tag-list">${model.gpu_skus
-            .map((gpu) => `<span class="tag">${escapeHtml(gpu)}</span>`)
-            .join("")}</div></td>
-          <td class="metric-cell">${escapeHtml(formatPercent(metrics.tpot_mape_pct))}</td>
-          <td class="metric-cell">${escapeHtml(formatPercent(metrics.ttft_mape_pct))}</td>
-          <td class="metric-cell">${escapeHtml(formatPercent(metrics.tpot_shape_error_pct))}</td>
-          <td class="metric-cell">${escapeHtml(formatPercent(metrics.ttft_shape_error_pct))}</td>
-        </tr>
-        <tr class="workload-row">
-          <td colspan="7">
-            <details>
-              <summary>Show ${model.workloads.length} workload breakdown${
-                model.workloads.length === 1 ? "" : "s"
-              }</summary>
-              <div class="workload-grid">${workloadCards(model)}</div>
-            </details>
-          </td>
-        </tr>`;
-    })
-    .join("");
-  tableNote.textContent = `${models.length} of ${state.data.models.length} models shown · ${state.data.scope.published_rows} single-node operating points in scope`;
+  const models = [...state.data.models].sort((left, right) => {
+    const compared = compareValues(sortValue(left), sortValue(right));
+    return compared || left.model.localeCompare(right.model, undefined, { numeric: true });
+  });
+  matrixBody.innerHTML = models.length
+    ? models.map(modelRows).join("")
+    : '<tr><td colspan="10" class="empty-cell">No accuracy data available.</td></tr>';
 }
 
 function renderSortState() {
@@ -239,22 +225,24 @@ function renderSortState() {
   });
 }
 
-function render() {
-  renderMetrics();
+function toggleWorkload(row) {
+  const key = row.dataset.workloadKey;
+  if (state.expandedWorkloads.has(key)) state.expandedWorkloads.delete(key);
+  else state.expandedWorkloads.add(key);
   renderMatrix();
-  renderSortState();
 }
 
-document.querySelectorAll("[data-series]").forEach((button) => {
-  button.addEventListener("click", () => {
-    state.series = button.dataset.series;
-    document.querySelectorAll("[data-series]").forEach((candidate) => {
-      const active = candidate === button;
-      candidate.classList.toggle("active", active);
-      candidate.setAttribute("aria-pressed", String(active));
-    });
-    render();
-  });
+function updateThemeControl() {
+  const dark = document.documentElement.dataset.theme !== "light";
+  themeIcon.textContent = dark ? "☀" : "☾";
+  themeToggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+}
+
+themeToggle.addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("aisimulate-accuracy-theme", next);
+  updateThemeControl();
 });
 
 document.querySelectorAll(".sort-button").forEach((button) => {
@@ -271,10 +259,20 @@ document.querySelectorAll(".sort-button").forEach((button) => {
   });
 });
 
-modelFilter.addEventListener("input", (event) => {
-  state.filter = event.target.value;
-  renderMatrix();
+matrixBody.addEventListener("click", (event) => {
+  const row = event.target.closest("tr[data-workload-key]");
+  if (row) toggleWorkload(row);
 });
+
+matrixBody.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const row = event.target.closest("tr[data-workload-key]");
+  if (!row) return;
+  event.preventDefault();
+  toggleWorkload(row);
+});
+
+updateThemeControl();
 
 fetch("./summary.json")
   .then((response) => {
@@ -282,17 +280,25 @@ fetch("./summary.json")
     return response.json();
   })
   .then((data) => {
-    if (data.schema_version !== 1 || !Array.isArray(data.models)) {
+    if (
+      data.schema_version !== 1 ||
+      !Array.isArray(data.models) ||
+      data.models.some((model) => model.workloads.some((workload) => !Array.isArray(workload.gpus)))
+    ) {
       throw new Error("unsupported accuracy summary schema");
     }
     state.data = data;
     renderSnapshot();
-    render();
+    renderSummary();
+    renderMatrix();
+    renderSortState();
   })
   .catch((error) => {
-    matrixBody.innerHTML = '<tr><td colspan="7" class="empty-cell">Accuracy data unavailable.</td></tr>';
+    summaryGrid.innerHTML = '<div class="loading-card">Accuracy summary unavailable.</div>';
+    matrixBody.innerHTML = '<tr><td colspan="10" class="empty-cell">Accuracy data unavailable.</td></tr>';
     errorBanner.hidden = false;
     errorBanner.textContent = `Could not load the published accuracy snapshot: ${error.message}`;
-    snapshotLine.textContent = "Snapshot unavailable";
+    identityLine.textContent = "Snapshot unavailable";
+    releaseLabel.textContent = "release: unavailable";
     provenanceContent.textContent = "Provenance unavailable";
   });

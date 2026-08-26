@@ -267,7 +267,7 @@ def _workload_label(workload: str) -> str:
         )
 
     input_tokens, output_tokens = (int(part) for part in workload.split(":"))
-    return f"{short_length(input_tokens)}/{short_length(output_tokens)}"
+    return f"{short_length(input_tokens)}{short_length(output_tokens)}"
 
 
 def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -281,12 +281,34 @@ def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
             if row.get("isl") == input_tokens and row.get("osl") == output_tokens
         ]
         statuses = _status_counts(workload_rows)
+        gpu_summaries = []
+        for gpu in sorted({str(row["hardware"]) for row in workload_rows}):
+            gpu_rows = [row for row in workload_rows if str(row["hardware"]) == gpu]
+            gpu_statuses = _status_counts(gpu_rows)
+            gpu_summaries.append(
+                {
+                    "gpu": gpu,
+                    "rows": len(gpu_rows),
+                    "precisions": sorted({str(row["precision"]) for row in gpu_rows}),
+                    "aic": _series_metrics(gpu_rows, "aic"),
+                    "aisimulate": {
+                        **_series_metrics(gpu_rows, "dynamo"),
+                        "status_counts": gpu_statuses,
+                        "coverage_pct": _round_metric(
+                            gpu_statuses["success"] / len(gpu_rows) * 100
+                            if gpu_rows
+                            else None
+                        ),
+                    },
+                }
+            )
         workloads.append(
             {
                 "identity": workload,
                 "label": _workload_label(workload),
                 "rows": len(workload_rows),
                 "gpu_skus": sorted({str(row["hardware"]) for row in workload_rows}),
+                "precisions": sorted({str(row["precision"]) for row in workload_rows}),
                 "aic": _series_metrics(workload_rows, "aic"),
                 "aisimulate": {
                     **_series_metrics(workload_rows, "dynamo"),
@@ -297,6 +319,7 @@ def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
                         else None
                     ),
                 },
+                "gpus": gpu_summaries,
             }
         )
 

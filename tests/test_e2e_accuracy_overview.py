@@ -251,6 +251,13 @@ def test_checked_in_public_snapshot_is_consistent_and_internal_link_free() -> No
             for fragment in OVERVIEW.FORBIDDEN_PUBLIC_FRAGMENTS:
                 assert fragment not in content, f"{path} contains {fragment}"
 
+    for model in summary["models"]:
+        for workload in model["workloads"]:
+            assert sum(gpu["rows"] for gpu in workload["gpus"]) == workload["rows"]
+            assert (
+                sorted(gpu["gpu"] for gpu in workload["gpus"]) == workload["gpu_skus"]
+            )
+
 
 def test_public_page_has_no_e2e_gym_navigation_or_payload() -> None:
     public_dir = ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy"
@@ -267,9 +274,21 @@ def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
 
-    aisimulate_button = page.index('data-series="aisimulate"')
-    aic_button = page.index('data-series="aic"')
+    assert page.index("AISimulate TPOT MAPE") < page.index("AIC TPOT MAPE")
+    assert script.index('accuracyCard("Average AISimulate Error"') < script.index(
+        'accuracyCard("Average AIC Error"'
+    )
+    assert "data-series" not in page
 
-    assert aisimulate_button < aic_button
-    assert 'class="active" data-series="aisimulate" aria-pressed="true"' in page
-    assert 'series: "aisimulate"' in script
+
+def test_public_page_uses_compact_dashboard_structure() -> None:
+    page = (
+        ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "index.html"
+    ).read_text()
+
+    assert '<html lang="en" data-theme="dark">' in page
+    assert 'class="top-header"' in page
+    assert 'class="tab-nav"' in page
+    assert 'class="summary-grid"' in page
+    assert 'class="matrix-panel"' in page
+    assert 'class="hero"' not in page
