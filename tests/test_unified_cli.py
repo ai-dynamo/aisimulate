@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import pytest
 import yaml
 
 import aisimulate.main as cli
 from aisimulate.output import prepare_output_directory
+from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 
@@ -318,6 +320,114 @@ def test_recommendation_yaml_round_trips_into_predict(
         == 0
     )
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 100
+
+
+def test_recommendation_outputs_each_concrete_prediction_once(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    concrete = {
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": "vllm",
+            "context_length": 4096,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {
+                        "replicas": 1,
+                        "tensor": 1,
+                        "pipeline": 1,
+                        "attention_data": 1,
+                        "moe_tensor": 1,
+                        "moe_expert": 1,
+                    },
+                    "scheduler": {
+                        "max_batched_tokens": 8192,
+                        "max_sequences": 256,
+                    },
+                    "kv_cache": {
+                        "block_size": 64,
+                        "prefix_caching": True,
+                        "capacity": {"type": "fixed", "blocks": 256},
+                    },
+                    "timing": {
+                        "type": "fixed",
+                        "prefill_ms": 1,
+                        "decode_ms": 1,
+                    },
+                }
+            },
+        },
+        "evaluation": {},
+    }
+    recommendation_input = deepcopy(concrete)
+    recommendation_input["engine"]["workers"]["aggregated"]["parallelism"] = {
+        "preset": False,
+        **recommendation_input["engine"]["workers"]["aggregated"][
+            "parallelism"
+        ],
+    }
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                **recommendation_input,
+                "optimization": {
+                    "target": "throughput",
+                    "constraints": {"max_candidate_gpus": 1},
+                },
+                "optimizer": {
+                    "algorithm": "random",
+                    "max_trials": 2,
+                    "parallelism": 1,
+                },
+            }
+        )
+    )
+    candidates = [
+        Candidate(
+            config={"planner_selection": selection},
+            used_gpus=1,
+            score=score,
+            metrics={},
+            prediction_config=concrete,
+        )
+        for selection, score in (("first", 2.0), ("second", 1.0))
+    ]
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    monkeypatch.setattr(
+        "aisimulate.recommend.run_recommendation",
+        lambda *args, **kwargs: candidates,
+    )
+
+    output = tmp_path / "out"
+    assert (
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 1
+    assert rows[0]["score"] == 2.0
+    assert [path.name for path in (output / "recommendations").iterdir()] == [
+        "0001.yaml"
+    ]
 
 
 def test_overwrite_only_removes_known_outputs(tmp_path) -> None:

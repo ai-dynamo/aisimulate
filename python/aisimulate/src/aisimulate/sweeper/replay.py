@@ -33,6 +33,7 @@ class BackendDeploymentSpec:
     num_workers: int = 0
     num_prefill_workers: int = 0
     num_decode_workers: int = 0
+    performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+engine:
+  mode: aggregated
+  model: tests/e2e/configs/unified_cli/fixtures/tiny-model
+  hardware: auto
+  backend: {choices: [vllm, sglang]}
+  context_length: 2048
+  workers:
+    aggregated:
+      parallelism: {preset: default}
+      scheduler: {}
+      kv_cache: {prefix_caching: true, capacity: {type: default}}
+      timing: {type: fixed, prefill_ms: 1, decode_ms: 1}
+optimization:
+  target: throughput
+  hardware: h200_sxm
+  constraints: {max_candidate_gpus: 2}
+optimizer: {algorithm: random, max_trials: 4, parallelism: 1, candidate_timeout_seconds: 30.0, seed: 11}
