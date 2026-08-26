@@ -19,11 +19,12 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
+const EMBEDDED_SOURCE_REVISION: Option<&str> = option_env!("AISIMULATE_SOURCE_REVISION");
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CampaignConfig {
     row_name: String,
-    source_revision: String,
     trace_file: PathBuf,
     trace_sha256: String,
     trace_rows: usize,
@@ -275,7 +276,7 @@ fn qualification_summary(
     let kv_ingest = report.runtime_evidence.kv_ingest.as_ref();
     json!({
         "row_name": config.row_name,
-        "source_revision": config.source_revision,
+        "source_revision": EMBEDDED_SOURCE_REVISION,
         "config_sha256": config_sha256,
         "runner_binary_sha256": binary_sha256,
         "canonical_sha256": canonical_sha256,
@@ -334,10 +335,13 @@ fn main() -> Result<()> {
         !config.row_name.trim().is_empty(),
         "row_name must be nonempty"
     );
-    ensure!(
-        !config.source_revision.trim().is_empty(),
-        "source_revision must be nonempty"
-    );
+    if let Some(revision) = EMBEDDED_SOURCE_REVISION {
+        ensure!(
+            matches!(revision.len(), 40 | 64)
+                && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "embedded source revision must be a 40- or 64-character hexadecimal Git object ID"
+        );
+    }
     ensure!(config.iterations > 0, "iterations must be positive");
     ensure!(
         config.trace_block_size > 0,

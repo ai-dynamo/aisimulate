@@ -60,7 +60,9 @@ fixtures, running the runner, or claiming long-corpus coverage.
    of the measured semantic delta and record its patch checksum.
 4. Use `scripts/build_runner.py` to copy the exact skill runner source and lockfile into
    separate build directories and point them at each checkout's `crates/core`. Record the
-   identical runner-source checksum plus each checkout revision and binary checksum.
+   identical runner-source checksum plus each checkout revision and binary checksum. The
+   builder embeds the checkout revision into its binary; never accept a revision supplied
+   by an editable replay config.
 5. The runner accepts a frozen `ReplaySpec`, enables `ReplayDeterminism::CanonicalV1`, and
    emits `CanonicalReplayRecord` plus qualification counters. If it lacks a required
    correctness or lifecycle signal, add the narrowest reusable support before starting the

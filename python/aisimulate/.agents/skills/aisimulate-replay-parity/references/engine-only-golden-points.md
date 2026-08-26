@@ -116,19 +116,26 @@ mkdir -p "$CAMPAIGN_ROOT"
 python3 "$BUILDER" \
   --checkout "$BASELINE_CHECKOUT" \
   --output-dir "$CAMPAIGN_ROOT/baseline-runner" \
+  --toolchain 1.93.1 \
   > "$CAMPAIGN_ROOT/baseline-build.json"
 python3 "$BUILDER" \
   --checkout "$CANDIDATE_CHECKOUT" \
   --output-dir "$CAMPAIGN_ROOT/candidate-runner" \
+  --toolchain 1.93.1 \
   > "$CAMPAIGN_ROOT/candidate-build.json"
 ```
 
 The two build records must report the same `runner_source_sha256`; they separately record
-the checkout revision and built binary SHA. A runner compilation failure on an older
-revision is a compatibility blocker to resolve explicitly, not permission to use a
-different runner. The builder rejects dirty checkouts by default. Use
+the checkout revision, the same revision embedded into the binary, and the built binary
+SHA. The runner does not accept a user-supplied source revision. A runner compilation
+failure on an older revision is a compatibility blocker to resolve explicitly, not
+permission to use a different runner. The builder rejects dirty checkouts by default. Use
 `--allow-dirty-checkout` only for a documented diagnostic build, never for an authoritative
 campaign artifact.
+
+`--toolchain 1.93.1` uses `rustup run 1.93.1 cargo ...`. Omit `--toolchain` to invoke the
+selected `--cargo` executable directly, including a Homebrew Cargo installation; the
+builder never passes rustup's `+toolchain` shorthand to Cargo itself.
 
 For initial golden qualification against the current checkout, use
 `$CAMPAIGN_ROOT/baseline-runner/target/release/aisimulate-replay-parity-runner`. After
@@ -157,11 +164,12 @@ done
 ```
 
 Each output directory must be absent or empty. Golden configs contain partial expected
-results and fail immediately on counter or digest drift. For a new comparison, copy the
-configs, update only `source_revision` for provenance, and preserve all semantic fields and
-baseline expectations when running the candidate. To inspect an intentional mismatch,
-rerun into a new directory with `expected: {}` and `write_full_report: true`. Do not copy
-Dynamo's KV-aware expected counters into an engine-only result.
+results and fail immediately on counter or digest drift. For a new comparison, reuse the
+same config bytes for baseline and candidate; each runner reports its build-embedded
+checkout revision. Preserve all semantic fields and baseline expectations when running the
+candidate. To inspect an intentional mismatch, rerun into a new directory with
+`expected: {}` and `write_full_report: true`. Do not copy Dynamo's KV-aware expected
+counters into an engine-only result.
 
 ## Committed fixed-timing seeds
 
@@ -293,7 +301,7 @@ the pinned 5,000-row trace above, trace block size 512, arrival speedup 4, model
 speedups 1, DP=1, TP=1, round-robin placement, and no scaling. Qualification ran on an
 Apple M3 Pro host; all values below are semantic virtual-time results except where noted.
 The runner-source SHA-256 reported by `build_runner.py` was
-`652a4b320e79052c6f6385678542f7bb29e102f5ea6d53b2a701f4006671a325`.
+`2985f08ebf09fc95f0c131b4973ef0cb245c602fe1e2c944bc26c4277f2f1f54`.
 
 ### Frozen configurations
 
@@ -310,11 +318,11 @@ The exact executable inputs are committed under
 
 | Row | Config SHA-256 |
 | --- | --- |
-| vLLM aggregated | `ccebaad768313cb18ab975c3b0bc5e1527cf418a7e22d7143bf72d4bb76e6afc` |
-| vLLM disaggregated | `0ad1fcbb166fecc3693d86312c47d0b7e664c32a174a3be6201b2082c12d3dcf` |
-| SGLang aggregated | `c24bf911a08ae48b2c0c9560b06cfeab6f3d4ac8af4e90910b1c2738aab1c358` |
-| SGLang disaggregated | `a512fbb395fd546d22f7d71a0a4b7714b6b71e8c4a3462c4a627e7f1b280fa14` |
-| TRT-LLM aggregated | `beecab693d37a1673d25e7947b9cf6ea74ac99a6138aa50f1b345f02322f29d6` |
+| vLLM aggregated | `e728259700d541bbbb654ec5b22dfe3e296ed8bcf02f2787e8712cb29ef9e437` |
+| vLLM disaggregated | `6e32d682c1916a14a7ebe7d70dc1acf98bceef05e2aa5ca26e77f74ec88cb484` |
+| SGLang aggregated | `c3633206f9c229b0ae0c07c38f7596c1d9371510d69c2100f0800bc5d668c8c7` |
+| SGLang disaggregated | `dd751fc51710a1d61f9ce4a53176ccbefa49c32116ab898f2e6bd213ecd86088` |
+| TRT-LLM aggregated | `4298fd49e83a2245f98d326355fab7c5f5ab5f7e95d68fb427e83e10e5839ca1` |
 
 ### Expected counters and canonical digests
 

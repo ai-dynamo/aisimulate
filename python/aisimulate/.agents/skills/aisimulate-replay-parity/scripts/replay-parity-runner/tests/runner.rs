@@ -28,7 +28,6 @@ fn fixture() -> (TempDir, PathBuf, PathBuf) {
     let config = directory.path().join("config.json");
     let document = json!({
         "row_name": "test-vllm-aggregated",
-        "source_revision": "0000000000000000000000000000000000000000",
         "trace_file": trace,
         "trace_sha256": sha256(trace_bytes),
         "trace_rows": 2,
@@ -118,6 +117,17 @@ fn rejects_trace_checksum_mismatch() {
     let result = run(&config, &directory.path().join("output"));
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("trace SHA-256 mismatch"));
+}
+
+#[test]
+fn rejects_user_supplied_source_revision() {
+    let (directory, config, _) = fixture();
+    mutate_config(&config, |value| {
+        value["source_revision"] = json!("0".repeat(40))
+    });
+    let result = run(&config, &directory.path().join("output"));
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("unknown field `source_revision`"));
 }
 
 #[test]

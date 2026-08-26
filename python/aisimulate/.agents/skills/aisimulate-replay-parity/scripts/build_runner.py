@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -90,12 +91,28 @@ def _materialize_runner(checkout: Path, output: Path) -> Path:
     return output / "Cargo.toml"
 
 
+def _cargo_build_command(
+    *, cargo: str, rustup: str, toolchain: str | None, manifest: Path
+) -> list[str]:
+    cargo_args = [
+        "build",
+        "--release",
+        "--locked",
+        "--manifest-path",
+        str(manifest),
+    ]
+    if toolchain is None:
+        return [cargo, *cargo_args]
+    return [rustup, "run", toolchain, cargo, *cargo_args]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--cargo", default="cargo")
-    parser.add_argument("--toolchain", default="1.93.1")
+    parser.add_argument("--rustup", default="rustup")
+    parser.add_argument("--toolchain")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--allow-dirty-checkout", action="store_true")
     args = parser.parse_args()
@@ -118,23 +135,26 @@ def main() -> int:
         "runner_source_sha256": _runner_source_sha256(),
     }
     if not args.prepare_only:
+        build_command = _cargo_build_command(
+            cargo=args.cargo,
+            rustup=args.rustup,
+            toolchain=args.toolchain,
+            manifest=manifest,
+        )
+        build_environment = os.environ.copy()
+        build_environment["AISIMULATE_SOURCE_REVISION"] = revision
         subprocess.run(
-            [
-                args.cargo,
-                f"+{args.toolchain}",
-                "build",
-                "--release",
-                "--locked",
-                "--manifest-path",
-                str(manifest),
-            ],
+            build_command,
             check=True,
+            env=build_environment,
         )
         binary = output / "target/release/aisimulate-replay-parity-runner"
         if not binary.is_file():
             raise RuntimeError(f"runner build did not produce {binary}")
         result["binary"] = str(binary)
         result["binary_sha256"] = _sha256(binary)
+        result["build_command"] = build_command
+        result["embedded_source_revision"] = revision
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 

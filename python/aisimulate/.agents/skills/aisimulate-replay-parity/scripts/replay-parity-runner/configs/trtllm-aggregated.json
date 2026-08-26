@@ -1,6 +1,5 @@
 {
   "row_name": "trtllm-aggregated",
-  "source_revision": "fb7b0d56de035d66ca9fcae7ff424055dcbf37cd",
   "trace_file": "/tmp/aisimulate-replay-parity-mooncake/mooncake_trace.rows-000000-004999.jsonl",
   "trace_sha256": "3892ae19ae480b643155f0c6b9d798591cbe2e73bec6a0fa5ae3d3bc0332fb8a",
   "trace_rows": 5000,
