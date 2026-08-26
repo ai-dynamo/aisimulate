@@ -54,6 +54,7 @@ def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
         parallel = _parallel_mapping(worker, prefix="")
         return BackendDeploymentSpec(
             parallel_config=parallel,
+            performance_model_metadata={"aggregated": _worker_performance_model_metadata(engine, worker)},
             agg_engine_args=_worker_engine_args(engine, worker, "aggregated"),
             num_workers=worker.parallelism.replicas,
             **common,
@@ -67,6 +68,10 @@ def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
     }
     return BackendDeploymentSpec(
         parallel_config=parallel,
+        performance_model_metadata={
+            "prefill": _worker_performance_model_metadata(engine, prefill),
+            "decode": _worker_performance_model_metadata(engine, decode),
+        },
         prefill_engine_args=_worker_engine_args(engine, prefill, "prefill"),
         decode_engine_args=_worker_engine_args(engine, decode, "decode"),
         num_prefill_workers=prefill.parallelism.replicas,
@@ -84,6 +89,27 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}attention_dp": parallel.attention_data,
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
+    }
+
+
+def _worker_performance_model_metadata(
+    engine: EnginePredictionConfig, worker: WorkerPredictionConfig
+) -> dict[str, JSONValue]:
+    parallel = worker.parallelism
+    sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
+    return {
+        "provider": "aic",
+        "config": {
+            "backend": engine.backend,
+            "backend_version": engine.backend_version,
+            "system": engine.hardware,
+            "model_path": engine.model,
+            "tp_size": parallel.tensor,
+            "attention_dp_size": parallel.attention_data,
+            "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
+            "moe_ep_size": parallel.moe_expert if sharded_moe else None,
+            "nextn": None,
+        },
     }
 
 

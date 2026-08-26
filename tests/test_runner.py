@@ -214,6 +214,38 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     assert "nextn" not in calls[0]
 
 
+def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("num_gpu_blocks")
+    engine_args["gpu_memory_utilization"] = 0.8
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append(kwargs)
+        return 321
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config={"tp": 2, "attention_dp": 1, "replicas": 1},
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert rank["num_gpu_blocks"] == 321
+    assert rank["timing_model"]["type"] == "fixed"
+    assert "gpu_memory_utilization" not in rank
+    assert calls[0]["gpu_memory_utilization"] == 0.8
+
+
 def test_runner_captures_requested_raw_and_per_request_report():
     runtime = RecordingRuntime()
     runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=7)

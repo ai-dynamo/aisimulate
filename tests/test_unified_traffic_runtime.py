@@ -41,6 +41,30 @@ def _run(config: dict):
     )
 
 
+def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
+    parsed = CorePredictionConfig.model_validate({"engine": _engine()})
+    deployment = prediction_to_replay_spec(parsed).backend_deployment
+
+    assert deployment.performance_model_metadata == {
+        "aggregated": {
+            "provider": "aic",
+            "config": {
+                "backend": "vllm",
+                "backend_version": None,
+                "system": "h200_sxm",
+                "model_path": "example/model",
+                "tp_size": 1,
+                "attention_dp_size": 1,
+                "moe_tp_size": None,
+                "moe_ep_size": None,
+                "nextn": None,
+            },
+        }
+    }
+    assert "aic_model_path" not in deployment.agg_engine_args
+    assert deployment.agg_engine_args["timing_model"]["type"] == "fixed"
+
+
 def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
     report = _run(
         {
