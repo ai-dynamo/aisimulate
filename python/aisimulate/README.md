@@ -13,10 +13,8 @@ SPDX-License-Identifier: Apache-2.0
 > documentation below is retained so existing workflows remain discoverable
 > during the CLI parity and deprecation window.
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ai-dynamo/aiconfigurator)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ai-dynamo/aisimulate)
 [![Discord](https://dcbadge.limes.pink/api/server/mRJ2KNzwYE?style=flat)](https://discord.gg/mRJ2KNzwYE)
-
-Explore the [AIC Developer Universe](https://ai-dynamo.github.io/aiconfigurator/universe/), an interactive map of AIConfigurator and its Dynamo integration.
 
 In disaggregated serving, configuring an effective deployment is challenging: you need to decide how many prefill and decode
 workers to run, and the parallelism for each worker. Combined with SLA targets for TTFT (Time to First Token) and
@@ -499,9 +497,12 @@ To go through the process, refer to the [guidance](collector/README.md) under th
 
 #### Detailed Support Matrix
 
-For a comprehensive, interactive view of which model/system/backend/version combinations are supported in both aggregated and disaggregated modes, visit the **[Support Matrix on GitHub Pages](https://ai-dynamo.github.io/aiconfigurator/support-matrix/)**. The page fetches the split support matrix CSV files directly from GitHub at load time and supports filtering by system, mode, model search, and switching between branches.
+The interactive [AISimulate Support Matrix](docs/support-matrix/) is versioned
+with this package. It supports filtering by system, mode, and model, and can
+compare the public compatibility snapshots available on release branches.
 
-The raw data is also available as [per-system CSV files](aic-core/src/aiconfigurator_core/systems/support_matrix).
+The raw data is also available as
+[per-system CSV files](src/aiconfigurator_core/systems/support_matrix).
 
 You can also check support via the CLI:
 ```bash

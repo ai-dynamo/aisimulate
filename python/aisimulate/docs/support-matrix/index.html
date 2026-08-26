@@ -51,10 +51,19 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ── Constants ───────────────────────────────────────────────────────
 const REPO = 'ai-dynamo/aisimulate';
-const SUPPORT_MATRIX_PATHS = [
+// The AISimulate repository is not publicly readable yet. Its checked-in
+// support-matrix snapshot is byte-identical to this public compatibility
+// source, so anonymous static-page visitors can still load the matrix.
+const DATA_REPO = 'ai-dynamo/aiconfigurator';
+const PUBLIC_DATA_MAIN_REF = '2ed278a91bc599c5149ddfcd527a20c3421b471d';
+const PUBLIC_SUPPORT_MATRIX_PATHS = [
+  'aic-core/src/aiconfigurator_core/systems/support_matrix', // split layout (>= 0.10)
+  'src/aiconfigurator/systems/support_matrix',               // pre-split branches
+];
+const LOCAL_SUPPORT_MATRIX_PATHS = [
   'python/aisimulate/src/aiconfigurator_core/systems/support_matrix',
 ];
-const LEGACY_CSV_PATH = 'python/aisimulate/src/aiconfigurator/systems/support_matrix.csv';
+const PUBLIC_LEGACY_CSV_PATH = 'src/aiconfigurator/systems/support_matrix.csv';
 const STATUS_HW_INCOMPATIBLE = 'HW_INCOMPATIBLE';
 const STATUS_FRAMEWORK_INCOMPATIBLE = 'FRAMEWORK_INCOMPATIBLE';
 const PREFERRED_DEFAULT_SYSTEM = 'b200_sxm';
@@ -663,7 +672,8 @@ function isLocalPreview() {
 
 function rawUrl(branch, path) {
   if (isLocalPreview()) return `/${path}?localPreviewTs=${Date.now()}`;
-  return `https://raw.githubusercontent.com/${REPO}/refs/heads/${branch}/${path}`;
+  const ref = branch === 'main' ? PUBLIC_DATA_MAIN_REF : `refs/heads/${branch}`;
+  return `https://raw.githubusercontent.com/${DATA_REPO}/${ref}/${path}`;
 }
 
 function readSearchQuery() {
@@ -688,6 +698,9 @@ function writeSearchQuery(query) {
 }
 
 const HARDCODED_RELEASE_BRANCHES = [
+  'release/0.11.0',
+  'release/0.10.0',
+  'release/0.9.0',
   'release/0.8.0',
   'release/0.7.0',
 ];
@@ -708,7 +721,7 @@ function filterAndSortBranches(names) {
 
 async function fetchBranchList() {
   try {
-    const res = await fetch(`https://api.github.com/repos/${REPO}/git/matching-refs/heads/release/`);
+    const res = await fetch(`https://api.github.com/repos/${DATA_REPO}/git/matching-refs/heads/release/`);
     if (res.ok) {
       const refs = await res.json();
       const branches = filterAndSortBranches(refs.map(r => r.ref.replace('refs/heads/', '')));
@@ -749,7 +762,10 @@ async function fetchOneCsv(branch, path) {
 }
 
 async function fetchCsv(branch) {
-  for (const supportMatrixPath of SUPPORT_MATRIX_PATHS) {
+  const supportMatrixPaths = isLocalPreview()
+    ? LOCAL_SUPPORT_MATRIX_PATHS
+    : PUBLIC_SUPPORT_MATRIX_PATHS;
+  for (const supportMatrixPath of supportMatrixPaths) {
     const indexPath = `${supportMatrixPath}/index.json`;
     const indexRes = await fetch(rawUrl(branch, indexPath), { cache: isLocalPreview() ? 'no-store' : 'default' });
     if (indexRes.status === 404) continue;
@@ -767,7 +783,8 @@ async function fetchCsv(branch) {
     return chunks.flat();
   }
 
-  return fetchOneCsv(branch, LEGACY_CSV_PATH);
+  if (!isLocalPreview()) return fetchOneCsv(branch, PUBLIC_LEGACY_CSV_PATH);
+  throw new Error(`No local support matrix data found for branch "${branch}"`);
 }
 
 // ── React Components ────────────────────────────────────────────────
