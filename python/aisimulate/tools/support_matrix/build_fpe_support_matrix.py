@@ -43,7 +43,6 @@ WEB_FIELDNAMES = (
     "System",
     "Backend",
     "Version",
-    "Mode",
     "Status",
     "ErrMsg",
     "Command",
@@ -105,10 +104,6 @@ def load_artifacts(inputs: Sequence[str | Path]) -> tuple[list[dict[str, Any]], 
     return rows, metadata
 
 
-def _roles(row: dict[str, Any]) -> set[str]:
-    return set(str(row.get("roles", "")).split("|"))
-
-
 def _topology(row: dict[str, Any]) -> tuple[Any, ...]:
     return tuple(row.get(field) for field in TOPOLOGY_FIELDS)
 
@@ -120,27 +115,24 @@ def _by_topology(rows: Iterable[dict[str, Any]]) -> dict[tuple[Any, ...], list[d
     return dict(grouped)
 
 
-def _passing_topology(
-    rows: Sequence[dict[str, Any]], *, role: str, required_phases: set[str]
-) -> list[dict[str, Any]] | None:
-    for _identity, candidates in sorted(_by_topology(row for row in rows if role in _roles(row)).items()):
+def _passing_topology(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    required_phases = {"prefill", "decode_start", "decode_end", "mixed"}
+    for _identity, candidates in sorted(_by_topology(rows).items()):
         passed = {row["phase"] for row in candidates if row["status"] == STATUS_PASS}
         if required_phases <= passed:
             return candidates
     return None
 
 
-def _mode_passes(rows: Sequence[dict[str, Any]], mode: str) -> tuple[bool, list[dict[str, Any]]]:
-    if mode == "agg":
-        topology = _passing_topology(
-            rows,
-            role="agg",
-            required_phases={"prefill", "decode_start", "decode_end", "mixed"},
-        )
-        return topology is not None, topology or []
-    prefill = _passing_topology(rows, role="prefill", required_phases={"prefill"})
-    decode = _passing_topology(rows, role="decode", required_phases={"decode_start", "decode_end"})
-    return prefill is not None and decode is not None, (prefill or []) + (decode or [])
+def _complete_topology_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep topology candidates that were exercised across the complete FPE phase set."""
+    grouped = _by_topology(rows)
+    complete = {
+        identity
+        for identity, candidates in grouped.items()
+        if any(str(row.get("phase")) == "mixed" for row in candidates)
+    }
+    return [row for row in rows if _topology(row) in complete] or list(rows)
 
 
 def _failure_status(rows: Sequence[dict[str, Any]]) -> str:
@@ -204,7 +196,7 @@ def _command(key: tuple[str, str, str, str, str]) -> str:
 
 
 def build_web_rows(raw_rows: Sequence[dict[str, Any]], metadata: dict[str, Any]) -> list[dict[str, str]]:
-    """Roll topology/phase rows into the agg/disagg cells used by the existing page."""
+    """Roll topology/phase rows into one mode-neutral FPE capability cell."""
     grouped: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in raw_rows:
         key = (
@@ -219,37 +211,30 @@ def build_web_rows(raw_rows: Sequence[dict[str, Any]], metadata: dict[str, Any])
     web_rows: list[dict[str, str]] = []
     for key, rows in sorted(grouped.items()):
         model, architecture, system, backend, version = key
-        for mode, role_filter in (("agg", "agg"), ("disagg", None)):
-            relevant = [
-                row
-                for row in rows
-                if role_filter in _roles(row) or (role_filter is None and bool({"prefill", "decode"} & _roles(row)))
-            ]
-            if not relevant:
-                continue
-            passes, selected = _mode_passes(relevant, mode)
-            status = STATUS_PASS if passes else _failure_status(relevant)
-            source = ",".join(sorted({str(row.get("source", "")) for row in selected if row.get("source")}))
-            latency = _latency_summary(selected)
-            web_rows.append(
-                {
-                    "HuggingFaceID": model,
-                    "Architecture": architecture,
-                    "System": system,
-                    "Backend": backend,
-                    "Version": version,
-                    "Mode": mode,
-                    "Status": status,
-                    "ErrMsg": "" if passes else _failure_summary(relevant, metadata=metadata),
-                    "Command": _command(key),
-                    "Source": source,
-                    "FPEProbeCount": str(len(relevant)),
-                    "FPETopologyCount": str(len(_by_topology(relevant))),
-                    "FPEStatusCounts": _status_counts(relevant),
-                    "FPEPhaseLatencyMs": latency,
-                    "SourceSHA": str(metadata["source_sha"]),
-                }
-            )
+        relevant = _complete_topology_rows(rows)
+        selected = _passing_topology(relevant) or []
+        passes = bool(selected)
+        status = STATUS_PASS if passes else _failure_status(relevant)
+        source = ",".join(sorted({str(row.get("source", "")) for row in selected if row.get("source")}))
+        latency = _latency_summary(selected)
+        web_rows.append(
+            {
+                "HuggingFaceID": model,
+                "Architecture": architecture,
+                "System": system,
+                "Backend": backend,
+                "Version": version,
+                "Status": status,
+                "ErrMsg": "" if passes else _failure_summary(relevant, metadata=metadata),
+                "Command": _command(key),
+                "Source": source,
+                "FPEProbeCount": str(len(relevant)),
+                "FPETopologyCount": str(len(_by_topology(relevant))),
+                "FPEStatusCounts": _status_counts(relevant),
+                "FPEPhaseLatencyMs": latency,
+                "SourceSHA": str(metadata["source_sha"]),
+            }
+        )
     return web_rows
 
 
@@ -267,7 +252,7 @@ def write_web_matrix(rows: Sequence[dict[str, str]], output_dir: str | Path) -> 
         filename = f"{system}.csv"
         files.append(filename)
         with (destination / filename).open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=WEB_FIELDNAMES)
+            writer = csv.DictWriter(handle, fieldnames=WEB_FIELDNAMES, lineterminator="\n")
             writer.writeheader()
             writer.writerows(grouped[system])
     index = {"files": files}

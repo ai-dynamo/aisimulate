@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from tools.support_matrix.build_fpe_supermatrix import build_web_rows, load_artifacts, write_web_matrix
+from tools.support_matrix.build_fpe_support_matrix import build_web_rows, load_artifacts, write_web_matrix
 
 pytestmark = pytest.mark.unit
 
@@ -48,7 +48,7 @@ def _metadata():
     return {"schema_version": 1, "source_version": "0.12.0", "source_sha": "abc123", "workload": {}}
 
 
-def test_build_web_rows_preserves_existing_agg_disagg_contract_and_real_latencies():
+def test_build_web_rows_emits_one_mode_neutral_cell_with_real_latencies():
     rows = [
         _row(roles="agg|prefill|decode", phase="prefill", latency_ms=1.0),
         _row(roles="agg|prefill|decode", phase="decode_start", latency_ms=2.0),
@@ -58,7 +58,9 @@ def test_build_web_rows_preserves_existing_agg_disagg_contract_and_real_latencie
 
     result = build_web_rows(rows, _metadata())
 
-    assert [(row["Mode"], row["Status"]) for row in result] == [("agg", "PASS"), ("disagg", "PASS")]
+    assert len(result) == 1
+    assert "Mode" not in result[0]
+    assert result[0]["Status"] == "PASS"
     assert result[0]["FPEPhaseLatencyMs"] == (
         "decode_end=3.000000, decode_start=2.000000, mixed=4.000000, prefill=1.000000"
     )
@@ -74,10 +76,26 @@ def test_build_web_rows_fails_closed_and_preserves_native_status_counts():
 
     result = build_web_rows(rows, _metadata())
 
-    assert {row["Status"] for row in result} == {"FAIL"}
-    assert {row["FPEStatusCounts"] for row in result} == {"PERF_DATA_MISSING=4"}
-    assert all("source_sha=abc123" in row["ErrMsg"] for row in result)
-    assert all("missing <repo>/python/aisimulate/op_level data" in row["ErrMsg"] for row in result)
+    assert len(result) == 1
+    assert result[0]["Status"] == "FAIL"
+    assert result[0]["FPEStatusCounts"] == "PERF_DATA_MISSING=4"
+    assert "source_sha=abc123" in result[0]["ErrMsg"]
+    assert "missing <repo>/python/aisimulate/op_level data" in result[0]["ErrMsg"]
+
+
+def test_build_web_rows_requires_one_topology_to_cover_every_fpe_phase():
+    rows = [
+        _row(roles="prefill", phase="prefill"),
+        _row(roles="decode", phase="decode_start", tp_size=2),
+        _row(roles="decode", phase="decode_end", tp_size=2),
+    ]
+
+    result = build_web_rows(rows, _metadata())
+
+    assert len(result) == 1
+    assert result[0]["Status"] == "FAIL"
+    assert result[0]["FPEProbeCount"] == "3"
+    assert result[0]["FPETopologyCount"] == "2"
 
 
 def test_write_web_matrix_uses_split_csv_index(tmp_path):

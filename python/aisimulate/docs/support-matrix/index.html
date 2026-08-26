@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AISimulate — FPE Supermatrix</title>
+<title>AISimulate — FPE Support Matrix</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
@@ -207,7 +207,7 @@ function supportMatrixCliConstraints(model) {
   return { totalGpus: '128', ttft: '2000000.0', tpot: '50000.0' };
 }
 
-function supportMatrixCommand(model, system, backend, version, mode) {
+function supportMatrixCommand(model, system, backend, version) {
   return [
     'python',
     'python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py',
@@ -227,13 +227,12 @@ function rowCommand(row) {
     !command.startsWith('aiconfigurator cli default') &&
     !command.includes('tools/support_matrix/generate_support_matrix.py')
   ) return command;
-  return supportMatrixCommand(row.HuggingFaceID, row.System, row.Backend, row.Version, row.Mode);
+  return supportMatrixCommand(row.HuggingFaceID, row.System, row.Backend, row.Version);
 }
 
 function rowDetails(row) {
   const errorMsg = (row.ErrMsg || '').trim();
   const lines = [
-    `Mode: ${row.Mode}`,
     `Status: ${row.Status}`,
     `Version: ${row.Version}`,
     '',
@@ -249,16 +248,14 @@ function rowDetails(row) {
   return lines.join('\n');
 }
 
-function missingRowDetails(model, system, backend, versions, modeFilter) {
+function missingRowDetails(model, system, backend, versions) {
   const latestVersion = versions && versions.length ? versions[versions.length - 1] : 'unknown';
-  const mode = modeFilter === 'all' ? 'all' : modeFilter;
   return [
-    `Mode: ${mode}`,
     'Status: FAIL',
     `Version: ${latestVersion}`,
     '',
     'Command:',
-    supportMatrixCommand(model, system, backend, latestVersion, mode),
+    supportMatrixCommand(model, system, backend, latestVersion),
     '',
     'Details:',
     'No support-matrix row exists for this model/system/backend cell. Run the command above to check the latest backend version.',
@@ -435,11 +432,11 @@ function getLatestSupportedVersion(rows, huggingfaceId, system, backend) {
 //   latest_pass_with_older_issues: latest framework version passes, older versions have issues
 //   older_pass_only: latest framework version does not pass, but an older version does
 //   fail:    every tested version fully fails
-//   partial: any mix (includes per-version agg/disagg splits)
+//   partial: any mixed or partially supported version result
 //   hw_incompatible: latest tested version is impossible on this GPU
 //   framework_unsupported: framework/version does not support required model feature
 //   missing: no rows tested for this (model, backend)
-function aggregateBackendCell(rows, modelId, system, backend, versions, modeFilter) {
+function aggregateBackendCell(rows, modelId, system, backend, versions) {
   const passVersions = [];
   const partialVersions = [];
   const failVersions = [];
@@ -458,8 +455,7 @@ function aggregateBackendCell(rows, modelId, system, backend, versions, modeFilt
     return 'pass';
   };
 
-  // Per-version status uses the existing agg-vs-disagg split inside
-  // `getLatestSupportedVersion`, restricted to one version at a time.
+  // Resolve one mode-neutral FPE capability result for each backend version.
   for (const version of versions) {
     const verRows = rows.filter(r => r.Version === version);
     const { version: v, error, detail } = getLatestSupportedVersion(verRows, modelId, system, backend);
@@ -468,53 +464,6 @@ function aggregateBackendCell(rows, modelId, system, backend, versions, modeFilt
     let verStatus = statusFromResult({ version: v, error });
     let verError = verStatus === 'pass' ? null : error;
     let verDetail = detail;
-
-    // Within-version agg/disagg split (only meaningful when viewing "all").
-    if (modeFilter === 'all') {
-      const aggRows = verRows.filter(r => r.Mode === 'agg');
-      const disaggRows = verRows.filter(r => r.Mode === 'disagg');
-      const aggResult = aggRows.length
-        ? getLatestSupportedVersion(aggRows, modelId, system, backend)
-        : { version: null, error: null };
-      const disaggResult = disaggRows.length
-        ? getLatestSupportedVersion(disaggRows, modelId, system, backend)
-        : { version: null, error: null };
-      const aggStatus = statusFromResult(aggResult);
-      const disaggStatus = statusFromResult(disaggResult);
-      const modeStatuses = [aggStatus, disaggStatus].filter(s => s !== 'missing');
-      const hasPass = modeStatuses.includes('pass');
-      const hasFail = modeStatuses.includes('fail');
-      const hasHw = modeStatuses.includes('hw_incompatible');
-      const hasFrameworkUnsupported = modeStatuses.includes('framework_unsupported');
-
-      if (hasPass && (hasFail || hasHw || hasFrameworkUnsupported || modeStatuses.length < 2)) {
-        verStatus = 'partial';
-        if (aggStatus !== 'pass') {
-          verError = `[agg ${statusDisplayLabel(aggStatus)}] ${aggResult.error || 'No error message available'}`;
-        } else {
-          verError = `[disagg ${statusDisplayLabel(disaggStatus)}] ${disaggResult.error || 'No error message available'}`;
-        }
-        verDetail = [aggResult.detail, disaggResult.detail].filter(Boolean).join('\n\n---\n\n') || verDetail;
-      } else if (!hasPass && hasFail) {
-        verStatus = 'fail';
-        verError = aggStatus === 'fail'
-          ? (aggResult.error || 'No error message available')
-          : (disaggResult.error || 'No error message available');
-        verDetail = [aggResult.detail, disaggResult.detail].filter(Boolean).join('\n\n---\n\n') || verDetail;
-      } else if (!hasPass && hasFrameworkUnsupported) {
-        verStatus = 'framework_unsupported';
-        verError = aggStatus === 'framework_unsupported'
-          ? (aggResult.error || 'Framework version does not support required model feature')
-          : (disaggResult.error || 'Framework version does not support required model feature');
-        verDetail = [aggResult.detail, disaggResult.detail].filter(Boolean).join('\n\n---\n\n') || verDetail;
-      } else if (!hasPass && hasHw) {
-        verStatus = 'hw_incompatible';
-        verError = aggStatus === 'hw_incompatible'
-          ? (aggResult.error || 'Hardware is incompatible with model datatype')
-          : (disaggResult.error || 'Hardware is incompatible with model datatype');
-        verDetail = [aggResult.detail, disaggResult.detail].filter(Boolean).join('\n\n---\n\n') || verDetail;
-      }
-    }
 
     if (verStatus === 'pass') passVersions.push(version);
     else if (verStatus === 'partial') partialVersions.push(version);
@@ -531,7 +480,7 @@ function aggregateBackendCell(rows, modelId, system, backend, versions, modeFilt
   }
 
   if (!passVersions.length && !partialVersions.length && !failVersions.length && !hwVersions.length && !frameworkUnsupportedVersions.length) {
-    const detail = missingRowDetails(modelId, system, backend, versions, modeFilter);
+    const detail = missingRowDetails(modelId, system, backend, versions);
     return {
       status: 'missing',
       passVersions: [],
@@ -600,15 +549,14 @@ function aggregateBackendCell(rows, modelId, system, backend, versions, modeFilt
   };
 }
 
-function buildMatrixForMode(rows, systemName, modeFilter) {
-  let subset = rows.filter(r => r.System === systemName);
-  if (modeFilter !== 'all') subset = subset.filter(r => r.Mode === modeFilter);
+function buildMatrix(rows, systemName) {
+  const subset = rows.filter(r => r.System === systemName);
   if (!subset.length) return { matrixRows: [], columns: [] };
 
   const models = [...new Set(subset.map(r => r.HuggingFaceID))].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 
   // Columns are one-per-backend; each carries the sorted list of versions
-  // tested for this system/mode. The cell aggregator consults that list.
+  // tested for this system. The cell aggregator consults that list.
   const backendVersionSet = {};
   for (const r of subset) {
     if (!backendVersionSet[r.Backend]) backendVersionSet[r.Backend] = new Set();
@@ -626,7 +574,7 @@ function buildMatrixForMode(rows, systemName, modeFilter) {
   const matrixRows = models.map(model => {
     const cells = {};
     for (const col of columns) {
-      cells[col.key] = aggregateBackendCell(subset, model, systemName, col.backend, col.versions, modeFilter);
+      cells[col.key] = aggregateBackendCell(subset, model, systemName, col.backend, col.versions);
     }
     return { model, cells };
   });
@@ -634,9 +582,8 @@ function buildMatrixForMode(rows, systemName, modeFilter) {
   return { matrixRows, columns };
 }
 
-function buildTopErrors(rows, systemName, modeFilter, topN = 10) {
-  let subset = rows.filter(r => r.System === systemName && r.Status === 'FAIL');
-  if (modeFilter !== 'all') subset = subset.filter(r => r.Mode === modeFilter);
+function buildTopErrors(rows, systemName, topN = 10) {
+  const subset = rows.filter(r => r.System === systemName && r.Status === 'FAIL');
   if (!subset.length) return [];
 
   const counts = {};
@@ -791,7 +738,7 @@ function Header({ activeBranch, onSelectBranch, releaseBranches, branchesLoading
         <a href="https://github.com/ai-dynamo/aisimulate"><img src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" className="rounded-full" /></a>
         <div className="min-w-0 mr-auto">
           <h1 className="text-lg font-bold leading-tight"><a href="https://github.com/ai-dynamo/aisimulate">AISimulate</a>
-          <span className="text-sm text-slate-500 dark:text-slate-400"> - FPE Supermatrix</span></h1>
+          <span className="text-sm text-slate-500 dark:text-slate-400"> - FPE Support Matrix</span></h1>
         </div>
         <BranchSelector
           activeBranch={activeBranch}
@@ -895,25 +842,10 @@ function BranchSelector({ activeBranch, onSelectBranch, releaseBranches, branche
   );
 }
 
-function Controls({ activeMode, onSetMode, searchQuery, onSetSearch, totalPass, totalFail, showAllVersions, onToggleShowAllVersions }) {
-  const modes = ['all', 'agg', 'disagg'];
+function Controls({ searchQuery, onSetSearch, totalPass, totalFail, showAllVersions, onToggleShowAllVersions }) {
   return (
     <div className="border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
      <div className="max-w-[1600px] mx-auto px-6 py-3 flex flex-wrap gap-3 items-center">
-      <span className="text-sm font-semibold text-slate-500 dark:text-slate-400">Mode:</span>
-      <div className="flex border border-slate-200 dark:border-slate-700 rounded overflow-hidden">
-        {modes.map(m => (
-          <button key={m}
-            onClick={() => onSetMode(m)}
-            className={`px-3.5 py-1.5 text-sm border-r last:border-r-0 border-slate-200 dark:border-slate-700 transition-all cursor-pointer capitalize
-              ${activeMode === m
-                ? 'bg-indigo-500 dark:bg-indigo-400 text-white font-semibold'
-                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
-          >
-            {m === 'all' ? 'All' : m.charAt(0).toUpperCase() + m.slice(1)}
-          </button>
-        ))}
-      </div>
       <input
         type="text" placeholder="Search models..."
         value={searchQuery} onChange={e => onSetSearch(e.target.value)}
@@ -1007,7 +939,7 @@ function Legend() {
       </div>
       <div className="flex items-center gap-1.5">
         <span className="inline-block w-9 h-5 rounded border border-slate-200 dark:border-slate-600 bg-amber-200 dark:bg-amber-950"></span>
-        Partial coverage in latest version (agg or disagg only) (<span className="line-through opacity-75 font-mono">struck</span>&nbsp;= fails)
+        Partial FPE coverage in latest version (<span className="line-through opacity-75 font-mono">struck</span>&nbsp;= fails)
       </div>
       <div className="flex items-center gap-1.5">
         <span className="inline-block w-9 h-5 rounded border border-slate-200 dark:border-slate-600 bg-red-200 dark:bg-red-950"></span>
@@ -1134,7 +1066,7 @@ function MatrixTable({ matrixRows, columns, searchQuery, sortCol, sortAsc, showA
   }
 
   if (!matrixRows.length) {
-    return <div className="py-8 text-center text-slate-400 italic">No data for this system / mode combination.</div>;
+    return <div className="py-8 text-center text-slate-400 italic">No data for this system.</div>;
   }
   if (!filtered.length) {
     return <div className="py-8 text-center text-slate-400 italic">No models match your search.</div>;
@@ -1162,7 +1094,7 @@ function MatrixTable({ matrixRows, columns, searchQuery, sortCol, sortAsc, showA
   const renderChips = (cell) => {
     const chips = [];
     const pushPass = (v) => chips.push(<span key={`p-${v}`}>{v}</span>);
-    const pushPartial = (v) => chips.push(<span key={`m-${v}`} title="Partial (agg or disagg only)">~{v}</span>);
+    const pushPartial = (v) => chips.push(<span key={`m-${v}`} title="Partial FPE coverage">~{v}</span>);
     const pushFail = (v) => chips.push(<span key={`f-${v}`} className="line-through opacity-75">{v}</span>);
     const pushFrameworkUnsupported = (v) => chips.push(<span key={`u-${v}`} title="Framework unsupported" className="opacity-80">F{v}</span>);
     const pushHw = (v) => chips.push(<span key={`h-${v}`} title="Hardware incompatible" className="opacity-80">!{v}</span>);
@@ -1353,7 +1285,7 @@ function TopErrors({ errors }) {
       </button>
       {open && (
         errors.length === 0
-          ? <p className="py-2 text-slate-400 italic text-sm">No failures recorded for this system / mode.</p>
+          ? <p className="py-2 text-slate-400 italic text-sm">No failures recorded for this system.</p>
           : (
             <table className="mt-2 w-full text-sm border-collapse">
               <thead>
@@ -1399,7 +1331,6 @@ function parseSupportDetailSections(text) {
         raw,
         index,
         headingVersion,
-        mode: null,
         status: null,
         version: null,
         command: null,
@@ -1429,7 +1360,7 @@ function parseSupportDetailSections(text) {
           continue;
         }
 
-        const fieldMatch = line.match(/^(Mode|Status|Version):\s*(.*)$/);
+        const fieldMatch = line.match(/^(Status|Version):\s*(.*)$/);
         if (fieldMatch) {
           section[fieldMatch[1].toLowerCase()] = fieldMatch[2].trim();
         }
@@ -1519,7 +1450,6 @@ function SupportDetailCards({ formatted }) {
         >
           <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2 flex-wrap">
             <StatusBadge status={section.status} />
-            <span className="font-semibold text-sm">{section.mode || 'mode unknown'}</span>
             <span className="text-xs text-slate-500 dark:text-slate-400">version {section.version || 'unknown'}</span>
             {section.headingVersion && section.headingVersion !== section.version && (
               <span className="text-xs text-slate-400">group {section.headingVersion}</span>
@@ -1632,7 +1562,7 @@ function ErrorBanner({ message, onRetry }) {
 function Footer() {
   return (
     <div className="text-center py-6 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-200 dark:border-slate-700 mt-8">
-      AISimulate FPE Supermatrix &middot; Data from <code className="text-xs">fpe_support_matrix/*.csv</code>
+      AISimulate FPE Support Matrix &middot; Data from <code className="text-xs">fpe_support_matrix/*.csv</code>
     </div>
   );
 }
@@ -1649,7 +1579,6 @@ function App() {
   const [csvRows, setCsvRows] = useState([]);
 
   const [activeSystem, setActiveSystem] = useState(null);
-  const [activeMode, setActiveMode] = useState('all');
   const [searchQuery, setSearchQuery] = useState(readSearchQuery);
   const [sortCol, setSortCol] = useState(null);
   const [sortAsc, setSortAsc] = useState(true);
@@ -1698,13 +1627,13 @@ function App() {
   const totalFail = useMemo(() => csvRows.filter(r => r.Status === 'FAIL').length, [csvRows]);
 
   const { matrixRows, columns } = useMemo(
-    () => activeSystem ? buildMatrixForMode(csvRows, activeSystem, activeMode) : { matrixRows: [], columns: [] },
-    [csvRows, activeSystem, activeMode]
+    () => activeSystem ? buildMatrix(csvRows, activeSystem) : { matrixRows: [], columns: [] },
+    [csvRows, activeSystem]
   );
 
   const topErrors = useMemo(
-    () => activeSystem ? buildTopErrors(csvRows, activeSystem, activeMode) : [],
-    [csvRows, activeSystem, activeMode]
+    () => activeSystem ? buildTopErrors(csvRows, activeSystem) : [],
+    [csvRows, activeSystem]
   );
 
   const handleSort = useCallback((col) => {
@@ -1757,7 +1686,6 @@ function App() {
       {loading ? <LoadingSpinner /> : !error && (
         <>
           <Controls
-            activeMode={activeMode} onSetMode={(m) => { setActiveMode(m); setSortCol(null); setSortAsc(true); }}
             searchQuery={searchQuery} onSetSearch={handleSetSearchQuery}
             totalPass={totalPass} totalFail={totalFail}
             showAllVersions={showAllVersions} onToggleShowAllVersions={setShowAllVersions}

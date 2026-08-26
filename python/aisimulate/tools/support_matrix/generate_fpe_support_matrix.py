@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--forward-model",
         action="append",
         choices=("op_level",),
-        help="Estimator mode to probe; the FPE supermatrix currently requires op_level",
+        help="Estimator mode to probe; the FPE support matrix currently requires op_level",
     )
     parser.add_argument(
         "--max-topologies-per-role",
