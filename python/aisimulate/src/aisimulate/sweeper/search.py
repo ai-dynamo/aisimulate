@@ -932,25 +932,6 @@ class Sweeper:
         self,
         config: SmartSearchConfig,
         *,
-        on_round: Callable[[int, list[Candidate]], None] | None = None,
-    ) -> list[Candidate]:
-        """Compatibility view returning the full ranked/frontier candidate list.
-
-        New consumers should call :meth:`run_result` to retain status counts,
-        rejection reasons, provenance, and stable top-N/Pareto views.
-        """
-
-        return self.run_result(
-            config,
-            top_n=None,
-            candidate_retention=CandidateRetention.ALL,
-            on_round=on_round,
-        ).selected_candidates
-
-    def run_result(
-        self,
-        config: SmartSearchConfig,
-        *,
         top_n: int | None = 5,
         candidate_retention: CandidateRetention | str = CandidateRetention.ALL,
         on_round: Callable[[int, list[Candidate]], None] | None = None,

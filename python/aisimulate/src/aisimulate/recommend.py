@@ -69,7 +69,7 @@ def run_recommendation(
             config, sample, spec, adapter_sections=adapter_sections
         ),
     )
-    return sweeper.run_result(smart, top_n=None)
+    return sweeper.run(smart, top_n=None)
 
 
 def recommendation_to_sweeper(

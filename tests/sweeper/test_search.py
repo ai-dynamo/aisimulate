@@ -53,11 +53,15 @@ def _run_sweep(
     show_progress: bool,
     on_round=None,
 ):
-    return Sweeper(
-        runner_factory=runner_factory,
-        sampler_factory=sampler_factory,
-        show_progress=show_progress,
-    ).run(config, on_round=on_round)
+    return (
+        Sweeper(
+            runner_factory=runner_factory,
+            sampler_factory=sampler_factory,
+            show_progress=show_progress,
+        )
+        .run(config, top_n=None, on_round=on_round)
+        .selected_candidates
+    )
 
 
 def _selection(seqs: int) -> dict:

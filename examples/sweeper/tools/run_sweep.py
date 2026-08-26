@@ -25,7 +25,7 @@ def main() -> None:
         config = SmartSearchConfig.from_yaml(args.config)
         result = Sweeper(
             runner_factory=DynamoReplayRunnerFactory(),
-        ).run_result(config, top_n=None)
+        ).run(config, top_n=None)
     except OSError as exc:
         parser.error(f"could not read {args.config}: {exc}")
     except yaml.YAMLError as exc:

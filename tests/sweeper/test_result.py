@@ -381,8 +381,10 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
         runner_factory=_RunnerFactory(),
         sampler_factory=_Sampler,
         show_progress=False,
-    ).run_result(_config(), top_n=1)
+    ).run(_config(), top_n=1)
 
+    assert isinstance(result, SweepResult)
+    assert not hasattr(Sweeper, "run_result")
     assert result.provenance.search_strategy is SearchStrategy.OPTIMIZER_GUIDED
     assert result.counts == SweepCounts(
         evaluated=2,
@@ -403,7 +405,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
         runner_factory=_RunnerFactory(),
         sampler_factory=_Sampler,
         show_progress=False,
-    ).run_result(
+    ).run(
         _config(),
         top_n=1,
         candidate_retention=CandidateRetention.VIEWS,
@@ -444,7 +446,7 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
         runner_factory=_SlaViolatingRunnerFactory(),
         sampler_factory=_Sampler,
         show_progress=False,
-    ).run_result(SmartSearchConfig.model_validate(config_data))
+    ).run(SmartSearchConfig.model_validate(config_data))
 
     assert result.counts.infeasible > 0
     assert result.counts.infeasible == len(result.candidates)
@@ -480,7 +482,7 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
         runner_factory=_FailingRunnerFactory(),
         sampler_factory=_UnsupportedThenFailedSampler,
         show_progress=False,
-    ).run_result(_config())
+    ).run(_config())
 
     assert result.counts == SweepCounts(
         evaluated=1,

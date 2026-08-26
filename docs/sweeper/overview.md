@@ -41,7 +41,7 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 from aisimulate.sweeper import SmartSearchConfig, Sweeper
 
 config = SmartSearchConfig.from_yaml("sweep.yaml")
-result = Sweeper(runner_factory=my_runner_factory).run_result(config)
+result = Sweeper(runner_factory=my_runner_factory).run(config)
 ```
 
 The public `aisimulate recommend --config ...` command validates the unified schema and selects a
@@ -53,6 +53,6 @@ runner through `--stack`. The `Sweeper` Python API remains available for callers
 - A provider is imported only when its adapter name appears under `adapters`.
 - The runner advertises supported `ReplaySpec` versions, backend/topology pairs, and runtime hooks
   before a study starts.
-- Every `Sweeper.run_result` call owns fresh optimizer studies, result caches, runners, and worker pools.
+- Every `Sweeper.run` call owns fresh optimizer studies, result caches, runners, and worker pools.
 - KVBM search fields are rejected. The AI Simulate engine and replay path do not support those
   fields and provide no adapter migration for the old host or disk offload settings.

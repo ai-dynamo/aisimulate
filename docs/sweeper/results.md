@@ -17,17 +17,17 @@ The unified `aisimulate recommend` command writes this envelope as `recommendati
 the selected `recommendations/*.yaml` prediction inputs.
 
 ```python
-result = sweeper.run_result(config, top_n=5, candidate_retention="all")
+result = sweeper.run(config, top_n=5, candidate_retention="all")
 
 result.to_json()                 # lossless interchange
 result.to_csv()                  # documented analysis view
 result.counts.failed             # machine-readable outcome counts
-result.selected_candidates       # top-N or Pareto compatibility objects
+result.selected_candidates       # top-N or Pareto candidates
 ```
 
-`Sweeper.run(config)` remains a compatibility adapter. It returns the full scalar ranking or Pareto
-front as `list[Candidate]`, but cannot expose rejected candidates, run provenance, or counts. New CLI,
-Pareto, QA, and configuration-selection code should consume `SweepResult`.
+`Sweeper.run(config)` returns `SweepResult`, the single public execution result. Callers that need
+only the scalar top-N or Pareto selection use `result.selected_candidates`; rejected candidates,
+run provenance, and counts remain available on the same result envelope.
 
 Strict aggregate SLA filtering happens before scalar ranking or Pareto dominance. Rejected candidates
 remain in the ledger with status `infeasible` and reason category `sla_constraint`.

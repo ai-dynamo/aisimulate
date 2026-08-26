@@ -26,7 +26,7 @@ from aisimulate.sweeper import SmartSearchConfig, Sweeper
 
 config = SmartSearchConfig.from_yaml("sweep.yaml")
 sweeper = Sweeper(runner_factory=my_runner_factory, show_progress=False)
-result = sweeper.run_result(config)
+result = sweeper.run(config)
 print(result.counts)
 print(result.selected_candidates)
 ```

@@ -68,7 +68,7 @@ engine:
 
 See [`docs/cli/design.md`](docs/cli/design.md) for the complete schema and search-domain contract.
 Embedded callers can obtain the full candidate ledger with
-`Sweeper(runner_factory=...).run_result(config)`.
+`Sweeper(runner_factory=...).run(config)`.
 
 Install AISimulate by itself for engine-only development:
 
@@ -98,13 +98,13 @@ from dynamo.replay.simulation import DynamoReplayRunnerFactory
 config = SmartSearchConfig.from_yaml("smart_sweep.yaml")
 result = Sweeper(
     runner_factory=DynamoReplayRunnerFactory(),
-).run_result(config)
+).run(config)
 print(result.counts)
 print(result.selected_candidates)
 ```
 
 The backend-neutral Sweeper API intentionally has no implicit replay runtime. Adapter-owned search
-spaces are validated when the selected adapters are resolved by `Sweeper.run_result`.
+spaces are validated when the selected adapters are resolved by `Sweeper.run`.
 KVBM sweep fields have been removed and have no adapter migration.
 
 Read the canonical [Sweeper documentation](docs/sweeper/overview.md) for its configuration,

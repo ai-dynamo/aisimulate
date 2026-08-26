@@ -57,12 +57,16 @@ def _run_sweep(
     sampler_factory,
     show_progress: bool,
 ):
-    return search_module.Sweeper(
-        runner_factory=runner_factory,
-        providers=providers,
-        sampler_factory=sampler_factory,
-        show_progress=show_progress,
-    ).run(config)
+    return (
+        search_module.Sweeper(
+            runner_factory=runner_factory,
+            providers=providers,
+            sampler_factory=sampler_factory,
+            show_progress=show_progress,
+        )
+        .run(config, top_n=None)
+        .selected_candidates
+    )
 
 
 class _Adapter:

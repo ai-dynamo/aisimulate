@@ -55,7 +55,7 @@ def main() -> None:
     result = Sweeper(
         runner_factory=ExampleRunnerFactory(),
         show_progress=False,
-    ).run_result(config)
+    ).run(config)
     for index, candidate in enumerate(result.selected_candidates):
         print(index, candidate.score, candidate.config)
 
