@@ -471,21 +471,27 @@ def test_traffic_and_optimizer_strict_defaults_and_finite_values() -> None:
         )
 
 
-def test_goodput_requires_complete_sla_in_typed_cli_config() -> None:
+@pytest.mark.parametrize(
+    ("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0), ("e2e_ms", 1000.0)]
+)
+@pytest.mark.parametrize("target", ["goodput", "goodput_per_gpu"])
+def test_goodput_requires_at_least_one_sla_bound_in_typed_cli_config(
+    target: str, field: str, bound: float
+) -> None:
     base = {
         "engine": {
             **_engine(),
             "mode": "aggregated",
             "context_length": 4096,
         },
-        "optimization": {"target": "goodput"},
+        "optimization": {"target": target},
     }
-    with pytest.raises(ValidationError, match="requires a complete evaluation.sla"):
+    with pytest.raises(ValidationError, match="requires an evaluation.sla bound"):
         CoreRecommendationConfig.model_validate(base)
     accepted = CoreRecommendationConfig.model_validate(
-        {**base, "evaluation": {"sla": {"e2e_ms": 1000}}}
+        {**base, "evaluation": {"sla": {field: bound}}}
     )
-    assert accepted.evaluation.sla.e2e_ms == 1000
+    assert getattr(accepted.evaluation.sla, field) == bound
 
 
 def test_strict_sla_is_public_and_lowers_to_sweeper_goal() -> None:
@@ -527,15 +533,20 @@ def test_prediction_accepts_independent_token_sla_bounds(
     assert getattr(config.evaluation.sla, field) == bound
 
 
-def test_partial_token_sla_is_strict_recommendation_only() -> None:
-    with pytest.raises(ValidationError, match="unless optimization.strict_sla"):
-        CoreRecommendationConfig.model_validate(
-            {
-                "engine": {**_engine(), "mode": "aggregated"},
-                "evaluation": {"sla": {"ttft_ms": 800}},
-                "optimization": {},
-            }
-        )
+@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
+def test_recommendation_accepts_independent_token_sla_bounds(
+    field: str, bound: float
+) -> None:
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {**_engine(), "mode": "aggregated"},
+            "evaluation": {"sla": {field: bound}},
+            "optimization": {},
+        }
+    )
+
+    assert getattr(config.evaluation.sla, field) == bound
+    assert config.optimization.strict_sla is False
 
 
 def test_kv_relative_load_choices_lower_as_generic_search_dimension() -> None:

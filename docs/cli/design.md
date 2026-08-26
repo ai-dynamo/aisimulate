@@ -789,12 +789,13 @@ evaluation:
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `evaluation.sla.ttft_ms` | `null` | `x` | `-` | Positive; normally supplied with `itl_ms`; may stand alone with strict SLA. |
-| `evaluation.sla.itl_ms` | `null` | `x` | `-` | Positive; normally supplied with `ttft_ms`; may stand alone with strict SLA. |
+| `evaluation.sla.ttft_ms` | `null` | `x` | `-` | Positive and independently optional; an unset field is unbounded. |
+| `evaluation.sla.itl_ms` | `null` | `x` | `-` | Positive and independently optional; an unset field is unbounded. |
 | `evaluation.sla.e2e_ms` | `null` | `x` | `-` | Positive; mutually exclusive with TTFT plus ITL. |
 
-`goodput` and `goodput_per_gpu` optimization require either SLA form. Planner throughput scaling uses
-the `ttft_ms` plus `itl_ms` form when the recommendation target is SLA-based.
+`goodput` and `goodput_per_gpu` optimization require at least one SLA bound. Planner throughput
+scaling specifically uses the `ttft_ms` plus `itl_ms` form when the recommendation target is
+SLA-based.
 
 ## Recommendation Domains
 
@@ -875,9 +876,9 @@ optimization:
 | `optimization.constraints.max_candidate_gpus` | `32` | `x` | `-` | Positive. |
 
 `pareto` is always the fixed `throughput_per_gpu` and `throughput_per_user` frontier. Goodput targets
-require a complete `evaluation.sla`. Strict SLA requires at least one bound and permits `ttft_ms` or
-`itl_ms` independently for non-goodput targets. `optimization.hardware` never accepts a list or
-inventory mapping; every candidate uses its single hardware identifier.
+require at least one `evaluation.sla` bound. Strict SLA requires at least one bound and controls only
+the additional aggregate-mean filter. `optimization.hardware` never accepts a list or inventory
+mapping; every candidate uses its single hardware identifier.
 
 ## Optimizer Controls
 

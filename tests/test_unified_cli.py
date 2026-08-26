@@ -277,7 +277,6 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
                 "evaluation": {"sla": {sla_field: bound}},
                 "optimization": {
                     "target": "throughput",
-                    "strict_sla": True,
                     "constraints": {"max_candidate_gpus": 8},
                 },
                 "optimizer": {

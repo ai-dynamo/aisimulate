@@ -97,9 +97,9 @@ candidate's aggregate mean metrics and removes a violation before ranking or Par
 Comparisons are inclusive, and missing/non-finite aggregate metrics or zero qualifying latency
 samples reject the candidate.
 
-Strict filtering can use `ttft_ms` or `itl_ms` independently. A `goodput` or `goodput_per_gpu`
-optimization still requires either both fields or `e2e_ms`, because those targets also need a
-complete per-request SLA.
+Request-level goodput and strict filtering both accept `ttft_ms` or `itl_ms` independently; an unset
+field is unbounded. `strict_sla` changes only whether the configured bounds additionally reject a
+candidate based on its aggregate means.
 
 ## Migration limits
 

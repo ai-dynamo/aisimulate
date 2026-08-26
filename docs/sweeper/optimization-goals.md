@@ -85,7 +85,9 @@ iff that set intersects `_SLA_TARGETS`. So an SLA is mandatory when:
 - `target` is `goodput` or `goodput_per_gpu`, **or**
 - `target` is `pareto` **and** its objectives include one of those.
 
-A satisfying per-request goodput SLA is `e2e_ms`, **or** both `ttft_ms` and `itl_ms`.
+A satisfying per-request goodput SLA has at least one configured bound. TTFT and ITL are
+independently optional; an unset field is unbounded. `e2e_ms` remains mutually exclusive
+with either token-latency field.
 By default SLA is *not* gated during aggregate feasibility (`is_feasible` checks only
 the GPU budget) — it lives inside the goodput metric, so an unconditional aggregate
 latency gate would double-count it. `strict_sla: true` is the explicit legacy-compatible
@@ -95,8 +97,8 @@ opt-in: it filters aggregate mean metrics before scalar ranking or Pareto domina
 
 | field | meaning |
 |---|---|
-| `ttft_ms` | time-to-first-token bound — pair with `itl_ms` |
-| `itl_ms` | inter-token-latency bound — pair with `ttft_ms` |
+| `ttft_ms` | independently optional time-to-first-token bound |
+| `itl_ms` | independently optional inter-token-latency bound |
 | `e2e_ms` | end-to-end bound — standalone alternative |
 
 Strict aggregate comparisons are inclusive (`value <= bound`). A configured bound with

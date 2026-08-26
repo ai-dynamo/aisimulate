@@ -2037,6 +2037,22 @@ mod tests {
         }
     }
 
+    /// A TTFT-only SLA leaves ITL unbounded for request-level goodput.
+    #[test]
+    fn goodput_ttft_only_ignores_itl() {
+        let mut collector = TraceCollector::default();
+        collector.set_sla_thresholds(SlaThresholds {
+            ttft_ms: Some(150.0),
+            ..Default::default()
+        });
+        // TTFT=100 passes even though avg ITL=(400-100)/2=150ms.
+        add_completed(&mut collector, 1, 0.0, 3, &[100.0, 250.0, 400.0]);
+        // TTFT=200 fails independently of its short ITL.
+        add_completed(&mut collector, 2, 0.0, 3, &[200.0, 210.0, 220.0]);
+
+        assert_eq!(collector.finish().goodput.unwrap().completed_requests, 1);
+    }
+
     /// A request straddling the ITL bound flips good↔bad at the boundary.
     #[test]
     fn goodput_itl_boundary_is_inclusive() {

@@ -67,17 +67,10 @@ class CoreRecommendationConfig(StrictModel):
         ):
             raise ValueError(f"{source.format} requires aggregated engine mode")
         sla = self.evaluation.sla
-        if self.optimization.strict_sla:
-            if sla is None or not sla.has_bound:
-                raise ValueError("optimization.strict_sla requires at least one evaluation.sla bound")
-        elif sla is not None and ((sla.ttft_ms is None) != (sla.itl_ms is None)):
-            raise ValueError(
-                "evaluation.sla requires ttft_ms and itl_ms together unless optimization.strict_sla is true"
-            )
-        if self.optimization.target in {"goodput", "goodput_per_gpu"} and (
-            sla is None or (sla.e2e_ms is None and (sla.ttft_ms is None or sla.itl_ms is None))
-        ):
-            raise ValueError(f"optimization target {self.optimization.target!r} requires a complete evaluation.sla")
+        if self.optimization.strict_sla and (sla is None or not sla.has_bound):
+            raise ValueError("optimization.strict_sla requires at least one evaluation.sla bound")
+        if self.optimization.target in {"goodput", "goodput_per_gpu"} and (sla is None or not sla.has_bound):
+            raise ValueError(f"optimization target {self.optimization.target!r} requires an evaluation.sla bound")
         return self
 
     @classmethod

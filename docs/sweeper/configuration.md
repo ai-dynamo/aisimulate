@@ -102,11 +102,11 @@ Providers](sweep-config-provider.md) for the complete ABI.
 
 ## Strict Aggregate SLA
 
-The default SLA behavior is replay goodput: requests are individually counted against
-`ttft_ms` + `itl_ms`, or `e2e_ms`. Set `goal.strict_sla: true` to additionally require
-the aggregate candidate means to stay within every configured bound before scalar
-ranking or Pareto dominance. Bounds are inclusive. Missing metrics and zero qualifying
-latency samples fail closed.
+The default SLA behavior is replay goodput: requests are individually counted against every
+configured bound, and an unset TTFT or ITL field is unbounded. Set `goal.strict_sla: true`
+to additionally require the aggregate candidate means to stay within every configured bound
+before scalar ranking or Pareto dominance. Bounds are inclusive. Missing metrics and zero
+qualifying latency samples fail closed.
 
 ## Sampler Algorithm Override
 

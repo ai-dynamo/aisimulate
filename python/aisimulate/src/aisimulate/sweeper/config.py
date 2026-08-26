@@ -61,10 +61,9 @@ class OptimizationTarget(str, Enum):
 class SLATarget(BaseModel):
     """Latency bounds in milliseconds.
 
-    Replay treats every configured field as an independent per-request
-    goodput bound. Sweeper normally requires ``ttft_ms`` + ``itl_ms`` together;
-    :attr:`OptimizationGoal.strict_sla` permits either token bound to stand alone
-    because the same field also gates the corresponding aggregate mean.
+    Replay treats every configured field as an independent per-request goodput
+    bound; an unset field is unbounded. :attr:`OptimizationGoal.strict_sla`
+    controls only the additional aggregate-mean filter.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -81,8 +80,8 @@ class SLATarget(BaseModel):
         return self
 
     @property
-    def has_aggregate_bound(self) -> bool:
-        """Whether at least one strict aggregate bound is configured."""
+    def has_bound(self) -> bool:
+        """Whether at least one SLA bound is configured."""
         return any(value is not None for value in (self.ttft_ms, self.itl_ms, self.e2e_ms))
 
 
@@ -144,15 +143,11 @@ class OptimizationGoal(BaseModel):
             effective = {self.target}
         # Any goodput-based objective (scalar target or pareto objective) needs an SLA.
         needs_sla = bool(effective & _SLA_TARGETS)
-        has_sla = self.sla is not None and (
-            self.sla.e2e_ms is not None or (self.sla.ttft_ms is not None and self.sla.itl_ms is not None)
-        )
+        has_sla = self.sla is not None and self.sla.has_bound
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
-            raise ValueError(f"{culprits} require an SLA target (ttft_ms+itl_ms or e2e_ms)")
-        if not self.strict_sla and self.sla is not None and ((self.sla.ttft_ms is None) != (self.sla.itl_ms is None)):
-            raise ValueError("ttft_ms and itl_ms must be supplied together unless strict_sla is true")
-        if self.strict_sla and (self.sla is None or not self.sla.has_aggregate_bound):
+            raise ValueError(f"{culprits} require at least one SLA bound")
+        if self.strict_sla and (self.sla is None or not self.sla.has_bound):
             raise ValueError("strict_sla requires at least one SLA bound")
         return self
 

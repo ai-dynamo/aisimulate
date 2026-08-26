@@ -141,7 +141,7 @@ def test_engine_runner_preserves_independent_sla_bounds(
     spec = _spec(
         goal={
             "target": "throughput",
-            "strict_sla": True,
+            "strict_sla": False,
             "sla": {field: bound},
         }
     )

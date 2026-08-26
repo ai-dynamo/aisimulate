@@ -307,31 +307,31 @@ def test_invalid_workloads_are_rejected(workload):
         Workload(**workload)
 
 
-def test_goodput_requires_complete_sla():
-    with pytest.raises(ValidationError, match="require an SLA"):
-        OptimizationGoal(target=OptimizationTarget.GOODPUT)
-    with pytest.raises(ValidationError, match="require an SLA"):
-        OptimizationGoal(
-            target=OptimizationTarget.GOODPUT,
-            sla=SLATarget(ttft_ms=2000),
-        )
+@pytest.mark.parametrize(
+    ("field", "bound"), [("ttft_ms", 2000.0), ("itl_ms", 30.0), ("e2e_ms", 5000.0)]
+)
+@pytest.mark.parametrize(
+    "target", [OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU]
+)
+def test_goodput_requires_at_least_one_sla_bound(
+    target: OptimizationTarget, field: str, bound: float
+):
+    with pytest.raises(ValidationError, match="require at least one SLA"):
+        OptimizationGoal(target=target)
 
-    OptimizationGoal(
-        target=OptimizationTarget.GOODPUT,
-        sla=SLATarget(ttft_ms=2000, itl_ms=30),
+    goal = OptimizationGoal(
+        target=target,
+        sla=SLATarget(**{field: bound}),
     )
-    OptimizationGoal(
-        target=OptimizationTarget.GOODPUT_PER_GPU,
-        sla=SLATarget(e2e_ms=5000),
-    )
+    assert getattr(goal.sla, field) == bound
 
 
-def test_strict_sla_requires_a_bound_but_does_not_change_goodput_requirement():
+def test_strict_sla_requires_a_bound_but_does_not_change_request_sla_shape():
     with pytest.raises(ValidationError, match="strict_sla requires"):
         OptimizationGoal(strict_sla=True)
 
-    with pytest.raises(ValidationError, match="unless strict_sla is true"):
-        OptimizationGoal(sla=SLATarget(itl_ms=30))
+    non_strict = OptimizationGoal(sla=SLATarget(itl_ms=30))
+    assert not non_strict.strict_sla
 
     goal = OptimizationGoal(
         target=OptimizationTarget.THROUGHPUT,
@@ -340,14 +340,12 @@ def test_strict_sla_requires_a_bound_but_does_not_change_goodput_requirement():
     )
     assert goal.strict_sla
 
-    # One aggregate bound is enough for strict filtering, but it cannot
-    # substitute for replay's complete per-request goodput SLA contract.
-    with pytest.raises(ValidationError, match="require an SLA"):
-        OptimizationGoal(
-            target=OptimizationTarget.GOODPUT,
-            sla=SLATarget(itl_ms=30),
-            strict_sla=True,
-        )
+    goodput = OptimizationGoal(
+        target=OptimizationTarget.GOODPUT,
+        sla=SLATarget(itl_ms=30),
+        strict_sla=True,
+    )
+    assert goodput.strict_sla
 
 
 def test_scalar_target_directions():

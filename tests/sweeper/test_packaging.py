@@ -151,7 +151,7 @@ def test_ai_dynamo_runner_preserves_independent_sla_bounds(
             num_workers=1,
         ),
         workload={},
-        goal={"target": "throughput", "strict_sla": True, "sla": {field: bound}},
+        goal={"target": "throughput", "strict_sla": False, "sla": {field: bound}},
     )
     expected = {
         "sla_ttft_ms": None,
