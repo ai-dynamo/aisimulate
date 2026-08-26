@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
@@ -168,7 +169,11 @@ def _latency_summary(rows: Sequence[dict[str, Any]]) -> str:
 def _failure_summary(rows: Sequence[dict[str, Any]], *, metadata: dict[str, Any]) -> str:
     messages = sorted(
         {
-            " ".join(str(row.get("error_message", "")).split())
+            re.sub(
+                r"(?:/[A-Za-z0-9_.-]+)+/python/aisimulate/",
+                "<repo>/python/aisimulate/",
+                " ".join(str(row.get("error_message", "")).split()),
+            )
             for row in rows
             if str(row.get("error_message", "")).strip()
         }
