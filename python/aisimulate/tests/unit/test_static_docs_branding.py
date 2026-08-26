@@ -1,5 +1,7 @@
-from pathlib import Path
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
+from pathlib import Path
 
 AISIMULATE_ROOT = Path(__file__).resolve().parents[2]
 DOCS_ROOT = AISIMULATE_ROOT / "docs"
