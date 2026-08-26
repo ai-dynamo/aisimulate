@@ -137,9 +137,26 @@ def is_feasible(used_gpus: int, gpu_budget: int) -> bool:
     return used_gpus <= gpu_budget
 
 
+def request_latency_ms(report: Mapping[str, float], *, osl: int) -> float:
+    """Return legacy aggregate request latency for one fixed output length.
+
+    Missing, non-finite, or unsampled aggregate TTFT/TPOT metrics return
+    ``math.inf`` so strict filtering fails closed.
+    """
+    if osl < 1:
+        raise ValueError(f"osl must be >= 1, got {osl}")
+    ttft = _qualified_latency_value(report, "mean_ttft_ms", "num_ttft_samples")
+    tpot = _qualified_latency_value(report, "mean_tpot_ms", "num_tpot_samples")
+    if not math.isfinite(ttft) or not math.isfinite(tpot):
+        return math.inf
+    return ttft + tpot * (osl - 1)
+
+
 def aggregate_sla_violations(
     report: Mapping[str, float],
     sla: SLATarget,
+    *,
+    osl: int | None = None,
 ) -> tuple[str, ...]:
     """Describe strict aggregate SLA violations using inclusive bounds.
 
@@ -185,15 +202,27 @@ def aggregate_sla_violations(
         elif value > bound:
             violations.append(f"{label} {value:g}ms > {bound:g}ms")
 
+    if sla.request_latency_ms is not None:
+        if osl is None:
+            violations.append("request latency needs a fixed output length")
+        else:
+            value = request_latency_ms(report, osl=osl)
+            if not math.isfinite(value):
+                violations.append("request latency needs sampled, finite mean_ttft_ms and mean_tpot_ms")
+            elif value > sla.request_latency_ms:
+                violations.append(f"request_latency {value:g}ms > {sla.request_latency_ms:g}ms")
+
     return tuple(violations)
 
 
 def meets_aggregate_sla(
     report: Mapping[str, float],
     sla: SLATarget,
+    *,
+    osl: int | None = None,
 ) -> bool:
     """Whether aggregate mean metrics satisfy every configured SLA bound."""
-    return not aggregate_sla_violations(report, sla)
+    return not aggregate_sla_violations(report, sla, osl=osl)
 
 
 def objective_vector(report: dict[str, float], objectives: list[OptimizationTarget]) -> dict[str, float]:
@@ -290,10 +319,12 @@ def rank(candidates: list[Candidate]) -> list[Candidate]:
 def analyze_candidates(
     candidates: Sequence[Candidate],
     goal: OptimizationGoal,
+    *,
+    osl: int | None = None,
 ) -> list[Candidate]:
     """Apply strict SLA filtering before scalar ranking or Pareto dominance."""
     pool = list(candidates)
     if goal.strict_sla:
         assert goal.sla is not None  # OptimizationGoal validates this invariant.
-        pool = [candidate for candidate in pool if meets_aggregate_sla(candidate.metrics, goal.sla)]
+        pool = [candidate for candidate in pool if meets_aggregate_sla(candidate.metrics, goal.sla, osl=osl)]
     return pareto_front(pool, goal.resolved_pareto_objectives) if goal.is_pareto else rank(pool)

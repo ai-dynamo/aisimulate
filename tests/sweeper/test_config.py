@@ -111,6 +111,46 @@ optimization:
     assert config.goal.sla == SLATarget(ttft_ms=800, itl_ms=30)
 
 
+def test_aic_request_latency_migration_yaml_loads(tmp_path):
+    """Keep the command-migration guide's request-latency example executable."""
+    path = tmp_path / "recommendation.yaml"
+    path.write_text(
+        """
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: constant_rate
+    requests_per_second: 4
+  stop:
+    requests_per_load_unit: 10
+engine:
+  mode: aggregated
+  model: meta-llama/Meta-Llama-3.1-8B
+  hardware: gb200
+  backend: trtllm
+  workers:
+    aggregated: {}
+evaluation:
+  sla:
+    request_latency_ms: 12000
+optimization:
+  target: throughput
+  strict_sla: true
+  constraints:
+    max_candidate_gpus: 8
+"""
+    )
+
+    public = CoreRecommendationConfig.from_yaml(path)
+    config = recommendation_to_sweeper(public)
+
+    assert config.goal.strict_sla
+    assert config.goal.sla == SLATarget(request_latency_ms=12000)
+
+
 def test_defaults_are_backend_only():
     config = SmartSearchConfig(
         search_space=_search_space(),
@@ -348,6 +388,32 @@ def test_strict_sla_requires_a_bound_but_does_not_change_request_sla_shape():
     assert goodput.strict_sla
 
 
+def test_request_latency_requires_strict_sla_and_fixed_osl():
+    with pytest.raises(ValidationError, match="requires strict_sla"):
+        OptimizationGoal(
+            target=OptimizationTarget.THROUGHPUT,
+            sla=SLATarget(request_latency_ms=10_000),
+        )
+
+    with pytest.raises(ValidationError, match="fixed osl"):
+        SmartSearchConfig(
+            search_space=_search_space(),
+            workload={"trace_path": "/tmp/trace.jsonl"},
+            goal={
+                "target": "throughput",
+                "strict_sla": True,
+                "sla": {"request_latency_ms": 10_000},
+            },
+        )
+
+    with pytest.raises(ValidationError, match="require at least one SLA"):
+        OptimizationGoal(
+            target=OptimizationTarget.GOODPUT,
+            strict_sla=True,
+            sla=SLATarget(request_latency_ms=10_000),
+        )
+
+
 def test_scalar_target_directions():
     assert OptimizationTarget.THROUGHPUT.maximize
     assert OptimizationTarget.THROUGHPUT_PER_GPU.maximize
@@ -467,7 +533,15 @@ def test_invalid_kv_load_ratio_is_rejected(value):
         )
 
 
-@pytest.mark.parametrize("kwargs", [{"ttft_ms": 0}, {"itl_ms": -1}, {"e2e_ms": -5}])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"ttft_ms": 0},
+        {"itl_ms": -1},
+        {"e2e_ms": -5},
+        {"request_latency_ms": 0},
+    ],
+)
 def test_non_positive_sla_is_rejected(kwargs):
     with pytest.raises(ValidationError):
         SLATarget(**kwargs)

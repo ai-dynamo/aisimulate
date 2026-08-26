@@ -40,6 +40,9 @@ class CorePredictionConfig(StrictModel):
             and self.engine.mode != "aggregated"
         ):
             raise ValueError(f"{source.format} requires aggregated engine mode")
+        sla = self.evaluation.sla
+        if sla is not None and sla.request_latency_ms is not None:
+            raise ValueError("evaluation.sla.request_latency_ms is recommendation-only")
         return self
 
     @classmethod
@@ -67,7 +70,14 @@ class CoreRecommendationConfig(StrictModel):
         ):
             raise ValueError(f"{source.format} requires aggregated engine mode")
         sla = self.evaluation.sla
-        if self.optimization.strict_sla and (sla is None or not sla.has_bound):
+        if sla is not None and sla.request_latency_ms is not None:
+            if not self.optimization.strict_sla:
+                raise ValueError("evaluation.sla.request_latency_ms requires optimization.strict_sla: true")
+            if isinstance(source, TraceSource):
+                raise ValueError(
+                    "evaluation.sla.request_latency_ms requires synthetic traffic with a fixed output length"
+                )
+        if self.optimization.strict_sla and (sla is None or not sla.has_aggregate_bound):
             raise ValueError("optimization.strict_sla requires at least one evaluation.sla bound")
         if self.optimization.target in {"goodput", "goodput_per_gpu"} and (sla is None or not sla.has_bound):
             raise ValueError(f"optimization target {self.optimization.target!r} requires an evaluation.sla bound")

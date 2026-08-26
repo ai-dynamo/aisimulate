@@ -536,7 +536,7 @@ def test_strict_aggregate_sla_gates_before_sampler_observation_and_ranking(
         sweep=base.sweep,
         goal={
             "target": "throughput",
-            "sla": {"itl_ms": 16.0},
+            "sla": {"itl_ms": 16.0, "request_latency_ms": 2132.0},
             "strict_sla": True,
         },
     )

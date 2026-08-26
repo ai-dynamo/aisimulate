@@ -100,9 +100,12 @@ opt-in: it filters aggregate mean metrics before scalar ranking or Pareto domina
 | `ttft_ms` | independently optional time-to-first-token bound |
 | `itl_ms` | independently optional inter-token-latency bound |
 | `e2e_ms` | end-to-end bound — standalone alternative |
+| `request_latency_ms` | aggregate-only `mean_ttft_ms + mean_tpot_ms * (osl - 1)` bound |
 
 Strict aggregate comparisons are inclusive (`value <= bound`). A configured bound with
 a missing/non-finite report metric or no qualifying latency samples rejects the candidate.
+`request_latency_ms` requires `strict_sla: true` and a synthetic workload with a fixed `osl`;
+it does not satisfy the per-request SLA requirement of a `goodput` objective.
 
 ## Pareto
 

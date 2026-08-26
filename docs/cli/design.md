@@ -792,10 +792,13 @@ evaluation:
 | `evaluation.sla.ttft_ms` | `null` | `x` | `-` | Positive and independently optional; an unset field is unbounded. |
 | `evaluation.sla.itl_ms` | `null` | `x` | `-` | Positive and independently optional; an unset field is unbounded. |
 | `evaluation.sla.e2e_ms` | `null` | `x` | `-` | Positive; mutually exclusive with TTFT plus ITL. |
+| `evaluation.sla.request_latency_ms` | `null` | `x` | `-` | Positive; recommendation-only, requires strict SLA and synthetic traffic with a fixed output length. |
 
 `goodput` and `goodput_per_gpu` optimization require at least one SLA bound. Planner throughput
 scaling specifically uses the `ttft_ms` plus `itl_ms` form when the recommendation target is
-SLA-based.
+SLA-based. `request_latency_ms` is an aggregate candidate bound computed as
+`mean_ttft_ms + mean_tpot_ms * (output_tokens - 1)`; it does not replace the per-request bound
+required by a goodput target.
 
 ## Recommendation Domains
 

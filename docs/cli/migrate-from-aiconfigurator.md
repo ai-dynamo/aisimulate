@@ -25,6 +25,7 @@ by the unified command surface. A legacy command becomes an AISimulate recommend
 | `--osl` | `traffic.source.output_tokens` | Synthetic output length |
 | `--ttft` | `evaluation.sla.ttft_ms` | Time-to-first-token bound in milliseconds |
 | `--tpot` | `evaluation.sla.itl_ms` | Per-request goodput uses average ITL; strict mode compares aggregate mean TPOT |
+| `--request-latency` | `evaluation.sla.request_latency_ms` | Aggregate TTFT plus TPOT across the fixed output length |
 | `--strict-sla` | `optimization.strict_sla: true` | Reject before scalar ranking or Pareto dominance |
 
 ## Illustrative strict SLA translation
@@ -100,6 +101,73 @@ samples reject the candidate.
 Request-level goodput and strict filtering both accept `ttft_ms` or `itl_ms` independently; an unset
 field is unbounded. `strict_sla` changes only whether the configured bounds additionally reject a
 candidate based on its aggregate means.
+
+## Request-latency SLA
+
+Legacy command:
+
+```bash
+aiconfigurator cli default \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system gb200 \
+  --backend trtllm \
+  --total-gpus 8 \
+  --isl 1024 \
+  --osl 128 \
+  --request-latency 12000 \
+  --strict-sla
+```
+
+Save this AISimulate configuration as `recommendation.yaml`:
+
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: constant_rate
+    requests_per_second: 4
+  stop:
+    requests_per_load_unit: 10
+
+engine:
+  mode: aggregated
+  model: meta-llama/Meta-Llama-3.1-8B
+  hardware: gb200
+  backend: trtllm
+  workers:
+    aggregated: {}
+
+evaluation:
+  sla:
+    request_latency_ms: 12000
+
+optimization:
+  target: throughput
+  strict_sla: true
+  constraints:
+    max_candidate_gpus: 8
+```
+
+Run the matching AISimulate command:
+
+```bash
+aisimulate recommend --config recommendation.yaml
+```
+
+For every candidate, AISimulate evaluates the combined aggregate bound directly:
+
+```text
+mean_ttft_ms + mean_tpot_ms * (output_tokens - 1) <= request_latency_ms
+```
+
+Legacy AIC internally enumerates TTFT/TPOT constraint pairs and ignores `--tpot` when
+`--request-latency` is present. AISimulate applies the combined formula directly to each replay
+report. Do not also set `evaluation.sla.itl_ms` unless you want an independent mean-TPOT bound.
+`request_latency_ms` alone does not define the per-request SLA required by a `goodput` or
+`goodput_per_gpu` optimization target.
 
 ## Migration limits
 

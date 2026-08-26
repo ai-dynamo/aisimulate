@@ -108,6 +108,11 @@ to additionally require the aggregate candidate means to stay within every confi
 before scalar ranking or Pareto dominance. Bounds are inclusive. Missing metrics and zero
 qualifying latency samples fail closed.
 
+`sla.request_latency_ms` applies the legacy aggregate formula
+`mean_ttft_ms + mean_tpot_ms * (osl - 1)`. It requires `strict_sla: true` and a
+synthetic workload with one fixed `osl`. AISimulate evaluates this combined bound
+directly; it does not need legacy AIC's internal TTFT/TPOT constraint-pair enumeration.
+
 ## Sampler Algorithm Override
 
 The experimental `AISIMULATE_SWEEPER_VIZIER_ALGO` environment variable overrides the Vizier
