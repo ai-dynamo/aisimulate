@@ -64,7 +64,9 @@ class _FakeTask:
                 setattr(self, f"{role}_backend_version", "0.5.14")
 
     def iter_parallel(self, _role):
-        return iter([(2, 1, 1, 1, 2, 1)])
+        # Production Task.iter_parallel() yields mutable lists.  The matrix
+        # planner must normalize them before deduplicating topologies.
+        return iter([[2, 1, 1, 1, 2, 1]])
 
     def build_model_config(self, *, role, parallel):
         assert role in {"agg", "prefill", "decode"}

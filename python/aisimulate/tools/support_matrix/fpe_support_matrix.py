@@ -377,7 +377,7 @@ def build_probe_plans(
                 )
                 task.forward_model = forward_model
                 for role in roles:
-                    choices = sorted(set(task.iter_parallel(role)))
+                    choices = sorted({tuple(choice) for choice in task.iter_parallel(role)})
                     if max_topologies_per_role is not None:
                         choices = choices[:max_topologies_per_role]
                     for choice in choices:
