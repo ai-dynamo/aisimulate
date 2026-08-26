@@ -1,0 +1,874 @@
+{
+  "models": [
+    {
+      "aic": {
+        "points": 90,
+        "tpot_mape_pct": 17.57,
+        "tpot_shape_error_pct": 12.93,
+        "ttft_mape_pct": 48.06,
+        "ttft_shape_error_pct": 41.57
+      },
+      "aisimulate": {
+        "coverage_pct": 95.56,
+        "points": 86,
+        "status_counts": {
+          "failed": 4,
+          "success": 86,
+          "unknown": 0,
+          "unsupported": 0
+        },
+        "tpot_mape_pct": 18.24,
+        "tpot_shape_error_pct": 12.88,
+        "ttft_mape_pct": 56.39,
+        "ttft_shape_error_pct": 30.53
+      },
+      "frameworks": [
+        "sglang",
+        "trtllm"
+      ],
+      "gpu_skus": [
+        "b200",
+        "b300",
+        "h200"
+      ],
+      "hf_model_paths": [
+        "deepseek-ai/DeepSeek-V3"
+      ],
+      "model": "DeepSeek-R1-0528",
+      "precisions": [
+        "fp4",
+        "fp8"
+      ],
+      "rows": 90,
+      "workloads": [
+        {
+          "aic": {
+            "points": 39,
+            "tpot_mape_pct": 12.78,
+            "tpot_shape_error_pct": 12.73,
+            "ttft_mape_pct": 47.84,
+            "ttft_shape_error_pct": 37.46
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 39,
+            "status_counts": {
+              "failed": 0,
+              "success": 39,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 12.66,
+            "tpot_shape_error_pct": 12.55,
+            "ttft_mape_pct": 65.25,
+            "ttft_shape_error_pct": 29.91
+          },
+          "gpu_skus": [
+            "b200",
+            "b300",
+            "h200"
+          ],
+          "identity": "1024:1024",
+          "label": "1k/1k",
+          "rows": 39
+        },
+        {
+          "aic": {
+            "points": 12,
+            "tpot_mape_pct": 17.94,
+            "tpot_shape_error_pct": 11.0,
+            "ttft_mape_pct": 70.93,
+            "ttft_shape_error_pct": 56.18
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 12,
+            "status_counts": {
+              "failed": 0,
+              "success": 12,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 18.75,
+            "tpot_shape_error_pct": 11.45,
+            "ttft_mape_pct": 77.76,
+            "ttft_shape_error_pct": 42.9
+          },
+          "gpu_skus": [
+            "b200"
+          ],
+          "identity": "1024:8192",
+          "label": "1k/8k",
+          "rows": 12
+        },
+        {
+          "aic": {
+            "points": 39,
+            "tpot_mape_pct": 22.25,
+            "tpot_shape_error_pct": 13.72,
+            "ttft_mape_pct": 41.23,
+            "ttft_shape_error_pct": 41.7
+          },
+          "aisimulate": {
+            "coverage_pct": 89.74,
+            "points": 35,
+            "status_counts": {
+              "failed": 4,
+              "success": 35,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 24.28,
+            "tpot_shape_error_pct": 13.74,
+            "ttft_mape_pct": 39.19,
+            "ttft_shape_error_pct": 27.3
+          },
+          "gpu_skus": [
+            "b200",
+            "b300",
+            "h200"
+          ],
+          "identity": "8192:1024",
+          "label": "8k/1k",
+          "rows": 39
+        }
+      ]
+    },
+    {
+      "aic": {
+        "points": 55,
+        "tpot_mape_pct": 91.21,
+        "tpot_shape_error_pct": 31.53,
+        "ttft_mape_pct": 49.94,
+        "ttft_shape_error_pct": 34.16
+      },
+      "aisimulate": {
+        "coverage_pct": 98.18,
+        "points": 54,
+        "status_counts": {
+          "failed": 1,
+          "success": 54,
+          "unknown": 0,
+          "unsupported": 0
+        },
+        "tpot_mape_pct": 93.79,
+        "tpot_shape_error_pct": 31.8,
+        "ttft_mape_pct": 397.53,
+        "ttft_shape_error_pct": 108.63
+      },
+      "frameworks": [
+        "sglang",
+        "vllm"
+      ],
+      "gpu_skus": [
+        "b200",
+        "b300"
+      ],
+      "hf_model_paths": [
+        "deepseek-ai/DeepSeek-V4-Pro"
+      ],
+      "model": "DeepSeek-V4-Pro",
+      "precisions": [
+        "fp4"
+      ],
+      "rows": 55,
+      "workloads": [
+        {
+          "aic": {
+            "points": 29,
+            "tpot_mape_pct": 90.32,
+            "tpot_shape_error_pct": 31.14,
+            "ttft_mape_pct": 72.18,
+            "ttft_shape_error_pct": 25.09
+          },
+          "aisimulate": {
+            "coverage_pct": 96.55,
+            "points": 28,
+            "status_counts": {
+              "failed": 1,
+              "success": 28,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 94.57,
+            "tpot_shape_error_pct": 31.27,
+            "ttft_mape_pct": 418.34,
+            "ttft_shape_error_pct": 44.99
+          },
+          "gpu_skus": [
+            "b200",
+            "b300"
+          ],
+          "identity": "1024:1024",
+          "label": "1k/1k",
+          "rows": 29
+        },
+        {
+          "aic": {
+            "points": 26,
+            "tpot_mape_pct": 92.21,
+            "tpot_shape_error_pct": 31.97,
+            "ttft_mape_pct": 25.13,
+            "ttft_shape_error_pct": 44.18
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 26,
+            "status_counts": {
+              "failed": 0,
+              "success": 26,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 92.96,
+            "tpot_shape_error_pct": 32.38,
+            "ttft_mape_pct": 375.13,
+            "ttft_shape_error_pct": 178.96
+          },
+          "gpu_skus": [
+            "b200",
+            "b300"
+          ],
+          "identity": "8192:1024",
+          "label": "8k/1k",
+          "rows": 26
+        }
+      ]
+    },
+    {
+      "aic": {
+        "points": 67,
+        "tpot_mape_pct": 9.26,
+        "tpot_shape_error_pct": 15.18,
+        "ttft_mape_pct": 29.89,
+        "ttft_shape_error_pct": 32.83
+      },
+      "aisimulate": {
+        "coverage_pct": 100.0,
+        "points": 67,
+        "status_counts": {
+          "failed": 0,
+          "success": 67,
+          "unknown": 0,
+          "unsupported": 0
+        },
+        "tpot_mape_pct": 8.27,
+        "tpot_shape_error_pct": 12.74,
+        "ttft_mape_pct": 39.25,
+        "ttft_shape_error_pct": 16.64
+      },
+      "frameworks": [
+        "sglang"
+      ],
+      "gpu_skus": [
+        "b200",
+        "b300",
+        "h200"
+      ],
+      "hf_model_paths": [
+        "nvidia/GLM-5-NVFP4",
+        "zai-org/GLM-5-FP8"
+      ],
+      "model": "GLM-5",
+      "precisions": [
+        "fp4",
+        "fp8"
+      ],
+      "rows": 67,
+      "workloads": [
+        {
+          "aic": {
+            "points": 35,
+            "tpot_mape_pct": 8.2,
+            "tpot_shape_error_pct": 13.12,
+            "ttft_mape_pct": 23.55,
+            "ttft_shape_error_pct": 25.01
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 35,
+            "status_counts": {
+              "failed": 0,
+              "success": 35,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 8.11,
+            "tpot_shape_error_pct": 13.83,
+            "ttft_mape_pct": 44.44,
+            "ttft_shape_error_pct": 14.77
+          },
+          "gpu_skus": [
+            "b200",
+            "b300",
+            "h200"
+          ],
+          "identity": "1024:1024",
+          "label": "1k/1k",
+          "rows": 35
+        },
+        {
+          "aic": {
+            "points": 32,
+            "tpot_mape_pct": 10.43,
+            "tpot_shape_error_pct": 17.48,
+            "ttft_mape_pct": 36.81,
+            "ttft_shape_error_pct": 41.59
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 32,
+            "status_counts": {
+              "failed": 0,
+              "success": 32,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 8.43,
+            "tpot_shape_error_pct": 11.52,
+            "ttft_mape_pct": 33.57,
+            "ttft_shape_error_pct": 18.74
+          },
+          "gpu_skus": [
+            "b200",
+            "b300",
+            "h200"
+          ],
+          "identity": "8192:1024",
+          "label": "8k/1k",
+          "rows": 32
+        }
+      ]
+    },
+    {
+      "aic": {
+        "points": 159,
+        "tpot_mape_pct": 42.16,
+        "tpot_shape_error_pct": 22.35,
+        "ttft_mape_pct": 69.33,
+        "ttft_shape_error_pct": 31.87
+      },
+      "aisimulate": {
+        "coverage_pct": 100.0,
+        "points": 159,
+        "status_counts": {
+          "failed": 0,
+          "success": 159,
+          "unknown": 0,
+          "unsupported": 0
+        },
+        "tpot_mape_pct": 43.59,
+        "tpot_shape_error_pct": 24.0,
+        "ttft_mape_pct": 60.12,
+        "ttft_shape_error_pct": 18.11
+      },
+      "frameworks": [
+        "trtllm",
+        "vllm"
+      ],
+      "gpu_skus": [
+        "b200",
+        "h100",
+        "h200"
+      ],
+      "hf_model_paths": [
+        "openai/gpt-oss-120b"
+      ],
+      "model": "gpt-oss-120b",
+      "precisions": [
+        "fp4"
+      ],
+      "rows": 159,
+      "workloads": [
+        {
+          "aic": {
+            "points": 75,
+            "tpot_mape_pct": 42.68,
+            "tpot_shape_error_pct": 31.22,
+            "ttft_mape_pct": 62.47,
+            "ttft_shape_error_pct": 31.18
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 75,
+            "status_counts": {
+              "failed": 0,
+              "success": 75,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 45.54,
+            "tpot_shape_error_pct": 35.04,
+            "ttft_mape_pct": 56.93,
+            "ttft_shape_error_pct": 19.85
+          },
+          "gpu_skus": [
+            "b200",
+            "h100",
+            "h200"
+          ],
+          "identity": "1024:1024",
+          "label": "1k/1k",
+          "rows": 75
+        },
+        {
+          "aic": {
+            "points": 11,
+            "tpot_mape_pct": 67.46,
+            "tpot_shape_error_pct": 16.09,
+            "ttft_mape_pct": 141.83,
+            "ttft_shape_error_pct": 16.88
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 11,
+            "status_counts": {
+              "failed": 0,
+              "success": 11,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 66.58,
+            "tpot_shape_error_pct": 15.91,
+            "ttft_mape_pct": 79.89,
+            "ttft_shape_error_pct": 7.14
+          },
+          "gpu_skus": [
+            "b200",
+            "h200"
+          ],
+          "identity": "1024:8192",
+          "label": "1k/8k",
+          "rows": 11
+        },
+        {
+          "aic": {
+            "points": 73,
+            "tpot_mape_pct": 37.82,
+            "tpot_shape_error_pct": 14.03,
+            "ttft_mape_pct": 65.46,
+            "ttft_shape_error_pct": 34.62
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 73,
+            "status_counts": {
+              "failed": 0,
+              "success": 73,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 38.12,
+            "tpot_shape_error_pct": 13.68,
+            "ttft_mape_pct": 60.42,
+            "ttft_shape_error_pct": 17.79
+          },
+          "gpu_skus": [
+            "b200",
+            "h100",
+            "h200"
+          ],
+          "identity": "8192:1024",
+          "label": "8k/1k",
+          "rows": 73
+        }
+      ]
+    },
+    {
+      "aic": {
+        "points": 42,
+        "tpot_mape_pct": 35.71,
+        "tpot_shape_error_pct": 10.06,
+        "ttft_mape_pct": 33.9,
+        "ttft_shape_error_pct": 21.51
+      },
+      "aisimulate": {
+        "coverage_pct": 100.0,
+        "points": 42,
+        "status_counts": {
+          "failed": 0,
+          "success": 42,
+          "unknown": 0,
+          "unsupported": 0
+        },
+        "tpot_mape_pct": 34.37,
+        "tpot_shape_error_pct": 8.95,
+        "ttft_mape_pct": 65.29,
+        "ttft_shape_error_pct": 87.46
+      },
+      "frameworks": [
+        "vllm"
+      ],
+      "gpu_skus": [
+        "b200",
+        "b300"
+      ],
+      "hf_model_paths": [
+        "moonshotai/Kimi-K2.5"
+      ],
+      "model": "Kimi-K2.5",
+      "precisions": [
+        "fp4"
+      ],
+      "rows": 42,
+      "workloads": [
+        {
+          "aic": {
+            "points": 22,
+            "tpot_mape_pct": 33.81,
+            "tpot_shape_error_pct": 9.68,
+            "ttft_mape_pct": 43.08,
+            "ttft_shape_error_pct": 21.62
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 22,
+            "status_counts": {
+              "failed": 0,
+              "success": 22,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 34.1,
+            "tpot_shape_error_pct": 9.32,
+            "ttft_mape_pct": 17.21,
+            "ttft_shape_error_pct": 12.5
+          },
+          "gpu_skus": [
+            "b200",
+            "b300"
+          ],
+          "identity": "1024:1024",
+          "label": "1k/1k",
+          "rows": 22
+        },
+        {
+          "aic": {
+            "points": 20,
+            "tpot_mape_pct": 37.8,
+            "tpot_shape_error_pct": 10.48,
+            "ttft_mape_pct": 23.81,
+            "ttft_shape_error_pct": 21.38
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 20,
+            "status_counts": {
+              "failed": 0,
+              "success": 20,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 34.67,
+            "tpot_shape_error_pct": 8.53,
+            "ttft_mape_pct": 118.18,
+            "ttft_shape_error_pct": 171.8
+          },
+          "gpu_skus": [
+            "b200",
+            "b300"
+          ],
+          "identity": "8192:1024",
+          "label": "8k/1k",
+          "rows": 20
+        }
+      ]
+    },
+    {
+      "aic": {
+        "points": 203,
+        "tpot_mape_pct": 15.98,
+        "tpot_shape_error_pct": 19.27,
+        "ttft_mape_pct": 53.01,
+        "ttft_shape_error_pct": 40.24
+      },
+      "aisimulate": {
+        "coverage_pct": 100.0,
+        "points": 203,
+        "status_counts": {
+          "failed": 0,
+          "success": 203,
+          "unknown": 0,
+          "unsupported": 0
+        },
+        "tpot_mape_pct": 12.28,
+        "tpot_shape_error_pct": 15.66,
+        "ttft_mape_pct": 38.35,
+        "ttft_shape_error_pct": 22.05
+      },
+      "frameworks": [
+        "dynamo-vllm",
+        "trtllm",
+        "vllm"
+      ],
+      "gpu_skus": [
+        "b200",
+        "b300",
+        "gb300",
+        "h200"
+      ],
+      "hf_model_paths": [
+        "MiniMaxAI/MiniMax-M2.5"
+      ],
+      "model": "MiniMax-M2.5",
+      "precisions": [
+        "fp4",
+        "fp8"
+      ],
+      "rows": 203,
+      "workloads": [
+        {
+          "aic": {
+            "points": 90,
+            "tpot_mape_pct": 13.45,
+            "tpot_shape_error_pct": 15.34,
+            "ttft_mape_pct": 59.21,
+            "ttft_shape_error_pct": 33.38
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 90,
+            "status_counts": {
+              "failed": 0,
+              "success": 90,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 12.42,
+            "tpot_shape_error_pct": 16.19,
+            "ttft_mape_pct": 37.67,
+            "ttft_shape_error_pct": 25.3
+          },
+          "gpu_skus": [
+            "b200",
+            "b300",
+            "h200"
+          ],
+          "identity": "1024:1024",
+          "label": "1k/1k",
+          "rows": 90
+        },
+        {
+          "aic": {
+            "points": 113,
+            "tpot_mape_pct": 17.99,
+            "tpot_shape_error_pct": 22.28,
+            "ttft_mape_pct": 48.07,
+            "ttft_shape_error_pct": 45.5
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 113,
+            "status_counts": {
+              "failed": 0,
+              "success": 113,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 12.17,
+            "tpot_shape_error_pct": 15.25,
+            "ttft_mape_pct": 38.9,
+            "ttft_shape_error_pct": 19.56
+          },
+          "gpu_skus": [
+            "b200",
+            "b300",
+            "gb300",
+            "h200"
+          ],
+          "identity": "8192:1024",
+          "label": "8k/1k",
+          "rows": 113
+        }
+      ]
+    },
+    {
+      "aic": {
+        "points": 112,
+        "tpot_mape_pct": 35.98,
+        "tpot_shape_error_pct": 9.57,
+        "ttft_mape_pct": 48.07,
+        "ttft_shape_error_pct": 25.84
+      },
+      "aisimulate": {
+        "coverage_pct": 100.0,
+        "points": 112,
+        "status_counts": {
+          "failed": 0,
+          "success": 112,
+          "unknown": 0,
+          "unsupported": 0
+        },
+        "tpot_mape_pct": 22.33,
+        "tpot_shape_error_pct": 9.0,
+        "ttft_mape_pct": 57.44,
+        "ttft_shape_error_pct": 18.22
+      },
+      "frameworks": [
+        "sglang",
+        "trtllm"
+      ],
+      "gpu_skus": [
+        "b200",
+        "b300",
+        "h100"
+      ],
+      "hf_model_paths": [
+        "Qwen/Qwen3.5-397B-A17B"
+      ],
+      "model": "Qwen-3.5-397B-A17B",
+      "precisions": [
+        "bf16",
+        "fp4",
+        "fp8"
+      ],
+      "rows": 112,
+      "workloads": [
+        {
+          "aic": {
+            "points": 55,
+            "tpot_mape_pct": 23.11,
+            "tpot_shape_error_pct": 11.15,
+            "ttft_mape_pct": 58.89,
+            "ttft_shape_error_pct": 15.13
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 55,
+            "status_counts": {
+              "failed": 0,
+              "success": 55,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 14.94,
+            "tpot_shape_error_pct": 11.86,
+            "ttft_mape_pct": 74.96,
+            "ttft_shape_error_pct": 20.39
+          },
+          "gpu_skus": [
+            "b200",
+            "b300",
+            "h100"
+          ],
+          "identity": "1024:1024",
+          "label": "1k/1k",
+          "rows": 55
+        },
+        {
+          "aic": {
+            "points": 57,
+            "tpot_mape_pct": 48.41,
+            "tpot_shape_error_pct": 7.99,
+            "ttft_mape_pct": 37.62,
+            "ttft_shape_error_pct": 36.55
+          },
+          "aisimulate": {
+            "coverage_pct": 100.0,
+            "points": 57,
+            "status_counts": {
+              "failed": 0,
+              "success": 57,
+              "unknown": 0,
+              "unsupported": 0
+            },
+            "tpot_mape_pct": 29.47,
+            "tpot_shape_error_pct": 6.14,
+            "ttft_mape_pct": 40.53,
+            "ttft_shape_error_pct": 16.04
+          },
+          "gpu_skus": [
+            "b200",
+            "b300",
+            "h100"
+          ],
+          "identity": "8192:1024",
+          "label": "8k/1k",
+          "rows": 57
+        }
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "scope": {
+    "claim": "Accuracy applies only to the exact measured operating points in this snapshot; it is not universal model, hardware, or deployment support.",
+    "excluded_multinode_rows": 698,
+    "latency_scope": "client_observed",
+    "measurement_scope": "end_to_end",
+    "metrics": [
+      "TTFT",
+      "TPOT"
+    ],
+    "multinode": "excluded",
+    "published_rows": 728,
+    "raw_rows": 1426
+  },
+  "snapshot": {
+    "aic_commit_sha": "54a6d84082afc00b1a66197e6ef77e1fb7d06ae3",
+    "aisimulate_completed_at": "2026-08-25T00:26:08.212773+00:00",
+    "aisimulate_method": "randomized_synthetic_engine_replay",
+    "aisimulate_packages": {
+      "aisimulate": "0.12.0",
+      "aisimulate-core": "0.12.0"
+    },
+    "aisimulate_sot_sha256": "5872a78834b7f122849c414014226e25f68b960ba102ca024e5dd7c8e5ee9973",
+    "corrections": [
+      "kimi_k25_b200_tp4_1k1k"
+    ],
+    "measurement_date_through": "2026-07-19",
+    "measurement_source": "SemiAnalysis InferenceX",
+    "measurement_source_url": "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-07-20",
+    "prediction_generated_at": "2026-08-15T04:55:21.815965+00:00",
+    "predictions_sha256": "b0afaad83c5111a4ae19134a5553388d1727561ef560f59e1147782792237b73",
+    "release_tag": "db-dump/2026-07-20"
+  },
+  "title": "AISimulate E2E Accuracy Overview",
+  "totals": {
+    "aic": {
+      "points": 728,
+      "tpot_mape_pct": 31.18,
+      "tpot_shape_error_pct": 17.56,
+      "ttft_mape_pct": 51.74,
+      "ttft_shape_error_pct": 33.9
+    },
+    "aisimulate": {
+      "coverage_pct": 99.31,
+      "points": 723,
+      "status_counts": {
+        "failed": 5,
+        "success": 723,
+        "unknown": 0,
+        "unsupported": 0
+      },
+      "tpot_mape_pct": 28.43,
+      "tpot_shape_error_pct": 16.69,
+      "ttft_mape_pct": 76.72,
+      "ttft_shape_error_pct": 31.48
+    },
+    "frameworks": [
+      "dynamo-vllm",
+      "sglang",
+      "trtllm",
+      "vllm"
+    ],
+    "gpu_skus": [
+      "b200",
+      "b300",
+      "gb300",
+      "h100",
+      "h200"
+    ],
+    "models": 7,
+    "precisions": [
+      "bf16",
+      "fp4",
+      "fp8"
+    ],
+    "rows": 728,
+    "workloads": [
+      "1024:1024",
+      "1024:8192",
+      "8192:1024"
+    ]
+  }
+}
