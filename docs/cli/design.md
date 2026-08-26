@@ -1030,18 +1030,19 @@ optimization:
     max_candidate_gpus: 32
 ```
 
-A scalar recommendation ranks every feasible candidate and saves all of them. A Pareto
-recommendation saves the complete nondominated front. A durable failed/infeasible trial ledger is
-deferred to the full output-contract revision.
+A scalar recommendation ranks every feasible candidate and saves all distinct concrete prediction
+configs. A Pareto recommendation saves the distinct concrete configs on the nondominated front.
+The durable result keeps the complete candidate ledger; its selected candidate-ID view is rebuilt
+after adapter canonicalization and deduplication so it maps one-to-one to the numbered YAML files.
 
 ## Outputs
 
 Output controls are CLI-only. They never appear in an input or recommended YAML file.
 
-This input-focused revision deliberately keeps durable output small. Field-level JSON schemas,
-run metadata, resolved-input snapshots, trial ledgers, recommendation indexes, metric names and
-units, status/error records, and partial-failure payloads are deferred to a separate output-contract
-revision.
+Recommendation output uses the schema-versioned `SweepResult` contract documented in
+[`docs/sweeper/results.md`](../sweeper/results.md). It preserves run metadata, a candidate-attempt
+ledger, stable status and reason categories, counts, provenance, and candidate-ID selection views.
+Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j`.
 
 ### Prediction Directory
 
@@ -1058,12 +1059,17 @@ revision.
 
 ```text
 <output-dir>/
+├── recommendation.json
 └── recommendations/
     ├── 0001.yaml
     ├── 0002.yaml
     └── ...
 ```
 
+- `recommendation.json` is the canonical lossless result. Its candidate ledger retains feasible,
+  infeasible, unsupported, timed-out, and failed rows according to the declared retention policy;
+  its counts describe the complete run. `views.top_n` or `views.pareto_front` lists the candidate IDs
+  corresponding to numbered YAML files in order.
 - Each numbered YAML is a concrete prediction config. It excludes `optimization`, `optimizer`, and
   `preset`, contains no domains or `auto` values, and can be passed directly to
   `aisimulate predict`.
@@ -1072,11 +1078,20 @@ For scalar optimization, file numbering follows best-to-worst rank. For Pareto o
 follows the deterministic display order of the complete nondominated front; that order does not
 imply a scalar ranking.
 
+If no feasible candidate exists, the CLI still writes `recommendation.json` with empty views, zero
+selected YAML files, complete counts and retained failure records, then exits with status `1`. If
+some trials fail but at least one selected config remains, those failures stay in the ledger and the
+recommendation succeeds with status `0`.
+
 ### Existing Output Directories
 
 Without `--overwrite`, the CLI rejects an existing nonempty output directory. With `--overwrite`, it
 may replace only the known files and directories listed above. It must preserve unrelated files and
 must not recursively clear an arbitrary directory.
+
+Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `requests.jsonl`, and
+numbered `recommendations/NNNN.yaml` files. Other files, including non-numbered files inside
+`recommendations/`, are preserved.
 
 ### Standard Output
 

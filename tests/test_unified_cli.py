@@ -19,19 +19,45 @@ from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 
 class _RecommendationResult:
     def __init__(self, selected_candidates, *, failed: int = 0) -> None:
-        self.selected_candidates = selected_candidates
+        self._candidates = {
+            f"candidate-{index:06d}": candidate
+            for index, candidate in enumerate(selected_candidates, start=1)
+        }
+        self._selected_ids = list(self._candidates)
         self._failed = failed
+
+    @property
+    def selected_candidate_ids(self):
+        return list(self._selected_ids)
+
+    @property
+    def selected_candidates(self):
+        return [self._candidates[candidate_id] for candidate_id in self._selected_ids]
+
+    def with_selected_prediction_configs(self, selections):
+        self._selected_ids = [candidate_id for candidate_id, _ in selections]
+        for candidate_id, config in selections:
+            self._candidates[candidate_id] = self._candidates[candidate_id].model_copy(
+                update={"prediction_config": dict(config)}
+            )
+        return self
 
     def to_json(self) -> str:
         return json.dumps(
             {
                 "schema_version": "1.0",
                 "counts": {
-                    "feasible": len(self.selected_candidates),
+                    "feasible": len(self._candidates),
                     "failed": self._failed,
                 },
-                "candidates": [],
-                "views": {"top_n": [], "pareto_front": []},
+                "candidates": [
+                    {
+                        "candidate_id": candidate_id,
+                        "prediction_config": candidate.prediction_config,
+                    }
+                    for candidate_id, candidate in self._candidates.items()
+                ],
+                "views": {"top_n": self._selected_ids, "pareto_front": []},
             },
             sort_keys=True,
         )
@@ -476,6 +502,12 @@ def test_recommendation_outputs_each_concrete_prediction_once(
     assert [path.name for path in (output / "recommendations").iterdir()] == [
         "0001.yaml"
     ]
+    result = json.loads((output / "recommendation.json").read_text())
+    assert result["counts"]["feasible"] == 2
+    assert result["views"]["top_n"] == ["candidate-000001"]
+    assert result["candidates"][0]["prediction_config"] == yaml.safe_load(
+        (output / "recommendations" / "0001.yaml").read_text()
+    )
 
 
 def test_overwrite_only_removes_known_outputs(tmp_path) -> None:

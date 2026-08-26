@@ -16,6 +16,7 @@ from pydantic import ValidationError
 import aisimulate.sweeper.search as search_module
 from aisimulate.sweeper import (
     RESULT_SCHEMA_VERSION,
+    BackendDeploymentSpec,
     CandidateProvenance,
     CandidateRecord,
     CandidateRetention,
@@ -23,6 +24,7 @@ from aisimulate.sweeper import (
     OperationProvenance,
     ReasonCategory,
     ReplayReport,
+    ReplaySpec,
     ResultViews,
     RunnerCapabilities,
     SearchStrategy,
@@ -168,6 +170,18 @@ def test_result_json_round_trip_is_lossless_and_schema_versioned():
         SweepResult.model_json_schema()["properties"]["schema_version"]["const"]
         == "1.0"
     )
+
+
+def test_selected_prediction_configs_preserve_ids_and_canonicalize_artifacts():
+    result = _complete_result()
+    concrete = {"engine": {"model": "canonical/model"}}
+
+    updated = result.with_selected_prediction_configs([("candidate-000001", concrete)])
+
+    assert updated.counts == result.counts
+    assert updated.selected_candidate_ids == ["candidate-000001"]
+    assert updated.selected_candidates[0].prediction_config == concrete
+    assert updated.candidates[0].prediction_config == concrete
     assert result.selected_candidates[0].prediction_config == {
         "engine": {"model": "example/model"}
     }
@@ -210,28 +224,60 @@ def test_flat_csv_is_one_row_per_candidate_with_canonical_json_cells():
     assert rows[3]["reason_category"] == "runtime_timeout"
 
 
-def test_inferred_performance_data_respects_the_active_timing_provider():
+def test_candidate_provenance_uses_the_materialized_replay_spec():
     candidate = {
         "deployment_mode": "agg",
         "backend": "trtllm",
         "backend_version": "1.0",
+        "model_name": "example/model",
+        "hardware_sku": "h200_sxm",
     }
-
-    default_timing = make_candidate_provenance(_config(), candidate)
-    fixed_timing = make_candidate_provenance(
-        _config(),
-        {**candidate, "agg_timing_model": {"type": "fixed"}},
+    replay_spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="trtllm",
+            backend_version="1.0",
+            parallel_config={"tp": 4, "replicas": 2},
+            performance_model_metadata={
+                "aggregated": {
+                    "provider": "aic",
+                    "config": {
+                        "model_path": "example/model",
+                        "system": "h200_sxm",
+                        "nextn": 2,
+                    },
+                }
+            },
+        ),
+        workload={"concurrency": 8, "isl": 1024, "osl": 128},
+        concurrency=16,
+        goal={"target": "throughput"},
     )
+    provenance = make_candidate_provenance(candidate, replay_spec=replay_spec)
 
-    assert default_timing.performance_data[0]["source"] == (
-        "aiconfigurator_performance_database"
-    )
-    assert fixed_timing.performance_data == []
+    assert provenance.workload["concurrency"] == 16
+    assert provenance.topology == {
+        "deployment_mode": "agg",
+        "tp": 4,
+        "replicas": 2,
+    }
+    assert provenance.performance_data == [
+        {
+            "role": "aggregated",
+            "source": "backend_deployment",
+            "provider": "aic",
+            "config": {
+                "model_path": "example/model",
+                "system": "h200_sxm",
+                "nextn": 2,
+            },
+        }
+    ]
 
 
 class _Sampler:
-    def __init__(self, branch, study_id, objectives=None):
-        del study_id, objectives
+    def __init__(self, branch, study_id, objectives=None, algorithm=None, seed=None):
+        del study_id, objectives, algorithm, seed
         self.branch = branch
 
     def suggest(self, count):
@@ -356,6 +402,58 @@ class _FailingRunnerFactory(_RunnerFactory):
         return _FailingRunner()
 
 
+class _DuplicateSampler(_Sampler):
+    def suggest(self, count):
+        selection = {
+            "deployment_mode": "agg",
+            "backend": "trtllm",
+            "agg_max_num_batched_tokens": 8192,
+            "agg_max_num_seqs": 256,
+        }
+        return [
+            Suggestion(
+                selection=dict(selection),
+                parallel_config=self.branch.parallel_configs[0],
+                handle=index,
+            )
+            for index in range(count)
+        ]
+
+
+class _ZeroSampleRunner(_Runner):
+    def run(self, spec):
+        del spec
+        return ReplayReport(
+            metrics={
+                "completed_requests": 0.0,
+                "num_e2e_latency_samples": 0.0,
+                "mean_e2e_latency_ms": 0.0,
+            }
+        )
+
+
+class _ZeroSampleRunnerFactory(_RunnerFactory):
+    def create(self, worker_id):
+        del worker_id
+        return _ZeroSampleRunner()
+
+
+def _with_trial_budget(
+    config: SmartSearchConfig,
+    *,
+    max_trials: int,
+    parallel_evals: int = 1,
+) -> SmartSearchConfig:
+    payload = config.model_dump(mode="python")
+    payload["sweep"].update(
+        max_trials=max_trials,
+        max_rounds=1,
+        candidates_per_round=parallel_evals,
+        parallel_evals=parallel_evals,
+    )
+    return SmartSearchConfig.model_validate(payload)
+
+
 def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
     parallel_config = ReplicaParallelConfig(
         ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
@@ -399,6 +497,11 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
     assert len(result.views.top_n) == 1
     assert result.selected_candidates[0].score == 512.0
     assert result.candidates[0].provenance.performance_data[0]["source"] == "parquet"
+    assert result.candidates[0].provenance.performance_data[1]["role"] == "aggregated"
+    assert (
+        result.candidates[0].provenance.performance_data[1]["config"]["model_path"]
+        == "example/model"
+    )
     assert result.candidates[0].provenance.power["mean_power_w"] == 400.0
 
     views_only = Sweeper(
@@ -452,9 +555,63 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
     assert result.counts.infeasible == len(result.candidates)
     assert result.counts.feasible == 0
     assert result.selected_candidates == []
+    assert result.candidates[0].metrics["mean_ttft_ms"] == 20.0
     assert {record.reason_category for record in result.candidates} == {
         ReasonCategory.SLA_CONSTRAINT
     }
+
+
+def test_same_batch_failed_duplicates_are_counted_as_coalesced_hits(monkeypatch):
+    parallel_config = ReplicaParallelConfig(
+        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
+    )
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel_config,),
+        supported_backends={parallel_config: frozenset({"trtllm"})},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    monkeypatch.setattr(
+        search_module, "enumerate_branches", lambda *args, **kwargs: [branch]
+    )
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+
+    result = Sweeper(
+        runner_factory=_FailingRunnerFactory(),
+        sampler_factory=_DuplicateSampler,
+        show_progress=False,
+    ).run(_with_trial_budget(_config(), max_trials=2, parallel_evals=2))
+
+    assert result.counts.failed == 1
+    assert result.counts.cache_hits == 1
+    assert len(result.candidates) == 1
+
+
+def test_zero_sample_latency_is_a_typed_infeasible_result(monkeypatch):
+    parallel_config = ReplicaParallelConfig(
+        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
+    )
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel_config,),
+        supported_backends={parallel_config: frozenset({"trtllm"})},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    monkeypatch.setattr(
+        search_module, "enumerate_branches", lambda *args, **kwargs: [branch]
+    )
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+
+    result = Sweeper(
+        runner_factory=_ZeroSampleRunnerFactory(),
+        sampler_factory=_Sampler,
+        show_progress=False,
+    ).run(_with_trial_budget(_config(target="e2e_latency"), max_trials=1))
+
+    assert result.counts.infeasible == 1
+    assert result.counts.failed == 0
+    assert result.candidates[0].reason_category is ReasonCategory.NO_SAMPLES
+    assert result.candidates[0].metrics["num_e2e_latency_samples"] == 0.0
 
 
 def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monkeypatch):

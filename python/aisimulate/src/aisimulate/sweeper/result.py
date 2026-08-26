@@ -15,6 +15,8 @@ import hashlib
 import io
 import json
 import math
+from collections.abc import Mapping
+from copy import deepcopy
 from datetime import UTC, datetime
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
@@ -23,7 +25,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from .config import Candidate, SmartSearchConfig
-from .replay import canonical_json, validate_json_value
+from .replay import ReplaySpec, canonical_json, validate_json_value
 
 RESULT_SCHEMA_VERSION = "1.0"
 
@@ -65,6 +67,7 @@ class ReasonCategory(str, Enum):
     REPLAY_RUNTIME = "replay_runtime"
     RUNNER_CONTRACT = "runner_contract"
     INVALID_METRICS = "invalid_metrics"
+    NO_SAMPLES = "no_samples"
     PARALLEL_PROJECTION = "parallel_projection"
     ADAPTER_CONSTRAINT = "adapter_constraint"
     UNKNOWN = "unknown"
@@ -271,12 +274,55 @@ class SweepResult(BaseModel):
         return [record.as_candidate() for record in self.candidates if record.status is CandidateStatus.FEASIBLE]
 
     @property
+    def selected_candidate_ids(self) -> list[str]:
+        """Candidate IDs in the active scalar or Pareto view."""
+
+        return list(self.views.pareto_front or self.views.top_n)
+
+    @property
     def selected_candidates(self) -> list[Candidate]:
-        """The scalar top-N or Pareto view as compatibility candidates."""
+        """The scalar top-N or Pareto view as candidate objects."""
 
         by_id = {candidate.candidate_id: candidate for candidate in self.candidates}
-        selected_ids = self.views.pareto_front or self.views.top_n
-        return [by_id[candidate_id].as_candidate() for candidate_id in selected_ids]
+        return [by_id[candidate_id].as_candidate() for candidate_id in self.selected_candidate_ids]
+
+    def with_selected_prediction_configs(
+        self,
+        selections: list[tuple[str, Mapping[str, JsonValue]]],
+    ) -> SweepResult:
+        """Return a result whose selected view maps one-to-one to concrete configs.
+
+        ``selections`` must be an order-preserving subset of the current view. It
+        is used by output producers after their final adapter canonicalization and
+        deduplication so every selected candidate ID corresponds to one artifact.
+        """
+
+        selected_ids = [candidate_id for candidate_id, _ in selections]
+        if len(selected_ids) != len(set(selected_ids)):
+            raise ValueError("selected prediction candidate IDs must be unique")
+        selected_set = set(selected_ids)
+        missing = selected_set - set(self.selected_candidate_ids)
+        if missing:
+            raise ValueError(f"selected prediction candidate IDs are not in the current view: {sorted(missing)}")
+        expected_order = [candidate_id for candidate_id in self.selected_candidate_ids if candidate_id in selected_set]
+        if selected_ids != expected_order:
+            raise ValueError("selected prediction candidate IDs must preserve the current view order")
+        configs_by_id = {candidate_id: deepcopy(dict(config)) for candidate_id, config in selections}
+        for candidate_id, config in configs_by_id.items():
+            validate_json_value(config, path=f"selected prediction config {candidate_id}")
+        candidates = [
+            candidate.model_copy(update={"prediction_config": configs_by_id[candidate.candidate_id]})
+            if candidate.candidate_id in configs_by_id
+            else candidate
+            for candidate in self.candidates
+        ]
+        views = ResultViews(
+            pareto_front=selected_ids if self.views.pareto_front else [],
+            top_n=selected_ids if self.views.top_n else [],
+        )
+        payload = self.model_dump(mode="python")
+        payload.update(candidates=candidates, views=views)
+        return type(self).model_validate(payload)
 
     def to_json(self, *, indent: int | None = 2) -> str:
         """Serialize the lossless canonical representation using strict JSON."""
@@ -379,74 +425,79 @@ def make_run_provenance(
 
 
 def make_candidate_provenance(
-    config: SmartSearchConfig,
     candidate_config: dict[str, JsonValue],
     *,
+    replay_spec: ReplaySpec | None = None,
     metrics: dict[str, float] | None = None,
     runner_metadata: dict[str, JsonValue] | None = None,
 ) -> CandidateProvenance:
-    """Normalize core inputs plus optional runner evidence into one provenance record."""
+    """Normalize a materialized replay plus optional runner evidence.
+
+    Pre-materialization rejections have no concrete replay specification, so
+    their candidate provenance contains only the concrete fields known at the
+    rejection point. The complete input search domain remains in run provenance.
+    """
 
     runner_metadata = runner_metadata or {}
-    topology_fields = {
-        key: value
-        for key, value in candidate_config.items()
-        if key
-        in {
-            "deployment_mode",
-            "tp",
-            "pp",
-            "attention_dp",
-            "moe_tp",
-            "moe_ep",
-            "strategy",
-            "replicas",
-            "prefill_tp",
-            "prefill_pp",
-            "prefill_attention_dp",
-            "prefill_moe_tp",
-            "prefill_moe_ep",
-            "prefill_strategy",
-            "prefill_replicas",
-            "decode_tp",
-            "decode_pp",
-            "decode_attention_dp",
-            "decode_moe_tp",
-            "decode_moe_ep",
-            "decode_strategy",
-            "decode_replicas",
+    deployment = replay_spec.backend_deployment if replay_spec is not None else None
+    topology_fields = (
+        {
+            "deployment_mode": deployment.deployment_mode,
+            **deepcopy(deployment.parallel_config),
         }
-    }
+        if deployment is not None
+        else {
+            key: value
+            for key, value in candidate_config.items()
+            if key
+            in {
+                "deployment_mode",
+                "tp",
+                "pp",
+                "attention_dp",
+                "moe_tp",
+                "moe_ep",
+                "strategy",
+                "replicas",
+                "prefill_tp",
+                "prefill_pp",
+                "prefill_attention_dp",
+                "prefill_moe_tp",
+                "prefill_moe_ep",
+                "prefill_strategy",
+                "prefill_replicas",
+                "decode_tp",
+                "decode_pp",
+                "decode_attention_dp",
+                "decode_moe_tp",
+                "decode_moe_ep",
+                "decode_strategy",
+                "decode_replicas",
+            }
+        }
+    )
     raw_performance_data = runner_metadata.get("performance_data", [])
-    performance_data = (
-        raw_performance_data
+    performance_data: list[dict[str, JsonValue]] = (
+        deepcopy(raw_performance_data)
         if isinstance(raw_performance_data, list) and all(isinstance(item, dict) for item in raw_performance_data)
         else []
     )
-    deployment_mode = candidate_config.get("deployment_mode")
-    timing_roles = ("agg",) if deployment_mode in {"agg", "aggregated"} else ("prefill", "decode")
-
-    def _uses_aic_timing(role: str) -> bool:
-        timing_model = candidate_config.get(f"{role}_timing_model")
-        return timing_model is None or (
-            isinstance(timing_model, dict)
-            and timing_model.get("type") == "external"
-            and timing_model.get("provider") == "aic"
-        )
-
-    if (
-        not performance_data
-        and candidate_config.get("backend_version") is not None
-        and any(_uses_aic_timing(role) for role in timing_roles)
-    ):
-        performance_data = [
-            {
-                "source": "aiconfigurator_performance_database",
-                "hardware": config.search_space.hardware_sku,
-                "backend": candidate_config.get("backend"),
-                "version": candidate_config["backend_version"],
-            }
-        ]
+    if deployment is not None:
+        for role, raw_metadata in deployment.performance_model_metadata.items():
+            if isinstance(raw_metadata, dict):
+                performance_data.append(
+                    {
+                        "role": role,
+                        "source": "backend_deployment",
+                        **deepcopy(raw_metadata),
+                    }
+                )
+    identity_config: dict[str, JsonValue] = {}
+    if deployment is not None:
+        for raw_metadata in deployment.performance_model_metadata.values():
+            if isinstance(raw_metadata, dict) and isinstance(raw_metadata.get("config"), dict):
+                identity_config = raw_metadata["config"]
+                break
     raw_operations = runner_metadata.get("operations", [])
     operations: list[OperationProvenance] = []
     if isinstance(raw_operations, list):
@@ -473,17 +524,33 @@ def make_candidate_provenance(
     raw_power = runner_metadata.get("power")
     if isinstance(raw_power, dict):
         power.update(raw_power)
-    goal_payload = config.goal.model_dump(mode="json")
+    workload: dict[str, JsonValue] = {}
+    goal_payload: dict[str, JsonValue] = {}
+    if replay_spec is not None:
+        workload = deepcopy(replay_spec.workload)
+        if replay_spec.concurrency is not None:
+            workload["concurrency"] = replay_spec.concurrency
+        goal_payload = deepcopy(replay_spec.goal)
     return CandidateProvenance(
-        model=config.search_space.model_name,
-        hardware=config.search_space.hardware_sku,
-        backend=(str(candidate_config["backend"]) if candidate_config.get("backend") is not None else None),
+        model=str(identity_config.get("model_path", candidate_config.get("model_name", "unknown"))),
+        hardware=str(identity_config.get("system", candidate_config.get("hardware_sku", "unknown"))),
+        backend=(
+            deployment.backend
+            if deployment is not None
+            else (str(candidate_config["backend"]) if candidate_config.get("backend") is not None else None)
+        ),
         backend_version=(
-            str(candidate_config["backend_version"]) if candidate_config.get("backend_version") is not None else None
+            deployment.backend_version
+            if deployment is not None
+            else (
+                str(candidate_config["backend_version"])
+                if candidate_config.get("backend_version") is not None
+                else None
+            )
         ),
         performance_data=performance_data,
         topology=topology_fields,
-        workload=config.workload.model_dump(mode="json"),
+        workload=workload,
         objective=goal_payload,
         sla=goal_payload.get("sla"),
         power=power,

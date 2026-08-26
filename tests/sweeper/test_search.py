@@ -727,7 +727,8 @@ def test_candidate_build_error_is_reported_not_raised(monkeypatch, capsys):
     assert "candidate build failed" in scored[0][1]
     output = capsys.readouterr().out
     assert "Sweeper failure reason(s): candidate build failed" in output
-    assert "(x33)" in output
+    assert "(x11)" in output
+    assert "22 cache hit(s)" in output
 
 
 def test_duplicate_full_samples_use_cache_and_are_replaced(monkeypatch):

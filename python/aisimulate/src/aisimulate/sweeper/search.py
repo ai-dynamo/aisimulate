@@ -818,6 +818,7 @@ def _score_prepared(
             ),
             reason_category=ReasonCategory.RUNNER_CONTRACT,
             runner_metadata=replay_result.metadata,
+            report_metrics=report,
         )
     sample = prepared.sample
     if not is_feasible(int(sample["used_gpus"]), config.search_space.gpu_budget):
@@ -833,6 +834,7 @@ def _score_prepared(
             ),
             reason_category=ReasonCategory.GPU_BUDGET,
             runner_metadata=replay_result.metadata,
+            report_metrics=report,
         )
     if goal.strict_sla:
         assert goal.sla is not None  # OptimizationGoal validates this invariant.
@@ -844,6 +846,27 @@ def _score_prepared(
                 outcome="infeasible",
                 reason=f"strict aggregate SLA violation: {'; '.join(violations)}",
                 reason_category=ReasonCategory.SLA_CONSTRAINT,
+                runner_metadata=replay_result.metadata,
+                report_metrics=report,
+            )
+    # A completed replay with no qualifying latency samples is a modeled
+    # infeasible outcome, not a runner failure. This preserves the intent of the
+    # former worst-rank sentinel without putting non-finite scores in SweepResult.
+    sample_metrics = {
+        OptimizationTarget.E2E_LATENCY: "num_e2e_latency_samples",
+        OptimizationTarget.TTFT: "num_ttft_samples",
+    }
+    for target in effective_targets:
+        sample_metric = sample_metrics.get(target)
+        sample_count = report.get(sample_metric) if sample_metric is not None else None
+        if sample_metric is not None and (sample_count is None or sample_count <= 0.0):
+            sample_detail = "missing" if sample_count is None else f"{sample_count:g}"
+            return _EvalResult(
+                candidate=None,
+                observe_metrics=None,
+                outcome="infeasible",
+                reason=f"{target.value} objective has no qualifying samples ({sample_metric}={sample_detail})",
+                reason_category=ReasonCategory.NO_SAMPLES,
                 runner_metadata=replay_result.metadata,
                 report_metrics=report,
             )
@@ -1189,57 +1212,57 @@ class Sweeper:
                 reason_category: ReasonCategory | None = None,
                 runner_metadata: dict[str, Any] | None = None,
                 provenance_metrics: dict[str, float] | None = None,
-                retain_record: bool = True,
+                replay_spec: ReplaySpec | None = None,
             ) -> None:
                 tally[outcome] += 1
                 if candidate is not None:
                     candidates.append(candidate)
                     bar.update(1)
-                if retain_record:
-                    if outcome == "feasible":
-                        status = CandidateStatus.FEASIBLE
-                    elif outcome == "unsupported":
-                        status = CandidateStatus.UNSUPPORTED
-                    elif reason_category is ReasonCategory.RUNTIME_TIMEOUT:
-                        status = CandidateStatus.TIMED_OUT
-                    elif outcome == "infeasible":
-                        status = CandidateStatus.INFEASIBLE
-                    else:
-                        status = CandidateStatus.FAILED
-                    snapshot = deepcopy(candidate.config if candidate is not None else candidate_config or {})
-                    record = CandidateRecord(
-                        candidate_id=f"candidate-{len(candidate_records) + 1:06d}",
-                        status=status,
-                        config=snapshot,
-                        prediction_config=deepcopy(
-                            candidate.prediction_config if candidate is not None else prediction_config
-                        ),
-                        used_gpus=(
-                            candidate.used_gpus
-                            if candidate is not None
-                            else (int(snapshot["used_gpus"]) if snapshot.get("used_gpus") is not None else None)
-                        ),
-                        score=candidate.score if candidate is not None else None,
-                        metrics=(deepcopy(candidate.metrics) if candidate is not None else {}),
-                        objectives=(deepcopy(candidate.objectives) if candidate is not None else None),
-                        reason_category=(
-                            None if status is CandidateStatus.FEASIBLE else reason_category or ReasonCategory.UNKNOWN
-                        ),
-                        reason=(None if status is CandidateStatus.FEASIBLE else reason),
-                        provenance=make_candidate_provenance(
-                            config,
-                            snapshot,
-                            metrics=(
-                                provenance_metrics
-                                if provenance_metrics is not None
-                                else (candidate.metrics if candidate is not None else None)
-                            ),
-                            runner_metadata=runner_metadata,
-                        ),
-                    )
-                    candidate_records.append(record)
-                    if candidate is not None:
-                        record_id_by_candidate_object[id(candidate)] = record.candidate_id
+                if outcome == "feasible":
+                    status = CandidateStatus.FEASIBLE
+                elif outcome == "unsupported":
+                    status = CandidateStatus.UNSUPPORTED
+                elif reason_category is ReasonCategory.RUNTIME_TIMEOUT:
+                    status = CandidateStatus.TIMED_OUT
+                elif outcome == "infeasible":
+                    status = CandidateStatus.INFEASIBLE
+                else:
+                    status = CandidateStatus.FAILED
+                snapshot = deepcopy(candidate.config if candidate is not None else candidate_config or {})
+                record_metrics = deepcopy(
+                    provenance_metrics
+                    if provenance_metrics is not None
+                    else (candidate.metrics if candidate is not None else {})
+                )
+                record = CandidateRecord(
+                    candidate_id=f"candidate-{len(candidate_records) + 1:06d}",
+                    status=status,
+                    config=snapshot,
+                    prediction_config=deepcopy(
+                        candidate.prediction_config if candidate is not None else prediction_config
+                    ),
+                    used_gpus=(
+                        candidate.used_gpus
+                        if candidate is not None
+                        else (int(snapshot["used_gpus"]) if snapshot.get("used_gpus") is not None else None)
+                    ),
+                    score=candidate.score if candidate is not None else None,
+                    metrics=record_metrics,
+                    objectives=(deepcopy(candidate.objectives) if candidate is not None else None),
+                    reason_category=(
+                        None if status is CandidateStatus.FEASIBLE else reason_category or ReasonCategory.UNKNOWN
+                    ),
+                    reason=(None if status is CandidateStatus.FEASIBLE else reason),
+                    provenance=make_candidate_provenance(
+                        snapshot,
+                        replay_spec=replay_spec,
+                        metrics=record_metrics,
+                        runner_metadata=runner_metadata,
+                    ),
+                )
+                candidate_records.append(record)
+                if candidate is not None:
+                    record_id_by_candidate_object[id(candidate)] = record.candidate_id
                 best = _best()
                 bar.set_postfix(
                     feasible=tally["feasible"],
@@ -1368,7 +1391,7 @@ class Sweeper:
                             for duplicate in duplicates:
                                 sampler.observe_infeasible(duplicate, reason)
                             if outcome == "failed":
-                                failure_reasons[reason] = failure_reasons.get(reason, 0) + 1 + len(duplicates)
+                                failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
                             _record(
                                 outcome,
                                 None,
@@ -1377,8 +1400,7 @@ class Sweeper:
                                 reason_category=build_result.reason_category,
                                 runner_metadata=build_result.runner_metadata,
                             )
-                            for _duplicate in duplicates:
-                                _record(outcome, None, retain_record=False)
+                            tally["cache_hit"] += len(duplicates)
                             continue
                         assert prepared is not None
                         todo.append((suggestion, prepared))
@@ -1396,7 +1418,7 @@ class Sweeper:
                             for duplicate in duplicates:
                                 sampler.observe_infeasible(duplicate, reason)
                             if outcome == "failed":
-                                failure_reasons[reason] = failure_reasons.get(reason, 0) + 1 + len(duplicates)
+                                failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
                             prepared = prepared_by_key[key]
                             _record(
                                 outcome,
@@ -1407,9 +1429,9 @@ class Sweeper:
                                 reason_category=evaluation.reason_category,
                                 runner_metadata=evaluation.runner_metadata,
                                 provenance_metrics=evaluation.report_metrics,
+                                replay_spec=prepared.replay_spec,
                             )
-                            for _duplicate in duplicates:
-                                _record(outcome, None, retain_record=False)
+                            tally["cache_hit"] += len(duplicates)
                             continue
 
                         if candidate is None or observe_metrics is None:
@@ -1427,6 +1449,7 @@ class Sweeper:
                             candidate,
                             runner_metadata=evaluation.runner_metadata,
                             provenance_metrics=evaluation.report_metrics,
+                            replay_spec=prepared_by_key[key].replay_spec,
                         )
                         unique_this_round += 1
 

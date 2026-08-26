@@ -44,8 +44,10 @@ remain in the ledger with status `infeasible` and reason category `sla_constrain
 | `views.pareto_front` | Non-dominated candidate IDs in frontier order. |
 | `provenance` | Search strategy, run ID/time, implementation, input fingerprint, and validated input config. |
 
-`views.top_n` and `views.pareto_front` are mutually exclusive. An empty result has empty views and
-an empty candidate list, while its counts and run provenance remain present.
+`views.top_n` and `views.pareto_front` are mutually exclusive. The unified CLI applies final adapter
+canonicalization and concrete-config deduplication before writing the active view, so each selected
+candidate ID maps one-to-one to one numbered prediction YAML. An empty result has empty views and an
+empty candidate list, while its counts and run provenance remain present.
 
 ### Candidate record
 
@@ -59,7 +61,7 @@ Every materialized or capability-gated candidate attempt has one record when ret
 | `prediction_config` | Concrete public `aisimulate predict` configuration when produced by the unified CLI. |
 | `used_gpus` | Provisioned GPU count, or `null` if materialization failed before it was known. Unit: GPUs. |
 | `score` | Scalar score normalized so larger is better; for a Pareto row it is the first objective's raw value. |
-| `metrics` | Replay metrics in natural units. Present only for feasible candidates. |
+| `metrics` | Normalized replay metrics in natural units for every attempt that completed replay, including attempts later classified infeasible. Empty only when no valid replay report exists. |
 | `objectives` | Natural-unit Pareto objective values, otherwise `null`. |
 | `reason_category` | Stable category for a non-feasible candidate. |
 | `reason` | Human-readable detail; consumers branch on `reason_category`, not this text. |
@@ -74,7 +76,9 @@ have a unit; use the named metric or `objectives` for display and comparisons.
 `evaluated` is the number of candidate attempts that reached materialization or replay and equals
 `feasible + infeasible + timed_out + failed`. `unsupported` is separate because capability gating
 rejects it before evaluation. `cache_hits` counts repeated optimizer suggestions served from the
-run-local cache and does not create duplicate ledger rows.
+run-local completed-result cache or coalesced with an identical suggestion in the same ask batch.
+Each such suggestion consumes a trial budget slot and is counted explicitly as a cache hit, but does
+not create a duplicate ledger row.
 
 | Status | When used |
 |---|---|
@@ -85,7 +89,7 @@ run-local cache and does not create duplicate ledger rows.
 | `failed` | Materialization, runner execution, or the runner/result contract failed. |
 
 Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `backend_topology`, `runtime_timeout`,
-`candidate_materialization`, `replay_runtime`, `runner_contract`, `invalid_metrics`,
+`candidate_materialization`, `replay_runtime`, `runner_contract`, `invalid_metrics`, `no_samples`,
 `parallel_projection`, `adapter_constraint`, and `unknown`.
 
 ## Provenance
@@ -98,18 +102,19 @@ Candidate provenance repeats the context required to interpret a row:
 - model and hardware identifiers;
 - backend and resolved performance-model version;
 - concrete agg/disagg topology;
-- workload, objective, and SLA payloads;
-- performance-data source records from runner metadata;
+- the concrete materialized replay workload (including effective concurrency), objective, and SLA payloads;
+- exact per-role performance-model identity from `BackendDeploymentSpec.performance_model_metadata`
+  plus performance-data source records from runner metadata;
 - power/energy measurements from report metrics or runner metadata;
 - operation-level source and version records; and
 - the complete validated runner metadata payload.
 
 Runner authors may populate `ReplayReport.metadata.performance_data`, `.operations`, and `.power`.
 Unknown JSON metadata is preserved under `runner_metadata`, so provenance is not lost when a newer
-runner supplies evidence an older consumer does not yet promote into typed fields.
-When detailed data metadata is absent and an active engine role uses the default or explicit AIC
-timing provider, Sweeper records the AI Configurator performance-database source together with the
-resolved hardware, backend, and backend version. Fixed and polynomial timing do not make that claim.
+runner supplies evidence an older consumer does not yet promote into typed fields. Candidate
+provenance is derived from the concrete `ReplaySpec`, not the run-level search domain or timing-model
+heuristics. Pre-materialization rejections have no replay specification and therefore retain only the
+concrete fields known at their rejection point; the full input domain remains in run provenance.
 
 ## JSON and CSV
 
