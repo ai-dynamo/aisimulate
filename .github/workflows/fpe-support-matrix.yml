@@ -58,9 +58,33 @@ jobs:
           python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
             --system "${{ matrix.system }}" \
             --output-dir "fpe-support-matrix/${{ matrix.system }}" \
+            --forward-model fpm \
             --max-workers 8
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fpe-support-matrix-${{ matrix.system }}
           path: fpe-support-matrix/${{ matrix.system }}
+          if-no-files-found: error
+
+  build-web-matrix:
+    name: Build FPM supermatrix CSVs
+    needs: generate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: fpe-support-matrix-*
+          path: fpe-support-matrix-shards
+      - name: Roll native probes into the existing support-matrix schema
+        run: |
+          python python/aisimulate/tools/support_matrix/build_fpm_supermatrix.py \
+            fpe-support-matrix-shards \
+            --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fpm-support-matrix-web
+          path: |
+            python/aisimulate/docs/support-matrix/index.html
+            python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix
           if-no-files-found: error

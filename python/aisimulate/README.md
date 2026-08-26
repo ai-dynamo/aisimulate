@@ -13,8 +13,10 @@ SPDX-License-Identifier: Apache-2.0
 > documentation below is retained so existing workflows remain discoverable
 > during the CLI parity and deprecation window.
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ai-dynamo/aisimulate)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ai-dynamo/aiconfigurator)
 [![Discord](https://dcbadge.limes.pink/api/server/mRJ2KNzwYE?style=flat)](https://discord.gg/mRJ2KNzwYE)
+
+Explore the [AIC Developer Universe](https://ai-dynamo.github.io/aiconfigurator/universe/), an interactive map of AIConfigurator and its Dynamo integration.
 
 In disaggregated serving, configuring an effective deployment is challenging: you need to decide how many prefill and decode
 workers to run, and the parallelism for each worker. Combined with SLA targets for TTFT (Time to First Token) and
@@ -92,7 +94,7 @@ Dynamo, without creating another CLI:
 aisimulate predict --stack dynamo --config prediction.yaml
 ```
 
-See [the unified CLI design](../../docs/cli/design.md) for the complete field, domain, preset, and
+See [the unified CLI design](../../docs/cli-design.md) for the complete field, domain, preset, and
 traffic contract. The `aiconfigurator` command below remains available for its existing AIC
 estimation and deployment-generation workflows.
 
@@ -495,18 +497,17 @@ To go through the process, refer to the [guidance](collector/README.md) under th
 > **Note**: b200 and gb200 are under dev. Results are to be aligned. For preview now.
 > `h100_pcie`, `a100_pcie`, `l4`, and `a30` do not include built-in silicon performance databases yet. Use them for naive sizing or rough SOL/EMPIRICAL estimates, and use `--systems-paths` to provide measured data for production-quality predictions.
 
-#### Legacy AIC Support Matrix
+#### Detailed Support Matrix
 
-The interactive [Legacy AIC Support Matrix](docs/support-matrix/) preserves
-historical AIConfigurator CLI compatibility coverage. It uses the current
-`main` snapshot and supports filtering by system, mode, and model.
+For a comprehensive, interactive view of which model/system/backend/version combinations are supported in both aggregated and disaggregated modes, visit the **[Support Matrix on GitHub Pages](https://ai-dynamo.github.io/aiconfigurator/support-matrix/)**. The page fetches the split support matrix CSV files directly from GitHub at load time and supports filtering by system, mode, model search, and switching between branches.
 
-For current strict-native forward-pass estimator coverage, use the
-[FPE Support Matrix](docs/fpe-support-matrix/). FPE coverage is estimator
-evidence, not deployment certification.
+AISimulate also has a separate [interactive FPM support matrix](docs/support-matrix/index.html) and
+[strict-native probe documentation](docs/support-matrix/fpe.md). It keeps the existing support-matrix page contract
+and split per-system CSV layout, but refreshes coverage through the public Forward Pass Engine with
+`forward_model=fpm`. FPM/FPE coverage is not evidence that the CLI, Sweeper, scheduler, Replay, disaggregated rate
+matching, deployment configuration, or prediction accuracy is supported.
 
-The raw data is also available as
-[per-system CSV files](src/aiconfigurator_core/systems/support_matrix).
+The raw data is also available as [per-system CSV files](aic-core/src/aiconfigurator_core/systems/support_matrix).
 
 You can also check support via the CLI:
 ```bash

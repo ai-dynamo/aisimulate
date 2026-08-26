@@ -49,12 +49,23 @@ failures. Error text is diagnostic evidence, not a stable API.
 
 ## Run it
 
-Install the repository package, then generate the full matrix:
+Install the repository package, then generate one FPM-only shard per system:
 
 ```bash
 python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
-  --output-dir fpe-support-matrix \
+  --output-dir fpe-support-matrix/b200_sxm \
+  --system b200_sxm \
+  --forward-model fpm \
   --max-workers 8
+```
+
+After all system shards finish, build the split CSV files consumed by the
+interactive page:
+
+```bash
+python python/aisimulate/tools/support_matrix/build_fpm_supermatrix.py \
+  fpe-support-matrix \
+  --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpm_support_matrix
 ```
 
 Use filters and a deterministic topology cap for a focused smoke run:
@@ -70,9 +81,12 @@ python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
   --max-workers 2
 ```
 
-The output directory contains deterministic JSON, CSV, and Markdown coverage
-artifacts plus a separate `run_metrics.json`. Wall time, CPU time, peak RSS,
-and worker count are intentionally kept out of the deterministic artifacts.
+Each raw shard contains deterministic JSON, CSV, and Markdown coverage
+artifacts plus a separate `run_metrics.json`. The rollup preserves the existing
+web matrix's `agg`/`disagg` rows and adds real probe counts, topology counts,
+native status counts, phase latencies, and source SHA to the detail view.
+Wall time, CPU time, peak RSS, and worker count remain separate from the
+deterministic coverage artifacts.
 
 ## Parallel execution and memory
 
@@ -82,5 +96,6 @@ but Python-backed model compilation and database memory still limit scaling.
 Increase `--max-workers` only with measured memory headroom.
 
 The scheduled workflow shards systems across the repository-specific CPU
-runner set. A measured comparison with the legacy `Task.run()` matrix remains
-required before publishing a speedup claim.
+runner set, runs only `forward_model=fpm`, and publishes the raw artifacts plus
+the split web CSV artifact. Refresh-time claims must name the worker count and
+source SHA from the measured run.
