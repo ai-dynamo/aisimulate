@@ -8,37 +8,45 @@ SPDX-License-Identifier: Apache-2.0
 AISimulate predicts LLM serving behavior and searches for strong deployment
 configurations offline, without bringing up a GPU serving cluster.
 
-One installation exposes two console entry points covering three primary
-workflows:
+AISimulate is the successor to the
+[AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
+repository. It brings the complete AIC application and estimator into one
+standalone home with Dynamo-independent Replay and Sweeper capabilities.
 
-| Goal | Command |
-|---|---|
-| Predict the behavior of one concrete deployment | `aisimulate predict` |
-| Search a deployment space and recommend concrete configurations | `aisimulate recommend` |
-| Use the established AIConfigurator estimator, generator, and support workflows | `aiconfigurator cli ...` |
-
-The `aiconfigurator` executable is a compatibility surface shipped by the
-`aisimulate` wheel. It is not a separate package to install. AISimulate also
-provides Python SDKs for embedding the estimator, Replay, and Sweeper, plus the
-`aisimulate-core` crate for Rust consumers.
-
-> [!WARNING]
-> Replay and Sweeper are experimental surfaces intended for evaluation and
-> feedback, not production capacity planning. Their APIs, schemas, search
-> behavior, and output may change without a standard deprecation period.
+The performance-modeling methodology is described in
+[AIConfigurator: Lightning-Fast Configuration Optimization for Multi-Framework
+LLM Serving](https://arxiv.org/abs/2601.06288).
 
 ## Install
 
+### Engine-only
+
+Install AISimulate by itself to use the built-in simulation engine without a
+Dynamo dependency:
+
 ```bash
 python3 -m pip install aisimulate
-
 aisimulate --help
-aiconfigurator --help
 ```
 
-When upgrading from the former standalone AIConfigurator distributions, remove
-them first so that only AISimulate provides the compatibility imports and
-command:
+### With Dynamo
+
+Install AISimulate with Dynamo to enable the `dynamo` runner plus Dynamo-owned
+Router and Planner configuration adapters:
+
+```bash
+python3 -m pip install aisimulate ai-dynamo
+aisimulate predict --help
+```
+
+AISimulate remains the CLI owner in both profiles. Select the integration at
+runtime with `--stack dynamo`; installing Dynamo does not add another
+simulation command.
+
+### Upgrade from standalone AIConfigurator
+
+Remove the former standalone distributions first so that only AISimulate owns
+the compatibility imports and command:
 
 ```bash
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
@@ -47,7 +55,7 @@ python3 -m pip install --upgrade aisimulate
 
 ## Predict one deployment
 
-`predict` accepts a pinned deployment configuration. For example, save this as
+`predict` evaluates one pinned deployment configuration. Save this example as
 `prediction.yaml`:
 
 ```yaml
@@ -60,23 +68,33 @@ engine:
     aggregated: {}
 ```
 
-Run the prediction with the built-in `engine` stack:
+### Engine-only prediction
 
 ```bash
 aisimulate predict \
+  --stack engine \
   --config prediction.yaml \
   --output-dir ./aisimulate-prediction
 ```
 
-The CLI prints a concise summary and writes the complete report to
-`aisimulate-prediction/prediction.json`. Add `--capture-per-request` to also
+### Dynamo-integrated prediction
+
+```bash
+aisimulate predict \
+  --stack dynamo \
+  --config prediction.yaml \
+  --output-dir ./aisimulate-dynamo-prediction
+```
+
+The CLI prints a concise summary and writes the selected runner's complete
+report to `<output-dir>/prediction.json`. Add `--capture-per-request` to also
 write `requests.jsonl`, or use `--format json` for machine-readable standard
 output.
 
 ## Recommend a deployment
 
-`recommend` accepts the prediction schema plus search domains and an
-optimization goal. For example, save this as `recommendation.yaml`:
+`recommend` searches the prediction schema plus search domains and an
+optimization goal. Save this example as `recommendation.yaml`:
 
 ```yaml
 engine:
@@ -95,17 +113,27 @@ optimization:
     max_candidate_gpus: 8
 ```
 
-Run the search:
+### Engine-only recommendation
 
 ```bash
 aisimulate recommend \
+  --stack engine \
   --config recommendation.yaml \
   --output-dir ./aisimulate-recommendation
 ```
 
-Each file under `aisimulate-recommendation/recommendations/` is a fully
-materialized, concrete configuration. It contains no search domains and can be
-passed directly back to `predict`:
+### Dynamo-integrated recommendation
+
+```bash
+aisimulate recommend \
+  --stack dynamo \
+  --config recommendation.yaml \
+  --output-dir ./aisimulate-dynamo-recommendation
+```
+
+Each file under `<output-dir>/recommendations/` is a fully materialized,
+concrete configuration. It contains no search domains and can be passed
+directly back to `predict`:
 
 ```bash
 aisimulate predict \
@@ -113,15 +141,17 @@ aisimulate predict \
   --output-dir ./aisimulate-best-prediction
 ```
 
-Both commands support `--set PATH=YAML_VALUE` overrides, an explicit
-`--output-dir`, `--overwrite`, and `--format table|json`. See the
-[CLI reference](docs/cli-design.md) for the complete schema, traffic models,
-search domains, presets, outputs, and error contract.
+Both commands support `--set PATH=YAML_VALUE`, `--output-dir`, `--overwrite`,
+and `--format table|json`. See the [CLI reference](docs/cli-design.md) for the
+complete schema, traffic models, search domains, presets, outputs, and error
+contract.
 
-## Use the AIConfigurator compatibility CLI
+## AIConfigurator compatibility CLI
 
-Existing AIC workflows remain available under the established
-`aiconfigurator` command:
+The `aisimulate` wheel preserves the established `aiconfigurator` command for
+workflows that have not yet moved to the unified CLI. This compatibility
+surface is planned for deprecation, so new prediction and search integrations
+should start with `aisimulate predict` and `aisimulate recommend`.
 
 ```bash
 # Check whether a model/system combination is supported.
@@ -147,48 +177,78 @@ The compatibility CLI preserves six workflows:
 | `generate` | Generate deployment artifacts without a parameter sweep |
 | `support` | Check model and system coverage |
 
-For AIC command options, the Python API, supported systems, configuration
-generation, and data collection, read the
-[AIConfigurator compatibility guide](python/aisimulate/README.md).
+Read the [AIC CLI and Python API guide](python/aisimulate/README.md) for the
+complete compatibility surface. The [migration guide](docs/migration.md)
+explains which AIC workflows map to `predict` or `recommend` and which ones
+must continue using the compatibility command for now.
 
-## Execution stacks and Python APIs
+## Experimental status and validation boundary
 
-The built-in `engine` stack is the default for `aisimulate predict` and
-`aisimulate recommend`. Independently installed packages can register optional
-runner and configuration adapters without adding another simulation CLI. For
-example, the `ai-dynamo` wheel registers the `dynamo` stack:
+> [!WARNING]
+> Replay and Sweeper are experimental surfaces intended for evaluation and
+> feedback, not production capacity planning. Their APIs, schemas, search
+> behavior, and output may change without a standard deprecation period.
+
+AISimulate narrows a deployment search and identifies candidates; it does not
+replace validation on the target hardware. Benchmark shortlisted
+configurations on a real deployment before making production capacity or SLA
+decisions.
+
+## SDKs
+
+Use the focused SDK documentation instead of treating CLI internals as public
+APIs:
+
+- [Estimator/FPE Python and Rust SDK](docs/core-api.md)
+- [Replay SDK and artifact contract](crates/core/src/replay/README.md)
+- [Sweeper SDK](docs/sweeper/overview.md)
+- [AIConfigurator compatibility Python API](python/aisimulate/README.md#python-api)
+
+## Support and accuracy
+
+Support coverage and accuracy are separate evidence. A supported cell means a
+specific path can execute with the required data; it does not establish that
+the resulting end-to-end prediction is accurate.
+
+### FPE support matrix — in development
+
+The new strict-native Forward Pass Engine (FPE) matrix measures estimator
+coverage across a curated roster of current models, GPU systems, backends, and
+backend versions. It probes native prefill, decode-start, decode-end, and mixed
+forward-pass calls without fallback. It does not certify the CLI, Replay,
+Sweeper, serving orchestration, or prediction accuracy.
+
+The FPE matrix is currently under review in
+[AISimulate PR #41](https://github.com/ai-dynamo/aisimulate/pull/41). Treat it
+as an in-development coverage surface until that work merges and publishes the
+interactive matrix.
+
+### AIC CLI support matrix
+
+The compatibility support matrix covers AIC command-based aggregated and
+disaggregated workflows by model, system, backend, and backend version:
+
+- [Interactive AIC support matrix](https://ai-dynamo.github.io/aiconfigurator/support-matrix/)
+- [AIC support-matrix data](python/aisimulate/src/aiconfigurator_core/systems/support_matrix/)
+- [Curated model roster](python/aisimulate/docs/support-matrix/model-roster.md)
+
+Check one exact cell from the installed package with:
 
 ```bash
-python3 -m pip install aisimulate ai-dynamo
-aisimulate predict --stack dynamo --config prediction.yaml
+aiconfigurator cli support \
+  --model-path Qwen/Qwen3-32B-FP8 \
+  --system h200_sxm \
+  --backend vllm \
+  --backend-version 0.14.0
 ```
 
-`aisimulate` is the only Replay/Sweeper CLI. The former module entry points are
-replaced by `aisimulate predict` and `aisimulate recommend`; the Replay and
-Sweeper Python APIs remain available to embedded callers.
+### Accuracy matrix — under construction
 
-For example, a caller can inject an explicit runner into Sweeper:
-
-```python
-from aisimulate.sweeper import SmartSearchConfig, Sweeper
-from dynamo.replay.simulation import DynamoReplayRunnerFactory
-
-config = SmartSearchConfig.from_yaml("smart_sweep.yaml")
-candidates = Sweeper(
-    runner_factory=DynamoReplayRunnerFactory(),
-).run(config)
-```
-
-The standalone module validates the backend-neutral core schema but has no
-implicit replay runtime. Adapter-owned search spaces are validated when the
-selected adapters are resolved by `Sweeper.run`. KVBM sweep fields have been
-removed and have no adapter migration.
-
-Read the canonical [Sweeper documentation](docs/sweeper/overview.md) for its
-configuration, search-space, and replay behavior. Backend-neutral and Dynamo
-integration examples live under [`examples/sweeper`](examples/sweeper/README.md).
-Dynamo owns its [Sweeper integration
-guide](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental/sweeper-experimental/dynamo-integration.md).
+The accuracy matrix is not yet a published support contract. The current work
+tracks AISimulate predictions against curated measured-silicon anchors and
+keeps forward-pass accuracy distinct from end-to-end serving accuracy. See the
+[prediction regression and accuracy design](python/aisimulate/docs/design/prediction_regression_gate_design.md)
+and the current [silicon anchor set](python/aisimulate/tools/accuracy_tracking/silicon_refs.csv).
 
 ## Release artifacts and compatibility
 
@@ -208,29 +268,11 @@ This repository produces exactly two release artifacts:
 It does **not** publish an `aiconfigurator` or `aiconfigurator-core` wheel, a
 Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
 `aisimulate` wheel preserves the `aiconfigurator`, `aiconfigurator_core`, and
-`aisimulate_core` Python import namespaces for compatibility.
+`aisimulate_core` Python import namespaces during the compatibility window.
 
 The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
 consume AISimulate through optional adapters.
-
-## Repository layout
-
-```text
-crates/
-  core/                 sole product crate: AIC perf model, Mocker, Replay, and PyO3 runtime
-  tests/public-api/     external-consumer compile contract
-python/
-  aisimulate/           application, AIC compatibility source/data, Replay, Sweeper, and runtime
-docs/
-  cli-design.md         prediction and recommendation CLI contract
-  artifact-contract.md  two-artifact release boundary
-  aic-sync.md           deterministic AIC source synchronization workflow
-  core-api.md           public core API and compatibility contract
-  migration.md          AIC and Dynamo source/history mapping
-scripts/
-  build_release_artifacts.py
-```
 
 ## Develop from source
 
@@ -256,17 +298,5 @@ python -m pytest -c pytest.ini tests
 python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"
 ```
 
-For focused development contracts, see the
-[core API](docs/core-api.md), [artifact contract](docs/artifact-contract.md),
-and [AIC synchronization guide](docs/aic-sync.md).
-
-## Source provenance
-
-The repository retains both imported histories: the path-filtered AIC core
-ancestry and the path-filtered Dynamo ancestry for the former `aisimulate/`
-directory. The complete AIC upper application was initially imported from
-AIConfigurator `main` commit `13b5cf2697876692b0a52098266c81162add11fc`
-and is synchronized through commit
-`095f58a51c4ca8e61b66ec108d86f223f8d559ce`. See
-[`docs/migration.md`](docs/migration.md) for provenance and
-[`docs/aic-sync.md`](docs/aic-sync.md) for the stable mirror mapping.
+See [DEVELOPMENT.md](python/aisimulate/DEVELOPMENT.md) for environment and test details and
+[CONTRIBUTING.md](CONTRIBUTING.md) before sending a change.
