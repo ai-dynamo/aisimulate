@@ -1,0 +1,65 @@
+{
+  "row_name": "vllm-aggregated",
+  "source_revision": "fb7b0d56de035d66ca9fcae7ff424055dcbf37cd",
+  "trace_file": "/tmp/aisimulate-replay-parity-mooncake/mooncake_trace.rows-000000-004999.jsonl",
+  "trace_sha256": "3892ae19ae480b643155f0c6b9d798591cbe2e73bec6a0fa5ae3d3bc0332fb8a",
+  "trace_rows": 5000,
+  "trace_block_size": 512,
+  "arrival_speedup_ratio": 4.0,
+  "trace_upstream_repository": "https://github.com/kvcache-ai/Mooncake",
+  "trace_upstream_commit": "dedfbde5daa3d5bc020adfd1d6e01c1d544f2098",
+  "trace_upstream_path": "FAST25-release/arxiv-trace/mooncake_trace.jsonl",
+  "trace_full_sha256": "b434f1816a707f4bac697235588184ebc374c9907cb981bb65fb0643471fe711",
+  "trace_full_rows": 23608,
+  "trace_slice_start": 0,
+  "iterations": 1,
+  "capture_canonical": true,
+  "write_full_report": false,
+  "metadata": {},
+  "expected": {
+    "canonical_sha256": "9932920c5cfa60df59ac89ea7439b50cbb47e757cdb2f5e8e4204c50458669e9",
+    "completed_requests": 5000,
+    "num_requests": 5000,
+    "total_input_tokens": 46542297,
+    "requested_output_tokens": 922544,
+    "total_output_tokens": 922544,
+    "all_requests_full_output": true,
+    "requests_with_short_output": 0,
+    "terminal_counts": {"completed": 5000},
+    "prefill_workers": [],
+    "decode_workers": [0, 1, 2, 3],
+    "routing_counts": {"agg_immediate": 5000},
+    "requests_with_reuse": 4910,
+    "handoffs_complete": 0,
+    "vllm_preemptions": 2,
+    "sglang_retractions": 0,
+    "pressure_records": 2,
+    "all_pressure_records_readmitted": true,
+    "virtual_duration_ms": 588733.1598880008
+  },
+  "spec": {
+    "version": 1,
+    "topology": {
+      "kind": "aggregated",
+      "workers": {"initial_workers": 4, "startup_delay_ms": 0.0}
+    },
+    "engine": {
+      "dp_size": 1,
+      "tensor_parallel_size": 1,
+      "rank": {
+        "backend": "vllm",
+        "num_gpu_blocks": 6144,
+        "block_size": 64,
+        "max_num_seqs": 16,
+        "max_num_batched_tokens": 8192,
+        "timing_model": {"type": "polynomial"}
+      }
+    },
+    "adapters": {
+      "placement": {"provider": "round_robin", "config": null},
+      "scaling": {"provider": "none", "config": null}
+    },
+    "record_per_request": true,
+    "requests": []
+  }
+}
