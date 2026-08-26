@@ -113,6 +113,51 @@ def test_build_probe_plans_uses_live_inventory_and_merges_equivalent_roles():
     assert plans[0].compile_kwargs()["forward_model"] == "op_level"
 
 
+def test_build_probe_plans_keeps_planning_failures_as_fail_closed_rows():
+    class FakeMatrix:
+        def generate_combinations(self):
+            return [("test/model", "h100_sxm", "sglang", "0.5.14")]
+
+        def get_architecture(self, _model):
+            return "TestForCausalLM"
+
+    def create_task(**_kwargs):
+        raise ValueError("native FP4 weights are not supported on Hopper systems")
+
+    plans = build_probe_plans(
+        matrix=FakeMatrix(),
+        create_task=create_task,
+        constraints_for_model=lambda _model: object(),
+        forward_models=("fpm",),
+    )
+
+    assert len(plans) == 1
+    assert plans[0].roles == ("agg", "prefill", "decode")
+    assert {plan.planning_status for plan in plans} == {STATUS_HW_INCOMPATIBLE}
+
+    called = False
+
+    def factory(_plan):
+        nonlocal called
+        called = True
+        raise AssertionError("planner failures must not build a substitute engine")
+
+    results = [
+        result
+        for plan in plans
+        for result in probe_plan(
+            plan,
+            workload=ProbeWorkload(),
+            source_version="0.12.0",
+            source_sha="abc123",
+            engine_factory=factory,
+        )
+    ]
+    assert not called
+    assert {result.status for result in results} == {STATUS_HW_INCOMPATIBLE}
+    assert {result.failure_stage for result in results} == {"plan"}
+
+
 def test_probe_plan_builds_once_and_runs_strict_native_shapes():
     calls = []
 

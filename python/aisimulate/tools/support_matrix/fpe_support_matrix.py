@@ -128,6 +128,9 @@ class EngineProbePlan:
     comm_quant_mode: str | None = None
     nextn: int = 0
     unrepresentable_reasons: tuple[str, ...] = ()
+    planning_status: str = ""
+    planning_error_type: str = ""
+    planning_error_message: str = ""
 
     def sort_key(self) -> tuple[Any, ...]:
         return (
@@ -177,6 +180,9 @@ class EngineProbePlan:
             self.comm_quant_mode,
             self.nextn,
             self.unrepresentable_reasons,
+            self.planning_status,
+            self.planning_error_type,
+            self.planning_error_message,
         )
 
 
@@ -366,31 +372,50 @@ def build_probe_plans(
         constraints = constraints_for_model(model)
         for forward_model in forward_models:
             for mode, roles in (("agg", ("agg",)), ("disagg", ("prefill", "decode"))):
-                task = create_task(
-                    mode=mode,
-                    model=model,
-                    system=system,
-                    backend=backend,
-                    version=version,
-                    constraints=constraints,
-                    database_mode="SILICON",
-                )
-                task.forward_model = forward_model
-                for role in roles:
-                    choices = sorted({tuple(choice) for choice in task.iter_parallel(role)})
-                    if max_topologies_per_role is not None:
-                        choices = choices[:max_topologies_per_role]
-                    for choice in choices:
-                        topology = ParallelTopology.from_choice(choice)
-                        seeds.append(
-                            _make_plan(
-                                task=task,
-                                role=role,
-                                topology=topology,
-                                architecture=architecture,
-                                forward_model=forward_model,
+                mode_seeds: list[EngineProbePlan] = []
+                try:
+                    task = create_task(
+                        mode=mode,
+                        model=model,
+                        system=system,
+                        backend=backend,
+                        version=version,
+                        constraints=constraints,
+                        database_mode="SILICON",
+                    )
+                    task.forward_model = forward_model
+                    for role in roles:
+                        choices = sorted({tuple(choice) for choice in task.iter_parallel(role)})
+                        if max_topologies_per_role is not None:
+                            choices = choices[:max_topologies_per_role]
+                        for choice in choices:
+                            topology = ParallelTopology.from_choice(choice)
+                            mode_seeds.append(
+                                _make_plan(
+                                    task=task,
+                                    role=role,
+                                    topology=topology,
+                                    architecture=architecture,
+                                    forward_model=forward_model,
+                                )
                             )
+                except Exception as error:
+                    mode_seeds = [
+                        EngineProbePlan(
+                            model=model,
+                            architecture=architecture,
+                            system=system,
+                            backend=backend,
+                            backend_version=version,
+                            forward_model=forward_model,
+                            topology=ParallelTopology(1, 1, 1, 1, 1, 1),
+                            roles=roles,
+                            planning_status=classify_failure(error, stage="build"),
+                            planning_error_type=type(error).__name__,
+                            planning_error_message=_error_message(error),
                         )
+                    ]
+                seeds.extend(mode_seeds)
     return merge_equivalent_plans(seeds)
 
 
@@ -457,7 +482,12 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
     evidence = f"{names} {messages}"
     if "perfdata" in names or "performance data not available" in evidence or "missing perf" in evidence:
         return STATUS_PERF_DATA_MISSING
-    if "missingsystemflops" in names or "hardware incompatible" in evidence or "unsupported datatype" in evidence:
+    if (
+        "missingsystemflops" in names
+        or "hardware incompatible" in evidence
+        or "unsupported datatype" in evidence
+        or ("not supported on" in evidence and any(token in evidence for token in ("hopper", "ampere", "blackwell")))
+    ):
         return STATUS_HW_INCOMPATIBLE
     if "framework" in names or "framework unsupported" in evidence or "unsupported on backend" in evidence:
         return STATUS_FRAMEWORK_INCOMPATIBLE
@@ -472,6 +502,18 @@ def _error_message(error: BaseException) -> str:
 
 
 def _reproducer(plan: EngineProbePlan, call: ProbeCall) -> str:
+    if plan.planning_status:
+        return json.dumps(
+            {
+                "api": "tools.support_matrix.fpe_support_matrix.build_probe_plans",
+                "error": plan.planning_error_message,
+                "error_type": plan.planning_error_type,
+                "phase": call.phase,
+                "status": plan.planning_status,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     payload = {
         "api": "aisimulate_core.sdk.EngineHandle.compile",
         "compile": {
@@ -549,6 +591,19 @@ def probe_plan(
     engine_factory: Callable[[EngineProbePlan], Any] = _default_engine_factory,
 ) -> list[FPEProbeResult]:
     calls = probe_calls_for_roles(plan.roles, workload)
+    if plan.planning_status:
+        return [
+            _result(
+                plan,
+                call,
+                status=plan.planning_status,
+                source_version=source_version,
+                source_sha=source_sha,
+                failure_stage="plan",
+                error_message=f"{plan.planning_error_type}: {plan.planning_error_message}",
+            )
+            for call in calls
+        ]
     if plan.unrepresentable_reasons:
         message = "; ".join(plan.unrepresentable_reasons)
         return [
