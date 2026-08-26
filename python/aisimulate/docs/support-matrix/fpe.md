@@ -95,7 +95,12 @@ a time. Native database loading and hot-path queries release the Python GIL,
 but Python-backed model compilation and database memory still limit scaling.
 Increase `--max-workers` only with measured memory headroom.
 
-The scheduled workflow shards systems across the repository-specific CPU
-runner set, runs only `forward_model=op_level`, and publishes the raw artifacts plus
-the split web CSV artifact. Refresh-time claims must name the worker count and
-source SHA from the measured run.
+The scheduled workflow creates one shard per system/backend pair and runs at
+most eight shards concurrently on the repository-specific CPU runner set. Each
+shard runs only `forward_model=op_level` with an eight-thread local pool. A
+final job combines the raw shards into the split web CSV artifact. This avoids
+leaving runners idle when a small system finishes before the largest systems.
+Full runs also suppress repeated SDK warnings at the console while preserving
+every classified failure and representative error in the matrix artifacts.
+Refresh-time claims must name both runner concurrency and per-runner thread
+count, plus the source SHA from the measured run.

@@ -14,30 +14,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  discover-systems:
-    name: Discover matrix systems
+  discover-shards:
+    name: Discover matrix shards
     runs-on: ubuntu-latest
     outputs:
-      systems: ${{ steps.systems.outputs.value }}
+      shards: ${{ steps.shards.outputs.value }}
     steps:
       - uses: actions/checkout@v7
-      - id: systems
-        name: Read the curated system manifest
+      - id: shards
+        name: Read system/backend identities from the curated matrix
         run: |
-          value=$(jq -c '[.files[] | sub("\\.csv$"; "")]' \
-            python/aisimulate/src/aiconfigurator_core/systems/support_matrix/index.json)
+          value=$(python - <<'PY'
+          import csv
+          import json
+          from pathlib import Path
+
+          root = Path("python/aisimulate/src/aiconfigurator_core/systems/support_matrix")
+          index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+          shards = set()
+          for filename in index["files"]:
+              with (root / filename).open(newline="", encoding="utf-8") as handle:
+                  for row in csv.DictReader(handle):
+                      shards.add((row["System"], row["Backend"]))
+          print(
+              json.dumps(
+                  [{"system": system, "backend": backend} for system, backend in sorted(shards)],
+                  separators=(",", ":"),
+              )
+          )
+          PY
+          )
           echo "value=${value}" >> "${GITHUB_OUTPUT}"
 
   generate:
-    name: FPE matrix (${{ matrix.system }})
-    needs: discover-systems
+    name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
+    needs: discover-shards
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 480
     strategy:
       fail-fast: false
-      max-parallel: 10
+      max-parallel: 8
       matrix:
-        system: ${{ fromJSON(needs.discover-systems.outputs.systems) }}
+        shard: ${{ fromJSON(needs.discover-shards.outputs.shards) }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -56,26 +74,18 @@ jobs:
       - name: Generate strict-native op-level coverage through the FPE SDK
         run: |
           python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
-            --system "${{ matrix.system }}" \
-            --output-dir "fpe-support-matrix/${{ matrix.system }}" \
+            --system "${{ matrix.shard.system }}" \
+            --backend "${{ matrix.shard.backend }}" \
+            --output-dir "fpe-support-matrix/${{ matrix.shard.system }}/${{ matrix.shard.backend }}" \
             --forward-model op_level \
+            --sdk-log-level ERROR \
             --max-workers 8
-      - name: Build this system's web CSV
-        run: |
-          python python/aisimulate/tools/support_matrix/build_fpe_supermatrix.py \
-            "fpe-support-matrix/${{ matrix.system }}" \
-            --output-dir "fpe-support-matrix-web/${{ matrix.system }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fpe-support-matrix-${{ matrix.system }}
-          path: fpe-support-matrix/${{ matrix.system }}
+          name: fpe-support-matrix-${{ matrix.shard.system }}-${{ matrix.shard.backend }}
+          path: fpe-support-matrix/${{ matrix.shard.system }}/${{ matrix.shard.backend }}
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: fpe-support-matrix-web-${{ matrix.system }}
-          path: fpe-support-matrix-web/${{ matrix.system }}/${{ matrix.system }}.csv
-          if-no-files-found: error
 
   build-web-matrix:
     name: Build FPE supermatrix CSVs
@@ -85,13 +95,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: fpe-support-matrix-web-*
-          path: python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
-          merge-multiple: true
-      - name: Add the deterministic system index
+          pattern: fpe-support-matrix-*
+          path: fpe-support-matrix
+      - name: Build the deterministic split web matrix
         run: |
-          cp python/aisimulate/src/aiconfigurator_core/systems/support_matrix/index.json \
-            python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/index.json
+          python python/aisimulate/tools/support_matrix/build_fpe_supermatrix.py \
+            fpe-support-matrix \
+            --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fpe-support-matrix-web

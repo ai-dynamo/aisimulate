@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import logging
 import os
 import subprocess
 import sys
@@ -75,8 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--forward-model",
         action="append",
-        choices=("op_level", "fpm"),
-        help="Estimator mode to probe; defaults to op_level for the FPE supermatrix",
+        choices=("op_level",),
+        help="Estimator mode to probe; the FPE supermatrix currently requires op_level",
     )
     parser.add_argument(
         "--max-topologies-per-role",
@@ -85,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional deterministic cap for focused/smoke runs; full runs enumerate all resolved role topologies",
     )
     parser.add_argument("--max-workers", type=int, default=None, help="Maximum threads inside each database group")
+    parser.add_argument(
+        "--sdk-log-level",
+        choices=("ERROR", "WARNING", "INFO"),
+        default="ERROR",
+        help="SDK console log level; ERROR avoids repeated per-topology warnings in full CI runs",
+    )
     parser.add_argument("--isl", type=int, default=256)
     parser.add_argument("--osl", type=int, default=256)
     parser.add_argument("--prefix", type=int, default=128)
@@ -97,6 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    logging.getLogger("aiconfigurator_core").setLevel(args.sdk_log_level)
     workload = ProbeWorkload(
         isl=args.isl,
         osl=args.osl,

@@ -114,6 +114,11 @@ def test_build_probe_plans_uses_live_inventory_and_merges_equivalent_roles():
     assert plans[0].compile_kwargs()["forward_model"] == "op_level"
 
 
+def test_build_probe_plans_rejects_non_op_level_forward_models():
+    with pytest.raises(ValueError, match="unsupported forward models:.*fpm"):
+        build_probe_plans(forward_models=("fpm",))
+
+
 def test_build_probe_plans_keeps_planning_failures_as_fail_closed_rows():
     class FakeMatrix:
         def generate_combinations(self):
@@ -129,7 +134,7 @@ def test_build_probe_plans_keeps_planning_failures_as_fail_closed_rows():
         matrix=FakeMatrix(),
         create_task=create_task,
         constraints_for_model=lambda _model: object(),
-        forward_models=("fpm",),
+        forward_models=("op_level",),
     )
 
     assert len(plans) == 1

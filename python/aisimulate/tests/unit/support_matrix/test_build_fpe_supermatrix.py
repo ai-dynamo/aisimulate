@@ -38,9 +38,7 @@ def _row(*, roles, phase, status="PASS", latency_ms=1.25, **overrides):
         "status": status,
         "latency_ms": latency_ms,
         "source": "silicon" if status == "PASS" else "",
-        "error_message": (
-            "" if status == "PASS" else "missing /home/runner/work/repo/python/aisimulate/op_level data"
-        ),
+        "error_message": ("" if status == "PASS" else "missing /home/runner/work/repo/python/aisimulate/op_level data"),
     }
     row.update(overrides)
     return row

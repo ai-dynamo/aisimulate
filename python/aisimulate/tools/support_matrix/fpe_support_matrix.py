@@ -343,7 +343,7 @@ def build_probe_plans(
     constraints_for_model: Callable[[str], Any] | None = None,
 ) -> list[EngineProbePlan]:
     """Resolve the live curated inventory into strict public-FPE plans."""
-    unsupported_forward_models = set(forward_models) - {"op_level", "fpm"}
+    unsupported_forward_models = set(forward_models) - {"op_level"}
     if unsupported_forward_models:
         raise ValueError(f"unsupported forward models: {sorted(unsupported_forward_models)}")
     if max_topologies_per_role is not None and max_topologies_per_role <= 0:
