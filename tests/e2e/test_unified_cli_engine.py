@@ -24,6 +24,26 @@ pytestmark = [
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_ROOT = Path("tests/e2e/configs/unified_cli")
+_EXPECTED_PREDICT_CASES = (
+    "01-synthetic-default.yaml",
+    "02-synthetic-poisson.yaml",
+    "03-synthetic-session-constant.yaml",
+    "04-trace-mooncake-speedup.yaml",
+    "05-trace-mooncake-delta-concurrency.yaml",
+    "06-trace-agentic-mooncake.yaml",
+    "07-trace-applied-compute-agentic.yaml",
+    "08-trace-dynamo-standard.yaml",
+    "09-trace-dynamo-agentic.yaml",
+    "10-trace-dynamo-standard-disagg.yaml",
+)
+_EXPECTED_RECOMMEND_CASES = (
+    "01-default-preset-throughput.yaml",
+    "02-custom-preset-throughput-per-gpu.yaml",
+    "03-preset-off-ttft.yaml",
+    "04-mixed-disagg-pareto.yaml",
+    "05-kv-fraction-goodput.yaml",
+    "06-override-parallel-mappings-agg-disagg.yaml",
+)
 _PREDICT_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glob("*.yaml")))
 _RECOMMEND_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml")))
 
@@ -54,6 +74,11 @@ def _assert_concrete(value: Any, *, path: str = "config") -> None:
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _assert_concrete(child, path=f"{path}[{index}]")
+
+
+def test_engine_cli_case_matrix_is_complete() -> None:
+    assert tuple(path.name for path in _PREDICT_CASES) == _EXPECTED_PREDICT_CASES
+    assert tuple(path.name for path in _RECOMMEND_CASES) == _EXPECTED_RECOMMEND_CASES
 
 
 @pytest.mark.parametrize("config_path", _PREDICT_CASES, ids=lambda path: path.stem)
