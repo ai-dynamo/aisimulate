@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build and verify the only three approved AISimulate release artifacts."""
+"""Build and verify the only two approved AISimulate release artifacts."""
 
 from __future__ import annotations
 
@@ -20,9 +20,8 @@ VERSION = "0.12.0"
 
 EXPECTED_PYTHON_PROJECTS = {
     ROOT / "python" / "aisimulate" / "pyproject.toml": "aisimulate",
-    ROOT / "python" / "aisimulate-core" / "pyproject.toml": "aisimulate-core",
 }
-EXPECTED_CRATE = ROOT / "crates" / "aisimulate-core" / "Cargo.toml"
+EXPECTED_CRATE = ROOT / "crates" / "core" / "Cargo.toml"
 
 
 def _toml(path: Path) -> dict[str, object]:
@@ -42,7 +41,7 @@ def check_manifests() -> None:
 
     publishable_crates: dict[Path, str] = {}
     for path in ROOT.rglob("Cargo.toml"):
-        if "target" in path.parts:
+        if ".venv" in path.parts or "target" in path.parts:
             continue
         manifest = _toml(path)
         package = manifest.get("package")
@@ -54,16 +53,28 @@ def check_manifests() -> None:
     )
 
     app = _toml(ROOT / "python" / "aisimulate" / "pyproject.toml")["project"]
-    core = _toml(ROOT / "python" / "aisimulate-core" / "pyproject.toml")["project"]
     crate = _toml(EXPECTED_CRATE)["package"]
-    assert app["version"] == core["version"] == crate["version"] == VERSION
-    assert "aisimulate-core==0.12.0" in app["dependencies"]
-    assert not any(str(dep).startswith("aiconfigurator") for dep in app["dependencies"])
+    assert app["version"] == crate["version"] == VERSION
+    optional_dependencies = app.get("optional-dependencies", {})
+    dependencies = [
+        *app["dependencies"],
+        *(
+            dependency
+            for group in optional_dependencies.values()
+            for dependency in group
+        ),
+    ]
     assert not any(
-        str(dep).lower().startswith(("dynamo", "ai-dynamo"))
-        for dep in [*app["dependencies"], *core["dependencies"]]
+        str(dep).lower().startswith(("aisimulate-core", "aiconfigurator"))
+        for dep in dependencies
     )
-    assert set(app["scripts"]) == {"aisimulate", "aiconfigurator"}
+    assert not any(
+        str(dep).lower().startswith(("dynamo", "ai-dynamo")) for dep in dependencies
+    )
+    assert app["scripts"] == {
+        "aiconfigurator": "aiconfigurator.main:main",
+        "aisimulate": "aisimulate.main:main",
+    }
 
 
 def _run(
@@ -82,21 +93,12 @@ def build(output: Path) -> None:
     _run(
         sys.executable,
         "-m",
-        "build",
-        "--wheel",
-        "--outdir",
-        str(output),
-        str(ROOT / "python" / "aisimulate"),
-    )
-    _run(
-        sys.executable,
-        "-m",
         "maturin",
         "build",
         "--release",
         "--out",
         str(output),
-        cwd=ROOT / "python" / "aisimulate-core",
+        cwd=ROOT / "python" / "aisimulate",
     )
 
     with tempfile.TemporaryDirectory(prefix="aisimulate-crate-") as temp:
@@ -127,14 +129,8 @@ def verify_output(output: Path) -> None:
         for name in names
         if name.startswith(f"aisimulate-{VERSION}-") and name.endswith(".whl")
     ]
-    core_wheels = [
-        name
-        for name in names
-        if name.startswith(f"aisimulate_core-{VERSION}-") and name.endswith(".whl")
-    ]
-    assert len(names) == 3, f"expected exactly three artifacts, got {names}"
+    assert len(names) == 2, f"expected exactly two artifacts, got {names}"
     assert len(app_wheels) == 1, f"missing or duplicate aisimulate wheel: {names}"
-    assert len(core_wheels) == 1, f"missing or duplicate aisimulate-core wheel: {names}"
     assert expected_crate in names, f"missing {expected_crate}: {names}"
     print("verified release artifacts:")
     for name in names:

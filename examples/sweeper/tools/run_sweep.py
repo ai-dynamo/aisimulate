@@ -7,14 +7,10 @@ from __future__ import annotations
 
 import argparse
 
-from pydantic import ValidationError
-
-from aisimulate.sweeper import Sweeper
-from aisimulate.sweeper.__main__ import (
-    load_config_or_parser_error,
-    print_candidates_or_exit,
-)
+import yaml
+from aisimulate.sweeper import SmartSearchConfig, Sweeper
 from dynamo.replay.simulation import DynamoReplayRunnerFactory
+from pydantic import ValidationError
 
 
 def main() -> None:
@@ -24,14 +20,23 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
 
-    config = load_config_or_parser_error(parser, args.config)
     try:
+        config = SmartSearchConfig.from_yaml(args.config)
         candidates = Sweeper(
             runner_factory=DynamoReplayRunnerFactory(),
         ).run(config)
+    except OSError as exc:
+        parser.error(f"could not read {args.config}: {exc}")
+    except yaml.YAMLError as exc:
+        parser.error(f"malformed YAML in {args.config}: {exc}")
     except ValidationError as exc:
-        parser.error(f"invalid adapter search space in {args.config}: {exc}")
-    print_candidates_or_exit(config, candidates)
+        parser.error(f"invalid config {args.config}: {exc}")
+    if not candidates:
+        parser.exit(1, "no feasible candidate found\n")
+    for index, candidate in enumerate(candidates):
+        print(
+            f"{index}: score={candidate.score} used_gpus={candidate.used_gpus}"
+        )
 
 
 if __name__ == "__main__":

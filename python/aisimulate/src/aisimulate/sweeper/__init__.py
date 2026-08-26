@@ -32,9 +32,12 @@ from .discovery import (
 )
 from .provider import (
     API_VERSION,
+    SEARCH_SPACE_FRAGMENT_API_VERSION,
     AdapterReplaySpec,
     AdapterSearchPlan,
     CandidateContext,
+    ConditionalSearchSpace,
+    InfeasibleCandidate,
     RuntimeHookSpec,
     SearchSpaceFragment,
     SweepConfigProvider,
@@ -104,6 +107,7 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "API_VERSION",
     "REPLAY_SPEC_API_VERSION",
+    "SEARCH_SPACE_FRAGMENT_API_VERSION",
     "SWEEP_CONFIG_PROVIDER_ENTRY_POINT_GROUP",
     "AdapterReplaySpec",
     "AdapterSearchConfig",
@@ -113,10 +117,12 @@ __all__ = [
     "BranchSpace",
     "Candidate",
     "CandidateContext",
+    "ConditionalSearchSpace",
     "DisaggParallelConfig",
     "EnumerationDiagnostics",
     "ExhaustiveBranchSampler",
     "HookCapability",
+    "InfeasibleCandidate",
     "ModelHardware",
     "NoPerfDatabase",
     "NoViableParallelConfig",

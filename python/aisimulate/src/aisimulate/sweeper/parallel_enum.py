@@ -56,9 +56,7 @@ class EnumerationDiagnostics:
     pruned: tuple[tuple[str, int], ...]
 
     @classmethod
-    def from_counter(
-        cls, *, considered: int, accepted: int, pruned: Counter[str]
-    ) -> EnumerationDiagnostics:
+    def from_counter(cls, *, considered: int, accepted: int, pruned: Counter[str]) -> EnumerationDiagnostics:
         return cls(
             considered=considered,
             accepted=accepted,
@@ -95,21 +93,11 @@ class ParallelShape:
         e.g. InferenceX GLM-5's EP=1 + DP-attention)."""
         if self.moe_tp == 1 and self.moe_ep == 1:
             return "tp"  # dense
-        if (
-            self.tp * self.cp > 1
-            and self.dp == 1
-            and self.moe_tp == 1
-            and self.moe_ep > 1
-        ):
+        if self.tp * self.cp > 1 and self.dp == 1 and self.moe_tp == 1 and self.moe_ep > 1:
             return "tep"
         if self.tp == 1 and self.dp > 1 and self.moe_tp == 1 and self.moe_ep > 1:
             return "dep"
-        if (
-            self.tp * self.cp > 1
-            and self.dp == 1
-            and self.moe_tp > 1
-            and self.moe_ep == 1
-        ):
+        if self.tp * self.cp > 1 and self.dp == 1 and self.moe_tp > 1 and self.moe_ep == 1:
             return "tp"  # MoE tensor-parallel, tensor-attention
         if self.tp == 1 and self.dp > 1 and self.moe_tp > 1 and self.moe_ep == 1:
             return "dtp"  # MoE tensor-parallel, DP-attention
@@ -142,9 +130,7 @@ class DisaggParallelConfig:
         return self.prefill.total_gpus + self.decode.total_gpus
 
 
-def _backend_allows_moe_tp(
-    backend: str, *, enable_wideep: bool, moe_backend: str | None
-) -> bool:
+def _backend_allows_moe_tp(backend: str, *, enable_wideep: bool, moe_backend: str | None) -> bool:
     """sglang's EP-only MoE *kernels* (deepep_moe / megamoe) require moe_tp=1. wideEP
     (multinode wide expert-parallelism) does NOT force it on its own: real GLM-5 sglang
     deployments run MoE tensor-parallel multinode (InferenceX reports EP=1), so MoE-TP
@@ -235,28 +221,15 @@ def enumerate_worker_shapes_with_diagnostics(
                                 continue
                             # Real-silicon pure-pattern filter.
                             attention_tp_width = tp * cp
-                            is_tep = (
-                                attention_tp_width > 1
-                                and dp == 1
-                                and moe_tp == 1
-                                and moe_ep > 1
-                            )
-                            is_dep = (
-                                attention_tp_width == 1
-                                and dp > 1
-                                and moe_tp == 1
-                                and moe_ep > 1
-                            )
+                            is_tep = attention_tp_width > 1 and dp == 1 and moe_tp == 1 and moe_ep > 1
+                            is_dep = attention_tp_width == 1 and dp > 1 and moe_tp == 1 and moe_ep > 1
                             # MoE tensor-parallel (moe_ep==1) under tensor-attention
                             # (strategy "tp") or DP-attention (strategy "dtp").
                             is_moe_tp = (
                                 allow_moe_pure_tp
                                 and moe_tp > 1
                                 and moe_ep == 1
-                                and (
-                                    (attention_tp_width > 1 and dp == 1)
-                                    or (tp == 1 and cp == 1 and dp > 1)
-                                )
+                                and ((attention_tp_width > 1 and dp == 1) or (tp == 1 and cp == 1 and dp > 1))
                             )
                             if not (is_tep or is_dep or is_moe_tp):
                                 pruned["non_silicon_moe_pattern"] += 1
@@ -271,9 +244,7 @@ def enumerate_worker_shapes_with_diagnostics(
                                     cp=cp,
                                 )
                             )
-    return shapes, EnumerationDiagnostics.from_counter(
-        considered=considered, accepted=len(shapes), pruned=pruned
-    )
+    return shapes, EnumerationDiagnostics.from_counter(considered=considered, accepted=len(shapes), pruned=pruned)
 
 
 def enumerate_worker_shapes(**kwargs) -> list[ParallelShape]:
@@ -387,12 +358,8 @@ def enumerate_disagg_configs(
     prefill_candidates = prefill_candidates or RoleParallelCandidates()
     decode_candidates = decode_candidates or RoleParallelCandidates()
     if gpus_per_worker_candidates is not None:
-        prefill_candidates = replace(
-            prefill_candidates, gpus_per_worker=gpus_per_worker_candidates
-        )
-        decode_candidates = replace(
-            decode_candidates, gpus_per_worker=gpus_per_worker_candidates
-        )
+        prefill_candidates = replace(prefill_candidates, gpus_per_worker=gpus_per_worker_candidates)
+        decode_candidates = replace(decode_candidates, gpus_per_worker=gpus_per_worker_candidates)
     prefill_role = enumerate_parallel_configs(
         is_moe=is_moe,
         backend=backend,
@@ -436,9 +403,7 @@ def enumerate_disagg_configs(
     # at budget minus the other role's minimum (prunes pairs that can never fit).
     min_prefill = min(c.total_gpus for c in prefill_role)
     min_decode = min(c.total_gpus for c in decode_role)
-    prefill_role = [
-        c for c in prefill_role if c.total_gpus <= gpu_budget - min_decode
-    ]
+    prefill_role = [c for c in prefill_role if c.total_gpus <= gpu_budget - min_decode]
     decode_role = [c for c in decode_role if c.total_gpus <= gpu_budget - min_prefill]
 
     configs: list[DisaggParallelConfig] = []

@@ -22,7 +22,9 @@ Rapid search is optimizer-guided and bounded. Its target is
 `branches * max_rounds * candidates_per_round` successful unique candidates. A round may request
 replacement suggestions for duplicate, unsupported, failed, or infeasible points, but it stops
 after at most eleven times the per-round target. `SearchExecutionReport.candidate_budget` records
-that hard suggestion ceiling.
+that hard suggestion ceiling. A successful legacy run reports `target_reached`; unified CLI runs
+with an explicit `max_trials` report `candidate_budget_reached` when that exact suggestion budget
+is consumed.
 
 `sweep.seed` initializes the pinned default Vizier designer. The same configuration, seed, runner,
 and dependency versions therefore begin from the same optimizer state. A custom sampler factory is

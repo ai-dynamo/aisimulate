@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
 from .replay import BackendDeploymentSpec
 
 
@@ -15,9 +16,7 @@ def _role_prefix(role: str) -> str:
     return "" if role == "agg" else f"{role}_"
 
 
-def _engine_args_payload(
-    sample: dict[str, Any], role: str, *, backend_version: str
-) -> dict[str, Any]:
+def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: str) -> dict[str, Any]:
     """Build the runner-neutral engine argument payload for one role."""
     prefix = _role_prefix(role)
     tp = int(sample[f"{prefix}tp"])
@@ -27,6 +26,12 @@ def _engine_args_payload(
     pp = int(sample[f"{prefix}pp"])
     cp = int(sample[f"{prefix}cp"])
     backend = sample["backend"]
+    block_size = sample[f"{role}_block_size"]
+    if block_size is None:
+        block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[backend]
+    memory_fraction = sample[f"{role}_gpu_memory_utilization"]
+    if memory_fraction is None:
+        memory_fraction = 0.88 if backend == "sglang" else 0.9
     memory_fraction_field = {
         "vllm": "gpu_memory_utilization",
         "sglang": "mem_fraction_static",
@@ -45,23 +50,59 @@ def _engine_args_payload(
         "aic_cp_size": cp,
         "max_num_batched_tokens": int(sample[f"{role}_max_num_batched_tokens"]),
         "max_num_seqs": int(sample[f"{role}_max_num_seqs"]),
-        "block_size": int(sample[f"{role}_block_size"]),
-        memory_fraction_field: float(sample[f"{role}_gpu_memory_utilization"]),
+        "block_size": int(block_size),
+        memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
+    if backend == "vllm" and sample.get("context_length") is not None:
+        payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
     if sample.get("aic_nextn") is not None:
         payload["aic_nextn"] = int(sample["aic_nextn"])
-    if sample.get("startup_time") is not None:
-        payload["startup_time"] = float(sample["startup_time"])
+    startup = sample.get(f"{role}_startup_time")
+    if startup is None:
+        startup = sample.get("startup_time")
+    if startup is not None:
+        payload["startup_time"] = float(startup)
+    if sample.get(f"{role}_num_gpu_blocks") is not None:
+        payload["num_gpu_blocks"] = int(sample[f"{role}_num_gpu_blocks"])
+        payload.pop(memory_fraction_field, None)
+    if sample.get(f"{role}_timing_model") is not None:
+        payload["timing_model"] = dict(sample[f"{role}_timing_model"])
+        if sample.get(f"{role}_num_gpu_blocks") is None:
+            payload = materialize_aic_num_gpu_blocks(payload)
+        for name in (
+            "aic_backend_version",
+            "aic_system",
+            "aic_model_path",
+            "aic_moe_tp_size",
+            "aic_moe_ep_size",
+            "aic_nextn",
+        ):
+            payload.pop(name, None)
+    if role in {"prefill", "decode"}:
+        if sample.get("kv_transfer_bytes_per_token") is not None:
+            configured_bytes = sample["kv_transfer_bytes_per_token"]
+            payload["kv_bytes_per_token"] = (
+                estimate_kv_bytes_per_token(
+                    str(sample["model_name"]),
+                    tp_size=tp,
+                    pp_size=int(sample[f"{prefix}pp"]),
+                    moe_tp_size=moe_tp,
+                    moe_ep_size=moe_ep,
+                )
+                if configured_bytes == "auto"
+                else int(configured_bytes)
+            )
+        if sample.get("kv_transfer_bandwidth") is not None:
+            payload["kv_transfer_bandwidth"] = float(sample["kv_transfer_bandwidth"])
+        payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
 
 
-def build_backend_deployment(
-    sample: dict[str, Any], *, backend_version: str
-) -> BackendDeploymentSpec:
+def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
     common = {
@@ -102,19 +143,22 @@ def build_backend_deployment(
     }
     if mode == "agg":
         return BackendDeploymentSpec(
-            agg_engine_args=_engine_args_payload(
-                sample, "agg", backend_version=backend_version
-            ),
+            agg_engine_args=_engine_args_payload(sample, "agg", backend_version=backend_version),
             num_workers=int(sample["replicas"]),
             **common,
         )
+    prefill_args = _engine_args_payload(sample, "prefill", backend_version=backend_version)
+    decode_args = _engine_args_payload(sample, "decode", backend_version=backend_version)
+    if sample.get("kv_transfer_bytes_per_token") == "auto":
+        resolved = max(
+            int(prefill_args["kv_bytes_per_token"]),
+            int(decode_args["kv_bytes_per_token"]),
+        )
+        prefill_args["kv_bytes_per_token"] = resolved
+        decode_args["kv_bytes_per_token"] = resolved
     return BackendDeploymentSpec(
-        prefill_engine_args=_engine_args_payload(
-            sample, "prefill", backend_version=backend_version
-        ),
-        decode_engine_args=_engine_args_payload(
-            sample, "decode", backend_version=backend_version
-        ),
+        prefill_engine_args=prefill_args,
+        decode_engine_args=decode_args,
         num_prefill_workers=int(sample["prefill_replicas"]),
         num_decode_workers=int(sample["decode_replicas"]),
         **common,

@@ -171,6 +171,51 @@ def test_model_capability_prunes_explicit_unsupported_context_parallelism(monkey
         )
 
 
+def test_role_runtime_preserves_legacy_three_tuple_contract(monkeypatch):
+    monkeypatch.setattr(
+        mh_mod,
+        "resolve_model_hardware",
+        lambda *args, **kwargs: ModelHardware(
+            model_name="model",
+            hardware_sku="hardware",
+            backend="vllm",
+            is_moe=False,
+            mla=False,
+            enable_wideep=False,
+            weight_bytes=1,
+            vram_per_gpu=80,
+            gpus_per_node=8,
+            max_context=2048,
+            model_family="MODEL",
+            default_gpus_per_worker=(1, 2),
+            default_pp_candidates=(1,),
+            default_cp_candidates=(1,),
+        ),
+    )
+    seen = {}
+
+    def fake_feasible(shapes, **kwargs):
+        seen.update(kwargs)
+        return dict.fromkeys(shapes, 4096)
+
+    monkeypatch.setattr(mh_mod, "feasible_shape_tokens", fake_feasible)
+
+    configs = parallel_configs_for(
+        "model",
+        "hardware",
+        gpu_budget=2,
+        deployment_mode="agg",
+        backend="vllm",
+        max_seq_len=1024,
+        role_runtime={"agg": (4096, 32, 0.75)},
+    )
+
+    assert configs
+    assert seen["max_num_tokens"] == 4096
+    assert seen["max_batch_size"] == 32
+    assert seen["memory_fraction"] == 0.75
+
+
 @pytest.mark.model(DEEPSEEK)
 def test_max_seq_len_defaults_to_model_context(monkeypatch):
     # Omitting max_seq_len uses the model's max context length.

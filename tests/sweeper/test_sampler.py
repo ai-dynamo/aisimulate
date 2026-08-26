@@ -8,7 +8,11 @@ import uuid
 
 import pytest
 
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.parallel_enum import (
+    DisaggParallelConfig,
+    ParallelShape,
+    ReplicaParallelConfig,
+)
 from aisimulate.sweeper.parallel_projection import (
     AGG_ATTENTION_MODE,
     AGG_FFN_MODE,
@@ -23,7 +27,7 @@ from aisimulate.sweeper.sampler import (
     _vizier_algorithm,
     make_branch_sampler,
 )
-from aisimulate.sweeper.search_space import BranchSpace
+from aisimulate.sweeper.search_space import BranchSpace, ConditionalDimensionSpace
 
 pytestmark = [
     pytest.mark.timeout(300),
@@ -176,6 +180,71 @@ def test_thorough_candidate_count_includes_execution_and_topology_dimensions():
     assert {suggestion.parallel_config for suggestion in suggestions} == {tp, pp}
 
 
+def test_thorough_sampler_enumerates_integer_ranges() -> None:
+    branch = _branch()
+    ranged = BranchSpace(
+        deployment_mode=branch.deployment_mode,
+        parallel_configs=(branch.parallel_configs[0],),
+        supported_backends={branch.parallel_configs[0]: frozenset({"trtllm"})},
+        knob_choices={"backend": ["trtllm"]},
+        integer_ranges={"agg_max_num_seqs": (2, 4)},
+    )
+
+    sampler = ExhaustiveBranchSampler(ranged)
+    suggestions = sampler.suggest(10)
+
+    assert sampler.candidate_count == 3
+    assert [suggestion.selection["agg_max_num_seqs"] for suggestion in suggestions] == [
+        2,
+        3,
+        4,
+    ]
+
+
+def test_thorough_sampler_enumerates_discrete_conditional_arms() -> None:
+    branch = _branch()
+    conditional = BranchSpace(
+        deployment_mode=branch.deployment_mode,
+        parallel_configs=(branch.parallel_configs[0],),
+        supported_backends={branch.parallel_configs[0]: frozenset({"trtllm"})},
+        knob_choices={
+            "backend": ["trtllm"],
+            "adapter::router::mode": ["round_robin", "kv_router"],
+        },
+        conditional_dimensions=(
+            ConditionalDimensionSpace(
+                selector="adapter::router::mode",
+                values=("kv_router",),
+                knob_choices={"adapter::router::load_model": ["none", "aic"]},
+            ),
+        ),
+    )
+
+    sampler = ExhaustiveBranchSampler(conditional)
+    suggestions = sampler.suggest(10)
+
+    assert sampler.candidate_count == 3
+    assert [suggestion.selection for suggestion in suggestions] == [
+        {
+            "deployment_mode": "agg",
+            "adapter::router::mode": "round_robin",
+            "backend": "trtllm",
+        },
+        {
+            "deployment_mode": "agg",
+            "adapter::router::load_model": "none",
+            "adapter::router::mode": "kv_router",
+            "backend": "trtllm",
+        },
+        {
+            "deployment_mode": "agg",
+            "adapter::router::load_model": "aic",
+            "adapter::router::mode": "kv_router",
+            "backend": "trtllm",
+        },
+    ]
+
+
 def test_thorough_sampler_rejects_continuous_ranges():
     branch = _branch_with_kv_load()
 
@@ -198,6 +267,125 @@ def test_seeded_rapid_sampler_reproduces_suggestion_sequence(monkeypatch):
         (suggestion.selection, suggestion.parallel_config)
         for suggestion in second_suggestions
     ]
+
+
+def _conditional_branch() -> BranchSpace:
+    parallel = ReplicaParallelConfig(
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1),
+        replicas=1,
+    )
+    return BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel,),
+        supported_backends={parallel: frozenset({"vllm"})},
+        knob_choices={
+            "backend": ["vllm"],
+            "adapter::router::mode": ["round_robin", "kv_router"],
+        },
+        conditional_dimensions=(
+            ConditionalDimensionSpace(
+                selector="adapter::router::mode",
+                values=("kv_router",),
+                knob_choices={"adapter::router::load_model": ["none", "aic"]},
+                float_ranges={
+                    "adapter::router::kv_weight": (0.01, 10.0),
+                    "adapter::router::queue_weight": (0.0, 1.0),
+                },
+                log_float_ranges=frozenset({"adapter::router::kv_weight"}),
+            ),
+        ),
+    )
+
+
+def _assert_conditional_suggestions(suggestions: list[Suggestion]) -> None:
+    modes = {
+        suggestion.selection["adapter::router::mode"] for suggestion in suggestions
+    }
+    assert modes == {"round_robin", "kv_router"}
+    for suggestion in suggestions:
+        selection = suggestion.selection
+        if selection["adapter::router::mode"] == "round_robin":
+            assert "adapter::router::load_model" not in selection
+            assert "adapter::router::kv_weight" not in selection
+            assert "adapter::router::queue_weight" not in selection
+        else:
+            assert selection["adapter::router::load_model"] in {"none", "aic"}
+            assert 0.01 <= selection["adapter::router::kv_weight"] <= 10.0
+            assert 0.0 <= selection["adapter::router::queue_weight"] <= 1.0
+
+
+def test_random_sampler_only_samples_active_conditional_children() -> None:
+    sampler = make_branch_sampler(
+        _conditional_branch(),
+        study_id="test_conditional_random",
+        algorithm="random",
+        seed=17,
+    )
+    suggestions = sampler.suggest(8)
+    _assert_conditional_suggestions(suggestions)
+    sampler.observe(suggestions[0], {"objective": 1.0})
+    sampler.observe_infeasible(suggestions[1], "test")
+
+
+def test_infeasible_independent_parallel_suggestion_is_returned_for_tell() -> None:
+    prefill = ReplicaParallelConfig(
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
+    )
+    decode = ReplicaParallelConfig(
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
+    )
+    legal = DisaggParallelConfig(prefill=prefill, decode=decode)
+    branch = BranchSpace(
+        deployment_mode="disagg",
+        parallel_configs=(legal,),
+        supported_backends={legal: frozenset({"vllm"})},
+        knob_choices={"backend": ["vllm"]},
+        parallel_custom_choices={"prefill": (prefill,)},
+        parallel_independent_choices={
+            "decode_replicas": (2,),
+            "decode_tp": (1,),
+            "decode_pp": (1,),
+            "decode_attention_dp": (1,),
+            "decode_moe_tp": (1,),
+            "decode_moe_ep": (1,),
+        },
+    )
+
+    suggestion = make_branch_sampler(
+        branch,
+        study_id="infeasible-independent",
+        algorithm="random",
+        seed=1,
+    ).suggest(1)[0]
+
+    assert suggestion.parallel_config == legal
+    assert suggestion.infeasible_reason is not None
+    assert "infeasible" in suggestion.infeasible_reason
+
+
+def test_vizier_sampler_only_decodes_active_conditional_children(monkeypatch) -> None:
+    monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
+    sampler = make_branch_sampler(
+        _conditional_branch(),
+        study_id=f"test_conditional_vizier_{uuid.uuid4().hex}",
+    )
+    suggestions = sampler.suggest(8)
+    _assert_conditional_suggestions(suggestions)
+    sampler.observe(suggestions[0], {"objective": 1.0})
+    sampler.observe_infeasible(suggestions[1], "test")
+
+
+def test_seeded_bayesian_sampler_only_decodes_active_conditional_children() -> None:
+    sampler = make_branch_sampler(
+        _conditional_branch(),
+        study_id="test_conditional_seeded_bayesian",
+        algorithm="bayesian",
+        seed=17,
+    )
+    suggestions = sampler.suggest(8)
+    _assert_conditional_suggestions(suggestions)
+    sampler.observe(suggestions[0], {"objective": 1.0})
+    sampler.observe_infeasible(suggestions[1], "test")
 
 
 def test_suggest_produces_valid_selections():

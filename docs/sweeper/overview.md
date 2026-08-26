@@ -43,8 +43,9 @@ config = SmartSearchConfig.from_yaml("sweep.yaml")
 candidates = Sweeper(runner_factory=my_runner_factory).run(config)
 ```
 
-The standalone `python -m aisimulate.sweeper` command validates configuration but deliberately does
-not choose a replay implementation.
+The public `aisimulate recommend --config ...` command validates the unified schema and selects a
+runner through `--stack`. The `Sweeper` Python API remains available for callers that inject a
+`RunnerFactory` directly.
 
 ## Compatibility
 

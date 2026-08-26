@@ -27,18 +27,27 @@ _AGG_PINNED = (
     "agg_block_size",
     "agg_gpu_memory_utilization",
     "agg_enable_prefix_caching",
+    "agg_num_gpu_blocks",
+    "agg_timing_model",
+    "agg_startup_time",
 )
 _PREFILL_SEARCHED = ("prefill_max_num_batched_tokens", "prefill_max_num_seqs")
 _PREFILL_PINNED = (
     "prefill_block_size",
     "prefill_gpu_memory_utilization",
     "prefill_enable_prefix_caching",
+    "prefill_num_gpu_blocks",
+    "prefill_timing_model",
+    "prefill_startup_time",
 )
 _DECODE_SEARCHED = ("decode_max_num_batched_tokens", "decode_max_num_seqs")
 _DECODE_PINNED = (
     "decode_block_size",
     "decode_gpu_memory_utilization",
     "decode_enable_prefix_caching",
+    "decode_num_gpu_blocks",
+    "decode_timing_model",
+    "decode_startup_time",
 )
 
 
@@ -104,13 +113,16 @@ def unroll_sample(
             sample[key] = selection[key]
             continue
         role, suffix = key.split("_max_", 1)
-        alias = (
-            f"{role}_context_tokens"
-            if suffix == "num_batched_tokens"
-            else f"{role}_batch_size"
-        )
+        alias = f"{role}_context_tokens" if suffix == "num_batched_tokens" else f"{role}_batch_size"
         sample[alias] = selection[alias]
         sample[key] = selection[alias]
     for key in pinned:
-        sample[key] = getattr(search_space, key)
+        sample[key] = selection.get(key, getattr(search_space, key))
+    if mode == "disagg":
+        for key in (
+            "kv_transfer_bytes_per_token",
+            "kv_transfer_bandwidth",
+            "kv_transfer_timing_mode",
+        ):
+            sample[key] = getattr(search_space, key)
     return sample

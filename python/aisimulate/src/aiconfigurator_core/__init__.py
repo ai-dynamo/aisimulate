@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Compatibility namespace for AIConfigurator's native performance-model API.
+
+AISimulate now builds one extension at ``aisimulate._runtime``.  The
+``aiconfigurator_core._aiconfigurator_core`` module is a Python compatibility
+shim over that extension, so upstream AIConfigurator imports remain unchanged
+while only the ``aisimulate`` distribution is published. This package re-exports
+the established public surface so callers can ``import aiconfigurator_core`` directly. It
+exports the compiled-engine pyclass ``AicEngine``
+(``from_spec`` / ``run_static`` / ``predict_prefill_latency`` /
+``predict_decode_latency`` / ``mixed_step_latency`` / ``decode_step_latency``),
+the op-transfer ``#[pyfunction]`` ``engine_spec_bincode_from_json`` (JSON
+``EngineSpec`` -> bincode bytes, the Python -> Rust op-transfer wire), and the
+build smoke check ``_build_smoke``.
+
+It also exports the forward-pass perf model pyclass
+``RustForwardPassPerfModel`` (PR #1152, built on the compiled ``Engine``): the
+tuned/fallback forward-pass latency model with online correction, regression
+fallback, and diagnostics.
+
+KV-cache capacity estimation is not exported here: it is computed in Python
+(``aiconfigurator_core.sdk.memory``), and the Rust
+``aiconfigurator_core::memory::estimate_kv_cache`` is a Rust-only forwarder for
+embedded callers (e.g. the Dynamo Mocker).
+"""
+
+from ._aiconfigurator_core import (
+    AicEngine,
+    RustForwardPassPerfModel,
+    _build_smoke,
+    engine_spec_bincode_from_json,
+    engine_spec_schema_version,
+    gemm_quant_util_levels,
+    moe_quant_util_levels,
+    op_from_spec_json,
+    ops_json_from_ops,
+    resolve_op_sources_report_json,
+    table_view_attributes,
+    weights_ops_json,
+)
+
+__all__ = [
+    "AicEngine",
+    "RustForwardPassPerfModel",
+    "_build_smoke",
+    "engine_spec_bincode_from_json",
+    "engine_spec_schema_version",
+    "gemm_quant_util_levels",
+    "moe_quant_util_levels",
+    "op_from_spec_json",
+    "ops_json_from_ops",
+    "resolve_op_sources_report_json",
+    "table_view_attributes",
+    "weights_ops_json",
+]

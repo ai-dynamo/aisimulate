@@ -32,6 +32,33 @@ _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("trtllm", "agg"),
 )
 
+_RUNTIME_TRAFFIC_FIELDS = frozenset(
+    {
+        "source_type",
+        "load_type",
+        "trace_path",
+        "trace_paths",
+        "trace_format",
+        "trace_block_size",
+        "arrival_speedup_ratio",
+        "replay_concurrency",
+        "isl",
+        "osl",
+        "request_count",
+        "turns_per_session",
+        "shared_prefix_ratio",
+        "num_prefix_groups",
+        "inter_turn_delay_ms",
+        "request_rate",
+        "arrival_interval_ms",
+        "arrival_seed",
+        "concurrency",
+        "num_request_ratio",
+        "kv_load_ratio",
+        "max_sim_time_ms",
+    }
+)
+
 _AIC_TIMING_FIELD_ALIASES = {
     "backend_version": ("backend_version", "aic_backend_version"),
     "pp": ("aic_pp_size",),
@@ -120,10 +147,7 @@ class EngineReplayRunner:
             ) from exc
 
         if not isinstance(runtime, EngineReplayRuntime):
-            raise InvalidRunnerError(
-                "aisimulate._runtime must export "
-                "run_replay_json(execution_spec_json: str) -> str"
-            )
+            raise InvalidRunnerError("aisimulate._runtime must export run_replay_json(execution_spec_json: str) -> str")
         self.runtime = runtime
         return runtime
 
@@ -147,25 +171,16 @@ class EngineReplayRunner:
         )
         report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
         if not isinstance(report_json, str):
-            raise InvalidRunnerError(
-                "AISimulate engine replay runtime report must be a JSON string"
-            )
+            raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON string")
         try:
             report = json.loads(report_json)
         except json.JSONDecodeError as exc:
-            raise InvalidRunnerError(
-                "AISimulate engine replay runtime returned invalid report JSON"
-            ) from exc
+            raise InvalidRunnerError("AISimulate engine replay runtime returned invalid report JSON") from exc
         if not isinstance(report, Mapping):
-            raise InvalidRunnerError(
-                "AISimulate engine replay runtime report must be a JSON object"
-            )
+            raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
         return _normalize_engine_replay_report(
             report,
-            include_native_report=(
-                output_requirements.include_raw_report
-                or output_requirements.capture_per_request
-            ),
+            include_native_report=(output_requirements.include_raw_report or output_requirements.capture_per_request),
         )
 
     def close(self) -> None:
@@ -191,9 +206,7 @@ def _materialize_engine_execution_spec(
     deployment = spec.backend_deployment
     deployment_mode = deployment.deployment_mode
     if deployment_mode == "agg":
-        raw_engine_args = _required_engine_args(
-            deployment.agg_engine_args, "aggregated"
-        )
+        raw_engine_args = _required_engine_args(deployment.agg_engine_args, "aggregated")
         engine = _materialize_engine_role(
             deployment.backend,
             deployment.backend_version,
@@ -257,43 +270,38 @@ def _materialize_engine_execution_spec(
         decode_backend = decode["rank"].get("backend", "vllm")
         if prefill_backend != decode_backend:
             raise ValueError(
-                "disaggregated prefill and decode must use the same backend: "
-                f"{prefill_backend!r} != {decode_backend!r}"
+                f"disaggregated prefill and decode must use the same backend: {prefill_backend!r} != {decode_backend!r}"
             )
         if prefill_backend == "trtllm":
-            raise ValueError(
-                "engine replay does not support TensorRT-LLM disaggregated mode"
-            )
+            raise ValueError("engine replay does not support TensorRT-LLM disaggregated mode")
         engine = {"prefill": prefill, "decode": decode}
         topology = {
             "kind": "disaggregated",
             "prefill": {
-                "initial_workers": _positive_int(
-                    deployment.num_prefill_workers, "num_prefill_workers"
-                ),
+                "initial_workers": _positive_int(deployment.num_prefill_workers, "num_prefill_workers"),
                 "startup_delay_ms": _startup_delay_ms(raw_prefill),
             },
             "decode": {
-                "initial_workers": _positive_int(
-                    deployment.num_decode_workers, "num_decode_workers"
-                ),
+                "initial_workers": _positive_int(deployment.num_decode_workers, "num_decode_workers"),
                 "startup_delay_ms": _startup_delay_ms(raw_decode),
             },
             "handoff_latency_ms": 0.0,
         }
     else:
-        raise ValueError(
-            "engine replay deployment_mode must be 'agg' or 'disagg', got "
-            f"{deployment_mode!r}"
-        )
+        raise ValueError(f"engine replay deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}")
 
-    requests, max_in_flight = _materialize_requests(spec, trace_block_size)
+    use_workload_driver = spec.workload.get("source_type") is not None
+    if use_workload_driver:
+        requests: list[dict[str, JSONValue]] = []
+        max_in_flight = _configured_in_flight_cap(spec)
+    else:
+        requests, max_in_flight = _materialize_requests(spec, trace_block_size)
     sla = _materialize_sla(spec)
     max_sim_time_ms = spec.workload.get("max_sim_time_ms")
     if max_sim_time_ms is not None:
         max_sim_time_ms = _nonnegative_time(max_sim_time_ms, "max_sim_time_ms")
 
-    return {
+    execution_spec: dict[str, JSONValue] = {
         "version": 1,
         "topology": topology,
         "engine": engine,
@@ -313,11 +321,28 @@ def _materialize_engine_execution_spec(
         "sla": sla,
         "requests": requests,
     }
+    if use_workload_driver:
+        traffic = {
+            key: value for key, value in spec.workload.items() if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
+        }
+        if traffic.get("trace_format") != "dynamo":
+            traffic.setdefault("trace_block_size", trace_block_size)
+        return {"spec": execution_spec, "traffic": traffic}
+    return execution_spec
 
 
-def _required_engine_args(
-    payload: dict[str, JSONValue] | None, role: str
-) -> dict[str, JSONValue]:
+def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:
+    workload = spec.workload
+    if workload.get("source_type") == "trace":
+        value = workload.get("replay_concurrency")
+    else:
+        value = spec.concurrency
+        if value is None:
+            value = workload.get("concurrency")
+    return _positive_int(value, "concurrency") if value is not None else None
+
+
+def _required_engine_args(payload: dict[str, JSONValue] | None, role: str) -> dict[str, JSONValue]:
     if payload is None:
         raise ValueError(f"ReplaySpec is missing {role} engine arguments")
     return dict(payload)
@@ -328,30 +353,21 @@ def _startup_delay_ms(payload: Mapping[str, JSONValue]) -> float:
     return 1_000.0 * _nonnegative_time(value, "startup_time")
 
 
-def _materialize_requests(
-    spec: ReplaySpec, trace_block_size: int
-) -> tuple[list[dict[str, JSONValue]], int | None]:
+def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list[dict[str, JSONValue]], int | None]:
     workload = spec.workload
     trace_path = workload.get("trace_path")
     if trace_path is not None:
         if not isinstance(trace_path, str) or not trace_path:
             raise TypeError("trace_path must be a non-empty string")
-        if (
-            workload.get("random_range_ratio", 1.0) != 1.0
-            or workload.get("random_seed", 0) != 0
-        ):
-            raise ValueError(
-                "random_range_ratio and random_seed only apply to synthetic replay"
-            )
+        if workload.get("random_range_ratio", 1.0) != 1.0 or workload.get("random_seed", 0) != 0:
+            raise ValueError("random_range_ratio and random_seed only apply to synthetic replay")
         configured_trace_block_size = workload.get("trace_block_size")
         requests = materialize_configured_traffic(
             {
                 "trace_path": trace_path,
                 "format": workload.get("trace_format", "mooncake"),
                 "trace_block_size": _positive_int(
-                    trace_block_size
-                    if configured_trace_block_size is None
-                    else configured_trace_block_size,
+                    trace_block_size if configured_trace_block_size is None else configured_trace_block_size,
                     "trace_block_size",
                 ),
                 "speedup": _positive_number(
@@ -361,9 +377,7 @@ def _materialize_requests(
             }
         )
         cap = workload.get("replay_concurrency")
-        return requests, (
-            _positive_int(cap, "replay_concurrency") if cap is not None else None
-        )
+        return requests, (_positive_int(cap, "replay_concurrency") if cap is not None else None)
 
     isl = _positive_int(workload.get("isl"), "isl")
     osl = _positive_int(workload.get("osl"), "osl")
@@ -372,48 +386,29 @@ def _materialize_requests(
     if concurrency is None and workload.get("concurrency") is not None:
         concurrency = _positive_int(workload["concurrency"], "concurrency")
     request_rate = workload.get("request_rate")
-    rate = (
-        _positive_number(request_rate, "request_rate")
-        if request_rate is not None
-        else None
-    )
+    rate = _positive_number(request_rate, "request_rate") if request_rate is not None else None
     raw_interval = workload.get("arrival_interval_ms")
-    arrival_interval_ms = (
-        _nonnegative_time(raw_interval, "arrival_interval_ms")
-        if raw_interval is not None
-        else None
-    )
+    arrival_interval_ms = _nonnegative_time(raw_interval, "arrival_interval_ms") if raw_interval is not None else None
     if rate is not None and arrival_interval_ms is not None:
-        raise ValueError(
-            "synthetic replay cannot combine request_rate and arrival_interval_ms"
-        )
+        raise ValueError("synthetic replay cannot combine request_rate and arrival_interval_ms")
     if concurrency is not None:
         load = float(concurrency)
     elif rate is not None:
         load = rate
     elif arrival_interval_ms is None:
-        raise ValueError(
-            "synthetic replay requires concurrency, request_rate, or "
-            "arrival_interval_ms"
-        )
+        raise ValueError("synthetic replay requires concurrency, request_rate, or arrival_interval_ms")
     raw_request_count = workload.get("request_count")
     if raw_request_count is not None:
         request_count = _positive_int(raw_request_count, "request_count")
     else:
         if arrival_interval_ms is not None:
-            raise ValueError(
-                "synthetic replay with arrival_interval_ms requires request_count"
-            )
+            raise ValueError("synthetic replay with arrival_interval_ms requires request_count")
         ratio = _positive_number(workload.get("num_request_ratio"), "num_request_ratio")
         request_count = max(1, round(ratio * load))
 
     if rate is not None:
         arrival_seed = workload.get("arrival_seed", 42)
-        if (
-            not isinstance(arrival_seed, int)
-            or isinstance(arrival_seed, bool)
-            or arrival_seed < 0
-        ):
+        if not isinstance(arrival_seed, int) or isinstance(arrival_seed, bool) or arrival_seed < 0:
             raise ValueError("arrival_seed must be a non-negative integer")
         rng = random.Random(arrival_seed)
         arrival_times = [0.0]
@@ -427,12 +422,8 @@ def _materialize_requests(
     random_seed = _random_seed(workload.get("random_seed", 0))
     length_rng = random.Random(random_seed)
     # Follow InferenceX's draw order: sample the complete ISL vector before OSL.
-    input_lengths = _sample_synthetic_lengths(
-        isl, request_count, random_range_ratio, length_rng
-    )
-    output_lengths = _sample_synthetic_lengths(
-        osl, request_count, random_range_ratio, length_rng
-    )
+    input_lengths = _sample_synthetic_lengths(isl, request_count, random_range_ratio, length_rng)
+    output_lengths = _sample_synthetic_lengths(osl, request_count, random_range_ratio, length_rng)
     requests = [
         {
             "id": f"synthetic-{index}",
@@ -478,21 +469,22 @@ def _materialize_engine_role(
         configured = role_config.pop(name, None)
         if configured is not None and configured != deployment_backend:
             raise ValueError(
-                f"{role} {name}={configured!r} conflicts with "
-                f"BackendDeploymentSpec backend={deployment_backend!r}"
+                f"{role} {name}={configured!r} conflicts with BackendDeploymentSpec backend={deployment_backend!r}"
             )
     role_config.pop("worker_type", None)
     role_config.pop("startup_time", None)
     model = role_config.pop("aic_model_path", None)
     system = role_config.pop("aic_system", None)
-    raw_dp_size = _pop_matching_aliases(
-        role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1
-    )
-    raw_tp_size = _pop_matching_aliases(
-        role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1
-    )
-    raw_pp_size = role_config.get("aic_pp_size", 1)
-    raw_cp_size = role_config.get("aic_cp_size", 1)
+    raw_dp_size = _pop_matching_aliases(role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1)
+    raw_tp_size = _pop_matching_aliases(role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1)
+    nested_rank_config = role_config.get("rank")
+    nested_rank_config = nested_rank_config if isinstance(nested_rank_config, Mapping) else {}
+    # In the shared flat form these are topology fields, not timing-model
+    # overrides. Consume them here after the capacity materializer has used
+    # them, so fixed timing remains compatible with PP/CP sweeps. A nested
+    # native rank retains its explicit AIC override semantics below.
+    raw_pp_size = role_config.pop("aic_pp_size", nested_rank_config.get("aic_pp_size", 1))
+    raw_cp_size = role_config.pop("aic_cp_size", nested_rank_config.get("aic_cp_size", 1))
     dp_size = _positive_int(
         raw_dp_size,
         f"engine provider {role} dp_size",
@@ -533,10 +525,7 @@ def _materialize_engine_role(
     if nested_rank is not None:
         if role_config:
             unexpected = ", ".join(sorted(role_config))
-            raise ValueError(
-                f"engine provider {role} config cannot mix nested 'rank' with "
-                f"rank fields: {unexpected}"
-            )
+            raise ValueError(f"engine provider {role} config cannot mix nested 'rank' with rank fields: {unexpected}")
         if not isinstance(nested_rank, dict):
             raise ValueError(f"engine provider {role} rank config must be a mapping")
         rank: dict[str, JSONValue] = dict(nested_rank)
@@ -550,9 +539,7 @@ def _materialize_engine_role(
         raise ValueError(f"engine provider {role} rank backend must be a string")
     backend = configured_backend or deployment_backend
     if backend not in {"vllm", "sglang", "trtllm"}:
-        raise ValueError(
-            f"engine replay supports vllm, sglang, and trtllm, got {backend!r}"
-        )
+        raise ValueError(f"engine replay supports vllm, sglang, and trtllm, got {backend!r}")
     if configured_backend is not None and configured_backend != deployment_backend:
         raise ValueError(
             "engine provider rank backend conflicts with deployment backend: "
@@ -583,9 +570,7 @@ def _materialize_engine_role(
             or not math.isfinite(value)
             or not 0.0 <= value <= 1.0
         ):
-            raise ValueError(
-                f"engine provider {role} {memory_field} must be between 0 and 1"
-            )
+            raise ValueError(f"engine provider {role} {memory_field} must be between 0 and 1")
         memory_fraction_overrides[memory_field] = float(value)
 
     aic_timing_overrides: dict[str, JSONValue] = {}
@@ -593,9 +578,7 @@ def _materialize_engine_role(
         configured = [alias for alias in aliases if alias in rank]
         if len(configured) > 1:
             names = ", ".join(configured)
-            raise ValueError(
-                f"engine provider {role} config duplicates AIC field {target}: {names}"
-            )
+            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
         if not configured:
             continue
         value = rank.pop(configured[0])
@@ -607,10 +590,7 @@ def _materialize_engine_role(
 
     if deployment_backend_version:
         configured_version = aic_timing_overrides.get("backend_version")
-        if (
-            configured_version is not None
-            and configured_version != deployment_backend_version
-        ):
+        if configured_version is not None and configured_version != deployment_backend_version:
             raise ValueError(
                 f"engine provider {role} backend version {configured_version!r} "
                 "conflicts with BackendDeploymentSpec backend_version="
@@ -623,18 +603,9 @@ def _materialize_engine_role(
             and timing_model.get("provider") == "aic"
         )
         if uses_aic_timing:
-            timing_config = (
-                timing_model.get("config") if isinstance(timing_model, dict) else None
-            )
-            timing_backend_version = (
-                timing_config.get("backend_version")
-                if isinstance(timing_config, dict)
-                else None
-            )
-            if (
-                timing_backend_version is not None
-                and timing_backend_version != deployment_backend_version
-            ):
+            timing_config = timing_model.get("config") if isinstance(timing_model, dict) else None
+            timing_backend_version = timing_config.get("backend_version") if isinstance(timing_config, dict) else None
+            if timing_backend_version is not None and timing_backend_version != deployment_backend_version:
                 raise ValueError(
                     f"engine provider {role} timing_model.config.backend_version="
                     f"{timing_backend_version!r} conflicts with "
@@ -657,26 +628,15 @@ def _materialize_engine_role(
     )
     if accept_rates is not None:
         if nextn is None:
-            raise ValueError(
-                f"engine provider {role} aic_nextn_accept_rates requires aic_nextn"
-            )
+            raise ValueError(f"engine provider {role} aic_nextn_accept_rates requires aic_nextn")
         if not isinstance(accept_rates, str):
-            raise ValueError(
-                f"engine provider {role} aic_nextn_accept_rates must be a string"
-            )
+            raise ValueError(f"engine provider {role} aic_nextn_accept_rates must be a string")
         rank["aic_nextn_accept_rates"] = accept_rates
 
     mtp_seed = _pop_alias(rank, "aic_mtp_seed", ("aic_mtp_seed", "mtp_seed"))
     if mtp_seed is not None:
-        if (
-            not isinstance(mtp_seed, int)
-            or isinstance(mtp_seed, bool)
-            or not 0 <= mtp_seed <= 0xFFFF_FFFF_FFFF_FFFF
-        ):
-            raise ValueError(
-                f"engine provider {role} aic_mtp_seed must be an unsigned "
-                "64-bit integer"
-            )
+        if not isinstance(mtp_seed, int) or isinstance(mtp_seed, bool) or not 0 <= mtp_seed <= 0xFFFF_FFFF_FFFF_FFFF:
+            raise ValueError(f"engine provider {role} aic_mtp_seed must be an unsigned 64-bit integer")
         rank["aic_mtp_seed"] = mtp_seed
 
     if "timing_model" not in rank:
@@ -689,6 +649,8 @@ def _materialize_engine_role(
             "backend": backend,
             "system": system,
             "tp": tensor_parallel_size,
+            "pp": pp_size,
+            "cp_size": cp_size,
             "attention_dp": dp_size,
         }
         block_size = rank.get("block_size")
@@ -716,16 +678,12 @@ def _materialize_engine_role(
         timing_config = dict(timing_model["config"])
         timing_overrides = memory_fraction_overrides | aic_timing_overrides
         duplicates = timing_overrides.keys() & timing_config.keys()
-        if (
-            "backend_version" in duplicates
-            and timing_overrides["backend_version"] == timing_config["backend_version"]
-        ):
+        if "backend_version" in duplicates and timing_overrides["backend_version"] == timing_config["backend_version"]:
             duplicates.remove("backend_version")
         if duplicates:
             duplicate = ", ".join(sorted(duplicates))
             raise ValueError(
-                "engine AIC option is configured both on the rank and "
-                f"inside timing_model.config: {duplicate}"
+                f"engine AIC option is configured both on the rank and inside timing_model.config: {duplicate}"
             )
         timing_config.update(timing_overrides)
         timing_model["config"] = timing_config
@@ -772,18 +730,12 @@ def _random_range_ratio(value: JSONValue) -> float:
         or value <= 0.0
         or value > 1.0
     ):
-        raise ValueError(
-            f"random_range_ratio must be finite and in (0.0, 1.0], got {value!r}"
-        )
+        raise ValueError(f"random_range_ratio must be finite and in (0.0, 1.0], got {value!r}")
     return float(value)
 
 
 def _random_seed(value: JSONValue) -> int:
-    if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or not 0 <= value <= 0xFFFF_FFFF_FFFF_FFFF
-    ):
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 0xFFFF_FFFF_FFFF_FFFF:
         raise ValueError("random_seed must be an unsigned 64-bit integer")
     return value
 
@@ -798,10 +750,7 @@ def _sample_synthetic_lengths(
         return [upper] * count
     lower = int(upper * random_range_ratio)
     if lower == 0:
-        raise ValueError(
-            f"random_range_ratio={random_range_ratio} gives a zero-token "
-            f"lower bound for length {upper}"
-        )
+        raise ValueError(f"random_range_ratio={random_range_ratio} gives a zero-token lower bound for length {upper}")
     return [rng.randint(lower, upper) for _ in range(count)]
 
 
@@ -816,9 +765,7 @@ def _require_parallel_match(
         return
     expected = _positive_int(expected, f"parallel_config.{field}")
     if expected != actual:
-        raise ValueError(
-            f"parallel_config.{field}={expected} conflicts with {label}={actual}"
-        )
+        raise ValueError(f"parallel_config.{field}={expected} conflicts with {label}={actual}")
 
 
 def _require_supported_synthetic_workload(
@@ -834,10 +781,7 @@ def _require_supported_synthetic_workload(
     if workload.get("inter_turn_delay_ms", 0.0) != 0.0:
         unsupported.append("inter_turn_delay_ms")
     if unsupported:
-        raise ValueError(
-            "engine replay synthetic traffic does not yet support "
-            + ", ".join(unsupported)
-        )
+        raise ValueError("engine replay synthetic traffic does not yet support " + ", ".join(unsupported))
 
 
 def _pop_alias(
@@ -869,12 +813,7 @@ def _pop_matching_aliases(
 
 
 def _nonnegative_time(value: JSONValue, name: str) -> float:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        or value < 0
-    ):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
         raise ValueError(f"{name} must be finite and non-negative")
     return float(value)
 
@@ -886,9 +825,7 @@ def _positive_number(value: JSONValue, name: str) -> float:
     return number
 
 
-def _normalize_engine_replay_report(
-    report: Mapping[str, JSONValue], *, include_native_report: bool
-) -> ReplayReport:
+def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_native_report: bool) -> ReplayReport:
     """Normalize an execution report to Sweeper's stable scoring metric names."""
 
     payload = dict(report)

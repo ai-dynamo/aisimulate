@@ -97,9 +97,13 @@ def test_explicit_role_domains_and_replica_controls_reach_enumerator(monkeypatch
         prefill_pp_candidates=[1, 2],
         prefill_cp_candidates=[1, 4],
         prefill_num_workers_candidates=[1, 3],
+        prefill_batch_size_candidates=[8, 16],
+        prefill_context_tokens_candidates=[4096, 8192],
         decode_num_gpu_candidates=[2],
         decode_tp_candidates=[2],
         decode_num_workers_candidates=[2],
+        decode_batch_size_candidates=[32],
+        decode_context_tokens_candidates=[2048],
         num_gpu_per_replica=[8, 16],
         max_gpu_per_replica=16,
         max_prefill_workers=3,
@@ -122,6 +126,8 @@ def test_explicit_role_domains_and_replica_controls_reach_enumerator(monkeypatch
     assert seen["max_gpu_per_replica"] == 16
     assert seen["max_prefill_workers"] == 3
     assert seen["max_decode_workers"] == 4
+    assert seen["role_runtime"]["prefill"][:2] == (8192, 16)
+    assert seen["role_runtime"]["decode"][:2] == (2048, 32)
 
 
 def test_enumerate_real_backend_space_honors_runner_topologies():
@@ -157,8 +163,10 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
         gpu_budget,
         deployment_mode,
         backend,
+        backend_version=None,
         min_gpu_budget=None,
         max_seq_len=None,
+        role_runtime=None,
     ):
         calls.append((deployment_mode, backend))
         return [_DISAGG_DP1_CFG]
@@ -259,8 +267,10 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
         gpu_budget,
         deployment_mode,
         backend,
+        backend_version=None,
         min_gpu_budget=None,
         max_seq_len=None,
+        role_runtime=None,
     ):
         if deployment_mode == "disagg":
             raise NoViableParallelConfig("disagg does not fit")
@@ -310,8 +320,10 @@ def test_backend_without_perf_database_is_dropped(monkeypatch):
         gpu_budget,
         deployment_mode,
         backend,
+        backend_version=None,
         min_gpu_budget=None,
         max_seq_len=None,
+        role_runtime=None,
     ):
         if backend == "vllm":
             raise NoPerfDatabase("no vLLM perf database")
