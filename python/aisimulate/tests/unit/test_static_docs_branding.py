@@ -13,7 +13,8 @@ def test_landing_page_is_aisimulate_branded_and_hides_outdated_universe():
 
     assert "<title>AISimulate</title>" in page
     assert ">AISimulate</h1>" in page
-    assert "AISimulate Support Matrix" in page
+    assert "Legacy AIC Support Matrix" in page
+    assert "Prefer the FPE Support Matrix" in page
     assert "https://github.com/ai-dynamo/aisimulate" in page
     assert "ai-dynamo/aiconfigurator" not in page
     assert "Architecture Universe" not in page
@@ -23,18 +24,22 @@ def test_landing_page_is_aisimulate_branded_and_hides_outdated_universe():
 def test_support_matrix_uses_aisimulate_navigation_and_data():
     page = (DOCS_ROOT / "support-matrix" / "index.html").read_text()
 
-    assert "<title>AISimulate — Support Matrix</title>" in page
+    assert "<title>AISimulate — Legacy AIC Support Matrix</title>" in page
     assert "const REPO = 'ai-dynamo/aisimulate';" in page
-    assert "const DATA_REPO = 'ai-dynamo/aiconfigurator';" in page
-    assert "const PUBLIC_DATA_MAIN_REF = '2ed278a91bc599c5149ddfcd527a20c3421b471d';" in page
-    assert "raw.githubusercontent.com/${DATA_REPO}" in page
-    assert "api.github.com/repos/${DATA_REPO}" in page
-    assert "aic-core/src/aiconfigurator_core/systems/support_matrix" in page
+    assert "DATA_REPO" not in page
+    assert "PUBLIC_DATA" not in page
+    assert "raw.githubusercontent.com/${REPO}/refs/heads/main/${path}" in page
     assert "python/aisimulate/src/aiconfigurator_core/systems/support_matrix" in page
+    assert "Release branches..." not in page
+    assert "matching-refs/heads/release" not in page
+    assert "HARDCODED_RELEASE_BRANCHES" not in page
     assert 'href="../">AISimulate</a>' in page
+    assert 'href="../fpe-support-matrix/"' in page
+    assert "FPE coverage is estimator evidence, not deployment certification." in page
     assert "https://github.com/ai-dynamo/aisimulate" in page
-    assert 'href="https://github.com/ai-dynamo/aiconfigurator"' not in page
+    assert "ai-dynamo/aiconfigurator" not in page
     assert 'href="/aiconfigurator/"' not in page
+    assert "AISimulate Support Matrix" not in page
     assert "AI Configurator Support Matrix" not in page
 
 
@@ -44,5 +49,7 @@ def test_package_readme_only_exposes_current_static_page_entrypoints():
     assert "https://deepwiki.com/ai-dynamo/aisimulate" in readme
     assert "AIC Developer Universe" not in readme
     assert "ai-dynamo.github.io/aiconfigurator" not in readme
-    assert "[AISimulate Support Matrix](docs/support-matrix/)" in readme
+    assert "[Legacy AIC Support Matrix](docs/support-matrix/)" in readme
+    assert "[FPE Support Matrix](docs/fpe-support-matrix/)" in readme
+    assert "release branches" not in readme
     assert "[per-system CSV files](src/aiconfigurator_core/systems/support_matrix)" in readme

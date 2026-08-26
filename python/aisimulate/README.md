@@ -495,11 +495,15 @@ To go through the process, refer to the [guidance](collector/README.md) under th
 > **Note**: b200 and gb200 are under dev. Results are to be aligned. For preview now.
 > `h100_pcie`, `a100_pcie`, `l4`, and `a30` do not include built-in silicon performance databases yet. Use them for naive sizing or rough SOL/EMPIRICAL estimates, and use `--systems-paths` to provide measured data for production-quality predictions.
 
-#### Detailed Support Matrix
+#### Legacy AIC Support Matrix
 
-The interactive [AISimulate Support Matrix](docs/support-matrix/) is versioned
-with this package. It supports filtering by system, mode, and model, and can
-compare the public compatibility snapshots available on release branches.
+The interactive [Legacy AIC Support Matrix](docs/support-matrix/) preserves
+historical AIConfigurator CLI compatibility coverage. It uses the current
+`main` snapshot and supports filtering by system, mode, and model.
+
+For current strict-native forward-pass estimator coverage, use the
+[FPE Support Matrix](docs/fpe-support-matrix/). FPE coverage is estimator
+evidence, not deployment certification.
 
 The raw data is also available as
 [per-system CSV files](src/aiconfigurator_core/systems/support_matrix).

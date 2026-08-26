@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AISimulate — Support Matrix</title>
+<title>AISimulate — Legacy AIC Support Matrix</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
@@ -51,19 +51,7 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ── Constants ───────────────────────────────────────────────────────
 const REPO = 'ai-dynamo/aisimulate';
-// The AISimulate repository is not publicly readable yet. Its checked-in
-// support-matrix snapshot is byte-identical to this public compatibility
-// source, so anonymous static-page visitors can still load the matrix.
-const DATA_REPO = 'ai-dynamo/aiconfigurator';
-const PUBLIC_DATA_MAIN_REF = '2ed278a91bc599c5149ddfcd527a20c3421b471d';
-const PUBLIC_SUPPORT_MATRIX_PATHS = [
-  'aic-core/src/aiconfigurator_core/systems/support_matrix', // split layout (>= 0.10)
-  'src/aiconfigurator/systems/support_matrix',               // pre-split branches
-];
-const LOCAL_SUPPORT_MATRIX_PATHS = [
-  'python/aisimulate/src/aiconfigurator_core/systems/support_matrix',
-];
-const PUBLIC_LEGACY_CSV_PATH = 'src/aiconfigurator/systems/support_matrix.csv';
+const SUPPORT_MATRIX_PATH = 'python/aisimulate/src/aiconfigurator_core/systems/support_matrix';
 const STATUS_HW_INCOMPATIBLE = 'HW_INCOMPATIBLE';
 const STATUS_FRAMEWORK_INCOMPATIBLE = 'FRAMEWORK_INCOMPATIBLE';
 const PREFERRED_DEFAULT_SYSTEM = 'b200_sxm';
@@ -670,10 +658,9 @@ function isLocalPreview() {
   return ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
 }
 
-function rawUrl(branch, path) {
+function rawUrl(path) {
   if (isLocalPreview()) return `/${path}?localPreviewTs=${Date.now()}`;
-  const ref = branch === 'main' ? PUBLIC_DATA_MAIN_REF : `refs/heads/${branch}`;
-  return `https://raw.githubusercontent.com/${DATA_REPO}/${ref}/${path}`;
+  return `https://raw.githubusercontent.com/${REPO}/refs/heads/main/${path}`;
 }
 
 function readSearchQuery() {
@@ -697,63 +684,9 @@ function writeSearchQuery(query) {
   }
 }
 
-const HARDCODED_RELEASE_BRANCHES = [
-  'release/0.11.0',
-  'release/0.10.0',
-  'release/0.9.0',
-  'release/0.8.0',
-  'release/0.7.0',
-];
-const BRANCH_CACHE_KEY = 'sm-release-branches';
-const BRANCH_CACHE_TTL = 3600000; // 1 hour
-const MIN_VERSION = [0, 7, 0, 0, 0, 0, 0];
-
-function filterAndSortBranches(names) {
-  return names
-    .filter(n => /^release\/[\d]/.test(n))
-    .filter(n => compareVersionTuples(parseVersionTuple(n.replace('release/', '')), MIN_VERSION) >= 0)
-    .sort((a, b) => {
-      const va = parseVersionTuple(a.replace('release/', ''));
-      const vb = parseVersionTuple(b.replace('release/', ''));
-      return compareVersionTuples(vb, va);
-    });
-}
-
-async function fetchBranchList() {
-  try {
-    const res = await fetch(`https://api.github.com/repos/${DATA_REPO}/git/matching-refs/heads/release/`);
-    if (res.ok) {
-      const refs = await res.json();
-      const branches = filterAndSortBranches(refs.map(r => r.ref.replace('refs/heads/', '')));
-      if (branches.length > 0) {
-        localStorage.setItem(BRANCH_CACHE_KEY, JSON.stringify({ branches, ts: Date.now() }));
-        return { branches, source: 'api' };
-      }
-    }
-    if (res.status === 403 || res.status === 429) {
-      throw new Error('rate_limited');
-    }
-    throw new Error(`HTTP ${res.status}`);
-  } catch (err) {
-    const warning = err.message === 'rate_limited'
-      ? 'GitHub API rate limited. Branch list may be outdated.'
-      : 'Could not fetch branch list.';
-
-    const cached = localStorage.getItem(BRANCH_CACHE_KEY);
-    if (cached) {
-      try {
-        const { branches } = JSON.parse(cached);
-        if (branches.length > 0) return { branches, source: 'cache', warning };
-      } catch {}
-    }
-
-    return { branches: filterAndSortBranches(HARDCODED_RELEASE_BRANCHES), source: 'hardcoded', warning };
-  }
-}
-
-async function fetchOneCsv(branch, path) {
-  const res = await fetch(rawUrl(branch, path), { cache: isLocalPreview() ? 'no-store' : 'default' });
-  if (!res.ok) throw new Error(`Failed to fetch CSV (HTTP ${res.status}) from branch "${branch}"`);
+async function fetchOneCsv(path) {
+  const res = await fetch(rawUrl(path), { cache: isLocalPreview() ? 'no-store' : 'default' });
+  if (!res.ok) throw new Error(`Failed to fetch CSV (HTTP ${res.status}) from branch "main"`);
   const text = await res.text();
   // Support generated updates that mix historical CRLF rows with LF rows.
   const normalizedText = text.replace(/\r\n?/g, '\n');
@@ -761,30 +694,21 @@ async function fetchOneCsv(branch, path) {
   return result.data;
 }
 
-async function fetchCsv(branch) {
-  const supportMatrixPaths = isLocalPreview()
-    ? LOCAL_SUPPORT_MATRIX_PATHS
-    : PUBLIC_SUPPORT_MATRIX_PATHS;
-  for (const supportMatrixPath of supportMatrixPaths) {
-    const indexPath = `${supportMatrixPath}/index.json`;
-    const indexRes = await fetch(rawUrl(branch, indexPath), { cache: isLocalPreview() ? 'no-store' : 'default' });
-    if (indexRes.status === 404) continue;
-    if (!indexRes.ok) {
-      throw new Error(`Failed to fetch support matrix index (HTTP ${indexRes.status}) from branch "${branch}"`);
-    }
-
-    const index = await indexRes.json();
-    const files = Array.isArray(index.files) ? index.files : [];
-    if (!files.length) throw new Error(`Support matrix index is empty on branch "${branch}"`);
-
-    const chunks = await Promise.all(
-      files.map(file => fetchOneCsv(branch, `${supportMatrixPath}/${file}`))
-    );
-    return chunks.flat();
+async function fetchCsv() {
+  const indexPath = `${SUPPORT_MATRIX_PATH}/index.json`;
+  const indexRes = await fetch(rawUrl(indexPath), { cache: isLocalPreview() ? 'no-store' : 'default' });
+  if (!indexRes.ok) {
+    throw new Error(`Failed to fetch support matrix index (HTTP ${indexRes.status}) from branch "main"`);
   }
 
-  if (!isLocalPreview()) return fetchOneCsv(branch, PUBLIC_LEGACY_CSV_PATH);
-  throw new Error(`No local support matrix data found for branch "${branch}"`);
+  const index = await indexRes.json();
+  const files = Array.isArray(index.files) ? index.files : [];
+  if (!files.length) throw new Error('Support matrix index is empty on branch "main"');
+
+  const chunks = await Promise.all(
+    files.map(file => fetchOneCsv(`${SUPPORT_MATRIX_PATH}/${file}`))
+  );
+  return chunks.flat();
 }
 
 // ── React Components ────────────────────────────────────────────────
@@ -797,7 +721,7 @@ function GitHubIcon() {
   );
 }
 
-function Header({ activeBranch, onSelectBranch, releaseBranches, branchesLoading, branchWarning }) {
+function Header() {
   const [dark, setDark] = useState(() => {
     const saved = localStorage.getItem('sm-theme');
     return saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -814,15 +738,12 @@ function Header({ activeBranch, onSelectBranch, releaseBranches, branchesLoading
         <a href="../"><img src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" className="rounded-full" /></a>
         <div className="min-w-0 mr-auto">
           <h1 className="text-lg font-bold leading-tight"><a href="../">AISimulate</a>
-          <span className="text-sm text-slate-500 dark:text-slate-400"> - Support Matrix</span></h1>
+          <span className="text-sm text-slate-500 dark:text-slate-400"> - Legacy AIC Support Matrix</span></h1>
         </div>
-        <BranchSelector
-          activeBranch={activeBranch}
-          onSelectBranch={onSelectBranch}
-          releaseBranches={releaseBranches}
-          branchesLoading={branchesLoading}
-          branchWarning={branchWarning}
-        />
+        <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+          <span className="font-semibold">Branch:</span>
+          <code className="px-2 py-1 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">main</code>
+        </div>
         <a href="https://github.com/ai-dynamo/aisimulate" target="_blank" rel="noopener"
            title="View on GitHub"
            className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors">
@@ -837,83 +758,6 @@ function Header({ activeBranch, onSelectBranch, releaseBranches, branchesLoading
           }
         </button>
       </div>
-    </div>
-  );
-}
-
-function BranchSelector({ activeBranch, onSelectBranch, releaseBranches, branchesLoading, branchWarning }) {
-  const isReleaseBranch = activeBranch !== 'main';
-  const isCustom = isReleaseBranch && !releaseBranches.includes(activeBranch);
-  const [customInput, setCustomInput] = useState('');
-  const [showCustom, setShowCustom] = useState(false);
-
-  const handleCustomGo = () => {
-    const val = customInput.trim();
-    if (!val) return;
-    onSelectBranch(val.startsWith('release/') ? val : `release/${val}`);
-    setShowCustom(false);
-    setCustomInput('');
-  };
-
-  return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <span className="text-sm font-semibold text-slate-500 dark:text-slate-400">Branch:</span>
-      <div className="flex border border-slate-200 dark:border-slate-700 rounded overflow-hidden">
-        <button
-          onClick={() => onSelectBranch('main')}
-          className={`px-3 py-1.5 text-sm border-r border-slate-200 dark:border-slate-700 transition-all cursor-pointer
-            ${activeBranch === 'main'
-              ? 'bg-indigo-500 dark:bg-indigo-400 text-white font-semibold'
-              : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
-        >
-          main
-        </button>
-        {branchesLoading ? (
-          <span className="px-3 py-1.5 text-sm text-slate-400 animate-pulse">Loading...</span>
-        ) : showCustom ? (
-          <div className="flex">
-            <input
-              type="text" placeholder="branch or version"
-              value={customInput} onChange={e => setCustomInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleCustomGo(); if (e.key === 'Escape') setShowCustom(false); }}
-              autoFocus
-              className="px-2 py-1.5 text-sm w-36 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-none outline-none"
-            />
-            <button onClick={handleCustomGo}
-              className="px-2 py-1.5 text-sm bg-indigo-500 text-white cursor-pointer hover:bg-indigo-600 transition-colors">
-              Go
-            </button>
-            <button onClick={() => setShowCustom(false)}
-              className="px-2 py-1.5 text-sm bg-slate-100 dark:bg-slate-700 text-slate-500 cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors">
-              &times;
-            </button>
-          </div>
-        ) : (
-          <select
-            value={isReleaseBranch ? activeBranch : ''}
-            onChange={e => {
-              if (e.target.value === '__custom__') { setShowCustom(true); return; }
-              if (e.target.value) onSelectBranch(e.target.value);
-            }}
-            className={`px-2 py-1.5 text-sm transition-all cursor-pointer border-none outline-none
-              ${isReleaseBranch
-                ? 'bg-indigo-500 dark:bg-indigo-400 text-white font-semibold'
-                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
-          >
-            <option value="" disabled>Release branches...</option>
-            {releaseBranches.map(b => (
-              <option key={b} value={b}>{b.replace('release/', '')} {b === releaseBranches[0] ? '(latest)' : ''}</option>
-            ))}
-            {isCustom && <option value={activeBranch}>{activeBranch.replace('release/', '')} (custom)</option>}
-            <option value="__custom__">Other branch...</option>
-          </select>
-        )}
-      </div>
-      {branchWarning && (
-        <span className="text-xs text-amber-600 dark:text-amber-400" title={branchWarning}>
-          &#9888; {branchWarning}
-        </span>
-      )}
     </div>
   );
 }
@@ -958,6 +802,19 @@ function Controls({ activeMode, onSetMode, searchQuery, onSetSearch, totalPass, 
         <span className="text-red-600 dark:text-red-400">{totalFail} FAIL</span>
       </div>
      </div>
+    </div>
+  );
+}
+
+function LegacyNotice() {
+  return (
+    <div className="max-w-[1600px] mx-auto px-6 pt-6">
+      <div className="p-4 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 text-sm text-amber-900 dark:text-amber-200">
+        <span className="font-bold">Legacy AIC Support Matrix.</span>{' '}
+        This page preserves historical AIConfigurator CLI compatibility coverage. For current strict-native forward-pass estimator coverage, use the{' '}
+        <a href="../fpe-support-matrix/" className="font-semibold underline hover:no-underline">FPE Support Matrix</a>.
+        FPE coverage is estimator evidence, not deployment certification.
+      </div>
     </div>
   );
 }
@@ -1655,7 +1512,7 @@ function ErrorBanner({ message, onRetry }) {
 function Footer() {
   return (
     <div className="text-center py-6 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-200 dark:border-slate-700 mt-8">
-      AISimulate Support Matrix &middot; Data from <code className="text-xs">support_matrix/*.csv</code>
+      Legacy AIC Support Matrix &middot; Data from <code className="text-xs">support_matrix/*.csv</code>
     </div>
   );
 }
@@ -1663,10 +1520,6 @@ function Footer() {
 // ── App ─────────────────────────────────────────────────────────────
 
 function App() {
-  const [branch, setBranch] = useState('main');
-  const [releaseBranches, setReleaseBranches] = useState([]);
-  const [branchesLoading, setBranchesLoading] = useState(true);
-  const [branchWarning, setBranchWarning] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [csvRows, setCsvRows] = useState([]);
@@ -1680,24 +1533,10 @@ function App() {
 
   const [modal, setModal] = useState(null);
 
-  useEffect(() => {
-    fetchBranchList()
-      .then(({ branches, warning }) => {
-        setReleaseBranches(branches);
-        setBranchWarning(warning || null);
-      })
-      .catch(() => {
-        setReleaseBranches(filterAndSortBranches(HARDCODED_RELEASE_BRANCHES));
-        setBranchWarning('Could not fetch branch list.');
-      })
-      .finally(() => setBranchesLoading(false));
-  }, []);
-
-  const loadCsv = useCallback((branchName) => {
+  const loadCsv = useCallback(() => {
     setLoading(true);
     setError(null);
-    setBranch(branchName);
-    fetchCsv(branchName)
+    fetchCsv()
       .then(rows => {
         setCsvRows(rows);
         const systems = sortSystems([...new Set(rows.map(r => r.System))]);
@@ -1714,7 +1553,7 @@ function App() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { loadCsv('main'); }, [loadCsv]);
+  useEffect(() => { loadCsv(); }, [loadCsv]);
 
   const systems = useMemo(() => sortSystems([...new Set(csvRows.map(r => r.System))]), [csvRows]);
   const totalPass = useMemo(() => csvRows.filter(r => r.Status === 'PASS').length, [csvRows]);
@@ -1744,10 +1583,6 @@ function App() {
     setSortAsc(true);
   }, []);
 
-  const handleSelectBranch = useCallback((branchName) => {
-    if (branchName !== branch) loadCsv(branchName);
-  }, [branch, loadCsv]);
-
   const handleSetSearchQuery = useCallback((query) => {
     setSearchQuery(query);
     writeSearchQuery(query);
@@ -1767,15 +1602,10 @@ function App() {
 
   return (
     <>
-      <Header
-        activeBranch={branch}
-        onSelectBranch={handleSelectBranch}
-        releaseBranches={releaseBranches}
-        branchesLoading={branchesLoading}
-        branchWarning={branchWarning}
-      />
+      <Header />
+      <LegacyNotice />
 
-      {error && <ErrorBanner message={error} onRetry={() => loadCsv(branch)} />}
+      {error && <ErrorBanner message={error} onRetry={loadCsv} />}
 
       {loading ? <LoadingSpinner /> : !error && (
         <>
