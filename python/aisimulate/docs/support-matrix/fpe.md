@@ -63,7 +63,7 @@ After all system shards finish, build the split CSV files consumed by the
 interactive page:
 
 ```bash
-python python/aisimulate/tools/support_matrix/build_fpe_supermatrix.py \
+python python/aisimulate/tools/support_matrix/build_fpe_support_matrix.py \
   fpe-support-matrix \
   --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
 ```
@@ -82,9 +82,9 @@ python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
 ```
 
 Each raw shard contains deterministic JSON, CSV, and Markdown coverage
-artifacts plus a separate `run_metrics.json`. The rollup preserves the existing
-web matrix's `agg`/`disagg` rows and adds real probe counts, topology counts,
-native status counts, phase latencies, and source SHA to the detail view.
+artifacts plus a separate `run_metrics.json`. The rollup produces mode-neutral
+rows for the separate FPE Support Matrix and adds real probe counts, topology
+counts, native status counts, phase latencies, and source SHA to the detail view.
 Wall time, CPU time, peak RSS, and worker count remain separate from the
 deterministic coverage artifacts.
 

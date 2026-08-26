@@ -106,6 +106,6 @@ jobs:
         with:
           name: fpe-support-matrix-web
           path: |
-            python/aisimulate/docs/support-matrix/index.html
+            python/aisimulate/docs/fpe-support-matrix/index.html
             python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
           if-no-files-found: error

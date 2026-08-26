@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Roll strict-native op-level FPE probe artifacts into the web support-matrix schema."""
+"""Roll strict-native op-level FPE probe artifacts into the FPE web-matrix schema."""
 
 from __future__ import annotations
 
@@ -261,7 +261,7 @@ def write_web_matrix(rows: Sequence[dict[str, str]], output_dir: str | Path) -> 
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build split FPE CSVs for the existing support-matrix page")
+    parser = argparse.ArgumentParser(description="Build split CSVs for the separate FPE Support Matrix page")
     parser.add_argument("inputs", nargs="+", help="Probe JSON files or directories containing shard artifacts")
     parser.add_argument("--output-dir", required=True, help="Destination for index.json and per-system CSVs")
     return parser
