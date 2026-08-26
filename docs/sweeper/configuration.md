@@ -40,6 +40,9 @@ goal:
   sla:
     ttft_ms: 800
     itl_ms: 30
+  # Optional hard capacity constraint. The public recommendation schema
+  # places this under optimization.constraints.min_goodput_rps.
+  min_goodput_rps: 3.5
 
 sweep:
   max_rounds: 10
@@ -107,6 +110,11 @@ configured bound, and an unset TTFT or ITL field is unbounded. Set `goal.strict_
 to additionally require the aggregate candidate means to stay within every configured bound
 before scalar ranking or Pareto dominance. Bounds are inclusive. Missing metrics and zero
 qualifying latency samples fail closed.
+
+`goal.min_goodput_rps` is an independent hard feasibility constraint on replay's
+`goodput_request_throughput_rps`. It requires an SLA. The public `min_gpus` recommendation target
+requires this constraint and ranks only directly evaluated, constraint-satisfying candidates by
+their actual GPU count.
 
 ## Sampler Algorithm Override
 

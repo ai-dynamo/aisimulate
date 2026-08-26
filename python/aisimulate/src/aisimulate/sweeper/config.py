@@ -44,6 +44,7 @@ class OptimizationTarget(str, Enum):
     E2E_LATENCY = "e2e_latency"  # minimize mean end-to-end latency
     GOODPUT = "goodput"  # maximize SLA-satisfying throughput
     GOODPUT_PER_GPU = "goodput_per_gpu"  # maximize goodput / avg GPU (tok/s/gpu)
+    MIN_GPUS = "min_gpus"  # minimize complete candidate GPU count under hard constraints
     PARETO = "pareto"  # multi-objective: Pareto front over pareto_objectives
 
     @property
@@ -55,7 +56,11 @@ class OptimizationTarget(str, Enum):
         """
         if self is OptimizationTarget.PARETO:
             raise ValueError("'pareto' is multi-objective and has no scalar direction")
-        return self not in {OptimizationTarget.TTFT, OptimizationTarget.E2E_LATENCY}
+        return self not in {
+            OptimizationTarget.TTFT,
+            OptimizationTarget.E2E_LATENCY,
+            OptimizationTarget.MIN_GPUS,
+        }
 
 
 class SLATarget(BaseModel):
@@ -112,6 +117,9 @@ class OptimizationGoal(BaseModel):
     # enabled, configured SLA bounds also gate aggregate mean metrics before
     # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
     strict_sla: bool = Field(default=False, strict=True)
+    # Hard capacity constraint used by minimum-GPU selection. Replay emits this
+    # request-rate metric only when an SLA is configured.
+    min_goodput_rps: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
 
     @property
     def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
@@ -136,6 +144,8 @@ class OptimizationGoal(BaseModel):
                 raise ValueError("a pareto goal needs at least 2 objectives")
             if OptimizationTarget.PARETO in objs:
                 raise ValueError("pareto_objectives cannot contain 'pareto' itself (objectives must be scalar)")
+            if OptimizationTarget.MIN_GPUS in objs:
+                raise ValueError("min_gpus is candidate-scoped and cannot be a pareto objective")
             if len(set(objs)) != len(objs):
                 raise ValueError(f"pareto_objectives must be distinct, got {[o.value for o in objs]}")
             effective = set(objs)
@@ -147,6 +157,10 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require at least one SLA bound")
+        if self.min_goodput_rps is not None and not has_sla:
+            raise ValueError("min_goodput_rps requires at least one SLA bound")
+        if self.target is OptimizationTarget.MIN_GPUS and self.min_goodput_rps is None:
+            raise ValueError("min_gpus requires min_goodput_rps")
         if self.strict_sla and (self.sla is None or not self.sla.has_bound):
             raise ValueError("strict_sla requires at least one SLA bound")
         return self

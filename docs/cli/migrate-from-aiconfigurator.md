@@ -26,6 +26,8 @@ by the unified command surface. A legacy command becomes an AISimulate recommend
 | `--ttft` | `evaluation.sla.ttft_ms` | Time-to-first-token bound in milliseconds |
 | `--tpot` | `evaluation.sla.itl_ms` | Per-request goodput uses average ITL; strict mode compares aggregate mean TPOT |
 | `--strict-sla` | `optimization.strict_sla: true` | Reject before scalar ranking or Pareto dominance |
+| `--target-request-rate` | `optimization.target: min_gpus` plus `optimization.constraints.min_goodput_rps` | See the constrained sizing example below; this is not legacy linear replica extrapolation |
+| `--target-concurrency` | No exact equivalent yet | Keep the compatibility CLI for this case; concurrency is a load shape, not an absolute served-rate constraint |
 
 ## Illustrative strict SLA translation
 
@@ -100,6 +102,82 @@ samples reject the candidate.
 Request-level goodput and strict filtering both accept `ttft_ms` or `itl_ms` independently; an unset
 field is unbounded. `strict_sla` changes only whether the configured bounds additionally reject a
 candidate based on its aggregate means.
+
+## Minimum GPUs for an SLA-good request rate
+
+AIConfigurator load matching estimates a fleet size by dividing a target request rate by one
+evaluated configuration's throughput and assuming perfectly linear replication. AISimulate does
+not carry that assumption forward. It evaluates each complete candidate at a fixed offered load,
+rejects candidates below an explicit SLA-good request-rate constraint, and minimizes the actual
+`used_gpus` of the remaining candidates.
+
+Legacy command:
+
+```bash
+aiconfigurator cli recommend \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system gb200 \
+  --backend trtllm \
+  --target-request-rate 4 \
+  --isl 1024 \
+  --osl 128 \
+  --ttft 800 \
+  --tpot 30 \
+  --strict-sla
+```
+
+Save this AISimulate configuration as `minimum-gpus.yaml`:
+
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: constant_rate
+    requests_per_second: 5
+  stop:
+    requests_per_load_unit: 50
+
+engine:
+  mode: aggregated
+  model: meta-llama/Meta-Llama-3.1-8B
+  hardware: gb200
+  backend: trtllm
+  workers:
+    aggregated: {}
+
+evaluation:
+  sla:
+    ttft_ms: 800
+    itl_ms: 30
+
+optimization:
+  target: min_gpus
+  strict_sla: true
+  constraints:
+    max_candidate_gpus: 32
+    min_goodput_rps: 4
+```
+
+Run the constrained recommendation:
+
+```bash
+aisimulate recommend --config minimum-gpus.yaml
+```
+
+The offered rate is deliberately higher than the required `min_goodput_rps`. Replay throughput
+includes the finite trace's final drain time, so offering exactly 4 RPS while requiring a measured
+4 good RPS can reject an otherwise saturated deployment at the measurement boundary. Increase the
+request count for a longer measurement window; do not lower `min_goodput_rps` below the rate the
+deployment must actually sustain.
+
+This mapping currently covers the legacy request-rate intent only. There is no honest one-field
+translation for `--target-concurrency`: fixed concurrency controls in-flight demand but does not
+state the absolute SLA-good service rate that a minimum-GPU constraint needs. Keep using the
+compatibility CLI for that case until AISimulate defines and qualifies a concurrency-specific hard
+constraint.
 
 ## Migration limits
 

@@ -111,6 +111,7 @@ class EvaluationConfig(StrictModel):
 class CandidateConstraints(StrictModel):
     min_candidate_gpus: PositiveStrictInt | None = None
     max_candidate_gpus: PositiveStrictInt = 32
+    min_goodput_rps: PositiveFiniteFloat | None = None
 
     @model_validator(mode="after")
     def _validate_bounds(self) -> CandidateConstraints:
@@ -128,6 +129,7 @@ class OptimizationConfig(StrictModel):
         "goodput_per_gpu",
         "ttft",
         "e2e_latency",
+        "min_gpus",
         "pareto",
     ] = "throughput"
     hardware: str | None = None

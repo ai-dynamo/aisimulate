@@ -37,10 +37,11 @@ Every `OptimizationTarget` and the exact report metric it reads (`score.objectiv
 | `e2e_latency` | **minimize** | `mean_e2e_latency_ms` | no |
 | `goodput` | maximize | `goodput_output_throughput_tok_s` | **yes** |
 | `goodput_per_gpu` | maximize | `goodput_output_throughput_tok_s / avg_gpu` (tok/s/gpu) | **yes** |
+| `min_gpus` | **minimize** | evaluated candidate `used_gpus` | **yes**, plus `min_goodput_rps` |
 | `pareto` | per-objective | a vector — one value per `pareto_objectives` entry | iff an objective needs it |
 
-`e2e_latency` is the only minimized target: `OptimizationTarget.maximize` returns `False`
-for it (and raises for `pareto`, which has no single direction). `score_report` negates
+`ttft`, `e2e_latency`, and `min_gpus` are minimized targets: `OptimizationTarget.maximize`
+returns `False` for them (and raises for `pareto`, which has no single direction). `score_report` negates
 minimized targets so **higher is always better** internally; for a Pareto goal the raw
 (unsigned) value is kept and `_dominates` applies each objective's own direction.
 Missing-key defaults differ by direction: a maximized target reads `0.0` when its key is
@@ -92,6 +93,20 @@ By default SLA is *not* gated during aggregate feasibility (`is_feasible` checks
 the GPU budget) — it lives inside the goodput metric, so an unconditional aggregate
 latency gate would double-count it. `strict_sla: true` is the explicit legacy-compatible
 opt-in: it filters aggregate mean metrics before scalar ranking or Pareto dominance.
+
+### Constrained minimum-GPU selection
+
+`min_gpus` is a candidate-scoped scalar target. It requires `min_goodput_rps`, evaluates complete
+candidates directly under the configured workload and SLA, rejects any report whose
+`goodput_request_throughput_rps` is below that hard bound, and then minimizes the candidate's actual
+`used_gpus`. Missing goodput request-rate data fails closed. It never scales a candidate by
+`ceil(target / capacity)` and never assumes that a topology can be replicated linearly.
+
+The public recommendation schema currently permits `min_gpus` only for concrete synthetic
+request-rate traffic. `min_goodput_rps` cannot exceed the offered `requests_per_second`. The
+constraint needs an SLA because the replay emits goodput metrics only when at least one request
+latency bound is configured. `min_gpus` is not allowed inside `pareto_objectives` because its value
+comes from candidate topology rather than the replay report.
 
 `SLATarget` shape (ms, each `> 0`, `extra="forbid"`):
 

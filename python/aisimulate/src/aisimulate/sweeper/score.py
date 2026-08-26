@@ -53,13 +53,8 @@ _METRIC_KEYS = (
     "mean_tpot_ms",
     "mean_e2e_latency_ms",
     "mean_output_token_throughput_per_user",
-    "request_throughput_rps",
-    "agg_request_throughput_rps",
-    "prefill_request_throughput_rps",
-    "decode_request_throughput_rps",
-    "encoder_request_throughput_rps",
-    "attention_request_throughput_rps",
-    "ffn_request_throughput_rps",
+    "goodput_completed_requests",
+    "goodput_request_throughput_rps",
     "goodput_output_throughput_tok_s",
     "gpu_hours",
     "duration_ms",
@@ -96,7 +91,12 @@ def _avg_gpu(report: dict[str, float]) -> float:
     return gpu_hours / (duration_ms / 3_600_000.0)
 
 
-def objective_value(report: dict[str, float], target: OptimizationTarget) -> float:
+def objective_value(
+    report: dict[str, float],
+    target: OptimizationTarget,
+    *,
+    used_gpus: int | None = None,
+) -> float:
     """The raw objective metric (NOT yet signed for direction)."""
     if target is OptimizationTarget.THROUGHPUT:
         return float(report.get("output_throughput_tok_s", 0.0))
@@ -122,14 +122,23 @@ def objective_value(report: dict[str, float], target: OptimizationTarget) -> flo
         return float(report.get("mean_output_token_throughput_per_user", 0.0))
     if target is OptimizationTarget.TTFT:
         return _qualified_latency_value(report, "mean_ttft_ms", "num_ttft_samples")
+    if target is OptimizationTarget.MIN_GPUS:
+        if used_gpus is None:
+            raise ValueError("min_gpus requires the evaluated candidate's used_gpus")
+        return float(used_gpus)
     if target is OptimizationTarget.PARETO:
         raise ValueError("'pareto' is multi-objective; use objective_vector / pareto_front, not objective_value")
     raise ValueError(f"unknown optimization target: {target!r}")
 
 
-def score_report(report: dict[str, float], target: OptimizationTarget) -> float:
+def score_report(
+    report: dict[str, float],
+    target: OptimizationTarget,
+    *,
+    used_gpus: int | None = None,
+) -> float:
     """Objective normalized so **higher is better** (minimized targets negated)."""
-    value = objective_value(report, target)
+    value = objective_value(report, target, used_gpus=used_gpus)
     return value if target.maximize else -value
 
 
@@ -277,7 +286,7 @@ def make_candidate(
     return Candidate(
         config=config,
         used_gpus=int(config.get("used_gpus", 0)),
-        score=score_report(report, target),
+        score=score_report(report, target, used_gpus=int(config.get("used_gpus", 0))),
         metrics=metrics,
     )
 

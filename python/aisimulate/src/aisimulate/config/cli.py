@@ -71,6 +71,20 @@ class CoreRecommendationConfig(StrictModel):
             raise ValueError("optimization.strict_sla requires at least one evaluation.sla bound")
         if self.optimization.target in {"goodput", "goodput_per_gpu"} and (sla is None or not sla.has_bound):
             raise ValueError(f"optimization target {self.optimization.target!r} requires an evaluation.sla bound")
+        min_goodput_rps = self.optimization.constraints.min_goodput_rps
+        if min_goodput_rps is not None and (sla is None or not sla.has_bound):
+            raise ValueError("optimization.constraints.min_goodput_rps requires an evaluation.sla bound")
+        if self.optimization.target == "min_gpus":
+            if min_goodput_rps is None:
+                raise ValueError("optimization target 'min_gpus' requires constraints.min_goodput_rps")
+            if self.traffic is None or self.traffic.source.type != "synthetic":
+                raise ValueError("optimization target 'min_gpus' requires fixed synthetic request-rate traffic")
+            load = self.traffic.load
+            offered_rps = load.requests_per_second
+            if load.type not in {"constant_rate", "poisson"} or not isinstance(offered_rps, (int, float)):
+                raise ValueError("optimization target 'min_gpus' requires one concrete requests_per_second value")
+            if min_goodput_rps > float(offered_rps):
+                raise ValueError("constraints.min_goodput_rps cannot exceed the offered requests_per_second")
         return self
 
     @classmethod

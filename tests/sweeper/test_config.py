@@ -111,6 +111,87 @@ optimization:
     assert config.goal.sla == SLATarget(ttft_ms=800, itl_ms=30)
 
 
+def test_aic_minimum_gpu_migration_yaml_loads(tmp_path):
+    """Keep the request-rate minimum-GPU migration example executable."""
+    path = tmp_path / "minimum-gpus.yaml"
+    path.write_text(
+        """
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: constant_rate
+    requests_per_second: 5
+  stop:
+    requests_per_load_unit: 50
+engine:
+  mode: aggregated
+  model: meta-llama/Meta-Llama-3.1-8B
+  hardware: gb200
+  backend: trtllm
+  workers:
+    aggregated: {}
+evaluation:
+  sla:
+    ttft_ms: 800
+    itl_ms: 30
+optimization:
+  target: min_gpus
+  strict_sla: true
+  constraints:
+    max_candidate_gpus: 32
+    min_goodput_rps: 4
+"""
+    )
+
+    public = CoreRecommendationConfig.from_yaml(path)
+    config = recommendation_to_sweeper(public)
+
+    assert config.goal.target is OptimizationTarget.MIN_GPUS
+    assert config.goal.min_goodput_rps == 4
+    assert config.workload.request_rate == 5
+
+
+@pytest.mark.parametrize(
+    ("optimization", "match"),
+    [
+        (
+            {"target": "min_gpus", "constraints": {"max_candidate_gpus": 8}},
+            "requires constraints.min_goodput_rps",
+        ),
+        (
+            {
+                "target": "min_gpus",
+                "constraints": {"max_candidate_gpus": 8, "min_goodput_rps": 5.1},
+            },
+            "cannot exceed the offered requests_per_second",
+        ),
+    ],
+)
+def test_public_minimum_gpu_rejects_incomplete_contract(optimization, match):
+    payload = {
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 128, "output_tokens": 16},
+            "load": {"type": "constant_rate", "requests_per_second": 5},
+            "stop": {"requests": 50},
+        },
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": "vllm",
+            "workers": {"aggregated": {}},
+        },
+        "evaluation": {"sla": {"ttft_ms": 1000}},
+        "optimization": optimization,
+    }
+
+    with pytest.raises(ValidationError, match=match):
+        CoreRecommendationConfig.model_validate(payload)
+
+
 def test_defaults_are_backend_only():
     config = SmartSearchConfig(
         search_space=_search_space(),

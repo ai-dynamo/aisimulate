@@ -55,6 +55,15 @@ def test_objective_per_target():
     assert objective_value(REPORT, OptimizationTarget.GOODPUT_PER_GPU) == 1000.0
     # throughput_per_gpu = throughput / avg_gpu = 5000 / 4 = 1250
     assert objective_value(REPORT, OptimizationTarget.THROUGHPUT_PER_GPU) == 1250.0
+    assert objective_value(REPORT, OptimizationTarget.MIN_GPUS, used_gpus=6) == 6.0
+    assert score_report(REPORT, OptimizationTarget.MIN_GPUS, used_gpus=6) == -6.0
+
+
+def test_minimum_gpu_candidate_uses_complete_candidate_gpu_count():
+    candidate = make_candidate({"used_gpus": 6}, REPORT, OptimizationTarget.MIN_GPUS)
+
+    assert candidate.used_gpus == 6
+    assert candidate.score == -6.0
 
 
 def test_candidate_preserves_planner_tick_metric():

@@ -494,6 +494,59 @@ def test_goodput_goal_fails_closed_when_runner_omits_metric(monkeypatch):
     )
 
 
+def test_minimum_gpu_goal_gates_goodput_rate_before_ranking(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    sampler_seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        sampler_seen["sampler"] = sampler
+        return sampler
+
+    class GoodputRunner(_FakeRunner):
+        def run(self, spec: ReplaySpec) -> ReplayReport:
+            self.calls += 1
+            self.specs.append(spec)
+            args = spec.backend_deployment.agg_engine_args
+            assert args is not None
+            max_seqs = float(args["max_num_seqs"])
+            return ReplayReport(
+                metrics={
+                    "completed_requests": 10.0,
+                    "goodput_completed_requests": 9.0,
+                    "goodput_request_throughput_rps": max_seqs / 100.0,
+                    "output_throughput_tok_s": max_seqs,
+                }
+            )
+
+    base = _config()
+    config = base.model_copy(
+        update={
+            "goal": OptimizationGoal(
+                target="min_gpus",
+                sla={"ttft_ms": 2000.0},
+                min_goodput_rps=5.0,
+            )
+        }
+    )
+    candidates = _run_sweep(
+        config,
+        runner_factory=_FakeRunnerFactory(runner=GoodputRunner()),
+        sampler_factory=sampler_factory,
+        show_progress=False,
+    )
+
+    assert len(candidates) == 2
+    assert all(candidate.score == -8.0 for candidate in candidates)
+    assert all(candidate.metrics["goodput_request_throughput_rps"] >= 5.0 for candidate in candidates)
+    assert any(
+        item[0] == "infeasible" and "below required 5 rps" in item[1]
+        for item in sampler_seen["sampler"].scored
+        if isinstance(item, tuple)
+    )
+
+
 def test_strict_aggregate_sla_gates_before_sampler_observation_and_ranking(
     monkeypatch,
 ):

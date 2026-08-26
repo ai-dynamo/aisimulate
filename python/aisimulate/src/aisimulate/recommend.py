@@ -593,6 +593,9 @@ def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
     sla = config.evaluation.sla
     if sla is not None:
         payload["sla"] = sla.model_dump(mode="json", exclude_none=True)
+    min_goodput_rps = config.optimization.constraints.min_goodput_rps
+    if min_goodput_rps is not None:
+        payload["min_goodput_rps"] = min_goodput_rps
     return payload
 
 

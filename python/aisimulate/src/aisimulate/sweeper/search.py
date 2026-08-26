@@ -684,6 +684,30 @@ def _score_prepared(
                 "as a fallback"
             ),
         )
+    if goal.min_goodput_rps is not None:
+        try:
+            goodput_rps = float(report["goodput_request_throughput_rps"])
+        except (KeyError, TypeError, ValueError):
+            return (
+                None,
+                None,
+                "failed",
+                "runner contract violation: min_goodput_rps requires goodput_request_throughput_rps",
+            )
+        if not math.isfinite(goodput_rps):
+            return (
+                None,
+                None,
+                "failed",
+                "runner contract violation: goodput_request_throughput_rps must be finite",
+            )
+        if goodput_rps < goal.min_goodput_rps:
+            return (
+                None,
+                None,
+                "infeasible",
+                f"goodput request rate {goodput_rps:.6g} rps is below required {goal.min_goodput_rps:.6g} rps",
+            )
     sample = prepared.sample
     if not is_feasible(int(sample["used_gpus"]), config.search_space.gpu_budget):
         # Over gpu_budget: report as infeasible to the optimizer (observe_infeasible, not
