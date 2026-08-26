@@ -15,28 +15,36 @@ migration is tracked by
 | AIC 0.11 surface | AISimulate 0.12 surface | Compatibility |
 | --- | --- | --- |
 | Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command and import namespace ship inside `aisimulate` during the compatibility window |
-| CLI `aiconfigurator ...` | `aisimulate ...` | Both commands delegate to the complete AIC CLI until the new CLI passes the parity gate |
-| Python distribution `aiconfigurator-core` | `aisimulate-core` | Install name changes |
-| `aiconfigurator_core` | `aisimulate_core` | Old import remains available in 0.12.0 |
-| `aiconfigurator_core.sdk` | `aisimulate_core.sdk` | Old facade and explicit submodules remain available in 0.12.0 |
+| CLI `aiconfigurator ...` | `aiconfigurator ...` from the `aisimulate` wheel | The distribution and source owner change; the command name does not |
+| Python distribution `aiconfigurator-core` | included in `aisimulate` | No separate core distribution is installed |
+| `aiconfigurator_core` | `aiconfigurator_core` from the `aisimulate` wheel | Existing import remains available in 0.12.0 |
+| `aiconfigurator_core.sdk` | `aisimulate_core.sdk` facade in the same wheel | Both import paths remain available in 0.12.0 |
 | Rust package/import `aiconfigurator-core` / `aiconfigurator_core` | `aisimulate-core` / `aisimulate_core` | Cargo consumers may temporarily alias the new package under the old dependency key |
 
 Temporary Cargo alias:
 
 ```toml
 [dependencies]
-aiconfigurator-core = { package = "aisimulate-core", version = "0.12" }
+aiconfigurator-core = { package = "aisimulate-core", version = "0.12", features = ["python"] }
 ```
+
+The former AIC crate-root types and builders remain available through this
+alias. Its `engine` module is the one unavoidable name collision: the combined
+crate keeps Replay's scheduler at `aisimulate_core::engine`, so the former AIC
+compiled-engine module is available at `aisimulate_core::perfmodel::engine`.
+Consumers that do not embed Python can omit the `python` feature and use the
+pure-Rust performance-model types; the feature is required for
+`AicEngineBuilder` and `AicEngine`.
 
 ### Ownership boundary
 
 AISimulate owns the estimator, model and performance data, neutral scheduling
 and replay contracts, engine-native simulation, and the migrated AIC
-application. Neither AISimulate wheel declares Dynamo as an installation
+application. The AISimulate wheel does not declare Dynamo as an installation
 dependency. The imported generator retains function-local use of Dynamo's
 deployment config modifiers only when a caller explicitly requests Dynamo
 manifests; moving that integration behind a Dynamo-owned adapter is a separate
-boundary cleanup and is not a fourth release artifact.
+boundary cleanup and is not another release artifact.
 
 ### Source provenance
 
@@ -44,33 +52,86 @@ The migration branch keeps the earlier path-filtered AIC core history. The
 complete upper application was initially imported as a snapshot from
 AIConfigurator source commit `13b5cf2697876692b0a52098266c81162add11fc`.
 The current synchronization boundary is source commit
-`ff2be1fd434fd516474e42b77f94cd5a5f841b9b`, which includes the data-plane
-engine migration from PR #1555, the SGLang DSA data update from PR #1556, and
-the deprecation/PyO3 unification from PR #1566. The final tree moves the upper
-application beneath `python/aisimulate/` and updates the existing core layout
-without copying a second buildable AIC core manifest.
+`095f58a51c4ca8e61b66ec108d86f223f8d559ce`. It includes the initial boundary
+at `ff2be1fd434fd516474e42b77f94cd5a5f841b9b` plus the 18 first-parent commits
+in the frozen `ff2be1f..095f58a` range. The final tree moves the upper
+application and Python core beneath `python/aisimulate/`, and moves the AIC
+Rust core beneath `crates/core/src/perfmodel/`, without copying a second
+buildable manifest.
 
 The imported upper tree includes the CLI, generator, SDK compatibility layer,
 Collector, tests, docs, Docker/development assets, and the original inactive
 workflow definitions. Only the repository-root `.github/workflows/` directory
 is active in AISimulate.
 
-The source commit is the future synchronization boundary. For example:
+The source commit is the future synchronization boundary. With an
+AIConfigurator clone at the sibling `../aiconfigurator` path and its origin
+fetched, for example:
 
 ```bash
-git log --follow -- crates/aisimulate-core/src/lib.rs
-git log --follow -- python/aisimulate-core/src/aiconfigurator_core/sdk/engine.py
-git diff ff2be1fd434fd516474e42b77f94cd5a5f841b9b:src/aiconfigurator/main.py HEAD:python/aisimulate/src/aiconfigurator/main.py
+git log --follow -- crates/core/src/perfmodel/mod.rs
+git log --follow -- python/aisimulate/src/aiconfigurator_core/sdk/engine.py
+git -C ../aiconfigurator fetch origin
+diff -u <(git -C ../aiconfigurator show 095f58a51c4ca8e61b66ec108d86f223f8d559ce:src/aiconfigurator/main.py) <(git show HEAD:python/aisimulate/src/aiconfigurator/main.py)
 ```
 
-### CLI cutover gate
+### Bulk synchronization ledger
+
+[AIC-1788](https://linear.app/nvidia/issue/AIC-1788/repo-bulk-sync-post-ff2be1f-aiconfigurator-changes-into-aisimulate-through-095f58a) tracks the single AISimulate bulk synchronization from `ff2be1f` through `095f58a`. The review units below preserve the source range's first-parent order.
+
+| AIC PR | Source commit | Review unit | AISimulate disposition |
+| --- | --- | --- | --- |
+| [#1565](https://github.com/ai-dynamo/aiconfigurator/pull/1565) | [`61613b9`](https://github.com/ai-dynamo/aiconfigurator/commit/61613b9) | AIC-1802 | Preserved the macOS wheel action byte-for-byte under inactive `python/aisimulate/.github/`; active workflow applicability remains AIC-1706. |
+| [#1564](https://github.com/ai-dynamo/aiconfigurator/pull/1564) | [`a9e012a`](https://github.com/ai-dynamo/aiconfigurator/commit/a9e012a) | AIC-1790 | Mapped the DSA data correction and fail-open coverage; final Parquet and metadata blobs remain byte-identical. |
+| [#1568](https://github.com/ai-dynamo/aiconfigurator/pull/1568) | [`c7bc4cf`](https://github.com/ai-dynamo/aiconfigurator/commit/c7bc4cf) | AIC-1802 | Preserved the platform-wheel workflow byte-for-byte under inactive `python/aisimulate/.github/`; no active root workflow changed. |
+| [#1545](https://github.com/ai-dynamo/aiconfigurator/pull/1545) | [`1d76ac0`](https://github.com/ai-dynamo/aiconfigurator/commit/1d76ac0) | AIC-1791 | Mapped the Dynamo recipe adapter to the AIS application/core layout. |
+| [#1571](https://github.com/ai-dynamo/aiconfigurator/pull/1571) | [`298cd36`](https://github.com/ai-dynamo/aiconfigurator/commit/298cd36) | AIC-1789 | Mapped the database fixture cache-invalidation guard and tests. |
+| [#1541](https://github.com/ai-dynamo/aiconfigurator/pull/1541) | [`a81829d`](https://github.com/ai-dynamo/aiconfigurator/commit/a81829d) | AIC-1792 | Mapped the Nemotron-3.5-Lightning NVFP4 Collector declarations and data. |
+| [#1548](https://github.com/ai-dynamo/aiconfigurator/pull/1548) | [`2dd1fb4`](https://github.com/ai-dynamo/aiconfigurator/commit/2dd1fb4) | AIC-1792 | Mapped the DeepSeek-V4 NVFP4 checkpoint declarations and model metadata. |
+| [#1540](https://github.com/ai-dynamo/aiconfigurator/pull/1540) | [`724f763`](https://github.com/ai-dynamo/aiconfigurator/commit/724f763) | AIC-1790 | Mapped DSA all-full fail-open behavior when skip-indexer rows are absent. |
+| [#1544](https://github.com/ai-dynamo/aiconfigurator/pull/1544) | [`71f49c7`](https://github.com/ai-dynamo/aiconfigurator/commit/71f49c7) | AIC-1794 | Mapped MTP decode-share scaling and reversion guards. |
+| [#1445](https://github.com/ai-dynamo/aiconfigurator/pull/1445) | [`40c1e74`](https://github.com/ai-dynamo/aiconfigurator/commit/40c1e74) | AIC-1793 | Mapped the perf-data reuse manifest/tool rename; regenerated the manifest from the final AIS data tree. |
+| [#1402](https://github.com/ai-dynamo/aiconfigurator/pull/1402) | [`87caf68`](https://github.com/ai-dynamo/aiconfigurator/commit/87caf68) | AIC-1795 | Mapped removal of the legacy `build_aic_engine` adapter into the AIS core API and implementation. |
+| [#1569](https://github.com/ai-dynamo/aiconfigurator/pull/1569) | [`163f662`](https://github.com/ai-dynamo/aiconfigurator/commit/163f662) | AIC-1802 | Preserved the inactive build-test workflow byte-for-byte and mapped the sanity selector, trigger paths, and notebook; active CI wiring remains AIC-1706. |
+| [#1513](https://github.com/ai-dynamo/aiconfigurator/pull/1513) | [`90f7fc0`](https://github.com/ai-dynamo/aiconfigurator/commit/90f7fc0) | AIC-1798 | Mapped current NVIDIA NVFP4 variants, including B60, and imported all final support-matrix CSVs byte-for-byte. |
+| [#1473](https://github.com/ai-dynamo/aiconfigurator/pull/1473) | [`0dc8a2b`](https://github.com/ai-dynamo/aiconfigurator/commit/0dc8a2b) | AIC-1796 | Mapped the shared Generator/Collector FPM contract. |
+| [#1575](https://github.com/ai-dynamo/aiconfigurator/pull/1575) | [`b28ab8f`](https://github.com/ai-dynamo/aiconfigurator/commit/b28ab8f) | AIC-1800 | Mapped DeepSeek-V4 NVFP4 Hopper redirects. |
+| [#1507](https://github.com/ai-dynamo/aiconfigurator/pull/1507) | [`dbb322e`](https://github.com/ai-dynamo/aiconfigurator/commit/dbb322e) | AIC-1801 | Mapped MiniMax-M3 MSA collectors, SDK tables, model metadata, and multi-platform data; the bounded evidence-waiver correction is recorded below. |
+| [#1486](https://github.com/ai-dynamo/aiconfigurator/pull/1486) | [`899034f`](https://github.com/ai-dynamo/aiconfigurator/commit/899034f) | AIC-1797 | Mapped TRT-LLM DeepSeek-V4 mHC and CSA/HCA collectors and source data; the unrelated-case filtering correction is recorded below. |
+| [#1475](https://github.com/ai-dynamo/aiconfigurator/pull/1475) | [`095f58a`](https://github.com/ai-dynamo/aiconfigurator/commit/095f58a) | AIC-1799 | Mapped the FPM forward-pass collection workflow. |
+
+The closure audit accounts for all 406 source paths and all six detected renames. Its exact-data envelope contains 96 changed Parquet blobs totaling 26,373,223 bytes.
+
+### Intentional AISimulate adaptations
+
+- Source paths map to the combined AIS layout: `aic-core/rust/aiconfigurator-core/src/` to `crates/core/src/perfmodel/`, `aic-core/src/aiconfigurator_core/` to `python/aisimulate/src/aiconfigurator_core/`, and the upper application, Collector, tests, docs, and tools beneath `python/aisimulate/`. Migration-introduced crate, distribution, package-data, and tool references follow those destinations; pre-existing source-provenance comments may retain historical AIC paths.
+- The source `.gitattributes` snapshot remains byte-identical under `python/aisimulate/`. Root `.gitattributes` carries equivalent mapped rules for the active AIS data and generated model-config paths and is owned by AISimulate Infra plus maintainers.
+- The source engine-step golden is byte-identical. Source model configs, collection metadata, reuse declarations, Parquet files, `collector_ref` values, framework image digests, and other pinned SHAs are preserved unless a row is explicitly named here.
+- `perf_data_reuse_manifest.yaml` is intentionally regenerated from the final AIS data tree because the source snapshot predates the data added by #1507 and #1486. Its generator defaults and rendered instructions use the unified `python/aisimulate/src/aiconfigurator_core` path.
+- Source workflows and actions are provenance-only snapshots under `python/aisimulate/.github/`. The repository-root workflows remain unchanged by this synchronization; [AIC-1706](https://linear.app/nvidia/issue/AIC-1706/repo-establish-aisimulate-ci-release-and-ownership-contract) owns active CI and release applicability.
+- AISimulate publishes two artifacts: one `aisimulate` wheel and one `aisimulate-core` crate. The application manifest includes the migrated FPM workflow, its model-plan YAML, in-pod runtime assets, compatibility SDKs, and performance data in the `aisimulate` wheel so `python -m collector.fpm_forward` remains usable after installation; this package-data mapping does not add an artifact or console script.
+- Rust formatting, AIS API documentation, and Python lint adaptations are limited to crate/module identity and existing AIS checks. Commit `f6e2f7a` explicitly defers Qwen W4A16 Collector cases that the retained runtime cannot execute instead of silently relabeling them.
+- Commit `7f07f3b` removes unrelated-case filtering from the DSV4 Collector and bounds the MSA evidence waiver to its approved scope. These are post-port policy corrections, not untracked source drift.
+The stable path mapping and last synchronized AIC commit are recorded in
+[`scripts/aic_sync.toml`](../scripts/aic_sync.toml). Follow the binary-safe,
+path-rewritten workflow in [aic-sync.md](aic-sync.md) for later AIC code, data,
+and test commits. Packaging, CI, and repository-policy changes are adapted
+manually because AISimulate owns the combined release boundary.
+
+### CLI identity and evolution gate
 
 Copying all AIC code removes repository-placement risk; it does not by itself
 prove that the newer `predict`/`recommend` CLI is a behavioral replacement.
 Until AIC-1480/AIC-1472/AIC-1476 have passing evidence or approved exceptions,
-the `aisimulate` executable delegates to the full AIC command implementation.
-The legacy `aiconfigurator` executable is an alias in the same wheel, not a
-fourth release artifact.
+the complete AIC command implementation remains the supported surface. The
+`aisimulate` wheel installs only the established `aiconfigurator` application
+command; `aisimulate` remains the distribution and Python namespace, not a
+second top-level executable. Future CLI actions must evolve the retained
+command identity and do not add another release artifact.
+
+For features already implemented by the standalone Sweeper, see
+[Migrate from AIConfigurator](cli/migrate-from-aiconfigurator.md) for explicit legacy
+command-to-configuration examples and current execution boundaries.
 
 ## Dynamo-to-AISimulate package migration
 
@@ -90,18 +151,18 @@ git log --follow -- crates/core/src/engine/generalized/engine.rs
 git log --follow -- python/aisimulate/src/aisimulate/sweeper/search.py
 ```
 
-The two migration branches initially carried separate `aisimulate` Python
+The two migration branches initially carried separate Python and Rust
 manifests. The post-merge reconciliation keeps the preserved source histories
-but builds one 0.12 application wheel from `python/aisimulate/`: its mixed
-Maturin layout packages the Replay extension together with the complete AIC
-application and the Replay/Sweeper Python sources. The generalized Replay
-engine remains an internal, non-publishable Rust crate; the only published
-`aisimulate-core` crate is the estimator described above.
+but builds one 0.12 wheel from `python/aisimulate/`: its mixed Maturin layout
+packages the unified native extension together with the complete AIC
+application/core and Replay/Sweeper Python sources. One published
+`aisimulate-core` crate in `crates/core/` combines the estimator and Replay
+runtime behind feature-gated Python bindings.
 
 The imported history requires a merge commit. Squashing would retain the files
 but discard that Dynamo ancestry from this repository's `main` history.
 
 ## Artifact boundary
 
-The only publishable packages are `aisimulate`, `aisimulate-core` (wheel), and
-`aisimulate-core` (crate). See [artifact-contract.md](artifact-contract.md).
+The only publishable packages are the `aisimulate` wheel and the
+`aisimulate-core` crate. See [artifact-contract.md](artifact-contract.md).

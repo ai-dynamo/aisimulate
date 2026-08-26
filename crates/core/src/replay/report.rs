@@ -9,6 +9,8 @@ use serde_json::Value;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use uuid::Uuid;
 
+use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
+
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
 // spanning roughly 10^28 within one sign while remaining bounded (~512 KiB for
 // the two stores at their maximum size, ~1 MiB for both global sketches).
@@ -23,6 +25,8 @@ pub struct ReplayReport {
     pub prefix_cache_reused_ratio: f64,
     pub first_admission_prefix_cache_reused_ratio: f64,
     pub latency: TraceLatencyStats,
+    pub trajectories: Option<TraceTrajectoryStats>,
+    pub agentic_graph: Option<AgenticGraphIdentity>,
     /// SLA-goodput stats. `Some` only when an SLA was supplied to the collector
     /// (via `set_sla_thresholds`); `None` otherwise — goodput is undefined
     /// without an SLA, so the `goodput_*` keys are omitted from the report.
@@ -110,12 +114,23 @@ pub struct TraceDistributionStats {
 
 #[derive(Debug, Clone)]
 pub struct TraceLatencyStats {
+    pub num_ttft_samples: usize,
+    pub num_tpot_samples: usize,
+    pub num_e2e_latency_samples: usize,
     pub ttft: TraceDistributionStats,
     pub ttst: TraceDistributionStats,
     pub tpot: TraceDistributionStats,
     pub itl: TraceInterTokenLatencyStats,
     pub e2e: TraceDistributionStats,
     pub output_token_throughput_per_user: TraceDistributionStats,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraceTrajectoryStats {
+    pub total: usize,
+    pub completed: usize,
+    pub incomplete: usize,
+    pub e2e: TraceDistributionStats,
 }
 
 #[derive(Debug, Clone)]
@@ -278,11 +293,27 @@ impl Serialize for ReplayReport {
             "first_admission_prefix_cache_reused_ratio",
             &self.first_admission_prefix_cache_reused_ratio,
         )?;
+        map.serialize_entry("num_ttft_samples", &self.latency.num_ttft_samples)?;
+        map.serialize_entry("num_tpot_samples", &self.latency.num_tpot_samples)?;
+        map.serialize_entry(
+            "num_e2e_latency_samples",
+            &self.latency.num_e2e_latency_samples,
+        )?;
         serialize_distribution(&mut map, "ttft", &self.latency.ttft)?;
         serialize_distribution(&mut map, "ttst", &self.latency.ttst)?;
         serialize_distribution(&mut map, "tpot", &self.latency.tpot)?;
         serialize_distribution(&mut map, "itl", &self.latency.itl.distribution)?;
         map.serialize_entry("max_itl_ms", &self.latency.itl.max_ms)?;
+        if let Some(trajectories) = &self.trajectories {
+            map.serialize_entry("total_trajectories", &trajectories.total)?;
+            map.serialize_entry("completed_trajectories", &trajectories.completed)?;
+            map.serialize_entry("incomplete_trajectories", &trajectories.incomplete)?;
+            serialize_distribution(&mut map, "trajectory_e2e_latency", &trajectories.e2e)?;
+            map.serialize_entry("p50_trajectory_e2e_latency_ms", &trajectories.e2e.median_ms)?;
+        }
+        if let Some(agentic_graph) = &self.agentic_graph {
+            map.serialize_entry("agentic_graph", agentic_graph)?;
+        }
         serialize_distribution(&mut map, "e2e_latency", &self.latency.e2e)?;
         serialize_rate_distribution(
             &mut map,
@@ -361,6 +392,8 @@ struct TraceRequestStats {
     session_id: Option<String>,
     turn_index: Option<usize>,
     authored_id: Option<String>,
+    play_id: Option<String>,
+    dispatched_at_ms: Option<f64>,
     metadata: Value,
     detail: Option<Box<PerRequestDetail>>,
 }
@@ -548,6 +581,8 @@ pub struct PerRequestRecord {
     /// only carry an internal UUID leave this unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub play_id: Option<String>,
     /// Session identifier from the trace, when present. Mirrors AIPerf's
     /// `conversation_id` field for the same purpose: bucket per-request
     /// records by multi-turn session. Placed first in the serialized output
@@ -561,6 +596,7 @@ pub struct PerRequestRecord {
     pub metadata: Value,
     pub uuid: String,
     pub arrival_time_ms: f64,
+    pub dispatched_at_ms: Option<f64>,
     pub first_admit_ms: Option<f64>,
     pub terminal_time_ms: f64,
     pub first_token_ms: Option<f64>,
@@ -610,11 +646,9 @@ pub(crate) struct TraceRequestStatsSnapshot {
     pub first_admission_reused_input_tokens: usize,
 }
 
-/// SLA thresholds used to classify requests for goodput. Mirrors Sweeper's
-/// `SLATarget` shape: set `ttft_ms` + `itl_ms` together, or `e2e_ms` alone.
-/// Only the thresholds that are set are checked, so an e2e-only SLA gates on
-/// e2e and a ttft+itl SLA gates on both. All-`None` (the default) means "no
-/// SLA", which suppresses goodput entirely.
+/// SLA thresholds used to classify requests for goodput. Every configured
+/// field is enforced independently; an unset field is unbounded. All-`None`
+/// (the default) means "no SLA", which suppresses goodput entirely.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, serde::Deserialize)]
 pub struct SlaThresholds {
     pub ttft_ms: Option<f64>,
@@ -632,16 +666,22 @@ impl SlaThresholds {
     }
 
     pub(crate) fn validate(&self) -> crate::replay::ReplayResult<()> {
+        let token_form = self.ttft_ms.is_some() || self.itl_ms.is_some();
+        if token_form && self.e2e_ms.is_some() {
+            return Err(crate::replay::ReplayError::InvalidSpec(
+                "sla.e2e_ms is mutually exclusive with sla.ttft_ms/itl_ms".to_string(),
+            ));
+        }
         for (name, value) in [
             ("sla.ttft_ms", self.ttft_ms),
             ("sla.itl_ms", self.itl_ms),
             ("sla.e2e_ms", self.e2e_ms),
         ] {
             if let Some(value) = value
-                && (!value.is_finite() || value < 0.0)
+                && (!value.is_finite() || value <= 0.0)
             {
                 return Err(crate::replay::ReplayError::InvalidSpec(format!(
-                    "{name} must be finite and non-negative, got {value}"
+                    "{name} must be finite and positive, got {value}"
                 )));
             }
         }
@@ -721,6 +761,8 @@ pub struct TraceCollector {
     prefill_gpus_per_worker: usize,
     decode_gpus_per_worker: usize,
     runtime_evidence: crate::replay::OfflineRuntimeEvidence,
+    agentic_trajectory: Option<AgenticTrajectorySnapshot>,
+    agentic_graph: Option<AgenticGraphIdentity>,
 }
 
 impl TraceRequestStats {
@@ -878,6 +920,8 @@ impl TraceCollector {
                 session_id: None,
                 turn_index: None,
                 authored_id: None,
+                play_id: None,
+                dispatched_at_ms: None,
                 metadata: Value::Null,
                 first_admission_reused_input_tokens: 0,
                 detail: self
@@ -901,6 +945,31 @@ impl TraceCollector {
             stats.session_id = Some(session_id);
             stats.turn_index = Some(turn_index);
         }
+    }
+
+    pub fn on_agentic_metadata(
+        &mut self,
+        uuid: Uuid,
+        request_id: String,
+        play_id: String,
+        dispatched_at_ms: f64,
+    ) {
+        if !self.capture_per_request {
+            return;
+        }
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            stats.authored_id = Some(request_id);
+            stats.play_id = Some(play_id);
+            stats.dispatched_at_ms = Some(dispatched_at_ms);
+        }
+    }
+
+    pub fn set_agentic_trajectory(&mut self, snapshot: AgenticTrajectorySnapshot) {
+        self.agentic_trajectory = Some(snapshot);
+    }
+
+    pub fn set_agentic_graph(&mut self, identity: AgenticGraphIdentity) {
+        self.agentic_graph = Some(identity);
     }
 
     /// Retain the ReplaySpec correlation fields before the request crosses
@@ -1195,18 +1264,32 @@ impl TraceCollector {
     }
 
     pub fn finish(mut self) -> ReplayReport {
-        let Self {
-            requests,
-            itl_distribution,
-            output_token_throughput_per_user,
-            ..
-        } = &mut self;
-        for stats in requests.values_mut() {
+        let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
+        request_order.sort_unstable_by(|left_uuid, right_uuid| {
+            let left = self
+                .requests
+                .get(left_uuid)
+                .expect("request order must reference retained request");
+            let right = self
+                .requests
+                .get(right_uuid)
+                .expect("request order must reference retained request");
+            left.authored_id
+                .as_deref()
+                .cmp(&right.authored_id.as_deref())
+                .then_with(|| left_uuid.cmp(right_uuid))
+        });
+
+        for uuid in &request_order {
+            let stats = self
+                .requests
+                .get_mut(uuid)
+                .expect("request order must reference retained request");
             stats.finalize_token_timeline(
                 stats.terminal_status == Some(ReplayTerminalStatus::Completed)
                     && stats.first_admit_ms.is_some(),
-                itl_distribution,
-                output_token_throughput_per_user,
+                &mut self.itl_distribution,
+                &mut self.output_token_throughput_per_user,
             );
         }
 
@@ -1227,6 +1310,17 @@ impl TraceCollector {
         let prefill_gpus_per_worker = self.prefill_gpus_per_worker;
         let decode_gpus_per_worker = self.decode_gpus_per_worker;
         let runtime_evidence = self.runtime_evidence;
+        let agentic_graph = self.agentic_graph;
+        let trajectories = self
+            .agentic_trajectory
+            .map(|snapshot| TraceTrajectoryStats {
+                total: snapshot.total_trajectories,
+                completed: snapshot.completed_trajectories,
+                incomplete: snapshot
+                    .total_trajectories
+                    .saturating_sub(snapshot.completed_trajectories),
+                e2e: build_distribution_stats(snapshot.e2e_latencies_ms),
+            });
         let itl_distribution = self.itl_distribution.finish();
         let output_token_throughput_per_user = self.output_token_throughput_per_user.finish();
         let requests = self.requests;
@@ -1245,7 +1339,10 @@ impl TraceCollector {
         let mut goodput_requests = 0usize;
         let mut goodput_output_tokens = 0usize;
 
-        for stats in requests.values() {
+        for uuid in request_order {
+            let stats = requests
+                .get(&uuid)
+                .expect("request order must reference retained request");
             if stats.first_admit_ms.is_none() {
                 continue;
             }
@@ -1294,6 +1391,9 @@ impl TraceCollector {
             }
         }
 
+        let num_ttft_samples = ttfts.len();
+        let num_tpot_samples = tpots.len();
+        let num_e2e_latency_samples = e2e_latencies.len();
         let duration_s = (duration_ms / 1000.0).max(1e-9);
         // Provisioned worker-seconds: static count × duration for an externally
         // clocked runtime, else the runtime-integrated accumulator.
@@ -1347,6 +1447,9 @@ impl TraceCollector {
                 total_first_admission_reused_tokens as f64 / total_input_tokens as f64
             },
             latency: TraceLatencyStats {
+                num_ttft_samples,
+                num_tpot_samples,
+                num_e2e_latency_samples,
                 ttft: build_distribution_stats(ttfts),
                 ttst: build_distribution_stats(ttsts),
                 tpot: build_distribution_stats(tpots),
@@ -1357,6 +1460,8 @@ impl TraceCollector {
                 e2e: build_distribution_stats(e2e_latencies),
                 output_token_throughput_per_user,
             },
+            trajectories,
+            agentic_graph,
             goodput,
             per_request,
             runtime_evidence,
@@ -1385,11 +1490,13 @@ impl TraceCollector {
             let last_token_ms = stats.last_token_ms();
             records.push(PerRequestRecord {
                 request_id: stats.authored_id.clone(),
+                play_id: stats.play_id.clone(),
                 session_id: stats.session_id.clone(),
                 turn_index: stats.turn_index,
                 metadata: stats.metadata.clone(),
                 uuid: uuid.to_string(),
                 arrival_time_ms: stats.arrival_time_ms,
+                dispatched_at_ms: stats.dispatched_at_ms,
                 first_admit_ms: stats.first_admit_ms,
                 terminal_time_ms,
                 first_token_ms,
@@ -1427,12 +1534,14 @@ impl TraceCollector {
                 terminal_status,
             });
         }
-        // Stable ordering: by arrival_time_ms (with uuid as tiebreaker) so the
-        // JSONL file is reproducible across runs and matches the order
-        // analysis tools usually expect.
+        // Authored IDs make agentic output stable across equivalent import
+        // paths even when runtime UUIDs differ. Legacy requests retain their
+        // historical arrival-time ordering.
         records.sort_by(|a, b| {
-            a.arrival_time_ms
-                .total_cmp(&b.arrival_time_ms)
+            a.request_id
+                .as_deref()
+                .cmp(&b.request_id.as_deref())
+                .then_with(|| a.arrival_time_ms.total_cmp(&b.arrival_time_ms))
                 .then_with(|| a.uuid.cmp(&b.uuid))
         });
         records
@@ -1704,8 +1813,16 @@ mod tests {
         assert_eq!(report.throughput.duration_ms, 25.0);
         assert_eq!(report.throughput.decode_worker_seconds, 0.025);
         assert!((report.throughput.gpu_hours - 0.1 / 3600.0).abs() < 1e-12);
+        assert_eq!(report.latency.num_ttft_samples, 0);
+        assert_eq!(report.latency.num_tpot_samples, 0);
+        assert_eq!(report.latency.num_e2e_latency_samples, 0);
         assert_eq!(report.latency.ttft.mean_ms, 0.0);
         assert_eq!(report.latency.e2e.mean_ms, 0.0);
+
+        let summary = serde_json::to_value(&report).unwrap();
+        assert_eq!(summary["num_ttft_samples"], 0);
+        assert_eq!(summary["num_tpot_samples"], 0);
+        assert_eq!(summary["num_e2e_latency_samples"], 0);
     }
 
     #[test]
@@ -1904,6 +2021,38 @@ mod tests {
         assert!((goodput.request_throughput_rps - 2.0 / 0.2).abs() < 1e-6);
     }
 
+    #[test]
+    fn sla_validation_accepts_independent_token_bounds() {
+        for sla in [
+            SlaThresholds {
+                ttft_ms: Some(150.0),
+                ..Default::default()
+            },
+            SlaThresholds {
+                itl_ms: Some(30.0),
+                ..Default::default()
+            },
+        ] {
+            sla.validate().unwrap();
+        }
+    }
+
+    /// A TTFT-only SLA leaves ITL unbounded for request-level goodput.
+    #[test]
+    fn goodput_ttft_only_ignores_itl() {
+        let mut collector = TraceCollector::default();
+        collector.set_sla_thresholds(SlaThresholds {
+            ttft_ms: Some(150.0),
+            ..Default::default()
+        });
+        // TTFT=100 passes even though avg ITL=(400-100)/2=150ms.
+        add_completed(&mut collector, 1, 0.0, 3, &[100.0, 250.0, 400.0]);
+        // TTFT=200 fails independently of its short ITL.
+        add_completed(&mut collector, 2, 0.0, 3, &[200.0, 210.0, 220.0]);
+
+        assert_eq!(collector.finish().goodput.unwrap().completed_requests, 1);
+    }
+
     /// A request straddling the ITL bound flips good↔bad at the boundary.
     #[test]
     fn goodput_itl_boundary_is_inclusive() {
@@ -2014,6 +2163,98 @@ mod tests {
             .map(|r| r.arrival_time_ms)
             .collect();
         assert_eq!(arrivals, vec![0.0, 10.0, 30.0]);
+    }
+
+    #[test]
+    fn per_request_records_have_total_order_with_mixed_authored_ids() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        for (uuid_n, arrival, request_id) in [
+            (1_u128, 30.0, Some("request-b")),
+            (2, 20.0, None),
+            (3, 10.0, Some("request-a")),
+            (4, 0.0, None),
+        ] {
+            let uuid = Uuid::from_u128(uuid_n);
+            collector.on_arrival(uuid, arrival, 100, 1);
+            if let Some(request_id) = request_id {
+                collector.on_agentic_metadata(
+                    uuid,
+                    request_id.to_string(),
+                    "play".to_string(),
+                    arrival,
+                );
+            }
+            collector.on_admit(uuid, arrival + 1.0, 0);
+            collector.on_decode_assigned(uuid, 0);
+            collector.on_token(uuid, arrival + 5.0);
+            collector.on_terminal(uuid, arrival + 5.0, ReplayTerminalStatus::Completed);
+        }
+
+        let report = collector.finish();
+        assert_eq!(
+            report
+                .per_request
+                .iter()
+                .map(|record| (record.request_id.as_deref(), record.arrival_time_ms))
+                .collect::<Vec<_>>(),
+            vec![
+                (None, 0.0),
+                (None, 20.0),
+                (Some("request-a"), 10.0),
+                (Some("request-b"), 30.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn agentic_summary_is_independent_of_runtime_uuid_and_insertion_order() {
+        fn report(requests: [(&str, u128, f64); 3]) -> ReplayReport {
+            let mut collector = TraceCollector::default();
+            collector.set_capture_per_request(true);
+            collector.set_defer_token_timeline_finalization(true);
+            for (request_id, uuid, ttft_ms) in requests {
+                let uuid = Uuid::from_u128(uuid);
+                collector.on_arrival(uuid, 0.0, 100, 1);
+                collector.on_agentic_metadata(
+                    uuid,
+                    request_id.to_string(),
+                    "play".to_string(),
+                    0.0,
+                );
+                collector.on_admit(uuid, 0.0, 0);
+                collector.on_decode_assigned(uuid, 0);
+                collector.on_token(uuid, ttft_ms);
+                collector.on_terminal(uuid, ttft_ms, ReplayTerminalStatus::Completed);
+            }
+            collector.finish()
+        }
+
+        let left = report([
+            ("request-a", 3, 1.0e16),
+            ("request-b", 1, 1.0),
+            ("request-c", 2, 1.0),
+        ]);
+        let right = report([
+            ("request-c", 300, 1.0),
+            ("request-a", 100, 1.0e16),
+            ("request-b", 200, 1.0),
+        ]);
+
+        assert_eq!(
+            serde_json::to_value(&left).unwrap(),
+            serde_json::to_value(&right).unwrap()
+        );
+        for report in [&left, &right] {
+            assert_eq!(
+                report
+                    .per_request
+                    .iter()
+                    .map(|record| record.request_id.as_deref().unwrap())
+                    .collect::<Vec<_>>(),
+                vec!["request-a", "request-b", "request-c"]
+            );
+        }
     }
 
     /// Each record must round-trip cleanly to JSON. Guards against accidental

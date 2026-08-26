@@ -59,6 +59,7 @@ class BackendDeploymentSpec:
     num_prefill_workers: int = 0
     num_decode_workers: int = 0
     engine_request: EngineRequestSpec | None = None
+    performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

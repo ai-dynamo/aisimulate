@@ -1,28 +1,19 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compatibility contract for the executable shipped by the AISimulate wheel."""
+"""Command identity contract for the application shipped by AISimulate."""
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+import importlib.util
 
 import pytest
-
-from aiconfigurator.main import main as aiconfigurator_main
-from aisimulate.main import main as aisimulate_main
 
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize("argv", [["--help"], ["version"]])
-def test_aisimulate_delegates_to_the_complete_aic_cli(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) if argv == ["--help"] else nullcontext():
-        aisimulate_main(argv)
-    aisimulate_output = capsys.readouterr()
-
-    with pytest.raises(SystemExit) if argv == ["--help"] else nullcontext():
-        aiconfigurator_main(argv)
-    aiconfigurator_output = capsys.readouterr()
-
-    assert aisimulate_output == aiconfigurator_output
+def test_aisimulate_owns_the_single_simulation_cli() -> None:
+    assert importlib.util.find_spec("aisimulate.main") is not None
+    assert importlib.util.find_spec("aisimulate.__main__") is not None
+    assert importlib.util.find_spec("aisimulate.replay.__main__") is None
+    assert importlib.util.find_spec("aisimulate.sweeper.__main__") is None

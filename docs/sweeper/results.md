@@ -39,7 +39,9 @@ candidate contains:
 | `objectives` | raw per-objective values for Pareto searches; otherwise `None` |
 
 For `goal.target: pareto`, the result contains only non-dominated candidates and preserves each
-objective's natural direction.
+objective's natural direction. Engine-only and adapter-backed candidates share the public
+`analyze_candidates` path so strict aggregate SLA filtering happens before Pareto dominance or
+scalar ranking.
 
 ```python
 candidates = sweeper.run(config)
@@ -50,3 +52,15 @@ print(best.metrics)
 
 Exact repeated suggestions reuse a result from the current `run` call. The cache does not persist
 between calls, even when the same `Sweeper` instance is reused.
+
+## Deployment Artifact Generation
+
+A `Candidate` is a ranked simulation result, not a deployment manifest. The downstream
+AIConfigurator generator owns artifact rendering. In the unified AISimulate application, pass the
+selected candidate and its matching workload to
+`aiconfigurator.generator.request.from_sweeper_candidate`, then render the resulting typed request
+with `aiconfigurator.generator.api.generate_from_request`.
+
+The bridge preserves evaluated engine limits and supported adapter configuration, and rejects
+candidate data it cannot lower without loss. Pareto output has no implicit winner: callers must
+select one point before requesting deployment artifacts.

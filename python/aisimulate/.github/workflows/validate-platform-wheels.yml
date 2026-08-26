@@ -11,18 +11,19 @@ on:
       - reopened
       - synchronize
     paths:
-      - ".github/actions/build-platform-wheel/**"
-      - ".github/workflows/build-platform-wheels-copied-pr.yml"
-      - ".github/workflows/validate-platform-wheels.yml"
-      - "docker/Dockerfile"
-      - "LICENSE"
-      - "pyproject.toml"
-      - "README.md"
-      - "aic-core/**"
-      - "src/**"
-      - "tools/build_legacy_monolith_fixture.py"
-      - "tools/verify_installed_package_layers.py"
-      - "tools/verify_release_wheels.py"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "python/aisimulate/.github/actions/build-platform-wheel/**"
+      - "python/aisimulate/.github/workflows/build-platform-wheels-copied-pr.yml"
+      - "python/aisimulate/.github/workflows/validate-platform-wheels.yml"
+      - "python/aisimulate/docker/Dockerfile"
+      - "python/aisimulate/LICENSE"
+      - "python/aisimulate/pyproject.toml"
+      - "python/aisimulate/src/**"
+      - "python/aisimulate/tools/build_legacy_monolith_fixture.py"
+      - "python/aisimulate/tools/verify_installed_package_layers.py"
+      - "python/aisimulate/tools/verify_release_wheels.py"
 
 concurrency:
   group: validate-platform-wheels-${{ github.ref }}
@@ -44,7 +45,7 @@ jobs:
           lfs: true
 
       - name: Build and verify wheel set
-        uses: ./.github/actions/build-platform-wheel
+        uses: ./python/aisimulate/.github/actions/build-platform-wheel
         with:
           build_method: docker
           python_architecture: x64
@@ -63,7 +64,7 @@ jobs:
           lfs: true
 
       - name: Build and verify wheel set
-        uses: ./.github/actions/build-platform-wheel
+        uses: ./python/aisimulate/.github/actions/build-platform-wheel
         with:
           build_method: docker
           python_architecture: arm64
@@ -88,7 +89,7 @@ jobs:
           lfs: true
 
       - name: Build and verify wheel set
-        uses: ./.github/actions/build-platform-wheel
+        uses: ./python/aisimulate/.github/actions/build-platform-wheel
         with:
           build_method: native-macos
           python_architecture: arm64

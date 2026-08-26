@@ -17,9 +17,8 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
-MANIFEST_SCHEMA = "aic-wheel-manifest/1.0.0"
-UPPER_RE = re.compile(r"^aiconfigurator-[^-].*\.whl$")
-CORE_RE = re.compile(r"^aiconfigurator_core-.*\.whl$")
+MANIFEST_SCHEMA = "aisimulate-wheel-manifest/1.0.0"
+WHEEL_RE = re.compile(r"^aisimulate-[^-].*\.whl$")
 
 
 class FinalizeError(RuntimeError):
@@ -53,10 +52,11 @@ def build_manifest(
             raise FinalizeError(f"wheel {filename} has no positive size")
         wheels.append({"filename": filename, "sha256": checksum, "size": size})
     wheels.sort(key=lambda item: item["filename"])
-    if len([item for item in wheels if UPPER_RE.fullmatch(item["filename"])]) != 1:
-        raise FinalizeError("completed platform build must contain exactly one upper wheel")
-    if not any(CORE_RE.fullmatch(item["filename"]) for item in wheels):
-        raise FinalizeError("completed platform build must contain at least one core wheel")
+    if not wheels:
+        raise FinalizeError("completed platform build must contain at least one aisimulate wheel")
+    unexpected = [item["filename"] for item in wheels if not WHEEL_RE.fullmatch(item["filename"])]
+    if unexpected:
+        raise FinalizeError(f"completed platform build contains non-aisimulate wheels: {unexpected}")
     return {
         "schemaVersion": MANIFEST_SCHEMA,
         "repository": repository,
@@ -108,7 +108,7 @@ class ArtifactoryApi:
         self.repository = repository
 
     def _request(self, url: str, *, payload: bytes | None = None) -> bytes:
-        headers = {"Authorization": f"Bearer {self.token}", "User-Agent": "aiconfigurator-wheel-finalizer"}
+        headers = {"Authorization": f"Bearer {self.token}", "User-Agent": "aisimulate-wheel-finalizer"}
         if payload is not None:
             headers["Content-Type"] = "application/json"
         for attempt in range(3):

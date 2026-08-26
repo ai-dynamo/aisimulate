@@ -18,6 +18,18 @@ fn write_trace(lines: &[serde_json::Value]) -> NamedTempFile {
     file
 }
 
+fn write_agentic_trace(rows: &[serde_json::Value]) -> NamedTempFile {
+    let mut lines = vec![serde_json::json!({
+        "schema": AGENTIC_MOONCAKE_SCHEMA,
+        "version": AGENTIC_MOONCAKE_VERSION,
+        "block_size": 4,
+        "hash_id_scope": "local",
+        "source": {"format": "test", "digest": "fixture"}
+    })];
+    lines.extend_from_slice(rows);
+    write_trace(&lines)
+}
+
 #[test]
 fn trace_synthesis_bounds_each_hash_block_to_remaining_input() {
     let tokens = synthesize_trace_tokens(1, &[7], usize::MAX).unwrap();
@@ -278,67 +290,272 @@ fn test_from_mooncake_defaults_missing_input_length_from_hash_capacity() {
 }
 
 #[test]
-fn test_from_agentic_mooncake_preserves_dependencies_and_tool_wait() {
+fn compatible_agentic_loader_preserves_legacy_rows_and_independent_plays() {
     let file = write_trace(&[
         serde_json::json!({
             "request_id": "r1",
+            "session_id": "session-a",
+            "timestamp": 100.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [1]
+        }),
+        serde_json::json!({
+            "request_id": "r2",
+            "session_id": "session-a",
+            "wait_for": ["r1"],
+            "delay": 10.0,
+            "tool_wait_ms": 6.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [1]
+        }),
+        serde_json::json!({
+            "request_id": "r3",
+            "session_id": "session-b",
+            "timestamp": 120.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [2]
+        }),
+    ]);
+
+    let trace = load_agentic_mooncake(file.path(), 4).unwrap();
+
+    assert_eq!(trace.node_count(), 3);
+    assert_eq!(trace.play_count(), 2);
+    assert_eq!(trace.nodes()[1].dependencies()[0].delay_ms, 16.0);
+}
+
+#[test]
+fn compatible_agentic_loader_lowers_multi_root_join_to_one_typed_play() {
+    let file = write_trace(&[
+        serde_json::json!({
+            "request_id": "r1", "timestamp": 0.0,
+            "input_length": 4, "output_length": 1, "hash_ids": [1]
+        }),
+        serde_json::json!({
+            "request_id": "r2", "timestamp": 5.0,
+            "input_length": 4, "output_length": 1, "hash_ids": [2]
+        }),
+        serde_json::json!({
+            "request_id": "r3", "wait_for": ["r1", "r2"],
+            "input_length": 4, "output_length": 1, "hash_ids": [3]
+        }),
+    ]);
+
+    let trace = load_agentic_mooncake(file.path(), 4).unwrap();
+
+    assert_eq!(trace.play_count(), 1);
+    assert_eq!(trace.node_count(), 3);
+    assert!(trace.nodes()[1].dependencies().is_empty());
+    assert_eq!(trace.nodes()[2].dependencies().len(), 2);
+
+    let mut driver = WorkloadDriver::new_agentic_trace(trace, 4).unwrap();
+    let first = driver.pop_ready(0.0, usize::MAX);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].authored_request_id.as_deref(), Some("r1"));
+    let second = driver.pop_ready(5.0, usize::MAX);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].authored_request_id.as_deref(), Some("r2"));
+}
+
+#[test]
+fn test_from_agentic_mooncake_builds_typed_graph() {
+    let file = write_agentic_trace(&[
+        serde_json::json!({
+            "request_id": "r1",
+            "play_id": "play",
             "session_id": "root",
-            "timestamp": 0.0,
+            "model": "model",
+            "not_before_ms": 0.0,
             "input_length": 4,
             "output_length": 1,
             "hash_ids": [1],
             "priority": 5,
-            "strict_priority": 6,
-            "prefix_reset": true
+            "strict_priority": 6
         }),
         serde_json::json!({
             "request_id": "r2",
+            "play_id": "play",
             "session_id": "root",
-            "timestamp": 100.0,
-            "delay": 5.0,
-            "tool_wait_ms": 7.0,
-            "wait_for": ["r1"],
+            "model": "model",
+            "not_before_ms": 100.0,
+            "dependencies": [{
+                "request_id": "r1",
+                "trigger": "dispatch",
+                "delay_ms": 12.0,
+                "relation": "spawn"
+            }],
             "input_length": 4,
             "output_length": 1,
             "hash_ids": [1]
         }),
     ]);
 
-    let trace = AgenticTrace::from_agentic_mooncake(file.path(), 4).unwrap();
-    assert_eq!(trace.turns.len(), 2);
-    assert_eq!(trace.turns[0].request_id, "r1");
-    assert!(trace.turns[0].prefix_reset);
-    assert_eq!(trace.turns[0].priority, 5);
-    assert_eq!(trace.turns[0].strict_priority, 6);
-    assert_eq!(trace.turns[1].wait_for, vec!["r1"]);
-    assert_eq!(trace.turns[1].delay_after_dependencies_ms, 12.0);
+    let trace = AgenticTrace::from_agentic_mooncake(file.path()).unwrap();
+    assert_eq!(trace.nodes.len(), 2);
+    assert_eq!(trace.nodes[0].request_id, "r1");
+    assert_eq!(trace.nodes[0].priority, 5);
+    assert_eq!(trace.nodes[0].strict_priority, 6);
+    assert_eq!(trace.nodes[1].dependencies.len(), 1);
+    assert_eq!(
+        trace.nodes[1].dependencies[0].trigger,
+        AgenticDependencyTrigger::Dispatch
+    );
+    assert_eq!(trace.nodes[1].dependencies[0].delay_ms, 12.0);
+    assert_eq!(trace.plays.len(), 1);
+    assert_eq!(trace.plays[0].root_nodes, vec![0]);
 }
 
 #[test]
 fn test_from_agentic_mooncake_rejects_unknown_dependency() {
-    let file = write_trace(&[serde_json::json!({
+    let file = write_agentic_trace(&[serde_json::json!({
         "request_id": "r1",
-        "wait_for": ["missing"],
+        "play_id": "play",
+        "session_id": "root",
+        "model": "model",
+        "not_before_ms": 0.0,
+        "dependencies": [{
+            "request_id": "missing",
+            "trigger": "completion",
+            "delay_ms": 0.0,
+            "relation": "join"
+        }],
         "input_length": 4,
         "output_length": 1,
         "hash_ids": [1]
     })]);
 
-    let err = AgenticTrace::from_agentic_mooncake(file.path(), 4).unwrap_err();
+    let err = AgenticTrace::from_agentic_mooncake(file.path()).unwrap_err();
     assert!(err.to_string().contains("unknown request_id"));
 }
 
 #[test]
 fn test_from_agentic_mooncake_rejects_input_length_above_hash_capacity() {
-    let file = write_trace(&[serde_json::json!({
+    let file = write_agentic_trace(&[serde_json::json!({
         "request_id": "r1",
+        "play_id": "play",
+        "session_id": "root",
+        "model": "model",
+        "not_before_ms": 0.0,
         "input_length": 9,
         "output_length": 1,
         "hash_ids": [1, 2]
     })]);
 
-    let err = AgenticTrace::from_agentic_mooncake(file.path(), 4).unwrap_err();
+    let err = AgenticTrace::from_agentic_mooncake(file.path()).unwrap_err();
     assert!(err.to_string().contains("input_length 9"));
+}
+
+#[test]
+fn agentic_v2_rejects_invalid_schema_and_graph_contracts() {
+    enum Fixture {
+        Raw(Vec<serde_json::Value>),
+        Rows(Vec<serde_json::Value>),
+    }
+
+    let node = |request_id: &str, play_id: &str, dependencies: serde_json::Value| {
+        serde_json::json!({
+            "request_id": request_id,
+            "play_id": play_id,
+            "session_id": "session",
+            "model": "model",
+            "not_before_ms": 0.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [1],
+            "dependencies": dependencies
+        })
+    };
+    let dependency = |request_id: &str| {
+        serde_json::json!({
+            "request_id": request_id,
+            "trigger": "completion",
+            "delay_ms": 0.0,
+            "relation": "sequence"
+        })
+    };
+    let cases = [
+        (
+            "headerless",
+            Fixture::Raw(vec![node("r1", "p", serde_json::json!([]))]),
+            "v2 header",
+        ),
+        (
+            "unknown version",
+            Fixture::Raw(vec![serde_json::json!({
+                "schema": AGENTIC_MOONCAKE_SCHEMA,
+                "version": AGENTIC_MOONCAKE_VERSION + 1,
+                "block_size": 4,
+                "hash_id_scope": "local",
+                "source": {"format": "test", "digest": "fixture"}
+            })]),
+            "unsupported agentic Mooncake version",
+        ),
+        (
+            "duplicate request",
+            Fixture::Rows(vec![
+                node("r1", "p", serde_json::json!([])),
+                node("r1", "p", serde_json::json!([])),
+            ]),
+            "duplicates request_id",
+        ),
+        (
+            "cycle",
+            Fixture::Rows(vec![
+                node("r1", "p", serde_json::json!([dependency("r2")])),
+                node("r2", "p", serde_json::json!([dependency("r1")])),
+            ]),
+            "cycle detected",
+        ),
+        (
+            "cross-play dependency",
+            Fixture::Rows(vec![
+                node("r1", "p1", serde_json::json!([])),
+                node("r2", "p2", serde_json::json!([dependency("r1")])),
+            ]),
+            "depends on request r1 in play p1",
+        ),
+        (
+            "invalid timing",
+            Fixture::Rows(vec![{
+                let mut value = node("r1", "p", serde_json::json!([]));
+                value["not_before_ms"] = serde_json::json!(-1.0);
+                value
+            }]),
+            "invalid not_before_ms",
+        ),
+        (
+            "invalid typed edge",
+            Fixture::Rows(vec![
+                node("r1", "p", serde_json::json!([])),
+                node(
+                    "r2",
+                    "p",
+                    serde_json::json!([{
+                        "request_id": "r1",
+                        "trigger": "dispatch",
+                        "delay_ms": 0.0,
+                        "relation": "join"
+                    }]),
+                ),
+            ]),
+            "invalid Join dependency with Dispatch trigger",
+        ),
+    ];
+
+    for (name, fixture, expected) in cases {
+        let file = match fixture {
+            Fixture::Raw(lines) => write_trace(&lines),
+            Fixture::Rows(rows) => write_agentic_trace(&rows),
+        };
+        let error = AgenticTrace::from_agentic_mooncake(file.path()).expect_err(name);
+        assert!(
+            format!("{error:#}").contains(expected),
+            "{name}: unexpected error: {error:#}"
+        );
+    }
 }
 
 #[test]
@@ -501,6 +718,7 @@ fn test_partition_by_session_round_robin_keeps_sessions_intact() {
             mean: 2,
             stddev: 0.0,
         },
+        cached_prefix_tokens: 0,
         shared_prefix_ratio: 0.5,
         num_prefix_groups: 2,
         first_turn_arrivals: ArrivalSpec::Burst,
@@ -537,6 +755,7 @@ fn test_synthetic_prefix_groups_share_prefixes_within_group() {
             mean: 2,
             stddev: 0.0,
         },
+        cached_prefix_tokens: 0,
         shared_prefix_ratio: 0.5,
         num_prefix_groups: 2,
         first_turn_arrivals: ArrivalSpec::Burst,
@@ -562,6 +781,46 @@ fn test_synthetic_prefix_groups_share_prefixes_within_group() {
 }
 
 #[test]
+fn test_synthetic_exact_cached_prefix_shares_only_requested_tokens() {
+    let trace = Trace::synthetic(SyntheticTraceSpec {
+        block_size: 1,
+        num_sessions: 3,
+        turns_per_session: 1,
+        input_tokens: LengthSpec {
+            mean: 8,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: 2,
+            stddev: 0.0,
+        },
+        cached_prefix_tokens: 3,
+        shared_prefix_ratio: 0.0,
+        num_prefix_groups: 0,
+        first_turn_arrivals: ArrivalSpec::Burst,
+        inter_turn_delays: DelaySpec::None,
+        seed: 42,
+        arrival_seed: 42,
+    })
+    .unwrap();
+
+    let prompts = trace
+        .sessions
+        .iter()
+        .map(|session| session.turns[0].synthesize_tokens(1).unwrap())
+        .collect::<Vec<_>>();
+    assert!(prompts.windows(2).all(|pair| pair[0][..3] == pair[1][..3]));
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|tokens| tokens[3..].to_vec())
+            .collect::<HashSet<_>>()
+            .len(),
+        prompts.len()
+    );
+}
+
+#[test]
 fn test_synthetic_arrival_mode_changes_timestamps_only() {
     let build = |first_turn_arrivals, arrival_seed| {
         Trace::synthetic(SyntheticTraceSpec {
@@ -576,6 +835,7 @@ fn test_synthetic_arrival_mode_changes_timestamps_only() {
                 mean: 4,
                 stddev: 1.0,
             },
+            cached_prefix_tokens: 0,
             shared_prefix_ratio: 0.5,
             num_prefix_groups: 5,
             first_turn_arrivals,

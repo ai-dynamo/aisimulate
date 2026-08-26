@@ -106,11 +106,14 @@ FpmForwardOp {
   decode coords `(B, B·s)`; cell selection (identity match + `backend_axis ==
   "baseline"`, exact-`model_path` preference, ambiguity errors in Python's
   order); **inclusive bounding-box domain gate BEFORE interpolation** (FPM
-  never extrapolates); interp via the shared engine with Python's configs
+  never extrapolates); interp via the shared engine with the FPM configs
   (prefill sites `(batch, kv)` / curve `total_prefill`; decode sites `(batch,)`
   / curve `kv`; `own_curve_coverage_fallback = true`, `max_site_distance = 2.0`,
-  `nn_sites = 4`, `require_curve_coverage = true`, `k_tail = 3`, RAW); result
-  must be finite and > 0. Energy 0.0, source Silicon.
+  `nn_sites = 4`, `require_curve_coverage = true`, `k_tail = 3`, RAW). Prefill
+  also admits a site when its raw `total_kv_read_tokens` difference is at most
+  32 and the residual batch log2 distance remains at most 2. This connects the
+  zero/first-block region without weakening the batch gate. The result must be
+  finite and > 0. Energy 0.0, source Silicon.
 - **`query_pass_baseline(batch)`** (decode only): kv_floor =
   `max(batch, decode-domain KV min)`, resolve `(B, kv_floor)` through the same
   path.

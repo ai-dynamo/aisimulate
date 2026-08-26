@@ -80,29 +80,34 @@ def _role_capacity_tokens(
     """Aggregate scheduler-visible KV tokens across attention-DP ranks and replicas."""
     block_size = int(sample[f"{role}_block_size"])
     if block_size <= 0:
-        raise ValueError(
-            f"{role}_block_size must be greater than zero, got {block_size}"
+        raise ValueError(f"{role}_block_size must be greater than zero, got {block_size}")
+    fixed_blocks = sample.get(f"{role}_num_gpu_blocks")
+    if fixed_blocks is not None:
+        per_rank_tokens = int(fixed_blocks) * block_size
+    else:
+        memory_fraction = (
+            sample.get("free_gpu_memory_fraction")
+            if sample.get("free_gpu_memory_fraction") is not None
+            else sample[f"{role}_gpu_memory_utilization"]
         )
-    per_rank_tokens = _per_rank_capacity_tokens(
-        config.shape,
-        model_name=str(sample["model_name"]),
-        hardware_sku=str(sample["hardware_sku"]),
-        backend=str(sample["backend"]),
-        backend_version=backend_version,
-        max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
-        max_batch_size=int(sample[f"{role}_max_num_seqs"]),
-        memory_fraction=float(
-            sample[f"{role}_gpu_memory_utilization"]
-            if sample.get("free_gpu_memory_fraction") is None
-            else sample["free_gpu_memory_fraction"]
-        ),
-        nextn=int(sample.get("aic_nextn") or 0),
-        gemm_quant_mode=sample.get("gemm_quant_mode"),
-        moe_quant_mode=sample.get("moe_quant_mode"),
-        kvcache_quant_mode=sample.get("kvcache_quant_mode"),
-        fmha_quant_mode=sample.get("fmha_quant_mode"),
-        comm_quant_mode=sample.get("comm_quant_mode"),
-    )
+        if memory_fraction is None:
+            memory_fraction = 0.88 if sample["backend"] == "sglang" else 0.9
+        per_rank_tokens = _per_rank_capacity_tokens(
+            config.shape,
+            model_name=str(sample["model_name"]),
+            hardware_sku=str(sample["hardware_sku"]),
+            backend=str(sample["backend"]),
+            backend_version=backend_version,
+            max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
+            max_batch_size=int(sample[f"{role}_max_num_seqs"]),
+            memory_fraction=float(memory_fraction),
+            nextn=int(sample.get("aic_nextn") or 0),
+            gemm_quant_mode=sample.get("gemm_quant_mode"),
+            moe_quant_mode=sample.get("moe_quant_mode"),
+            kvcache_quant_mode=sample.get("kvcache_quant_mode"),
+            fmha_quant_mode=sample.get("fmha_quant_mode"),
+            comm_quant_mode=sample.get("comm_quant_mode"),
+        )
     # Dynamo's AIC estimator returns per-rank blocks. Offline replay models one
     # engine-wide KV pool, so attention-DP ranks contribute independent capacity;
     # tensor/expert parallel ranks shard the same sequences and are not multipliers.
@@ -137,21 +142,16 @@ def resolve_kv_load(
         role_configs = {"agg": parallel_config}
         load_role = "agg"
     else:
-        raise TypeError(
-            f"unsupported parallel config for KV load: {type(parallel_config).__name__}"
-        )
+        raise TypeError(f"unsupported parallel config for KV load: {type(parallel_config).__name__}")
 
     capacities = {
-        role: _role_capacity_tokens(
-            sample, role=role, config=config, backend_version=backend_version
-        )
+        role: _role_capacity_tokens(sample, role=role, config=config, backend_version=backend_version)
         for role, config in role_configs.items()
     }
     expected_tokens_per_request = int(workload.isl) + int(workload.osl) // 2
     if expected_tokens_per_request <= 0:
         raise InfeasibleKVCapacity(
-            "kv_load_ratio requires positive average tokens per request, got "
-            f"isl={workload.isl}, osl={workload.osl}"
+            f"kv_load_ratio requires positive average tokens per request, got isl={workload.isl}, osl={workload.osl}"
         )
     concurrency_capacity = capacities[load_role] // expected_tokens_per_request
     if concurrency_capacity < 1:

@@ -162,14 +162,16 @@ def materialize_engine_request(
         if sample["deployment_mode"] == "agg"
         else ("prefill", "decode")
     )
-    memory_by_role = {
-        role: float(
+    memory_by_role: dict[str, float] = {}
+    for role in roles:
+        value = (
             ss.free_gpu_memory_fraction
             if ss.free_gpu_memory_fraction is not None
             else sample[f"{role}_gpu_memory_utilization"]
         )
-        for role in roles
-    }
+        if value is None:
+            value = 0.88 if template.backend == "sglang" else 0.9
+        memory_by_role[role] = float(value)
     return EngineRequestSpec(
         cached_prefix_tokens=config.workload.cached_prefix_tokens,
         context_tokens={

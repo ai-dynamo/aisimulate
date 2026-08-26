@@ -27,6 +27,8 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [Traffic](traffic.md) defines trace, request-rate, concurrency, and KV-load workloads.
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
 - [Results](results.md) describes `ReplaySpec` and `Candidate` output.
+- [Migrate from AIConfigurator](../cli/migrate-from-aiconfigurator.md) maps legacy Sweeper inputs to
+  the standalone configuration and execution workflow.
 - [Sweep Configuration Providers](sweep-config-provider.md) documents the extension ABI.
 - [Dynamo Integration](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental/sweeper-experimental/dynamo-integration.md)
   composes Dynamo's optional Planner, Router, and replay adapters with the standalone Sweeper core.
@@ -42,8 +44,9 @@ config = SmartSearchConfig.from_yaml("sweep.yaml")
 candidates = Sweeper(runner_factory=my_runner_factory).run(config)
 ```
 
-The standalone `python -m aisimulate.sweeper` command validates configuration but deliberately does
-not choose a replay implementation.
+The public `aisimulate recommend --config ...` command validates the unified schema and selects a
+runner through `--stack`. The `Sweeper` Python API remains available for callers that inject a
+`RunnerFactory` directly.
 
 ## Compatibility
 

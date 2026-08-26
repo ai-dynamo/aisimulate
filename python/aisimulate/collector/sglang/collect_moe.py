@@ -162,6 +162,8 @@ def get_moe_test_cases():
     common_cases = get_common_moe_test_cases()
     test_cases = []
     seen_physical_cases = {}
+    quant_policy_drops = {}
+    models_with_cases = set()
 
     for common_moe_testcase in common_cases:
         model_name = common_moe_testcase.model_name
@@ -169,7 +171,9 @@ def get_moe_test_cases():
 
         for moe_type, num_tokens in itertools.product(moe_list, num_tokens_list):
             if not moe_model_allows_quantization("sglang", model_name, moe_type):
+                quant_policy_drops[model_name] = quant_policy_drops.get(model_name, 0) + 1
                 continue
+            models_with_cases.add(model_name)
             is_fp4_experts = common_moe_testcase.architecture == "DeepseekV4ForCausalLM" and moe_type in {
                 "w4a16_mxfp4",
                 "w4a8_mxfp4_mxfp8",
@@ -244,6 +248,16 @@ def get_moe_test_cases():
             if previous_signature is None:
                 seen_physical_cases[physical_key] = execution_signature
                 test_cases.append(base_case)
+
+    # Zero-case expansions must be explainable from logged drops
+    # (case_authoring.md): name every planned model whose declared sglang
+    # quant policy excluded all of its moe cases.
+    fully_dropped = sorted(set(quant_policy_drops) - models_with_cases)
+    if fully_dropped:
+        print(
+            f"moe: dropped all cases for {len(fully_dropped)} model(s) by declared sglang "
+            f"quantization policy (allowed_modes): {', '.join(fully_dropped)}"
+        )
 
     return test_cases
 

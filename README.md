@@ -6,15 +6,16 @@ SPDX-License-Identifier: Apache-2.0
 # AISimulate
 
 AISimulate is the standalone home for GPU-free inference simulation and
-deployment configuration. Neither AISimulate wheel declares Dynamo as an
+deployment configuration. The AISimulate wheel does not declare Dynamo as an
 installation dependency. Dynamo-owned Router, Planner, runtime, transport,
 and live-Mocker integrations consume AISimulate through optional adapters.
 
 Starting with 0.12.0, this repository owns the complete AIConfigurator product
 surface—not only its native core. The full AIC application, CLI, generator,
 SDK, Collector, tests, documentation, and development tooling are preserved
-under `python/aisimulate/`. The native estimator remains independently
-consumable from Python and Rust.
+under `python/aisimulate/`. The estimator SDK ships in that same wheel, while
+the native estimator and Replay runtime remain independently consumable from
+Rust through `aisimulate-core`.
 
 > [!WARNING]
 > Replay and Sweeper are experimental surfaces intended for evaluation and
@@ -23,58 +24,55 @@ consumable from Python and Rust.
 
 ## Release artifacts
 
-This repository produces exactly three release artifacts:
+This repository produces exactly two release artifacts:
 
-1. `aisimulate` Python wheel — the complete application, CLI, native Replay runtime, and Sweeper;
-2. `aisimulate-core` Python wheel — the estimator SDK, native extension,
-   model metadata, and performance data;
-3. `aisimulate-core` Rust crate — the native estimator and simulation core for
+1. `aisimulate` Python wheel — the application, CLI, estimator SDK,
+   model/performance data, Replay, Sweeper, and unified native extension;
+2. `aisimulate-core` Rust crate — the native estimator and simulation core for
    Rust consumers.
 
 It does **not** publish an `aiconfigurator` wheel or an `aiconfigurator-core`
-wheel/crate. The legacy Python import namespaces and the `aiconfigurator`
-console command remain compatibility surfaces inside the two AISimulate
-wheels for the 0.12 transition.
+wheel/crate, nor a Python `aisimulate-core` distribution. The legacy Python
+import namespaces remain in the `aisimulate` wheel, which also preserves the supported
+`aiconfigurator` console command. The `aisimulate` distribution does not
+rename that compatibility command; it additionally installs the public
+`aisimulate predict`/`aisimulate recommend` application.
 
-## CLI transition
+## CLIs
 
-The `aisimulate` wheel installs both compatibility commands:
+Installing the `aisimulate` wheel provides the unified simulation CLI and preserves the established
+AIC command name:
 
 ```bash
-aisimulate cli generate --model-path Qwen/Qwen3-32B-FP8 --total-gpus 8 --system h200_sxm
+uv pip install aisimulate
+aisimulate predict --config prediction.yaml
+aisimulate recommend --config recommendation.yaml
 aiconfigurator cli generate --model-path Qwen/Qwen3-32B-FP8 --total-gpus 8 --system h200_sxm
 ```
 
-Both currently execute the complete, proven AIC CLI. The newer
-`predict`/`recommend` design must satisfy the tracked AIC-to-AISimulate parity
-matrix, product requirements, and approved exceptions before it replaces this
-delegation.
+`aisimulate` is the only Replay/Sweeper CLI. The built-in `engine` stack is the default;
+`--stack dynamo` selects the optional runner and Router/Planner configuration adapters registered by
+an independently installed `ai-dynamo` wheel. The existing Replay and Sweeper Python APIs remain
+available to embedded callers.
 
-For an engine-only replay, use `python -m aisimulate.replay`. Dynamo Router,
-Planner, or online adapters remain available through `python -m dynamo.replay`
-when `ai-dynamo` is installed separately. Both commands share the engine,
-topology, traffic, replay-mode, SLA, and output arguments; Dynamo adds its
-adapter options. For configuration search, call
-`Sweeper(runner_factory=...).run(config)` or start from an example under
-[`examples/sweeper`](examples/sweeper/README.md).
+For example, a minimal prediction input is:
 
-For example, run one engine-only synthetic replay with fixed timing:
-
-```bash
-python -m aisimulate.replay \
-  --extra-engine-args '{"engine_type":"vllm","num_gpu_blocks":1024,"block_size":16,"timing_model":{"type":"fixed","prefill_ms":10,"decode_ms":2}}' \
-  --input-tokens 1024 \
-  --output-tokens 128 \
-  --request-count 16 \
-  --replay-concurrency 4
+```yaml
+engine:
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
+  backend: vllm
+  workers:
+    aggregated: {}
 ```
+
+See [`docs/cli/design.md`](docs/cli/design.md) for the complete schema and search-domain contract.
 
 Install AISimulate by itself for engine-only development:
 
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install -e ./python/aisimulate-core
 uv pip install -e ./python/aisimulate
 ```
 
@@ -85,9 +83,9 @@ Router and Planner adapters consume the released `aisimulate` artifact:
 uv pip install aisimulate ai-dynamo
 ```
 
-The `ai-dynamo` wheel registers the `dynamo.planner` and `dynamo.router` Sweeper provider entry
-points. Its Dynamo runner composes the materialized runtime hooks with the shared AI Simulate
-Replayer.
+The `ai-dynamo` wheel registers the `dynamo` runner factory plus `dynamo.planner` and
+`dynamo.router` configuration adapters and Sweeper providers. Its runner composes the materialized
+runtime hooks with the shared AISimulate Replayer.
 
 Run a sweep from Python with an explicit runner:
 
@@ -116,15 +114,17 @@ including the Dynamo development environment and adapter contracts.
 
 ```text
 crates/
-  aisimulate-core/      migrated AIC estimator and native PyO3 extension
-  core/                 generalized Mocker engine and deterministic Replayer
-  python/               Python binding for the Replay runtime
+  core/                 sole product crate: AIC perf model, Mocker, Replay, and PyO3 runtime
   tests/public-api/     external-consumer compile contract
 python/
-  aisimulate/           complete application, compatibility CLI, Replay, Sweeper, and native runtime
-  aisimulate-core/      Python estimator SDK, metadata, and performance data
+  aisimulate/           application, AIC core mirror/data, Replay, Sweeper, and native runtime
 docs/
-  artifact-contract.md  three-artifact release boundary
+  cli/
+    design.md           public CLI schema and output contract
+    migrate-from-aiconfigurator.md
+                        AIConfigurator-to-AISimulate CLI translation
+  artifact-contract.md  two-artifact release boundary
+  aic-sync.md           deterministic AIC source synchronization workflow
   core-api.md           public core API and compatibility contract
   migration.md          AIC and Dynamo source/history mapping
 scripts/
@@ -150,5 +150,6 @@ The branch retains both imported histories: the path-filtered AIC core ancestry
 and the path-filtered Dynamo ancestry for the former `aisimulate/` directory.
 The complete AIC upper application was initially imported from AIConfigurator
 `main` commit `13b5cf2697876692b0a52098266c81162add11fc` and is synchronized
-through commit `ff2be1fd434fd516474e42b77f94cd5a5f841b9b`. See
-[`docs/migration.md`](docs/migration.md) for the complete mapping.
+through commit `095f58a51c4ca8e61b66ec108d86f223f8d559ce`. See
+[`docs/migration.md`](docs/migration.md) for provenance and
+[`docs/aic-sync.md`](docs/aic-sync.md) for the stable mirror mapping.

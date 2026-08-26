@@ -3,8 +3,8 @@
 
 //! Compile-time contract tests from an external crate's point of view.
 
-use aisimulate_core::{
-    build_aic_engine, AicEngine, AicEngineBuilder, AicError, BackendKind, ForwardPassPerfModel,
+use aiconfigurator_core::{
+    AicEngine, AicEngineBuilder, AicError, BackendKind, ForwardPassPerfModel,
     ForwardPassPerfOptions, KvCacheEstimateRequest,
 };
 
@@ -33,31 +33,6 @@ pub fn build_engine(builder: AicEngineBuilder) -> Result<AicEngine, AicError> {
     builder.build()
 }
 
-/// Keep the flat compatibility adapter source-compatible through 0.10. The
-/// function is compiled but not called because it embeds Python and needs
-/// installed model/system data.
-pub fn build_engine_compatibility_adapter() -> Result<AicEngine, AicError> {
-    build_aic_engine(
-        "Qwen/Qwen3-32B",
-        "h200_sxm",
-        "vllm",
-        Some("0.10.2"),
-        2,
-        1,
-        1,
-        None,
-        None,
-        Some("bfloat16"),
-        Some("bfloat16"),
-        Some("bfloat16"),
-        Some("bfloat16"),
-        Some("bfloat16"),
-        0,
-        Some(16),
-        Some("/tmp/systems"),
-    )
-}
-
 /// Compile the forward-pass model's public constructor and telemetry type.
 pub fn regression_model() -> Result<ForwardPassPerfModel, AicError> {
     ForwardPassPerfModel::from_regression(ForwardPassPerfOptions::default())
@@ -72,7 +47,7 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aisimulate_core::{
+    use aiconfigurator_core::{
         ForwardPassMetrics, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
     };
 
