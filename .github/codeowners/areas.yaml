@@ -11,6 +11,7 @@ areas:
     path_globs:
       - LICENSE
       - README.md
+      - SECURITY.md
       - CONTRIBUTING.md
       - CONTRIBUTORS.md
       - docs/
@@ -155,6 +156,8 @@ shared:
   - glob: pytest.ini
     owners: [infra, maintainers]
   - glob: scripts/
+    owners: [infra, maintainers]
+  - glob: SECURITY.md
     owners: [infra, maintainers]
   - glob: .gitattributes
     owners: [infra, maintainers]
