@@ -39,7 +39,9 @@ candidate contains:
 | `objectives` | raw per-objective values for Pareto searches; otherwise `None` |
 
 For `goal.target: pareto`, the result contains only non-dominated candidates and preserves each
-objective's natural direction.
+objective's natural direction. Engine-only and adapter-backed candidates share the public
+`analyze_candidates` path so strict aggregate SLA filtering happens before Pareto dominance or
+scalar ranking.
 
 ```python
 candidates = sweeper.run(config)

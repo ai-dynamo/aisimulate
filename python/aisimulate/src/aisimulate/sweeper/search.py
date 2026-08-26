@@ -69,7 +69,12 @@ from .replay import (
 )
 from .sample import unroll_sample
 from .sampler import BranchSampler, Suggestion, make_branch_sampler
-from .score import is_feasible, make_candidate, pareto_front, rank
+from .score import (
+    aggregate_sla_violations,
+    analyze_candidates,
+    is_feasible,
+    make_candidate,
+)
 from .search_space import BranchSpace, ConditionalDimensionSpace, enumerate_branches
 
 logger = logging.getLogger(__name__)
@@ -690,6 +695,19 @@ def _score_prepared(
             "infeasible",
             f"over gpu_budget: used_gpus={int(sample['used_gpus'])} > gpu_budget={config.search_space.gpu_budget}",
         )
+    if goal.strict_sla:
+        assert goal.sla is not None  # OptimizationGoal validates this invariant.
+        violations = aggregate_sla_violations(
+            report,
+            goal.sla,
+        )
+        if violations:
+            return (
+                None,
+                None,
+                "infeasible",
+                f"strict aggregate SLA violation: {'; '.join(violations)}",
+            )
     if goal.is_pareto:
         candidate = make_candidate(
             sample,
@@ -1181,8 +1199,8 @@ class Sweeper:
                     if not progressed:
                         break
 
-        # Single-objective -> rank best-first by score; pareto -> the non-dominated front.
-        result = pareto_front(candidates, goal.resolved_pareto_objectives) if goal.is_pareto else rank(candidates)
+        # Strict filtering precedes scalar ranking or Pareto dominance.
+        result = analyze_candidates(candidates, goal)
         if show_progress:
             replay_attempts = tally["feasible"] + tally["infeasible"] + tally["failed"]
             summary = (

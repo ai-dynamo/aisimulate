@@ -586,7 +586,10 @@ def _configure_load_domain(
 
 def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
     target = config.optimization.target
-    payload: dict[str, Any] = {"target": target}
+    payload: dict[str, Any] = {
+        "target": target,
+        "strict_sla": config.optimization.strict_sla,
+    }
     sla = config.evaluation.sla
     if sla is not None:
         payload["sla"] = sla.model_dump(mode="json", exclude_none=True)

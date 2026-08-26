@@ -26,7 +26,16 @@ class _Runner:
         self.spec = spec
         self.output_requirements = output_requirements
         return ReplayReport(
-            metrics={"completed_requests": 1.0},
+            metrics={
+                "completed_requests": 1.0,
+                "num_ttft_samples": 1.0,
+                "num_tpot_samples": 1.0,
+                "num_e2e_latency_samples": 1.0,
+                "output_throughput_tok_s": 8.0,
+                "mean_ttft_ms": 2.0,
+                "mean_tpot_ms": 1.0,
+                "mean_e2e_latency_ms": 4.0,
+            },
             metadata={
                 "native_report": {
                     "summary": {
@@ -47,10 +56,12 @@ class _Factory:
         self.runner = runner
 
     def capabilities(self):
-        return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),))
+        return RunnerCapabilities(
+            supported_backend_topologies=(("vllm", "agg"), ("trtllm", "agg"))
+        )
 
     def create(self, worker_id: int):
-        assert worker_id == 0
+        del worker_id
         return self.runner
 
 
@@ -223,8 +234,9 @@ def test_engine_stack_rejects_explicit_unavailable_component(
     assert "engine.router" in capsys.readouterr().err
 
 
-def test_recommendation_yaml_round_trips_into_predict(
-    tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize(("sla_field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
+def test_partial_sla_recommendation_yaml_round_trips_into_predict(
+    tmp_path, monkeypatch, capsys, sla_field: str, bound: float
 ) -> None:
     config_path = tmp_path / "recommendation.yaml"
     config_path.write_text(
@@ -235,6 +247,8 @@ def test_recommendation_yaml_round_trips_into_predict(
                     "model": "deepseek-ai/DeepSeek-V3",
                     "hardware": "gb200",
                     "backend": "trtllm",
+                    "backend_version": "1.3.0rc20",
+                    "context_length": 2048,
                     "workers": {
                         "aggregated": {
                             "parallelism": {
@@ -243,14 +257,17 @@ def test_recommendation_yaml_round_trips_into_predict(
                                 "tensor": 4,
                                 "pipeline": 1,
                                 "attention_data": 1,
-                                "moe_tensor": 1,
-                                "moe_expert": 4,
+                                "moe_tensor": 4,
+                                "moe_expert": 1,
                             },
                             "scheduler": {
                                 "max_batched_tokens": 8192,
                                 "max_sequences": 256,
                             },
-                            "kv_cache": {"capacity": {"type": "fixed", "blocks": 256}},
+                            "kv_cache": {
+                                "block_size": 64,
+                                "capacity": {"type": "fixed", "blocks": 256},
+                            },
                             "timing": {
                                 "type": "fixed",
                                 "prefill_ms": 1,
@@ -259,6 +276,7 @@ def test_recommendation_yaml_round_trips_into_predict(
                         }
                     },
                 },
+                "evaluation": {"sla": {sla_field: bound}},
                 "optimization": {
                     "target": "throughput",
                     "constraints": {"max_candidate_gpus": 8},
@@ -275,6 +293,8 @@ def test_recommendation_yaml_round_trips_into_predict(
     )
     recommendation_output = tmp_path / "recommend-output"
     adapter = _PlacementAdapter()
+    runner = _Runner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(runner))
 
     def resolve(names):
         assert list(names) == ["engine.placement"]
@@ -303,6 +323,7 @@ def test_recommendation_yaml_round_trips_into_predict(
     assert "router" not in generated
     assert "planner" not in generated
     assert generated["placement"] == {"policy": "first"}
+    assert generated["evaluation"]["sla"] == {sla_field: bound}
 
     prediction_output = tmp_path / "predict-output"
     assert (
@@ -319,7 +340,8 @@ def test_recommendation_yaml_round_trips_into_predict(
         )
         == 0
     )
-    assert json.loads(capsys.readouterr().out)["completed_requests"] == 100
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+    assert runner.spec.goal["sla"] == {sla_field: bound}
 
 
 def test_recommendation_outputs_each_concrete_prediction_once(
