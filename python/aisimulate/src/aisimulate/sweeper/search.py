@@ -44,7 +44,7 @@ from tqdm import tqdm
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
-from .kv_estimate import resolve_backend_version
+from .forward_pass_estimator import resolve_forward_pass_estimator_specs
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
     SEARCH_SPACE_FRAGMENT_API_VERSION,
@@ -60,6 +60,7 @@ from .provider import (
 )
 from .replay import (
     REPLAY_SPEC_API_VERSION,
+    ForwardPassEstimatorSpec,
     ReplayReport,
     ReplaySpec,
     Runner,
@@ -506,6 +507,7 @@ def _materialize_one(
     providers: Mapping[str, SweepConfigProvider],
     provider_plans: Mapping[str, AdapterSearchPlan],
     runner_factory: RunnerFactory,
+    forward_pass_estimator_specs: Mapping[str, ForwardPassEstimatorSpec],
     prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
@@ -515,13 +517,13 @@ def _materialize_one(
             selection=selection,
             parallel_config=parallel_config,
         )
-        backend_version = config.search_space.backend_version or resolve_backend_version(
-            config.search_space.hardware_sku, selection["backend"]
-        )
+        forward_pass_estimator = forward_pass_estimator_specs[selection["backend"]]
+        backend_version = forward_pass_estimator.backend_version
         # The resolved perf-model version is part of the evaluated contract. Keep it
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
         sample["backend_version"] = backend_version
+        sample["forward_pass_estimator"] = asdict(forward_pass_estimator)
         concurrency = config.workload.concurrency
         workload_payload = config.workload.model_dump(mode="json")
         if "traffic_load" in selection:
@@ -561,7 +563,11 @@ def _materialize_one(
             # Preserve the concrete load on every candidate, including a fixed absolute
             # concurrency and one derived from kv_load_ratio.
             sample["concurrency"] = concurrency
-        backend_deployment = build_backend_deployment(sample, backend_version=backend_version)
+        backend_deployment = build_backend_deployment(
+            sample,
+            backend_version=backend_version,
+            forward_pass_estimator=forward_pass_estimator,
+        )
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
             candidate_context = CandidateContext(
@@ -794,12 +800,18 @@ class Sweeper:
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
 
+        # Resolve every forward-pass estimator/data identity before branch enumeration creates
+        # studies or adapters perform work. Candidate materialization consumes this
+        # immutable map and never re-resolves ``latest`` independently.
+        forward_pass_estimator_specs = resolve_forward_pass_estimator_specs(config.search_space)
+
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
         branches = enumerate_branches(
             config,
             max_seq_len=config.search_space.context_length,
             runner_capabilities=capabilities,
+            forward_pass_estimator_specs=forward_pass_estimator_specs,
         )
         resolved_providers, provider_plans = _prepare_providers(config, injected=providers, show_progress=show_progress)
         for name, plan in provider_plans.items():
@@ -1111,6 +1123,7 @@ class Sweeper:
                             providers=resolved_providers,
                             provider_plans=provider_plans,
                             runner_factory=runner_factory,
+                            forward_pass_estimator_specs=forward_pass_estimator_specs,
                             prediction_config_factory=prediction_config_factory,
                         )
                         if build_result is not None:

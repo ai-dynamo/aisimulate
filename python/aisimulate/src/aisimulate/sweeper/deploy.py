@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
-from .replay import BackendDeploymentSpec
+from .replay import BackendDeploymentSpec, ForwardPassEstimatorSpec
 
 
 def _role_prefix(role: str) -> str:
@@ -16,7 +16,13 @@ def _role_prefix(role: str) -> str:
     return "" if role == "agg" else f"{role}_"
 
 
-def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_version: str) -> dict[str, Any]:
+def _performance_model_metadata(
+    sample: dict[str, Any],
+    role: str,
+    *,
+    backend_version: str,
+    forward_pass_estimator: ForwardPassEstimatorSpec | None,
+) -> dict[str, Any]:
     """Keep optional perf-model identity separate from runtime timing args."""
     prefix = _role_prefix(role)
     moe_tp = int(sample[f"{prefix}moe_tp"])
@@ -32,6 +38,16 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
         "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
         "nextn": sample.get("aic_nextn"),
     }
+    if forward_pass_estimator is not None:
+        config.update(
+            {
+                "database_mode": forward_pass_estimator.database_mode,
+                "transfer_policy": list(forward_pass_estimator.transfer_policy),
+                "forward_model": forward_pass_estimator.forward_model,
+                "systems_paths": list(forward_pass_estimator.systems_paths),
+                "performance_data_root": forward_pass_estimator.performance_data_root,
+            }
+        )
     return {"provider": "aic", "config": config}
 
 
@@ -117,13 +133,27 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
     return payload
 
 
-def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) -> BackendDeploymentSpec:
+def build_backend_deployment(
+    sample: dict[str, Any],
+    *,
+    backend_version: str,
+    forward_pass_estimator: ForwardPassEstimatorSpec | None = None,
+) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
+    if forward_pass_estimator is not None and (
+        forward_pass_estimator.backend != sample["backend"] or forward_pass_estimator.backend_version != backend_version
+    ):
+        raise ValueError(
+            "forward-pass estimator identity does not match the sampled backend/version: "
+            f"{forward_pass_estimator.backend}/{forward_pass_estimator.backend_version} != "
+            f"{sample['backend']}/{backend_version}"
+        )
     common = {
         "deployment_mode": mode,
         "backend": sample["backend"],
         "backend_version": backend_version,
+        "forward_pass_estimator": forward_pass_estimator,
         "parallel_config": {
             key: value
             for key, value in sample.items()
@@ -154,7 +184,10 @@ def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) ->
         },
         "performance_model_metadata": {
             ("aggregated" if role == "agg" else role): _performance_model_metadata(
-                sample, role, backend_version=backend_version
+                sample,
+                role,
+                backend_version=backend_version,
+                forward_pass_estimator=forward_pass_estimator,
             )
             for role in (("agg",) if mode == "agg" else ("prefill", "decode"))
         },

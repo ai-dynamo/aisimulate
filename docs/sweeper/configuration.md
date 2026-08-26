@@ -20,6 +20,13 @@ search_space:
   gpu_budget: 32
   deployment_mode: [disagg, agg]
   backend: [vllm, sglang]
+  backend_version:
+    vllm: 0.11.0
+    sglang: 0.5.6
+  database_mode: HYBRID
+  transfer_policy: balanced
+  forward_model: op_level
+  systems_paths: [default]
 
 adapters:
   example.policy:
@@ -59,6 +66,11 @@ configuration for each candidate.
 | `hardware_sku` | required | AI Configurator system identifier |
 | `deployment_mode` | `[disagg, agg]` | deployment branches to search |
 | `backend` | `[vllm]` | engine backends to search |
+| `backend_version` | `None` | exact version for one backend, or a per-backend version mapping; omitted backends resolve once to latest |
+| `database_mode` | `SILICON` | forward-pass estimator data-source policy; see below |
+| `transfer_policy` | `None` (all) | Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
+| `forward_model` | `op_level` | granular `op_level` or exact-data `fpm` forward estimation |
+| `systems_paths` | `[default]` | ordered request-scoped system/data roots; `default` is the packaged Core root |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
 | `context_length` | `None` | optional KV-feasibility sequence length |
@@ -68,6 +80,27 @@ configuration for each candidate.
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
+
+Estimator controls resolve before branch enumeration. `latest` becomes one concrete
+backend/performance-data version per run, custom system paths remain request-scoped, and every
+`ReplaySpec` plus returned candidate records the same model architecture, system, backend/version,
+data root/mode, normalized transfer policy, and forward model. Unavailable versions and incomplete
+FPM data pairs fail before a sampler study is created.
+
+Database modes choose the source of each operation estimate:
+
+| Mode | Resolution |
+|---|---|
+| `SILICON` | collected performance data and supported interpolation only |
+| `HYBRID` | collected data first; calibrated empirical estimation for uncovered operations |
+| `EMPIRICAL` | calibrated estimation for every operation (`latency = SOL / utilization`) |
+| `SOL` | uncalibrated analytic speed-of-light estimate |
+
+`transfer_policy` is not a search dimension. It selects which fixed Core transfer kinds the
+empirical forward-pass estimator may use when its own calibration slice is missing. It accepts `off`,
+`conservative`, `balanced`, or `aggressive`, or an explicit list containing `xshape`, `xquant`,
+`xprofile`, and `xop`. Core validates the request and the Sweeper records the normalized explicit
+policy in every candidate. The field is ignored by `SILICON` and `SOL`.
 
 ## Pinned Parallel Configurations
 

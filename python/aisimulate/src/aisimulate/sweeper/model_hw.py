@@ -64,7 +64,13 @@ class ModelHardware:
     max_context: int | None  # model's max context length (the default max_seq_len)
 
 
-def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) -> ModelHardware:
+def resolve_model_hardware(
+    model_name: str,
+    hardware_sku: str,
+    *,
+    backend: str,
+    systems_paths: list[str] | None = None,
+) -> ModelHardware:
     """Read the model weights + SKU spec (via AIC) to derive is_moe / mla / wideep
     and the model's max context length."""
     model_config = get_model_config_from_model_path(model_name)
@@ -74,7 +80,7 @@ def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) 
     mla = is_moe and not allow_pure_tp
     max_context = model_config.get("context")
 
-    system_spec = perf_database.load_system_spec(hardware_sku)
+    system_spec = perf_database.load_system_spec(hardware_sku, systems_paths=systems_paths)
     if not system_spec:
         raise ValueError(
             f"unknown hardware_sku {hardware_sku!r}: no system config found on AIConfigurator Core's systems path"
@@ -114,6 +120,7 @@ def parallel_configs_for(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     role_runtime: dict[str, tuple[int, int, float] | tuple[int, int, float, int | None]] | None = None,
+    systems_paths: list[str] | None = None,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
     the GPU budget and can hold a ``max_seq_len``-token sequence.
@@ -133,7 +140,12 @@ def parallel_configs_for(
     :class:`NoViableParallelConfig` when no shape can hold the sequence within the
     budget.
     """
-    mh = resolve_model_hardware(model_name, hardware_sku, backend=backend)
+    mh = resolve_model_hardware(
+        model_name,
+        hardware_sku,
+        backend=backend,
+        systems_paths=systems_paths,
+    )
     seq_len = max_seq_len if max_seq_len is not None else mh.max_context
     if seq_len is None:
         raise ValueError(f"max_seq_len is required: {model_name} config exposes no max context length")
@@ -177,6 +189,7 @@ def parallel_configs_for(
             hardware_sku=hardware_sku,
             backend=backend,
             backend_version=backend_version,
+            systems_paths=systems_paths,
             max_seq_len=seq_len,
             max_num_tokens=role_tokens,
             max_batch_size=role_batch,

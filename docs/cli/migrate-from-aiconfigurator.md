@@ -20,12 +20,19 @@ by the unified command surface. A legacy command becomes an AISimulate recommend
 | `--model-path` | `engine.model` | Same model identifier |
 | `--system` | `engine.hardware` | Same hardware identifier |
 | `--backend` | `engine.backend` | One backend or an explicit recommendation domain |
+| `--backend-version` | `engine.backend_version` | Pin the selected backend's forward-pass performance-data version |
 | `--total-gpus` | `optimization.constraints.max_candidate_gpus` | Maximum GPUs per candidate |
 | `--isl` | `traffic.source.input_tokens` | Synthetic input length |
 | `--osl` | `traffic.source.output_tokens` | Synthetic output length |
 | `--ttft` | `evaluation.sla.ttft_ms` | Time-to-first-token bound in milliseconds |
 | `--tpot` | `evaluation.sla.itl_ms` | Per-request goodput uses average ITL; strict mode compares aggregate mean TPOT |
 | `--strict-sla` | `optimization.strict_sla: true` | Reject before scalar ranking or Pareto dominance |
+
+AISimulate uses only `engine.backend_version` for this identity. The current performance database
+is keyed by backend and version, so there is no separate `performance_data_version` field. When
+`engine.backend_version` is omitted, the Sweeper resolves the latest available version once before
+the search begins and records that concrete version on every candidate. Pin `engine.backend` to one
+concrete backend when setting `engine.backend_version`.
 
 ## Illustrative strict SLA translation
 

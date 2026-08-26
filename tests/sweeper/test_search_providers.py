@@ -18,7 +18,12 @@ from aisimulate.sweeper.provider import (
     RuntimeHookSpec,
     SearchSpaceFragment,
 )
-from aisimulate.sweeper.replay import HookCapability, ReplayReport, RunnerCapabilities
+from aisimulate.sweeper.replay import (
+    ForwardPassEstimatorSpec,
+    HookCapability,
+    ReplayReport,
+    RunnerCapabilities,
+)
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search_space import BranchSpace
 
@@ -241,12 +246,24 @@ def _stub_branch(monkeypatch) -> None:
     monkeypatch.setattr(
         search_module,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, forward_pass_estimator_specs=None: [branch],
+    )
+    forward_pass_estimator = ForwardPassEstimatorSpec(
+        model_path="model",
+        model_architecture="TestForCausalLM",
+        system="h200_sxm",
+        backend="vllm",
+        backend_version="0.11.0",
+        database_mode="SILICON",
+        transfer_policy=("xshape", "xquant", "xprofile", "xop"),
+        forward_model="op_level",
+        systems_paths=("/systems",),
+        performance_data_root="/systems",
     )
     monkeypatch.setattr(
         search_module,
-        "resolve_backend_version",
-        lambda hardware, backend: "0.11.0",
+        "resolve_forward_pass_estimator_specs",
+        lambda search_space: {"vllm": forward_pass_estimator},
     )
 
 
@@ -371,11 +388,6 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
             del plan, selection, context
             raise InfeasibleCandidate("invalid correlated leaves")
 
-    monkeypatch.setattr(
-        search_module,
-        "resolve_backend_version",
-        lambda hardware, backend: "0.11.0",
-    )
     prepared, result = search_module._materialize_one(
         {
             "deployment_mode": "agg",
@@ -390,6 +402,20 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
         providers={"test.feature": InfeasibleAdapter()},
         provider_plans={"test.feature": AdapterSearchPlan()},
         runner_factory=_RunnerFactory(),
+        forward_pass_estimator_specs={
+            "vllm": ForwardPassEstimatorSpec(
+                model_path="model",
+                model_architecture="TestForCausalLM",
+                system="h200_sxm",
+                backend="vllm",
+                backend_version="0.11.0",
+                database_mode="SILICON",
+                transfer_policy=("xshape", "xquant", "xprofile", "xop"),
+                forward_model="op_level",
+                systems_paths=("/systems",),
+                performance_data_root="/systems",
+            )
+        },
     )
 
     assert prepared is None
@@ -415,6 +441,7 @@ def test_runner_hook_capability_is_checked_before_runner_creation(monkeypatch) -
 
 
 def test_core_branch_preflight_runs_before_adapter_preparation(monkeypatch) -> None:
+    _stub_branch(monkeypatch)
     adapter = _Adapter()
 
     def reject_branches(*args, **kwargs):

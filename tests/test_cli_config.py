@@ -287,6 +287,7 @@ def test_engine_scheduler_domains_replace_defaults_and_preserve_log_scale() -> N
             "engine": {
                 **_engine(),
                 "mode": "aggregated",
+                "backend": "vllm",
                 "backend_version": "0.19.0",
                 "context_length": 4096,
                 "workers": {
