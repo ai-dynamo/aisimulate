@@ -26,6 +26,8 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [Configuration](configuration.md) describes core and adapter-owned search spaces.
 - [Traffic](traffic.md) defines trace, request-rate, concurrency, and KV-load workloads.
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
+- [Minimum-GPU Recommendation](minimum-gpu-recommendation.md) sizes evaluated candidates for a
+  target request rate or concurrency.
 - [Results](results.md) describes `ReplaySpec` and `Candidate` output.
 - [Migrate from AIConfigurator](../cli/migrate-from-aiconfigurator.md) maps legacy Sweeper inputs to
   the standalone configuration and execution workflow.
