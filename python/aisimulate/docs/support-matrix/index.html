@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Configurator — Support Matrix</title>
+<title>AISimulate — Support Matrix</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
@@ -50,12 +50,11 @@ tailwind.config = {
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ── Constants ───────────────────────────────────────────────────────
-const REPO = 'ai-dynamo/aiconfigurator';
+const REPO = 'ai-dynamo/aisimulate';
 const SUPPORT_MATRIX_PATHS = [
-  'aic-core/src/aiconfigurator_core/systems/support_matrix', // split layout (>= 0.10)
-  'src/aiconfigurator/systems/support_matrix',               // pre-split branches
+  'python/aisimulate/src/aiconfigurator_core/systems/support_matrix',
 ];
-const LEGACY_CSV_PATH = 'src/aiconfigurator/systems/support_matrix.csv';
+const LEGACY_CSV_PATH = 'python/aisimulate/src/aiconfigurator/systems/support_matrix.csv';
 const STATUS_HW_INCOMPATIBLE = 'HW_INCOMPATIBLE';
 const STATUS_FRAMEWORK_INCOMPATIBLE = 'FRAMEWORK_INCOMPATIBLE';
 const PREFERRED_DEFAULT_SYSTEM = 'b200_sxm';
@@ -795,9 +794,9 @@ function Header({ activeBranch, onSelectBranch, releaseBranches, branchesLoading
   return (
     <div className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-50 shadow-sm">
       <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center gap-3 flex-wrap">
-        <a href="/aiconfigurator/"><img src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" className="rounded-full" /></a>
+        <a href="../"><img src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" className="rounded-full" /></a>
         <div className="min-w-0 mr-auto">
-          <h1 className="text-lg font-bold leading-tight"><a href="/aiconfigurator/">AI Configurator</a>
+          <h1 className="text-lg font-bold leading-tight"><a href="../">AISimulate</a>
           <span className="text-sm text-slate-500 dark:text-slate-400"> - Support Matrix</span></h1>
         </div>
         <BranchSelector
@@ -807,7 +806,7 @@ function Header({ activeBranch, onSelectBranch, releaseBranches, branchesLoading
           branchesLoading={branchesLoading}
           branchWarning={branchWarning}
         />
-        <a href="https://github.com/ai-dynamo/aiconfigurator" target="_blank" rel="noopener"
+        <a href="https://github.com/ai-dynamo/aisimulate" target="_blank" rel="noopener"
            title="View on GitHub"
            className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors">
           <GitHubIcon />
@@ -1639,7 +1638,7 @@ function ErrorBanner({ message, onRetry }) {
 function Footer() {
   return (
     <div className="text-center py-6 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-200 dark:border-slate-700 mt-8">
-      AI Configurator Support Matrix &middot; Data from <code className="text-xs">support_matrix/*.csv</code>
+      AISimulate Support Matrix &middot; Data from <code className="text-xs">support_matrix/*.csv</code>
     </div>
   );
 }
