@@ -260,3 +260,16 @@ def test_public_page_has_no_e2e_gym_navigation_or_payload() -> None:
     assert "E2E Gym" not in page
     assert "predictors" not in page
     assert 'fetch("./summary.json")' in script
+
+
+def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
+    public_dir = ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy"
+    page = (public_dir / "index.html").read_text()
+    script = (public_dir / "app.js").read_text()
+
+    aisimulate_button = page.index('data-series="aisimulate"')
+    aic_button = page.index('data-series="aic"')
+
+    assert aisimulate_button < aic_button
+    assert 'class="active" data-series="aisimulate" aria-pressed="true"' in page
+    assert 'series: "aisimulate"' in script

@@ -28,6 +28,9 @@ The first public view excludes multi-node configurations. It reports:
 These values are evidence for exact measured operating points, not a universal
 support claim or release gate.
 
+The page presents AISimulate first and selects it by default. The AIC series
+remains available as a separately labeled compatibility baseline.
+
 ## Regeneration
 
 The publisher supplies three validated inputs from the accuracy-evidence
