@@ -18,11 +18,11 @@ name: Nightly artifacts
 # stamping (AIC-1463, under the OPS-7963 umbrella) — artifacts carry the
 # manifest version verbatim.
 #
-# Runs on the repo's Velonix runners (OPS-8249) in the image proven by
-# ci/validate-velonix-runners. That test exercised no network egress and no
-# compilers, so registry endpoints and the C toolchain are first used here.
-# manylinux build images are unproven on these runners, so the wheel's glibc
-# floor tracks this image.
+# Runs on the repo's Velonix runners (OPS-8249). Jobs run in pinned
+# manylinux_2_28 containers: the Velonix actions-runner image has no C
+# compiler (run 33052185267), and manylinux also fixes the wheels' glibc
+# floor at 2.28 — the AIC platform-wheel precedent. quay.io reachability
+# and registry egress from this runner set are first exercised here.
 
 on:
   schedule:
@@ -101,22 +101,25 @@ jobs:
             rustup_init_sha256: 4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
             uv_target: x86_64-unknown-linux-gnu
             uv_sha256: 8681d8921e7d520fb368991dcf5f9c1905b80f5bf2a265a0ed085c8d8e342477
+            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
           - arch: arm64
             runner: prod-aisimulate-default-arm64-v1
             rust_target: aarch64-unknown-linux-gnu
             rustup_init_sha256: 9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792
             uv_target: aarch64-unknown-linux-gnu
             uv_sha256: d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
+            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     container:
-      # Image proven on this runner set by ci/validate-velonix-runners. The
-      # tag is mutable and its digest is not readable in-job, so the image
-      # reference is recorded in provenance.json; digest pinning is pending.
-      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      # Digest-pinned manylinux_2_28: ships the C toolchain the native build
+      # needs and audit-tags wheels at glibc 2.28 — also the minimum glibc
+      # for the runner's node24-based actions.
+      image: ${{ matrix.container_image }}
       env:
         HOME: /__w/aisimulate/aisimulate
-        USER: runner
     defaults:
       run:
         shell: bash
@@ -129,8 +132,8 @@ jobs:
       # uv.toml discovered in the workspace.
       UV_PYTHON_PREFERENCE: only-managed
       UV_NO_CONFIG: "1"
-      # Keep in sync with container.image above; recorded in provenance.json.
-      CONTAINER_IMAGE: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      # Recorded in provenance.json.
+      CONTAINER_IMAGE: ${{ matrix.container_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,14 +157,24 @@ jobs:
             echo "TMPDIR=${RUNNER_TEMP}/tmp"
           } >> "${GITHUB_ENV}"
 
-      # Fail fast if the image lacks the C toolchain the native build needs
-      # (zstd-sys, blake3, cdylib link) — unproven by the Velonix smoke test.
-      # If this trips, the runner image needs the toolchain added.
+      # Inventory the image's tools before failing, so a bad image yields a
+      # complete diagnosis in one run, then fail fast unless the C toolchain
+      # the native build needs (zstd-sys, blake3, cdylib link) works.
       - name: Preflight image toolchain
         run: |
           set -euo pipefail
+          for tool in cc gcc clang curl tar sha256sum git python3; do
+            if path="$(command -v "${tool}" 2>/dev/null)"; then
+              echo "found   ${tool} -> ${path}"
+            else
+              echo "missing ${tool}"
+            fi
+          done
           for tool in cc curl tar sha256sum; do
-            command -v "${tool}"
+            command -v "${tool}" >/dev/null 2>&1 || {
+              echo "::error::runner image is missing required tool: ${tool}"
+              exit 1
+            }
           done
           printf 'int main(void){return 0;}\n' > "${RUNNER_TEMP}/preflight.c"
           cc "${RUNNER_TEMP}/preflight.c" -o "${RUNNER_TEMP}/preflight"
@@ -319,17 +332,20 @@ jobs:
             runner: prod-aisimulate-default-amd64-v1
             uv_target: x86_64-unknown-linux-gnu
             uv_sha256: 8681d8921e7d520fb368991dcf5f9c1905b80f5bf2a265a0ed085c8d8e342477
+            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
           - arch: arm64
             runner: prod-aisimulate-default-arm64-v1
             uv_target: aarch64-unknown-linux-gnu
             uv_sha256: d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
+            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     container:
-      image: 210086341041.dkr.ecr.us-west-2.amazonaws.com/dynamo-ci/aws/dynamo/actions-runner/actions-runner:2.336.0
+      image: ${{ matrix.container_image }}
       env:
         HOME: /__w/aisimulate/aisimulate
-        USER: runner
     defaults:
       run:
         shell: bash
