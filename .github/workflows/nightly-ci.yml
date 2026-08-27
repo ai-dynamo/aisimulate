@@ -356,7 +356,7 @@ jobs:
   # fails the run, the signal staging consumers gate on.
   smoke-test:
     name: Smoke-test wheel (${{ matrix.arch }})
-    needs: build-artifacts
+    needs: [changes-guard, build-artifacts]
     strategy:
       fail-fast: false
       matrix:
@@ -388,6 +388,7 @@ jobs:
       PYTHON_SERIES_LIST: "3.11 3.12 3.13"
       UV_PYTHON_PREFERENCE: only-managed
       UV_NO_CONFIG: "1"
+      DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
     steps:
       # No checkout: this job needs only the stored artifact, keeping the
       # untrusted dependency install away from repo content.
@@ -431,22 +432,46 @@ jobs:
           set -euo pipefail
           (cd "${DIST_DIR}" && sha256sum --check --strict SHA256SUMS.txt)
 
+      # The wheel's name is a contract: stamped dev version (catches a
+      # silent stamping failure) and cp311-abi3-manylinux_2_28 tags for this
+      # arch (catches a build-container regression that would mistag wheels).
+      # The parsed version is re-asserted against installed metadata below.
+      - name: Verify wheel name, tags, and stamped version
+        env:
+          UV_TARGET: ${{ matrix.uv_target }}
+        run: |
+          set -euo pipefail
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          plat="${UV_TARGET%%-*}"
+          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
+            echo "::error::unexpected wheel name: ${wheel}"
+            exit 1
+          }
+          version="${wheel#aisimulate-}"
+          version="${version%%-*}"
+          echo "EXPECTED_VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "wheel OK: ${wheel} (version ${version})"
+
       - name: Smoke-test the wheel on every supported Python
         run: |
           set -euo pipefail
           cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
           import importlib.metadata as metadata
+          import os
 
           import aiconfigurator
           import aiconfigurator_core
           import aisimulate
           import aisimulate_core
 
+          expected = os.environ["EXPECTED_VERSION"]
           assert (
               aisimulate.__version__
               == aisimulate_core.__version__
               == metadata.version("aisimulate")
-          )
+              == expected
+          ), (aisimulate.__version__, expected)
           installed = {dist.metadata["Name"].lower() for dist in metadata.distributions()}
           forbidden = {"aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
           assert installed.isdisjoint(forbidden), installed & forbidden
