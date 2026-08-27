@@ -860,10 +860,25 @@ def _score_prepared(
         sample_metric = sample_metrics.get(target)
         sample_count = report.get(sample_metric) if sample_metric is not None else None
         if sample_metric is not None and (sample_count is None or sample_count <= 0.0):
+            # Keep the historical sampler feedback even though the canonical
+            # result records this completed replay as typed infeasible. Before
+            # SweepResult, missing latency samples produced the worst-ranked
+            # non-finite objective and still used sampler.observe().
+            observation_candidate = make_candidate(
+                sample,
+                report,
+                goal.target,
+                pareto_objectives=(goal.resolved_pareto_objectives if goal.is_pareto else None),
+            )
+            observation_metrics = (
+                dict(observation_candidate.objectives or {})
+                if goal.is_pareto
+                else {"objective": observation_candidate.score}
+            )
             sample_detail = "missing" if sample_count is None else f"{sample_count:g}"
             return _EvalResult(
                 candidate=None,
-                observe_metrics=None,
+                observe_metrics=observation_metrics,
                 outcome="infeasible",
                 reason=f"{target.value} objective has no qualifying samples ({sample_metric}={sample_detail})",
                 reason_category=ReasonCategory.NO_SAMPLES,
@@ -1047,7 +1062,7 @@ class Sweeper:
                 "provider_plans": provider_plans,
             }
         )
-        replay_cache: dict[Any, tuple[Candidate, dict[str, float]]] = {}
+        replay_cache: dict[Any, tuple[Candidate | None, dict[str, float]]] = {}
 
         def _best() -> float | None:
             return max((c.score for c in candidates), default=None)
@@ -1414,9 +1429,21 @@ class Sweeper:
                         key = _suggestion_cache_key(suggestion, cache_context)
                         duplicates = duplicates_by_key.get(key, [])
                         if outcome in ("failed", "infeasible"):
-                            sampler.observe_infeasible(suggestion, reason)
-                            for duplicate in duplicates:
-                                sampler.observe_infeasible(duplicate, reason)
+                            preserve_ranked_observation = (
+                                evaluation.reason_category is ReasonCategory.NO_SAMPLES and observe_metrics is not None
+                            )
+                            if preserve_ranked_observation:
+                                sampler.observe(suggestion, observe_metrics)
+                                replay_cache[key] = (None, dict(observe_metrics))
+                                for duplicate in duplicates:
+                                    sampler.observe(duplicate, observe_metrics)
+                                # A no-sample result still completed one unique
+                                # replay, matching the previous round semantics.
+                                unique_this_round += 1
+                            else:
+                                sampler.observe_infeasible(suggestion, reason)
+                                for duplicate in duplicates:
+                                    sampler.observe_infeasible(duplicate, reason)
                             if outcome == "failed":
                                 failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
                             prepared = prepared_by_key[key]

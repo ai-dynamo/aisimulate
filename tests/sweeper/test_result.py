@@ -421,21 +421,29 @@ class _DuplicateSampler(_Sampler):
 
 
 class _ZeroSampleRunner(_Runner):
+    def __init__(self, *, include_sample_count):
+        self.include_sample_count = include_sample_count
+
     def run(self, spec):
         del spec
-        return ReplayReport(
-            metrics={
-                "completed_requests": 0.0,
-                "num_e2e_latency_samples": 0.0,
-                "mean_e2e_latency_ms": 0.0,
-            }
-        )
+        metrics = {
+            "completed_requests": 0.0,
+            "mean_e2e_latency_ms": 0.0,
+        }
+        if self.include_sample_count:
+            metrics["num_e2e_latency_samples"] = 0.0
+        return ReplayReport(metrics=metrics)
 
 
 class _ZeroSampleRunnerFactory(_RunnerFactory):
+    def __init__(self, *, include_sample_count):
+        self.include_sample_count = include_sample_count
+
     def create(self, worker_id):
         del worker_id
-        return _ZeroSampleRunner()
+        return _ZeroSampleRunner(
+            include_sample_count=self.include_sample_count,
+        )
 
 
 def _with_trial_budget(
@@ -587,7 +595,11 @@ def test_same_batch_failed_duplicates_are_counted_as_coalesced_hits(monkeypatch)
     assert len(result.candidates) == 1
 
 
-def test_zero_sample_latency_is_a_typed_infeasible_result(monkeypatch):
+@pytest.mark.parametrize("include_sample_count", [True, False], ids=["zero", "missing"])
+def test_zero_or_missing_sample_latency_preserves_ranked_sampler_feedback(
+    monkeypatch,
+    include_sample_count,
+):
     parallel_config = ReplicaParallelConfig(
         ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
     )
@@ -602,16 +614,45 @@ def test_zero_sample_latency_is_a_typed_infeasible_result(monkeypatch):
     )
     monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
 
+    seen = {}
+
+    class _RecordingSampler(_Sampler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.observed = []
+
+        def observe(self, suggestion, metrics):
+            del suggestion
+            self.observed.append(metrics)
+
+        def observe_infeasible(self, suggestion, reason):
+            del suggestion
+            self.observed.append(("infeasible", reason))
+
+    def sampler_factory(*args, **kwargs):
+        sampler = _RecordingSampler(*args, **kwargs)
+        seen["sampler"] = sampler
+        return sampler
+
+    config_payload = _config(target="e2e_latency").model_dump(mode="python")
+    config_payload["sweep"]["candidates_per_round"] = 1
+
     result = Sweeper(
-        runner_factory=_ZeroSampleRunnerFactory(),
-        sampler_factory=_Sampler,
+        runner_factory=_ZeroSampleRunnerFactory(
+            include_sample_count=include_sample_count,
+        ),
+        sampler_factory=sampler_factory,
         show_progress=False,
-    ).run(_with_trial_budget(_config(target="e2e_latency"), max_trials=1))
+    ).run(SmartSearchConfig.model_validate(config_payload))
 
     assert result.counts.infeasible == 1
     assert result.counts.failed == 0
+    assert result.counts.cache_hits == 0
     assert result.candidates[0].reason_category is ReasonCategory.NO_SAMPLES
-    assert result.candidates[0].metrics["num_e2e_latency_samples"] == 0.0
+    assert (
+        "num_e2e_latency_samples" in result.candidates[0].metrics
+    ) is include_sample_count
+    assert seen["sampler"].observed == [{"objective": float("-inf")}]
 
 
 def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monkeypatch):
