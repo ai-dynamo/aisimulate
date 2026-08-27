@@ -32,8 +32,8 @@ name: Nightly artifacts
 # each night's staging waits for approval — approve or reject promptly,
 # since a waiting run holds the nightly-ci concurrency group.
 #
-# Runs on the repo's Velonix runners (OPS-8249). Jobs run in pinned
-# manylinux_2_28 containers: the Velonix actions-runner image has no C
+# Runs on the repository-specific self-hosted runners (OPS-8249). Jobs run
+# in pinned manylinux_2_28 containers: the default runner image has no C
 # compiler (run 33052185267), and manylinux also fixes the wheels' glibc
 # floor at 2.28 — the AIC platform-wheel precedent. quay.io reachability
 # and registry egress from this runner set are first exercised here.
@@ -43,7 +43,7 @@ on:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
   # TEMPORARY — TESTING ONLY, REVERT BEFORE MERGE: exercises this workflow on
-  # copy-pr-bot refs. Velonix runner admission (admit-job.sh) only approves
+  # copy-pr-bot refs. The self-hosted runner admission policy only approves
   # push events on pull-request/* refs, not personal branches. The production
   # trigger is the schedule.
   push:
@@ -533,7 +533,11 @@ jobs:
           for arch in amd64 arm64; do
             (cd "${STAGE_DIR}/${arch}" && sha256sum --check --strict SHA256SUMS.txt)
           done
-          cp "${STAGE_DIR}"/amd64/*.whl "${STAGE_DIR}"/amd64/*.crate "${STAGE_DIR}/upload/"
+          cp "${STAGE_DIR}"/amd64/*.whl "${STAGE_DIR}/upload/"
+          # TEMPORARY — crate staging disabled pending repository
+          # permissions; restore the crate here, in the manifest asserts
+          # below, and in the upload loop when the deploy grant lands:
+          # cp "${STAGE_DIR}"/amd64/*.crate "${STAGE_DIR}/upload/"
           cp "${STAGE_DIR}"/arm64/*.whl "${STAGE_DIR}/upload/"
           cp "${STAGE_DIR}/amd64/provenance.json" "${STAGE_DIR}/upload/provenance-amd64.json"
           cp "${STAGE_DIR}/arm64/provenance.json" "${STAGE_DIR}/upload/provenance-arm64.json"
@@ -546,12 +550,14 @@ jobs:
 
           upload = Path(os.environ["STAGE_DIR"]) / "upload"
           files = sorted(upload.iterdir())
-          # 2 wheels + 1 crate + 2 provenance files, and nothing else:
-          # sha256sum --check never flags EXTRA files, so pin the set here.
+          # 2 wheels + 2 provenance files, and nothing else: sha256sum
+          # --check never flags EXTRA files, so pin the set here.
+          # TEMPORARY — crate staging disabled: expected set is 4 files with
+          # no crate; restore to 5 files / 1 crate when cargo deploy lands.
           names = [path.name for path in files]
-          assert len(files) == 5, names
+          assert len(files) == 4, names
           assert sum(name.endswith(".whl") for name in names) == 2, names
-          assert sum(name.endswith(".crate") for name in names) == 1, names
+          assert sum(name.endswith(".crate") for name in names) == 0, names
           assert sum(name.startswith("provenance-") for name in names) == 2, names
 
           subpath = os.environ["STAGE_SUBPATH"]
@@ -596,9 +602,12 @@ jobs:
           subpath="${STAGE_SUBPATH}"
           [ -n "${subpath}" ] || { echo "::error::STAGE_SUBPATH not set"; exit 1; }
           put() {
-            local file="$1" repo="$2"
+            local file="$1" repo="$2" label="$3"
             local sha
             sha="$(sha256sum "${file}" | cut -d' ' -f1)"
+            # Log target before the PUT so a failure names the file in flight
+            # (repo values are masked; the label says which repo type).
+            echo "uploading ${file} -> ${label} repo"
             # --retry covers timeouts and retryable HTTP codes; the image's
             # curl (7.61, AlmaLinux 8) predates --retry-all-errors. Hard
             # network failures are recovered by re-running the job — the
@@ -612,15 +621,17 @@ jobs:
             echo "staged ${repo}/${subpath}/$(basename "${file}")"
           }
           cd "${STAGE_DIR}/upload"
-          for file in *.crate; do
-            put "${file}" "${ARTIFACTORY_CARGO_REPO}"
-          done
+          # TEMPORARY — crate staging disabled pending repository
+          # permissions; uncomment when the deploy grant lands:
+          # for file in *.crate; do
+          #   put "${file}" "${ARTIFACTORY_CARGO_REPO}" cargo
+          # done
           for file in *.whl provenance-*.json; do
-            put "${file}" "${ARTIFACTORY_PYPI_REPO}"
+            put "${file}" "${ARTIFACTORY_PYPI_REPO}" pypi
           done
-          put _MANIFEST.json "${ARTIFACTORY_PYPI_REPO}"
+          put _MANIFEST.json "${ARTIFACTORY_PYPI_REPO}" pypi
           printf '{"completed_at_utc": "%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > _COMPLETE.json
-          put _COMPLETE.json "${ARTIFACTORY_PYPI_REPO}"
+          put _COMPLETE.json "${ARTIFACTORY_PYPI_REPO}" pypi
           {
             # Repo names are secrets and would be masked here anyway; the
             # subpath is identical in both repos.
