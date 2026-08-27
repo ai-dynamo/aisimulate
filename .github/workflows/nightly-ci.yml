@@ -29,9 +29,11 @@ on:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
   # TEMPORARY — TESTING ONLY, REVERT BEFORE MERGE: exercises this workflow on
-  # pushes to the development branch. The production trigger is the schedule.
+  # copy-pr-bot refs. Velonix runner admission (admit-job.sh) only approves
+  # push events on pull-request/* refs, not personal branches. The production
+  # trigger is the schedule.
   push:
-    branches: [pvijayakrish/nightly-ci]
+    branches: ["pull-request/*"]
 
 # Read-only default token; only the guard job adds actions:read.
 permissions:
