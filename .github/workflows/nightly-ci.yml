@@ -384,7 +384,8 @@ jobs:
         shell: bash
     env:
       UV_VERSION: "0.12.6"
-      PYTHON_SERIES: "3.12"
+      # The abi3 wheel claims every Python in requires-python; prove each one.
+      PYTHON_SERIES_LIST: "3.11 3.12 3.13"
       UV_PYTHON_PREFERENCE: only-managed
       UV_NO_CONFIG: "1"
     steps:
@@ -430,14 +431,10 @@ jobs:
           set -euo pipefail
           (cd "${DIST_DIR}" && sha256sum --check --strict SHA256SUMS.txt)
 
-      - name: Smoke-test the wheel
+      - name: Smoke-test the wheel on every supported Python
         run: |
           set -euo pipefail
-          uv venv --python "${PYTHON_SERIES}" "${TOOLS_DIR}/venv-smoke"
-          smoke_python="${TOOLS_DIR}/venv-smoke/bin/python"
-          uv pip install --python "${smoke_python}" "${DIST_DIR}"/aisimulate-*.whl
-          uv pip check --python "${smoke_python}"
-          "${smoke_python}" - <<'EOF'
+          cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
           import importlib.metadata as metadata
 
           import aiconfigurator
@@ -454,8 +451,16 @@ jobs:
           forbidden = {"aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
           assert installed.isdisjoint(forbidden), installed & forbidden
           EOF
-          "${TOOLS_DIR}/venv-smoke/bin/aisimulate" --help
-          "${TOOLS_DIR}/venv-smoke/bin/aiconfigurator" version
+          for series in ${PYTHON_SERIES_LIST}; do
+            venv="${TOOLS_DIR}/venv-smoke-${series}"
+            uv venv --python "${series}" "${venv}"
+            uv pip install --python "${venv}/bin/python" "${DIST_DIR}"/aisimulate-*.whl
+            uv pip check --python "${venv}/bin/python"
+            "${venv}/bin/python" "${TOOLS_DIR}/smoke_asserts.py"
+            "${venv}/bin/aisimulate" --help
+            "${venv}/bin/aiconfigurator" version
+            echo "smoke OK on Python ${series}"
+          done
 
   # Uploads the smoke-tested wheels and crate to internal Artifactory under
   # nightly/<run_id>/, checksum-verified before upload and server-side on
