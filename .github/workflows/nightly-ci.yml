@@ -15,13 +15,12 @@ name: Nightly CI
 # ai-dynamo/dynamo nightly convention). The date is computed once in the
 # guard job so both arch legs agree across a UTC midnight.
 #
-# Staging: uploads only the built wheels to the internal PyPI repo under
-# nightly/<run_id>/ — the ai-dynamo staging path convention (crate staging
-# is temporarily disabled pending repository permissions; the future
-# release workflow will use a release/ prefix). Wheels are checksum-
-# verified against the build job's SHA256SUMS before upload and
-# server-side on PUT. The stage job is gated by the `automated-release`
-# environment.
+# Staging: uploads the built wheels to the internal PyPI repo and the
+# crate to the internal Cargo repo, both under nightly/<run_id>/ — the
+# ai-dynamo staging path convention (the future release workflow will use
+# a release/ prefix). Files are checksum-verified against the build job's
+# SHA256SUMS before upload and server-side on PUT. The stage job is gated
+# by the `automated-release` environment.
 #
 # Environment prerequisite: create `automated-release` BEFORE merging —
 # a referenced-but-missing environment is auto-created UNPROTECTED and the
@@ -458,7 +457,7 @@ jobs:
           "${TOOLS_DIR}/venv-smoke/bin/aisimulate" --help
           "${TOOLS_DIR}/venv-smoke/bin/aiconfigurator" version
 
-  # Uploads the smoke-tested wheels to internal Artifactory under
+  # Uploads the smoke-tested wheels and crate to internal Artifactory under
   # nightly/<run_id>/, checksum-verified before upload and server-side on
   # PUT. Runs only for scheduled runs on main (never on pull-request/*
   # copies, which contain unreviewed PR content), behind the protected
@@ -517,14 +516,14 @@ jobs:
           for arch in amd64 arm64; do
             (cd "${STAGE_DIR}/${arch}" && sha256sum --check --strict SHA256SUMS.txt)
           done
-          # Wheels only. The build job's SHA256SUMS/provenance stay in the
-          # workflow artifact and are not staged.
+          # Wheels and the crate. The build job's SHA256SUMS/provenance stay
+          # in the workflow artifact and are not staged.
           cp "${STAGE_DIR}"/amd64/*.whl "${STAGE_DIR}"/arm64/*.whl "${STAGE_DIR}/upload/"
-          # TEMPORARY — crate staging disabled pending repository
-          # permissions; restore here and in the upload loop when granted:
-          # cp "${STAGE_DIR}"/amd64/*.crate "${STAGE_DIR}/upload/"
+          cp "${STAGE_DIR}"/amd64/*.crate "${STAGE_DIR}/upload/"
           wheels=("${STAGE_DIR}"/upload/*.whl)
           [ "${#wheels[@]}" -eq 2 ] || { echo "::error::expected 2 wheels"; exit 1; }
+          crates=("${STAGE_DIR}"/upload/*.crate)
+          [ "${#crates[@]}" -eq 1 ] || { echo "::error::expected 1 crate"; exit 1; }
 
       - name: Upload to Artifactory
         env:
@@ -558,11 +557,9 @@ jobs:
             echo "staged ${repo}/${subpath}/$(basename "${file}")"
           }
           cd "${STAGE_DIR}/upload"
-          # TEMPORARY — crate staging disabled pending repository
-          # permissions; uncomment when the deploy grant lands:
-          # for file in *.crate; do
-          #   put "${file}" "${ARTIFACTORY_CARGO_REPO}" cargo
-          # done
+          for file in *.crate; do
+            put "${file}" "${ARTIFACTORY_CARGO_REPO}" cargo
+          done
           for file in *.whl; do
             put "${file}" "${ARTIFACTORY_PYPI_REPO}" pypi
           done
