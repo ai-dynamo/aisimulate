@@ -470,15 +470,7 @@ fn engine_query(
 /// First-wins measured-leaf insert (Python loaders skip rows whose
 /// coordinate is already populated; `Node::insert_value` would overwrite).
 fn insert_first_wins(root: &mut Node, path: &[u32], value: LeafValue) {
-    let Node::Branch(map) = root else {
-        return; // malformed nesting; keep the earlier row
-    };
-    if path.len() == 1 {
-        map.entry(path[0]).or_insert(Node::Leaf(value));
-    } else {
-        let child = map.entry(path[0]).or_insert_with(Node::branch);
-        insert_first_wins(child, &path[1..], value);
-    }
+    root.insert_value_first_wins(path, value);
 }
 
 /// Load the Mamba2 table from an ordered, priority-sorted source list. Sources

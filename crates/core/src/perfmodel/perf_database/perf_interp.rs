@@ -39,6 +39,8 @@
 //! tests in `axis_curve.rs` enforce that relationship.
 
 use std::collections::BTreeMap;
+use std::ops::Deref;
+use std::sync::OnceLock;
 
 use crate::common::error::AicError;
 
@@ -84,17 +86,125 @@ impl LeafValue {
     }
 }
 
+/// Flattened leaf data for repeated multi-axis Grid hold searches.
+#[derive(Debug, Clone)]
+struct FlatHoldIndex {
+    coords: Box<[u32]>,
+    log_coords: Box<[f64]>,
+    offsets: Box<[usize]>,
+    leaves: Box<[LeafValue]>,
+}
+
+impl FlatHoldIndex {
+    fn build(node: &Node) -> Self {
+        fn visit(
+            node: &Node,
+            path: &mut Vec<u32>,
+            log_path: &mut Vec<f64>,
+            coords: &mut Vec<u32>,
+            log_coords: &mut Vec<f64>,
+            offsets: &mut Vec<usize>,
+            leaves: &mut Vec<LeafValue>,
+        ) {
+            match node {
+                Node::Leaf(leaf) => {
+                    coords.extend_from_slice(path);
+                    log_coords.extend_from_slice(log_path);
+                    offsets.push(coords.len());
+                    leaves.push(*leaf);
+                }
+                Node::Branch(branch) => {
+                    for (&key, child) in branch {
+                        path.push(key);
+                        log_path.push(((key as f64).max(1e-12)).log2());
+                        visit(child, path, log_path, coords, log_coords, offsets, leaves);
+                        path.pop();
+                        log_path.pop();
+                    }
+                }
+            }
+        }
+
+        let mut coords = Vec::new();
+        let mut log_coords = Vec::new();
+        let mut offsets = vec![0];
+        let mut leaves = Vec::new();
+        visit(
+            node,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut coords,
+            &mut log_coords,
+            &mut offsets,
+            &mut leaves,
+        );
+        Self {
+            coords: coords.into_boxed_slice(),
+            log_coords: log_coords.into_boxed_slice(),
+            offsets: offsets.into_boxed_slice(),
+            leaves: leaves.into_boxed_slice(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.leaves.len()
+    }
+
+    fn coords(&self, leaf_idx: usize) -> &[u32] {
+        &self.coords[self.offsets[leaf_idx]..self.offsets[leaf_idx + 1]]
+    }
+
+    fn log_coords(&self, leaf_idx: usize) -> &[f64] {
+        &self.log_coords[self.offsets[leaf_idx]..self.offsets[leaf_idx + 1]]
+    }
+}
+
+/// One branch of a nested perf table. The hold index is initialized only for
+/// roots that execute a multi-axis out-of-range Grid query.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct BranchNode {
+    children: BTreeMap<u32, Node>,
+    hold_index: OnceLock<FlatHoldIndex>,
+}
+
+impl Clone for BranchNode {
+    fn clone(&self) -> Self {
+        Self {
+            children: self.children.clone(),
+            hold_index: OnceLock::new(),
+        }
+    }
+}
+
+impl Deref for BranchNode {
+    type Target = BTreeMap<u32, Node>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.children
+    }
+}
+
+impl<'a> IntoIterator for &'a BranchNode {
+    type Item = (&'a u32, &'a Node);
+    type IntoIter = std::collections::btree_map::Iter<'a, u32, Node>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.children.iter()
+    }
+}
+
 /// Nested perf table: every level is a `u32`-keyed map, leaves are the
 /// measured `LeafValue` (latency ms + optional power/energy).
 #[derive(Debug, Clone)]
 pub enum Node {
-    Branch(BTreeMap<u32, Node>),
+    Branch(BranchNode),
     Leaf(LeafValue),
 }
 
 impl Node {
     pub fn branch() -> Node {
-        Node::Branch(BTreeMap::new())
+        Node::Branch(BranchNode::default())
     }
 
     /// Insert a latency-only leaf at the given path, creating intermediate
@@ -106,7 +216,9 @@ impl Node {
     /// Insert a full measured leaf at the given path.
     pub fn insert_value(&mut self, path: &[u32], value: LeafValue) {
         match self {
-            Node::Branch(map) => {
+            Node::Branch(branch) => {
+                branch.hold_index.take();
+                let map = &mut branch.children;
                 if path.len() == 1 {
                     map.insert(path[0], Node::Leaf(value));
                 } else {
@@ -130,7 +242,9 @@ impl Node {
     /// priority sources overwrite it).
     pub fn insert_value_first_wins(&mut self, path: &[u32], value: LeafValue) {
         match self {
-            Node::Branch(map) => {
+            Node::Branch(branch) => {
+                branch.hold_index.take();
+                let map = &mut branch.children;
                 if path.len() == 1 {
                     map.entry(path[0]).or_insert(Node::Leaf(value));
                 } else {
@@ -145,7 +259,7 @@ impl Node {
 
     fn as_branch(&self) -> Option<&BTreeMap<u32, Node>> {
         match self {
-            Node::Branch(map) => Some(map),
+            Node::Branch(branch) => Some(&branch.children),
             Node::Leaf(_) => None,
         }
     }
@@ -159,7 +273,7 @@ impl Node {
 
     pub fn is_empty(&self) -> bool {
         match self {
-            Node::Branch(map) => map.is_empty(),
+            Node::Branch(branch) => branch.is_empty(),
             Node::Leaf(_) => false,
         }
     }
@@ -572,6 +686,13 @@ pub(crate) struct HoldAnchor {
     pub(crate) weight: f64,
 }
 
+/// One entry in the bounded nearest-leaf set.
+#[derive(Clone, Copy)]
+struct HoldCandidate {
+    distance_sq: f64,
+    leaf_idx: usize,
+}
+
 /// The multi-axis hold's anchor selection: the `nn_leaves` nearest valid
 /// leaves in joint log2 space, with tapered modified-Shepard weights (support
 /// radius R = the next valid leaf's distance; leaves at d == R weigh zero, so
@@ -579,11 +700,10 @@ pub(crate) struct HoldAnchor {
 /// `pub(crate)` so owners that must split a summed leaf into components
 /// (wideep dispatch) reuse the engine's exact selection and weights.
 ///
-/// Selection is a single pass over the tree with a small best-M buffer —
-/// no full leaf vector, no full sort, and coordinate paths are cloned only
-/// when a leaf enters the buffer. The buffer carries `SLACK` extra candidates
-/// so validity filtering (lat/sol > 0) almost never needs the full-collect
-/// fallback below.
+/// Selection is a single pass over a lazily prepared flat leaf index with a
+/// small best-M buffer. The index stores coordinates and their log2 values in
+/// contiguous arrays. The buffer carries `SLACK` extra candidates so validity
+/// filtering (lat/sol > 0) almost never needs the full-collect fallback below.
 pub(crate) fn hold_anchor_weights(
     cfg: &OpInterpConfig,
     data: &Node,
@@ -593,32 +713,15 @@ pub(crate) fn hold_anchor_weights(
     const SLACK: usize = 8;
     let m = nn_leaves + SLACK;
     let q_log: Vec<f64> = coords.iter().map(|&v| v.max(1e-12).log2()).collect();
-
-    // (distance, coords, leaf), ascending by distance, at most m entries.
-    let mut best: Vec<(f64, Vec<u32>, LeafValue)> = Vec::with_capacity(m + 1);
-    let mut n_leaves = 0usize;
-    visit_leaves(
-        data,
-        &mut Vec::new(),
-        &mut |path: &[u32], leaf: LeafValue| {
-            n_leaves += 1;
-            let mut dd = 0.0;
-            for (i, &v) in path.iter().enumerate() {
-                let delta = ((v as f64).max(1e-12)).log2() - q_log[i];
-                dd += delta * delta;
-            }
-            let d = dd.sqrt();
-            if best.len() == m {
-                if d >= best[m - 1].0 {
-                    return;
-                }
-                best.pop();
-            }
-            let pos = best.partition_point(|e| e.0 <= d);
-            best.insert(pos, (d, path.to_vec(), leaf));
-        },
-    );
-    if n_leaves == 0 {
+    let local_index;
+    let index = match data {
+        Node::Branch(branch) => branch.hold_index.get_or_init(|| FlatHoldIndex::build(data)),
+        Node::Leaf(_) => {
+            local_index = FlatHoldIndex::build(data);
+            &local_index
+        }
+    };
+    if index.len() == 0 {
         return Err(miss(
             cfg,
             coords,
@@ -626,34 +729,62 @@ pub(crate) fn hold_anchor_weights(
         ));
     }
 
+    let mut best: Vec<HoldCandidate> = Vec::with_capacity(m + 1);
+    for leaf_idx in 0..index.len() {
+        let mut distance_sq = 0.0;
+        for (axis, &value) in index.log_coords(leaf_idx).iter().enumerate() {
+            let delta = value - q_log[axis];
+            distance_sq += delta * delta;
+        }
+        if best.len() == m {
+            if distance_sq >= best[m - 1].distance_sq {
+                continue;
+            }
+            best.pop();
+        }
+        let pos = best.partition_point(|candidate| candidate.distance_sq <= distance_sq);
+        best.insert(
+            pos,
+            HoldCandidate {
+                distance_sq,
+                leaf_idx,
+            },
+        );
+    }
+
     // Validity-check in distance order: the first nn_leaves valid candidates
     // are the anchors; the NEXT valid distance is the support radius R.
     let mut picked: Vec<HoldAnchor> = Vec::with_capacity(nn_leaves);
     let mut support_r = f64::INFINITY;
     let mut support_found = false;
-    for (d, c, leaf) in &best {
-        let anchor: Vec<f64> = c.iter().map(|&v| v as f64).collect();
+    let mut anchor = Vec::with_capacity(coords.len());
+    for candidate in best {
+        let c = index.coords(candidate.leaf_idx);
+        let leaf = index.leaves[candidate.leaf_idx];
+        anchor.clear();
+        anchor.extend(c.iter().map(|&v| v as f64));
         let sol = (cfg.sol_fn)(&anchor);
         if !(leaf.latency.is_finite() && leaf.latency > 0.0 && sol.is_finite() && sol > 0.0) {
             continue;
         }
+        let distance = candidate.distance_sq.sqrt();
         if picked.len() < nn_leaves {
             picked.push(HoldAnchor {
-                coords: c.clone(),
+                coords: c.to_vec(),
                 latency: leaf.latency,
                 power: leaf.blend_power(),
                 sol,
-                weight: *d, // distance for now; weights assigned below
+                weight: distance, // distance for now; weights assigned below
             });
         } else {
-            support_r = *d;
+            support_r = distance;
             support_found = true;
             break;
         }
     }
     // The buffer proved too small to certify the selection (pathological
     // invalid density): fall back to the exhaustive path for correctness.
-    if n_leaves > m && !support_found && picked.len() <= nn_leaves {
+    if index.len() > m && !support_found && picked.len() <= nn_leaves {
         return hold_anchor_weights_exhaustive(cfg, data, coords, nn_leaves, &q_log);
     }
     finish_hold_anchors(cfg, coords, picked, support_r)
@@ -1208,22 +1339,6 @@ pub(crate) fn node_points(node: &Node) -> Vec<(Vec<f64>, f64)> {
     out.into_iter()
         .map(|(coords, leaf)| (coords.into_iter().map(|c| c as f64).collect(), leaf.latency))
         .collect()
-}
-
-/// Visit every leaf without materializing a leaf vector (the hold path's
-/// single-pass selection uses this; `walk_leaves` remains for callers that
-/// genuinely need the full collection).
-fn visit_leaves(node: &Node, prefix: &mut Vec<u32>, f: &mut impl FnMut(&[u32], LeafValue)) {
-    match node {
-        Node::Leaf(v) => f(prefix, *v),
-        Node::Branch(map) => {
-            for (&k, child) in map {
-                prefix.push(k);
-                visit_leaves(child, prefix, f);
-                prefix.pop();
-            }
-        }
-    }
 }
 
 fn walk_leaves(node: &Node, prefix: &mut Vec<u32>, out: &mut Vec<(Vec<u32>, LeafValue)>) {
@@ -1955,21 +2070,67 @@ mod tests {
         assert!(ratio > 0.95, "got {ratio}");
     }
 
-    /// Perf comparison for the hold selection (review P2): single-pass
-    /// best-M buffer vs the former collect-all + full-sort. Not asserted (CI
+    #[test]
+    fn grid_hold_index_matches_exhaustive_reference_and_invalidates_on_insert() {
+        fn assert_same(cfg: &OpInterpConfig<'_>, table: &Node, coords: &[f64]) {
+            let q_log: Vec<f64> = coords.iter().map(|&v| v.max(1e-12).log2()).collect();
+            let actual = hold_anchor_weights(cfg, table, coords, 4).unwrap();
+            let expected = hold_anchor_weights_exhaustive(cfg, table, coords, 4, &q_log).unwrap();
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert_eq!(actual.coords, expected.coords);
+                assert_eq!(actual.latency.to_bits(), expected.latency.to_bits());
+                assert_eq!(actual.power.to_bits(), expected.power.to_bits());
+                assert_eq!(actual.sol.to_bits(), expected.sol.to_bits());
+                assert_eq!(actual.weight.to_bits(), expected.weight.to_bits());
+            }
+        }
+
+        // Ragged 3-axis table with an invalid near-frontier leaf.
+        let mut ragged = attn_table();
+        ragged.insert(&[16, 8192, 1], 0.0);
+        let ragged_cfg = attn_cfg(&attn_lat);
+        assert_same(&ragged_cfg, &ragged, &[16.0, 16384.0, 6.0]);
+        // The first comparison initializes the index. A later insert must
+        // clear it before the next query.
+        ragged.insert(&[16, 16384, 4], attn_lat(&[16.0, 16384.0, 4.0]));
+        assert_same(&ragged_cfg, &ragged, &[16.0, 32768.0, 6.0]);
+
+        // Four-axis table exercises the deepest production Grid shape.
+        let four_axis = dsa_table();
+        let four_axis_cfg = dsa_cfg(&dsa_lat);
+        assert_same(&four_axis_cfg, &four_axis, &[32.0, 16384.0, 8192.0, 8.0]);
+
+        // Exact power-of-two distance ties must retain BTree traversal order.
+        let mut tied = Node::branch();
+        for (coords, latency) in [
+            ([64, 32, 2], 1.0),
+            ([64, 16, 2], 1.1),
+            ([64, 64, 2], 1.3),
+            ([32, 32, 2], 1.5),
+            ([128, 32, 2], 1.7),
+            ([64, 32, 4], 2.0),
+        ] {
+            tied.insert(&coords, latency);
+        }
+        let constant_sol = |_: &[f64]| 1.0;
+        let tied_cfg = OpInterpConfig::grid(&["num_heads", "batch", "seq_len"], &constant_sol);
+        assert_same(&tied_cfg, &tied, &[64.0, 32.0, 1.0]);
+    }
+
+    /// Perf comparison for the hold selection: indexed best-M search vs the
+    /// former collect-all + full-sort. Not asserted (CI
     /// timing is flaky); run manually:
     /// `cargo test -p aisimulate-core --release hold_selection_bench -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn hold_selection_bench() {
         use std::time::Instant;
-        // ~1.9k leaves, the size of the real b200 gen-attention slice.
+        // 1,920 leaves, matching the requested DSV4-sized hold benchmark.
         let mut t = Node::branch();
         for n in [8u32, 16, 32, 64] {
             for b in [1u32, 2, 4, 8, 16, 32, 64, 128, 256, 512] {
-                for s in [
-                    2u32, 8, 32, 128, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
-                ] {
+                for s in (1u32..=48).map(|i| i * 2048) {
                     t.insert(&[n, b, s], 1e-6 * (n * b) as f64 * s as f64);
                 }
             }
@@ -2007,13 +2168,18 @@ mod tests {
             std::hint::black_box(old_selection());
         }
         let old_ns = start.elapsed().as_nanos() / ITERS as u128;
+
+        let start = Instant::now();
+        std::hint::black_box(hold_anchor_weights(&cfg, &t, &coords, 4).unwrap());
+        let cold_ns = start.elapsed().as_nanos();
+
         let start = Instant::now();
         for _ in 0..ITERS {
             std::hint::black_box(hold_anchor_weights(&cfg, &t, &coords, 4).unwrap());
         }
-        let new_ns = start.elapsed().as_nanos() / ITERS as u128;
+        let flat_ns = start.elapsed().as_nanos() / ITERS as u128;
         println!(
-            "hold selection on 1920 leaves: collect+sort {old_ns} ns/query, single-pass {new_ns} ns/query"
+            "hold selection on 1920 leaves: collect+sort {old_ns} ns/query, flat-cold {cold_ns} ns, flat-warm {flat_ns} ns/query"
         );
     }
 
