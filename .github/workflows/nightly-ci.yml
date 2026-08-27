@@ -10,13 +10,27 @@ name: Nightly artifacts
 # lockfile-resolved crates; the wheel's unpinned PyPI dependency tree is
 # installed in a separate smoke job after the artifacts are stored.
 #
-# Consumer contract: staging must pick the newest successful scheduled run
-# on refs/heads/main that uploaded artifacts. Guard-skipped nights succeed
-# with zero artifacts. provenance.json records ref and event for filtering.
+# Versioning: every run stamps the tree with scripts/apply_dev_version.py —
+# wheels get `<base>.devYYYYMMDD`, the crate `<base>-devYYYYMMDD` (the
+# ai-dynamo/dynamo nightly convention). The date is computed once in the
+# guard job so both arch legs agree across a UTC midnight.
 #
-# Out of scope: publishing/staging (OPS-8259) and nightly dev-version
-# stamping (AIC-1463, under the OPS-7963 umbrella) — artifacts carry the
-# manifest version verbatim.
+# Staging: scheduled main runs upload the artifact set to internal
+# Artifactory — wheels to the PyPI repo, the crate to the Cargo repo (both
+# names held as environment secrets), under nightly/<date>/<run_id>-
+# <attempt>/ (the future release workflow will use a release/ prefix). A
+# checksummed _MANIFEST.json in the pypi path lists every file across both
+# repos; _COMPLETE.json is written last and consumers must require it
+# before trusting the set. The stage job never runs on pull-request/*
+# copies and is gated by the `automated-release` environment.
+#
+# Environment prerequisite: create `automated-release` BEFORE merging —
+# a referenced-but-missing environment is auto-created UNPROTECTED and the
+# job runs ungated. Store ARTIFACTORY_URL and ARTIFACTORY_TOKEN as
+# environment secrets only (repo-level secrets would flow to modified
+# workflow copies on pull-request/* refs). With required reviewers set,
+# each night's staging waits for approval — approve or reject promptly,
+# since a waiting run holds the nightly-ci concurrency group.
 #
 # Runs on the repo's Velonix runners (OPS-8249). Jobs run in pinned
 # manylinux_2_28 containers: the Velonix actions-runner image has no C
@@ -53,7 +67,14 @@ jobs:
       actions: read
     outputs:
       should-build: ${{ steps.decide.outputs.should-build }}
+      dev-date: ${{ steps.version.outputs.dev-date }}
     steps:
+      # Computed once here so both arch legs stamp the same date even if the
+      # run crosses a UTC midnight.
+      - name: Compute nightly version date
+        id: version
+        run: echo "dev-date=$(date -u +%Y%m%d)" >> "${GITHUB_OUTPUT}"
+
       - name: Compare HEAD with the last successful nightly
         id: decide
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
@@ -227,6 +248,13 @@ jobs:
             --requirements .github/nightly/build-requirements.txt
           "${TOOLS_DIR}/venv-build/bin/python" -m maturin --version
 
+      - name: Stamp nightly dev version
+        env:
+          DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
+        run: |
+          set -euo pipefail
+          "${TOOLS_DIR}/venv-build/bin/python" scripts/apply_dev_version.py ".dev${DEV_DATE}"
+
       - name: Validate release manifests
         run: |
           set -euo pipefail
@@ -266,11 +294,15 @@ jobs:
           import json
           import os
           import platform
+          import tomllib
           from datetime import datetime, timezone
           from pathlib import Path
 
           dist = Path(os.environ["DIST_DIR"])
+          pyproject = Path("python/aisimulate/pyproject.toml")
+          version = tomllib.loads(pyproject.read_text())["project"]["version"]
           provenance = {
+              "version": version,
               "repository": os.environ["GH_REPOSITORY"],
               "workflow_ref": os.environ["GH_WORKFLOW_REF"],
               "ref": os.environ["GH_REF"],
@@ -299,6 +331,9 @@ jobs:
           }
           (dist / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
           EOF
+          # Cover provenance.json too, so the smoke and staging jobs'
+          # `sha256sum --check` verifies every file crossing the artifact store.
+          (cd "${DIST_DIR}" && sha256sum provenance.json >> SHA256SUMS.txt)
           {
             echo "### Nightly artifacts (${MATRIX_ARCH})"
             echo '```'
@@ -423,3 +458,173 @@ jobs:
           EOF
           "${TOOLS_DIR}/venv-smoke/bin/aisimulate" --help
           "${TOOLS_DIR}/venv-smoke/bin/aiconfigurator" version
+
+  # Uploads the smoke-tested artifact set to internal Artifactory under
+  # nightly/<date>/<run_id>/: files first (server-side checksum-verified),
+  # then _MANIFEST.json, then _COMPLETE.json last — consumers must require
+  # _COMPLETE.json before trusting the set. Runs only for scheduled runs on
+  # main (never on pull-request/* copies, which contain unreviewed PR
+  # content), behind a repo-variable kill switch and a protected environment
+  # that scopes the ARTIFACTORY_* secrets.
+  stage-artifactory:
+    name: Stage to Artifactory
+    needs: [changes-guard, build-artifacts, smoke-test]
+    # TEMPORARY — TESTING ONLY, REVERT BEFORE MERGE: the `|| push` arm lets
+    # pull-request/* test runs exercise staging. Every run still needs the
+    # automated-release environment's reviewer approval (and its deployment
+    # branch policy must temporarily include pull-request/* for the test);
+    # non-schedule runs stage under the nightly-test/ prefix.
+    if: >-
+      (github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'push'
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 30
+    environment: automated-release
+    container:
+      # Keep in sync with the amd64 build-matrix image.
+      # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+      env:
+        HOME: /__w/aisimulate/aisimulate
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
+      ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+      ARTIFACTORY_CARGO_REPO: ${{ secrets.ARTIFACTORY_CARGO_REPO_NAME }}
+    steps:
+      - name: Prepare staging directory
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/stage/amd64" "${RUNNER_TEMP}/stage/arm64" "${RUNNER_TEMP}/stage/upload"
+          echo "STAGE_DIR=${RUNNER_TEMP}/stage" >> "${GITHUB_ENV}"
+
+      - name: Download amd64 artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-dist-amd64
+          path: ${{ runner.temp }}/stage/amd64
+
+      - name: Download arm64 artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-dist-arm64
+          path: ${{ runner.temp }}/stage/arm64
+
+      - name: Verify checksums and assemble upload set
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_SHA: ${{ github.sha }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_SERVER_URL: ${{ github.server_url }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          # Scheduled runs stage under nightly/; anything else (test runs)
+          # under nightly-test/. <run_id>-<attempt> keeps re-runs of a failed
+          # staging on a fresh path (a deploy-only token cannot overwrite).
+          prefix="nightly"
+          [ "${GH_EVENT_NAME}" = "schedule" ] || prefix="nightly-test"
+          echo "STAGE_SUBPATH=${prefix}/${DEV_DATE}/${GH_RUN_ID}-${GH_RUN_ATTEMPT}" >> "${GITHUB_ENV}"
+          export STAGE_SUBPATH="${prefix}/${DEV_DATE}/${GH_RUN_ID}-${GH_RUN_ATTEMPT}"
+          for arch in amd64 arm64; do
+            (cd "${STAGE_DIR}/${arch}" && sha256sum --check --strict SHA256SUMS.txt)
+          done
+          cp "${STAGE_DIR}"/amd64/*.whl "${STAGE_DIR}"/amd64/*.crate "${STAGE_DIR}/upload/"
+          cp "${STAGE_DIR}"/arm64/*.whl "${STAGE_DIR}/upload/"
+          cp "${STAGE_DIR}/amd64/provenance.json" "${STAGE_DIR}/upload/provenance-amd64.json"
+          cp "${STAGE_DIR}/arm64/provenance.json" "${STAGE_DIR}/upload/provenance-arm64.json"
+          # cp312 is a stable path inside the digest-pinned manylinux image.
+          /opt/python/cp312-cp312/bin/python - <<'EOF'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          upload = Path(os.environ["STAGE_DIR"]) / "upload"
+          files = sorted(upload.iterdir())
+          # 2 wheels + 1 crate + 2 provenance files, and nothing else:
+          # sha256sum --check never flags EXTRA files, so pin the set here.
+          names = [path.name for path in files]
+          assert len(files) == 5, names
+          assert sum(name.endswith(".whl") for name in names) == 2, names
+          assert sum(name.endswith(".crate") for name in names) == 1, names
+          assert sum(name.startswith("provenance-") for name in names) == 2, names
+
+          subpath = os.environ["STAGE_SUBPATH"]
+
+          def repo(name: str) -> str:
+              if name.endswith(".crate"):
+                  return os.environ["ARTIFACTORY_CARGO_REPO"]
+              return os.environ["ARTIFACTORY_PYPI_REPO"]
+
+          manifest = {
+              "schema": "aisimulate-nightly-manifest/1.0.0",
+              "dev_date": os.environ["DEV_DATE"],
+              "repository": os.environ["GH_REPOSITORY"],
+              "commit": os.environ["GH_SHA"],
+              "run_url": (
+                  f"{os.environ['GH_SERVER_URL']}/{os.environ['GH_REPOSITORY']}"
+                  f"/actions/runs/{os.environ['GH_RUN_ID']}"
+                  f"/attempts/{os.environ['GH_RUN_ATTEMPT']}"
+              ),
+              "files": {
+                  path.name: {
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                      "size": path.stat().st_size,
+                      "artifactory_path": f"{repo(path.name)}/{subpath}/{path.name}",
+                  }
+                  for path in files
+              },
+          }
+          (upload / "_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          EOF
+
+      - name: Upload to Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in ARTIFACTORY_URL ARTIFACTORY_TOKEN \
+                      ARTIFACTORY_PYPI_REPO ARTIFACTORY_CARGO_REPO; do
+            [ -n "${!name}" ] || { echo "::error::secret ${name} is not configured"; exit 1; }
+          done
+          subpath="${STAGE_SUBPATH}"
+          [ -n "${subpath}" ] || { echo "::error::STAGE_SUBPATH not set"; exit 1; }
+          put() {
+            local file="$1" repo="$2"
+            local sha
+            sha="$(sha256sum "${file}" | cut -d' ' -f1)"
+            # --retry-all-errors is safe: PUT is idempotent and the checksum
+            # header makes Artifactory reject truncated bodies.
+            curl -q --fail --silent --show-error --retry 3 --retry-all-errors \
+              --output /dev/null \
+              -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
+              -H "X-Checksum-Sha256: ${sha}" \
+              --upload-file "${file}" \
+              "${ARTIFACTORY_URL%/}/${repo}/${subpath}/$(basename "${file}")"
+            echo "staged ${repo}/${subpath}/$(basename "${file}")"
+          }
+          cd "${STAGE_DIR}/upload"
+          for file in *.crate; do
+            put "${file}" "${ARTIFACTORY_CARGO_REPO}"
+          done
+          for file in *.whl provenance-*.json; do
+            put "${file}" "${ARTIFACTORY_PYPI_REPO}"
+          done
+          put _MANIFEST.json "${ARTIFACTORY_PYPI_REPO}"
+          printf '{"completed_at_utc": "%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > _COMPLETE.json
+          put _COMPLETE.json "${ARTIFACTORY_PYPI_REPO}"
+          {
+            # Repo names are secrets and would be masked here anyway; the
+            # subpath is identical in both repos.
+            echo "### Staged to Artifactory"
+            echo "Subpath in both repos: \`${subpath}/\`"
+            echo '```'
+            ls -l
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
