@@ -75,9 +75,9 @@ sweeper = Sweeper(
     runner_factory=my_runner_factory,
     providers={"example.policy": my_provider},
 )
-candidates = sweeper.run(config)
+result = sweeper.run(config)
 
-for candidate in candidates[:5]:
+for candidate in result.selected_candidates:
     print(candidate.score, candidate.used_gpus, candidate.config)
 ```
 
