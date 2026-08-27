@@ -599,9 +599,11 @@ jobs:
             local file="$1" repo="$2"
             local sha
             sha="$(sha256sum "${file}" | cut -d' ' -f1)"
-            # --retry-all-errors is safe: PUT is idempotent and the checksum
-            # header makes Artifactory reject truncated bodies.
-            curl -q --fail --silent --show-error --retry 3 --retry-all-errors \
+            # --retry covers timeouts and retryable HTTP codes; the image's
+            # curl (7.61, AlmaLinux 8) predates --retry-all-errors. Hard
+            # network failures are recovered by re-running the job — the
+            # <run_id>-<attempt> subpath keeps re-runs on a fresh path.
+            curl -q --fail --silent --show-error --retry 3 \
               --output /dev/null \
               -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
               -H "X-Checksum-Sha256: ${sha}" \
