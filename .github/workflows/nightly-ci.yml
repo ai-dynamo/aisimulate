@@ -11,9 +11,10 @@ name: Nightly CI
 # installed in a separate smoke job after the artifacts are stored.
 #
 # Versioning: every run stamps the tree with scripts/apply_dev_version.py —
-# wheels get `<base>.devYYYYMMDD`, the crate `<base>-devYYYYMMDD` (the
-# ai-dynamo/dynamo nightly convention). The date is computed once in the
-# guard job so both arch legs agree across a UTC midnight.
+# wheels get `<base>.devYYYYMMDD` (the ai-dynamo/dynamo nightly convention),
+# the crate `<base>-dev.YYYYMMDD` (dotted so SemVer orders the date
+# numerically). The date is computed once in the guard job so both arch
+# legs agree across a UTC midnight.
 #
 # Staging: uploads the built wheels to the internal PyPI repo and the
 # crate to the internal Cargo repo, both under nightly/<run_id>/ — the
@@ -569,22 +570,36 @@ jobs:
           [ -n "${subpath}" ] || { echo "::error::STAGE_SUBPATH not set"; exit 1; }
           put() {
             local file="$1" repo="$2" label="$3"
-            local sha
+            local sha url existing
             sha="$(sha256sum "${file}" | cut -d' ' -f1)"
-            # Log target before the PUT so a failure names the file in flight
-            # (repo values are masked; the label says which repo type).
-            echo "uploading ${file} -> ${label} repo"
+            url="${ARTIFACTORY_URL%/}/${repo}/${subpath}/$(basename "${file}")"
+            # Re-runs reuse the same run_id path and the deploy-only token
+            # cannot overwrite, so make staging idempotent: skip files a
+            # prior attempt already uploaded (verified byte-identical via
+            # the server's checksum) and fail loudly on a real mismatch.
+            existing="$(curl -q --silent --head \
+              -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" "${url}" \
+              | tr -d '\r' | awk 'tolower($1)=="x-checksum-sha256:" {print $2}')"
+            if [ "${existing}" = "${sha}" ]; then
+              echo "already staged (${label}): $(basename "${file}")"
+              return 0
+            fi
+            if [ -n "${existing}" ]; then
+              echo "::error::${label} file exists with a different checksum: $(basename "${file}")"
+              return 1
+            fi
+            echo "uploading $(basename "${file}") -> ${label} repo"
             # --retry covers timeouts and retryable HTTP codes; the image's
             # curl (7.61, AlmaLinux 8) predates --retry-all-errors. Hard
-            # network failures are recovered by re-running the job — the
-            # <run_id>-<attempt> subpath keeps re-runs on a fresh path.
+            # network failures are recovered by re-running the failed job,
+            # which skips already-staged files via the probe above.
             curl -q --fail --silent --show-error --retry 3 \
               --output /dev/null \
               -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
               -H "X-Checksum-Sha256: ${sha}" \
               --upload-file "${file}" \
-              "${ARTIFACTORY_URL%/}/${repo}/${subpath}/$(basename "${file}")"
-            echo "staged ${repo}/${subpath}/$(basename "${file}")"
+              "${url}"
+            echo "staged (${label}): $(basename "${file}")"
           }
           cd "${STAGE_DIR}/upload"
           for file in *.crate; do

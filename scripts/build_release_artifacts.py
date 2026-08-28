@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.12.0"
 # Nightly CI stamps a dev suffix via scripts/apply_dev_version.py:
-# PEP 440 `0.12.0.devYYYYMMDD` in the wheel, SemVer `0.12.0-devYYYYMMDD` in
+# PEP 440 `0.12.0.devYYYYMMDD` in the wheel, SemVer `0.12.0-dev.YYYYMMDD` in
 # the crate (cargo rejects the PEP 440 spelling). The release contract still
 # anchors on VERSION; only this suffix pair is additionally accepted.
 DEV_SUFFIX_RE = re.compile(r"\.dev[0-9]{8}")
@@ -68,7 +68,7 @@ def check_manifests() -> tuple[str, str]:
         dev_suffix == "" or DEV_SUFFIX_RE.fullmatch(dev_suffix)
     ), f"wheel version must be {VERSION} or {VERSION}.devYYYYMMDD, got {py_version}"
     expected_crate_version = (
-        f"{VERSION}-{dev_suffix[1:]}" if dev_suffix else VERSION
+        f"{VERSION}-dev.{dev_suffix[len('.dev'):]}" if dev_suffix else VERSION
     )
     assert crate_version == expected_crate_version, (
         f"crate version {crate_version} does not match wheel version "

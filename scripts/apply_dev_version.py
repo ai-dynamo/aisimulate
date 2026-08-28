@@ -8,11 +8,13 @@ argument -- a PEP 440 suffix like '.dev20260827' -- and rewrites:
   - [project].version in python/aisimulate/pyproject.toml (PEP 440 form)
   - [package].version in crates/core/Cargo.toml and
     [workspace.package].version in Cargo.toml (SemVer form: dash instead of
-    dot, so '0.12.0-dev20260827' -- cargo rejects the PEP 440 spelling)
+    dot, so '0.12.0-dev.20260827' -- cargo rejects the PEP 440 spelling)
 
-This mirrors the ai-dynamo/dynamo nightly convention
-(.github/scripts/apply_dev_version.py there). Idempotent: re-running with the
-same suffix is a no-op, and an empty suffix changes nothing.
+The wheel form mirrors the ai-dynamo/dynamo nightly convention. The crate
+form keeps the date as a dotted numeric identifier so SemVer pre-release
+ordering compares it numerically (matching the crate's published lineage on
+crates.io). Idempotent: re-running with the same suffix is a no-op, and an
+empty suffix changes nothing.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ SUFFIX_RE = re.compile(r"^\.dev[0-9]{8}$")
 
 
 def semver(suffix: str) -> str:
-    return "-" + suffix[1:]
+    return "-dev." + suffix[len(".dev"):]
 
 
 def rewrite(path: Path, tail: str) -> str:

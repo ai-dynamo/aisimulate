@@ -23,10 +23,12 @@ distribution.
 
 Nightly builds stamp a dev suffix with `scripts/apply_dev_version.py` before
 building: the wheel becomes `0.12.0.devYYYYMMDD` (PEP 440) and the crate
-`0.12.0-devYYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling). This
-follows the ai-dynamo/dynamo nightly convention. The release script accepts
-only this suffix pair and still anchors both artifacts to the one product
-version; any other version shape fails the build.
+`0.12.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
+dotted date is a numeric identifier so pre-release versions order
+numerically). The wheel form follows the ai-dynamo/dynamo nightly
+convention. The release script accepts only this suffix pair and still
+anchors both artifacts to the one product version; any other version shape
+fails the build.
 
 The bundled performance database makes the unified wheel about 164 MiB, above
 the default 100 MiB per-file upload limit on PyPI and TestPyPI. Before the first
