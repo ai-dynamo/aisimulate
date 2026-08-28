@@ -41,12 +41,6 @@ on:
   schedule:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
-  # TEMPORARY — TESTING ONLY, REVERT BEFORE MERGE: exercises this workflow on
-  # copy-pr-bot refs. The self-hosted runner admission policy only approves
-  # push events on pull-request/* refs, not personal branches. The production
-  # trigger is the schedule.
-  push:
-    branches: ["pull-request/*"]
 
 # Read-only default token; only the guard job adds actions:read.
 permissions:
@@ -79,7 +73,8 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
-            // Only scheduled runs dedup; test pushes always build.
+            // Only scheduled runs dedup; any other event (e.g. a future
+            // workflow_dispatch) always builds.
             if (context.eventName !== 'schedule') {
               core.setOutput('should-build', 'true');
               return;
@@ -496,13 +491,7 @@ jobs:
   stage-artifactory:
     name: Stage to Artifactory
     needs: [build-artifacts, smoke-test]
-    # TEMPORARY — TESTING ONLY, REVERT BEFORE MERGE: the `|| push` arm lets
-    # pull-request/* test runs exercise staging. Every run still needs the
-    # automated-release environment's reviewer approval (and its deployment
-    # branch policy must temporarily include pull-request/* for the test).
-    if: >-
-      (github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
-      github.event_name == 'push'
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
     environment: automated-release
