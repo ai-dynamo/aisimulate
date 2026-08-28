@@ -30,7 +30,11 @@
 //!   [`UtilGridCache`] keyed by the op's slice identity.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use quick_cache::sync::{Cache, DefaultLifecycle};
+use quick_cache::{DefaultHashBuilder, Equivalent, OptionsBuilder, UnitWeighter};
 
 use crate::common::error::AicError;
 
@@ -154,9 +158,82 @@ pub struct UtilGrid {
     mins: Vec<f64>,
     spans: Vec<f64>,
     index: Option<UtilKdTree>,
+    query_cache: Arc<OnceLock<UtilQueryCache>>,
     /// Transfer tag of the reference slice this grid was built from
     /// (`xshape` / `xquant` / ...), when borrowed from a sibling.
     pub reference_provenance: Option<&'static str>,
+}
+
+const UTIL_QUERY_CACHE_CAPACITY: usize = 32_768;
+const UTIL_QUERY_CACHE_SHARDS: usize = 16;
+
+type UtilQueryCache = Cache<UtilQueryKey, f64>;
+
+#[derive(Debug, PartialEq, Eq)]
+struct UtilQueryKey(Box<[u64]>);
+
+impl UtilQueryKey {
+    fn new(query: &[f64]) -> Self {
+        Self(
+            query
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
+    }
+}
+
+impl Hash for UtilQueryKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_util_query(self.0.len(), self.0.iter().copied(), state);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct UtilQueryRef<'a>(&'a [f64]);
+
+impl Hash for UtilQueryRef<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_util_query(
+            self.0.len(),
+            self.0.iter().map(|value| value.to_bits()),
+            state,
+        );
+    }
+}
+
+impl Equivalent<UtilQueryKey> for UtilQueryRef<'_> {
+    fn equivalent(&self, key: &UtilQueryKey) -> bool {
+        self.0.len() == key.0.len()
+            && self
+                .0
+                .iter()
+                .zip(key.0.iter())
+                .all(|(value, bits)| value.to_bits() == *bits)
+    }
+}
+
+fn hash_util_query<H: Hasher>(len: usize, bits: impl Iterator<Item = u64>, state: &mut H) {
+    len.hash(state);
+    for bits in bits {
+        bits.hash(state);
+    }
+}
+
+fn util_query_cache() -> UtilQueryCache {
+    let options = OptionsBuilder::new()
+        .estimated_items_capacity(UTIL_QUERY_CACHE_CAPACITY)
+        .weight_capacity(UTIL_QUERY_CACHE_CAPACITY as u64)
+        .shards(UTIL_QUERY_CACHE_SHARDS)
+        .build()
+        .expect("valid static util query cache options");
+    Cache::with_options(
+        options,
+        UnitWeighter,
+        DefaultHashBuilder::default(),
+        DefaultLifecycle::default(),
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -334,6 +411,7 @@ impl UtilGrid {
                 mins: Vec::new(),
                 spans: Vec::new(),
                 index: None,
+                query_cache: Arc::new(OnceLock::new()),
                 reference_provenance: None,
             };
         }
@@ -372,6 +450,7 @@ impl UtilGrid {
             mins,
             spans,
             index,
+            query_cache: Arc::new(OnceLock::new()),
             reference_provenance: None,
         }
     }
@@ -392,39 +471,52 @@ impl UtilGrid {
             .enumerate()
             .map(|(a, &v)| ((log_floor(v) - self.mins[a]) / self.spans[a]).clamp(0.0, 1.0))
             .collect();
-        let nearest = if let Some(index) = self.index.as_ref().filter(|index| index.dims == q.len())
-        {
-            index.nearest_two(&self.norm, &q)
-        } else {
-            // Preserve the former behavior for tiny, non-finite, ragged,
-            // or dimension-mismatched grids that cannot use the index.
-            let mut nearest = NearestTwo::default();
-            for (sample, row) in self.norm.iter().enumerate() {
-                let distance = row
+        let (nearest, cache) =
+            if let Some(index) = self.index.as_ref().filter(|index| index.dims == q.len()) {
+                let cache = q
                     .iter()
-                    .zip(&q)
-                    .map(|(&x, &y)| (x - y) * (x - y))
-                    .sum::<f64>()
-                    .sqrt();
-                nearest.consider(Neighbor { sample, distance });
-            }
-            nearest
-        };
+                    .all(|value| value.is_finite())
+                    .then(|| self.query_cache.get_or_init(util_query_cache));
+                if let Some(value) = cache.and_then(|cache| cache.get(&UtilQueryRef(&q))) {
+                    return Some(value);
+                }
+                (index.nearest_two(&self.norm, &q), cache)
+            } else {
+                // Preserve the former behavior for tiny, non-finite, ragged,
+                // or dimension-mismatched grids that cannot use the index.
+                let mut nearest = NearestTwo::default();
+                for (sample, row) in self.norm.iter().enumerate() {
+                    let distance = row
+                        .iter()
+                        .zip(&q)
+                        .map(|(&x, &y)| (x - y) * (x - y))
+                        .sum::<f64>()
+                        .sqrt();
+                    nearest.consider(Neighbor { sample, distance });
+                }
+                (nearest, None)
+            };
 
         let second = nearest.second;
         let nearest = nearest.nearest.expect("non-empty util grid");
-        if nearest.distance == 0.0 {
-            return Some(self.utils[nearest.sample]);
+        let util = if nearest.distance == 0.0 {
+            self.utils[nearest.sample]
+        } else {
+            let mut weighted = 0.0;
+            let mut weight_sum = 0.0;
+            for neighbor in [Some(nearest), second].into_iter().flatten() {
+                let w = 1.0 / neighbor.distance;
+                weighted += self.utils[neighbor.sample] * w;
+                weight_sum += w;
+            }
+            weighted / weight_sum
+        };
+        if util.is_finite() {
+            if let Some(cache) = cache {
+                cache.insert(UtilQueryKey::new(&q), util);
+            }
         }
-
-        let mut weighted = 0.0;
-        let mut weight_sum = 0.0;
-        for neighbor in [Some(nearest), second].into_iter().flatten() {
-            let w = 1.0 / neighbor.distance;
-            weighted += self.utils[neighbor.sample] * w;
-            weight_sum += w;
-        }
-        Some(weighted / weight_sum)
+        Some(util)
     }
 }
 
@@ -751,6 +843,57 @@ mod tests {
     }
 
     #[test]
+    fn indexed_queries_cache_exact_normalized_coordinates() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![1.0], 0.2),
+            UtilSample::new(vec![2.0], 0.4),
+            UtilSample::new(vec![4.0], 0.8),
+        ]);
+
+        let first = grid.util(&[2.0]).unwrap();
+        let second = grid.util(&[2.0]).unwrap();
+        assert_eq!(first.to_bits(), second.to_bits());
+        assert_eq!(grid.query_cache.get().unwrap().len(), 1);
+
+        let low = grid.util(&[0.5]).unwrap();
+        let lower = grid.util(&[0.25]).unwrap();
+        assert_eq!(low.to_bits(), lower.to_bits());
+        assert_eq!(grid.query_cache.get().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn indexed_query_cache_supports_arbitrary_dimensions() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![1.0; 5], 0.2),
+            UtilSample::new(vec![4.0; 5], 0.4),
+            UtilSample::new(vec![16.0; 5], 0.8),
+        ]);
+        let query = vec![2.0; 5];
+
+        let first = grid.util(&query).unwrap();
+        let second = grid.util(&query).unwrap();
+        assert_eq!(first.to_bits(), second.to_bits());
+        assert_eq!(grid.query_cache.get().unwrap().len(), 1);
+
+        let mut distinct = query;
+        distinct[4] = 3.0;
+        grid.util(&distinct).unwrap();
+        assert_eq!(grid.query_cache.get().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn indexed_query_cache_does_not_store_non_finite_results() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![1.0], f64::NAN),
+            UtilSample::new(vec![2.0], 0.4),
+            UtilSample::new(vec![4.0], 0.8),
+        ]);
+
+        assert!(grid.util(&[1.0]).unwrap().is_nan());
+        assert_eq!(grid.query_cache.get().unwrap().len(), 0);
+    }
+
+    #[test]
     fn second_neighbor_tie_keeps_sample_order() {
         let grid = UtilGrid::new(vec![
             UtilSample::new(vec![2.0, 2.0], 0.2),
@@ -790,6 +933,7 @@ mod tests {
 
         approx(grid.util(&[1.0]).unwrap(), 0.2);
         approx(grid.util(&[128.0]).unwrap(), 0.8);
+        assert!(grid.query_cache.get().is_none());
     }
 
     #[test]
