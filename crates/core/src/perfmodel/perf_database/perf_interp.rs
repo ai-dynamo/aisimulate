@@ -273,7 +273,7 @@ impl PreparedGrid {
         cfg: &OpInterpConfig,
         coords: &[f64],
     ) -> Result<LeafValue, AicError> {
-        query_value_impl(cfg, &self.node, coords, Some(&self.hold_index))
+        query_value_impl(cfg, &self.node, coords, &self.hold_index)
     }
 }
 
@@ -401,27 +401,11 @@ fn miss(cfg: &OpInterpConfig, coords: &[f64], reason: &str) -> AicError {
 /// Internal signal: the query left the collected range at some level.
 struct OutOfRange;
 
-/// Resolve one query against a raw nested table (latency only).
-pub fn query(cfg: &OpInterpConfig, data: &Node, coords: &[f64]) -> Result<f64, AicError> {
-    query_value(cfg, data, coords).map(|v| v.latency)
-}
-
-/// Resolve one query against a raw nested table. Returns the measured leaf
-/// verbatim on an exact hit, else `{latency, power, energy = power * latency}`
-/// — the same contract as the Python engine's `query`.
-pub fn query_value(
-    cfg: &OpInterpConfig,
-    data: &Node,
-    coords: &[f64],
-) -> Result<LeafValue, AicError> {
-    query_value_impl(cfg, data, coords, None)
-}
-
 fn query_value_impl(
     cfg: &OpInterpConfig,
     data: &Node,
     coords: &[f64],
-    hold_index: Option<&OnceLock<FlatHoldIndex>>,
+    hold_index: &OnceLock<FlatHoldIndex>,
 ) -> Result<LeafValue, AicError> {
     assert_eq!(
         coords.len(),
@@ -484,7 +468,7 @@ fn resolve_grid(
     cfg: &OpInterpConfig,
     data: &Node,
     coords: &[f64],
-    hold_index: Option<&OnceLock<FlatHoldIndex>>,
+    hold_index: &OnceLock<FlatHoldIndex>,
 ) -> Result<(f64, f64), AicError> {
     match grid_interior(cfg, data, coords, 0) {
         Ok(pair) => Ok(pair),
@@ -625,7 +609,7 @@ fn grid_hold(
     cfg: &OpInterpConfig,
     data: &Node,
     coords: &[f64],
-    hold_index: Option<&OnceLock<FlatHoldIndex>>,
+    hold_index: &OnceLock<FlatHoldIndex>,
 ) -> Result<(f64, f64), AicError> {
     let (k_tail, nn_leaves) = match &cfg.resolver {
         Resolver::Grid { k_tail, nn_leaves } => (*k_tail, *nn_leaves),
@@ -635,16 +619,12 @@ fn grid_hold(
         return grid_hold_1d(cfg, data, coords, k_tail);
     }
 
-    let anchors = if let Some(hold_index) = hold_index {
-        hold_anchor_weights_prepared(
-            cfg,
-            hold_index.get_or_init(|| FlatHoldIndex::build(data)),
-            coords,
-            nn_leaves,
-        )?
-    } else {
-        hold_anchor_weights(cfg, data, coords, nn_leaves)?
-    };
+    let anchors = hold_anchor_weights_prepared(
+        cfg,
+        hold_index.get_or_init(|| FlatHoldIndex::build(data)),
+        coords,
+        nn_leaves,
+    )?;
     let wsum: f64 = anchors.iter().map(|a| a.weight).sum();
     if wsum <= 0.0 {
         return Err(miss(cfg, coords, "no positive-util boundary anchor"));
@@ -720,83 +700,6 @@ struct HoldAnchor {
 struct HoldCandidate {
     distance_sq: f64,
     leaf_idx: usize,
-}
-
-/// The multi-axis hold's anchor selection for stateless raw-`Node` queries.
-/// Selection is a single pass over the tree with a small best-M buffer: no
-/// full leaf vector or flat index, and coordinate paths are cloned only when
-/// a leaf enters the buffer.
-fn hold_anchor_weights(
-    cfg: &OpInterpConfig,
-    data: &Node,
-    coords: &[f64],
-    nn_leaves: usize,
-) -> Result<Vec<HoldAnchor>, AicError> {
-    const SLACK: usize = 8;
-    let m = nn_leaves + SLACK;
-    let q_log: Vec<f64> = coords.iter().map(|&v| v.max(1e-12).log2()).collect();
-    let mut best: Vec<(f64, Vec<u32>, LeafValue)> = Vec::with_capacity(m + 1);
-    let mut n_leaves = 0usize;
-    visit_leaves(
-        data,
-        &mut Vec::new(),
-        &mut |path: &[u32], leaf: LeafValue| {
-            n_leaves += 1;
-            let mut distance_sq = 0.0;
-            for (i, &v) in path.iter().enumerate() {
-                let delta = ((v as f64).max(1e-12)).log2() - q_log[i];
-                distance_sq += delta * delta;
-            }
-            if best.len() == m {
-                if distance_sq >= best[m - 1].0 {
-                    return;
-                }
-                best.pop();
-            }
-            let pos = best.partition_point(|candidate| candidate.0 <= distance_sq);
-            best.insert(pos, (distance_sq, path.to_vec(), leaf));
-        },
-    );
-    if n_leaves == 0 {
-        return Err(miss(
-            cfg,
-            coords,
-            &format!("empty branch at axis '{}'", cfg.axes[0]),
-        ));
-    }
-
-    let mut picked = Vec::with_capacity(nn_leaves);
-    let mut support_r = f64::INFINITY;
-    let mut support_found = false;
-    let mut anchor = Vec::with_capacity(coords.len());
-    for (distance_sq, candidate_coords, leaf) in &best {
-        anchor.clear();
-        anchor.extend(candidate_coords.iter().map(|&value| value as f64));
-        let sol = (cfg.sol_fn)(&anchor);
-        if !(leaf.latency.is_finite() && leaf.latency > 0.0 && sol.is_finite() && sol > 0.0) {
-            continue;
-        }
-        let distance = distance_sq.sqrt();
-        if picked.len() < nn_leaves {
-            picked.push(HoldAnchor {
-                coords: candidate_coords.clone(),
-                latency: leaf.latency,
-                power: leaf.blend_power(),
-                sol,
-                weight: distance,
-            });
-        } else {
-            support_r = distance;
-            support_found = true;
-            break;
-        }
-    }
-
-    if n_leaves > m && !support_found {
-        let index = FlatHoldIndex::build(data);
-        return hold_anchor_weights_exhaustive(cfg, &index, coords, nn_leaves, &q_log);
-    }
-    finish_hold_anchors(cfg, coords, picked, support_r)
 }
 
 /// The multi-axis hold's anchor selection: the `nn_leaves` nearest valid
@@ -1490,6 +1393,18 @@ mod tests {
             (a - b).abs() <= 1e-9 * b.abs().max(1.0),
             "left: {a}, right: {b}"
         );
+    }
+
+    fn query(cfg: &OpInterpConfig, data: &Node, coords: &[f64]) -> Result<f64, AicError> {
+        PreparedGrid::new(data.clone()).query(cfg, coords)
+    }
+
+    fn query_value(
+        cfg: &OpInterpConfig,
+        data: &Node,
+        coords: &[f64],
+    ) -> Result<LeafValue, AicError> {
+        PreparedGrid::new(data.clone()).query_value(cfg, coords)
     }
 
     // Attention-like: (num_heads, seq, batch) grid, corner-truncated; lat ~ n*b*s^2
@@ -2239,29 +2154,6 @@ mod tests {
             selected,
             vec![vec![12, 2], vec![13, 2], vec![14, 2], vec![15, 2]]
         );
-    }
-
-    #[test]
-    fn stateless_and_prepared_hold_match_on_ragged_grid() {
-        let mut ragged = Node::branch();
-        for (coords, latency, power) in [
-            ([1, 1, 1], 1.0, 100.0),
-            ([1, 2, 4], 2.0, 110.0),
-            ([2, 1, 2], 3.0, 120.0),
-            ([2, 4, 1], 4.0, 130.0),
-            ([4, 2, 2], 5.0, 140.0),
-            ([4, 4, 4], 6.0, 150.0),
-        ] {
-            ragged.insert_value(&coords, LeafValue::with_power(latency, power));
-        }
-        let sol = |coords: &[f64]| coords.iter().product();
-        let cfg = OpInterpConfig::grid(&["a", "b", "c"], &sol);
-        let prepared = PreparedGrid::new(ragged.clone());
-
-        let stateless = query_value(&cfg, &ragged, &[8.0, 8.0, 8.0]).unwrap();
-        let indexed = prepared.query_value(&cfg, &[8.0, 8.0, 8.0]).unwrap();
-
-        assert_eq!(stateless, indexed);
     }
 
     #[test]
