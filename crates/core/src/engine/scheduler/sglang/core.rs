@@ -873,6 +873,7 @@ impl SglangCore {
             admissions.push(crate::engine::scheduler::AdmissionEvent {
                 uuid: request.uuid,
                 reused_input_tokens: 0,
+                cache_tier_attribution: None,
             });
             self.running.push(request);
         }

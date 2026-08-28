@@ -177,6 +177,32 @@ def test_runner_lowers_sglang_with_prefix_caching_disabled():
     assert runtime.execution_spec["engine"]["rank"]["enable_prefix_caching"] is False
 
 
+def test_runner_preserves_native_host_offload_rank_config():
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args["kv_bytes_per_token"] = 131_072
+    engine_args["native_host_offload"] = {
+        "num_host_blocks": 4096,
+        "d2h_bandwidth_gbps": 7.0,
+        "h2d_bandwidth_gbps": 38.0,
+    }
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert rank["kv_bytes_per_token"] == 131_072
+    assert rank["native_host_offload"] == engine_args["native_host_offload"]
+
+
 def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     runtime = RecordingRuntime()
     engine_args = _engine_args()

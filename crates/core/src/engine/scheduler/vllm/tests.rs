@@ -91,6 +91,34 @@ fn engine_adapter_constructs_native_request_state() {
 }
 
 #[test]
+fn ordinary_vllm_requests_keep_host_state_lazy_and_skip_connector_queue() {
+    let mut core = VllmCore::new(prefix_cache_args());
+    for (uuid, start) in [(80_101_u128, 0_u32), (80_102, 100)] {
+        core.receive(DirectRequest {
+            tokens: (start..start + 8).collect(),
+            max_output_tokens: 2,
+            uuid: Some(Uuid::from_u128(uuid)),
+            ..Default::default()
+        });
+    }
+
+    assert_eq!(core.host_offload_request_state_count(), 0);
+    assert_eq!(
+        VllmCore::host_offload_state_slot_size(),
+        std::mem::size_of::<usize>(),
+        "disabled requests should retain only a pointer-sized optional slot"
+    );
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    core.execute_pass(&mut collector, 0.0);
+    assert_eq!(
+        core.connector_waiting_selections(),
+        0,
+        "ordinary FCFS must not consult the host connector queue"
+    );
+}
+
+#[test]
 fn flat_tokens_cover_every_native_g1_configuration() {
     let mut next_uuid = 80_110_u128;
     for engine_type in [EngineType::Vllm, EngineType::Trtllm] {
@@ -534,6 +562,34 @@ mod destination_lifecycle {
             }] if *signal_uuid == uuid
         ));
         assert!(!core.state().requests.contains_key(&uuid));
+    }
+
+    #[test]
+    fn sequential_destination_activation_keeps_materialized_queue_bounded() {
+        let mut core = VllmCore::new(args(WorkerType::Decode));
+        let mut now_ms = 0.0;
+        for index in 0..16_u128 {
+            let handoff_id = HandoffId::from(Uuid::from_u128(30_100 + index * 2));
+            let request_id = Uuid::from_u128(30_101 + index * 2);
+            assert!(matches!(
+                core.apply_command(SchedulerCommand::ReserveDestination {
+                    handoff_id,
+                    request: request(request_id, vec![index as u32; 4], 0),
+                })
+                .unwrap(),
+                SchedulerCommandResult::DestinationAccepted { .. }
+            ));
+            assert_eq!(
+                core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                    .unwrap(),
+                SchedulerCommandResult::Applied
+            );
+            assert_eq!(core.materialized_waiting_physical_len(), 1);
+            let pass = execute(&mut core, now_ms);
+            now_ms = pass.end_ms;
+            assert!(core.is_empty());
+            assert_eq!(core.materialized_waiting_physical_len(), 0);
+        }
     }
 
     fn drive_source_to_hold(core: &mut VllmCore, handoff_id: HandoffId, req: DirectRequest) {

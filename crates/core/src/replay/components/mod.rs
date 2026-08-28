@@ -12,6 +12,6 @@ pub use types::ReplayEngineObservation;
 pub(crate) use types::ReplayMode;
 pub use types::TrafficStats;
 pub(crate) use types::{
-    AdmissionEvent, EngineEffects, EnginePassMode, ObservedCommandEffects, PressureEvent,
-    ScheduledEngineCompletion, TrafficAccumulator,
+    AdmissionEvent, EngineEffects, EnginePassMode, InternalEngineEffects, ObservedCommandEffects,
+    PressureEvent, ScheduledEngineCompletion, TrafficAccumulator,
 };

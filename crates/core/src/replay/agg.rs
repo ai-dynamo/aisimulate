@@ -4,8 +4,8 @@
 use super::artifact::{ReplayArtifactRequest, ReplayArtifactSink};
 pub(super) use super::components::ReplayMode;
 use super::core::{
-    AdmissionSource as CoreAdmissionSource, Placement, PlacementDecision, PlacementPolicy,
-    WorkerTopology,
+    AdmissionSource as CoreAdmissionSource, EngineEventBatch, Placement, PlacementDecision,
+    PlacementPolicy, WorkerTopology,
 };
 use super::events::{SimulationEvent, SimulationWorkerStage, WorkerCompletionPayload};
 use super::evidence::{
@@ -34,6 +34,8 @@ use anyhow::{Context, bail};
 use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
 use uuid::Uuid;
+
+const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct AggRuntimeStats;
@@ -145,6 +147,8 @@ where
 
     pub(crate) fn with_artifact_sink(mut self, sink: ReplayArtifactSink) -> Self {
         self.engine.set_artifact_kv_capture(true);
+        self.engine
+            .set_host_offload_observer(sink.host_offload_observer());
         self.artifact_sink = Some(sink);
         self
     }
@@ -364,13 +368,15 @@ where
         })
     }
 
-    /// Pick the next logical timestamp from either arrivals or scheduled worker completions.
+    /// Pick the next logical timestamp from arrivals, scheduled events, or
+    /// independently modeled engine work such as host transfers.
     fn next_timestamp(&mut self) -> Option<f64> {
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
-        choose_next_timestamp(
+        let external = choose_next_timestamp(
             CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
             next_event_ms,
-        )
+        );
+        choose_next_timestamp(external, self.engine.next_internal_deadline_ms())
     }
 
     /// Apply router-visible KV events at the phase chosen by the scheduler core.
@@ -597,6 +603,39 @@ where
         }
     }
 
+    /// Settle transfer and other deadline-driven engine work due at the
+    /// current timestamp before releasing new arrivals to scheduler admission.
+    fn apply_internal_work(&mut self) -> anyhow::Result<bool> {
+        let effects = self.engine.process_internal_work(self.now_ms)?;
+        if let (Some(sink), Some(events)) = (&self.artifact_sink, effects.artifact_kv_events) {
+            sink.record_internal_kv_events(self.now_ms, &events)?;
+        }
+        if !effects.engine_events.is_empty() {
+            self.apply_engine_observations(effects.engine_events, KvIngestBoundary::OffloadTick)?;
+        }
+        Ok(effects.made_progress)
+    }
+
+    fn settle_internal_work(
+        &mut self,
+        consecutive_internal_steps: &mut usize,
+    ) -> anyhow::Result<bool> {
+        let mut changed = false;
+        while self.apply_internal_work()? {
+            *consecutive_internal_steps = consecutive_internal_steps
+                .checked_add(1)
+                .context("internal-work convergence counter overflow")?;
+            if *consecutive_internal_steps >= MAX_CONSECUTIVE_INTERNAL_STEPS {
+                bail!(
+                    "offline replay detected non-converging engine internal work at {} ms",
+                    self.now_ms
+                );
+            }
+            changed = true;
+        }
+        Ok(changed)
+    }
+
     fn handle_engine_effects(
         &mut self,
         effects: EngineEffects<Observation::Batch>,
@@ -606,13 +645,19 @@ where
         // scheduler contract by making them visible to Replay's collector at
         // the same virtual timestamp before any completion is processed.
         for admission in effects.admissions {
-            self.collector
-                .on_admit(admission.uuid, self.now_ms, admission.reused_input_tokens);
-            self.collector.on_pool_admission(
+            let attribution = admission.cache_tier_attribution;
+            self.collector.on_admit_with_tier_attribution(
+                admission.uuid,
+                self.now_ms,
+                admission.reused_input_tokens,
+                attribution,
+            );
+            self.collector.on_pool_admission_with_tier_attribution(
                 admission.uuid,
                 ReplayRequestPool::Agg,
                 self.now_ms,
                 admission.reused_input_tokens,
+                attribution,
             );
             self.evidence
                 .record_pressure_readmission(admission.uuid, WorkerPool::Agg, self.now_ms);
@@ -690,9 +735,18 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> anyhow::Result<()> {
+        let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = false;
-            changed |= self.apply_worker_completions()?;
+            // Settle idle deadlines first: a completion below may release a
+            // queued placement and submit it to that same idle worker.
+            changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            let completed = self.apply_worker_completions()?;
+            changed |= completed;
+            if completed {
+                // Pass completion can expose another deadline at this timestamp.
+                changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.drive_ready_workers()?;
@@ -1074,5 +1128,225 @@ where
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
         Ok((self.collector, self.stats))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{EngineConfig, NativeHostOffloadConfig, TimingModelConfig};
+    use crate::replay::components::NoReplayMetadata;
+    use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
+    use crate::replay::loadgen::ReplayRequestPayload;
+    use crate::replay::{NoEngineEvents, PlacementEffects, WorkerStage};
+    use std::collections::VecDeque;
+
+    const SEED: Uuid = Uuid::from_u128(1);
+    const EVICT: Uuid = Uuid::from_u128(2);
+    const RESTORE: Uuid = Uuid::from_u128(3);
+    const COMPLETING_A: Uuid = Uuid::from_u128(4);
+    const QUEUED_FOR_B: Uuid = Uuid::from_u128(5);
+
+    struct ReleaseToIdleWorker {
+        pending: Option<Uuid>,
+    }
+
+    impl PlacementPolicy<ReplayRequestPayload> for ReleaseToIdleWorker {
+        type Metadata = NoReplayMetadata;
+        type Observation = ();
+
+        fn place(
+            &mut self,
+            request: &ReplayRequestPayload,
+            _metadata: Self::Metadata,
+            _session_id: Option<String>,
+            _now_ms: f64,
+        ) -> anyhow::Result<PlacementEffects> {
+            let request_id = request
+                .metadata()
+                .uuid
+                .expect("test requests have stable IDs");
+            if request_id == QUEUED_FOR_B {
+                assert!(self.pending.replace(request_id).is_none());
+                return Ok(PlacementEffects {
+                    decision: PlacementDecision::Queued,
+                    released: Vec::new(),
+                });
+            }
+            let scheduler_id =
+                usize::from(request_id == SEED || request_id == EVICT || request_id == RESTORE);
+            Ok(PlacementEffects {
+                decision: PlacementDecision::Immediate(Placement {
+                    request_id,
+                    scheduler_id,
+                    reported_overlap_tokens: 0,
+                    cache_sample: None,
+                }),
+                released: Vec::new(),
+            })
+        }
+
+        fn observe(
+            &mut self,
+            _observation: Self::Observation,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+            if self.pending == Some(request_id) {
+                self.pending = None;
+                true
+            } else {
+                false
+            }
+        }
+
+        fn request_terminal(
+            &mut self,
+            request_id: Uuid,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            if request_id != COMPLETING_A {
+                return Ok(Vec::new());
+            }
+            Ok(self
+                .pending
+                .take()
+                .into_iter()
+                .map(|request_id| Placement {
+                    request_id,
+                    scheduler_id: 1,
+                    reported_overlap_tokens: 0,
+                    cache_sample: None,
+                })
+                .collect())
+        }
+
+        fn prefill_completed(
+            &mut self,
+            _request_id: Uuid,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn pending_count(&self) -> usize {
+            usize::from(self.pending.is_some())
+        }
+
+        fn worker_ready(
+            &mut self,
+            _worker: WorkerTopology,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn worker_draining(
+            &mut self,
+            _worker: WorkerTopology,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn worker_removed(
+            &mut self,
+            _worker: WorkerTopology,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn topology_settled(&mut self, _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn request(uuid: Uuid, at_ms: f64, tokens: Vec<u32>) -> DirectRequest {
+        DirectRequest {
+            tokens,
+            max_output_tokens: 0,
+            uuid: Some(uuid),
+            arrival_timestamp_ms: Some(at_ms),
+            ..DirectRequest::default()
+        }
+    }
+
+    #[test]
+    fn idle_internal_deadline_settles_before_completion_releases_placement() {
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                num_gpu_blocks: 1,
+                block_size: 4,
+                max_num_seqs: 2,
+                max_num_batched_tokens: 8,
+                enable_prefix_caching: true,
+                kv_bytes_per_token: Some(250_000),
+                native_host_offload: Some(
+                    NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0),
+                ),
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 0.0,
+                },
+                ..EngineConfig::default()
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let admission = AdmissionQueue::new_requests(
+            VecDeque::from([
+                request(SEED, 0.0, vec![1, 2, 3, 4]),
+                request(EVICT, 2.0, vec![5, 6, 7, 8]),
+                request(RESTORE, 4.0, vec![1, 2, 3, 4]),
+                request(COMPLETING_A, 4.0, vec![11, 12, 13, 14]),
+                request(QUEUED_FOR_B, 4.0, vec![21, 22, 23, 24]),
+            ]),
+            ReplayMode::Trace,
+        );
+        let runtime = AggRuntimeImpl::<ReleaseToIdleWorker, NoEngineEvents, ()>::new_composed(
+            factory,
+            admission,
+            2,
+            None,
+            move |_dp_size, topology| {
+                assert_eq!(
+                    topology
+                        .iter()
+                        .map(|worker| worker.scheduler_ids.as_slice())
+                        .collect::<Vec<_>>(),
+                    vec![&[0][..], &[1][..]]
+                );
+                Ok(ReleaseToIdleWorker { pending: None })
+            },
+        )
+        .unwrap()
+        .with_per_request_records(true);
+
+        let (collector, _) = runtime.run().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.completed_requests, 5);
+        let restore = report
+            .per_request
+            .iter()
+            .find(|request| request.uuid == RESTORE.to_string())
+            .expect("restore request record");
+        assert_eq!(restore.decode_worker_idx, Some(1));
+        assert_eq!(restore.first_admit_ms, Some(5.0));
+        assert_eq!(restore.first_admission_host_reused_input_tokens, Some(4));
+        assert_eq!(restore.terminal_status, ReplayTerminalStatus::Completed);
+        let released = report
+            .per_request
+            .iter()
+            .find(|request| request.uuid == QUEUED_FOR_B.to_string())
+            .expect("released request record");
+        assert_eq!(released.decode_worker_idx, Some(1));
+        assert_eq!(released.first_admit_ms, Some(5.0));
+        assert_eq!(released.terminal_status, ReplayTerminalStatus::Completed);
     }
 }

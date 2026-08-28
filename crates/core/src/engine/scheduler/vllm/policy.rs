@@ -173,12 +173,42 @@ pub(super) fn apply_prefix_recompute(
 /// vLLM reserves only the current known sequence. TRT-LLM
 /// `GUARANTEED_NO_EVICT` reserves the request through its maximum completion
 /// and accounts for the completion reservations of running requests.
+#[cfg(test)]
 pub(super) fn decide_waiting_admission<'a, S: PolicySequence + 'a>(
     config: WaitingAdmissionConfig,
     sequence: &S,
     is_fresh: bool,
     running: impl Iterator<Item = &'a S>,
     kv_manager: &G1Manager,
+) -> AdmissionDecision {
+    let raw_prefill_cost = sequence.prefill_cost(kv_manager);
+    decide_waiting_admission_with_cost(
+        config,
+        sequence,
+        is_fresh,
+        running,
+        kv_manager,
+        0,
+        0,
+        raw_prefill_cost,
+    )
+}
+
+/// Apply the scheduler capacity rule to a prefix lookup that has already run.
+///
+/// A framework-native host tier probes after the authoritative G1 lookup but
+/// before G1 allocation. Passing that observed cost through this boundary
+/// avoids a second lookup changing recency or hiding a lifecycle divergence.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
+    config: WaitingAdmissionConfig,
+    sequence: &S,
+    is_fresh: bool,
+    running: impl Iterator<Item = &'a S>,
+    kv_manager: &G1Manager,
+    reserved_request_blocks: usize,
+    inflight_prefill_reserved_blocks: usize,
+    raw_prefill_cost: PrefillCost,
 ) -> AdmissionDecision {
     let WaitingAdmissionConfig {
         policy,
@@ -204,7 +234,6 @@ pub(super) fn decide_waiting_admission<'a, S: PolicySequence + 'a>(
         }
     }
 
-    let raw_prefill_cost = sequence.prefill_cost(kv_manager);
     let prefill_cost = apply_prefix_recompute(
         policy,
         sequence.len(),
@@ -214,15 +243,17 @@ pub(super) fn decide_waiting_admission<'a, S: PolicySequence + 'a>(
         raw_prefill_cost,
     );
     let available = match policy {
-        SchedulingPolicy::Vllm => num_gpu_blocks.saturating_sub(kv_manager.num_active_blocks()),
+        SchedulingPolicy::Vllm => num_gpu_blocks
+            .saturating_sub(kv_manager.num_active_blocks())
+            .saturating_sub(inflight_prefill_reserved_blocks),
         SchedulingPolicy::TrtllmGuaranteedNoEvict => {
             available_blocks(running, num_gpu_blocks, block_size, kv_manager)
         }
     };
     let needed = match policy {
-        SchedulingPolicy::Vllm => sequence
-            .current_known_blocks()
-            .saturating_sub(prefill_cost.active_cached_tokens / block_size),
+        SchedulingPolicy::Vllm => sequence.current_known_blocks().saturating_sub(
+            (prefill_cost.active_cached_tokens / block_size).max(reserved_request_blocks),
+        ),
         SchedulingPolicy::TrtllmGuaranteedNoEvict => {
             blocks_needed_to_finish(sequence, block_size, kv_manager, Some(&prefill_cost))
         }
