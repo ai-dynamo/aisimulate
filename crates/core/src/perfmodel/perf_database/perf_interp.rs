@@ -635,14 +635,16 @@ fn grid_hold(
         return grid_hold_1d(cfg, data, coords, k_tail);
     }
 
-    let local_index;
-    let index = if let Some(hold_index) = hold_index {
-        hold_index.get_or_init(|| FlatHoldIndex::build(data))
+    let anchors = if let Some(hold_index) = hold_index {
+        hold_anchor_weights_prepared(
+            cfg,
+            hold_index.get_or_init(|| FlatHoldIndex::build(data)),
+            coords,
+            nn_leaves,
+        )?
     } else {
-        local_index = FlatHoldIndex::build(data);
-        &local_index
+        hold_anchor_weights(cfg, data, coords, nn_leaves)?
     };
-    let anchors = hold_anchor_weights(cfg, index, coords, nn_leaves)?;
     let wsum: f64 = anchors.iter().map(|a| a.weight).sum();
     if wsum <= 0.0 {
         return Err(miss(cfg, coords, "no positive-util boundary anchor"));
@@ -720,6 +722,83 @@ struct HoldCandidate {
     leaf_idx: usize,
 }
 
+/// The multi-axis hold's anchor selection for stateless raw-`Node` queries.
+/// Selection is a single pass over the tree with a small best-M buffer: no
+/// full leaf vector or flat index, and coordinate paths are cloned only when
+/// a leaf enters the buffer.
+fn hold_anchor_weights(
+    cfg: &OpInterpConfig,
+    data: &Node,
+    coords: &[f64],
+    nn_leaves: usize,
+) -> Result<Vec<HoldAnchor>, AicError> {
+    const SLACK: usize = 8;
+    let m = nn_leaves + SLACK;
+    let q_log: Vec<f64> = coords.iter().map(|&v| v.max(1e-12).log2()).collect();
+    let mut best: Vec<(f64, Vec<u32>, LeafValue)> = Vec::with_capacity(m + 1);
+    let mut n_leaves = 0usize;
+    visit_leaves(
+        data,
+        &mut Vec::new(),
+        &mut |path: &[u32], leaf: LeafValue| {
+            n_leaves += 1;
+            let mut distance_sq = 0.0;
+            for (i, &v) in path.iter().enumerate() {
+                let delta = ((v as f64).max(1e-12)).log2() - q_log[i];
+                distance_sq += delta * delta;
+            }
+            if best.len() == m {
+                if distance_sq >= best[m - 1].0 {
+                    return;
+                }
+                best.pop();
+            }
+            let pos = best.partition_point(|candidate| candidate.0 <= distance_sq);
+            best.insert(pos, (distance_sq, path.to_vec(), leaf));
+        },
+    );
+    if n_leaves == 0 {
+        return Err(miss(
+            cfg,
+            coords,
+            &format!("empty branch at axis '{}'", cfg.axes[0]),
+        ));
+    }
+
+    let mut picked = Vec::with_capacity(nn_leaves);
+    let mut support_r = f64::INFINITY;
+    let mut support_found = false;
+    let mut anchor = Vec::with_capacity(coords.len());
+    for (distance_sq, candidate_coords, leaf) in &best {
+        anchor.clear();
+        anchor.extend(candidate_coords.iter().map(|&value| value as f64));
+        let sol = (cfg.sol_fn)(&anchor);
+        if !(leaf.latency.is_finite() && leaf.latency > 0.0 && sol.is_finite() && sol > 0.0) {
+            continue;
+        }
+        let distance = distance_sq.sqrt();
+        if picked.len() < nn_leaves {
+            picked.push(HoldAnchor {
+                coords: candidate_coords.clone(),
+                latency: leaf.latency,
+                power: leaf.blend_power(),
+                sol,
+                weight: distance,
+            });
+        } else {
+            support_r = distance;
+            support_found = true;
+            break;
+        }
+    }
+
+    if n_leaves > m && !support_found {
+        let index = FlatHoldIndex::build(data);
+        return hold_anchor_weights_exhaustive(cfg, &index, coords, nn_leaves, &q_log);
+    }
+    finish_hold_anchors(cfg, coords, picked, support_r)
+}
+
 /// The multi-axis hold's anchor selection: the `nn_leaves` nearest valid
 /// leaves in joint log2 space, with tapered modified-Shepard weights (support
 /// radius R = the next valid leaf's distance; leaves at d == R weigh zero, so
@@ -728,7 +807,7 @@ struct HoldCandidate {
 /// small best-M buffer. The index stores coordinates and their log2 values in
 /// contiguous arrays. The buffer carries `SLACK` extra candidates so validity
 /// filtering (lat/sol > 0) almost never needs the full-collect fallback below.
-fn hold_anchor_weights(
+fn hold_anchor_weights_prepared(
     cfg: &OpInterpConfig,
     index: &FlatHoldIndex,
     coords: &[f64],
@@ -1363,6 +1442,20 @@ pub(crate) fn node_points(node: &Node) -> Vec<(Vec<f64>, f64)> {
     out.into_iter()
         .map(|(coords, leaf)| (coords.into_iter().map(|c| c as f64).collect(), leaf.latency))
         .collect()
+}
+
+/// Visit every leaf without materializing a full leaf vector.
+fn visit_leaves(node: &Node, prefix: &mut Vec<u32>, f: &mut impl FnMut(&[u32], LeafValue)) {
+    match node {
+        Node::Leaf(v) => f(prefix, *v),
+        Node::Branch(map) => {
+            for (&k, child) in map {
+                prefix.push(k);
+                visit_leaves(child, prefix, f);
+                prefix.pop();
+            }
+        }
+    }
 }
 
 fn walk_leaves(node: &Node, prefix: &mut Vec<u32>, out: &mut Vec<(Vec<u32>, LeafValue)>) {
@@ -2113,7 +2206,7 @@ mod tests {
         let tied_cfg = OpInterpConfig::grid(&["a", "b", "c", "d"], &sol);
         let tied_index = FlatHoldIndex::build(&tied);
         let anchors =
-            hold_anchor_weights(&tied_cfg, &tied_index, &[2.0, 2.0, 2.0, 2.0], 4).unwrap();
+            hold_anchor_weights_prepared(&tied_cfg, &tied_index, &[2.0, 2.0, 2.0, 2.0], 4).unwrap();
         let selected: Vec<Vec<u32>> = anchors.iter().map(|anchor| anchor.coords.clone()).collect();
         assert_eq!(
             selected,
@@ -2133,12 +2226,36 @@ mod tests {
         }
         let invalid_cfg = OpInterpConfig::grid(&["x", "y"], &sol);
         let invalid_index = FlatHoldIndex::build(&invalid);
-        let anchors = hold_anchor_weights(&invalid_cfg, &invalid_index, &[1.0, 1.0], 4).unwrap();
+        let anchors =
+            hold_anchor_weights_prepared(&invalid_cfg, &invalid_index, &[1.0, 1.0], 4).unwrap();
         let selected: Vec<Vec<u32>> = anchors.iter().map(|anchor| anchor.coords.clone()).collect();
         assert_eq!(
             selected,
             vec![vec![12, 2], vec![13, 2], vec![14, 2], vec![15, 2]]
         );
+    }
+
+    #[test]
+    fn stateless_and_prepared_hold_match_on_ragged_grid() {
+        let mut ragged = Node::branch();
+        for (coords, latency, power) in [
+            ([1, 1, 1], 1.0, 100.0),
+            ([1, 2, 4], 2.0, 110.0),
+            ([2, 1, 2], 3.0, 120.0),
+            ([2, 4, 1], 4.0, 130.0),
+            ([4, 2, 2], 5.0, 140.0),
+            ([4, 4, 4], 6.0, 150.0),
+        ] {
+            ragged.insert_value(&coords, LeafValue::with_power(latency, power));
+        }
+        let sol = |coords: &[f64]| coords.iter().product();
+        let cfg = OpInterpConfig::grid(&["a", "b", "c"], &sol);
+        let prepared = PreparedGrid::new(ragged.clone());
+
+        let stateless = query_value(&cfg, &ragged, &[8.0, 8.0, 8.0]).unwrap();
+        let indexed = prepared.query_value(&cfg, &[8.0, 8.0, 8.0]).unwrap();
+
+        assert_eq!(stateless, indexed);
     }
 
     #[test]

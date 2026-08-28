@@ -471,7 +471,7 @@ fn engine_query(
 /// coordinate is already populated; `Node::insert_value` would overwrite).
 fn insert_first_wins(root: &mut Node, path: &[u32], value: LeafValue) {
     let Node::Branch(map) = root else {
-        return;
+        return; // malformed nesting; keep the earlier row
     };
     if path.len() == 1 {
         map.entry(path[0]).or_insert(Node::Leaf(value));
