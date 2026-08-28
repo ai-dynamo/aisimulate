@@ -77,10 +77,90 @@ pub struct MoeA2aKey {
     pub sms: u32,
 }
 
-/// `num_tokens -> latency_ms` curves keyed by [`MoeA2aKey`], plus the
-/// collected comm-dtypes per `(comm_backend, phase)` the dtype chain needs.
+/// One stable table slice above the `(sms, num_tokens)` axes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MoeA2aSliceKey {
+    comm_backend: String,
+    phase: String,
+    comm_dtype: String,
+    ep_size: u32,
+    node_num: u32,
+    hidden_size: u32,
+    topk: u32,
+    num_experts: u32,
+}
+
+impl MoeA2aSliceKey {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        comm_backend: &str,
+        phase: &str,
+        comm_dtype: &str,
+        ep_size: u32,
+        node_num: u32,
+        hidden_size: u32,
+        topk: u32,
+        num_experts: u32,
+    ) -> Self {
+        Self {
+            comm_backend: comm_backend.to_string(),
+            phase: phase.to_string(),
+            comm_dtype: comm_dtype.to_string(),
+            ep_size,
+            node_num,
+            hidden_size,
+            topk,
+            num_experts,
+        }
+    }
+
+    fn with_phase_dtype(&self, phase: &str, comm_dtype: &str) -> Self {
+        let mut key = self.clone();
+        key.phase = phase.to_string();
+        key.comm_dtype = comm_dtype.to_string();
+        key
+    }
+}
+
+impl From<MoeA2aKey> for MoeA2aSliceKey {
+    fn from(key: MoeA2aKey) -> Self {
+        Self {
+            comm_backend: key.comm_backend,
+            phase: key.phase,
+            comm_dtype: key.comm_dtype,
+            ep_size: key.ep_size,
+            node_num: key.node_num,
+            hidden_size: key.hidden_size,
+            topk: key.topk,
+            num_experts: key.num_experts,
+        }
+    }
+}
+
+/// Curves retained for the exact-SMS fast path and one reusable 2-D Grid.
+struct SmsGrid {
+    curves: BTreeMap<u32, BTreeMap<u32, f64>>,
+    node: Node,
+}
+
+impl SmsGrid {
+    fn new(curves: BTreeMap<u32, BTreeMap<u32, f64>>) -> Self {
+        let mut node = Node::branch();
+        for (&sms, curve) in &curves {
+            for (&tokens, &latency) in curve {
+                node.insert(&[sms, tokens], latency);
+            }
+        }
+        Self { curves, node }
+    }
+}
+
+/// Prepared `(sms, num_tokens)` Grids, plus the collected comm-dtypes per
+/// `(comm_backend, phase)` the dtype chain needs.
 struct MoeA2aGrids {
-    by_keys: BTreeMap<MoeA2aKey, BTreeMap<u32, f64>>,
+    slices: BTreeMap<MoeA2aSliceKey, SmsGrid>,
+    /// Canonical `(dispatch, combine)` slice pair -> summed-latency Grid.
+    combined: BTreeMap<(MoeA2aSliceKey, MoeA2aSliceKey), Node>,
     /// `(comm_backend, phase) -> {comm_dtype}`. Mirrors `len(phase_slice)` /
     /// `next(iter(phase_slice))` in `_resolve_comm_dtype_slice`; the sole-dtype
     /// fallback only fires at size 1, where iteration order cannot matter.
@@ -181,46 +261,35 @@ impl MoeA2aTable {
             }
         };
         let used_dtype = resolve_dtype(phase)?;
-        let collect_by_sms = |phase_name: &str, dtype: &str| {
-            let key_at = |sms: u32| MoeA2aKey {
-                comm_backend: comm_backend.to_string(),
-                phase: phase_name.to_string(),
-                comm_dtype: dtype.to_string(),
-                ep_size,
-                node_num,
-                hidden_size,
-                topk,
-                num_experts,
-                sms,
-            };
-            grids
-                .by_keys
-                .range(key_at(0)..=key_at(u32::MAX))
-                .map(|(key, curve)| (key.sms, curve))
-                .collect::<BTreeMap<_, _>>()
-        };
-        // `sms` is the last key field, so every collected SM budget of one
-        // shape coordinate is one contiguous range — Python's `by_sms` slice.
-        let by_sms = collect_by_sms(phase, &used_dtype);
-        if by_sms.is_empty() {
-            return Err(AicError::PerfDatabase(format!(
+        let slice_key = MoeA2aSliceKey::new(
+            comm_backend,
+            phase,
+            &used_dtype,
+            ep_size,
+            node_num,
+            hidden_size,
+            topk,
+            num_experts,
+        );
+        let slice = grids.slices.get(&slice_key).ok_or_else(|| {
+            AicError::PerfDatabase(format!(
                 "moe_a2a data missing for {comm_backend}/{phase}, dtype={used_dtype}, \
                  ep={ep_size}, nodes={node_num}, hidden={hidden_size}, topk={topk}, \
                  experts={num_experts} at {}",
                 self.data_root.display(),
-            )));
-        }
+            ))
+        })?;
         // An EXACT sms key collapses that level to a 1-D token curve;
         // anything else resolves the 2-D (sms, num_tokens) Grid. Preserve the
         // Python DeepEP-HT exception: only node=1/sms=20 uses the 1-D path;
         // all other HT requests stay on the 2-D grid even for an exact sms.
-        let use_token_curve = by_sms.contains_key(&sms)
+        let use_token_curve = slice.curves.contains_key(&sms)
             && (comm_backend != "deepep_ht" || (node_num == 1 && sms == 20));
         if use_token_curve {
-            let curve = by_sms.get(&sms).expect("contains_key checked");
+            let curve = slice.curves.get(&sms).expect("contains_key checked");
             return token_axis_curve(curve).query(num_tokens as f64, &|t| t);
         }
-        let latency = query_sms_grid(&by_sms, sms, num_tokens)?;
+        let latency = query_sms_grid(&slice.node, sms, num_tokens)?;
 
         // The tapered Grid frontier hold is nonlinear in latency. Python
         // preserves the legacy DeepEP round-trip contract by interpolating
@@ -233,28 +302,18 @@ impl MoeA2aTable {
                 "dispatch"
             };
             let other_dtype = resolve_dtype(other_phase)?;
-            let other_by_sms = collect_by_sms(other_phase, &other_dtype);
-            let mut combined = BTreeMap::<u32, BTreeMap<u32, f64>>::new();
-            for (&sm, curve) in &by_sms {
-                let Some(other_curve) = other_by_sms.get(&sm) else {
-                    continue;
+            let other_key = slice_key.with_phase_dtype(other_phase, &other_dtype);
+            if let Some(other) = grids.slices.get(&other_key) {
+                let pair = if phase == "dispatch" {
+                    (slice_key.clone(), other_key)
+                } else {
+                    (other_key, slice_key.clone())
                 };
-                for (&tokens, &value) in curve.iter() {
-                    if let Some(&other_value) = other_curve.get(&tokens) {
-                        combined
-                            .entry(sm)
-                            .or_default()
-                            .insert(tokens, value + other_value);
-                    }
-                }
-            }
-            if !combined.is_empty() {
-                let other_latency = query_sms_grid(&other_by_sms, sms, num_tokens)?;
-                let combined_refs = combined
-                    .iter()
-                    .map(|(&sm, curve)| (sm, curve))
-                    .collect::<BTreeMap<_, _>>();
-                let combined_latency = query_sms_grid(&combined_refs, sms, num_tokens)?;
+                let Some(combined) = grids.combined.get(&pair) else {
+                    return Ok(latency);
+                };
+                let other_latency = query_sms_grid(&other.node, sms, num_tokens)?;
+                let combined_latency = query_sms_grid(combined, sms, num_tokens)?;
                 let phase_sum = latency + other_latency;
                 if phase_sum > 0.0 {
                     return Ok(latency * combined_latency / phase_sum);
@@ -277,20 +336,10 @@ impl MoeA2aTable {
     }
 }
 
-fn query_sms_grid(
-    by_sms: &BTreeMap<u32, &BTreeMap<u32, f64>>,
-    sms: u32,
-    num_tokens: u32,
-) -> Result<f64, AicError> {
-    let mut node = Node::branch();
-    for (&sm, curve) in by_sms {
-        for (&tokens, &latency) in curve.iter() {
-            node.insert(&[sm, tokens], latency);
-        }
-    }
+fn query_sms_grid(node: &Node, sms: u32, num_tokens: u32) -> Result<f64, AicError> {
     let sol = |c: &[f64]| c[1];
     let cfg = OpInterpConfig::grid(&["sms", "num_tokens"], &sol);
-    perf_interp::query(&cfg, &node, &[f64::from(sms), f64::from(num_tokens)])
+    perf_interp::query(&cfg, node, &[f64::from(sms), f64::from(num_tokens)])
 }
 
 /// `comm_dtype` of every legacy DeepEP row: those tables were collected with
@@ -339,17 +388,72 @@ fn load_moe_a2a_grids(
                 .unwrap_or_else(|| "<no moe_a2a sources>".to_string())
         )));
     }
+    let mut curves_by_slice = BTreeMap::<MoeA2aSliceKey, BTreeMap<u32, BTreeMap<u32, f64>>>::new();
     let mut dtypes_by_phase: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-    for key in by_keys.keys() {
+    for (key, curve) in by_keys {
         dtypes_by_phase
             .entry((key.comm_backend.clone(), key.phase.clone()))
             .or_default()
             .insert(key.comm_dtype.clone());
+        let sms = key.sms;
+        curves_by_slice
+            .entry(key.into())
+            .or_default()
+            .insert(sms, curve);
     }
+    let slices = curves_by_slice
+        .into_iter()
+        .map(|(key, curves)| (key, SmsGrid::new(curves)))
+        .collect::<BTreeMap<_, _>>();
+    let combined = build_combined_grids(&slices, &dtypes_by_phase);
     Ok(MoeA2aGrids {
-        by_keys,
+        slices,
+        combined,
         dtypes_by_phase,
     })
+}
+
+/// Build each DeepEP-HT dispatch+combine surface once. The original query
+/// formed the same intersection on every call; retaining it is exact because
+/// the loaded perf data is immutable.
+fn build_combined_grids(
+    slices: &BTreeMap<MoeA2aSliceKey, SmsGrid>,
+    dtypes_by_phase: &BTreeMap<(String, String), BTreeSet<String>>,
+) -> BTreeMap<(MoeA2aSliceKey, MoeA2aSliceKey), Node> {
+    let combine_phase = ("deepep_ht".to_string(), "combine".to_string());
+    let Some(combine_dtypes) = dtypes_by_phase.get(&combine_phase) else {
+        return BTreeMap::new();
+    };
+    let dispatch_keys = slices
+        .keys()
+        .filter(|key| key.comm_backend == "deepep_ht" && key.phase == "dispatch")
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut combined = BTreeMap::new();
+    for dispatch_key in dispatch_keys {
+        let dispatch = &slices[&dispatch_key];
+        for combine_dtype in combine_dtypes {
+            let combine_key = dispatch_key.with_phase_dtype("combine", combine_dtype);
+            let Some(combine) = slices.get(&combine_key) else {
+                continue;
+            };
+            let mut node = Node::branch();
+            for (&sms, dispatch_curve) in &dispatch.curves {
+                let Some(combine_curve) = combine.curves.get(&sms) else {
+                    continue;
+                };
+                for (&tokens, &dispatch_latency) in dispatch_curve {
+                    if let Some(&combine_latency) = combine_curve.get(&tokens) {
+                        node.insert(&[sms, tokens], dispatch_latency + combine_latency);
+                    }
+                }
+            }
+            if !node.is_empty() {
+                combined.insert((dispatch_key.clone(), combine_key), node);
+            }
+        }
+    }
+    combined
 }
 
 /// Bridge a sorted token->latency map onto the shared [`AxisCurve`] engine
@@ -1816,5 +1920,86 @@ mod tests {
             AicError::PerfDatabase(_) | AicError::Io { .. } => {}
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    /// Compare the previous temporary-Grid query with the retained table
+    /// path. The 6 x 23 shape matches one B200 DeepEP-HT phase slice.
+    /// Run manually in release mode:
+    /// `cargo test -p aisimulate-core --release moe_a2a_grid_reuse_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn moe_a2a_grid_reuse_bench() {
+        use std::time::Instant;
+
+        const ITERS: usize = 20_000;
+        const SMS: [u32; 6] = [4, 8, 12, 16, 20, 24];
+        const TOKENS: [u32; 23] = [
+            1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 1_536, 2_048, 4_096, 8_192, 16_384,
+            32_768, 49_152, 65_536, 98_304, 131_072, 196_608, 262_144,
+        ];
+
+        let curves = SMS
+            .iter()
+            .map(|&sm| {
+                let curve = TOKENS
+                    .iter()
+                    .map(|&tokens| (tokens, f64::from(sm * tokens) / 1_000.0))
+                    .collect::<BTreeMap<_, _>>();
+                (sm, curve)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let by_sms = curves
+            .iter()
+            .map(|(&sm, curve)| (sm, curve))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut prebuilt = Node::branch();
+        for (&sm, curve) in &by_sms {
+            for (&tokens, &latency) in curve.iter() {
+                prebuilt.insert(&[sm, tokens], latency);
+            }
+        }
+        let sol = |c: &[f64]| c[1];
+        let cfg = OpInterpConfig::grid(&["sms", "num_tokens"], &sol);
+        let temporary_query = |sms: u32, num_tokens: u32| {
+            let mut node = Node::branch();
+            for (&sm, curve) in &by_sms {
+                for (&tokens, &latency) in curve.iter() {
+                    node.insert(&[sm, tokens], latency);
+                }
+            }
+            query_sms_grid(&node, sms, num_tokens)
+        };
+
+        let bench = |name: &str, sms: u32, num_tokens: u32| {
+            let coords = [f64::from(sms), f64::from(num_tokens)];
+            let expected = temporary_query(sms, num_tokens).unwrap();
+            let actual = perf_interp::query(&cfg, &prebuilt, &coords).unwrap();
+            assert_eq!(actual.to_bits(), expected.to_bits());
+
+            // Warm the reusable Grid, including its lazy hold index.
+            std::hint::black_box(perf_interp::query(&cfg, &prebuilt, &coords).unwrap());
+
+            let start = Instant::now();
+            for _ in 0..ITERS {
+                std::hint::black_box(temporary_query(sms, num_tokens).unwrap());
+            }
+            let temporary_ns = start.elapsed().as_nanos() / ITERS as u128;
+
+            let start = Instant::now();
+            for _ in 0..ITERS {
+                std::hint::black_box(perf_interp::query(&cfg, &prebuilt, &coords).unwrap());
+            }
+            let prebuilt_ns = start.elapsed().as_nanos() / ITERS as u128;
+
+            println!(
+                "{name}: temporary {temporary_ns} ns/query, prebuilt {prebuilt_ns} ns/query, speedup {:.2}x, reduction {:.1}%",
+                temporary_ns as f64 / prebuilt_ns as f64,
+                100.0 * (1.0 - prebuilt_ns as f64 / temporary_ns as f64),
+            );
+        };
+
+        bench("interior", 10, 1_000);
+        bench("hold", 1, 300_000);
     }
 }
