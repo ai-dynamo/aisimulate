@@ -54,7 +54,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use super::axis_curve::AxisCurve;
-use super::perf_interp::{self, Node, OpInterpConfig};
+use super::perf_interp::{Node, OpInterpConfig, PreparedGrid};
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::error::AicError;
 use crate::config::{PerfDbSources, PerfSource};
@@ -140,7 +140,7 @@ impl From<MoeA2aKey> for MoeA2aSliceKey {
 /// Curves retained for the exact-SMS fast path and one reusable 2-D Grid.
 struct SmsGrid {
     curves: BTreeMap<u32, BTreeMap<u32, f64>>,
-    node: Node,
+    node: PreparedGrid,
 }
 
 impl SmsGrid {
@@ -151,7 +151,10 @@ impl SmsGrid {
                 node.insert(&[sms, tokens], latency);
             }
         }
-        Self { curves, node }
+        Self {
+            curves,
+            node: PreparedGrid::new(node),
+        }
     }
 }
 
@@ -160,7 +163,7 @@ impl SmsGrid {
 struct MoeA2aGrids {
     slices: BTreeMap<MoeA2aSliceKey, SmsGrid>,
     /// Canonical `(dispatch, combine)` slice pair -> summed-latency Grid.
-    combined: BTreeMap<(MoeA2aSliceKey, MoeA2aSliceKey), Node>,
+    combined: BTreeMap<(MoeA2aSliceKey, MoeA2aSliceKey), PreparedGrid>,
     /// `(comm_backend, phase) -> {comm_dtype}`. Mirrors `len(phase_slice)` /
     /// `next(iter(phase_slice))` in `_resolve_comm_dtype_slice`; the sole-dtype
     /// fallback only fires at size 1, where iteration order cannot matter.
@@ -336,10 +339,10 @@ impl MoeA2aTable {
     }
 }
 
-fn query_sms_grid(node: &Node, sms: u32, num_tokens: u32) -> Result<f64, AicError> {
+fn query_sms_grid(node: &PreparedGrid, sms: u32, num_tokens: u32) -> Result<f64, AicError> {
     let sol = |c: &[f64]| c[1];
     let cfg = OpInterpConfig::grid(&["sms", "num_tokens"], &sol);
-    perf_interp::query(&cfg, node, &[f64::from(sms), f64::from(num_tokens)])
+    node.query(&cfg, &[f64::from(sms), f64::from(num_tokens)])
 }
 
 /// `comm_dtype` of every legacy DeepEP row: those tables were collected with
@@ -419,7 +422,7 @@ fn load_moe_a2a_grids(
 fn build_combined_grids(
     slices: &BTreeMap<MoeA2aSliceKey, SmsGrid>,
     dtypes_by_phase: &BTreeMap<(String, String), BTreeSet<String>>,
-) -> BTreeMap<(MoeA2aSliceKey, MoeA2aSliceKey), Node> {
+) -> BTreeMap<(MoeA2aSliceKey, MoeA2aSliceKey), PreparedGrid> {
     let combine_phase = ("deepep_ht".to_string(), "combine".to_string());
     let Some(combine_dtypes) = dtypes_by_phase.get(&combine_phase) else {
         return BTreeMap::new();
@@ -449,7 +452,7 @@ fn build_combined_grids(
                 }
             }
             if !node.is_empty() {
-                combined.insert((dispatch_key.clone(), combine_key), node);
+                combined.insert((dispatch_key.clone(), combine_key), PreparedGrid::new(node));
             }
         }
     }
@@ -1953,12 +1956,13 @@ mod tests {
             .map(|(&sm, curve)| (sm, curve))
             .collect::<BTreeMap<_, _>>();
 
-        let mut prebuilt = Node::branch();
+        let mut prebuilt_node = Node::branch();
         for (&sm, curve) in &by_sms {
             for (&tokens, &latency) in curve.iter() {
-                prebuilt.insert(&[sm, tokens], latency);
+                prebuilt_node.insert(&[sm, tokens], latency);
             }
         }
+        let prebuilt = PreparedGrid::new(prebuilt_node);
         let sol = |c: &[f64]| c[1];
         let cfg = OpInterpConfig::grid(&["sms", "num_tokens"], &sol);
         let temporary_query = |sms: u32, num_tokens: u32| {
@@ -1968,17 +1972,17 @@ mod tests {
                     node.insert(&[sm, tokens], latency);
                 }
             }
-            query_sms_grid(&node, sms, num_tokens)
+            PreparedGrid::new(node).query(&cfg, &[f64::from(sms), f64::from(num_tokens)])
         };
 
         let bench = |name: &str, sms: u32, num_tokens: u32| {
             let coords = [f64::from(sms), f64::from(num_tokens)];
             let expected = temporary_query(sms, num_tokens).unwrap();
-            let actual = perf_interp::query(&cfg, &prebuilt, &coords).unwrap();
+            let actual = prebuilt.query(&cfg, &coords).unwrap();
             assert_eq!(actual.to_bits(), expected.to_bits());
 
             // Warm the reusable Grid, including its lazy hold index.
-            std::hint::black_box(perf_interp::query(&cfg, &prebuilt, &coords).unwrap());
+            std::hint::black_box(prebuilt.query(&cfg, &coords).unwrap());
 
             let start = Instant::now();
             for _ in 0..ITERS {
@@ -1988,7 +1992,7 @@ mod tests {
 
             let start = Instant::now();
             for _ in 0..ITERS {
-                std::hint::black_box(perf_interp::query(&cfg, &prebuilt, &coords).unwrap());
+                std::hint::black_box(prebuilt.query(&cfg, &coords).unwrap());
             }
             let prebuilt_ns = start.elapsed().as_nanos() / ITERS as u128;
 

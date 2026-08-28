@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::gemm::quant_tc_flops;
-use super::perf_interp::{self, LeafValue, Node, OpInterpConfig};
+use super::perf_interp::{LeafValue, Node, OpInterpConfig, PreparedGrid};
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
@@ -108,7 +108,7 @@ pub fn dsa_sparse_file_prefix(architecture: &str) -> &'static str {
 
 pub(crate) struct NodeCache {
     /// (arch, fmha, kv, gemm) → dsa_backend → engine table.
-    pub(crate) by_keys: BTreeMap<DsaKey, BTreeMap<String, Node>>,
+    pub(crate) by_keys: BTreeMap<DsaKey, BTreeMap<String, PreparedGrid>>,
 }
 
 /// num_heads → step → isl → batch → measured leaf
@@ -403,9 +403,8 @@ impl DsaTable {
             )
         };
         let cfg = OpInterpConfig::grid(&["num_heads", "prefix", "seq_len", "batch"], &sol);
-        perf_interp::query_value(
+        node.query_value(
             &cfg,
-            node,
             &[num_heads as f64, prefix as f64, isl as f64, b as f64],
         )
     }
@@ -478,11 +477,7 @@ impl DsaTable {
             )
         };
         let cfg = OpInterpConfig::grid(&["num_heads", "batch", "seq_len"], &sol);
-        perf_interp::query_value(
-            &cfg,
-            node,
-            &[num_heads as f64, b as f64, sequence_tokens as f64],
-        )
+        node.query_value(&cfg, &[num_heads as f64, b as f64, sequence_tokens as f64])
     }
 
     /// RAW context slice `[num_heads][prefix][isl][batch]` for the exact
@@ -659,7 +654,20 @@ pub(crate) fn build_context_nodes(grids: &DsaGrids) -> NodeCache {
             }
         }
     }
-    NodeCache { by_keys }
+    NodeCache {
+        by_keys: by_keys
+            .into_iter()
+            .map(|(key, by_backend)| {
+                (
+                    key,
+                    by_backend
+                        .into_iter()
+                        .map(|(backend, node)| (backend, PreparedGrid::new(node)))
+                        .collect(),
+                )
+            })
+            .collect(),
+    }
 }
 
 /// Materialise the per-`(DsaKey, dsa_backend)` engine table for
@@ -687,7 +695,20 @@ pub(crate) fn build_generation_nodes(grids: &DsaGrids) -> NodeCache {
             }
         }
     }
-    NodeCache { by_keys }
+    NodeCache {
+        by_keys: by_keys
+            .into_iter()
+            .map(|(key, by_backend)| {
+                (
+                    key,
+                    by_backend
+                        .into_iter()
+                        .map(|(backend, node)| (backend, PreparedGrid::new(node)))
+                        .collect(),
+                )
+            })
+            .collect(),
+    }
 }
 
 // ---------------------------------------------------------------------------

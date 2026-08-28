@@ -44,7 +44,7 @@ use super::attention::generation_attn_mode;
 use super::dsa::{SparseGrid, bs_slice, lookup_2d};
 use super::gemm::quant_tc_flops;
 use super::interpolation::{Grid3, interpolate_clamped};
-use super::perf_interp::{self, LeafValue, Node, OpInterpConfig};
+use super::perf_interp::{self, LeafValue, Node, OpInterpConfig, PreparedGrid};
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
@@ -123,7 +123,7 @@ struct ModuleGrids {
 /// Engine-ready tables: per (key, native, local), the phase-shaped `Node`
 /// (context: `[step][isl][batch]`; generation: `[batch][s_total]`).
 struct ModuleNodes {
-    by_keys: BTreeMap<ModuleKey, BTreeMap<u32, BTreeMap<u32, Node>>>,
+    by_keys: BTreeMap<ModuleKey, BTreeMap<u32, BTreeMap<u32, PreparedGrid>>>,
 }
 
 /// Table key mirroring the Python loaders (PR #1337 alignment):
@@ -336,7 +336,7 @@ impl Dsv4Table {
             )
         };
         let cfg = OpInterpConfig::grid(&["prefix", "seq_len", "batch"], &sol);
-        let value = perf_interp::query_value(&cfg, node, &[prefix as f64, isl as f64, b as f64])?;
+        let value = node.query_value(&cfg, &[prefix as f64, isl as f64, b as f64])?;
         // Mirrors Python `ContextDeepSeekV4AttentionModule` get_silicon
         // (operations/dsv4.py): for CSA (compress_ratio==4) ONLY, subtract the
         // measured topK DELTA = flat_ms - top_last_ms at the ORIGINAL query
@@ -418,7 +418,7 @@ impl Dsv4Table {
             )
         };
         let cfg = OpInterpConfig::grid(&["batch", "seq_len"], &sol);
-        let value = perf_interp::query_value(&cfg, node, &[b as f64, sequence_tokens as f64])?;
+        let value = node.query_value(&cfg, &[b as f64, sequence_tokens as f64])?;
         // Mirrors Python `GenerationDeepSeekV4AttentionModule` get_silicon
         // (operations/dsv4.py): subtract the topK DELTA for CSA (cr==4) only.
         // Decode is q_len=1 with past_kv = s_total - 1, so the DELTA keys at
@@ -567,7 +567,7 @@ impl Dsv4Table {
         };
         let sol = |c: &[f64]| c[2] * (c[0] * c[1] + c[1] * c[1] / 2.0);
         let cfg = OpInterpConfig::grid(&["past_kv", "seq_len", "batch"], &sol);
-        match perf_interp::query(&cfg, node, &[past_kv as f64, isl as f64, b as f64]) {
+        match node.query(&cfg, &[past_kv as f64, isl as f64, b as f64]) {
             Ok(latency) if latency.is_finite() => Ok(Some(latency)),
             Ok(_) | Err(_) => Ok(None),
         }
@@ -601,7 +601,7 @@ impl Dsv4Table {
             native_heads,
             local_heads,
         )?;
-        let points = perf_interp::node_points(node);
+        let points = perf_interp::node_points(node.node());
         if points.is_empty() {
             return Err(AicError::PerfDatabase(format!(
                 "DSV4 context module data empty for local_heads={local_heads}, \
@@ -630,7 +630,7 @@ impl Dsv4Table {
             AttnKind::Hca => self.load_hca_generation()?,
         };
         let node = select_resolved(grids, None, kv_quant, gemm_quant, native_heads, local_heads)?;
-        let points = perf_interp::node_points(node);
+        let points = perf_interp::node_points(node.node());
         if points.is_empty() {
             return Err(AicError::PerfDatabase(format!(
                 "DSV4 generation module data empty for local_heads={local_heads}, \
@@ -692,7 +692,7 @@ fn context_nodes(grids: ModuleGrids) -> ModuleNodes {
             }
         }
     }
-    ModuleNodes { by_keys }
+    prepare_module_nodes(by_keys)
 }
 
 /// Convert loaded grids into generation-phase engine tables: per (key,
@@ -719,7 +719,34 @@ fn generation_nodes(grids: ModuleGrids) -> ModuleNodes {
             }
         }
     }
-    ModuleNodes { by_keys }
+    prepare_module_nodes(by_keys)
+}
+
+fn prepare_module_nodes(
+    by_keys: BTreeMap<ModuleKey, BTreeMap<u32, BTreeMap<u32, Node>>>,
+) -> ModuleNodes {
+    ModuleNodes {
+        by_keys: by_keys
+            .into_iter()
+            .map(|(key, by_native)| {
+                (
+                    key,
+                    by_native
+                        .into_iter()
+                        .map(|(native, by_local)| {
+                            (
+                                native,
+                                by_local
+                                    .into_iter()
+                                    .map(|(local, node)| (local, PreparedGrid::new(node)))
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -975,7 +1002,7 @@ fn load_topk_calib_parquet(sources: &[PerfSource]) -> Result<Option<TopkCalib>, 
 /// `[past_kv(step)][isl][batch]` (Python `load_dsv4_sparse_kernel_data`'s
 /// `_SPARSE_KERNEL_KEYS = (num_heads, tp_size, step, isl, batch_size)`).
 struct SparseKernelNodes {
-    by_heads: BTreeMap<u32, BTreeMap<u32, Node>>,
+    by_heads: BTreeMap<u32, BTreeMap<u32, PreparedGrid>>,
 }
 
 /// Load one sparse-kernel parquet. Cells insert FIRST-wins in read order —
@@ -1027,7 +1054,20 @@ fn load_sparse_kernel_parquet(
     if !any_source {
         return Ok(None);
     }
-    Ok(Some(SparseKernelNodes { by_heads }))
+    Ok(Some(SparseKernelNodes {
+        by_heads: by_heads
+            .into_iter()
+            .map(|(heads, by_tp)| {
+                (
+                    heads,
+                    by_tp
+                        .into_iter()
+                        .map(|(tp, node)| (tp, PreparedGrid::new(node)))
+                        .collect(),
+                )
+            })
+            .collect(),
+    }))
 }
 
 /// Resolve the quant key ([fmha][kv][gemm] for context, [kv][gemm] for
@@ -1043,7 +1083,7 @@ fn select_resolved<'a>(
     gemm: GemmQuantMode,
     native_heads: u32,
     local_heads: u32,
-) -> Result<&'a Node, AicError> {
+) -> Result<&'a PreparedGrid, AicError> {
     let key = ModuleKey {
         fmha_quant: fmha.map(|f| f.name().to_string()).unwrap_or_default(),
         kv_quant: kv.name().to_string(),
