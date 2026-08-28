@@ -153,9 +153,172 @@ pub struct UtilGrid {
     utils: Vec<f64>,
     mins: Vec<f64>,
     spans: Vec<f64>,
+    index: Option<UtilKdTree>,
     /// Transfer tag of the reference slice this grid was built from
     /// (`xshape` / `xquant` / ...), when borrowed from a sibling.
     pub reference_provenance: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Neighbor {
+    sample: usize,
+    distance: f64,
+}
+
+impl Neighbor {
+    fn cmp(self, other: Self) -> std::cmp::Ordering {
+        self.distance
+            .partial_cmp(&other.distance)
+            .expect("finite distances")
+            .then_with(|| self.sample.cmp(&other.sample))
+    }
+}
+
+#[derive(Debug, Default)]
+struct NearestTwo {
+    nearest: Option<Neighbor>,
+    second: Option<Neighbor>,
+}
+
+impl NearestTwo {
+    fn consider(&mut self, candidate: Neighbor) {
+        if self
+            .nearest
+            .is_none_or(|nearest| candidate.cmp(nearest).is_lt())
+        {
+            self.second = self.nearest;
+            self.nearest = Some(candidate);
+        } else if self
+            .second
+            .is_none_or(|second| candidate.cmp(second).is_lt())
+        {
+            self.second = Some(candidate);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct KdNode {
+    sample: usize,
+    axis: usize,
+    left: Option<usize>,
+    right: Option<usize>,
+}
+
+/// Immutable exact nearest-two index over a `UtilGrid`'s normalised samples.
+#[derive(Debug, Clone)]
+struct UtilKdTree {
+    nodes: Vec<KdNode>,
+    root: usize,
+    dims: usize,
+}
+
+impl UtilKdTree {
+    fn build(norm: &[Vec<f64>]) -> Option<Self> {
+        if norm.len() < 3 {
+            return None;
+        }
+        let dims = norm.first()?.len();
+        if dims == 0
+            || norm
+                .iter()
+                .any(|row| row.len() != dims || row.iter().any(|v| !v.is_finite()))
+        {
+            return None;
+        }
+
+        fn build_nodes(
+            norm: &[Vec<f64>],
+            samples: &mut [usize],
+            depth: usize,
+            dims: usize,
+            nodes: &mut Vec<KdNode>,
+        ) -> Option<usize> {
+            if samples.is_empty() {
+                return None;
+            }
+            let axis = depth % dims;
+            let mid = samples.len() / 2;
+            samples.select_nth_unstable_by(mid, |&a, &b| {
+                norm[a][axis]
+                    .partial_cmp(&norm[b][axis])
+                    .expect("finite normalised coordinates")
+                    .then_with(|| a.cmp(&b))
+            });
+            let (left_samples, middle_and_right) = samples.split_at_mut(mid);
+            let (sample, right_samples) = middle_and_right
+                .split_first_mut()
+                .expect("non-empty kd-tree partition");
+
+            let node = nodes.len();
+            nodes.push(KdNode {
+                sample: *sample,
+                axis,
+                left: None,
+                right: None,
+            });
+            let left = build_nodes(norm, left_samples, depth + 1, dims, nodes);
+            let right = build_nodes(norm, right_samples, depth + 1, dims, nodes);
+            nodes[node].left = left;
+            nodes[node].right = right;
+            Some(node)
+        }
+
+        let mut samples: Vec<usize> = (0..norm.len()).collect();
+        let mut nodes = Vec::with_capacity(norm.len());
+        let root = build_nodes(norm, &mut samples, 0, dims, &mut nodes)
+            .expect("non-empty util grid has a kd-tree root");
+        Some(Self { nodes, root, dims })
+    }
+
+    fn nearest_two(&self, norm: &[Vec<f64>], query: &[f64]) -> NearestTwo {
+        fn visit(
+            tree: &UtilKdTree,
+            norm: &[Vec<f64>],
+            query: &[f64],
+            node_index: usize,
+            nearest: &mut NearestTwo,
+        ) {
+            let node = &tree.nodes[node_index];
+            let row = &norm[node.sample];
+            let distance = row
+                .iter()
+                .zip(query)
+                .map(|(&x, &y)| (x - y) * (x - y))
+                .sum::<f64>()
+                .sqrt();
+            nearest.consider(Neighbor {
+                sample: node.sample,
+                distance,
+            });
+
+            let axis = node.axis;
+            let delta = query[axis] - row[axis];
+            let (near, far) = if delta.is_sign_negative() {
+                (node.left, node.right)
+            } else {
+                (node.right, node.left)
+            };
+            if let Some(near) = near {
+                visit(tree, norm, query, near, nearest);
+            }
+            // Equality must visit the far branch: it can contain an equally
+            // distant sample with an earlier original index.
+            if nearest
+                .second
+                .is_none_or(|second| delta.abs() <= second.distance)
+            {
+                if let Some(far) = far {
+                    visit(tree, norm, query, far, nearest);
+                }
+            }
+        }
+
+        debug_assert_eq!(query.len(), self.dims);
+        let mut nearest = NearestTwo::default();
+        visit(self, norm, query, self.root, &mut nearest);
+        nearest
+    }
 }
 
 fn log_floor(value: f64) -> f64 {
@@ -170,6 +333,7 @@ impl UtilGrid {
                 utils: Vec::new(),
                 mins: Vec::new(),
                 spans: Vec::new(),
+                index: None,
                 reference_provenance: None,
             };
         }
@@ -201,11 +365,13 @@ impl UtilGrid {
             })
             .collect();
         let utils = samples.iter().map(|s| s.util).collect();
+        let index = UtilKdTree::build(&norm);
         Self {
             norm,
             utils,
             mins,
             spans,
+            index,
             reference_provenance: None,
         }
     }
@@ -226,37 +392,36 @@ impl UtilGrid {
             .enumerate()
             .map(|(a, &v)| ((log_floor(v) - self.mins[a]) / self.spans[a]).clamp(0.0, 1.0))
             .collect();
-        let distances: Vec<f64> = self
-            .norm
-            .iter()
-            .map(|row| {
-                row.iter()
+        let nearest = if let Some(index) = self.index.as_ref().filter(|index| index.dims == q.len())
+        {
+            index.nearest_two(&self.norm, &q)
+        } else {
+            // Preserve the former behavior for tiny, non-finite, ragged,
+            // or dimension-mismatched grids that cannot use the index.
+            let mut nearest = NearestTwo::default();
+            for (sample, row) in self.norm.iter().enumerate() {
+                let distance = row
+                    .iter()
                     .zip(&q)
                     .map(|(&x, &y)| (x - y) * (x - y))
                     .sum::<f64>()
-                    .sqrt()
-            })
-            .collect();
-        // Stable argsort: ties keep sample order, so duplicate /
-        // log-floor-collapsed coordinates deterministically prefer the first
-        // sample (mirrors `np.argsort(kind="stable")`).
-        let mut order: Vec<usize> = (0..distances.len()).collect();
-        order.sort_by(|&i, &j| {
-            distances[i]
-                .partial_cmp(&distances[j])
-                .expect("finite distances")
-        });
+                    .sqrt();
+                nearest.consider(Neighbor { sample, distance });
+            }
+            nearest
+        };
 
-        if distances[order[0]] == 0.0 {
-            return Some(self.utils[order[0]]);
+        let second = nearest.second;
+        let nearest = nearest.nearest.expect("non-empty util grid");
+        if nearest.distance == 0.0 {
+            return Some(self.utils[nearest.sample]);
         }
 
-        let nearest = &order[..order.len().min(2)];
         let mut weighted = 0.0;
         let mut weight_sum = 0.0;
-        for &i in nearest {
-            let w = 1.0 / distances[i];
-            weighted += self.utils[i] * w;
+        for neighbor in [Some(nearest), second].into_iter().flatten() {
+            let w = 1.0 / neighbor.distance;
+            weighted += self.utils[neighbor.sample] * w;
             weight_sum += w;
         }
         Some(weighted / weight_sum)
@@ -543,6 +708,7 @@ mod tests {
         let duplicate = UtilGrid::new(vec![
             UtilSample::new(vec![4.0], 0.6),
             UtilSample::new(vec![4.0], 0.7),
+            UtilSample::new(vec![16.0], 0.9),
         ]);
 
         approx(exact.util(&[9.0]).unwrap(), 0.4);
@@ -582,6 +748,37 @@ mod tests {
 
         // (10, 1) is equidistant from the first two normalized-log samples.
         approx(grid.util(&[10.0, 1.0]).unwrap(), 0.4);
+    }
+
+    #[test]
+    fn second_neighbor_tie_keeps_sample_order() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![2.0, 2.0], 0.2),
+            UtilSample::new(vec![1.0, 3.0], 0.2),
+            UtilSample::new(vec![3.0, 1.0], 0.9),
+        ]);
+
+        // The last two samples tie for second place. Stable order selects
+        // the first one, whose utilization matches the nearest sample.
+        approx(grid.util(&[2.5, 2.5]).unwrap(), 0.2);
+    }
+
+    #[test]
+    fn second_neighbor_can_cross_kd_tree_split() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![1.0, 1.0], 0.1),
+            UtilSample::new(vec![2.0, 1.0], 0.2),
+            UtilSample::new(vec![4.0, 100.0], 0.4),
+            UtilSample::new(vec![8.0, 100.0], 0.6),
+            UtilSample::new(vec![16.0, 1.0], 0.8),
+        ]);
+        let query_x = 6.0_f64.ln() / 16.0_f64.ln();
+        let distance_16 = 1.0 - query_x;
+        let distance_2 = query_x - 0.25;
+        let expected =
+            (0.8 / distance_16 + 0.2 / distance_2) / (1.0 / distance_16 + 1.0 / distance_2);
+
+        approx(grid.util(&[6.0, 1.0]).unwrap(), expected);
     }
 
     #[test]
