@@ -58,7 +58,10 @@ pub trait AdmissionSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlacementCacheSample {
+    /// Prefix blocks available on the selected worker.
     pub overlap_blocks: u32,
+    /// Largest prefix overlap available on any eligible worker at selection time.
+    pub best_available_overlap_blocks: u32,
     pub isl_blocks: u32,
 }
 
@@ -68,6 +71,8 @@ pub struct Placement {
     pub scheduler_id: usize,
     pub reported_overlap_tokens: usize,
     pub cache_sample: Option<PlacementCacheSample>,
+    /// Placement-policy replica that made the decision, when the policy has replicas.
+    pub placement_replica_id: Option<usize>,
 }
 
 #[derive(Debug)]

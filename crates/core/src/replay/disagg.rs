@@ -1302,6 +1302,8 @@ where
                 placement.scheduler_id,
                 dp_rank,
                 placement.reported_overlap_tokens,
+                placement.cache_sample,
+                placement.placement_replica_id,
             );
             let (uuid, worker_idx, action) = self.flow.take_prefill_placement(
                 placement,
@@ -1337,6 +1339,8 @@ where
                 placement.scheduler_id,
                 dp_rank,
                 placement.reported_overlap_tokens,
+                placement.cache_sample,
+                placement.placement_replica_id,
             );
             let (uuid, worker_idx, action) = self
                 .flow
@@ -1375,6 +1379,8 @@ where
                     placement.scheduler_id,
                     dp_rank,
                     placement.reported_overlap_tokens,
+                    placement.cache_sample,
+                    placement.placement_replica_id,
                 );
                 self.record_prefill_placement(placement)?;
                 self.dispatch_prefill(uuid, placement.scheduler_id, action)?;
@@ -1427,6 +1433,8 @@ where
                     placement.scheduler_id,
                     dp_rank,
                     placement.reported_overlap_tokens,
+                    placement.cache_sample,
+                    placement.placement_replica_id,
                 );
                 self.record_decode_placement(placement)?;
                 self.reserve_destination(uuid, placement.scheduler_id, action)?;

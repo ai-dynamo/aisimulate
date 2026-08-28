@@ -245,6 +245,8 @@ where
                 placement.scheduler_id,
                 dp_rank,
                 placement.reported_overlap_tokens,
+                placement.cache_sample,
+                placement.placement_replica_id,
             );
             let request = self
                 .requests
@@ -309,6 +311,8 @@ where
                     placement.scheduler_id,
                     dp_rank,
                     placement.reported_overlap_tokens,
+                    placement.cache_sample,
+                    placement.placement_replica_id,
                 );
                 self.requests.insert(
                     uuid,
