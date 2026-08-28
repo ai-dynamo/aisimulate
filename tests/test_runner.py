@@ -10,6 +10,8 @@ import pytest
 
 import aisimulate
 from aisimulate import aic
+from aisimulate.compiler import prediction_to_replay_spec
+from aisimulate.config.cli import CorePredictionConfig
 from aisimulate.runner import (
     EngineReplayRunner,
     EngineReplayRunnerFactory,
@@ -201,6 +203,65 @@ def test_runner_preserves_native_host_offload_rank_config():
     rank = runtime.execution_spec["engine"]["rank"]
     assert rank["kv_bytes_per_token"] == 131_072
     assert rank["native_host_offload"] == engine_args["native_host_offload"]
+
+
+def test_public_host_offload_config_reaches_native_execution_rank():
+    runtime = RecordingRuntime()
+    public = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "mode": "aggregated",
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 4096,
+                "workers": {
+                    "aggregated": {
+                        "parallelism": {
+                            "replicas": 1,
+                            "tensor": 1,
+                            "pipeline": 1,
+                            "attention_data": 1,
+                            "moe_tensor": 1,
+                            "moe_expert": 1,
+                        },
+                        "scheduler": {
+                            "max_batched_tokens": 8192,
+                            "max_sequences": 4,
+                        },
+                        "kv_cache": {
+                            "block_size": 16,
+                            "prefix_caching": True,
+                            "bytes_per_token": 131_072,
+                            "capacity": {"type": "fixed", "blocks": 128},
+                            "host_offload": {
+                                "num_host_blocks": 4096,
+                                "d2h_bandwidth_gbps": 7.0,
+                                "h2d_bandwidth_gbps": 38.0,
+                            },
+                        },
+                        "timing": {
+                            "type": "fixed",
+                            "prefill_ms": 1.0,
+                            "decode_ms": 1.0,
+                        },
+                    }
+                },
+            }
+        }
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        prediction_to_replay_spec(public)
+    )
+
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["kv_bytes_per_token"] == 131_072
+    assert rank["native_host_offload"] == {
+        "num_host_blocks": 4096,
+        "d2h_bandwidth_gbps": 7.0,
+        "h2d_bandwidth_gbps": 38.0,
+    }
 
 
 def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):

@@ -16,7 +16,7 @@ const DEFAULT_MAX_PREFILL_TOKENS: usize = 16_384;
 const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8_192;
 const DEFAULT_CLIP_MAX_NEW_TOKENS: usize = 4_096;
 const DEFAULT_SCHEDULE_CONSERVATIVENESS: f64 = 1.0;
-const DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 14.0;
+const DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 32.0;
 
 fn default_num_gpu_blocks() -> usize {
     16_384
@@ -684,6 +684,15 @@ mod tests {
 
     #[test]
     fn native_host_offload_deserializes_with_default_bandwidths() {
+        assert_eq!(DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS, 32.0);
+        assert_eq!(
+            NativeHostOffloadConfig::new(1),
+            NativeHostOffloadConfig {
+                num_host_blocks: 1,
+                d2h_bandwidth_gbps: 32.0,
+                h2d_bandwidth_gbps: 32.0,
+            }
+        );
         let config: EngineConfig = serde_json::from_value(serde_json::json!({
             "backend": "vllm",
             "block_size": 16,

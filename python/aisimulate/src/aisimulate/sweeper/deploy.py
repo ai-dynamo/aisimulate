@@ -97,20 +97,24 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
             "aic_nextn",
         ):
             payload.pop(name, None)
-    if role in {"prefill", "decode"}:
-        if sample.get("kv_transfer_bytes_per_token") is not None:
-            configured_bytes = sample["kv_transfer_bytes_per_token"]
-            payload["kv_bytes_per_token"] = (
-                estimate_kv_bytes_per_token(
-                    str(sample["model_name"]),
-                    tp_size=tp,
-                    pp_size=int(sample[f"{prefix}pp"]),
-                    moe_tp_size=moe_tp,
-                    moe_ep_size=moe_ep,
-                )
-                if configured_bytes == "auto"
-                else int(configured_bytes)
+    host_offload = sample.get(f"{role}_native_host_offload")
+    legacy_geometry = sample.get("kv_transfer_bytes_per_token")
+    if sample.get("kv_transfer_enabled", False) or host_offload is not None:
+        configured_bytes = legacy_geometry if legacy_geometry is not None else sample[f"{role}_kv_bytes_per_token"]
+        payload["kv_bytes_per_token"] = (
+            estimate_kv_bytes_per_token(
+                str(sample["model_name"]),
+                tp_size=tp,
+                pp_size=int(sample[f"{prefix}pp"]),
+                moe_tp_size=moe_tp,
+                moe_ep_size=moe_ep,
             )
+            if configured_bytes == "auto"
+            else int(configured_bytes)
+        )
+    if host_offload is not None:
+        payload["native_host_offload"] = dict(host_offload)
+    if role in {"prefill", "decode"}:
         if sample.get("kv_transfer_bandwidth") is not None:
             payload["kv_transfer_bandwidth"] = float(sample["kv_transfer_bandwidth"])
         payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
@@ -167,13 +171,6 @@ def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) ->
         )
     prefill_args = _engine_args_payload(sample, "prefill", backend_version=backend_version)
     decode_args = _engine_args_payload(sample, "decode", backend_version=backend_version)
-    if sample.get("kv_transfer_bytes_per_token") == "auto":
-        resolved = max(
-            int(prefill_args["kv_bytes_per_token"]),
-            int(decode_args["kv_bytes_per_token"]),
-        )
-        prefill_args["kv_bytes_per_token"] = resolved
-        decode_args["kv_bytes_per_token"] = resolved
     return BackendDeploymentSpec(
         prefill_engine_args=prefill_args,
         decode_engine_args=decode_args,

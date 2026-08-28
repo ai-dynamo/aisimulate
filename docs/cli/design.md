@@ -574,6 +574,7 @@ engine:
       kv_cache:
         block_size: 64
         prefix_caching: true
+        bytes_per_token: auto
         capacity:
           type: default
           memory_fraction: 0.9
@@ -606,14 +607,18 @@ engine:
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
 | `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. TODO: align with backend- and version-specific defaults. |
 | `engine.workers.<role>.kv_cache.prefix_caching` | `true` | `x` | `-` | Backend-supported. |
+| `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive and required for `fixed` capacity. |
+| `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
+| `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
+| `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.startup_seconds` | `0` | `x` | `-` | Nonnegative. |
-| `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete; disaggregated mode only. |
+| `engine.kv_transfer.bytes_per_token` | `null` | `x` | `-` | Backward-compatible input alias for per-role `kv_cache.bytes_per_token`; positive or `auto` when explicitly authored. It conflicts with any explicitly authored canonical location. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
 | `engine.kv_transfer.timing_mode` | `destination_missing` | `x` | `-` | `full_prompt` or `destination_missing`; disaggregated mode only. |
 
@@ -632,7 +637,6 @@ engine:
   backend: vllm
   context_length: max
   kv_transfer:
-    bytes_per_token: auto
     bandwidth_gb_per_second: 400
     timing_mode: destination_missing
   workers:
@@ -642,6 +646,7 @@ engine:
       kv_cache:
         block_size: 64
         prefix_caching: true
+        bytes_per_token: auto
         capacity: {type: default, memory_fraction: 0.9}
       timing: {type: default}
       startup_seconds: 0
@@ -651,6 +656,7 @@ engine:
       kv_cache:
         block_size: 64
         prefix_caching: true
+        bytes_per_token: auto
         capacity: {type: default, memory_fraction: 0.9}
       timing: {type: default}
       startup_seconds: 0
@@ -685,6 +691,49 @@ candidate GPU count is the sum of the prefill and decode worker counts.
 only the prompt KV not already present at the selected decode worker. `kv_transfer` is rejected for
 aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range is `x`, and
 `recommend` rejects domains on them.
+
+### Native vLLM host-offload prediction
+
+The initial public host-offload surface is deliberately fail-closed: it supports one aggregated
+vLLM worker role with prefix caching enabled, attention DP equal to one, and no native speculative
+decoding. The descriptor is fixed in both `predict` and `recommend`; host capacity and bandwidths
+are not search dimensions. `bytes_per_token` belongs to `kv_cache`, not `host_offload`, and is
+resolved for the worker role before lowering to the native rank.
+
+```yaml
+# host-offload-prediction.yaml
+engine:
+  mode: aggregated
+  model: meta-llama/Llama-3.1-8B-Instruct
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  workers:
+    aggregated:
+      parallelism: {replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 16}
+      kv_cache:
+        block_size: 16
+        prefix_caching: true
+        bytes_per_token: auto
+        capacity: {type: fixed, blocks: 2499}
+        host_offload:
+          num_host_blocks: 4096
+          d2h_bandwidth_gbps: 32.0
+          h2d_bandwidth_gbps: 32.0
+      timing: {type: default}
+
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 4}
+  stop: {requests: 16}
+```
+
+Run it with:
+
+```bash
+aisimulate predict --stack engine --config host-offload-prediction.yaml
+```
 
 ## Router (Dynamo Adapter)
 

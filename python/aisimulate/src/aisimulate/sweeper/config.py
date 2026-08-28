@@ -411,6 +411,8 @@ class SearchSpace(BaseModel):
     prefill_block_size: int | list[int] | None = 64
     prefill_gpu_memory_utilization: float | list[float] | None = 0.9
     prefill_enable_prefix_caching: bool = True
+    prefill_kv_bytes_per_token: int | str = "auto"
+    prefill_native_host_offload: dict[str, Any] | None = None
     prefill_num_gpu_blocks: int | None = None
     prefill_timing_model: dict[str, Any] | None = None
     prefill_startup_time: float | None = None
@@ -422,6 +424,8 @@ class SearchSpace(BaseModel):
     decode_block_size: int | list[int] | None = 64
     decode_gpu_memory_utilization: float | list[float] | None = 0.9
     decode_enable_prefix_caching: bool = False  # forced off for decode workers
+    decode_kv_bytes_per_token: int | str = "auto"
+    decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
     decode_timing_model: dict[str, Any] | None = None
     decode_startup_time: float | None = None
@@ -433,9 +437,12 @@ class SearchSpace(BaseModel):
     agg_block_size: int | list[int] | None = 64
     agg_gpu_memory_utilization: float | list[float] | None = 0.9
     agg_enable_prefix_caching: bool = True
+    agg_kv_bytes_per_token: int | str = "auto"
+    agg_native_host_offload: dict[str, Any] | None = None
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
     agg_startup_time: float | None = None
+    kv_transfer_enabled: bool = False
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
     kv_transfer_timing_mode: str = "destination_missing"

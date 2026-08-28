@@ -184,8 +184,16 @@ def _worker_engine_args(
             "aic_moe_ep_size",
         ):
             payload.pop(name, None)
-    if engine.kv_transfer is not None:
+    host_offload = cache.host_offload
+    if engine.kv_transfer is not None or host_offload is not None:
         transfer = engine.kv_transfer
+        legacy_geometry = (
+            transfer is not None
+            and transfer.bytes_per_token is not None
+            and "bytes_per_token" in transfer.model_fields_set
+        )
+        configured_bytes = transfer.bytes_per_token if legacy_geometry else cache.bytes_per_token
+        assert configured_bytes is not None
         payload["kv_bytes_per_token"] = (
             estimate_kv_bytes_per_token(
                 engine.model,
@@ -194,9 +202,13 @@ def _worker_engine_args(
                 moe_tp_size=parallel.moe_tensor,
                 moe_ep_size=parallel.moe_expert,
             )
-            if transfer.bytes_per_token == "auto"
-            else transfer.bytes_per_token
+            if configured_bytes == "auto"
+            else configured_bytes
         )
+    if host_offload is not None:
+        payload["native_host_offload"] = host_offload.model_dump(mode="json")
+    if engine.kv_transfer is not None:
+        transfer = engine.kv_transfer
         if transfer.bandwidth_gb_per_second is not None:
             payload["kv_transfer_bandwidth"] = transfer.bandwidth_gb_per_second
         payload["kv_transfer_timing_mode"] = transfer.timing_mode
