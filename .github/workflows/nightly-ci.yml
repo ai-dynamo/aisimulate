@@ -604,3 +604,44 @@ jobs:
             ls -l
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  # Security scanning runs in the internal GitLab release-automation
+  # pipeline, the same split dynamo uses: GitHub stages the artifacts, then
+  # fires the internal pipeline that scans them. Scan findings stay inside
+  # GitLab and never appear in these logs. The job is variable-gated so
+  # nightlies stay green until the GitLab pipeline and the runner-group
+  # access exist; flip GITLAB_SECURITY_TRIGGER_ENABLED to activate.
+  trigger-gitlab-security:
+    name: Trigger GitLab security pipeline
+    needs: stage-artifactory
+    if: >-
+      github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
+      vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
+    # The dedicated runner group dynamo and aiperf use for GitLab
+    # reachability; regular runners cannot reach the internal instance.
+    runs-on:
+      group: gitlab_ci_runners
+    timeout-minutes: 10
+    environment: automated-release
+    steps:
+      - name: Trigger internal security scan
+        env:
+          GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
+          GITLAB_PIPELINE_URL: ${{ secrets.GITLAB_PIPELINE_URL }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL; do
+            [ -n "${!name}" ] || { echo "::error::secret ${name} is not configured"; exit 1; }
+          done
+          # The response is discarded: it names internal pipeline URLs.
+          curl -q --fail --silent --show-error --retry 3 --output /dev/null \
+            -F "token=${GITLAB_TRIGGER_TOKEN}" \
+            -F "ref=main" \
+            -F "variables[PIPELINE_TYPE]=security" \
+            -F "variables[RELEASE_TYPE]=nightly" \
+            -F "variables[SOURCE_RUN_ID]=${GH_RUN_ID}" \
+            -F "variables[SOURCE_COMMIT_SHA]=${GH_SHA}" \
+            "${GITLAB_PIPELINE_URL}"
+          echo "internal security pipeline triggered"
