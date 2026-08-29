@@ -11,7 +11,9 @@
 //! Every grid uses the same two-neighbour inverse-distance weighting
 //! (`k=2`, `p=1`) without requiring a Cartesian product; queries outside the
 //! measured range are clamped per axis before neighbour selection, so
-//! extrapolation freezes boundary utilization.
+//! extrapolation freezes boundary utilization. Well-formed grids use an
+//! immutable k-d tree and a bounded query cache; tiny or non-indexable grids
+//! retain the linear lookup for compatibility.
 //!
 //! When *no* samples exist for the requested slice (no own-shape, no
 //! cross-shape/sibling transfer reference), [`estimate`] returns
@@ -24,10 +26,10 @@
 //! - No provenance contextvar: provenance capture feeds the Python-side
 //!   support matrix; the compiled engine only returns latencies. Reference
 //!   grids still carry their provenance tag for cache keying.
-//! - Caching is the caller's concern: Python keys grids by `id(node)` because
-//!   database views share mutable table objects; Rust perf tables are
-//!   immutable after load, so per-op wiring caches grids in a
-//!   [`UtilGridCache`] keyed by the op's slice identity.
+//! - Python keys grids by `id(node)` because database views share mutable table
+//!   objects. Rust perf tables are immutable after load, so per-op wiring
+//!   caches grids in a [`UtilGridCache`] keyed by the op's slice identity.
+//!   Each indexed grid also owns a bounded cache of exact normalized queries.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -149,7 +151,9 @@ where
 /// samples are combined with inverse-distance weights (`k=2`, `p=1`). Exact
 /// hits return the collected utilization unchanged. Works for ragged grids
 /// without operation-specific Cartesian bracketing; callers remain
-/// responsible for slicing categorical/kernel-regime axes.
+/// responsible for slicing categorical/kernel-regime axes. Grids with at
+/// least three finite, equal-dimensional samples use an immutable k-d tree and
+/// bounded query cache; other grids retain the linear lookup.
 #[derive(Debug, Clone)]
 pub struct UtilGrid {
     /// Normalised log-space coordinates, one row per sample.
@@ -240,13 +244,13 @@ fn util_query_cache() -> UtilQueryCache {
 struct Neighbor {
     sample: usize,
     distance: f64,
+    distance_squared: f64,
 }
 
 impl Neighbor {
     fn cmp(self, other: Self) -> std::cmp::Ordering {
         self.distance
-            .partial_cmp(&other.distance)
-            .expect("finite distances")
+            .total_cmp(&other.distance)
             .then_with(|| self.sample.cmp(&other.sample))
     }
 }
@@ -318,8 +322,7 @@ impl UtilKdTree {
             let mid = samples.len() / 2;
             samples.select_nth_unstable_by(mid, |&a, &b| {
                 norm[a][axis]
-                    .partial_cmp(&norm[b][axis])
-                    .expect("finite normalised coordinates")
+                    .total_cmp(&norm[b][axis])
                     .then_with(|| a.cmp(&b))
             });
             let (left_samples, middle_and_right) = samples.split_at_mut(mid);
@@ -358,15 +361,15 @@ impl UtilKdTree {
         ) {
             let node = &tree.nodes[node_index];
             let row = &norm[node.sample];
-            let distance = row
+            let distance_squared = row
                 .iter()
                 .zip(query)
                 .map(|(&x, &y)| (x - y) * (x - y))
-                .sum::<f64>()
-                .sqrt();
+                .sum::<f64>();
             nearest.consider(Neighbor {
                 sample: node.sample,
-                distance,
+                distance: distance_squared.sqrt(),
+                distance_squared,
             });
 
             let axis = node.axis;
@@ -380,10 +383,11 @@ impl UtilKdTree {
                 visit(tree, norm, query, near, nearest);
             }
             // Equality must visit the far branch: it can contain an equally
-            // distant sample with an earlier original index.
+            // distant sample with an earlier original index. Compare squared
+            // values so sqrt rounding cannot incorrectly prune that branch.
             if nearest
                 .second
-                .is_none_or(|second| delta.abs() <= second.distance)
+                .is_none_or(|second| delta * delta <= second.distance_squared)
             {
                 if let Some(far) = far {
                     visit(tree, norm, query, far, nearest);
@@ -473,26 +477,26 @@ impl UtilGrid {
             .collect();
         let (nearest, cache) =
             if let Some(index) = self.index.as_ref().filter(|index| index.dims == q.len()) {
-                let cache = q
-                    .iter()
-                    .all(|value| value.is_finite())
-                    .then(|| self.query_cache.get_or_init(util_query_cache));
-                if let Some(value) = cache.and_then(|cache| cache.get(&UtilQueryRef(&q))) {
+                let cache = self.query_cache.get_or_init(util_query_cache);
+                if let Some(value) = cache.get(&UtilQueryRef(&q)) {
                     return Some(value);
                 }
-                (index.nearest_two(&self.norm, &q), cache)
+                (index.nearest_two(&self.norm, &q), Some(cache))
             } else {
                 // Preserve the former behavior for tiny, non-finite, ragged,
                 // or dimension-mismatched grids that cannot use the index.
                 let mut nearest = NearestTwo::default();
                 for (sample, row) in self.norm.iter().enumerate() {
-                    let distance = row
+                    let distance_squared = row
                         .iter()
                         .zip(&q)
                         .map(|(&x, &y)| (x - y) * (x - y))
-                        .sum::<f64>()
-                        .sqrt();
-                    nearest.consider(Neighbor { sample, distance });
+                        .sum::<f64>();
+                    nearest.consider(Neighbor {
+                        sample,
+                        distance: distance_squared.sqrt(),
+                        distance_squared,
+                    });
                 }
                 (nearest, None)
             };
@@ -797,7 +801,11 @@ mod tests {
             UtilSample::new(vec![8.0], 0.2),
             UtilSample::new(vec![9.0], 0.4),
         ]);
-        let duplicate = UtilGrid::new(vec![
+        let linear_duplicate = UtilGrid::new(vec![
+            UtilSample::new(vec![4.0], 0.6),
+            UtilSample::new(vec![4.0], 0.7),
+        ]);
+        let indexed_duplicate = UtilGrid::new(vec![
             UtilSample::new(vec![4.0], 0.6),
             UtilSample::new(vec![4.0], 0.7),
             UtilSample::new(vec![16.0], 0.9),
@@ -811,7 +819,8 @@ mod tests {
             0.3,
         );
         // Duplicate coordinates: first sample wins (stable ordering).
-        approx(duplicate.util(&[4.0]).unwrap(), 0.6);
+        approx(linear_duplicate.util(&[4.0]).unwrap(), 0.6);
+        approx(indexed_duplicate.util(&[4.0]).unwrap(), 0.6);
         assert!(UtilGrid::new(vec![]).util(&[1.0, 2.0]).is_none());
     }
 
@@ -922,6 +931,19 @@ mod tests {
             (0.8 / distance_16 + 0.2 / distance_2) / (1.0 / distance_16 + 1.0 / distance_2);
 
         approx(grid.util(&[6.0, 1.0]).unwrap(), expected);
+    }
+
+    #[test]
+    fn far_branch_pruning_preserves_underflowed_distance_ties() {
+        let tiny = f64::MIN_POSITIVE;
+        let norm = vec![vec![0.0], vec![tiny], vec![3.0 * tiny]];
+        let tree = UtilKdTree::build(&norm).unwrap();
+
+        // All three squared distances underflow to zero. The far branch still
+        // contains the first sample, which stable ordering must select.
+        let nearest = tree.nearest_two(&norm, &[2.0 * tiny]);
+        assert_eq!(nearest.nearest.unwrap().sample, 0);
+        assert_eq!(nearest.second.unwrap().sample, 1);
     }
 
     #[test]
