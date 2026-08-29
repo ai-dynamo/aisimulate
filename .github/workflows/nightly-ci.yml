@@ -495,6 +495,8 @@ jobs:
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
     environment: automated-release
+    outputs:
+      wheel-version: ${{ steps.assemble.outputs.wheel-version }}
     container:
       # Keep in sync with the amd64 build-matrix image.
       # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
@@ -527,6 +529,7 @@ jobs:
           path: ${{ runner.temp }}/stage/arm64
 
       - name: Verify checksums and assemble upload set
+        id: assemble
         env:
           GH_RUN_ID: ${{ github.run_id }}
         run: |
@@ -544,6 +547,11 @@ jobs:
           [ "${#wheels[@]}" -eq 2 ] || { echo "::error::expected 2 wheels"; exit 1; }
           crates=("${STAGE_DIR}"/upload/*.crate)
           [ "${#crates[@]}" -eq 1 ] || { echo "::error::expected 1 crate"; exit 1; }
+          # Exported for the GitLab security pipeline, which locates the
+          # staged wheels by version + run id.
+          wheel="$(basename "${wheels[0]}")"
+          version="${wheel#aisimulate-}"
+          echo "wheel-version=${version%%-*}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload to Artifactory
         env:
@@ -630,18 +638,23 @@ jobs:
           GITLAB_PIPELINE_URL: ${{ secrets.GITLAB_PIPELINE_URL }}
           GH_RUN_ID: ${{ github.run_id }}
           GH_SHA: ${{ github.sha }}
+          WHEEL_VERSION: ${{ needs.stage-artifactory.outputs.wheel-version }}
         run: |
           set -euo pipefail
-          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL; do
-            [ -n "${!name}" ] || { echo "::error::secret ${name} is not configured"; exit 1; }
+          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL WHEEL_VERSION; do
+            [ -n "${!name}" ] || { echo "::error::${name} is not available"; exit 1; }
           done
+          # Variable names follow the release-automation root pipeline's
+          # contract (PROJECT routes to projects/aisimulate.yml there).
           # The response is discarded: it names internal pipeline URLs.
           curl -q --fail --silent --show-error --retry 3 --output /dev/null \
             -F "token=${GITLAB_TRIGGER_TOKEN}" \
             -F "ref=main" \
+            -F "variables[PROJECT]=aisimulate" \
             -F "variables[PIPELINE_TYPE]=security" \
             -F "variables[RELEASE_TYPE]=nightly" \
-            -F "variables[SOURCE_RUN_ID]=${GH_RUN_ID}" \
-            -F "variables[SOURCE_COMMIT_SHA]=${GH_SHA}" \
+            -F "variables[WHEEL_VERSION]=${WHEEL_VERSION}" \
+            -F "variables[GITHUB_RUN_ID]=${GH_RUN_ID}" \
+            -F "variables[COMMIT_SHA]=${GH_SHA}" \
             "${GITLAB_PIPELINE_URL}"
           echo "internal security pipeline triggered"
