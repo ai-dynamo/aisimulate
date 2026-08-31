@@ -69,6 +69,49 @@ configuration for each candidate.
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
 
+## Attention-FFN Disaggregation
+
+AFD is currently an internal `SmartSearchConfig` contract. It is not yet accepted by the public
+`aisimulate recommend` schema, and the built-in engine runner does not advertise AFD execution.
+An injected runner must explicitly advertise the selected backend with topology `afd` or `afd+pd`.
+
+This pinned pure-AFD example creates a finite standard Sweeper branch:
+
+```yaml
+search_space:
+  deployment_mode: [afd]
+  backend: [trtllm]
+  model_name: Qwen/Qwen3-32B
+  hardware_sku: h200_sxm
+  gpu_budget: 32
+  afd_phase: both
+  afd_pinned_topologies:
+    - n_a_nodes: 2
+      n_f_nodes: 2
+      tp_a: 4
+      a_batch_size: 64
+      f_moe_ep_size: 1
+      num_microbatches: 3
+      pipeline_model: optimistic
+
+workload:
+  isl: 1024
+  osl: 128
+  concurrency: 64
+  num_request_ratio: 10
+```
+
+Use `deployment_mode: [afd+pd]` with `afd_phase: prefill` or `decode` to search a companion for the
+opposite phase. The companion uses that phase's ordinary `max_num_batched_tokens`, `max_num_seqs`,
+block-size, and memory fields. Optional `afd_companion_parallel_configs` pins its parallel shapes.
+Searched (non-pinned) AFD requires an explicit `afd_batch_size_candidates` list. The finite domain
+also supports `afd_tp_a_candidates`, `afd_f_moe_ep_size_candidates`,
+`afd_microbatch_candidates`, `afd_pipeline_model_candidates`, and `afd_max_candidates`.
+
+AFD rejects `kv_load_ratio` until the execution layer exposes scheduler-visible KV capacity. Use a
+trace, request rate, or absolute concurrency instead. The complete topology and capability contract
+is documented in [AFD Topology Contract](afd-topology.md).
+
 ## Pinned Parallel Configurations
 
 Pinning `parallel_configs` requires exactly one deployment mode. An aggregated entry is one shape:

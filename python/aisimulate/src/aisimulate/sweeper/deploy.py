@@ -113,13 +113,58 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
             )
         if sample.get("kv_transfer_bandwidth") is not None:
             payload["kv_transfer_bandwidth"] = float(sample["kv_transfer_bandwidth"])
-        payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
+        if sample.get("kv_transfer_timing_mode") is not None:
+            payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
 
 
 def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
+    if mode in {"afd", "afd+pd"}:
+        parallel_config = {
+            "afd": sample["afd"],
+            "afd_provenance": sample["afd_provenance"],
+        }
+        performance_model_metadata = {
+            "afd": {
+                "provider": "aic",
+                "config": sample["afd"],
+                "provenance": sample["afd_provenance"],
+            }
+        }
+        afd_common = {
+            "deployment_mode": mode,
+            "backend": sample["backend"],
+            "backend_version": backend_version,
+            "parallel_config": parallel_config,
+            "performance_model_metadata": performance_model_metadata,
+        }
+        if mode == "afd":
+            return BackendDeploymentSpec(**afd_common)
+
+        companion_role = sample["afd_companion_role"]
+        if companion_role not in {"prefill", "decode"}:
+            raise ValueError("afd+pd requires one prefill or decode companion")
+        prefix = f"{companion_role}_"
+        for suffix in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "strategy", "replicas"):
+            parallel_config[f"{prefix}{suffix}"] = sample[f"{prefix}{suffix}"]
+        performance_model_metadata[companion_role] = _performance_model_metadata(
+            sample, companion_role, backend_version=backend_version
+        )
+        companion_args = _engine_args_payload(sample, companion_role, backend_version=backend_version)
+        if companion_role == "prefill":
+            return BackendDeploymentSpec(
+                prefill_engine_args=companion_args,
+                num_prefill_workers=int(sample["prefill_replicas"]),
+                **afd_common,
+            )
+        return BackendDeploymentSpec(
+            decode_engine_args=companion_args,
+            num_decode_workers=int(sample["decode_replicas"]),
+            **afd_common,
+        )
+
     common = {
         "deployment_mode": mode,
         "backend": sample["backend"],
