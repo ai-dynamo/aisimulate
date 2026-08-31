@@ -87,6 +87,22 @@ def format_report_table(report: dict[str, Any]) -> str:
             ],
         ]
     )
+    if "power_coverage" in report:
+        power_w = report.get("power_w")
+        rows.extend(
+            [
+                [
+                    "Power per GPU (W)",
+                    _format_value(power_w),
+                    *["N/A"] * (len(STAT_COLUMNS) - 1),
+                ],
+                [
+                    "Power Data Coverage (%)",
+                    _format_value(float(report["power_coverage"]) * 100.0),
+                    *["N/A"] * (len(STAT_COLUMNS) - 1),
+                ],
+            ]
+        )
     lines = [TITLE, _render_table(rows)]
     wall_time_ms = report.get("wall_time_ms")
     if isinstance(wall_time_ms, int | float):

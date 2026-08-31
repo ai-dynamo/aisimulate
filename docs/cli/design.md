@@ -1044,6 +1044,13 @@ Recommendation output uses the schema-versioned `SweepResult` contract documente
 ledger, stable status and reason categories, counts, provenance, and candidate-ID selection views.
 Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j`.
 
+When every replay role uses the AIC timing provider, prediction metrics also include
+`power_coverage`, the latency-weighted fraction of modeled operations with positive energy data.
+`power_w` is emitted only when that coverage is at least `0.9`, matching AIC's fail-closed power
+gate. The value is active forward-pass average power per GPU, derived from modeled operation energy
+and modeled active latency; it does not include idle, host, networking, or other platform power.
+Fixed and polynomial timing providers do not synthesize power data.
+
 ### Prediction Directory
 
 ```text

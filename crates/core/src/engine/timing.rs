@@ -12,6 +12,32 @@ use serde_json::Value;
 
 use crate::engine::common::perf_model::{polynomial_decode_time, polynomial_prefill_time};
 
+/// Power evidence accumulated by one timing provider for one forward-pass
+/// phase. Energy is per GPU in watt-milliseconds; latency fields use the same
+/// unscaled provider clock as the prediction that produced them.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TimingPhasePower {
+    pub energy_wms: f64,
+    pub latency_ms: f64,
+    pub covered_latency_ms: f64,
+}
+
+impl TimingPhasePower {
+    pub fn accumulate(&mut self, other: Self) {
+        self.energy_wms += other.energy_wms;
+        self.latency_ms += other.latency_ms;
+        self.covered_latency_ms += other.covered_latency_ms;
+    }
+}
+
+/// Provider-owned power evidence collected across every timing prediction in
+/// one replay. Latency-only providers return no summary.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TimingPowerSummary {
+    pub prefill: TimingPhasePower,
+    pub decode: TimingPhasePower,
+}
+
 /// Serializable timing-provider selection.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
@@ -50,6 +76,16 @@ pub trait TimingModel: Send + Sync {
         mean_context_length: usize,
         total_kv_tokens: usize,
     ) -> Result<f64>;
+
+    /// Return power evidence accumulated by this timing provider so far.
+    ///
+    /// The default keeps existing external timing implementations
+    /// latency-only. Providers that model energy may override this method;
+    /// replay snapshots it after execution and applies the engine's authored
+    /// prefill/decode speedup ratios before computing average power.
+    fn power_summary(&self) -> Option<TimingPowerSummary> {
+        None
+    }
 }
 
 struct PolynomialTimingModel;

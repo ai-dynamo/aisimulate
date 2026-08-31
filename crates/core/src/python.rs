@@ -4,12 +4,14 @@
 //! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use crate::engine::{Backend, TimingModel, TimingModelConfig};
+use crate::engine::{
+    Backend, EngineConfig, TimingModel, TimingModelConfig, TimingPhasePower, TimingPowerSummary,
+};
 use crate::replay::{
-    ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec,
-    ReplayTopology, Replayer,
+    POWER_DATA_COVERAGE_THRESHOLD, ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig,
+    ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
         ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
         WorkloadDriver, load_agentic_mooncake,
@@ -190,6 +192,7 @@ impl AicTimingConfig {
 
 struct AicTimingModel {
     engine: Py<PyAny>,
+    power: Mutex<TimingPowerSummary>,
 }
 
 impl AicTimingModel {
@@ -247,8 +250,79 @@ impl AicTimingModel {
         .map_err(|error| {
             anyhow!("AIC timing provider could not compile the requested engine: {error}")
         })?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            power: Mutex::new(TimingPowerSummary::default()),
+        })
     }
+
+    fn predict_phase(
+        &self,
+        batch_size: u32,
+        isl: u32,
+        osl: u32,
+        prefix: u32,
+        mode: &str,
+    ) -> Result<TimingPhasePower> {
+        let (context, generation) = Python::with_gil(|py| {
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("batch_size", batch_size)?;
+            kwargs.set_item("beam_width", 1)?;
+            kwargs.set_item("isl", isl)?;
+            kwargs.set_item("osl", osl)?;
+            kwargs.set_item("prefix", prefix)?;
+            kwargs.set_item("seq_imbalance_correction_scale", 1.0)?;
+            kwargs.set_item("gen_seq_imbalance_correction_scale", 1.0)?;
+            kwargs.set_item("mode", mode)?;
+            kwargs.set_item("stride", 32)?;
+            self.engine
+                .bind(py)
+                .call_method("run_static_per_op", (), Some(&kwargs))?
+                .extract::<(
+                    Vec<(String, f64, f64, String)>,
+                    Vec<(String, f64, f64, String)>,
+                )>()
+        })
+        .map_err(|error| anyhow!("AIC {mode} power prediction failed: {error}"))?;
+        summarize_power_entries(if mode == "static_ctx" {
+            &context
+        } else {
+            &generation
+        })
+    }
+
+    fn record_power(&self, phase: TimingPhasePower, prefill: bool) -> Result<()> {
+        let mut power = self
+            .power
+            .lock()
+            .map_err(|_| anyhow!("AIC timing power accumulator was poisoned"))?;
+        if prefill {
+            power.prefill.accumulate(phase);
+        } else {
+            power.decode.accumulate(phase);
+        }
+        Ok(())
+    }
+}
+
+fn summarize_power_entries(entries: &[(String, f64, f64, String)]) -> Result<TimingPhasePower> {
+    let mut summary = TimingPhasePower::default();
+    for (name, latency_ms, energy_wms, _source) in entries {
+        ensure!(
+            latency_ms.is_finite() && *latency_ms >= 0.0,
+            "AIC operation {name:?} returned invalid latency {latency_ms}ms"
+        );
+        ensure!(
+            energy_wms.is_finite() && *energy_wms >= 0.0,
+            "AIC operation {name:?} returned invalid energy {energy_wms}Wms"
+        );
+        summary.latency_ms += latency_ms;
+        summary.energy_wms += energy_wms;
+        if *energy_wms > 0.0 {
+            summary.covered_latency_ms += latency_ms;
+        }
+    }
+    Ok(summary)
 }
 
 impl TimingModel for AicTimingModel {
@@ -261,16 +335,9 @@ impl TimingModel for AicTimingModel {
         let batch_size = checked_u32(batch_size, "prefill batch size")?;
         let mean_isl = checked_u32(mean_isl, "mean input length")?;
         let mean_prefix = checked_u32(mean_prefix, "mean prefix length")?;
-        Python::with_gil(|py| {
-            self.engine
-                .bind(py)
-                .call_method1(
-                    "predict_prefill_latency",
-                    (batch_size, mean_isl, mean_prefix),
-                )?
-                .extract::<f64>()
-        })
-        .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
+        let power = self.predict_phase(batch_size, mean_isl, 1, mean_prefix, "static_ctx")?;
+        self.record_power(power, true)?;
+        Ok(power.latency_ms)
     }
 
     fn predict_decode_ms(
@@ -282,16 +349,13 @@ impl TimingModel for AicTimingModel {
     ) -> Result<f64> {
         let batch_size = checked_u32(batch_size, "decode batch size")?;
         let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
-        Python::with_gil(|py| {
-            self.engine
-                .bind(py)
-                .call_method1(
-                    "predict_decode_latency",
-                    (batch_size, mean_context_length, 2),
-                )?
-                .extract::<f64>()
-        })
-        .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))
+        let power = self.predict_phase(batch_size, mean_context_length, 2, 0, "static_gen")?;
+        self.record_power(power, false)?;
+        Ok(power.latency_ms)
+    }
+
+    fn power_summary(&self) -> Option<TimingPowerSummary> {
+        self.power.lock().ok().map(|summary| *summary)
     }
 }
 
@@ -707,6 +771,70 @@ fn run_with_input(
     }
 }
 
+struct TimingPowerSource {
+    timing: Arc<dyn TimingModel>,
+    prefill_speedup_ratio: f64,
+    decode_speedup_ratio: f64,
+}
+
+impl TimingPowerSource {
+    fn new(timing: Arc<dyn TimingModel>, config: &EngineConfig) -> Self {
+        Self {
+            timing,
+            prefill_speedup_ratio: config.speedup_ratio,
+            decode_speedup_ratio: config.speedup_ratio * config.decode_speedup_ratio,
+        }
+    }
+}
+
+fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePowerStats>> {
+    let mut combined = TimingPhasePower::default();
+    for source in sources {
+        let Some(summary) = source.timing.power_summary() else {
+            return Ok(None);
+        };
+        combined.accumulate(scale_power_phase(
+            summary.prefill,
+            source.prefill_speedup_ratio,
+        )?);
+        combined.accumulate(scale_power_phase(
+            summary.decode,
+            source.decode_speedup_ratio,
+        )?);
+    }
+    if combined.latency_ms <= 0.0 {
+        return Ok(Some(TracePowerStats {
+            power_w: None,
+            coverage: 0.0,
+        }));
+    }
+    let coverage = (combined.covered_latency_ms / combined.latency_ms).clamp(0.0, 1.0);
+    let power_w = (coverage >= POWER_DATA_COVERAGE_THRESHOLD)
+        .then_some(combined.energy_wms / combined.latency_ms);
+    ensure!(
+        power_w.is_none_or(f64::is_finite),
+        "AIC timing provider produced non-finite replay power"
+    );
+    Ok(Some(TracePowerStats { power_w, coverage }))
+}
+
+fn scale_power_phase(phase: TimingPhasePower, speedup_ratio: f64) -> Result<TimingPhasePower> {
+    ensure!(
+        speedup_ratio.is_finite() && speedup_ratio >= 0.0,
+        "modeled speedup ratio must be finite and non-negative, got {speedup_ratio}"
+    );
+    let scale = if speedup_ratio > 0.0 {
+        speedup_ratio.recip()
+    } else {
+        1.0
+    };
+    Ok(TimingPhasePower {
+        energy_wms: phase.energy_wms * scale,
+        latency_ms: phase.latency_ms * scale,
+        covered_latency_ms: phase.covered_latency_ms * scale,
+    })
+}
+
 fn execute_json(payload: &str) -> Result<String> {
     let (mut spec, mut traffic) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
@@ -720,14 +848,22 @@ fn execute_json(payload: &str) -> Result<String> {
         serde_json::from_value(spec.engine.clone())
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
+    let expected_power_sources = match &spec.topology {
+        ReplayTopology::Aggregated { .. } => 1,
+        ReplayTopology::Disaggregated { .. } => 2,
+    };
+    let mut power_sources = Vec::with_capacity(expected_power_sources);
 
-    let report = match spec.topology.clone() {
+    let mut report = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
             let mut role = aggregated_role(&engine_config);
             let timing = resolve_role_timing(
                 &mut role,
                 role_capacity_is_explicit(&serialized_engine, None),
             )?;
+            if let Some(timing) = timing.as_ref() {
+                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &role.rank));
+            }
             engine_config.dp_size = role.dp_size;
             engine_config.tensor_parallel_size = role.tensor_parallel_size;
             engine_config.rank = role.rank;
@@ -773,6 +909,12 @@ fn execute_json(payload: &str) -> Result<String> {
                 &mut decode,
                 role_capacity_is_explicit(&serialized_engine, Some("decode")),
             )?;
+            if let Some(timing) = prefill_timing.as_ref() {
+                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &prefill.rank));
+            }
+            if let Some(timing) = decode_timing.as_ref() {
+                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &decode.rank));
+            }
             engine_config.prefill = Some(prefill);
             engine_config.decode = Some(decode);
             if let Some(traffic) = traffic.as_mut()
@@ -815,6 +957,9 @@ fn execute_json(payload: &str) -> Result<String> {
         }
     }
     .context("AISimulate replay failed")?;
+    if power_sources.len() == expected_power_sources {
+        report = report.with_power(replay_power_stats(&power_sources)?);
+    }
     let mut serialized =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
     if !report.per_request.is_empty() {
@@ -854,6 +999,33 @@ mod tests {
     };
 
     use super::*;
+
+    struct PowerTiming(TimingPowerSummary);
+
+    impl TimingModel for PowerTiming {
+        fn predict_prefill_ms(
+            &self,
+            _batch_size: usize,
+            _mean_isl: usize,
+            _mean_prefix: usize,
+        ) -> Result<f64> {
+            Ok(0.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            _batch_size: usize,
+            _active_kv_tokens: usize,
+            _mean_context_length: usize,
+            _total_kv_tokens: usize,
+        ) -> Result<f64> {
+            Ok(0.0)
+        }
+
+        fn power_summary(&self) -> Option<TimingPowerSummary> {
+            Some(self.0)
+        }
+    }
 
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
@@ -924,6 +1096,61 @@ mod tests {
                 .to_string()
                 .contains("gpu_memory_utilization")
         );
+    }
+
+    #[test]
+    fn per_op_power_summary_matches_aic_coverage_semantics() {
+        let summary = summarize_power_entries(&[
+            ("covered".into(), 100.0, 50_000.0, "silicon".into()),
+            ("missing".into(), 25.0, 0.0, "empirical".into()),
+            ("no-op".into(), 0.0, 0.0, "silicon".into()),
+        ])
+        .unwrap();
+        assert_eq!(summary.energy_wms, 50_000.0);
+        assert_eq!(summary.latency_ms, 125.0);
+        assert_eq!(summary.covered_latency_ms, 100.0);
+    }
+
+    #[test]
+    fn replay_power_applies_phase_speedups_before_weighting() {
+        let source = TimingPowerSource {
+            timing: Arc::new(PowerTiming(TimingPowerSummary {
+                prefill: TimingPhasePower {
+                    energy_wms: 100_000.0,
+                    latency_ms: 200.0,
+                    covered_latency_ms: 190.0,
+                },
+                decode: TimingPhasePower {
+                    energy_wms: 150_000.0,
+                    latency_ms: 300.0,
+                    covered_latency_ms: 300.0,
+                },
+            })),
+            prefill_speedup_ratio: 2.0,
+            decode_speedup_ratio: 4.0,
+        };
+        let power = replay_power_stats(&[source]).unwrap().unwrap();
+        assert_eq!(power.power_w, Some(500.0));
+        assert!((power.coverage - 170.0 / 175.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn replay_power_is_withheld_below_aic_coverage_gate() {
+        let source = TimingPowerSource {
+            timing: Arc::new(PowerTiming(TimingPowerSummary {
+                prefill: TimingPhasePower {
+                    energy_wms: 40_000.0,
+                    latency_ms: 100.0,
+                    covered_latency_ms: 80.0,
+                },
+                decode: TimingPhasePower::default(),
+            })),
+            prefill_speedup_ratio: 1.0,
+            decode_speedup_ratio: 1.0,
+        };
+        let power = replay_power_stats(&[source]).unwrap().unwrap();
+        assert_eq!(power.power_w, None);
+        assert_eq!(power.coverage, 0.8);
     }
 
     #[test]

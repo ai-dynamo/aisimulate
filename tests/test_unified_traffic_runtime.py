@@ -65,6 +65,55 @@ def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
     assert deployment.agg_engine_args["timing_model"]["type"] == "fixed"
 
 
+def test_aic_timing_surfaces_real_power_coverage_and_fails_closed() -> None:
+    report = _run(
+        {
+            "traffic": {
+                "source": {
+                    "type": "synthetic",
+                    "input_tokens": 128,
+                    "output_tokens": 4,
+                },
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+            "engine": {
+                "mode": "aggregated",
+                "model": "Qwen/Qwen3-30B-A3B",
+                "hardware": "b200_sxm",
+                "backend": "vllm",
+                "backend_version": "0.22.0",
+                "context_length": 4096,
+                "workers": {
+                    "aggregated": {
+                        "parallelism": {
+                            "replicas": 1,
+                            "tensor": 4,
+                            "pipeline": 1,
+                            "attention_data": 1,
+                            "moe_tensor": 1,
+                            "moe_expert": 4,
+                        },
+                        "scheduler": {
+                            "max_batched_tokens": 8192,
+                            "max_sequences": 256,
+                        },
+                        "kv_cache": {
+                            "block_size": 64,
+                            "prefix_caching": True,
+                            "capacity": {"type": "fixed", "blocks": 4096},
+                        },
+                        "timing": {"type": "default"},
+                    }
+                },
+            },
+        }
+    )
+
+    assert 0.0 < report.metrics["power_coverage"] < 0.9
+    assert "power_w" not in report.metrics
+
+
 def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
     report = _run(
         {

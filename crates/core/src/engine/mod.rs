@@ -29,7 +29,7 @@ pub use protocol::{
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
-pub use timing::{TimingModel, TimingModelConfig};
+pub use timing::{TimingModel, TimingModelConfig, TimingPhasePower, TimingPowerSummary};
 
 #[doc(hidden)]
 pub use protocol::PendingPass;
