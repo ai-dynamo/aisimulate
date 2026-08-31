@@ -735,6 +735,50 @@ fn telemetry_samples_router_queues_before_a_coincident_scale_up() {
     assert_eq!(coincident.active_decode_ids, vec![0]);
 }
 
+#[test]
+fn telemetry_heartbeat_does_not_keep_a_deadlocked_disagg_replay_alive() {
+    let config = disagg_config();
+    let runtime_config = config.runtime_config(false).unwrap();
+    let build_runtime = || {
+        let pending =
+            crate::replay::normalize_trace_requests(vec![request(9_304, 64, 1, 0.0)], 1.0).unwrap();
+        DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+            &runtime_config,
+            AdmissionQueue::new_requests(pending, ReplayMode::Trace),
+            false,
+            |_, prefill_topology, _, decode_topology| {
+                Ok((
+                    QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                    QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+                ))
+            },
+        )
+        .unwrap()
+    };
+
+    let baseline_error = match build_runtime().run() {
+        Ok(_) => panic!("blocked replay unexpectedly completed"),
+        Err(error) => error.to_string(),
+    };
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let observed_error = match build_runtime()
+        .with_telemetry_observer(0.1, Box::new(observer))
+        .run()
+    {
+        Ok(_) => panic!("telemetry kept a blocked replay alive"),
+        Err(error) => error.to_string(),
+    };
+
+    assert_eq!(observed_error, baseline_error);
+    assert!(observed_error.contains("dead end"));
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+}
+
 fn run_trace_with_details(
     config: &TestDisaggConfig,
     requests: Vec<DirectRequest>,
@@ -1997,6 +2041,98 @@ fn test_disagg_max_sim_time_truncates_run() {
         report.throughput.duration_ms,
         cap_ms
     );
+}
+
+#[test]
+fn telemetry_heartbeats_do_not_advance_disagg_through_a_capped_idle_gap() {
+    let config = disagg_config();
+    let cap_ms = 5.0;
+    let pending = VecDeque::from([request(9_401, 64, 2, 10.0)]);
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(cap_ms))
+            .run()
+            .unwrap();
+    let mut baseline = collector.finish();
+
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(cap_ms))
+            .with_telemetry_observer(1.0, Box::new(observer))
+            .run()
+            .unwrap();
+    let mut observed = collector.finish();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    assert_eq!(samples[0].sampled_at_ms, 0.0);
+}
+
+#[test]
+fn capped_disagg_telemetry_flushes_t0_observations_without_advancing_accounting() {
+    let config = disagg_config();
+    let pending = VecDeque::from([request(9_402, 64, 2, 0.0)]);
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(0.0))
+            .run()
+            .unwrap();
+    let mut baseline = collector.finish();
+
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(0.0))
+            .with_telemetry_observer(0.1, Box::new(observer))
+            .run()
+            .unwrap();
+    let mut observed = collector.finish();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(baseline.throughput.prefill_worker_seconds, 0.0);
+    assert_eq!(observed.throughput.prefill_worker_seconds, 0.0);
+    assert_eq!(baseline.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(observed.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(baseline.throughput.gpu_hours, 0.0);
+    assert_eq!(observed.throughput.gpu_hours, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 2);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    let final_sample = &samples[1];
+    assert_eq!(final_sample.kind, ReplayTelemetrySampleKind::Final);
+    assert_eq!(final_sample.interval_start_ms, 0.0);
+    assert_eq!(final_sample.sampled_at_ms, 0.0);
+    assert_eq!(final_sample.traffic.duration_s, 0.0);
+    assert_eq!(final_sample.traffic.arriving_requests, 1);
 }
 
 /// Sanity: without a cap, the same setup admits all submitted requests

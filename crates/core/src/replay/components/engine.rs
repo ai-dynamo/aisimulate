@@ -584,6 +584,20 @@ where
         Ok((gauges, interval))
     }
 
+    pub(crate) fn telemetry_has_interval_observations(&self) -> bool {
+        let Some(telemetry) = self.telemetry.as_ref() else {
+            return false;
+        };
+        telemetry.retired_interval.has_observations()
+            || self
+                .workers
+                .iter()
+                .filter_map(Option::as_ref)
+                .filter_map(|worker| worker.telemetry.as_ref())
+                .flatten()
+                .any(|rank| rank.interval.has_observations())
+    }
+
     pub(crate) fn has_active_workers(&self) -> bool {
         !self.active_group_ids().is_empty()
     }

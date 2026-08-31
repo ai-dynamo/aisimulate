@@ -14,9 +14,9 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
-    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
-    push_worker_completions, push_worker_ready,
+    next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp, pop_ready_scaling_tick,
+    pop_ready_telemetry_tick, pop_ready_worker_completions, pop_ready_worker_ready,
+    push_scaling_tick, push_telemetry_tick, push_worker_completions, push_worker_ready,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::telemetry::{
@@ -385,12 +385,19 @@ where
         })
     }
 
-    /// Pick the next logical timestamp from either arrivals or scheduled worker completions.
-    fn next_timestamp(&mut self) -> Option<f64> {
+    /// Return both the next event including telemetry and the canonical next
+    /// timestamp that can advance replay semantics.
+    fn next_timestamps(&mut self) -> (Option<f64>, Option<f64>) {
+        let next_arrival_ms = CoreAdmissionSource::next_ready_time_ms(&mut self.admission);
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
-        choose_next_timestamp(
-            CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
-            next_event_ms,
+        let next_canonical_event_ms = if self.telemetry.is_some() {
+            next_non_telemetry_event_ms(&mut self.events)
+        } else {
+            next_event_ms
+        };
+        (
+            choose_next_timestamp(next_arrival_ms, next_event_ms),
+            choose_next_timestamp(next_arrival_ms, next_canonical_event_ms),
         )
     }
 
@@ -866,7 +873,10 @@ where
         let Some(telemetry) = self.telemetry.as_ref() else {
             return Ok(());
         };
-        if self.now_ms > telemetry.interval_start_ms() {
+        if self.now_ms > telemetry.interval_start_ms()
+            || self.traffic.telemetry_has_observations()
+            || self.engine.telemetry_has_interval_observations()
+        {
             self.publish_telemetry_sample(ReplayTelemetrySampleKind::Final)?;
         }
         Ok(())
@@ -1159,7 +1169,8 @@ where
         self.seed_first_scaling_tick()?;
 
         while !self.is_done() {
-            let Some(next_timestamp_ms) = self.next_timestamp() else {
+            let (next_timestamp_ms, canonical_timestamp_ms) = self.next_timestamps();
+            let Some(canonical_timestamp_ms) = canonical_timestamp_ms else {
                 // Aggregated workers have no external handoff dependency. If
                 // the event queue is empty while an engine still owns a
                 // request, the preceding zero-duration pass lost its terminal
@@ -1177,10 +1188,12 @@ where
                 );
             };
             if let Some(cap_ms) = self.max_sim_time_ms
-                && next_timestamp_ms > cap_ms
+                && canonical_timestamp_ms > cap_ms
             {
                 break;
             }
+            let next_timestamp_ms = next_timestamp_ms
+                .expect("canonical replay activity must have a next scheduled timestamp");
             self.advance_now_ms(next_timestamp_ms);
             self.drain_current_timestamp()?;
         }

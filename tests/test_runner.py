@@ -262,6 +262,22 @@ def test_runner_captures_requested_raw_and_per_request_report():
     assert report.metadata["native_report"]["completed_requests"] == 1
 
 
+def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation():
+    runtime = RecordingRuntime()
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=7)
+
+    with pytest.raises(
+        InvalidRunnerError,
+        match="JSON runtime does not yet expose replay telemetry",
+    ):
+        runner.run(
+            _spec(),
+            output_requirements=ReplayOutputRequirements(capture_telemetry=True),
+        )
+
+    assert runtime.execution_spec_json is None
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

@@ -26,6 +26,35 @@ pub(super) fn next_timestamp(
     }
 }
 
+/// Return the earliest scheduled event that can advance replay semantics.
+///
+/// At most one telemetry heartbeat is armed at a time. Temporarily removing
+/// it lets capped/deadlock logic inspect the canonical next event in O(log n)
+/// without allowing observation alone to keep or advance the simulation.
+pub(super) fn next_non_telemetry_event_ms<Events: EngineEventBatch>(
+    events: &mut BinaryHeap<SimulationEvent<Events>>,
+) -> Option<f64> {
+    if !events
+        .peek()
+        .is_some_and(|event| matches!(event.kind, SimulationEventKind::TelemetryTick))
+    {
+        return events.peek().map(|event| event.at_ms);
+    }
+
+    let telemetry = events
+        .pop()
+        .expect("peeked telemetry event must remain in the queue");
+    debug_assert!(
+        !events
+            .peek()
+            .is_some_and(|event| matches!(event.kind, SimulationEventKind::TelemetryTick)),
+        "replay must arm at most one telemetry tick"
+    );
+    let next_ms = events.peek().map(|event| event.at_ms);
+    events.push(telemetry);
+    next_ms
+}
+
 #[cfg(test)]
 pub(super) fn pop_next_trace_ready(
     pending: &mut VecDeque<DirectRequest>,
@@ -246,6 +275,33 @@ mod tests {
         assert_eq!(next_timestamp(Some(3.0), None), Some(3.0));
         assert_eq!(next_timestamp(None, Some(4.0)), Some(4.0));
         assert_eq!(next_timestamp(None, None), None);
+    }
+
+    #[test]
+    fn next_non_telemetry_event_ignores_the_armed_heartbeat_without_consuming_it() {
+        let mut events: BinaryHeap<SimulationEvent<()>> = BinaryHeap::new();
+        let mut next_event_seq = 0;
+        push_telemetry_tick(&mut events, &mut next_event_seq, 1.0);
+
+        assert_eq!(next_non_telemetry_event_ms(&mut events), None);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events.peek().unwrap().at_ms, 1.0);
+
+        push_worker_ready(
+            &mut events,
+            &mut next_event_seq,
+            5.0,
+            SimulationWorkerStage::Aggregated,
+            0,
+        );
+
+        assert_eq!(next_non_telemetry_event_ms(&mut events), Some(5.0));
+        assert_eq!(events.len(), 2);
+        assert_eq!(events.peek().unwrap().at_ms, 1.0);
+        assert!(matches!(
+            events.peek().unwrap().kind,
+            SimulationEventKind::TelemetryTick
+        ));
     }
 
     #[test]

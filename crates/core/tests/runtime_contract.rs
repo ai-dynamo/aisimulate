@@ -246,6 +246,105 @@ fn telemetry_sampling_does_not_perturb_the_replay_report() {
     assert!(samples.lock().unwrap().len() > 2);
 }
 
+#[test]
+fn capped_telemetry_does_not_advance_agg_accounting_and_flushes_t0_observations() {
+    let mut spec = aggregated_spec(
+        Backend::Vllm,
+        1,
+        0.0,
+        vec![request("capped-telemetry", 0.0, 4, 2)],
+    );
+    spec.max_sim_time_ms = Some(0.0);
+    let capture = ReplayCaptureOptions {
+        determinism: ReplayDeterminism::CanonicalV1,
+        ..ReplayCaptureOptions::default()
+    };
+    let mut baseline = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .run()
+        .unwrap();
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = RecordingTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let mut observed = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .with_telemetry_observer(0.1, Box::new(observer))
+        .unwrap()
+        .run()
+        .unwrap();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(baseline.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(observed.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(baseline.throughput.gpu_hours, 0.0);
+    assert_eq!(observed.throughput.gpu_hours, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 2);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    let final_sample = &samples[1];
+    assert_eq!(final_sample.kind, ReplayTelemetrySampleKind::Final);
+    assert_eq!(final_sample.interval_start_ms, 0.0);
+    assert_eq!(final_sample.sampled_at_ms, 0.0);
+    assert_eq!(final_sample.traffic.duration_s, 0.0);
+    assert_eq!(final_sample.traffic.arriving_requests, 1);
+}
+
+#[test]
+fn telemetry_heartbeats_do_not_advance_agg_through_a_capped_idle_gap() {
+    let mut spec = aggregated_spec(
+        Backend::Vllm,
+        1,
+        0.0,
+        vec![request("after-cap", 10.0, 4, 2)],
+    );
+    spec.max_sim_time_ms = Some(5.0);
+    let capture = ReplayCaptureOptions {
+        determinism: ReplayDeterminism::CanonicalV1,
+        ..ReplayCaptureOptions::default()
+    };
+    let mut baseline = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .run()
+        .unwrap();
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = RecordingTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let mut observed = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .with_telemetry_observer(1.0, Box::new(observer))
+        .unwrap()
+        .run()
+        .unwrap();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    assert_eq!(samples[0].sampled_at_ms, 0.0);
+}
+
 struct GeneralRoundRobinComposition {
     scaling: Option<Box<dyn ReplayScalingPolicy>>,
     scaling_construction_error: Option<&'static str>,

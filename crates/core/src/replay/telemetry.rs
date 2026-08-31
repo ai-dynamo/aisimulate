@@ -19,7 +19,8 @@ pub enum ReplayTelemetrySampleKind {
     Baseline,
     /// A complete configured sampling interval.
     Periodic,
-    /// The non-empty tail after the last periodic sample.
+    /// The non-empty tail after the last periodic sample, including a
+    /// zero-duration tail with observations recorded at the final timestamp.
     Final,
 }
 
@@ -60,6 +61,10 @@ pub struct ReplaySchedulerIntervalMetrics {
 }
 
 impl ReplaySchedulerIntervalMetrics {
+    pub(crate) const fn has_observations(&self) -> bool {
+        self.cache_hit_tokens != 0 || self.cache_total_tokens != 0 || self.preemptions != 0
+    }
+
     pub(crate) fn checked_add_assign(&mut self, other: Self) -> anyhow::Result<()> {
         self.cache_hit_tokens = self
             .cache_hit_tokens

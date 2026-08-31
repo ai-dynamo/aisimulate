@@ -289,6 +289,15 @@ impl TrafficAccumulator {
         }
     }
 
+    fn has_observations(&self) -> bool {
+        self.offered_count != 0
+            || self.shape_count != 0
+            || self.ttft_count != 0
+            || self.itl_count != 0
+            || self.hit_rate_count != 0
+            || self.accept_length_forward_count != 0
+    }
+
     /// Record one request offered to the replay runtime.
     pub(crate) fn on_arrival(&mut self) {
         self.offered_count += 1;
@@ -507,6 +516,12 @@ impl TrafficAccumulators {
             avg_accept_length: stats.avg_accept_length,
             accept_length_forward_count: stats.accept_length_forward_count,
         }
+    }
+
+    pub(crate) fn telemetry_has_observations(&self) -> bool {
+        self.telemetry
+            .as_ref()
+            .is_some_and(TrafficAccumulator::has_observations)
     }
 }
 

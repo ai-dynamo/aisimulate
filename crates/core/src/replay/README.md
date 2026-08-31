@@ -193,7 +193,8 @@ The observer receives:
 - periodic samples with traffic and additive scheduler counters for each
   completed interval
 - a final sample when a positive elapsed tail remains after the last periodic
-  boundary
+  boundary, or when the final timestamp has pending zero-duration interval
+  observations
 
 Gauge rows describe only live worker ranks. Cache-hit token and preemption
 counters from a rank that retires during an interval are folded into one
@@ -202,6 +203,10 @@ O(live ranks) plus O(1) retired history. Arriving-request traffic has its own
 accumulator, so neither the baseline nor telemetry sampling drains Planner's
 traffic window. When no observer is attached, Replay allocates no telemetry
 rank state and performs no telemetry callbacks.
+
+Telemetry heartbeats are observational: they do not keep a deadlocked replay
+alive or advance a replay past its configured time cap. A heartbeat is only
+interleaved when canonical replay work exists at or before the cap.
 
 ### Why KV events are captured only where needed
 
