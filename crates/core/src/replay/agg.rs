@@ -249,6 +249,8 @@ where
                 placement.scheduler_id,
                 dp_rank,
                 placement.reported_overlap_tokens,
+                placement.cache_sample,
+                placement.placement_replica_id,
             );
             let request = self
                 .requests
@@ -313,6 +315,8 @@ where
                     placement.scheduler_id,
                     dp_rank,
                     placement.reported_overlap_tokens,
+                    placement.cache_sample,
+                    placement.placement_replica_id,
                 );
                 self.requests.insert(
                     uuid,
@@ -1181,6 +1185,7 @@ mod tests {
                     scheduler_id,
                     reported_overlap_tokens: 0,
                     cache_sample: None,
+                    placement_replica_id: None,
                 }),
                 released: Vec::new(),
             })
@@ -1220,6 +1225,7 @@ mod tests {
                     scheduler_id: 1,
                     reported_overlap_tokens: 0,
                     cache_sample: None,
+                    placement_replica_id: None,
                 })
                 .collect())
         }
