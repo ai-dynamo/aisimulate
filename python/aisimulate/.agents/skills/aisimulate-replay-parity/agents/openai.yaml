@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "AI Simulate Replay Parity"
+  short_description: "Detect engine replay semantic regressions"
+  default_prompt: "Use $aisimulate-replay-parity to compare this AI Simulate replay change against a pinned baseline."

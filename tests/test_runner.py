@@ -71,7 +71,9 @@ def _engine_args(*, role="aggregated", timing=None):
     }
 
 
-def _spec(*, deployment=None, workload=None, concurrency=None, adapters=None):
+def _spec(
+    *, deployment=None, workload=None, goal=None, concurrency=None, adapters=None
+):
     return ReplaySpec(
         backend_deployment=deployment
         or BackendDeploymentSpec(
@@ -83,7 +85,7 @@ def _spec(*, deployment=None, workload=None, concurrency=None, adapters=None):
         ),
         workload=workload
         or {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
-        goal={"target": "throughput"},
+        goal=goal or {"target": "throughput"},
         concurrency=concurrency,
         adapters=adapters or {},
     )
@@ -129,6 +131,24 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
     assert execution["record_per_request"] is False
     assert isinstance(runtime.execution_spec_json, str)
     assert report.metadata == {}
+
+
+@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
+def test_engine_runner_preserves_independent_sla_bounds(
+    field: str, bound: float
+) -> None:
+    runtime = RecordingRuntime()
+    spec = _spec(
+        goal={
+            "target": "throughput",
+            "strict_sla": False,
+            "sla": {field: bound},
+        }
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+
+    assert runtime.execution_spec["sla"] == {field: bound}
 
 
 def test_runner_lowers_sglang_with_prefix_caching_disabled():

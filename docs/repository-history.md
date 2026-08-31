@@ -1,32 +1,7 @@
-# AISimulate migrations
+# AISimulate repository history
 
 This repository combines two independently preserved source streams: the full
 AIConfigurator product and the former Dynamo `aisimulate/` package.
-
-## CLI migration
-
-AISimulate now owns the public offline simulation CLI. New single-deployment
-predictions should use `aisimulate predict`; new configuration searches should
-use `aisimulate recommend`. The `aiconfigurator` command remains in the same
-wheel during the compatibility window for established workflows that do not
-yet have a direct replacement.
-
-The two CLIs do not share flags or input files. The unified CLI uses one strict
-YAML schema, so migrating an AIC command requires translating its intent rather
-than renaming the executable.
-
-| AIC workflow | Preferred AISimulate workflow | Migration status |
-| --- | --- | --- |
-| `aiconfigurator cli estimate` | `aisimulate predict` | Translate the explicit deployment, workload, and evaluation settings into one concrete prediction YAML |
-| `aiconfigurator cli default` | `aisimulate recommend` | Express the topology search, GPU bound, and objective in recommendation YAML; output and ranking are not CLI-compatible aliases |
-| `aiconfigurator cli recommend` | `aisimulate recommend` | Express the target load, SLA, GPU bounds, and objective in recommendation YAML; there is no automatic flag converter |
-| `aiconfigurator cli exp` | `aisimulate predict` or `aisimulate recommend` | Use `predict` for each concrete experiment and `recommend` when the experiment defines search domains |
-| `aiconfigurator cli generate` | Continue using `aiconfigurator` | The unified CLI does not yet replace AIC deployment-artifact generation |
-| `aiconfigurator cli support` | Continue using `aiconfigurator` or the published matrices | The AIC CLI matrix and strict-native FPE matrix answer different support questions |
-
-Every YAML emitted by `aisimulate recommend` is concrete and can be passed
-directly to `aisimulate predict`. Do not treat FPE coverage, successful command
-execution, and end-to-end prediction accuracy as interchangeable evidence.
 
 ## Full AIConfigurator migration
 
@@ -40,7 +15,7 @@ migration is tracked by
 | AIC 0.11 surface | AISimulate 0.12 surface | Compatibility |
 | --- | --- | --- |
 | Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command and import namespace ship inside `aisimulate` during the compatibility window |
-| CLI `aiconfigurator ...` | `aisimulate predict` / `aisimulate recommend` for new simulation workflows; `aiconfigurator ...` for compatibility-only workflows | Use the CLI migration table above; this is not a flag-compatible rename |
+| CLI `aiconfigurator ...` | `aisimulate predict` / `aisimulate recommend` for new simulation workflows; `aiconfigurator ...` for compatibility-only workflows | See the [AIC migration guide](cli/migrate-from-aiconfigurator.md); this is not a flag-compatible rename |
 | Python distribution `aiconfigurator-core` | included in `aisimulate` | No separate core distribution is installed |
 | `aiconfigurator_core` | `aiconfigurator_core` from the `aisimulate` wheel | Existing import remains available in 0.12.0 |
 | `aiconfigurator_core.sdk` | `aisimulate_core.sdk` facade in the same wheel | Both import paths remain available in 0.12.0 |
@@ -152,11 +127,15 @@ integrations, but copying AIC code and adding the new commands does not prove
 behavioral parity for every legacy workflow. AIC-1480/AIC-1472/AIC-1476 track
 the remaining parity and product evidence.
 
-Keep using `aiconfigurator` for the no-direct-replacement rows in the CLI
-migration table until an explicit replacement and migration path land. The
-compatibility command is planned for deprecation, but its removal schedule is a
-separate release decision and must not be inferred from the presence of the
-new CLI.
+Keep using `aiconfigurator` for the no-direct-replacement workflows in the
+[AIC migration guide](cli/migrate-from-aiconfigurator.md) until an explicit
+replacement and migration path land. The compatibility command is planned for
+deprecation, but its removal schedule is a separate release decision and must
+not be inferred from the presence of the new CLI.
+
+For features already implemented by the standalone Sweeper, see
+[Migrate from AIConfigurator](cli/migrate-from-aiconfigurator.md) for explicit legacy
+command-to-configuration examples and current execution boundaries.
 
 ## Dynamo-to-AISimulate package migration
 

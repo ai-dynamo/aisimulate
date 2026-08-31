@@ -44,8 +44,9 @@ for it (and raises for `pareto`, which has no single direction). `score_report` 
 minimized targets so **higher is always better** internally; for a Pareto goal the raw
 (unsigned) value is kept and `_dominates` applies each objective's own direction.
 Missing-key defaults differ by direction: a maximized target reads `0.0` when its key is
-absent, but `e2e_latency` defaults to `+inf` — so a report missing `mean_e2e_latency_ms`
-scores worst-possible (`-inf` after negation) rather than best.
+absent, but `ttft` and `e2e_latency` default to `+inf` when their metric is missing or has
+no qualifying samples. Such a latency report scores worst-possible (`-inf` after negation)
+rather than best.
 
 The `*_per_user` metric is already a rate (mean of per-token-gap `1000/itl`), so it gets
 **no** GPU/time normalization — it is the InferenceX x-axis (tok/s/user).
@@ -84,17 +85,24 @@ iff that set intersects `_SLA_TARGETS`. So an SLA is mandatory when:
 - `target` is `goodput` or `goodput_per_gpu`, **or**
 - `target` is `pareto` **and** its objectives include one of those.
 
-A satisfying SLA is `e2e_ms`, **or** both `ttft_ms` and `itl_ms`. Note SLA is *not* gated
-during feasibility (`is_feasible` checks only the GPU budget) — it lives entirely inside
-the goodput metric, so an aggregate latency gate would double-count it.
+A satisfying per-request goodput SLA has at least one configured bound. TTFT and ITL are
+independently optional; an unset field is unbounded. `e2e_ms` remains mutually exclusive
+with either token-latency field.
+By default SLA is *not* gated during aggregate feasibility (`is_feasible` checks only
+the GPU budget) — it lives inside the goodput metric, so an unconditional aggregate
+latency gate would double-count it. `strict_sla: true` is the explicit legacy-compatible
+opt-in: it filters aggregate mean metrics before scalar ranking or Pareto dominance.
 
 `SLATarget` shape (ms, each `> 0`, `extra="forbid"`):
 
 | field | meaning |
 |---|---|
-| `ttft_ms` | time-to-first-token bound — pair with `itl_ms` |
-| `itl_ms` | inter-token-latency bound — pair with `ttft_ms` |
+| `ttft_ms` | independently optional time-to-first-token bound |
+| `itl_ms` | independently optional inter-token-latency bound |
 | `e2e_ms` | end-to-end bound — standalone alternative |
+
+Strict aggregate comparisons are inclusive (`value <= bound`). A configured bound with
+a missing/non-finite report metric or no qualifying latency samples rejects the candidate.
 
 ## Pareto
 
@@ -119,7 +127,8 @@ tradeoff between the scalar targets in `pareto_objectives`.
   measurement. (Single-objective goals declare the sampler's default single maximized
   `"objective"` metric, pre-signed by the caller.)
 
-- **front** — `score.pareto_front` returns the **non-dominated** subset.
+- **front** — `score.pareto_front` returns the **non-dominated** subset after optional
+  strict aggregate SLA filtering.
   `_dominates(a, b)` is true iff `a` is at least as good as `b` on **every** objective (in
   that objective's own `maximize` direction) and strictly better on at least one. The
   front is **sorted by the last objective ascending** — the x-axis — so the list traces
