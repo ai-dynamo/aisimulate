@@ -7,8 +7,8 @@
 //! from bucketed `(feature vector, observed_ms)` samples once an inferred
 //! workload kind has enough observations, and predicts from that fit.
 
-use super::options::ForwardPassPerfOptions;
-use super::samples::{AxisRange, BucketedSamples, StoreStats, WithOptions};
+use super::samples::{AxisRange, BucketedSamples, StoreStats, WithTuningConfig};
+use super::tuning::ForwardPassPerfTuningConfig;
 
 const HINGE_NEG_TOLERANCE: f64 = 1e-6;
 const PREFILL_HINGE_MIN_OBSERVATIONS: usize = 6;
@@ -23,13 +23,16 @@ pub(crate) struct BucketedRegression {
     fit: Option<RegressionFit>,
 }
 
-impl WithOptions for BucketedRegression {
-    fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self {
+impl WithTuningConfig for BucketedRegression {
+    fn with_tuning_config(
+        tuning_config: &ForwardPassPerfTuningConfig,
+        axis_ranges: &[AxisRange],
+    ) -> Self {
         let ndim = axis_ranges.len();
         Self {
-            samples: BucketedSamples::new_dynamic(options, ndim),
+            samples: BucketedSamples::new_dynamic(tuning_config, ndim),
             ndim,
-            min_observations: options.min_observations,
+            min_observations: tuning_config.min_observations,
             fit: None,
         }
     }

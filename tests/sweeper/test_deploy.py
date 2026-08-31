@@ -13,6 +13,7 @@ from aisimulate.sweeper.parallel_enum import (
     ParallelShape,
     ReplicaParallelConfig,
 )
+from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
 from aisimulate.sweeper.sample import unroll_sample
 
 BACKEND_VERSION = "1.3.0rc10"
@@ -176,6 +177,84 @@ def test_optional_backend_runtime_values_are_forwarded():
 
     assert engine["startup_time"] == 45.0
     assert engine["aic_nextn"] == 2
+
+
+def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_into_engine_args(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        deploy_module,
+        "materialize_aic_num_gpu_blocks",
+        lambda payload: {**payload, "num_gpu_blocks": 321},
+    )
+    forward_pass_estimator = ForwardPassEstimatorSpec(
+        config={
+            "model": "example/model",
+            "system": "example_sku",
+            "backend": "trtllm",
+            "backend_version": BACKEND_VERSION,
+            "tp": 1,
+            "pp": 1,
+            "attention_dp": 1,
+            "database_mode": "HYBRID",
+            "transfer_policy": ["xshape", "xquant"],
+            "forward_model": "fpm",
+            "systems_paths": ["/custom/systems"],
+            "fallback_policy": "error",
+        },
+        diagnostics={
+            "source": "aic",
+            "provenance": {"selected_systems_root": "/custom/systems"},
+        },
+    )
+    sample = unroll_sample(
+        search_space=_space(),
+        selection=_agg_selection(),
+        parallel_config=AGG_MOE,
+    )
+
+    deployment = build_backend_deployment(
+        sample,
+        backend_version=BACKEND_VERSION,
+        forward_pass_estimator=forward_pass_estimator,
+    )
+
+    assert deployment.forward_pass_estimator is forward_pass_estimator
+    engine = deployment.agg_engine_args
+    assert engine is not None
+    assert {
+        "aic_database_mode",
+        "aic_transfer_policy",
+        "aic_forward_model",
+        "aic_systems_paths",
+        "aic_engine_step_backend",
+    }.isdisjoint(engine)
+    expected_config = {
+        "model": "example/model",
+        "system": "example_sku",
+        "backend": "trtllm",
+        "backend_version": BACKEND_VERSION,
+        "tp": 4,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp_size": 1,
+        "moe_ep_size": 4,
+        "nextn": 0,
+        "kv_block_size": 64,
+        "database_mode": "HYBRID",
+        "transfer_policy": ["xshape", "xquant"],
+        "forward_model": "fpm",
+        "systems_paths": ["/custom/systems"],
+        "fallback_policy": "error",
+    }
+    assert (
+        deployment.performance_model_metadata["aggregated"]["config"] == expected_config
+    )
+    assert engine["timing_model"]["config"] == expected_config
+    assert (
+        deployment.performance_model_metadata["aggregated"]["selection"]["source"]
+        == "aic"
+    )
 
 
 def test_backend_deployment_contains_no_dynamo_policy_fields():

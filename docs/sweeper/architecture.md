@@ -26,7 +26,8 @@ replay runtime.
 ```mermaid
 flowchart TD
     A["Validate SmartSearchConfig"] --> B["Preflight Runner capabilities"]
-    B --> C["Enumerate backend branches"]
+    B --> R["Resolve forward-pass estimator and performance-data identities"]
+    R --> C["Enumerate backend branches"]
     C --> D["Resolve configured providers"]
     D --> E["Generate namespaced search dimensions"]
     E --> F["Ask sampler for suggestions"]
@@ -41,6 +42,18 @@ flowchart TD
 Provider code runs in the main process. Worker tasks receive only a serializable `ReplaySpec`; they
 do not import or pickle provider objects. Each worker creates one runner and reuses it for candidate
 replays.
+
+AIConfigurator Core owns the typed `ForwardPassPerfModelConfig` (immutable identity and selection
+policy), `ForwardPassPerfTuningConfig` (tuning behavior), and the sole production constructor,
+`ForwardPassPerfModel::best_available`. Sweeper parses YAML into those types and calls the Core
+constructor before branch enumeration; it does not load databases or select versions itself.
+
+`ReplaySpec.backend_deployment.forward_pass_estimator` stores Core's resolved model config, tuning config, and
+diagnostics/provenance. Candidate topology is the only per-role derivation. The resulting exact
+role config is used both as Replay's AIC timing-provider config and as performance-model metadata,
+so worker processes never consult mutable global system paths or choose a newer data version
+independently. Planner and other consumers use the same public Core facade instead of defining a
+parallel constructor schema.
 
 ## Provider Preparation
 

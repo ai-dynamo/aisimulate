@@ -34,11 +34,11 @@ use pyo3::sync::GILOnceCell;
 use pyo3::types::PyType;
 
 use crate::common::error::AicError;
-use crate::perfmodel::EngineConfig;
 use crate::perfmodel::engine::runtime::{
     DEFAULT_STATIC_STRIDE, Engine, PerOpSolValue, PerOpValue, RuntimeConfig, StaticMode,
     StaticResult,
 };
+use crate::perfmodel::{EngineConfig, ForwardPassPerfModelConfig};
 use crate::{BackendKind, DataType, ENGINE_CONFIG_SCHEMA_VERSION};
 
 /// Trivial smoke export: returns the engine-config schema version so callers
@@ -147,7 +147,7 @@ fn parse_mode(mode: &str) -> PyResult<StaticMode> {
 /// Precedence: explicit `systems_path` arg → `AICONFIGURATOR_SYSTEMS_PATH` env
 /// → the installed core wheel's SDK resource path → repo-relative
 /// `python/aisimulate/src/aiconfigurator_core/systems`.
-fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
+pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
     if let Some(p) = systems_path {
         return Ok(PathBuf::from(p));
     }
@@ -831,6 +831,8 @@ struct EngineBuildRequest {
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
+    database_mode: Option<String>,
+    transfer_policy: Option<Vec<String>>,
 }
 
 /// Ergonomic builder for the Rust -> Python -> Rust compiled-engine entry point.
@@ -870,6 +872,8 @@ impl AicEngineBuilder {
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
+                database_mode: None,
+                transfer_policy: None,
             },
         }
     }
@@ -1047,6 +1051,8 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("fmha_quant_mode", request.fmha_quant_mode.as_deref())?;
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
+        kwargs.set_item("database_mode", request.database_mode.as_deref())?;
+        kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
         kwargs.set_item("nextn", request.nextn)?;
         kwargs.set_item("kv_block_size", request.kv_block_size)?;
         kwargs.set_item("systems_path", systems_root_str)?;
@@ -1115,7 +1121,49 @@ pub(crate) fn compile_engine_to_engine(
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
+        database_mode: Some(database_mode_token(config.database_mode).to_owned()),
+        transfer_policy: config.transfer_policy.clone(),
     })
+}
+
+/// Compile the one canonical forward-pass config through the shared build body.
+pub(crate) fn compile_forward_pass_model_to_engine(
+    config: &ForwardPassPerfModelConfig,
+    systems_path: &str,
+) -> Result<Engine, AicError> {
+    compile_engine_from_request(EngineBuildRequest {
+        model_path: config.model.clone(),
+        system: config.system.clone(),
+        backend: config.backend.as_str().to_owned(),
+        backend_version: config.backend_version.clone(),
+        tp_size: config.tp,
+        pp_size: config.pp,
+        attention_dp_size: config.attention_dp,
+        moe_tp_size: config.moe_tp_size,
+        moe_ep_size: config.moe_ep_size,
+        gemm_quant_mode: config.gemm_quant_mode.clone(),
+        moe_quant_mode: config.moe_quant_mode.clone(),
+        kvcache_quant_mode: config.kvcache_quant_mode.clone(),
+        fmha_quant_mode: config.fmha_quant_mode.clone(),
+        comm_quant_mode: config.comm_quant_mode.clone(),
+        nextn: config.nextn,
+        kv_block_size: config.kv_block_size,
+        systems_path: Some(systems_path.to_owned()),
+        forward_model: Some(config.forward_model.as_str().to_owned()),
+        database_mode: Some(database_mode_token(config.database_mode).to_owned()),
+        transfer_policy: config.transfer_policy.clone(),
+    })
+}
+
+fn database_mode_token(mode: crate::common::enums::DatabaseMode) -> &'static str {
+    use crate::common::enums::DatabaseMode;
+    match mode {
+        DatabaseMode::Silicon => "SILICON",
+        DatabaseMode::Hybrid => "HYBRID",
+        DatabaseMode::Empirical => "EMPIRICAL",
+        DatabaseMode::Sol => "SOL",
+        DatabaseMode::SolFull => "SOL_FULL",
+    }
 }
 
 /// `DataType` → `GEMMQuantMode` enum name. `None` (auto-infer) for DataTypes
@@ -1178,12 +1226,12 @@ fn kvcache_quant_name(dtype: Option<&DataType>) -> Option<&'static str> {
 /// The hot path (`estimate_forward_pass_time_ms` / `tune_with_fpms`) is pure
 /// Rust over the embedded [`Engine`] with NO Python re-entry — the GIL is
 /// released via [`Python::allow_threads`] around each compute. Only the
-/// constructors (`from_native` / `best_available`) cross into Python once to
+/// sole production constructor (`best_available`) crosses into Python once to
 /// compile the model (`compile_engine`); that crossing re-acquires the GIL via
 /// `with_gil`, which is re-entrant, so calling it from inside a `#[pymethod]`
 /// staticmethod is fine.
 ///
-/// Constructors take the engine config + options as JSON strings (the same
+/// The constructor takes the canonical model config + tuning config as JSON strings (the same
 /// marshalling the Python `RustForwardPassPerfModel` wrapper used to pass over
 /// ctypes), so the Python wrapper's public surface is unchanged.
 #[pyclass(name = "RustForwardPassPerfModel")]
@@ -1191,14 +1239,16 @@ pub struct PyForwardPassPerfModel {
     inner: crate::ForwardPassPerfModel,
 }
 
-/// Parse the optional options JSON into [`ForwardPassPerfOptions`], defaulting
-/// when `None`/empty. Serde fills missing fields from the per-field defaults.
-fn parse_fpm_options(options_json: Option<&str>) -> PyResult<crate::ForwardPassPerfOptions> {
-    match options_json {
-        None => Ok(crate::ForwardPassPerfOptions::default()),
-        Some(s) if s.trim().is_empty() => Ok(crate::ForwardPassPerfOptions::default()),
+/// Parse the optional tuning configuration. `None` lets the core own defaults.
+fn parse_fpm_tuning_config(
+    tuning_config_json: Option<&str>,
+) -> PyResult<Option<crate::ForwardPassPerfTuningConfig>> {
+    match tuning_config_json {
+        None => Ok(None),
+        Some(s) if s.trim().is_empty() => Ok(None),
         Some(s) => serde_json::from_str(s)
-            .map_err(|e| PyValueError::new_err(format!("invalid options JSON: {e}"))),
+            .map(Some)
+            .map_err(|e| PyValueError::new_err(format!("invalid tuning config JSON: {e}"))),
     }
 }
 
@@ -1219,40 +1269,19 @@ fn parse_fpm_iteration(fpm_json: &str) -> PyResult<Vec<crate::ForwardPassMetrics
 
 #[pymethods]
 impl PyForwardPassPerfModel {
-    /// `RustForwardPassPerfModel.from_native(config_json, options_json=None)`:
-    /// strict native AIC model. Compiles the engine via Python `compile_engine`;
-    /// raises if the config cannot be compiled.
+    /// `RustForwardPassPerfModel.best_available(model_config_json, tuning_config_json=None)`:
+    /// the sole production constructor. The model config's explicit fallback policy
+    /// decides whether unsupported native input fails or uses regression.
     #[staticmethod]
-    #[pyo3(signature = (config_json, options_json=None))]
-    fn from_native(config_json: &str, options_json: Option<&str>) -> PyResult<Self> {
-        let config: EngineConfig = serde_json::from_str(config_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid engine config JSON: {e}")))?;
-        let options = parse_fpm_options(options_json)?;
-        let inner = crate::ForwardPassPerfModel::from_native(config, options).map_err(aic_to_py)?;
-        Ok(Self { inner })
-    }
-
-    /// `RustForwardPassPerfModel.best_available(config_json, options_json=None)`:
-    /// native when possible, else regression fallback (reason in
-    /// `diagnostics()["last_warning"]`).
-    #[staticmethod]
-    #[pyo3(signature = (config_json, options_json=None))]
-    fn best_available(config_json: &str, options_json: Option<&str>) -> PyResult<Self> {
-        let config: EngineConfig = serde_json::from_str(config_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid engine config JSON: {e}")))?;
-        let options = parse_fpm_options(options_json)?;
-        let inner =
-            crate::ForwardPassPerfModel::best_available(config, options).map_err(aic_to_py)?;
-        Ok(Self { inner })
-    }
-
-    /// `RustForwardPassPerfModel.from_regression(options_json=None)`:
-    /// regression-only model (no native engine, no Python compile).
-    #[staticmethod]
-    #[pyo3(signature = (options_json=None))]
-    fn from_regression(options_json: Option<&str>) -> PyResult<Self> {
-        let options = parse_fpm_options(options_json)?;
-        let inner = crate::ForwardPassPerfModel::from_regression(options).map_err(aic_to_py)?;
+    #[pyo3(signature = (model_config_json, tuning_config_json=None))]
+    fn best_available(model_config_json: &str, tuning_config_json: Option<&str>) -> PyResult<Self> {
+        let model_config: crate::ForwardPassPerfModelConfig =
+            serde_json::from_str(model_config_json).map_err(|e| {
+                PyValueError::new_err(format!("invalid forward-pass config JSON: {e}"))
+            })?;
+        let tuning_config = parse_fpm_tuning_config(tuning_config_json)?;
+        let inner = crate::ForwardPassPerfModel::best_available(model_config, tuning_config)
+            .map_err(aic_to_py)?;
         Ok(Self { inner })
     }
 

@@ -320,6 +320,8 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    database_mode: str | None = None,
+    transfer_policy: list[str] | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -352,18 +354,28 @@ def compile_engine(
     model = get_model(model_path, model_config, backend)
 
     # The database supplies the shared-layer perf sources, the query mode and
-    # the transfer policy stamped into the compiled `EngineConfig`. Load lazily
-    # and tolerate failure; the Rust core falls back to its own defaults.
-    database = _maybe_load_database(system, backend, backend_version, systems_path)
+    # the transfer policy stamped into the compiled `EngineConfig`. Explicit
+    # construction policy is fail-closed; legacy callers without one retain
+    # the historical best-effort behavior.
+    database = _maybe_load_database(
+        system,
+        backend,
+        backend_version,
+        systems_path,
+        database_mode=database_mode,
+        transfer_policy=transfer_policy,
+    )
+    resolved_backend_version = getattr(database, "version", None) or backend_version
+    resolved_systems_path = getattr(database, "systems_root", None) or systems_path
 
     spec_json = build_engine_spec_json(
         model,
         model_path=model_path,
         system=system,
         backend=backend,
-        backend_version=backend_version,
+        backend_version=resolved_backend_version,
         kv_block_size=kv_block_size,
-        systems_path=systems_path,
+        systems_path=resolved_systems_path,
         nextn=model_config.nextn,
         database=database,
     )
@@ -605,12 +617,40 @@ def _evaluate_single_op(
     return PerformanceResult(latency, energy=energy, source=source)
 
 
-def _maybe_load_database(system: str, backend: str, backend_version: str | None, systems_path: str | None) -> Any:
+def _maybe_load_database(
+    system: str,
+    backend: str,
+    backend_version: str | None,
+    systems_path: str | None,
+    *,
+    database_mode: str | None = None,
+    transfer_policy: list[str] | None = None,
+) -> Any:
     try:
         from aiconfigurator_core.sdk import perf_database
 
-        return perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
+        resolved_version = backend_version or perf_database.get_latest_database_version(
+            system,
+            backend,
+            systems_paths=systems_path,
+        )
+        if resolved_version is None:
+            return None
+        if database_mode is None and transfer_policy is None:
+            return perf_database.get_database(system, backend, resolved_version, systems_paths=systems_path)
+        mode = (database_mode or "SILICON").upper()
+        return perf_database.get_database_view(
+            system,
+            backend,
+            resolved_version,
+            systems_paths=systems_path,
+            allow_missing_data=mode != "SILICON",
+            database_mode=mode,
+            transfer_policy=transfer_policy,
+        )
     except Exception:
+        if database_mode is not None or transfer_policy is not None:
+            raise
         return None
 
 

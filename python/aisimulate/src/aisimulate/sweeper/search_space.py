@@ -16,6 +16,7 @@ runner are dropped from the backend knob.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,7 +24,7 @@ from .config import SmartSearchConfig
 from .kv_estimate import NoPerfDatabase
 from .model_hw import NoViableParallelConfig, parallel_configs_for
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
-from .replay import RunnerCapabilities
+from .replay import ForwardPassEstimatorSpec, RunnerCapabilities
 
 _ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig
 
@@ -174,6 +175,7 @@ def enumerate_branches(
     *,
     max_seq_len: int | None = None,
     runner_capabilities: RunnerCapabilities | None = None,
+    forward_pass_estimator_specs: Mapping[str, ForwardPassEstimatorSpec] | None = None,
 ) -> list[BranchSpace]:
     """One :class:`BranchSpace` per ``deployment_mode``. Within each, ``backend`` is a
     searched knob: the parallel-config domain is the **union** of every configured
@@ -243,16 +245,29 @@ def enumerate_branches(
             ):
                 continue
             try:
+                forward_pass_estimator_kwargs: dict[str, Any] = {}
+                if forward_pass_estimator_specs is not None:
+                    forward_pass_estimator = forward_pass_estimator_specs[backend]
+                    forward_pass_estimator_kwargs.update(
+                        backend_version=forward_pass_estimator.backend_version,
+                        systems_paths=list(forward_pass_estimator.systems_paths),
+                    )
+                else:
+                    requested_version = ss.requested_backend_version(backend)
+                    if requested_version is not None:
+                        forward_pass_estimator_kwargs["backend_version"] = requested_version
+                    if ss.systems_paths != ["default"]:
+                        forward_pass_estimator_kwargs["systems_paths"] = ss.systems_paths
                 legal = parallel_configs_for(
                     ss.model_name,
                     ss.hardware_sku,
                     gpu_budget=ss.gpu_budget,
                     deployment_mode=deployment_mode,
                     backend=backend,
-                    backend_version=ss.backend_version,
                     min_gpu_budget=ss.min_gpu_budget,
                     max_seq_len=max_seq_len,
                     role_runtime=role_runtime(backend, deployment_mode),
+                    **forward_pass_estimator_kwargs,
                 )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

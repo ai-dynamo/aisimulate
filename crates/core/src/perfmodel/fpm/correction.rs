@@ -7,8 +7,8 @@
 //! samples into a fixed-bound grid and applies the local median ratio on top of
 //! the native AIC estimate.
 
-use super::options::ForwardPassPerfOptions;
-use super::samples::{AxisRange, BucketedSamples, StoreStats, WithOptions, median_ratio};
+use super::samples::{AxisRange, BucketedSamples, StoreStats, WithTuningConfig, median_ratio};
+use super::tuning::ForwardPassPerfTuningConfig;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CorrectionBuckets {
@@ -23,13 +23,16 @@ struct CorrectionObservation {
     correction_factor: f64,
 }
 
-impl WithOptions for CorrectionBuckets {
-    fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self {
+impl WithTuningConfig for CorrectionBuckets {
+    fn with_tuning_config(
+        tuning_config: &ForwardPassPerfTuningConfig,
+        axis_ranges: &[AxisRange],
+    ) -> Self {
         Self {
-            samples: BucketedSamples::new_fixed(options, axis_ranges),
-            min_observations: options.min_observations,
-            min_faster_correction_factor: options.min_faster_correction_factor,
-            max_slower_correction_factor: options.max_slower_correction_factor,
+            samples: BucketedSamples::new_fixed(tuning_config, axis_ranges),
+            min_observations: tuning_config.min_observations,
+            min_faster_correction_factor: tuning_config.min_faster_correction_factor,
+            max_slower_correction_factor: tuning_config.max_slower_correction_factor,
         }
     }
 }

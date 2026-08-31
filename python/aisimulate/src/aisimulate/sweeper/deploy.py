@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
-from .replay import BackendDeploymentSpec
+from .replay import BackendDeploymentSpec, ForwardPassEstimatorSpec
 
 
 def _role_prefix(role: str) -> str:
@@ -16,26 +16,74 @@ def _role_prefix(role: str) -> str:
     return "" if role == "agg" else f"{role}_"
 
 
-def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_version: str) -> dict[str, Any]:
-    """Keep optional perf-model identity separate from runtime timing args."""
+def _performance_model_metadata(
+    sample: dict[str, Any],
+    role: str,
+    *,
+    backend_version: str,
+    forward_pass_estimator: ForwardPassEstimatorSpec | None,
+) -> dict[str, Any]:
+    """Preserve the exact role config consumed by Replay plus Core provenance."""
+    if forward_pass_estimator is None:
+        prefix = _role_prefix(role)
+        moe_tp = int(sample[f"{prefix}moe_tp"])
+        moe_ep = int(sample[f"{prefix}moe_ep"])
+        return {
+            "provider": "aic",
+            "config": {
+                "backend": sample["backend"],
+                "backend_version": backend_version,
+                "system": sample["hardware_sku"],
+                "model_path": sample["model_name"],
+                "tp_size": int(sample[f"{prefix}tp"]),
+                "attention_dp_size": int(sample[f"{prefix}attention_dp"]),
+                "moe_tp_size": moe_tp if moe_tp * moe_ep > 1 else None,
+                "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
+                "nextn": sample.get("aic_nextn"),
+            },
+        }
+    return {
+        "provider": "aic",
+        "config": _role_forward_pass_config(sample, role, forward_pass_estimator),
+        "tuning_config": forward_pass_estimator.tuning_config,
+        "selection": forward_pass_estimator.diagnostics,
+    }
+
+
+def _role_forward_pass_config(
+    sample: dict[str, Any],
+    role: str,
+    estimator: ForwardPassEstimatorSpec,
+) -> dict[str, Any]:
+    """Derive only candidate topology from Core's already-resolved config."""
     prefix = _role_prefix(role)
     moe_tp = int(sample[f"{prefix}moe_tp"])
     moe_ep = int(sample[f"{prefix}moe_ep"])
-    config: dict[str, Any] = {
-        "backend": sample["backend"],
-        "backend_version": backend_version,
-        "system": sample["hardware_sku"],
-        "model_path": sample["model_name"],
-        "tp_size": int(sample[f"{prefix}tp"]),
-        "attention_dp_size": int(sample[f"{prefix}attention_dp"]),
-        "moe_tp_size": moe_tp if moe_tp * moe_ep > 1 else None,
-        "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
-        "nextn": sample.get("aic_nextn"),
-    }
-    return {"provider": "aic", "config": config}
+    block_size = sample[f"{role}_block_size"]
+    if block_size is None:
+        block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[sample["backend"]]
+    config = dict(estimator.config)
+    config.update(
+        {
+            "tp": int(sample[f"{prefix}tp"]),
+            "pp": int(sample[f"{prefix}pp"]),
+            "attention_dp": int(sample[f"{prefix}attention_dp"]),
+            "moe_tp_size": moe_tp if moe_tp * moe_ep > 1 else None,
+            "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
+            "nextn": int(sample.get("aic_nextn") or 0),
+            "kv_block_size": int(block_size),
+        }
+    )
+    return config
 
 
-def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: str) -> dict[str, Any]:
+def _engine_args_payload(
+    sample: dict[str, Any],
+    role: str,
+    *,
+    backend_version: str,
+    forward_pass_estimator: ForwardPassEstimatorSpec | None,
+) -> dict[str, Any]:
     """Build the runner-neutral engine argument payload for one role."""
     prefix = _role_prefix(role)
     tp = int(sample[f"{prefix}tp"])
@@ -69,6 +117,8 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
+    if forward_pass_estimator is not None and forward_pass_estimator.performance_data_root:
+        payload["systems_path"] = forward_pass_estimator.performance_data_root
     if backend == "vllm" and sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
@@ -84,8 +134,21 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
     if sample.get(f"{role}_num_gpu_blocks") is not None:
         payload["num_gpu_blocks"] = int(sample[f"{role}_num_gpu_blocks"])
         payload.pop(memory_fraction_field, None)
-    if sample.get(f"{role}_timing_model") is not None:
-        payload["timing_model"] = dict(sample[f"{role}_timing_model"])
+    authored_timing_model = sample.get(f"{role}_timing_model")
+    if authored_timing_model is None and forward_pass_estimator is not None:
+        timing_config = _role_forward_pass_config(sample, role, forward_pass_estimator)
+        if forward_pass_estimator.tuning_config is not None:
+            timing_config["tuning_config"] = dict(forward_pass_estimator.tuning_config)
+        payload["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": timing_config,
+        }
+        for name in tuple(payload):
+            if (name.startswith("aic_") and name != "aic_nextn") or name == "systems_path":
+                payload.pop(name, None)
+    elif authored_timing_model is not None:
+        payload["timing_model"] = dict(authored_timing_model)
         if sample.get(f"{role}_num_gpu_blocks") is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
@@ -117,13 +180,27 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
     return payload
 
 
-def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) -> BackendDeploymentSpec:
+def build_backend_deployment(
+    sample: dict[str, Any],
+    *,
+    backend_version: str,
+    forward_pass_estimator: ForwardPassEstimatorSpec | None = None,
+) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
+    if forward_pass_estimator is not None and (
+        forward_pass_estimator.backend != sample["backend"] or forward_pass_estimator.backend_version != backend_version
+    ):
+        raise ValueError(
+            "forward-pass estimator identity does not match the sampled backend/version: "
+            f"{forward_pass_estimator.backend}/{forward_pass_estimator.backend_version} != "
+            f"{sample['backend']}/{backend_version}"
+        )
     common = {
         "deployment_mode": mode,
         "backend": sample["backend"],
         "backend_version": backend_version,
+        "forward_pass_estimator": forward_pass_estimator,
         "parallel_config": {
             key: value
             for key, value in sample.items()
@@ -154,19 +231,37 @@ def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) ->
         },
         "performance_model_metadata": {
             ("aggregated" if role == "agg" else role): _performance_model_metadata(
-                sample, role, backend_version=backend_version
+                sample,
+                role,
+                backend_version=backend_version,
+                forward_pass_estimator=forward_pass_estimator,
             )
             for role in (("agg",) if mode == "agg" else ("prefill", "decode"))
         },
     }
     if mode == "agg":
         return BackendDeploymentSpec(
-            agg_engine_args=_engine_args_payload(sample, "agg", backend_version=backend_version),
+            agg_engine_args=_engine_args_payload(
+                sample,
+                "agg",
+                backend_version=backend_version,
+                forward_pass_estimator=forward_pass_estimator,
+            ),
             num_workers=int(sample["replicas"]),
             **common,
         )
-    prefill_args = _engine_args_payload(sample, "prefill", backend_version=backend_version)
-    decode_args = _engine_args_payload(sample, "decode", backend_version=backend_version)
+    prefill_args = _engine_args_payload(
+        sample,
+        "prefill",
+        backend_version=backend_version,
+        forward_pass_estimator=forward_pass_estimator,
+    )
+    decode_args = _engine_args_payload(
+        sample,
+        "decode",
+        backend_version=backend_version,
+        forward_pass_estimator=forward_pass_estimator,
+    )
     if sample.get("kv_transfer_bytes_per_token") == "auto":
         resolved = max(
             int(prefill_args["kv_bytes_per_token"]),

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::{
-    ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassPerfReadiness,
-    ForwardPassPerfSource,
+    ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfReadiness, ForwardPassPerfSource,
+    ForwardPassPerfTuningConfig,
 };
 use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::operators::op::Op;
@@ -119,11 +119,11 @@ fn fixture_engine_config() -> EngineConfig {
 /// A native model built from a hand-built fixture `Engine` (NO Python). The
 /// public `from_native` constructors compile via Python; `from_engine` lets
 /// the pure-Rust tests build the native variant directly.
-fn native_model(options: ForwardPassPerfOptions) -> ForwardPassPerfModel {
+fn native_model(tuning_config: ForwardPassPerfTuningConfig) -> ForwardPassPerfModel {
     let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.19.0").unwrap();
     let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
     let engine = Engine::build(spec, Arc::new(db)).unwrap();
-    ForwardPassPerfModel::from_engine(Arc::new(engine), options)
+    ForwardPassPerfModel::from_engine(Arc::new(engine), tuning_config)
 }
 
 fn fixture_engine() -> Arc<Engine> {
@@ -250,7 +250,7 @@ fn forward_pass_decode_matches_run_generation_ops_step() {
 fn forward_pass_empty_inputs() {
     let engine = fixture_engine();
     assert!(engine.forward_pass_time_ms(&[]).is_err());
-    let model = native_model(ForwardPassPerfOptions::default());
+    let model = native_model(ForwardPassPerfTuningConfig::default());
     assert_eq!(
         model
             .estimate_forward_pass_time_ms(&[ForwardPassMetrics::default()])
@@ -289,17 +289,17 @@ fn forward_pass_takes_max_across_ranks() {
 /// Invalid schema version is rejected by the model's estimate path.
 #[test]
 fn invalid_schema_rejected() {
-    let model = native_model(ForwardPassPerfOptions::default());
+    let model = native_model(ForwardPassPerfTuningConfig::default());
     let mut bad = prefill_fpm(10, 0.0);
     bad.version = 999;
     assert!(model.estimate_forward_pass_time_ms(&[bad]).is_err());
 }
 
-// ---- options validation ----
+// ---- tuning configuration validation ----
 
 #[test]
-fn options_reject_min_observations_above_max() {
-    let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+fn tuning_config_rejects_min_observations_above_max() {
+    let err = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_observations: 10,
         max_observations: 5,
         ..Default::default()
@@ -309,8 +309,8 @@ fn options_reject_min_observations_above_max() {
 }
 
 #[test]
-fn options_reject_non_square_bucket_count() {
-    let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+fn tuning_config_rejects_non_square_bucket_count() {
+    let err = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         bucket_count: 7,
         ..Default::default()
     })
@@ -319,8 +319,8 @@ fn options_reject_non_square_bucket_count() {
 }
 
 #[test]
-fn options_reject_zero_bounds() {
-    let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+fn tuning_config_rejects_zero_bounds() {
+    let err = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         max_num_tokens: 0,
         ..Default::default()
     })
@@ -329,16 +329,16 @@ fn options_reject_zero_bounds() {
 }
 
 #[test]
-fn options_default_directional_correction_factors() {
-    let defaults = ForwardPassPerfOptions::default();
+fn tuning_config_defaults_directional_correction_factors() {
+    let defaults = ForwardPassPerfTuningConfig::default();
     assert_eq!(defaults.min_faster_correction_factor, Some(0.5));
     assert_eq!(defaults.max_slower_correction_factor, Some(2.0));
 
-    let omitted: ForwardPassPerfOptions = serde_json::from_str("{}").unwrap();
+    let omitted: ForwardPassPerfTuningConfig = serde_json::from_str("{}").unwrap();
     assert_eq!(omitted.min_faster_correction_factor, Some(0.5));
     assert_eq!(omitted.max_slower_correction_factor, Some(2.0));
 
-    let unbounded: ForwardPassPerfOptions = serde_json::from_str(
+    let unbounded: ForwardPassPerfTuningConfig = serde_json::from_str(
         r#"{
             "min_faster_correction_factor": null,
             "max_slower_correction_factor": null
@@ -348,43 +348,56 @@ fn options_default_directional_correction_factors() {
     assert_eq!(unbounded.min_faster_correction_factor, None);
     assert_eq!(unbounded.max_slower_correction_factor, None);
 
-    let no_floor: ForwardPassPerfOptions =
+    let no_floor: ForwardPassPerfTuningConfig =
         serde_json::from_str(r#"{"min_faster_correction_factor": null}"#).unwrap();
     assert_eq!(no_floor.min_faster_correction_factor, None);
     assert_eq!(no_floor.max_slower_correction_factor, Some(2.0));
 
-    let no_ceiling: ForwardPassPerfOptions =
+    let no_ceiling: ForwardPassPerfTuningConfig =
         serde_json::from_str(r#"{"max_slower_correction_factor": null}"#).unwrap();
     assert_eq!(no_ceiling.min_faster_correction_factor, Some(0.5));
     assert_eq!(no_ceiling.max_slower_correction_factor, None);
 }
 
 #[test]
-fn options_validate_directional_correction_factors() {
-    let model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+fn tuning_config_rejects_unknown_fields() {
+    let err = serde_json::from_str::<ForwardPassPerfTuningConfig>(r#"{"min_observation": 5}"#)
+        .unwrap_err();
+    assert!(err.to_string().contains("unknown field"), "{err}");
+}
+
+#[test]
+fn tuning_config_validates_directional_correction_factors() {
+    let model = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_faster_correction_factor: Some(0.5),
         max_slower_correction_factor: Some(2.0),
         ..Default::default()
     })
     .unwrap();
-    assert_eq!(model.options().min_faster_correction_factor, Some(0.5));
-    assert_eq!(model.options().max_slower_correction_factor, Some(2.0));
+    assert_eq!(
+        model.tuning_config().min_faster_correction_factor,
+        Some(0.5)
+    );
+    assert_eq!(
+        model.tuning_config().max_slower_correction_factor,
+        Some(2.0)
+    );
 
     for valid_factor in [f64::MIN_POSITIVE, 1.0] {
-        ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+        ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
             min_faster_correction_factor: Some(valid_factor),
             ..Default::default()
         })
         .unwrap();
     }
-    ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+    ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         max_slower_correction_factor: Some(1.0),
         ..Default::default()
     })
     .unwrap();
 
     for invalid_factor in [f64::NEG_INFINITY, -1.0, 0.0, 1.001, f64::INFINITY, f64::NAN] {
-        let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+        let err = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
             min_faster_correction_factor: Some(invalid_factor),
             ..Default::default()
         })
@@ -393,7 +406,7 @@ fn options_validate_directional_correction_factors() {
     }
 
     for invalid_factor in [f64::NEG_INFINITY, -1.0, 0.0, 0.999, f64::INFINITY, f64::NAN] {
-        let err = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+        let err = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
             max_slower_correction_factor: Some(invalid_factor),
             ..Default::default()
         })
@@ -406,7 +419,7 @@ fn options_validate_directional_correction_factors() {
 
 #[test]
 fn fallback_regression_returns_none_until_sufficient_data() {
-    let model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+    let model = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_observations: 3,
         ..Default::default()
     })
@@ -427,7 +440,7 @@ fn fallback_regression_returns_none_until_sufficient_data() {
 
 #[test]
 fn fallback_regression_predicts_prefill_decode_and_mixed_workload_kinds() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_observations: 3,
         ..Default::default()
     })
@@ -472,7 +485,7 @@ fn fallback_regression_predicts_prefill_decode_and_mixed_workload_kinds() {
 
 #[test]
 fn fallback_regression_keeps_decode_fit_ready_when_ols_kv_slope_is_negative() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_observations: 6,
         ..Default::default()
     })
@@ -536,7 +549,7 @@ fn fallback_regression_keeps_decode_fit_ready_when_ols_kv_slope_is_negative() {
 
 #[test]
 fn fallback_regression_rejects_intercept_only_fit_when_slopes_are_identifiable() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_observations: 4,
         ..Default::default()
     })
@@ -565,7 +578,7 @@ fn fallback_regression_rejects_intercept_only_fit_when_slopes_are_identifiable()
 
 #[test]
 fn fallback_regression_prefill_weighted_hinge_avoids_small_token_collapse() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_observations: 6,
         max_observations: 64,
         ..Default::default()
@@ -619,7 +632,7 @@ fn fallback_regression_prefill_weighted_hinge_avoids_small_token_collapse() {
 
 #[test]
 fn tune_with_fpms_uses_one_rank_feature_vector() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_observations: 1,
         ..Default::default()
     })
@@ -647,7 +660,7 @@ fn tune_with_fpms_uses_one_rank_feature_vector() {
 
 #[test]
 fn tuning_ignores_idle_wall_time_and_queued_only_work() {
-    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+    let mut model = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_observations: 2,
         ..Default::default()
     })
@@ -677,7 +690,7 @@ fn tuning_ignores_idle_wall_time_and_queued_only_work() {
 
 #[test]
 fn fallback_regression_has_no_correction_factors() {
-    let model = ForwardPassPerfModel::from_regression(ForwardPassPerfOptions {
+    let model = ForwardPassPerfModel::from_regression(ForwardPassPerfTuningConfig {
         min_faster_correction_factor: Some(0.5),
         max_slower_correction_factor: Some(2.0),
         ..Default::default()
@@ -699,7 +712,7 @@ fn fallback_regression_has_no_correction_factors() {
 /// model's own native estimate so the factor is exactly 2.0.
 #[test]
 fn native_correction_applies_after_bucket_is_ready() {
-    let mut model = native_model(ForwardPassPerfOptions {
+    let mut model = native_model(ForwardPassPerfTuningConfig {
         min_observations: 2,
         ..Default::default()
     });
@@ -736,7 +749,7 @@ fn native_correction_applies_after_bucket_is_ready() {
 /// not compound as matching outliers are added to an already-corrected bucket.
 #[test]
 fn native_slower_correction_ceiling_is_absolute_across_repeated_outliers() {
-    let mut model = native_model(ForwardPassPerfOptions {
+    let mut model = native_model(ForwardPassPerfTuningConfig {
         min_observations: 2,
         max_slower_correction_factor: Some(2.0),
         ..Default::default()
@@ -783,7 +796,7 @@ fn native_slower_correction_ceiling_is_absolute_across_repeated_outliers() {
 /// observations move the retained-sample median down as capped samples age out.
 #[test]
 fn native_correction_recovers_from_saturated_slower_ceiling() {
-    let mut model = native_model(ForwardPassPerfOptions {
+    let mut model = native_model(ForwardPassPerfTuningConfig {
         min_observations: 2,
         max_observations: 4,
         max_slower_correction_factor: Some(2.0),
@@ -822,7 +835,7 @@ fn native_correction_recovers_from_saturated_slower_ceiling() {
 /// taking the median, retaining observations inside either bound.
 #[test]
 fn native_default_directional_correction_bounds_are_applied_at_observation_ingestion() {
-    let mut model = native_model(ForwardPassPerfOptions {
+    let mut model = native_model(ForwardPassPerfTuningConfig {
         min_observations: 2,
         ..Default::default()
     });
@@ -857,7 +870,7 @@ fn native_default_directional_correction_bounds_are_applied_at_observation_inges
 /// estimate.
 #[test]
 fn native_slower_correction_ceiling_preserves_faster_corrections() {
-    let mut model = native_model(ForwardPassPerfOptions {
+    let mut model = native_model(ForwardPassPerfTuningConfig {
         min_observations: 2,
         min_faster_correction_factor: None,
         max_slower_correction_factor: Some(2.0),
@@ -888,14 +901,14 @@ fn native_slower_correction_ceiling_preserves_faster_corrections() {
 /// corrections unbounded when no slower ceiling is configured.
 #[test]
 fn native_faster_correction_floor_is_independent() {
-    let options = ForwardPassPerfOptions {
+    let tuning_config = ForwardPassPerfTuningConfig {
         min_observations: 2,
         min_faster_correction_factor: Some(0.5),
         max_slower_correction_factor: None,
         ..Default::default()
     };
 
-    let mut faster_model = native_model(options.clone());
+    let mut faster_model = native_model(tuning_config.clone());
     let faster_metrics = prefill_fpm(20, 0.0);
     let faster_native_ms = faster_model
         .estimate_forward_pass_time_ms(&[faster_metrics])
@@ -907,7 +920,7 @@ fn native_faster_correction_floor_is_independent() {
         .unwrap();
     assert_close(faster_model.min_correction_factor().unwrap(), 0.5);
 
-    let mut slower_model = native_model(options);
+    let mut slower_model = native_model(tuning_config);
     let slower_metrics = prefill_fpm(20, 0.0);
     let slower_native_ms = slower_model
         .estimate_forward_pass_time_ms(&[slower_metrics])
@@ -924,7 +937,7 @@ fn native_faster_correction_floor_is_independent() {
 /// default factor 1.0. Two distinct prefill buckets get distinct factors.
 #[test]
 fn native_correction_min_observations_is_workload_kind_wide_and_empty_regions_default_to_one() {
-    let mut model = native_model(ForwardPassPerfOptions {
+    let mut model = native_model(ForwardPassPerfTuningConfig {
         min_observations: 2,
         bucket_count: 4,
         max_num_tokens: 100,
@@ -984,7 +997,7 @@ fn native_correction_min_observations_is_workload_kind_wide_and_empty_regions_de
 /// Observations outside the configured correction-grid workload ranges are ignored.
 #[test]
 fn native_correction_uses_configured_bounds_and_ignores_out_of_range_observations() {
-    let mut model = native_model(ForwardPassPerfOptions {
+    let mut model = native_model(ForwardPassPerfTuningConfig {
         min_observations: 2,
         bucket_count: 4,
         max_num_tokens: 40,
@@ -1018,7 +1031,7 @@ fn native_correction_uses_configured_bounds_and_ignores_out_of_range_observation
 /// Ready.
 #[test]
 fn native_model_starts_ready_with_aic_source() {
-    let model = native_model(ForwardPassPerfOptions::default());
+    let model = native_model(ForwardPassPerfTuningConfig::default());
     let diag = model.diagnostics();
     assert_eq!(diag.source, ForwardPassPerfSource::Aic);
     assert_eq!(diag.readiness, ForwardPassPerfReadiness::Ready);

@@ -7,6 +7,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::engine::{Backend, TimingModel, TimingModelConfig};
+use crate::perfmodel::{
+    FPM_VERSION, ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
+    ForwardPassPerfTuningConfig, QueuedRequestMetrics, ScheduledRequestMetrics,
+};
 use crate::replay::{
     ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec,
     ReplayTopology, Replayer,
@@ -18,8 +22,8 @@ use crate::replay::{
 use anyhow::{Context, Result, anyhow, ensure};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PyModule};
-use serde::Deserialize;
+use pyo3::types::{PyDict, PyModule};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -80,62 +84,24 @@ struct RuntimeTraffic {
     max_sim_time_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AicTimingConfig {
-    model: String,
-    backend: String,
-    system: String,
-    #[serde(alias = "tp_size")]
-    tp: u32,
-    #[serde(default)]
-    backend_version: Option<String>,
-    #[serde(default = "one")]
-    pp: u32,
-    #[serde(default = "one")]
-    attention_dp: u32,
-    #[serde(default)]
-    moe_tp_size: Option<u32>,
-    #[serde(default)]
-    moe_ep_size: Option<u32>,
-    #[serde(default, alias = "gemm_quant_mode")]
-    gemm_dtype: Option<String>,
-    #[serde(default, alias = "moe_quant_mode")]
-    moe_dtype: Option<String>,
-    #[serde(default, alias = "fmha_quant_mode")]
-    fmha_dtype: Option<String>,
-    #[serde(default, alias = "kvcache_quant_mode")]
-    kv_cache_dtype: Option<String>,
-    #[serde(default, alias = "comm_quant_mode")]
-    comm_dtype: Option<String>,
-    #[serde(default)]
-    nextn: u32,
-    #[serde(default)]
-    kv_block_size: Option<u32>,
+    #[serde(flatten)]
+    perf_model: ForwardPassPerfModelConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tuning_config: Option<ForwardPassPerfTuningConfig>,
     #[serde(default)]
     gpu_memory_utilization: Option<f64>,
     #[serde(default)]
     mem_fraction_static: Option<f64>,
     #[serde(default)]
     free_gpu_memory_fraction: Option<f64>,
-    #[serde(default)]
-    systems_path: Option<String>,
-}
-
-const fn one() -> u32 {
-    1
 }
 
 impl AicTimingConfig {
     fn resolved_backend_version(&self) -> &str {
-        self.backend_version
-            .as_deref()
-            .unwrap_or(match self.backend.as_str() {
-                "vllm" => "0.19.0",
-                "sglang" => "0.5.10",
-                "trtllm" => "1.3.0rc10",
-                _ => "",
-            })
+        self.perf_model.backend_version.as_deref().unwrap_or("")
     }
 
     fn resolved_memory_fraction(&self) -> Result<(&'static str, f64)> {
@@ -151,35 +117,37 @@ impl AicTimingConfig {
                 "{name} must be finite and between 0 and 1"
             );
         }
-        match self.backend.as_str() {
+        match self.perf_model.backend.as_str() {
             "vllm" => Ok(("of_total", self.gpu_memory_utilization.unwrap_or(0.9))),
             "sglang" => Ok(("of_total", self.mem_fraction_static.unwrap_or(0.88))),
             "trtllm" => Ok(("of_free", self.free_gpu_memory_fraction.unwrap_or(0.9))),
             _ => Err(anyhow!(
                 "unsupported AIC backend {:?}; expected vllm, sglang, or trtllm",
-                self.backend
+                self.perf_model.backend
             )),
         }
     }
 
     fn validate_parallel_shape(&self) -> Result<()> {
         ensure!(
-            self.tp > 0
-                && self.pp > 0
-                && self.attention_dp > 0
-                && self.moe_tp_size != Some(0)
-                && self.moe_ep_size != Some(0),
+            self.perf_model.tp > 0
+                && self.perf_model.pp > 0
+                && self.perf_model.attention_dp > 0
+                && self.perf_model.moe_tp_size != Some(0)
+                && self.perf_model.moe_ep_size != Some(0),
             "AIC timing parallel sizes tp, pp, attention_dp, moe_tp_size, and \
              moe_ep_size must be positive"
         );
-        ensure!(self.nextn <= 5, "AIC nextn must be in 0..=5");
+        ensure!(self.perf_model.nextn <= 5, "AIC nextn must be in 0..=5");
         ensure!(
-            self.moe_tp_size.is_some() == self.moe_ep_size.is_some(),
+            self.perf_model.moe_tp_size.is_some() == self.perf_model.moe_ep_size.is_some(),
             "AIC moe_tp_size and moe_ep_size must be configured together"
         );
-        if let (Some(moe_tp), Some(moe_ep)) = (self.moe_tp_size, self.moe_ep_size) {
+        if let (Some(moe_tp), Some(moe_ep)) =
+            (self.perf_model.moe_tp_size, self.perf_model.moe_ep_size)
+        {
             ensure!(
-                u64::from(self.tp) * u64::from(self.attention_dp)
+                u64::from(self.perf_model.tp) * u64::from(self.perf_model.attention_dp)
                     == u64::from(moe_tp) * u64::from(moe_ep),
                 "AIC topology requires tp * attention_dp == moe_tp_size * moe_ep_size"
             );
@@ -189,65 +157,30 @@ impl AicTimingConfig {
 }
 
 struct AicTimingModel {
-    engine: Py<PyAny>,
+    model: ForwardPassPerfModel,
 }
 
 impl AicTimingModel {
-    fn build(config: AicTimingConfig) -> Result<Self> {
-        ensure!(
-            !config.model.trim().is_empty(),
-            "AIC timing config field \"model\" cannot be empty"
-        );
-        ensure!(
-            !config.system.trim().is_empty(),
-            "AIC timing config field \"system\" cannot be empty"
-        );
-        config.validate_parallel_shape()?;
-        ensure!(
-            matches!(config.backend.as_str(), "vllm" | "sglang" | "trtllm"),
-            "unsupported AIC backend {:?}; expected vllm, sglang, or trtllm",
-            config.backend
-        );
-        ensure!(
-            !config.resolved_backend_version().is_empty(),
-            "AIC backend version cannot be empty"
-        );
-        config.resolved_memory_fraction()?;
-
-        let engine = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-            let sdk = PyModule::import(py, "aiconfigurator_core.sdk.engine")?;
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("backend_version", config.resolved_backend_version())?;
-            kwargs.set_item("tp_size", config.tp)?;
-            kwargs.set_item("pp_size", config.pp)?;
-            kwargs.set_item("attention_dp_size", config.attention_dp)?;
-            kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
-            kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
-            kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
-            kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
-            kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
-            kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
-            kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
-            kwargs.set_item("nextn", config.nextn)?;
-            kwargs.set_item("kv_block_size", config.kv_block_size)?;
-            kwargs.set_item("systems_path", config.systems_path.as_deref())?;
-            let spec = sdk.getattr("compile_engine")?.call(
-                (
-                    config.model.as_str(),
-                    config.system.as_str(),
-                    config.backend.as_str(),
-                ),
-                Some(&kwargs),
-            )?;
-            let aic = PyModule::import(py, "aiconfigurator_core")?
-                .getattr("AicEngine")?
-                .call_method1("from_spec", (spec, config.systems_path.as_deref()))?;
-            Ok(aic.unbind())
-        })
+    fn build(config: &AicTimingConfig) -> Result<Self> {
+        let model = ForwardPassPerfModel::best_available(
+            config.perf_model.clone(),
+            config.tuning_config.clone(),
+        )
         .map_err(|error| {
-            anyhow!("AIC timing provider could not compile the requested engine: {error}")
+            anyhow!("AIC timing provider could not construct the requested estimator: {error}")
         })?;
-        Ok(Self { engine })
+        Ok(Self { model })
+    }
+
+    fn resolved_config(&self, authored: &AicTimingConfig) -> AicTimingConfig {
+        let mut resolved = authored.clone();
+        if let Some(provenance) = self.model.provenance() {
+            resolved.perf_model = provenance.config.clone();
+            if let Some(root) = provenance.selected_systems_root.as_ref() {
+                resolved.perf_model.systems_paths = vec![root.clone()];
+            }
+        }
+        resolved
     }
 }
 
@@ -261,37 +194,53 @@ impl TimingModel for AicTimingModel {
         let batch_size = checked_u32(batch_size, "prefill batch size")?;
         let mean_isl = checked_u32(mean_isl, "mean input length")?;
         let mean_prefix = checked_u32(mean_prefix, "mean prefix length")?;
-        Python::with_gil(|py| {
-            self.engine
-                .bind(py)
-                .call_method1(
-                    "predict_prefill_latency",
-                    (batch_size, mean_isl, mean_prefix),
-                )?
-                .extract::<f64>()
-        })
-        .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
+        let computed_tokens = mean_isl
+            .checked_sub(mean_prefix)
+            .context("mean prefix length exceeds mean input length")?;
+        let metrics = ForwardPassMetrics {
+            version: FPM_VERSION,
+            scheduled_requests: ScheduledRequestMetrics {
+                num_prefill_requests: batch_size,
+                sum_prefill_tokens: batch_size
+                    .checked_mul(computed_tokens)
+                    .context("prefill token sum exceeds AIC's u32 limit")?,
+                sum_prefill_kv_tokens: batch_size
+                    .checked_mul(mean_prefix)
+                    .context("prefill KV token sum exceeds AIC's u32 limit")?,
+                ..ScheduledRequestMetrics::default()
+            },
+            queued_requests: QueuedRequestMetrics::default(),
+            ..ForwardPassMetrics::default()
+        };
+        self.model
+            .estimate_forward_pass_time_ms(&[metrics])
+            .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))?
+            .context("AIC prefill regression requires more tuning observations")
     }
 
     fn predict_decode_ms(
         &self,
         batch_size: usize,
         _active_kv_tokens: usize,
-        mean_context_length: usize,
-        _total_kv_tokens: usize,
+        _mean_context_length: usize,
+        total_kv_tokens: usize,
     ) -> Result<f64> {
         let batch_size = checked_u32(batch_size, "decode batch size")?;
-        let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
-        Python::with_gil(|py| {
-            self.engine
-                .bind(py)
-                .call_method1(
-                    "predict_decode_latency",
-                    (batch_size, mean_context_length, 2),
-                )?
-                .extract::<f64>()
-        })
-        .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))
+        let total_kv_tokens = checked_u32(total_kv_tokens, "total decode KV tokens")?;
+        let metrics = ForwardPassMetrics {
+            version: FPM_VERSION,
+            scheduled_requests: ScheduledRequestMetrics {
+                num_decode_requests: batch_size,
+                sum_decode_kv_tokens: total_kv_tokens,
+                ..ScheduledRequestMetrics::default()
+            },
+            queued_requests: QueuedRequestMetrics::default(),
+            ..ForwardPassMetrics::default()
+        };
+        self.model
+            .estimate_forward_pass_time_ms(&[metrics])
+            .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))?
+            .context("AIC decode regression requires more tuning observations")
     }
 }
 
@@ -310,26 +259,48 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("max_batch_size", role.rank.max_num_seqs)?;
         kwargs.set_item("memory_fraction_kind", memory_fraction_kind)?;
         kwargs.set_item("memory_fraction_value", memory_fraction_value)?;
-        kwargs.set_item("tp_size", config.tp)?;
-        kwargs.set_item("pp_size", config.pp)?;
-        kwargs.set_item("attention_dp_size", config.attention_dp)?;
-        kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
-        kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
-        kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
-        kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
-        kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
-        kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
-        kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
+        kwargs.set_item("tp_size", config.perf_model.tp)?;
+        kwargs.set_item("pp_size", config.perf_model.pp)?;
+        kwargs.set_item("attention_dp_size", config.perf_model.attention_dp)?;
+        kwargs.set_item("moe_tp_size", config.perf_model.moe_tp_size)?;
+        kwargs.set_item("moe_ep_size", config.perf_model.moe_ep_size)?;
+        kwargs.set_item(
+            "gemm_quant_mode",
+            config.perf_model.gemm_quant_mode.as_deref(),
+        )?;
+        kwargs.set_item(
+            "moe_quant_mode",
+            config.perf_model.moe_quant_mode.as_deref(),
+        )?;
+        kwargs.set_item(
+            "fmha_quant_mode",
+            config.perf_model.fmha_quant_mode.as_deref(),
+        )?;
+        kwargs.set_item(
+            "kvcache_quant_mode",
+            config.perf_model.kvcache_quant_mode.as_deref(),
+        )?;
+        kwargs.set_item(
+            "comm_quant_mode",
+            config.perf_model.comm_quant_mode.as_deref(),
+        )?;
         // Capacity intentionally omits NextN until AIC's Eagle memory model no
         // longer returns negative KV capacity. Timing compilation still uses it.
-        kwargs.set_item("systems_path", config.systems_path.as_deref())?;
+        kwargs.set_item(
+            "systems_path",
+            config
+                .perf_model
+                .systems_paths
+                .first()
+                .and_then(|path| path.to_str()),
+        )?;
         memory
             .getattr("estimate_num_gpu_blocks")?
             .call(
                 (
-                    config.model.as_str(),
-                    config.system.as_str(),
-                    config.backend.as_str(),
+                    config.perf_model.model.as_str(),
+                    config.perf_model.system.as_str(),
+                    config.perf_model.backend.as_str(),
                 ),
                 Some(&kwargs),
             )?
@@ -351,24 +322,25 @@ fn materialize_aic_capacity(
         Backend::Trtllm => "trtllm",
     };
     ensure!(
-        config.backend == engine_backend,
+        config.perf_model.backend.as_str() == engine_backend,
         "AIC backend {:?} does not match engine backend {engine_backend:?}",
-        config.backend
+        config.perf_model.backend
     );
     ensure!(
-        config.tp == role.tensor_parallel_size,
+        config.perf_model.tp == role.tensor_parallel_size,
         "AIC tp={} does not match engine tensor_parallel_size={}",
-        config.tp,
+        config.perf_model.tp,
         role.tensor_parallel_size
     );
     ensure!(
-        config.attention_dp == role.dp_size,
+        config.perf_model.attention_dp == role.dp_size,
         "AIC attention_dp={} does not match engine dp_size={}",
-        config.attention_dp,
+        config.perf_model.attention_dp,
         role.dp_size
     );
     ensure!(
         config
+            .perf_model
             .kv_block_size
             .is_none_or(|block_size| block_size as usize == role.rank.block_size),
         "AIC kv_block_size does not match engine block_size={}",
@@ -376,9 +348,9 @@ fn materialize_aic_capacity(
     );
     let engine_nextn = role.rank.aic_nextn.unwrap_or(0);
     ensure!(
-        config.nextn as usize == engine_nextn,
+        config.perf_model.nextn as usize == engine_nextn,
         "AIC nextn={} does not match engine aic_nextn={engine_nextn}",
-        config.nextn
+        config.perf_model.nextn
     );
     if capacity_is_explicit {
         return Ok(());
@@ -419,15 +391,22 @@ fn resolve_role_timing(
         "native timing provider {provider:?} is not installed; only \"aic\" is \
          available in the AISimulate runtime"
     );
-    let config: AicTimingConfig =
+    let authored: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
+    let timing = AicTimingModel::build(&authored)?;
+    let resolved = timing.resolved_config(&authored);
     materialize_aic_capacity(
-        &config,
+        &resolved,
         role,
         capacity_is_explicit,
         estimate_aic_num_gpu_blocks,
     )?;
-    Ok(Some(Arc::new(AicTimingModel::build(config)?)))
+    role.rank.timing_model = TimingModelConfig::External {
+        provider,
+        config: serde_json::to_value(&resolved)
+            .context("serializing resolved AIC timing provider configuration")?,
+    };
+    Ok(Some(Arc::new(timing)))
 }
 
 fn runtime_paths(traffic: &RuntimeTraffic) -> Result<Vec<PathBuf>> {
@@ -857,27 +836,56 @@ mod tests {
 
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
-            model: "test-model".into(),
-            backend: "vllm".into(),
-            system: "test-system".into(),
-            tp: 1,
-            backend_version: None,
-            pp: 1,
-            attention_dp: 1,
-            moe_tp_size: None,
-            moe_ep_size: None,
-            gemm_dtype: None,
-            moe_dtype: None,
-            fmha_dtype: None,
-            kv_cache_dtype: None,
-            comm_dtype: None,
-            nextn: 0,
-            kv_block_size: None,
+            perf_model: serde_json::from_value(serde_json::json!({
+                "model": "test-model",
+                "backend": "vllm",
+                "system": "test-system",
+                "backend_version": "test-version"
+            }))
+            .unwrap(),
+            tuning_config: None,
             gpu_memory_utilization: None,
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
-            systems_path: None,
         }
+    }
+
+    #[test]
+    fn aic_timing_config_round_trips_the_canonical_contract() {
+        let authored = serde_json::json!({
+            "model": "test-model",
+            "backend": "vllm",
+            "system": "test-system",
+            "backend_version": "test-version",
+            "tp": 4,
+            "pp": 1,
+            "attention_dp": 2,
+            "moe_tp_size": 2,
+            "moe_ep_size": 4,
+            "forward_model": "op_level",
+            "database_mode": "HYBRID",
+            "transfer_policy": ["xshape", "xquant"],
+            "systems_paths": ["/tmp/aic-systems"],
+            "fallback_policy": "error",
+            "tuning_config": {"min_observations": 7},
+            "gpu_memory_utilization": 0.85
+        });
+        let parsed: AicTimingConfig = serde_json::from_value(authored.clone()).unwrap();
+        assert_eq!(parsed.perf_model.tp, 4);
+        assert_eq!(parsed.perf_model.attention_dp, 2);
+        assert_eq!(parsed.tuning_config.as_ref().unwrap().min_observations, 7);
+        assert_eq!(parsed.gpu_memory_utilization, Some(0.85));
+
+        let round_trip = serde_json::to_value(parsed).unwrap();
+        assert_eq!(round_trip["model"], authored["model"]);
+        assert_eq!(round_trip["database_mode"], authored["database_mode"]);
+        assert_eq!(round_trip["tuning_config"]["min_observations"], 7);
+        let reparsed: AicTimingConfig = serde_json::from_value(round_trip).unwrap();
+        assert_eq!(reparsed.perf_model.tp, 4);
+        assert_eq!(
+            reparsed.perf_model.transfer_policy.as_deref(),
+            Some(["xshape".into(), "xquant".into()].as_slice())
+        );
     }
 
     #[test]

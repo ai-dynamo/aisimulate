@@ -21,6 +21,7 @@ from aisimulate.sweeper import (
     CandidateRecord,
     CandidateRetention,
     CandidateStatus,
+    ForwardPassEstimatorSpec,
     OperationProvenance,
     ReasonCategory,
     ReplayReport,
@@ -61,6 +62,39 @@ def _config(*, target: str = "throughput") -> SmartSearchConfig:
             "candidates_per_round": 2,
             "parallel_evals": 1,
         },
+    )
+
+
+def _forward_pass_estimator_specs(search_space):
+    return {
+        backend: ForwardPassEstimatorSpec(
+            config={
+                "model": search_space.model_name,
+                "system": search_space.hardware_sku,
+                "backend": backend,
+                "backend_version": "1.0",
+                "database_mode": "SILICON",
+                "transfer_policy": ["xshape", "xquant", "xprofile", "xop"],
+                "forward_model": "op_level",
+                "systems_paths": ["/systems"],
+                "fallback_policy": "error",
+            },
+            diagnostics={"provenance": {"selected_systems_root": "/systems"}},
+        )
+        for backend in search_space.backend
+    }
+
+
+def _stub_optimizer_dependencies(monkeypatch, branch: BranchSpace) -> None:
+    monkeypatch.setattr(
+        search_module,
+        "enumerate_branches",
+        lambda *args, **kwargs: [branch],
+    )
+    monkeypatch.setattr(
+        search_module,
+        "resolve_forward_pass_estimator_specs",
+        _forward_pass_estimator_specs,
     )
 
 
@@ -472,16 +506,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module,
-        "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
-    )
-    monkeypatch.setattr(
-        search_module,
-        "resolve_backend_version",
-        lambda hardware, backend: "1.0",
-    )
+    _stub_optimizer_dependencies(monkeypatch, branch)
 
     result = Sweeper(
         runner_factory=_RunnerFactory(),
@@ -507,7 +532,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
     assert result.candidates[0].provenance.performance_data[0]["source"] == "parquet"
     assert result.candidates[0].provenance.performance_data[1]["role"] == "aggregated"
     assert (
-        result.candidates[0].provenance.performance_data[1]["config"]["model_path"]
+        result.candidates[0].provenance.performance_data[1]["config"]["model"]
         == "example/model"
     )
     assert result.candidates[0].provenance.power["mean_power_w"] == 400.0
@@ -536,16 +561,7 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module,
-        "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
-    )
-    monkeypatch.setattr(
-        search_module,
-        "resolve_backend_version",
-        lambda hardware, backend: "1.0",
-    )
+    _stub_optimizer_dependencies(monkeypatch, branch)
     config_data = _config().model_dump(mode="python")
     config_data["goal"] = {
         "target": "throughput",
@@ -579,10 +595,7 @@ def test_same_batch_failed_duplicates_are_counted_as_coalesced_hits(monkeypatch)
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module, "enumerate_branches", lambda *args, **kwargs: [branch]
-    )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+    _stub_optimizer_dependencies(monkeypatch, branch)
 
     result = Sweeper(
         runner_factory=_FailingRunnerFactory(),
@@ -609,10 +622,7 @@ def test_zero_or_missing_sample_latency_preserves_ranked_sampler_feedback(
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module, "enumerate_branches", lambda *args, **kwargs: [branch]
-    )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+    _stub_optimizer_dependencies(monkeypatch, branch)
 
     seen = {}
 
@@ -665,16 +675,7 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module,
-        "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
-    )
-    monkeypatch.setattr(
-        search_module,
-        "resolve_backend_version",
-        lambda hardware, backend: "1.0",
-    )
+    _stub_optimizer_dependencies(monkeypatch, branch)
 
     result = Sweeper(
         runner_factory=_FailingRunnerFactory(),

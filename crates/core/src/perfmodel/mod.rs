@@ -41,8 +41,9 @@ pub use common::AicError;
 // planner / Mocker) can use it natively; also exposed to Python via the
 // `RustForwardPassPerfModel` pyclass in `py.rs`.
 pub use fpm::{
-    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfOptions,
-    ForwardPassPerfReadiness, ForwardPassPerfSource,
+    ForwardPassFallbackPolicy, ForwardPassModelKind, ForwardPassPerfDiagnostics,
+    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfProvenance,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassPerfTuningConfig,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing

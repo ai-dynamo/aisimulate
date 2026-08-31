@@ -16,6 +16,8 @@ from typing import Any
 from .config import (
     AdapterSearchConfig,
     Candidate,
+    DatabaseMode,
+    ForwardModel,
     OptimizationGoal,
     OptimizationTarget,
     SearchSpace,
@@ -45,6 +47,7 @@ from .provider import (
 from .replay import (
     REPLAY_SPEC_API_VERSION,
     BackendDeploymentSpec,
+    ForwardPassEstimatorSpec,
     HookCapability,
     ReplayOutputRequirements,
     ReplayReport,
@@ -71,6 +74,8 @@ from .result import (
 
 _LAZY_EXPORTS = {
     "build_backend_deployment": (".deploy", "build_backend_deployment"),
+    "ForwardPassEstimatorResolutionError": (".forward_pass_estimator", "ForwardPassEstimatorResolutionError"),
+    "resolve_forward_pass_estimator_specs": (".forward_pass_estimator", "resolve_forward_pass_estimator_specs"),
     "NoPerfDatabase": (".kv_estimate", "NoPerfDatabase"),
     "estimate_kv_tokens": (".kv_estimate", "estimate_kv_tokens"),
     "feasible_shape_tokens": (".kv_estimate", "feasible_shape_tokens"),
@@ -131,7 +136,11 @@ __all__ = [
     "CandidateRetention",
     "CandidateStatus",
     "ConditionalSearchSpace",
+    "DatabaseMode",
     "DisaggParallelConfig",
+    "ForwardModel",
+    "ForwardPassEstimatorResolutionError",
+    "ForwardPassEstimatorSpec",
     "HookCapability",
     "InfeasibleCandidate",
     "ModelHardware",
@@ -183,6 +192,7 @@ __all__ = [
     "objective_value",
     "parallel_configs_for",
     "rank",
+    "resolve_forward_pass_estimator_specs",
     "resolve_model_hardware",
     "resolve_providers",
     "score_report",
