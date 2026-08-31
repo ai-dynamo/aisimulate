@@ -24,6 +24,7 @@ pub(crate) const DEFAULT_MAX_KV_TOKENS: u32 = 2_000_000;
 /// observations before predicting from learned data, bucket observations by
 /// workload kind, and bound native correction factors to `[0.5, 2.0]`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ForwardPassPerfOptions {
     /// Maximum retained observations across all buckets for each inferred workload kind.
     #[serde(default = "default_max_observations")]

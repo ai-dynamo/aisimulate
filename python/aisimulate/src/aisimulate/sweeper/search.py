@@ -44,7 +44,7 @@ from tqdm import tqdm
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
-from .kv_estimate import resolve_backend_version
+from .forward_pass_estimator import ForwardPassEstimatorResolver
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
     SEARCH_SPACE_FRAGMENT_API_VERSION,
@@ -547,6 +547,7 @@ def _materialize_one(
     providers: Mapping[str, SweepConfigProvider],
     provider_plans: Mapping[str, AdapterSearchPlan],
     runner_factory: RunnerFactory,
+    forward_pass_estimator_resolver: ForwardPassEstimatorResolver,
     prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
@@ -556,13 +557,15 @@ def _materialize_one(
             selection=selection,
             parallel_config=parallel_config,
         )
-        backend_version = config.search_space.backend_version or resolve_backend_version(
-            config.search_space.hardware_sku, selection["backend"]
-        )
+        forward_pass_estimators = forward_pass_estimator_resolver.resolve_candidate(sample)
+        backend_version = next(iter(forward_pass_estimators.values())).backend_version
         # The resolved perf-model version is part of the evaluated contract. Keep it
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
         sample["backend_version"] = backend_version
+        sample["forward_pass_estimators"] = {
+            role: asdict(estimator) for role, estimator in forward_pass_estimators.items()
+        }
         concurrency = config.workload.concurrency
         workload_payload = config.workload.model_dump(mode="json")
         if "traffic_load" in selection:
@@ -602,7 +605,11 @@ def _materialize_one(
             # Preserve the concrete load on every candidate, including a fixed absolute
             # concurrency and one derived from kv_load_ratio.
             sample["concurrency"] = concurrency
-        backend_deployment = build_backend_deployment(sample, backend_version=backend_version)
+        backend_deployment = build_backend_deployment(
+            sample,
+            backend_version=backend_version,
+            forward_pass_estimators=forward_pass_estimators,
+        )
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
             candidate_context = CandidateContext(
@@ -1000,6 +1007,11 @@ class Sweeper:
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
 
+        # Parse request-scoped estimator controls once. Exact Core construction is
+        # deferred until a suggestion has concrete per-role topology and block size,
+        # then completed before the replay trial reaches a runner.
+        forward_pass_estimator_resolver = ForwardPassEstimatorResolver(config.search_space)
+
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
         branches = enumerate_branches(
@@ -1393,6 +1405,7 @@ class Sweeper:
                             providers=resolved_providers,
                             provider_plans=provider_plans,
                             runner_factory=runner_factory,
+                            forward_pass_estimator_resolver=forward_pass_estimator_resolver,
                             prediction_config_factory=prediction_config_factory,
                         )
                         if build_result is not None:

@@ -243,16 +243,22 @@ def enumerate_branches(
             ):
                 continue
             try:
+                forward_pass_estimator_kwargs: dict[str, Any] = {}
+                requested_version = ss.requested_backend_version(backend)
+                if requested_version is not None:
+                    forward_pass_estimator_kwargs["backend_version"] = requested_version
+                if ss.systems_paths != ["default"]:
+                    forward_pass_estimator_kwargs["systems_paths"] = ss.systems_paths
                 legal = parallel_configs_for(
                     ss.model_name,
                     ss.hardware_sku,
                     gpu_budget=ss.gpu_budget,
                     deployment_mode=deployment_mode,
                     backend=backend,
-                    backend_version=ss.backend_version,
                     min_gpu_budget=ss.min_gpu_budget,
                     max_seq_len=max_seq_len,
                     role_runtime=role_runtime(backend, deployment_mode),
+                    **forward_pass_estimator_kwargs,
                 )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

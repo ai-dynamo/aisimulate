@@ -18,6 +18,8 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 from importlib import resources as pkg_resources
 from pathlib import Path
 from typing import Any
@@ -82,6 +84,56 @@ class RustEngineUnsupportedError(RuntimeError):
     error-symmetric between the engines."""
 
 
+@dataclass(frozen=True)
+class ForwardPassPerfModelConfig:
+    """Canonical immutable identity and selection policy for the estimator."""
+
+    model: str
+    system: str
+    backend: str
+    backend_version: str | None = None
+    tp: int = 1
+    pp: int = 1
+    attention_dp: int = 1
+    moe_tp_size: int | None = None
+    moe_ep_size: int | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    nextn: int = 0
+    kv_block_size: int | None = None
+    forward_model: str = "op_level"
+    database_mode: str = "SILICON"
+    transfer_policy: str | tuple[str, ...] | None = None
+    systems_paths: tuple[str, ...] = ()
+    fallback_policy: str = "error"
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
+        payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
+        return payload
+
+
+@dataclass(frozen=True)
+class ForwardPassPerfOptions:
+    """Runtime observation, regression, correction, and capacity controls."""
+
+    max_observations: int = 64
+    min_observations: int = 5
+    min_faster_correction_factor: float | None = 0.5
+    max_slower_correction_factor: float | None = 2.0
+    bucket_count: int = 16
+    max_num_tokens: int = 8192
+    max_batch_size: int = 512
+    max_kv_tokens: int = 2_000_000
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 class RustForwardPassPerfModel:
     """Facade over the compiled Rust forward-pass perf model (PR #1152).
 
@@ -135,68 +187,29 @@ class RustForwardPassPerfModel:
         self._inner = inner
 
     @classmethod
-    def from_native(
-        cls,
-        config: dict[str, Any],
-        options: dict[str, Any] | None = None,
-    ) -> RustForwardPassPerfModel:
-        """API: ``RustForwardPassPerfModel.from_native(config, options=None)``.
-
-        Description: create a strict native AIC forward-pass model.
-
-        Crosses into the Rust core, which compiles ``config`` via
-        ``aiconfigurator_core.sdk.engine.compile_engine``. Raises if the config is
-        unsupported by the native estimator. Use ``best_available()`` when
-        unsupported configs should fall back to the learned regression model.
-        """
-        _configure_default_data_roots()
-        import aiconfigurator_core
-
-        inner = aiconfigurator_core.RustForwardPassPerfModel.from_native(
-            _json_dumps(config),
-            _optional_json_dumps(options),
-        )
-        return cls(inner)
-
-    @classmethod
     def best_available(
         cls,
-        config: dict[str, Any],
-        options: dict[str, Any] | None = None,
+        config: ForwardPassPerfModelConfig | Mapping[str, Any],
+        options: ForwardPassPerfOptions | Mapping[str, Any] | None = None,
     ) -> RustForwardPassPerfModel:
         """API: ``RustForwardPassPerfModel.best_available(config, options=None)``.
 
-        Description: create a native model when possible, otherwise fall back to
-        regression. Fallback reason is available from
-        ``diagnostics()["last_warning"]``.
+        This is the only production constructor. ``config`` owns immutable
+        identity and selection policy; ``options`` owns runtime tuning controls.
+        Regression fallback occurs only when ``fallback_policy="regression"``.
         """
         _configure_default_data_roots()
         import aiconfigurator_core
 
-        inner = aiconfigurator_core.RustForwardPassPerfModel.best_available(
-            _json_dumps(config),
-            _optional_json_dumps(options),
+        config_payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
+        config_payload["systems_paths"] = _resolve_forward_pass_systems_paths(
+            tuple(config_payload.get("systems_paths") or ())
         )
-        return cls(inner)
-
-    @classmethod
-    def from_regression(
-        cls,
-        options: dict[str, Any] | None = None,
-    ) -> RustForwardPassPerfModel:
-        """API: ``RustForwardPassPerfModel.from_regression(options=None)``.
-
-        Description: create a regression-only forward-pass model. Regression
-        models return ``None`` for non-empty estimates until enough samples have
-        been provided for the inferred workload kind through
-        ``tune_with_fpms()``. Correction factor getters return ``None`` in this
-        mode.
-        """
-        _configure_default_data_roots()
-        import aiconfigurator_core
-
-        inner = aiconfigurator_core.RustForwardPassPerfModel.from_regression(
-            _optional_json_dumps(options),
+        config_payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(config_payload.get("transfer_policy"))
+        options_payload = options.to_dict() if isinstance(options, ForwardPassPerfOptions) else options
+        inner = aiconfigurator_core.RustForwardPassPerfModel.best_available(
+            _json_dumps(config_payload),
+            _optional_json_dumps(options_payload),
         )
         return cls(inner)
 
@@ -268,10 +281,32 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
-def _optional_json_dumps(value: dict[str, Any] | None) -> str | None:
+def _optional_json_dumps(value: Mapping[str, Any] | None) -> str | None:
     if value is None:
         return None
     return _json_dumps(value)
+
+
+def _resolve_forward_pass_systems_paths(entries: tuple[str, ...]) -> list[str]:
+    packaged = os.fspath(pkg_resources.files("aiconfigurator_core") / "systems")
+    resolved: list[str] = []
+    for entry in entries or (packaged,):
+        path = packaged if entry.lower() == "default" else os.path.abspath(os.path.expanduser(entry))
+        if not os.path.isdir(path):
+            raise ValueError(f"forward-pass systems path is not a directory: {path}")
+        if path not in resolved:
+            resolved.append(path)
+    return resolved
+
+
+def _resolve_forward_pass_transfer_policy(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        from aiconfigurator_core.sdk.common import resolve_transfer_policy
+
+        return list(resolve_transfer_policy(value))
+    return [str(token) for token in value]
 
 
 def _normalize_tuning_iterations(iterations: dict[str, Any] | list[Any]) -> list[Any]:

@@ -1,0 +1,264 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Golden Core-owned forward-pass estimator resolution for Sweeper candidates."""
+
+from __future__ import annotations
+
+from dataclasses import asdict
+
+import pytest
+
+import aisimulate.sweeper.forward_pass_estimator as forward_pass_estimator_mod
+from aisimulate.sweeper.config import SearchSpace
+from aisimulate.sweeper.forward_pass_estimator import (
+    ForwardPassEstimatorResolver,
+    ForwardPassEstimatorResolutionError,
+)
+
+
+def _space(systems_root, **overrides):
+    values = {
+        "model_name": "example/model",
+        "hardware_sku": "example_system",
+        "backend": ["vllm"],
+        "systems_paths": [str(systems_root)],
+    }
+    values.update(overrides)
+    return SearchSpace(**values)
+
+
+def _agg_sample(**overrides):
+    values = {
+        "deployment_mode": "agg",
+        "backend": "vllm",
+        "tp": 4,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 4,
+        "agg_block_size": 16,
+    }
+    values.update(overrides)
+    return values
+
+
+def _disagg_sample(**overrides):
+    values = {
+        "deployment_mode": "disagg",
+        "backend": "vllm",
+        "prefill_tp": 2,
+        "prefill_pp": 1,
+        "prefill_attention_dp": 1,
+        "prefill_moe_tp": 1,
+        "prefill_moe_ep": 2,
+        "prefill_block_size": 16,
+        "decode_tp": 4,
+        "decode_pp": 1,
+        "decode_attention_dp": 1,
+        "decode_moe_tp": 1,
+        "decode_moe_ep": 4,
+        "decode_block_size": 32,
+    }
+    values.update(overrides)
+    return values
+
+
+def _stub_core(monkeypatch, systems_root, *, versions=("0.10.0", "0.11.0")):
+    calls = []
+
+    class _Model:
+        def __init__(self, diagnostics):
+            self._diagnostics = diagnostics
+
+        def diagnostics(self):
+            return self._diagnostics
+
+        def close(self):
+            return None
+
+    class _Core:
+        @staticmethod
+        def best_available(config, options):
+            calls.append((config, options))
+            if (
+                config.backend_version is not None
+                and config.backend_version not in versions
+            ):
+                raise ValueError(
+                    f"unsupported backend_version {config.backend_version!r}"
+                )
+            if config.transfer_policy == "mystery":
+                raise ValueError("invalid transfer_policy 'mystery'")
+            if config.forward_model == "fpm" and config.nextn:
+                raise ValueError("forward_model='fpm' does not support aic_nextn/MTP")
+            if config.forward_model == "fpm":
+                complete = any(
+                    path.name == "fpm_forward_perf.parquet"
+                    and (path.parent / "fpm_forward_perf.metadata.json").is_file()
+                    for path in systems_root.rglob("fpm_forward_perf.parquet")
+                )
+                if not complete:
+                    raise ValueError(
+                        "forward_model='fpm' requires fpm_forward_perf data"
+                    )
+
+            resolved = asdict(config)
+            resolved["backend_version"] = config.backend_version or (
+                versions[-1] if versions else None
+            )
+            if config.transfer_policy is None:
+                resolved["transfer_policy"] = ["xshape", "xquant", "xprofile", "xop"]
+            elif config.transfer_policy == "balanced,xop":
+                resolved["transfer_policy"] = ["xshape", "xquant", "xop"]
+            else:
+                resolved["transfer_policy"] = list(config.transfer_policy)
+            resolved["systems_paths"] = [str(systems_root)]
+            return _Model(
+                {
+                    "source": "aic",
+                    "readiness": "ready",
+                    "provenance": {
+                        "config": resolved,
+                        "selected_systems_root": str(systems_root),
+                    },
+                }
+            )
+
+    monkeypatch.setattr(forward_pass_estimator_mod, "RustForwardPassPerfModel", _Core)
+    return calls
+
+
+def test_default_resolution_is_core_owned_concrete_and_reproducible(
+    monkeypatch, tmp_path
+):
+    calls = _stub_core(monkeypatch, tmp_path)
+
+    spec = ForwardPassEstimatorResolver(_space(tmp_path)).resolve_candidate(
+        _agg_sample()
+    )["agg"]
+
+    assert spec.model_path == "example/model"
+    assert spec.system == "example_system"
+    assert spec.backend == "vllm"
+    assert spec.backend_version == "0.11.0"
+    assert spec.database_mode == "SILICON"
+    assert spec.transfer_policy == ("xshape", "xquant", "xprofile", "xop")
+    assert spec.forward_model == "op_level"
+    assert spec.systems_paths == (str(tmp_path),)
+    assert spec.performance_data_root == str(tmp_path)
+    assert calls[0][0].backend_version is None
+    assert calls[0][0].tp == 4
+    assert calls[0][0].moe_ep_size == 4
+    assert calls[0][0].kv_block_size == 16
+    assert spec.config == spec.diagnostics["provenance"]["config"]
+
+
+def test_pinned_policy_and_options_reach_the_canonical_constructor(
+    monkeypatch, tmp_path
+):
+    calls = _stub_core(monkeypatch, tmp_path)
+    search = _space(
+        tmp_path,
+        backend_version="0.10.0",
+        database_mode="HYBRID",
+        transfer_policy="balanced,xop",
+        forward_pass_options={"min_observations": 3},
+    )
+
+    spec = ForwardPassEstimatorResolver(search).resolve_candidate(_agg_sample())["agg"]
+
+    request, options = calls[0]
+    assert request.backend_version == "0.10.0"
+    assert request.database_mode == "HYBRID"
+    assert request.transfer_policy == "balanced,xop"
+    assert options is not None and options.min_observations == 3
+    assert spec.transfer_policy == ("xshape", "xquant", "xop")
+    assert spec.options is not None and spec.options["min_observations"] == 3
+
+
+def test_invalid_transfer_policy_fails_through_core(monkeypatch, tmp_path):
+    calls = _stub_core(monkeypatch, tmp_path)
+
+    with pytest.raises(ForwardPassEstimatorResolutionError, match="transfer_policy"):
+        ForwardPassEstimatorResolver(
+            _space(tmp_path, transfer_policy="mystery")
+        ).resolve_candidate(_agg_sample())
+
+    assert len(calls) == 1
+
+
+def test_unknown_pinned_version_fails_through_core(monkeypatch, tmp_path):
+    calls = _stub_core(monkeypatch, tmp_path)
+
+    with pytest.raises(
+        ForwardPassEstimatorResolutionError, match="unsupported backend_version"
+    ):
+        ForwardPassEstimatorResolver(
+            _space(tmp_path, backend_version="9.9.9")
+        ).resolve_candidate(_agg_sample())
+
+    assert len(calls) == 1
+
+
+def test_fpm_support_is_validated_by_core_before_search(monkeypatch, tmp_path):
+    _stub_core(monkeypatch, tmp_path)
+    search = _space(tmp_path, backend_version="0.11.0", forward_model="fpm")
+    resolver = ForwardPassEstimatorResolver(search)
+
+    with pytest.raises(
+        ForwardPassEstimatorResolutionError, match="requires fpm_forward_perf"
+    ):
+        resolver.resolve_candidate(_agg_sample())
+
+    version_dir = tmp_path / "data/example_system/dense/vllm/0.11.0"
+    version_dir.mkdir(parents=True)
+    (version_dir / "fpm_forward_perf.parquet").touch()
+    (version_dir / "fpm_forward_perf.metadata.json").write_text("{}")
+
+    spec = resolver.resolve_candidate(_agg_sample())["agg"]
+    assert spec.forward_model == "fpm"
+
+
+def test_fpm_rejects_mtp_through_core_before_search(monkeypatch, tmp_path):
+    _stub_core(monkeypatch, tmp_path)
+
+    with pytest.raises(
+        ForwardPassEstimatorResolutionError, match="does not support aic_nextn"
+    ):
+        ForwardPassEstimatorResolver(
+            _space(
+                tmp_path,
+                backend_version="0.11.0",
+                forward_model="fpm",
+                aic_nextn=2,
+            )
+        ).resolve_candidate(_agg_sample())
+
+
+def test_invalid_system_path_fails_concisely(tmp_path):
+    with pytest.raises(
+        ForwardPassEstimatorResolutionError, match="not an existing directory"
+    ):
+        ForwardPassEstimatorResolver(_space(tmp_path / "missing"))
+
+
+def test_disaggregated_roles_are_resolved_exactly_and_cached(monkeypatch, tmp_path):
+    calls = _stub_core(monkeypatch, tmp_path)
+    resolver = ForwardPassEstimatorResolver(_space(tmp_path))
+
+    first = resolver.resolve_candidate(_disagg_sample())
+    second = resolver.resolve_candidate(_disagg_sample())
+
+    assert second == first
+    assert len(calls) == 2
+    assert first["prefill"].config["tp"] == 2
+    assert first["prefill"].config["moe_ep_size"] == 2
+    assert first["prefill"].config["kv_block_size"] == 16
+    assert first["decode"].config["tp"] == 4
+    assert first["decode"].config["moe_ep_size"] == 4
+    assert first["decode"].config["kv_block_size"] == 32
+    assert all(
+        spec.config == spec.diagnostics["provenance"]["config"]
+        for spec in first.values()
+    )

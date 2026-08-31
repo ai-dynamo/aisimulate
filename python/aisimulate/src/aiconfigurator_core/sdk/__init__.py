@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any
 
 __all__ = [
     "EngineHandle",
+    "ForwardPassPerfModelConfig",
+    "ForwardPassPerfOptions",
     "ModelConfig",
     "RuntimeConfig",
     "RustForwardPassPerfModel",
@@ -30,6 +32,14 @@ __all__ = [
 
 _PUBLIC_EXPORTS = {
     "EngineHandle": ("aiconfigurator_core.sdk.engine", "EngineHandle"),
+    "ForwardPassPerfModelConfig": (
+        "aiconfigurator_core.sdk.rust_engine_step",
+        "ForwardPassPerfModelConfig",
+    ),
+    "ForwardPassPerfOptions": (
+        "aiconfigurator_core.sdk.rust_engine_step",
+        "ForwardPassPerfOptions",
+    ),
     "ModelConfig": ("aiconfigurator_core.sdk.config", "ModelConfig"),
     "RuntimeConfig": ("aiconfigurator_core.sdk.config", "RuntimeConfig"),
     "RustForwardPassPerfModel": (
@@ -64,4 +74,8 @@ if TYPE_CHECKING:
     from aiconfigurator_core.sdk.config import ModelConfig, RuntimeConfig
     from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
     from aiconfigurator_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
-    from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
+    from aiconfigurator_core.sdk.rust_engine_step import (
+        ForwardPassPerfModelConfig,
+        ForwardPassPerfOptions,
+        RustForwardPassPerfModel,
+    )

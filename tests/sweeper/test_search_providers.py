@@ -18,7 +18,12 @@ from aisimulate.sweeper.provider import (
     RuntimeHookSpec,
     SearchSpaceFragment,
 )
-from aisimulate.sweeper.replay import HookCapability, ReplayReport, RunnerCapabilities
+from aisimulate.sweeper.replay import (
+    ForwardPassEstimatorSpec,
+    HookCapability,
+    ReplayReport,
+    RunnerCapabilities,
+)
 from aisimulate.sweeper.result import ReasonCategory
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search_space import BranchSpace
@@ -29,6 +34,17 @@ _HOOK = RuntimeHookSpec(
     kind="policy",
     api_version=1,
 )
+
+
+class _StaticResolver:
+    def __init__(self, spec):
+        self.spec = spec
+
+    def resolve_candidate(self, sample):
+        roles = (
+            ("agg",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
+        )
+        return {role: self.spec for role in roles}
 
 
 def _config() -> SmartSearchConfig:
@@ -248,10 +264,23 @@ def _stub_branch(monkeypatch) -> None:
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
+    forward_pass_estimator = ForwardPassEstimatorSpec(
+        config={
+            "model": "model",
+            "system": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "0.11.0",
+            "database_mode": "SILICON",
+            "transfer_policy": ["xshape", "xquant", "xprofile", "xop"],
+            "forward_model": "op_level",
+            "systems_paths": ["/systems"],
+        },
+        diagnostics={"provenance": {"selected_systems_root": "/systems"}},
+    )
     monkeypatch.setattr(
         search_module,
-        "resolve_backend_version",
-        lambda hardware, backend: "0.11.0",
+        "ForwardPassEstimatorResolver",
+        lambda search_space: _StaticResolver(forward_pass_estimator),
     )
 
 
@@ -376,11 +405,6 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
             del plan, selection, context
             raise InfeasibleCandidate("invalid correlated leaves")
 
-    monkeypatch.setattr(
-        search_module,
-        "resolve_backend_version",
-        lambda hardware, backend: "0.11.0",
-    )
     prepared, result = search_module._materialize_one(
         {
             "deployment_mode": "agg",
@@ -395,6 +419,21 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
         providers={"test.feature": InfeasibleAdapter()},
         provider_plans={"test.feature": AdapterSearchPlan()},
         runner_factory=_RunnerFactory(),
+        forward_pass_estimator_resolver=_StaticResolver(
+            ForwardPassEstimatorSpec(
+                config={
+                    "model": "model",
+                    "system": "h200_sxm",
+                    "backend": "vllm",
+                    "backend_version": "0.11.0",
+                    "database_mode": "SILICON",
+                    "transfer_policy": ["xshape", "xquant", "xprofile", "xop"],
+                    "forward_model": "op_level",
+                    "systems_paths": ["/systems"],
+                },
+                diagnostics={"provenance": {"selected_systems_root": "/systems"}},
+            )
+        ),
     )
 
     assert prepared is None
@@ -421,6 +460,7 @@ def test_runner_hook_capability_is_checked_before_runner_creation(monkeypatch) -
 
 
 def test_core_branch_preflight_runs_before_adapter_preparation(monkeypatch) -> None:
+    _stub_branch(monkeypatch)
     adapter = _Adapter()
 
     def reject_branches(*args, **kwargs):

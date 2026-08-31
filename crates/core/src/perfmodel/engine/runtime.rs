@@ -301,6 +301,24 @@ impl Engine {
         }
     }
 
+    /// Eagerly validate the whole-forward database cell selected by an FPM
+    /// engine. The table itself is lazy, so compiling the engine is not enough
+    /// to prove that the requested model identity has collected prefill and
+    /// decode data. The canonical forward-pass constructor calls this before
+    /// returning so a missing/mismatched FPM pair fails before search starts.
+    pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
+        let Some((prefill, decode)) = self.fpm_ops() else {
+            return Ok(());
+        };
+        self.db
+            .fpm_forward
+            .select_cell(&prefill.match_identity, &prefill.model_path)?;
+        self.db
+            .fpm_forward
+            .select_cell(&decode.match_identity, &decode.model_path)?;
+        Ok(())
+    }
+
     /// Convenience constructor: deserialize a bincode `EngineSpec` and load the
     /// matching `PerfDatabase` from its identity, then [`Engine::build`].
     ///
@@ -344,12 +362,10 @@ impl Engine {
                 DatabaseMode::Silicon | DatabaseMode::Hybrid
             )),
             spec.engine.strict_provenance,
-            // Estimate-only systems (a spec yaml with no collected data) may
-            // back a SOL view: every SOL answer is analytic from the system
-            // spec, so tolerate a missing perf-data directory under SOL and
-            // let table-backed lookups miss lazily. All other modes keep the
-            // loud load-time gate.
-            spec.engine.database_mode == DatabaseMode::Sol,
+            // Formula/fallback-capable modes can serve a system spec without a
+            // collected primary directory. SILICON alone requires exact data
+            // at load time; every other mode owns its typed miss behavior.
+            spec.engine.database_mode != DatabaseMode::Silicon,
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
         Engine::build(spec, Arc::new(db))
@@ -1715,6 +1731,21 @@ mod tests {
         );
         let err = Engine::build(spec, Arc::new(db)).unwrap_err();
         assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
+    }
+
+    #[test]
+    fn fpm_readiness_eagerly_validates_the_exact_model_cell() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut engine = build_fpm_engine(tmp.path(), None).unwrap();
+        engine.validate_forward_pass_readiness().unwrap();
+
+        let [Op::FpmForward(prefill)] = engine.context_ops.as_mut_slice() else {
+            panic!("FPM fixture must contain one prefill op");
+        };
+        prefill.model_path = "org/uncollected-model".into();
+        let err = engine.validate_forward_pass_readiness().unwrap_err();
+        assert!(err.to_string().contains("No FPM cell matches"), "{err}");
+        assert!(err.to_string().contains("uncollected-model"), "{err}");
     }
 
     /// The marginal-decode mixed composition, exact arithmetic over the

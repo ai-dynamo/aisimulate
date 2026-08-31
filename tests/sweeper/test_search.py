@@ -13,6 +13,7 @@ from aisimulate.sweeper.kv_load import KVLoadResolution
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import (
     BackendDeploymentSpec,
+    ForwardPassEstimatorSpec,
     ReplayReport,
     ReplaySpec,
     RunnerCapabilities,
@@ -145,6 +146,34 @@ def _branch(parallel_config):
     )
 
 
+def _forward_pass_estimator_spec(backend="trtllm", version="1.3.0rc10"):
+    return ForwardPassEstimatorSpec(
+        config={
+            "model": "deepseek-ai/DeepSeek-V3",
+            "system": "gb200",
+            "backend": backend,
+            "backend_version": version,
+            "database_mode": "SILICON",
+            "transfer_policy": ["xshape", "xquant", "xprofile", "xop"],
+            "forward_model": "op_level",
+            "systems_paths": ["/systems"],
+            "fallback_policy": "error",
+        },
+        diagnostics={"provenance": {"selected_systems_root": "/systems"}},
+    )
+
+
+class _StaticResolver:
+    def __init__(self, specs):
+        self.specs = specs
+
+    def resolve_candidate(self, sample):
+        roles = (
+            ("agg",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
+        )
+        return {role: self.specs[sample["backend"]] for role in roles}
+
+
 def _stub(monkeypatch, branch):
     monkeypatch.setattr(
         search_mod,
@@ -152,7 +181,14 @@ def _stub(monkeypatch, branch):
         lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
     monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
+        search_mod,
+        "ForwardPassEstimatorResolver",
+        lambda search_space: _StaticResolver(
+            {
+                backend: _forward_pass_estimator_spec(backend)
+                for backend in search_space.backend
+            }
+        ),
     )
 
 
@@ -179,13 +215,23 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     assert all(
         candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates
     )
+    assert all(
+        candidate.config["forward_pass_estimators"]["agg"]["config"]["model"]
+        == "deepseek-ai/DeepSeek-V3"
+        for candidate in candidates
+    )
     assert candidates[0].metrics["gpu_hours"] == 1.0
     assert factory.worker_ids == [0]
     assert all(isinstance(spec, ReplaySpec) for spec in factory.runner.specs)
+    assert all(
+        spec.backend_deployment.forward_pass_estimators["agg"].backend_version
+        == "1.3.0rc10"
+        for spec in factory.runner.specs
+    )
     assert factory.runner.closed
 
 
-def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
+def test_resolved_pinned_backend_version_reaches_candidates(monkeypatch):
     branch = _branch(_pc())
     monkeypatch.setattr(
         search_mod,
@@ -194,8 +240,14 @@ def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     )
     monkeypatch.setattr(
         search_mod,
-        "resolve_backend_version",
-        lambda *args: (_ for _ in ()).throw(AssertionError("must not resolve latest")),
+        "ForwardPassEstimatorResolver",
+        lambda search_space: _StaticResolver(
+            {
+                "trtllm": _forward_pass_estimator_spec(
+                    version=search_space.requested_backend_version("trtllm")
+                )
+            }
+        ),
     )
     config = _config()
     config.search_space.backend_version = "0.18.0"
@@ -632,6 +684,38 @@ def test_replay_spec_version_is_checked_before_runner_creation(monkeypatch):
     assert factory.worker_ids == []
 
 
+def test_forward_pass_estimator_identity_fails_before_replay_execution(monkeypatch):
+    factory = _FakeRunnerFactory()
+    branch_called = False
+
+    class FailingResolver:
+        def __init__(self, search_space):
+            del search_space
+
+        def resolve_candidate(self, sample):
+            del sample
+            raise ValueError("pinned forward-pass estimator unavailable")
+
+    def enumerate_branch(*args, **kwargs):
+        nonlocal branch_called
+        branch_called = True
+        return [_branch(_pc())]
+
+    monkeypatch.setattr(search_mod, "ForwardPassEstimatorResolver", FailingResolver)
+    monkeypatch.setattr(search_mod, "enumerate_branches", enumerate_branch)
+
+    candidates = _run_sweep(
+        _config(),
+        runner_factory=factory,
+        sampler_factory=_FakeSampler,
+        show_progress=False,
+    )
+
+    assert branch_called
+    assert candidates == []
+    assert factory.runner.calls == 0
+
+
 def test_unsupported_backend_pair_never_reaches_runner(monkeypatch):
     pc = _pc()
     branch = BranchSpace(
@@ -815,7 +899,14 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
         lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
     )
     monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
+        search_mod,
+        "ForwardPassEstimatorResolver",
+        lambda search_space: _StaticResolver(
+            {
+                backend: _forward_pass_estimator_spec(backend)
+                for backend in search_space.backend
+            }
+        ),
     )
     seen = []
 

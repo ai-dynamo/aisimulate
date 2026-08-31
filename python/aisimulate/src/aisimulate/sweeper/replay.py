@@ -20,6 +20,59 @@ REPLAY_SPEC_API_VERSION = 1
 
 
 @dataclass(frozen=True)
+class ForwardPassEstimatorSpec:
+    """Resolved output of Core's canonical forward-pass constructor.
+
+    The config is the sole estimator identity carried by Sweeper and Replay.
+    Convenience properties below are projections, never independently authored
+    values. Diagnostics preserve Core's selection result for artifacts.
+    """
+
+    config: dict[str, JSONValue]
+    options: dict[str, JSONValue] | None = None
+    diagnostics: dict[str, JSONValue] = field(default_factory=dict)
+
+    @property
+    def model_path(self) -> str:
+        return str(self.config["model"])
+
+    @property
+    def system(self) -> str:
+        return str(self.config["system"])
+
+    @property
+    def backend(self) -> str:
+        return str(self.config["backend"])
+
+    @property
+    def backend_version(self) -> str:
+        return str(self.config["backend_version"])
+
+    @property
+    def database_mode(self) -> str:
+        return str(self.config["database_mode"])
+
+    @property
+    def transfer_policy(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.config.get("transfer_policy") or ())
+
+    @property
+    def forward_model(self) -> str:
+        return str(self.config["forward_model"])
+
+    @property
+    def systems_paths(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.config.get("systems_paths") or ())
+
+    @property
+    def performance_data_root(self) -> str:
+        provenance = self.diagnostics.get("provenance")
+        if isinstance(provenance, dict):
+            return str(provenance.get("selected_systems_root") or "")
+        return ""
+
+
+@dataclass(frozen=True)
 class BackendDeploymentSpec:
     """Concrete backend engines and fleet shape for one candidate."""
 
@@ -34,6 +87,8 @@ class BackendDeploymentSpec:
     num_prefill_workers: int = 0
     num_decode_workers: int = 0
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
+    # Appended to preserve the positional constructor slots above.
+    forward_pass_estimators: dict[str, ForwardPassEstimatorSpec] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -51,11 +106,7 @@ class ReplaySpec:
     def runtime_hooks(self) -> tuple[RuntimeHookSpec, ...]:
         """All requested hooks in deterministic adapter insertion order."""
 
-        return tuple(
-            hook
-            for adapter_spec in self.adapters.values()
-            for hook in adapter_spec.runtime_hooks
-        )
+        return tuple(hook for adapter_spec in self.adapters.values() for hook in adapter_spec.runtime_hooks)
 
 
 @dataclass(frozen=True)
@@ -109,8 +160,7 @@ class RunnerCapabilities:
         """
 
         return any(
-            (supported_backend in (backend, "*"))
-            and (supported_topology in (topology, "*"))
+            (supported_backend in (backend, "*")) and (supported_topology in (topology, "*"))
             for supported_backend, supported_topology in self.supported_backend_topologies
         )
 
@@ -126,14 +176,10 @@ class RunnerCapabilities:
             or all(dp_size == 1 for dp_size in dp_sizes)
         )
 
-    def require_replay_spec_version(
-        self, api_version: int = REPLAY_SPEC_API_VERSION
-    ) -> None:
+    def require_replay_spec_version(self, api_version: int = REPLAY_SPEC_API_VERSION) -> None:
         """Raise when the runner and Sweeper do not share the replay-spec ABI."""
 
-        versions_are_integers = (
-            type(api_version) is int and type(self.replay_spec_api_version) is int
-        )
+        versions_are_integers = type(api_version) is int and type(self.replay_spec_api_version) is int
         if not versions_are_integers or api_version != self.replay_spec_api_version:
             raise ValueError(
                 f"ReplaySpec API version {api_version} is incompatible with "
@@ -145,21 +191,13 @@ class RunnerCapabilities:
 
         self.require_replay_spec_version(spec.api_version)
         deployment = spec.backend_deployment
-        if not self.supports_backend_topology(
-            deployment.backend, deployment.deployment_mode
-        ):
+        if not self.supports_backend_topology(deployment.backend, deployment.deployment_mode):
             raise ValueError(
-                f"runner does not support backend/topology "
-                f"{deployment.backend!r}/{deployment.deployment_mode!r}"
+                f"runner does not support backend/topology {deployment.backend!r}/{deployment.deployment_mode!r}"
             )
-        unsupported = [
-            hook for hook in spec.runtime_hooks if not self.supports_hook(hook)
-        ]
+        unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]
         if unsupported:
-            labels = ", ".join(
-                f"{hook.provider}:{hook.kind}@{hook.api_version}"
-                for hook in unsupported
-            )
+            labels = ", ".join(f"{hook.provider}:{hook.kind}@{hook.api_version}" for hook in unsupported)
             raise ValueError(f"runner does not support runtime hook(s): {labels}")
 
 
@@ -199,18 +237,14 @@ def _jsonable(value: Any) -> JSONValue:
         converted: dict[str, JSONValue] = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise TypeError(
-                    f"canonical replay JSON requires string mapping keys, got {key!r}"
-                )
+                raise TypeError(f"canonical replay JSON requires string mapping keys, got {key!r}")
             converted[key] = _jsonable(item)
         return converted
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    raise TypeError(
-        f"value of type {type(value).__name__} is not supported by replay JSON contracts"
-    )
+    raise TypeError(f"value of type {type(value).__name__} is not supported by replay JSON contracts")
 
 
 def validate_json_value(value: Any, *, path: str = "value") -> None:

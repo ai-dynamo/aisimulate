@@ -13,7 +13,11 @@ from aisimulate.sweeper.parallel_enum import (
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
+from aisimulate.sweeper.replay import (
+    ForwardPassEstimatorSpec,
+    ReplayReport,
+    RunnerCapabilities,
+)
 from aisimulate.sweeper.sampler import (
     RandomBranchSampler,
     SeededBayesianBranchSampler,
@@ -143,6 +147,37 @@ def _branches():
     ]
 
 
+class _StaticResolver:
+    def __init__(self, specs):
+        self.specs = specs
+
+    def resolve_candidate(self, sample):
+        roles = (
+            ("agg",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
+        )
+        return {role: self.specs[sample["backend"]] for role in roles}
+
+
+def _forward_pass_estimator_resolver(search_space):
+    specs = {
+        backend: ForwardPassEstimatorSpec(
+            config={
+                "model": search_space.model_name,
+                "system": search_space.hardware_sku,
+                "backend": backend,
+                "backend_version": "test",
+                "database_mode": "SILICON",
+                "transfer_policy": ["xshape", "xquant", "xprofile", "xop"],
+                "forward_model": "op_level",
+                "systems_paths": ["/systems"],
+            },
+            diagnostics={"provenance": {"selected_systems_root": "/systems"}},
+        )
+        for backend in search_space.backend
+    }
+    return _StaticResolver(specs)
+
+
 def test_global_trial_budget_is_split_across_branches(monkeypatch) -> None:
     _CountingSampler.created = []
     _CountingSampler.suggestion_batches = []
@@ -150,7 +185,11 @@ def test_global_trial_budget_is_split_across_branches(monkeypatch) -> None:
     monkeypatch.setattr(
         search_module, "enumerate_branches", lambda *args, **kwargs: _branches()
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(
+        search_module,
+        "ForwardPassEstimatorResolver",
+        _forward_pass_estimator_resolver,
+    )
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -197,7 +236,11 @@ def test_global_trial_budget_runs_branch_batches_round_robin(monkeypatch) -> Non
     monkeypatch.setattr(
         search_module, "enumerate_branches", lambda *args, **kwargs: _branches()
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(
+        search_module,
+        "ForwardPassEstimatorResolver",
+        _forward_pass_estimator_resolver,
+    )
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -249,7 +292,11 @@ def test_legacy_rounds_remain_branch_major_without_max_trials(monkeypatch) -> No
     monkeypatch.setattr(
         search_module, "enumerate_branches", lambda *args, **kwargs: _branches()
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(
+        search_module,
+        "ForwardPassEstimatorResolver",
+        _forward_pass_estimator_resolver,
+    )
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -294,7 +341,11 @@ def test_branch_seed_is_stable_when_branch_order_changes(monkeypatch) -> None:
         "enumerate_branches",
         lambda *args, **kwargs: list(reversed(_branches())),
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(
+        search_module,
+        "ForwardPassEstimatorResolver",
+        _forward_pass_estimator_resolver,
+    )
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -361,7 +412,11 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
         "enumerate_branches",
         lambda *args, **kwargs: [_branches()[0]],
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(
+        search_module,
+        "ForwardPassEstimatorResolver",
+        _forward_pass_estimator_resolver,
+    )
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {

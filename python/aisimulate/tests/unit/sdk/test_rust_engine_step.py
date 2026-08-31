@@ -723,27 +723,20 @@ def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
     pytest.importorskip("aiconfigurator_core")
     from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
-    model = RustForwardPassPerfModel.from_native(
+    model = RustForwardPassPerfModel.best_available(
         {
-            "schema_version": 1,
-            "model_name": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
-            "system_name": "h100_sxm",
+            "model": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+            "system": "h100_sxm",
             "backend": "vllm",
             "backend_version": "0.24.0",
-            "tp_size": 4,
-            "pp_size": 1,
-            "attention_dp_size": 1,
-            "cp_size": None,
+            "tp": 4,
+            "pp": 1,
+            "attention_dp": 1,
             "moe_tp_size": 1,
             "moe_ep_size": 4,
-            "weight_dtype": "fp8",
-            "activation_dtype": None,
-            "moe_dtype": None,
-            "kv_cache_dtype": None,
+            "gemm_quant_mode": "fp8",
             "kv_block_size": 16,
-            "nextn": None,
-            "nextn_accept_rates": None,
-            "extra": {},
+            "fallback_policy": "error",
         },
         {
             "bucket_count": 16,
@@ -798,25 +791,19 @@ def test_forward_pass_perf_model_native_default_directional_bounds_end_to_end() 
     from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
 
     config = {
-        "schema_version": 1,
-        "model_name": "Qwen/Qwen3-32B",
-        "system_name": "h200_sxm",
+        "model": "Qwen/Qwen3-32B",
+        "system": "h200_sxm",
         "backend": "trtllm",
         "backend_version": "1.3.0rc10",
-        "tp_size": 4,
-        "pp_size": 1,
+        "tp": 4,
+        "pp": 1,
         "moe_tp_size": None,
         "moe_ep_size": None,
-        "attention_dp_size": 1,
-        "weight_dtype": None,
-        "moe_dtype": None,
-        "activation_dtype": None,
-        "kv_cache_dtype": None,
+        "attention_dp": 1,
         "kv_block_size": None,
-        "nextn": None,
-        "extra": {},
+        "fallback_policy": "error",
     }
-    model = RustForwardPassPerfModel.from_native(
+    model = RustForwardPassPerfModel.best_available(
         config,
         {
             "min_observations": 2,
@@ -899,23 +886,17 @@ def test_forward_pass_perf_model_best_available_falls_back_on_bad_config() -> No
     from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
 
     config = {
-        "schema_version": 1,
-        "model_name": "this/model-does-not-exist-xyz",
-        "system_name": "h200_sxm",
+        "model": "this/model-does-not-exist-xyz",
+        "system": "h200_sxm",
         "backend": "trtllm",
         "backend_version": "1.3.0rc10",
-        "tp_size": 1,
-        "pp_size": 1,
+        "tp": 1,
+        "pp": 1,
         "moe_tp_size": None,
         "moe_ep_size": None,
-        "attention_dp_size": 1,
-        "weight_dtype": None,
-        "moe_dtype": None,
-        "activation_dtype": None,
-        "kv_cache_dtype": None,
+        "attention_dp": 1,
         "kv_block_size": None,
-        "nextn": None,
-        "extra": {},
+        "fallback_policy": "regression",
     }
     model = RustForwardPassPerfModel.best_available(config, {"min_observations": 2})
     diag = model.diagnostics()
