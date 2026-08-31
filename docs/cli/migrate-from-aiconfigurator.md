@@ -174,6 +174,84 @@ This translation is not an aggregate-only constraint. AISimulate does not curren
 public mapping for a bound that filters aggregate mean E2E latency but must not participate in
 request-level goodput.
 
+## Planned AFD translation
+
+Attention-FFN Disaggregation (AFD) is migrating in layers. The
+[AFD topology contract](../sweeper/afd-topology.md) defines complete A/F topology enumeration,
+pipeline evaluation, P/D companion rate matching, GPU accounting, and capability gates. Later work
+will connect that contract to the public recommendation schema, generic search, and an AFD-capable
+runner.
+
+> [!IMPORTANT]
+> The AISimulate configuration below is a **contract preview**, not a runnable command in this PR.
+> Continue using the compatibility `aiconfigurator` command for AFD until the public schema,
+> lowering, and runner support land.
+
+Legacy AFD command:
+
+```bash
+aiconfigurator cli default \
+  --model-path Qwen/Qwen3-32B \
+  --system h200_sxm \
+  --backend trtllm \
+  --serving-mode afd \
+  --total-gpus 32 \
+  --isl 1024 \
+  --osl 128 \
+  --ttft 800 \
+  --tpot 30 \
+  --strict-sla
+```
+
+The intended AISimulate recommendation contract is:
+
+<!-- afd-migration-contract-start -->
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: constant_rate
+    requests_per_second: 4
+  stop:
+    requests_per_load_unit: 10
+
+engine:
+  mode: afd
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  backend: trtllm
+  afd:
+    phase: decode
+    combined_with_pd: true
+
+evaluation:
+  sla:
+    ttft_ms: 800
+    itl_ms: 30
+
+optimization:
+  target: throughput_per_gpu
+  strict_sla: true
+  constraints:
+    max_candidate_gpus: 32
+```
+<!-- afd-migration-contract-end -->
+
+This preserves the legacy command's default of decode-side AFD combined with a static prefill
+companion. The GPU constraint covers the A pool, F pool, and companion together; the Sweeper AFD
+contract accounts for each contribution explicitly. Once the remaining layers land, the target
+invocation will be:
+
+```bash
+aisimulate recommend --config recommendation.yaml
+```
+
+This migration target covers analytical recommendation. It does not imply native request-level
+AFD Replay/Mocker execution or deployment-artifact generation.
+
 ## Migration limits
 
 - `--stack engine` is the default. Use `--stack dynamo` only when the independently installed Dynamo

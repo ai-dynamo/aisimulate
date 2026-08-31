@@ -26,6 +26,8 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [Configuration](configuration.md) describes core and adapter-owned search spaces.
 - [Traffic](traffic.md) defines trace, request-rate, concurrency, and KV-load workloads.
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
+- [AFD Topology Contract](afd-topology.md) defines Attention-FFN shapes, pipeline evaluation, and
+  P/D companion rate matching.
 - [Results](results.md) describes `ReplaySpec`, the `SweepResult` envelope, and candidate records.
 - [Migrate from AIConfigurator](../cli/migrate-from-aiconfigurator.md) maps legacy Sweeper inputs to
   the standalone configuration and execution workflow.
