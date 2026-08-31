@@ -71,7 +71,9 @@ def _engine_args(*, role="aggregated", timing=None):
     }
 
 
-def _spec(*, deployment=None, workload=None, concurrency=None, adapters=None):
+def _spec(
+    *, deployment=None, workload=None, goal=None, concurrency=None, adapters=None
+):
     return ReplaySpec(
         backend_deployment=deployment
         or BackendDeploymentSpec(
@@ -83,7 +85,7 @@ def _spec(*, deployment=None, workload=None, concurrency=None, adapters=None):
         ),
         workload=workload
         or {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
-        goal={"target": "throughput"},
+        goal=goal or {"target": "throughput"},
         concurrency=concurrency,
         adapters=adapters or {},
     )
@@ -129,6 +131,24 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
     assert execution["record_per_request"] is False
     assert isinstance(runtime.execution_spec_json, str)
     assert report.metadata == {}
+
+
+@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
+def test_engine_runner_preserves_independent_sla_bounds(
+    field: str, bound: float
+) -> None:
+    runtime = RecordingRuntime()
+    spec = _spec(
+        goal={
+            "target": "throughput",
+            "strict_sla": False,
+            "sla": {field: bound},
+        }
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+
+    assert runtime.execution_spec["sla"] == {field: bound}
 
 
 def test_runner_lowers_sglang_with_prefix_caching_disabled():
@@ -192,6 +212,38 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     assert calls[0]["pp_size"] == 2
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
     assert "nextn" not in calls[0]
+
+
+def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("num_gpu_blocks")
+    engine_args["gpu_memory_utilization"] = 0.8
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append(kwargs)
+        return 321
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config={"tp": 2, "attention_dp": 1, "replicas": 1},
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert rank["num_gpu_blocks"] == 321
+    assert rank["timing_model"]["type"] == "fixed"
+    assert "gpu_memory_utilization" not in rank
+    assert calls[0]["gpu_memory_utilization"] == 0.8
 
 
 def test_runner_captures_requested_raw_and_per_request_report():

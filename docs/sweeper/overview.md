@@ -11,8 +11,8 @@ subtitle: Experimental backend-neutral configuration search
 > standard deprecation period.
 
 Sweeper searches deployment configurations with a black-box optimizer. It turns every suggestion
-into a versioned `ReplaySpec`, sends that specification to an injected `RunnerFactory`, and returns
-ranked candidates or a Pareto front.
+into a versioned `ReplaySpec`, sends that specification to an injected `RunnerFactory`, and returns a
+schema-versioned `SweepResult` with a complete candidate ledger and ranked or Pareto views.
 
 The `aisimulate` package owns only backend-neutral simulation behavior. Optional feature packages
 can register a `SweepConfigProvider` that contributes search dimensions and materializes its part
@@ -28,7 +28,9 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
 - [AFD Topology Contract](afd-topology.md) defines Attention-FFN shapes, pipeline evaluation, and
   P/D companion rate matching.
-- [Results](results.md) describes `ReplaySpec` and `Candidate` output.
+- [Results](results.md) describes `ReplaySpec`, the `SweepResult` envelope, and candidate records.
+- [Migrate from AIConfigurator](../cli/migrate-from-aiconfigurator.md) maps legacy Sweeper inputs to
+  the standalone configuration and execution workflow.
 - [Sweep Configuration Providers](sweep-config-provider.md) documents the extension ABI.
 - [Dynamo Integration](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental/sweeper-experimental/dynamo-integration.md)
   composes Dynamo's optional Planner, Router, and replay adapters with the standalone Sweeper core.
@@ -41,7 +43,7 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 from aisimulate.sweeper import SmartSearchConfig, Sweeper
 
 config = SmartSearchConfig.from_yaml("sweep.yaml")
-candidates = Sweeper(runner_factory=my_runner_factory).run(config)
+result = Sweeper(runner_factory=my_runner_factory).run(config)
 ```
 
 The public `aisimulate recommend --config ...` command validates the unified schema and selects a

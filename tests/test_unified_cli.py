@@ -4,14 +4,63 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
 import aisimulate.main as cli
 from aisimulate.output import prepare_output_directory
+from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
+
+
+class _RecommendationResult:
+    def __init__(self, selected_candidates, *, failed: int = 0) -> None:
+        self._candidates = {
+            f"candidate-{index:06d}": candidate
+            for index, candidate in enumerate(selected_candidates, start=1)
+        }
+        self._selected_ids = list(self._candidates)
+        self._failed = failed
+
+    @property
+    def selected_candidate_ids(self):
+        return list(self._selected_ids)
+
+    @property
+    def selected_candidates(self):
+        return [self._candidates[candidate_id] for candidate_id in self._selected_ids]
+
+    def with_selected_prediction_configs(self, selections):
+        self._selected_ids = [candidate_id for candidate_id, _ in selections]
+        for candidate_id, config in selections:
+            self._candidates[candidate_id] = self._candidates[candidate_id].model_copy(
+                update={"prediction_config": dict(config)}
+            )
+        return self
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "schema_version": "1.0",
+                "counts": {
+                    "feasible": len(self._candidates),
+                    "failed": self._failed,
+                },
+                "candidates": [
+                    {
+                        "candidate_id": candidate_id,
+                        "prediction_config": candidate.prediction_config,
+                    }
+                    for candidate_id, candidate in self._candidates.items()
+                ],
+                "views": {"top_n": self._selected_ids, "pareto_front": []},
+            },
+            sort_keys=True,
+        )
 
 
 class _Runner:
@@ -24,7 +73,16 @@ class _Runner:
         self.spec = spec
         self.output_requirements = output_requirements
         return ReplayReport(
-            metrics={"completed_requests": 1.0},
+            metrics={
+                "completed_requests": 1.0,
+                "num_ttft_samples": 1.0,
+                "num_tpot_samples": 1.0,
+                "num_e2e_latency_samples": 1.0,
+                "output_throughput_tok_s": 8.0,
+                "mean_ttft_ms": 2.0,
+                "mean_tpot_ms": 1.0,
+                "mean_e2e_latency_ms": 4.0,
+            },
             metadata={
                 "native_report": {
                     "summary": {
@@ -45,10 +103,12 @@ class _Factory:
         self.runner = runner
 
     def capabilities(self):
-        return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),))
+        return RunnerCapabilities(
+            supported_backend_topologies=(("vllm", "agg"), ("trtllm", "agg"))
+        )
 
     def create(self, worker_id: int):
-        assert worker_id == 0
+        del worker_id
         return self.runner
 
 
@@ -221,8 +281,9 @@ def test_engine_stack_rejects_explicit_unavailable_component(
     assert "engine.router" in capsys.readouterr().err
 
 
-def test_recommendation_yaml_round_trips_into_predict(
-    tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize(("sla_field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
+def test_partial_sla_recommendation_yaml_round_trips_into_predict(
+    tmp_path, monkeypatch, capsys, sla_field: str, bound: float
 ) -> None:
     config_path = tmp_path / "recommendation.yaml"
     config_path.write_text(
@@ -233,6 +294,8 @@ def test_recommendation_yaml_round_trips_into_predict(
                     "model": "deepseek-ai/DeepSeek-V3",
                     "hardware": "gb200",
                     "backend": "trtllm",
+                    "backend_version": "1.3.0rc20",
+                    "context_length": 2048,
                     "workers": {
                         "aggregated": {
                             "parallelism": {
@@ -241,14 +304,17 @@ def test_recommendation_yaml_round_trips_into_predict(
                                 "tensor": 4,
                                 "pipeline": 1,
                                 "attention_data": 1,
-                                "moe_tensor": 1,
-                                "moe_expert": 4,
+                                "moe_tensor": 4,
+                                "moe_expert": 1,
                             },
                             "scheduler": {
                                 "max_batched_tokens": 8192,
                                 "max_sequences": 256,
                             },
-                            "kv_cache": {"capacity": {"type": "fixed", "blocks": 256}},
+                            "kv_cache": {
+                                "block_size": 64,
+                                "capacity": {"type": "fixed", "blocks": 256},
+                            },
                             "timing": {
                                 "type": "fixed",
                                 "prefill_ms": 1,
@@ -257,6 +323,7 @@ def test_recommendation_yaml_round_trips_into_predict(
                         }
                     },
                 },
+                "evaluation": {"sla": {sla_field: bound}},
                 "optimization": {
                     "target": "throughput",
                     "constraints": {"max_candidate_gpus": 8},
@@ -273,6 +340,8 @@ def test_recommendation_yaml_round_trips_into_predict(
     )
     recommendation_output = tmp_path / "recommend-output"
     adapter = _PlacementAdapter()
+    runner = _Runner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(runner))
 
     def resolve(names):
         assert list(names) == ["engine.placement"]
@@ -301,6 +370,12 @@ def test_recommendation_yaml_round_trips_into_predict(
     assert "router" not in generated
     assert "planner" not in generated
     assert generated["placement"] == {"policy": "first"}
+    assert generated["evaluation"]["sla"] == {sla_field: bound}
+    result = json.loads((recommendation_output / "recommendation.json").read_text())
+    assert result["schema_version"] == "1.0"
+    assert result["counts"]["feasible"] == 1
+    assert result["views"]["top_n"] == ["candidate-000001"]
+    assert result["candidates"][0]["prediction_config"] == generated
 
     prediction_output = tmp_path / "predict-output"
     assert (
@@ -317,7 +392,122 @@ def test_recommendation_yaml_round_trips_into_predict(
         )
         == 0
     )
-    assert json.loads(capsys.readouterr().out)["completed_requests"] == 100
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+    assert runner.spec.goal["sla"] == {sla_field: bound}
+
+
+def test_recommendation_outputs_each_concrete_prediction_once(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    concrete = {
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": "vllm",
+            "context_length": 4096,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {
+                        "replicas": 1,
+                        "tensor": 1,
+                        "pipeline": 1,
+                        "attention_data": 1,
+                        "moe_tensor": 1,
+                        "moe_expert": 1,
+                    },
+                    "scheduler": {
+                        "max_batched_tokens": 8192,
+                        "max_sequences": 256,
+                    },
+                    "kv_cache": {
+                        "block_size": 64,
+                        "prefix_caching": True,
+                        "capacity": {"type": "fixed", "blocks": 256},
+                    },
+                    "timing": {
+                        "type": "fixed",
+                        "prefill_ms": 1,
+                        "decode_ms": 1,
+                    },
+                }
+            },
+        },
+        "evaluation": {},
+    }
+    recommendation_input = deepcopy(concrete)
+    recommendation_input["engine"]["workers"]["aggregated"]["parallelism"] = {
+        "preset": False,
+        **recommendation_input["engine"]["workers"]["aggregated"]["parallelism"],
+    }
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                **recommendation_input,
+                "optimization": {
+                    "target": "throughput",
+                    "constraints": {"max_candidate_gpus": 1},
+                },
+                "optimizer": {
+                    "algorithm": "random",
+                    "max_trials": 2,
+                    "parallelism": 1,
+                },
+            }
+        )
+    )
+    candidates = [
+        Candidate(
+            config={"planner_selection": selection},
+            used_gpus=1,
+            score=score,
+            metrics={},
+            prediction_config=concrete,
+        )
+        for selection, score in (("first", 2.0), ("second", 1.0))
+    ]
+    monkeypatch.setattr(
+        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
+    )
+    monkeypatch.setattr(
+        "aisimulate.recommend.run_recommendation",
+        lambda *args, **kwargs: _RecommendationResult(candidates),
+    )
+
+    output = tmp_path / "out"
+    assert (
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 1
+    assert rows[0]["score"] == 2.0
+    assert [path.name for path in (output / "recommendations").iterdir()] == [
+        "0001.yaml"
+    ]
+    result = json.loads((output / "recommendation.json").read_text())
+    assert result["counts"]["feasible"] == 2
+    assert result["views"]["top_n"] == ["candidate-000001"]
+    assert result["candidates"][0]["prediction_config"] == yaml.safe_load(
+        (output / "recommendations" / "0001.yaml").read_text()
+    )
 
 
 def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
@@ -327,6 +517,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     unrelated = root / "keep.txt"
     unrelated.write_text("keep")
     (root / "prediction.json").write_text("old")
+    (root / "recommendation.json").write_text("old")
     (recommendations / "0001.yaml").write_text("old")
     (recommendations / "notes.txt").write_text("keep")
 
@@ -338,4 +529,42 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert unrelated.read_text() == "keep"
     assert (recommendations / "notes.txt").read_text() == "keep"
     assert not (root / "prediction.json").exists()
+    assert not (root / "recommendation.json").exists()
     assert not (recommendations / "0001.yaml").exists()
+
+
+def test_recommendation_writes_an_empty_result_before_returning_failure(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    import aisimulate.recommend as recommendation_module
+
+    monkeypatch.setattr(
+        cli.CoreRecommendationConfig,
+        "model_validate",
+        staticmethod(lambda raw: object()),
+    )
+    monkeypatch.setattr(cli, "_resolve_section_adapters", lambda sections, stack: {})
+    monkeypatch.setattr(
+        recommendation_module,
+        "run_recommendation",
+        lambda *args, **kwargs: _RecommendationResult([], failed=1),
+    )
+    output = tmp_path / "empty-result"
+
+    status = cli._recommend(
+        SimpleNamespace(
+            stack="engine",
+            format="json",
+            output_dir=str(output),
+            overwrite=False,
+        ),
+        {},
+        object(),
+    )
+
+    assert status == 1
+    assert json.loads((output / "recommendation.json").read_text())["counts"] == {
+        "failed": 1,
+        "feasible": 0,
+    }
+    assert "saved full result" in capsys.readouterr().err

@@ -66,7 +66,9 @@ engine:
     aggregated: {}
 ```
 
-See [`docs/cli-design.md`](docs/cli-design.md) for the complete schema and search-domain contract.
+See [`docs/cli/design.md`](docs/cli/design.md) for the complete schema and search-domain contract.
+Embedded callers can obtain the full candidate ledger with
+`Sweeper(runner_factory=...).run(config)`.
 
 Install AISimulate by itself for engine-only development:
 
@@ -94,14 +96,15 @@ from aisimulate.sweeper import SmartSearchConfig, Sweeper
 from dynamo.replay.simulation import DynamoReplayRunnerFactory
 
 config = SmartSearchConfig.from_yaml("smart_sweep.yaml")
-candidates = Sweeper(
+result = Sweeper(
     runner_factory=DynamoReplayRunnerFactory(),
 ).run(config)
+print(result.counts)
+print(result.selected_candidates)
 ```
 
-The standalone module validates the backend-neutral core schema but intentionally has no implicit
-replay runtime. Adapter-owned search spaces are validated when the selected adapters are resolved
-by `Sweeper.run`.
+The backend-neutral Sweeper API intentionally has no implicit replay runtime. Adapter-owned search
+spaces are validated when the selected adapters are resolved by `Sweeper.run`.
 KVBM sweep fields have been removed and have no adapter migration.
 
 Read the canonical [Sweeper documentation](docs/sweeper/overview.md) for its configuration,
@@ -119,6 +122,10 @@ crates/
 python/
   aisimulate/           application, AIC core mirror/data, Replay, Sweeper, and native runtime
 docs/
+  cli/
+    design.md           public CLI schema and output contract
+    migrate-from-aiconfigurator.md
+                        AIConfigurator-to-AISimulate CLI translation
   artifact-contract.md  two-artifact release boundary
   aic-sync.md           deterministic AIC source synchronization workflow
   core-api.md           public core API and compatibility contract

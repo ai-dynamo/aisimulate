@@ -59,7 +59,12 @@ class OptimizationTarget(str, Enum):
 
 
 class SLATarget(BaseModel):
-    """Per-request latency bounds in ms. Set ttft_ms+itl_ms, or e2e_ms."""
+    """Latency bounds in milliseconds.
+
+    Replay treats every configured field as an independent per-request goodput
+    bound; an unset field is unbounded. :attr:`OptimizationGoal.strict_sla`
+    controls only the additional aggregate-mean filter.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -70,11 +75,14 @@ class SLATarget(BaseModel):
     @model_validator(mode="after")
     def _validate_form(self) -> SLATarget:
         token_form = self.ttft_ms is not None or self.itl_ms is not None
-        if token_form and (self.ttft_ms is None or self.itl_ms is None):
-            raise ValueError("ttft_ms and itl_ms must be supplied together")
         if token_form and self.e2e_ms is not None:
             raise ValueError("e2e_ms is mutually exclusive with ttft_ms/itl_ms")
         return self
+
+    @property
+    def has_bound(self) -> bool:
+        """Whether at least one SLA bound is configured."""
+        return any(value is not None for value in (self.ttft_ms, self.itl_ms, self.e2e_ms))
 
 
 # Goodput-based scalar targets — the only ones that need an SLA (their metric counts
@@ -100,6 +108,10 @@ class OptimizationGoal(BaseModel):
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
     pareto_objectives: list[OptimizationTarget] | None = None
+    # Preserve replay goodput's per-request SLA semantics by default. When
+    # enabled, configured SLA bounds also gate aggregate mean metrics before
+    # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
+    strict_sla: bool = Field(default=False, strict=True)
 
     @property
     def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
@@ -131,12 +143,12 @@ class OptimizationGoal(BaseModel):
             effective = {self.target}
         # Any goodput-based objective (scalar target or pareto objective) needs an SLA.
         needs_sla = bool(effective & _SLA_TARGETS)
-        has_sla = self.sla is not None and (
-            self.sla.e2e_ms is not None or (self.sla.ttft_ms is not None and self.sla.itl_ms is not None)
-        )
+        has_sla = self.sla is not None and self.sla.has_bound
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
-            raise ValueError(f"{culprits} require an SLA target (ttft_ms+itl_ms or e2e_ms)")
+            raise ValueError(f"{culprits} require at least one SLA bound")
+        if self.strict_sla and (self.sla is None or not self.sla.has_bound):
+            raise ValueError("strict_sla requires at least one SLA bound")
         return self
 
 
