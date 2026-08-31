@@ -151,6 +151,100 @@ class DisaggregatedCorrectionSpec:
 
 
 @dataclass(frozen=True)
+class EncoderWorkerSpec:
+    """One concrete encoder-only worker pool for an EPD candidate."""
+
+    candidate_id: str
+    backend_key: str
+    estimator: EstimatorSpec
+    tp: int
+    batch_size: int
+    num_workers: int
+    latency_ms: float
+    throughput_rps_per_worker: float
+    memory_gib_per_worker: float
+    rate_degradation: float
+    power_w_per_worker: float = 0.0
+    power_coverage: float = 0.0
+
+    def __post_init__(self) -> None:
+        for name in ("candidate_id", "backend_key"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} must be a non-empty string")
+        for name in ("tp", "batch_size", "num_workers"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"encoder {name} must be a positive integer")
+        for name in (
+            "latency_ms",
+            "throughput_rps_per_worker",
+            "rate_degradation",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) <= 0.0
+            ):
+                raise ValueError(f"encoder {name} must be positive and finite")
+        for name in (
+            "memory_gib_per_worker",
+            "power_w_per_worker",
+            "power_coverage",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0.0
+            ):
+                raise ValueError(f"encoder {name} must be non-negative and finite")
+        if self.power_coverage > 1.0:
+            raise ValueError("encoder power_coverage must be within [0, 1]")
+
+    @property
+    def total_gpus(self) -> int:
+        return self.tp * self.num_workers
+
+    @property
+    def degraded_capacity_rps(self) -> float:
+        return self.throughput_rps_per_worker * self.rate_degradation * self.num_workers
+
+
+@dataclass(frozen=True)
+class EpdDeploymentSpec:
+    """Encoder overlay applied to an aggregate or P/D language deployment."""
+
+    encoder: EncoderWorkerSpec
+    language_gpus: int
+    language_topology: str = "agg"
+    ttft_scale: float = 1.0
+    artifact_generation_supported: bool = False
+
+    def __post_init__(self) -> None:
+        if isinstance(self.language_gpus, bool) or not isinstance(self.language_gpus, int) or self.language_gpus < 1:
+            raise ValueError("EPD language_gpus must be a positive integer")
+        if self.language_topology not in {"agg", "disagg"}:
+            raise ValueError("EPD language_topology must be 'agg' or 'disagg'")
+        if (
+            isinstance(self.ttft_scale, bool)
+            or not isinstance(self.ttft_scale, (int, float))
+            or not math.isfinite(float(self.ttft_scale))
+            or float(self.ttft_scale) <= 0.0
+        ):
+            raise ValueError("EPD ttft_scale must be positive and finite")
+        if self.artifact_generation_supported:
+            raise ValueError("EPD deployment artifact generation is not supported by native Sweeper")
+
+    @property
+    def total_gpus(self) -> int:
+        return self.language_gpus + self.encoder.total_gpus
+
+
+@dataclass(frozen=True)
 class BackendDeploymentSpec:
     """Concrete backend engines and fleet shape for one candidate."""
 
@@ -173,6 +267,7 @@ class BackendDeploymentSpec:
     decode_backend_version: str | None = None
     role_estimators: dict[str, EstimatorSpec] = field(default_factory=dict)
     disaggregated_corrections: DisaggregatedCorrectionSpec | None = None
+    epd: EpdDeploymentSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -240,6 +335,7 @@ class RunnerCapabilities:
     supported_hooks: tuple[HookCapability, ...] = ()
     supports_disaggregated_attention_dp: bool = False
     supported_disaggregated_backend_pairs: tuple[tuple[str, str], ...] = ()
+    supported_epd_backend_topologies: tuple[tuple[str, str], ...] = ()
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -256,6 +352,14 @@ class RunnerCapabilities:
 
     def supports_hook(self, hook: RuntimeHookSpec) -> bool:
         return any(capability.supports(hook) for capability in self.supported_hooks)
+
+    def supports_epd(self, backend: str, topology: str) -> bool:
+        """Return whether the runner explicitly supports an encoder overlay."""
+
+        return any(
+            supported_backend in (backend, "*") and supported_topology in (topology, "*")
+            for supported_backend, supported_topology in self.supported_epd_backend_topologies
+        )
 
     def supports_disaggregated_backend_pair(
         self, prefill_backend: str, decode_backend: str
@@ -296,6 +400,13 @@ class RunnerCapabilities:
 
         self.require_replay_spec_version(spec.api_version)
         deployment = spec.backend_deployment
+        if deployment.epd is not None:
+            encoder_backend = deployment.epd.encoder.estimator.backend
+            if not self.supports_epd(encoder_backend, deployment.deployment_mode):
+                raise ValueError(
+                    "runner does not support EPD encoder backend/topology "
+                    f"{encoder_backend!r}/{deployment.deployment_mode!r}"
+                )
         if deployment.deployment_mode == "disagg" and (
             deployment.prefill_backend is not None
             or deployment.decode_backend is not None

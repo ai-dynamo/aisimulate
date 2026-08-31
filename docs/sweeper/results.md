@@ -39,6 +39,17 @@ candidate contains:
 | `score` | objective normalized so larger is better |
 | `objectives` | raw per-objective values for Pareto searches; otherwise `None` |
 
+For EPD candidates, `config.encoder` records the resolved encoder estimator,
+TP, batch size, worker count, latency, memory, rate degradation, power, and
+power-coverage evidence. `used_gpus` is the exact language-plus-encoder total;
+`language_gpus` preserves the decomposition. Metrics include
+`encoder_latency_ms`, `encoder_capacity_rps`, `encoder_memory_gib`,
+`encoder_power_w`, `encoder_power_coverage`, and `encoder_gpus`.
+
+`deployment_artifact_generation_supported` is `false` for EPD. Consumers must
+not lower an EPD recommendation to an aggregate or P/D-only deployment by
+dropping the encoder pool.
+
 For `goal.target: pareto`, the result contains only non-dominated candidates and preserves each
 objective's natural direction.
 

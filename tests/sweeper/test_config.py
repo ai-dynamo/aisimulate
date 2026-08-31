@@ -476,6 +476,80 @@ def test_trace_closed_loop_cap_and_synthetic_helpers():
     assert rate.resolved_request_count() == 100
 
 
+def test_epd_fixed_image_profile_round_trips_for_synthetic_and_trace():
+    image = {
+        "image_height": 448,
+        "image_width": 448,
+        "num_images_per_request": 2,
+    }
+    synthetic = SmartSearchConfig(
+        search_space=_search_space(
+            enable_epd=True,
+            encoder_tp_candidates=[1, 2],
+            encoder_batch_size_candidates=[1, 4],
+            encoder_num_workers_candidates=[1, 2],
+        ),
+        workload=_workload(**image),
+    )
+    trace = SmartSearchConfig(
+        search_space=_search_space(enable_epd=True),
+        workload={"trace_path": "/tmp/trace.jsonl", **image},
+    )
+
+    assert synthetic.workload.has_images
+    assert trace.workload.has_images
+    assert SmartSearchConfig.model_validate(synthetic.model_dump(mode="python")).search_space.encoder_tp_candidates == [
+        1,
+        2,
+    ]
+
+
+@pytest.mark.parametrize(
+    "workload,match",
+    [
+        ({"image_height": 448}, "both be positive"),
+        (
+            {
+                "image_height": 448,
+                "image_width": 448,
+                "num_image_tokens": 256,
+                "num_images_per_request": 1,
+            },
+            "not both",
+        ),
+        (
+            {"image_height": 448, "image_width": 448},
+            "positive num_images_per_request",
+        ),
+        ({"num_images_per_request": 1}, "requires image_height"),
+    ],
+)
+def test_multimodal_workload_shape_is_fail_closed(workload, match):
+    with pytest.raises(ValidationError, match=match):
+        Workload(**_workload(**workload))
+
+
+def test_epd_and_multimodal_workload_must_be_enabled_together():
+    image_workload = _workload(
+        num_image_tokens=256,
+        num_images_per_request=1,
+    )
+    with pytest.raises(ValidationError, match="set search_space.enable_epd"):
+        SmartSearchConfig(
+            search_space=_search_space(),
+            workload=image_workload,
+        )
+    with pytest.raises(ValidationError, match="requires a multimodal workload"):
+        SmartSearchConfig(
+            search_space=_search_space(enable_epd=True),
+            workload=_workload(),
+        )
+    with pytest.raises(ValidationError, match="require enable_epd"):
+        SearchSpace(
+            **_search_space(encoder_tp_candidates=[1]),
+        )
+
+
 def test_synthetic_random_length_options_are_validated():
     workload = Workload(
         **_workload(random_range_ratio=0.8, random_seed=7),

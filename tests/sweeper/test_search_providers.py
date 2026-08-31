@@ -525,6 +525,7 @@ def test_adapter_replay_contract_rejects_invalid_field_shapes(spec) -> None:
         AdapterSearchPlan(diagnostics=[]),
         AdapterSearchPlan(potential_runtime_hooks=[]),
         AdapterSearchPlan(supports_heterogeneous_pd=1),
+        AdapterSearchPlan(supports_epd=1),
         AdapterSearchPlan(
             fragment=SearchSpaceFragment(choices_by_branch={"agg": {"mode": (1,)}})
         ),

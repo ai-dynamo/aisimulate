@@ -12,6 +12,7 @@ from .replay import (
     BackendDeploymentSpec,
     DisaggregatedCorrectionSpec,
     EngineRequestSpec,
+    EpdDeploymentSpec,
     EstimatorSpec,
 )
 
@@ -125,6 +126,7 @@ def build_backend_deployment(
     estimator: EstimatorSpec | None = None,
     engine_request: EngineRequestSpec | None = None,
     role_estimators: Mapping[str, EstimatorSpec] | None = None,
+    epd: EpdDeploymentSpec | None = None,
 ) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
@@ -144,6 +146,7 @@ def build_backend_deployment(
         "estimator": estimator,
         "engine_request": engine_request,
         "role_estimators": dict(role_estimators or {}),
+        "epd": epd,
         "parallel_config": {
             key: value
             for key, value in sample.items()

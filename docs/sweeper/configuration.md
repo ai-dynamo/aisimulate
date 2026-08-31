@@ -221,6 +221,41 @@ are retained in `BackendDeploymentSpec` and consumed by replay as role service-t
 limiting role, correction provenance, and role-attributed budget failures; non-finite results are
 rejected before serialization or ranking.
 
+## Encoder-disaggregated vision search (EPD)
+
+Set `enable_epd: true` to search an encoder-only pool in front of either an
+aggregate language pool (`E+agg`) or disaggregated prefill/decode pools
+(`E+P+D`). The encoder follows the aggregate/prefill backend but resolves its
+system and performance-data version independently.
+
+```yaml
+search_space:
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  hardware_sku: h200_sxm
+  backend: [vllm]
+  deployment_mode: [agg, disagg]
+  gpu_budget: 32
+  enable_epd: true
+  encoder_hardware_sku: h200_sxm
+  encoder_tp_candidates: [1, 2, 4]
+  encoder_batch_size_candidates: [1, 2, 4, 8]
+  encoder_num_workers_candidates: [1, 2, 3, 4]
+  encoder_latency_correction: 1.0
+  encoder_rate_degradation: 0.9
+```
+
+`encoder_backend_version`, `encoder_database_mode`,
+`encoder_transfer_policy`, and `encoder_systems_paths` can pin the encoder data
+identity independently. If omitted, the encoder inherits the corresponding
+aggregate/prefill identity and resolves the latest compatible data version on
+its selected system.
+
+Each sampled candidate includes the concrete encoder TP, batch, worker count,
+latency, memory, power coverage, and estimator provenance. Encoder GPUs are
+included in feasibility and throughput-per-GPU objectives. EPD adapters must
+explicitly opt in with `supports_epd=True`; deployment artifact generation is
+reported as unsupported until the generator consumes the encoder pool contract.
+
 ## Pinned Parallel Configurations
 
 Pinning `parallel_configs` requires exactly one deployment mode. An aggregated entry is one shape:

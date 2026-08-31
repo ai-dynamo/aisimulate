@@ -132,6 +132,34 @@ makes the generated workload repeatable. The configured `isl` and `osl` remain i
 upper bounds; for example, ratio `0.8` with `isl: 1000` and `osl: 1000` produces lengths
 in `[800, 1000]`.
 
+## Fixed multimodal image profile
+
+Native EPD search accepts one canonical image profile and applies it to every
+request, whether the load is synthetic or comes from a Mooncake trace:
+
+```yaml
+workload:
+  isl: 128
+  osl: 64
+  concurrency: 16
+  num_request_ratio: 10
+  image_height: 448
+  image_width: 448
+  num_images_per_request: 2
+```
+
+Use `num_image_tokens` instead of `image_height` and `image_width` when the
+post-merge visual token count per image is already known. The two forms are
+mutually exclusive. Visual tokens are added to the language-model context;
+the encoder-only pool is estimated from the same image profile.
+
+Image workloads currently require `search_space.enable_epd: true`. Colocated
+vision execution and per-request image distributions remain fail-closed rather
+than silently running a token-only replay. A trace can carry arrival,
+text-token, and output-token variation while using the fixed image profile;
+per-row image shape/count variation is not yet part of the canonical trace
+schema.
+
 ## Validation (`Workload._validate_workload`)
 
 - **Trace workload** (`trace_path` set): must **not** set any synthetic field

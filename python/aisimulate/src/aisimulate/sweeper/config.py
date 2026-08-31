@@ -287,6 +287,14 @@ class Workload(BaseModel):
     turns_per_session: int = 1  # multi-turn sessions
     inter_turn_delay_ms: float = 0.0  # think-time between turns (multi-turn synthetic)
 
+    # Canonical fixed multimodal profile. The profile applies to every request,
+    # including requests materialized from a trace. Per-request image
+    # distributions remain a separate workload-contract extension.
+    image_height: int = 0
+    image_width: int = 0
+    num_images_per_request: int = 0
+    num_image_tokens: int = 0
+
     # dynamic trace source (mutually exclusive with the synthetic fields)
     trace_path: str | None = None
     trace_format: str = "mooncake"  # replay-ready trace schema
@@ -328,6 +336,14 @@ class Workload(BaseModel):
     @property
     def is_synthetic(self) -> bool:
         return self.trace_path is None
+
+    @property
+    def has_images(self) -> bool:
+        """Whether every request carries a non-empty image workload."""
+
+        return self.num_images_per_request > 0 and (
+            self.num_image_tokens > 0 or (self.image_height > 0 and self.image_width > 0)
+        )
 
     @property
     def kv_load_ratio_range(self) -> tuple[float, float] | None:
@@ -381,6 +397,27 @@ class Workload(BaseModel):
 
     @model_validator(mode="after")
     def _validate_workload(self) -> Workload:
+        image_fields = {
+            "image_height": self.image_height,
+            "image_width": self.image_width,
+            "num_images_per_request": self.num_images_per_request,
+            "num_image_tokens": self.num_image_tokens,
+        }
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in image_fields.values()):
+            raise ValueError(f"multimodal workload fields must be non-negative integers, got {image_fields!r}")
+        if any(value < 0 for value in image_fields.values()):
+            raise ValueError(f"multimodal workload fields must be non-negative, got {image_fields!r}")
+        has_height = self.image_height > 0
+        has_width = self.image_width > 0
+        if has_height != has_width:
+            raise ValueError("image_height and image_width must either both be positive or both be zero")
+        if has_height and self.num_image_tokens > 0:
+            raise ValueError("set image_height/image_width or num_image_tokens, not both")
+        has_image_shape = has_height or self.num_image_tokens > 0
+        if self.num_images_per_request > 0 and not has_image_shape:
+            raise ValueError("num_images_per_request requires image_height/image_width or num_image_tokens")
+        if has_image_shape and self.num_images_per_request == 0:
+            raise ValueError("image_height/image_width or num_image_tokens requires a positive num_images_per_request")
         synthetic_only = (
             "isl",
             "osl",
@@ -528,6 +565,12 @@ _ROLE_CANDIDATE_FIELDS = tuple(
     f"{role}_{suffix}"
     for role in ("agg", "prefill", "decode")
     for suffix in _ROLE_CANDIDATE_SUFFIXES
+)
+
+_ENCODER_CANDIDATE_FIELDS = (
+    "encoder_tp_candidates",
+    "encoder_batch_size_candidates",
+    "encoder_num_workers_candidates",
 )
 
 
@@ -685,6 +728,22 @@ class SearchSpace(BaseModel):
     decode_latency_correction: float = Field(default=1.08, gt=0, allow_inf_nan=False)
     ttft_correction_factor: float = Field(default=1.8, gt=0, allow_inf_nan=False)
 
+    # Encoder-disaggregated (EPD) search. The encoder backend follows the
+    # aggregate/prefill backend, while its system and performance-data identity
+    # resolve independently.
+    enable_epd: bool = False
+    encoder_hardware_sku: str | None = None
+    encoder_backend_version: str | dict[str, str] | None = None
+    encoder_database_mode: DatabaseMode | None = None
+    encoder_transfer_policy: list[TransferKind] | None = None
+    encoder_systems_paths: list[str] | None = None
+    encoder_tp_candidates: list[int] | None = None
+    encoder_batch_size_candidates: list[int] | None = None
+    encoder_num_workers_candidates: list[int] | None = None
+    max_encoder_workers: int = Field(default=32, ge=1)
+    encoder_latency_correction: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    encoder_rate_degradation: float = Field(default=0.9, gt=0, allow_inf_nan=False)
+
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
     prefill_max_num_seqs: list[int] = [1, 2, 4, 8, 16, 32, 64, 128, 256]
@@ -709,7 +768,12 @@ class SearchSpace(BaseModel):
     agg_gpu_memory_utilization: float = 0.9
     agg_enable_prefix_caching: bool = True
 
-    @field_validator(*_ROLE_CANDIDATE_FIELDS, "num_gpu_per_replica", mode="before")
+    @field_validator(
+        *_ROLE_CANDIDATE_FIELDS,
+        *_ENCODER_CANDIDATE_FIELDS,
+        "num_gpu_per_replica",
+        mode="before",
+    )
     @classmethod
     def _validate_positive_candidate_lists(cls, value: Any) -> Any:
         if value is None:
@@ -739,6 +803,7 @@ class SearchSpace(BaseModel):
         "database_mode",
         "prefill_database_mode",
         "decode_database_mode",
+        "encoder_database_mode",
         mode="before",
     )
     @classmethod
@@ -762,6 +827,7 @@ class SearchSpace(BaseModel):
         "transfer_policy",
         "prefill_transfer_policy",
         "decode_transfer_policy",
+        "encoder_transfer_policy",
         mode="before",
     )
     @classmethod
@@ -774,6 +840,7 @@ class SearchSpace(BaseModel):
         "systems_paths",
         "prefill_systems_paths",
         "decode_systems_paths",
+        "encoder_systems_paths",
         mode="before",
     )
     @classmethod
@@ -782,7 +849,12 @@ class SearchSpace(BaseModel):
             value = [part.strip() for part in value.split(",") if part.strip()]
         return value
 
-    @field_validator("systems_paths", "prefill_systems_paths", "decode_systems_paths")
+    @field_validator(
+        "systems_paths",
+        "prefill_systems_paths",
+        "decode_systems_paths",
+        "encoder_systems_paths",
+    )
     @classmethod
     def _validate_systems_paths(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
@@ -829,6 +901,7 @@ class SearchSpace(BaseModel):
         "decode_model_name",
         "prefill_hardware_sku",
         "decode_hardware_sku",
+        "encoder_hardware_sku",
     )
     @classmethod
     def _validate_role_identity_name(cls, value: str | None) -> str | None:
@@ -916,6 +989,15 @@ class SearchSpace(BaseModel):
             return self.backend_version
         if isinstance(self.backend_version, dict):
             return self.backend_version.get(backend)
+        return None
+
+    def requested_encoder_backend_version(self, backend: str) -> str | None:
+        """Return the independently pinned encoder data version, if any."""
+
+        if isinstance(self.encoder_backend_version, str):
+            return self.encoder_backend_version
+        if isinstance(self.encoder_backend_version, dict):
+            return self.encoder_backend_version.get(backend)
         return None
 
     def role_backends(self, role: str) -> list[str]:
@@ -1049,6 +1131,61 @@ class SearchSpace(BaseModel):
                 raise ValueError(
                     f"{role}_moe_backend must be 'deepep_moe' or 'megamoe', got {moe_backend!r}"
                 )
+        encoder_fields = {
+            "encoder_hardware_sku": self.encoder_hardware_sku,
+            "encoder_backend_version": self.encoder_backend_version,
+            "encoder_database_mode": self.encoder_database_mode,
+            "encoder_transfer_policy": self.encoder_transfer_policy,
+            "encoder_systems_paths": self.encoder_systems_paths,
+            "encoder_tp_candidates": self.encoder_tp_candidates,
+            "encoder_batch_size_candidates": self.encoder_batch_size_candidates,
+            "encoder_num_workers_candidates": self.encoder_num_workers_candidates,
+        }
+        if not self.enable_epd and (
+            any(value is not None for value in encoder_fields.values())
+            or self.max_encoder_workers != 32
+            or self.encoder_latency_correction != 1.0
+            or self.encoder_rate_degradation != 0.9
+        ):
+            configured = [name for name, value in encoder_fields.items() if value is not None]
+            if self.max_encoder_workers != 32:
+                configured.append("max_encoder_workers")
+            if self.encoder_latency_correction != 1.0:
+                configured.append("encoder_latency_correction")
+            if self.encoder_rate_degradation != 0.9:
+                configured.append("encoder_rate_degradation")
+            raise ValueError(f"encoder settings require enable_epd=True; configured {configured}")
+        if self.enable_epd and self.forward_model is ForwardModel.FPM:
+            raise ValueError("enable_epd requires forward_model='op_level'; encoder FPM data is not supported")
+        if isinstance(self.encoder_backend_version, str):
+            if not self.encoder_backend_version.strip():
+                raise ValueError("encoder_backend_version must be a non-empty version")
+            encoder_backends = set(self.backend)
+            if self.prefill_backend is not None:
+                encoder_backends.update(self.prefill_backend)
+            if len(encoder_backends) != 1:
+                raise ValueError(
+                    "a string encoder_backend_version requires exactly one configured backend; "
+                    "use a {backend: version} mapping for a multi-backend search"
+                )
+            self.encoder_backend_version = self.encoder_backend_version.strip()
+        elif isinstance(self.encoder_backend_version, dict):
+            encoder_backends = set(self.backend)
+            if self.prefill_backend is not None:
+                encoder_backends.update(self.prefill_backend)
+            unknown = sorted(set(self.encoder_backend_version) - encoder_backends)
+            if unknown:
+                raise ValueError(f"encoder_backend_version contains unconfigured backend(s): {unknown}")
+            invalid = [
+                backend
+                for backend, version in self.encoder_backend_version.items()
+                if not isinstance(version, str) or not version.strip()
+            ]
+            if invalid:
+                raise ValueError(f"encoder_backend_version needs a non-empty version for {sorted(invalid)}")
+            self.encoder_backend_version = {
+                backend: version.strip() for backend, version in self.encoder_backend_version.items()
+            }
         return self
 
     @model_validator(mode="after")
@@ -1254,6 +1391,22 @@ class SmartSearchConfig(BaseModel):
             raise ValueError(
                 "a ranged workload.kv_load_ratio is only allowed when goal.target is 'pareto' "
                 f"(got target={self.goal.target.value}); use one scalar kv_load_ratio"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_epd_workload(self) -> SmartSearchConfig:
+        """EPD is explicit and cannot silently reinterpret text traffic."""
+
+        if self.search_space.enable_epd and not self.workload.has_images:
+            raise ValueError(
+                "enable_epd requires a multimodal workload with a positive image count "
+                "and image dimensions or num_image_tokens"
+            )
+        if self.workload.has_images and not self.search_space.enable_epd:
+            raise ValueError(
+                "multimodal workload execution is not yet colocated in native Sweeper; "
+                "set search_space.enable_epd=true or use the AIC-1765 path"
             )
         return self
 

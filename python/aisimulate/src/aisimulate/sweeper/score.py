@@ -46,6 +46,12 @@ _METRIC_KEYS = (
     "gpu_hours",
     "duration_ms",
     "planner_total_ticks",
+    "encoder_latency_ms",
+    "encoder_capacity_rps",
+    "encoder_memory_gib",
+    "encoder_power_w",
+    "encoder_power_coverage",
+    "encoder_gpus",
 )
 
 

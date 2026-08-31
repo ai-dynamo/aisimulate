@@ -19,6 +19,9 @@ from aisimulate.sweeper import (
     AdapterReplaySpec,
     BackendDeploymentSpec,
     DisaggregatedCorrectionSpec,
+    EncoderWorkerSpec,
+    EpdDeploymentSpec,
+    EstimatorSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
@@ -45,12 +48,14 @@ class RecordingRuntime:
             {
                 "duration_ms": 4.0,
                 "output_throughput_tok_s": 2000.0,
+                "request_throughput_rps": 100.0,
                 "gpu_hours": 0.001,
                 "mean_ttft_ms": 2.0,
                 "mean_tpot_ms": 1.0,
                 "mean_e2e_latency_ms": 4.0,
                 "mean_output_token_throughput_per_user": 1000.0,
                 "goodput_output_throughput_tok_s": 1500.0,
+                "goodput_request_throughput_rps": 75.0,
                 "completed_requests": 1,
             }
         )
@@ -103,6 +108,9 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_backend_topology("vllm", "agg")
     assert capabilities.supports_backend_topology("sglang", "disagg")
     assert capabilities.supports_disaggregated_backend_pair("sglang", "vllm")
+    assert capabilities.supports_epd("vllm", "agg")
+    assert capabilities.supports_epd("sglang", "disagg")
+    assert not capabilities.supports_epd("trtllm", "disagg")
     assert not capabilities.supports_backend_topology("trtllm", "disagg")
     assert not capabilities.supports_disaggregated_attention_dp
     assert capabilities.supported_hooks == ()
@@ -132,6 +140,67 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
     assert execution["record_per_request"] is False
     assert isinstance(runtime.execution_spec_json, str)
     assert report.metadata == {}
+
+
+def test_runner_executes_epd_as_language_replay_plus_encoder_overlay():
+    runtime = RecordingRuntime()
+    estimator = EstimatorSpec(
+        model_path="Qwen/Qwen3-VL-8B-Instruct",
+        model_architecture="Qwen3VLForConditionalGeneration",
+        system="h200_sxm",
+        backend="vllm",
+        backend_version="test",
+        performance_data_version="test",
+        database_mode="SILICON",
+        transfer_policy=("xshape",),
+        forward_model="op_level",
+        engine_step_backend="rust",
+        systems_paths=("/systems",),
+        performance_data_root="/systems",
+    )
+    encoder = EncoderWorkerSpec(
+        candidate_id="encoder",
+        backend_key="vllm",
+        estimator=estimator,
+        tp=2,
+        batch_size=4,
+        num_workers=1,
+        latency_ms=50.0,
+        throughput_rps_per_worker=200.0,
+        memory_gib_per_worker=1.5,
+        rate_degradation=0.9,
+        power_w_per_worker=200.0,
+        power_coverage=1.0,
+    )
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=_engine_args(),
+        num_workers=2,
+        epd=EpdDeploymentSpec(encoder=encoder, language_gpus=4),
+    )
+    workload = {
+        "isl": 8,
+        "osl": 2,
+        "concurrency": 1,
+        "num_request_ratio": 1,
+        "image_height": 448,
+        "image_width": 448,
+        "num_images_per_request": 1,
+    }
+
+    report = EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment, workload=workload))
+
+    request = runtime.execution_spec["requests"][0]
+    assert request["input_tokens"] > 8
+    assert request["metadata"]["multimodal"]["visual_context_tokens"] == (request["input_tokens"] - 8)
+    assert report.metrics["mean_ttft_ms"] == 52.0
+    assert report.metrics["mean_e2e_latency_ms"] == 54.0
+    assert report.metrics["encoder_gpus"] == 2.0
+    assert report.metrics["gpu_hours"] == pytest.approx(6 * 4 / 3_600_000)
+    assert report.metadata["epd"]["topology"] == "E+agg"
+    assert report.metadata["epd"]["artifact_generation_supported"] is False
 
 
 def test_runner_materializes_exact_cached_prefix_tokens():

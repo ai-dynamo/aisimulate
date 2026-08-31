@@ -15,6 +15,8 @@ from numbers import Real
 from typing import Protocol, runtime_checkable
 
 from .aic import materialize_aic_num_gpu_blocks
+from .sweeper.config import Workload
+from .sweeper.epd import apply_epd_metrics, visual_context_tokens
 from .sweeper.provider import JSONValue
 from .sweeper.replay import (
     ReplayOutputRequirements,
@@ -36,6 +38,13 @@ _SUPPORTED_DISAGGREGATED_BACKEND_PAIRS = (
     ("vllm", "sglang"),
     ("sglang", "vllm"),
     ("sglang", "sglang"),
+)
+_SUPPORTED_EPD_BACKEND_TOPOLOGIES = (
+    ("vllm", "agg"),
+    ("vllm", "disagg"),
+    ("sglang", "agg"),
+    ("sglang", "disagg"),
+    ("trtllm", "agg"),
 )
 
 _AIC_TIMING_FIELD_ALIASES = {
@@ -95,6 +104,7 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=False,
             supported_disaggregated_backend_pairs=_SUPPORTED_DISAGGREGATED_BACKEND_PAIRS,
+            supported_epd_backend_topologies=_SUPPORTED_EPD_BACKEND_TOPOLOGIES,
         )
 
     def create(self, worker_id: int) -> EngineReplayRunner:
@@ -175,13 +185,23 @@ class EngineReplayRunner:
             raise InvalidRunnerError(
                 "AISimulate engine replay runtime report must be a JSON object"
             )
-        return _normalize_engine_replay_report(
+        normalized = _normalize_engine_replay_report(
             report,
             include_native_report=(
                 output_requirements.include_raw_report
                 or output_requirements.capture_per_request
             ),
         )
+        if spec.backend_deployment.epd is None:
+            return normalized
+        metrics, epd_metadata = apply_epd_metrics(
+            normalized.metrics,
+            spec.backend_deployment.epd,
+            goal=spec.goal,
+        )
+        metadata = dict(normalized.metadata)
+        metadata["epd"] = epd_metadata
+        return ReplayReport(metrics=metrics, metadata=metadata)
 
     def close(self) -> None:
         """Release worker-local resources.
@@ -313,6 +333,10 @@ def _materialize_engine_execution_spec(
         )
 
     requests, max_in_flight = _materialize_requests(spec, trace_block_size)
+    if deployment.epd is not None:
+        workload = Workload.model_validate(spec.workload)
+        vision_tokens = visual_context_tokens(workload, deployment.epd.encoder.estimator.model_path)
+        _add_visual_context_tokens(requests, vision_tokens, workload)
     sla = _materialize_sla(spec)
     max_sim_time_ms = spec.workload.get("max_sim_time_ms")
     if max_sim_time_ms is not None:
@@ -338,6 +362,40 @@ def _materialize_engine_execution_spec(
         "sla": sla,
         "requests": requests,
     }
+
+
+def _add_visual_context_tokens(
+    requests: list[dict[str, JSONValue]],
+    vision_tokens: int,
+    workload: Workload,
+) -> None:
+    """Append deterministic post-merge vision tokens to each LM request."""
+
+    if vision_tokens <= 0:
+        raise ValueError("EPD workload resolved no visual context tokens")
+    for index, request in enumerate(requests):
+        input_tokens = _positive_int(request.get("input_tokens"), "input_tokens")
+        request["input_tokens"] = input_tokens + vision_tokens
+        token_ids = request.get("input_token_ids")
+        if token_ids is not None:
+            if not isinstance(token_ids, list):
+                raise ValueError("input_token_ids must be a list")
+            seed = 0xE000_0000 + index * max(vision_tokens, 1)
+            request["input_token_ids"] = token_ids + [(seed + offset) & 0xFFFF_FFFF for offset in range(vision_tokens)]
+        metadata = request.get("metadata")
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            raise ValueError("request metadata must be a mapping")
+        metadata = dict(metadata)
+        metadata["multimodal"] = {
+            "image_height": workload.image_height,
+            "image_width": workload.image_width,
+            "num_images": workload.num_images_per_request,
+            "num_image_tokens": workload.num_image_tokens,
+            "visual_context_tokens": vision_tokens,
+        }
+        request["metadata"] = metadata
 
 
 def _required_engine_args(

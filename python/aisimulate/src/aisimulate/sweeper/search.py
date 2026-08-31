@@ -58,6 +58,12 @@ from .engine_request import (
     resolve_engine_controls,
     resolve_role_engine_controls,
 )
+from .epd import (
+    EpdResolutionError,
+    add_epd_branch_choices,
+    materialize_epd_deployment,
+    resolve_epd_catalog,
+)
 from .estimator import resolve_estimator_specs, resolve_role_estimator_specs
 from .heterogeneous import RoleEstimatorSpecs
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
@@ -195,6 +201,8 @@ def _validate_search_plan(name: str, plan: Any) -> None:
             raise TypeError("potential_runtime_hooks must be a tuple")
         if type(plan.supports_heterogeneous_pd) is not bool:
             raise TypeError("supports_heterogeneous_pd must be a boolean")
+        if type(plan.supports_epd) is not bool:
+            raise TypeError("supports_epd must be a boolean")
         _validate_search_fragment(plan.fragment)
         validate_json_value(plan.state, path=f"adapter {name!r} search plan state")
         validate_json_value(
@@ -395,6 +403,7 @@ def _materialize_one(
     engine_controls: Mapping[str, EngineControlTemplate],
     role_estimator_specs: Mapping[str, RoleEstimatorSpecs],
     role_engine_controls: Mapping[str, Mapping[str, EngineControlTemplate]],
+    encoder_catalog: Mapping[str, Any] | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
     try:
@@ -476,6 +485,29 @@ def _materialize_one(
             # Preserve the concrete load on every candidate, including a fixed absolute
             # concurrency and one derived from kv_load_ratio.
             sample["concurrency"] = concurrency
+        epd = None
+        if config.search_space.enable_epd:
+            epd = materialize_epd_deployment(
+                selection,
+                catalog=encoder_catalog or {},
+                language_gpus=int(sample["used_gpus"]),
+                deployment_mode=str(sample["deployment_mode"]),
+                ttft_scale=(1.0 if sample["deployment_mode"] == "agg" else config.search_space.ttft_correction_factor),
+            )
+            sample["language_gpus"] = epd.language_gpus
+            sample["used_gpus"] = epd.total_gpus
+            sample["encoder"] = asdict(epd.encoder)
+            sample["deployment_artifact_generation_supported"] = False
+            if epd.total_gpus > config.search_space.gpu_budget:
+                return None, (
+                    None,
+                    None,
+                    "infeasible",
+                    "EPD candidate exceeds gpu_budget: "
+                    f"language_gpus={epd.language_gpus} + "
+                    f"encoder_gpus={epd.encoder.total_gpus} > "
+                    f"gpu_budget={config.search_space.gpu_budget}",
+                )
         backend_deployment = build_backend_deployment(
             sample,
             backend_version=backend_version,
@@ -489,6 +521,7 @@ def _materialize_one(
                 if role_estimators is not None
                 else None
             ),
+            epd=epd,
         )
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
@@ -527,6 +560,13 @@ def _materialize_one(
             None,
             "infeasible",
             f"candidate KV capacity infeasible: {exc}",
+        )
+    except EpdResolutionError as exc:
+        return None, (
+            None,
+            None,
+            "infeasible",
+            f"candidate EPD topology infeasible: {exc}",
         )
     except Exception as exc:
         logger.exception("Sweeper candidate build failed")
@@ -774,9 +814,14 @@ class Sweeper:
             role_estimator_specs=role_estimator_specs,
             role_engine_controls=role_engine_controls,
         )
-        resolved_providers, provider_plans = _prepare_providers(
-            config, injected=providers, show_progress=show_progress
+        encoder_catalog = resolve_epd_catalog(
+            config,
+            estimator_specs=estimator_specs,
+            role_estimator_specs=role_estimator_specs,
         )
+        if ss.enable_epd:
+            branches = add_epd_branch_choices(branches, encoder_catalog)
+        resolved_providers, provider_plans = _prepare_providers(config, injected=providers, show_progress=show_progress)
         if ss.has_role_overrides:
             unsupported_adapters = sorted(
                 name
@@ -788,6 +833,14 @@ class Sweeper:
                     "heterogeneous prefill/decode search requires every adapter "
                     "plan to opt in with supports_heterogeneous_pd=True; unsupported "
                     f"adapter(s): {unsupported_adapters}"
+                )
+        if ss.enable_epd:
+            unsupported_adapters = sorted(name for name, plan in provider_plans.items() if not plan.supports_epd)
+            if unsupported_adapters:
+                raise ValueError(
+                    "EPD search requires every adapter plan to opt in with "
+                    "supports_epd=True; unsupported adapter(s): "
+                    f"{unsupported_adapters}"
                 )
         for name, plan in provider_plans.items():
             unsupported = [
@@ -1121,6 +1174,7 @@ class Sweeper:
                         engine_controls=engine_controls,
                         role_estimator_specs=role_estimator_specs,
                         role_engine_controls=role_engine_controls,
+                        encoder_catalog=encoder_catalog,
                     )
                     if build_result is not None:
                         candidate, observe_metrics, outcome, reason = build_result

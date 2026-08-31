@@ -1,0 +1,30 @@
+search_space:
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  hardware_sku: h200_sxm
+  backend: [vllm]
+  deployment_mode: [agg, disagg]
+  gpu_budget: 32
+  enable_epd: true
+  encoder_hardware_sku: h200_sxm
+  encoder_tp_candidates: [1, 2, 4]
+  encoder_batch_size_candidates: [1, 2, 4, 8]
+  encoder_num_workers_candidates: [1, 2, 3, 4]
+  encoder_latency_correction: 1.0
+  encoder_rate_degradation: 0.9
+
+workload:
+  isl: 128
+  osl: 64
+  concurrency: 16
+  num_request_ratio: 10
+  image_height: 448
+  image_width: 448
+  num_images_per_request: 1
+
+goal:
+  target: throughput_per_gpu
+
+sweep:
+  policy: rapid
+  max_rounds: 10
+  parallel_evals: 4

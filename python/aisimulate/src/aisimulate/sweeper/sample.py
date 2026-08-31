@@ -39,6 +39,10 @@ _DEPLOYMENT_PINNED = (
     "prefill_latency_correction",
     "decode_latency_correction",
     "ttft_correction_factor",
+    "enable_epd",
+    "encoder_hardware_sku",
+    "encoder_latency_correction",
+    "encoder_rate_degradation",
 )
 
 # engine knobs per branch: searched batching + pinned scalars.
@@ -123,6 +127,8 @@ def unroll_sample(
         sample[key] = getattr(search_space, key)
 
     sample.update(_unroll_parallel(mode, parallel_config))
+    if search_space.enable_epd:
+        sample["encoder_candidate"] = selection["encoder_candidate"]
 
     # engine knobs for the active branch only
     if mode == "agg":

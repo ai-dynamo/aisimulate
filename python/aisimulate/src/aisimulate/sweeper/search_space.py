@@ -344,10 +344,9 @@ def _heterogeneous_support(
                 ),
                 None,
             )
-            pair_supported = runner_capabilities.supports_disaggregated_backend_pair(
-                pair.prefill, pair.decode
-            )
-            if unsupported_role is not None or not pair_supported:
+            pair_supported = runner_capabilities.supports_disaggregated_backend_pair(pair.prefill, pair.decode)
+            epd_supported = not ss.enable_epd or runner_capabilities.supports_epd(pair.prefill, "disagg")
+            if unsupported_role is not None or not pair_supported or not epd_supported:
                 diagnostics.append(
                     BranchPruningDiagnostic(
                         backend=pair_label,
@@ -356,6 +355,8 @@ def _heterogeneous_support(
                         detail=(
                             "runner does not support the role backend/topology"
                             if unsupported_role is not None
+                            else "runner does not explicitly support EPD on the prefill backend"
+                            if not epd_supported
                             else "runner does not explicitly support the heterogeneous backend pair"
                         ),
                     )
@@ -574,6 +575,7 @@ def enumerate_branches(
                     or not runner_capabilities.supports_disaggregated_backend_pair(
                         estimators.pair.prefill, estimators.pair.decode
                     )
+                    or (ss.enable_epd and not runner_capabilities.supports_epd(estimators.pair.prefill, "disagg"))
                 ]
         else:
             support = {}
@@ -604,8 +606,9 @@ def enumerate_branches(
                 backend
                 for backend in ss.backend
                 if runner_capabilities is not None
-                and not runner_capabilities.supports_backend_topology(
-                    backend, deployment_mode
+                and (
+                    not runner_capabilities.supports_backend_topology(backend, deployment_mode)
+                    or (ss.enable_epd and not runner_capabilities.supports_epd(backend, deployment_mode))
                 )
             ]
             for backend in ss.backend:
@@ -614,6 +617,12 @@ def enumerate_branches(
                     and not runner_capabilities.supports_backend_topology(
                         backend, deployment_mode
                     )
+                ):
+                    continue
+                if (
+                    runner_capabilities is not None
+                    and ss.enable_epd
+                    and not runner_capabilities.supports_epd(backend, deployment_mode)
                 ):
                     continue
                 estimator_kwargs: dict[str, Any] = {}

@@ -14,7 +14,9 @@ from .runner import (
 from .sweeper.replay import (
     BackendDeploymentSpec,
     DisaggregatedCorrectionSpec,
+    EncoderWorkerSpec,
     EngineRequestSpec,
+    EpdDeploymentSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
@@ -29,9 +31,11 @@ __version__ = version("aisimulate")
 __all__ = [
     "BackendDeploymentSpec",
     "DisaggregatedCorrectionSpec",
+    "EncoderWorkerSpec",
     "EngineReplayRunner",
     "EngineReplayRunnerFactory",
     "EngineRequestSpec",
+    "EpdDeploymentSpec",
     "InvalidRunnerError",
     "ReplayOutputRequirements",
     "ReplayReport",

@@ -330,6 +330,58 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
     assert branch.supported_backends[_DISAGG_DP1_CFG] == frozenset({"vllm"})
 
 
+def test_epd_runner_capability_is_checked_before_perf_lookup(monkeypatch):
+    calls = []
+
+    def fake_parallel_configs(*args, **kwargs):
+        calls.append((args, kwargs))
+        return [_AGG_CFG]
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        fake_parallel_configs,
+    )
+    config = SmartSearchConfig.model_validate(
+        {
+            "search_space": {
+                "model_name": "Qwen/Qwen3-VL-8B-Instruct",
+                "hardware_sku": "h200_sxm",
+                "backend": ["vllm"],
+                "deployment_mode": ["agg"],
+                "gpu_budget": 8,
+                "enable_epd": True,
+            },
+            "workload": {
+                "trace_path": TRACE,
+                "num_image_tokens": 256,
+                "num_images_per_request": 1,
+            },
+        }
+    )
+
+    with (
+        pytest.warns(UserWarning, match="runner-incompatible"),
+        pytest.raises(NoViableParallelConfig),
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=RunnerCapabilities(
+                supported_backend_topologies=(("vllm", "agg"),),
+            ),
+        )
+    assert calls == []
+
+    (branch,) = enumerate_branches(
+        config,
+        runner_capabilities=RunnerCapabilities(
+            supported_backend_topologies=(("vllm", "agg"),),
+            supported_epd_backend_topologies=(("vllm", "agg"),),
+        ),
+    )
+    assert calls
+    assert branch.knob_choices["backend"] == ["vllm"]
+
+
 def test_runner_prunes_disaggregated_attention_dp_before_sampling(monkeypatch):
     monkeypatch.setattr(
         "aisimulate.sweeper.search_space.parallel_configs_for",

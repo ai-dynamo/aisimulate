@@ -76,10 +76,11 @@ class SearchSpaceFragment:
 class AdapterSearchPlan:
     """Prepared adapter search state shared by all candidates in one sweep.
 
-    ``supports_heterogeneous_pd`` is an explicit capability opt-in. Providers
-    that leave it false are rejected when prefill and decode use independent
-    search identities, because their materializer may otherwise interpret the
-    core ``backend`` pair label as one homogeneous backend.
+    ``supports_heterogeneous_pd`` and ``supports_epd`` are explicit capability
+    opt-ins. Providers that leave the applicable flag false are rejected when
+    prefill and decode use independent search identities or the encoder stage is
+    enabled, because their materializer may otherwise misinterpret the native
+    topology.
     """
 
     fragment: SearchSpaceFragment = field(default_factory=SearchSpaceFragment)
@@ -87,6 +88,7 @@ class AdapterSearchPlan:
     diagnostics: dict[str, JSONValue] = field(default_factory=dict)
     potential_runtime_hooks: tuple[RuntimeHookSpec, ...] = ()
     supports_heterogeneous_pd: bool = False
+    supports_epd: bool = False
 
 
 @dataclass(frozen=True)

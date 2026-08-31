@@ -17,6 +17,7 @@ from aiconfigurator_core.sdk.common import (
 from aiconfigurator_core.sdk.models import get_model_family
 
 from .config import SmartSearchConfig, Workload
+from .epd import visual_context_tokens
 from .estimator import resolve_systems_paths
 from .heterogeneous import (
     DisaggBackendPair,
@@ -54,11 +55,11 @@ def _validate_quant_mode(name: str, value: str | None, enum_type: type) -> None:
         raise ValueError(f"{name} has unsupported value {value!r}; allowed: {allowed}")
 
 
-def _required_workload_tokens(workload: Workload) -> int | None:
+def _required_workload_tokens(workload: Workload, model_path: str) -> int | None:
     if workload.is_trace_based:
         return None
     assert workload.isl is not None and workload.osl is not None
-    return workload.isl + workload.osl
+    return workload.isl + visual_context_tokens(workload, model_path) + workload.osl
 
 
 def resolve_engine_controls(
@@ -80,7 +81,7 @@ def resolve_engine_controls(
 
     model_family = get_model_family(ss.model_name)
     systems_paths = list(resolve_systems_paths(ss.systems_paths))
-    required_tokens = _required_workload_tokens(config.workload)
+    required_tokens = _required_workload_tokens(config.workload, ss.model_name)
     resolved: dict[str, EngineControlTemplate] = {}
     for backend in dict.fromkeys(ss.backend):
         model_hw = resolve_model_hardware(
