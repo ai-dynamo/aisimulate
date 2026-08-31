@@ -567,6 +567,57 @@ impl Dsv4Table {
         }
     }
 
+    fn select_context_node(
+        &self,
+        attn_kind: AttnKind,
+        local_heads: u32,
+        native_heads: u32,
+        kv_quant: KvCacheQuantMode,
+        fmha_quant: FmhaQuantMode,
+        gemm_quant: GemmQuantMode,
+    ) -> Result<&Node, AicError> {
+        let grids = match attn_kind {
+            AttnKind::Csa => self.load_csa_context()?,
+            AttnKind::Hca => self.load_hca_context()?,
+        };
+        select_resolved(
+            grids,
+            Some(fmha_quant),
+            kv_quant,
+            gemm_quant,
+            native_heads,
+            local_heads,
+        )
+    }
+
+    /// Number and inclusive bounds of the collected prefix keys. This reads
+    /// only the resolved context node's top-level map; it does not flatten
+    /// the `(prefix, s, batch)` tree.
+    pub(crate) fn context_prefix_bounds(
+        &self,
+        attn_kind: AttnKind,
+        local_heads: u32,
+        native_heads: u32,
+        kv_quant: KvCacheQuantMode,
+        fmha_quant: FmhaQuantMode,
+        gemm_quant: GemmQuantMode,
+    ) -> Result<(usize, u32, u32), AicError> {
+        let node = self.select_context_node(
+            attn_kind,
+            local_heads,
+            native_heads,
+            kv_quant,
+            fmha_quant,
+            gemm_quant,
+        )?;
+        context_prefix_bounds(node).ok_or_else(|| {
+            AicError::PerfDatabase(format!(
+                "DSV4 context module data empty for local_heads={local_heads}, \
+                 attn_kind={attn_kind:?}"
+            ))
+        })
+    }
+
     /// Collected context-module points `(prefix, s, b) -> latency` for the
     /// operator-layer util-calibration grid (Python
     /// `_query_context_attn_table::get_empirical`'s `_slice()`:
@@ -583,17 +634,13 @@ impl Dsv4Table {
         fmha_quant: FmhaQuantMode,
         gemm_quant: GemmQuantMode,
     ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
-        let grids = match attn_kind {
-            AttnKind::Csa => self.load_csa_context()?,
-            AttnKind::Hca => self.load_hca_context()?,
-        };
-        let node = select_resolved(
-            grids,
-            Some(fmha_quant),
-            kv_quant,
-            gemm_quant,
-            native_heads,
+        let node = self.select_context_node(
+            attn_kind,
             local_heads,
+            native_heads,
+            kv_quant,
+            fmha_quant,
+            gemm_quant,
         )?;
         let points = perf_interp::node_points(node);
         if points.is_empty() {
@@ -603,6 +650,30 @@ impl Dsv4Table {
             )));
         }
         Ok(points)
+    }
+
+    /// Collected `(s, b) -> latency` points under one exact context prefix.
+    /// The subtree is selected before flattening, so the prefix-zero fallback
+    /// does not visit rows for other prefixes.
+    pub(crate) fn context_prefix_points(
+        &self,
+        attn_kind: AttnKind,
+        local_heads: u32,
+        native_heads: u32,
+        kv_quant: KvCacheQuantMode,
+        fmha_quant: FmhaQuantMode,
+        gemm_quant: GemmQuantMode,
+        prefix: u32,
+    ) -> Result<Option<Vec<(Vec<f64>, f64)>>, AicError> {
+        let node = self.select_context_node(
+            attn_kind,
+            local_heads,
+            native_heads,
+            kv_quant,
+            fmha_quant,
+            gemm_quant,
+        )?;
+        Ok(context_prefix_points(node, prefix))
     }
 
     /// Collected generation-module points `(b, s_total) -> latency` for the
@@ -1072,6 +1143,23 @@ fn select_resolved<'a>(
     Ok(&by_local[&head])
 }
 
+fn context_prefix_bounds(node: &Node) -> Option<(usize, u32, u32)> {
+    let Node::Branch(prefixes) = node else {
+        return None;
+    };
+    let (&first, _) = prefixes.first_key_value()?;
+    let (&last, _) = prefixes.last_key_value()?;
+    Some((prefixes.len(), first, last))
+}
+
+fn context_prefix_points(node: &Node, prefix: u32) -> Option<Vec<(Vec<f64>, f64)>> {
+    let Node::Branch(prefixes) = node else {
+        return None;
+    };
+    let points = perf_interp::node_points(prefixes.get(&prefix)?);
+    (!points.is_empty()).then_some(points)
+}
+
 /// Resolve a requested head count against the available keys of one head
 /// axis (applied per level: native, then rank-local). Mirrors Python
 /// `operations.dsv4._dsv4_resolve_head_key`:
@@ -1515,6 +1603,21 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
             "../../python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/sglang/0.5.10",
         )
+    }
+
+    #[test]
+    fn context_prefix_helpers_read_only_the_selected_subtree() {
+        let mut node = Node::branch();
+        node.insert(&[1024, 512, 8], 2.0);
+        node.insert(&[0, 256, 4], 1.0);
+        node.insert(&[0, 128, 8], 0.5);
+
+        assert_eq!(context_prefix_bounds(&node), Some((2, 0, 1024)));
+        assert_eq!(
+            context_prefix_points(&node, 0),
+            Some(vec![(vec![128.0, 8.0], 0.5), (vec![256.0, 4.0], 1.0),])
+        );
+        assert_eq!(context_prefix_points(&node, 1), None);
     }
 
     #[test]
