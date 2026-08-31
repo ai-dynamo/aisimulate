@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use aisimulate_core::engine::{Backend, EngineConfig, KvEvent, TimingModelConfig};
+use aisimulate_core::engine::{
+    Backend, EngineConfig, KvEvent, NativeHostOffloadConfig, TimingModelConfig,
+};
 use aisimulate_core::replay::loadgen::{SessionTrace, Trace, TurnTrace, WorkloadDriver};
 use aisimulate_core::replay::{
-    CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayArtifactKvEventVisibility,
-    ReplayArtifacts, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineConfig,
-    ReplayEngineFactory, ReplayReport, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
-    RoundRobinComposition, WorkerPoolSpec,
+    CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayArtifactHostOffloadEvent,
+    ReplayArtifactHostOffloadEventData, ReplayArtifactKvEventVisibility, ReplayArtifacts,
+    ReplayCaptureOptions, ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayReport,
+    ReplayRequest, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer, RoundRobinComposition,
+    WorkerPoolSpec,
 };
 
 fn spec(backend: Backend, workers: usize, dp_size: u32) -> ReplaySpec {
@@ -84,6 +87,42 @@ fn replayer(spec: ReplaySpec, arrivals_ms: &[f64]) -> Replayer<RoundRobinComposi
         })
 }
 
+fn host_offload_spec(capacity_blocks: usize) -> ReplaySpec {
+    let mut replay_spec = spec(Backend::Vllm, 1, 1);
+    let mut engine: ReplayEngineConfig =
+        serde_json::from_value(replay_spec.engine.clone()).unwrap();
+    engine.rank.num_gpu_blocks = 1;
+    engine.rank.timing_model = TimingModelConfig::Fixed {
+        prefill_ms: 0.0,
+        decode_ms: 0.0,
+    };
+    engine.rank.kv_cache_bytes_per_token = Some(250_000);
+    engine.rank.native_host_offload =
+        Some(NativeHostOffloadConfig::new(capacity_blocks).with_bandwidths(1.0, 1.0));
+    replay_spec.engine = serde_json::to_value(engine).unwrap();
+    replay_spec
+}
+
+fn replay_request(id: &str, arrival_time_ms: f64, input_token_ids: Vec<u32>) -> ReplayRequest {
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "arrival_time_ms": arrival_time_ms,
+        "input_tokens": input_token_ids.len(),
+        "input_token_ids": input_token_ids,
+        "output_tokens": 0,
+    }))
+    .unwrap()
+}
+
+fn assert_host_event(
+    event: &ReplayArtifactHostOffloadEvent,
+    request_id: uuid::Uuid,
+    observed_at_ms: f64,
+) {
+    assert_eq!(event.request_id, request_id);
+    assert_eq!(event.observed_at_ms, observed_at_ms);
+}
+
 fn capture(
     backend: Backend,
     visibility: ReplayArtifactKvEventVisibility,
@@ -151,6 +190,7 @@ fn common_agg_runtime_captures_requests_outputs_and_the_same_report() {
             (14.0, true, true, true, false, None),
         ]
     );
+    assert!(artifacts.host_offload_events.is_empty());
 }
 
 #[test]
@@ -222,4 +262,134 @@ fn artifact_capture_rejects_unsupported_topologies() {
         handoff_latency_ms: 0.0,
     };
     assert!(error(disagg).contains("require aggregated topology"));
+}
+
+#[test]
+fn h2d_activation_is_captured_at_the_internal_work_boundary() {
+    let mut replay_spec = host_offload_spec(2);
+    replay_spec.requests = [
+        ("seed", 0.0, vec![1, 2, 3, 4]),
+        ("second", 5.0, vec![5, 6, 7, 8]),
+        ("evict", 10.0, vec![9, 10, 11, 12]),
+        ("restore", 15.0, vec![5, 6, 7, 8]),
+    ]
+    .into_iter()
+    .map(|(id, arrival_time_ms, tokens)| replay_request(id, arrival_time_ms, tokens))
+    .collect();
+
+    let (_, artifacts) = Replayer::new(replay_spec, ReplayEngineFactory::new())
+        .unwrap()
+        .run_with_artifacts(ReplayArtifactKvEventVisibility::Native)
+        .unwrap();
+    assert!(
+        artifacts
+            .kv_events
+            .iter()
+            .any(|event| event.observed_at_ms == 16.0)
+    );
+
+    let ids: Vec<_> = artifacts
+        .requests
+        .iter()
+        .map(|request| request.request_id)
+        .collect();
+    let store_times = [(0.0, 1.0), (5.0, 6.0), (10.0, 11.0)];
+    let (mut prepared, mut submitted, mut completed) = (0, 0, 0);
+    let (mut queued, mut loaded, mut evicted) = (0, 0, 0);
+    let mut stored_hashes = Vec::new();
+    for event in &artifacts.host_offload_events {
+        match &event.event {
+            ReplayArtifactHostOffloadEventData::StorePrepared { .. } => {
+                assert_host_event(event, ids[prepared], store_times[prepared].0);
+                prepared += 1;
+            }
+            ReplayArtifactHostOffloadEventData::StoreSubmitted {
+                completes_at_ms, ..
+            } => {
+                assert_host_event(event, ids[submitted], store_times[submitted].0);
+                assert_eq!(*completes_at_ms, store_times[submitted].1);
+                submitted += 1;
+            }
+            ReplayArtifactHostOffloadEventData::StoreCompleted { block_hashes, .. } => {
+                assert_host_event(event, ids[completed], store_times[completed].1);
+                assert_eq!(block_hashes.len(), 1);
+                stored_hashes.push(block_hashes[0]);
+                completed += 1;
+            }
+            ReplayArtifactHostOffloadEventData::LoadQueued {
+                completes_at_ms, ..
+            } => {
+                assert_host_event(event, ids[3], 15.0);
+                assert_eq!(*completes_at_ms, 16.0);
+                queued += 1;
+            }
+            ReplayArtifactHostOffloadEventData::LoadCompleted { block_hashes, .. } => {
+                assert_host_event(event, ids[3], 16.0);
+                assert_eq!(block_hashes.as_slice(), &stored_hashes[1..2]);
+                loaded += 1;
+            }
+            ReplayArtifactHostOffloadEventData::Evicted { block_hash } => {
+                assert_host_event(event, ids[2], 10.0);
+                assert_eq!(*block_hash, stored_hashes[0]);
+                evicted += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        (prepared, submitted, completed, queued, loaded, evicted),
+        (3, 3, 3, 1, 1, 1)
+    );
+}
+
+#[test]
+fn prepared_store_artifact_maps_hashes_to_request_local_block_indices() {
+    let mut replay_spec = host_offload_spec(2);
+    let mut engine: ReplayEngineConfig =
+        serde_json::from_value(replay_spec.engine.clone()).unwrap();
+    engine.rank.num_gpu_blocks = 2;
+    replay_spec.engine = serde_json::to_value(engine).unwrap();
+    replay_spec.requests = vec![
+        replay_request("seed", 0.0, vec![1, 2, 3, 4]),
+        replay_request("shared-prefix-suffix", 5.0, vec![1, 2, 3, 4, 5, 6, 7, 8]),
+    ];
+
+    let (_, artifacts) = Replayer::new(replay_spec, ReplayEngineFactory::new())
+        .unwrap()
+        .run_with_artifacts(ReplayArtifactKvEventVisibility::Native)
+        .unwrap();
+    let mappings = artifacts
+        .host_offload_events
+        .windows(2)
+        .filter_map(|events| {
+            let [prepared, mapped] = events else {
+                unreachable!()
+            };
+            let (
+                ReplayArtifactHostOffloadEventData::StorePrepared {
+                    transfer_id,
+                    block_hashes,
+                },
+                ReplayArtifactHostOffloadEventData::StoreBlockMappings {
+                    transfer_id: mapped_transfer_id,
+                    mappings,
+                },
+            ) = (&prepared.event, &mapped.event)
+            else {
+                return None;
+            };
+            assert_eq!(prepared.request_id, mapped.request_id);
+            assert_eq!(transfer_id, mapped_transfer_id);
+            assert_eq!(mappings.len(), 1);
+            assert_eq!(block_hashes.as_slice(), [mappings[0].block_hash]);
+            Some((mapped.request_id, mappings[0].logical_block_index))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        mappings,
+        vec![
+            (artifacts.requests[0].request_id, 0),
+            (artifacts.requests[1].request_id, 1),
+        ]
+    );
 }
