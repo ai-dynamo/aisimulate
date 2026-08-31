@@ -24,7 +24,7 @@ result on the target hardware.
 |---|---|---|---|
 | `aiconfigurator cli estimate` | One FPM point for an explicit batch, parallel configuration, and estimation mode | **Supported for deployment-level prediction, not behaviorally equivalent** | Use `aisimulate predict` when the goal is to predict one concrete serving deployment. Keep AIC for exact batch-level FPM, static, AFD, detail, per-op, or power semantics. |
 | `aiconfigurator cli default` | Capacity-oriented aggregated/disaggregated search and selection | **Partially supported** | Use `aisimulate recommend` after choosing explicit traffic, topology domains, GPU bounds, and an objective. Keep AIC when its capacity-sweep and ranking semantics are required. |
-| `aiconfigurator cli recommend` | Minimum-GPU procurement sizing for a load target and SLA | **Partially supported** | Use `aisimulate recommend` for explicit traffic/SLA/GPU-bounded search. AISimulate does not yet promise identical minimum-GPU or ranking results. |
+| `aiconfigurator cli recommend` | Minimum-GPU procurement sizing for a load target and SLA | **Partially supported** | Use `aisimulate recommend` to search explicit candidates under a chosen traffic shape, SLA, GPU budget, and objective. The unified CLI does not reproduce AIC's minimum-GPU sizing from either a target request rate or target concurrency; keep using the compatibility CLI when that sizing result is required. |
 | `aiconfigurator cli exp` | AIC experiment YAML, including heterogeneous experiments | **Manual migration only** | Use `predict` for each concrete deployment or `recommend` for a search domain. AISimulate does not consume AIC experiment YAML directly. |
 | `aiconfigurator cli generate` | Deployment artifacts for Dynamo, llm-d, or FPM targets | **Not supported** | Continue using `aiconfigurator cli generate`. The unified CLI emits prediction and recommendation artifacts, not deployment manifests. |
 | `aiconfigurator cli support` | AIC command-level aggregated/disaggregated coverage | **Not supported as an `aisimulate` command** | Continue using `aiconfigurator cli support` or the published AIC support matrix. Do not substitute FPE estimator coverage for CLI coverage. |
@@ -40,8 +40,8 @@ result on the target hardware.
 | `--total-gpus` on AIC `default` | `optimization.constraints.max_candidate_gpus` | Recommendation budget only; a prediction derives GPU use from concrete worker parallelism and replicas |
 | `--isl` | `traffic.source.input_tokens` | Synthetic request traffic |
 | `--osl` | `traffic.source.output_tokens` | Synthetic request traffic |
-| `--target-request-rate` | `traffic.load.requests_per_second` | Select `constant_rate` or `poisson` explicitly |
-| `--target-concurrency` | `traffic.load.concurrency` | Select `concurrency` explicitly |
+| `--target-request-rate N` | `traffic.load.type: constant_rate` or `poisson`, plus `traffic.load.requests_per_second: N` | Traffic-shape mapping only: `N` is offered request rate, not required fleet capacity or a minimum-GPU sizing target |
+| `--target-concurrency N` | `traffic.load.type: concurrency`, plus `traffic.load.concurrency: N` | Traffic-shape mapping only: `N` is the closed-loop in-flight-request cap, not a minimum-GPU sizing target |
 | `--ttft` | `evaluation.sla.ttft_ms` | Add `optimization.strict_sla: true` when aggregate-mean rejection is required |
 | `--tpot` | `evaluation.sla.itl_ms` | Request goodput uses ITL; strict mode compares aggregate mean TPOT |
 | `--request-latency` | `evaluation.sla.e2e_ms` | Mutually exclusive with `ttft_ms` and `itl_ms` |
@@ -114,9 +114,9 @@ aisimulate predict \
 This predicts deployment-level serving behavior. It does not reproduce AIC's batch-level estimate,
 per-op detail, power report, or static/AFD estimation modes.
 
-## Migrate a configuration search
+## Preserve request-rate traffic during a configuration search
 
-An AIC sizing command may look like this:
+An AIC minimum-GPU sizing command may look like this:
 
 ```bash
 aiconfigurator cli recommend \
@@ -130,8 +130,8 @@ aiconfigurator cli recommend \
   --tpot 30
 ```
 
-To search explicit AISimulate candidates, choose a GPU budget and save this as
-`recommendation.yaml`:
+To preserve its constant 4 requests-per-second traffic shape while searching explicit AISimulate
+candidates, choose a GPU budget and save this as `recommendation.yaml`:
 
 ```yaml
 traffic:
@@ -177,8 +177,43 @@ aisimulate recommend \
 ```
 
 Every YAML under `aisimulate-recommendation/recommendations/` is concrete and can be passed to
-`aisimulate predict`. The traffic model, objective, candidate space, and ranking differ from AIC, so
-compare the resulting candidates rather than expecting identical ordering or minimum-GPU results.
+`aisimulate predict`. Here, `requests_per_second: 4` is offered open-loop traffic, and
+`max_candidate_gpus: 8` is only a search bound. Neither field asks AISimulate to find the minimum GPU
+count that can serve 4 requests per second. The traffic model, objective, candidate space, and ranking
+differ from AIC, so compare the resulting candidates rather than expecting identical ordering or
+minimum-GPU results.
+
+## Preserve concurrency traffic during a configuration search
+
+Legacy `--target-concurrency 32` also has a traffic-shape mapping, but not a minimum-GPU sizing
+equivalent. To search with 32 requests kept in flight, replace the `traffic` section in the preceding
+example with:
+
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: concurrency
+    concurrency: 32
+  stop:
+    requests: 320
+```
+
+This is closed-loop traffic: AISimulate keeps up to 32 requests in flight and starts another as one
+finishes. The completion rate is an outcome, not a configured capacity requirement. A slow one-GPU
+candidate can still maintain 32 in-flight requests while completing them slowly, so
+`traffic.load.concurrency` must not be interpreted as the number of concurrent users that a selected
+minimum-GPU fleet can serve.
+
+## Keep minimum-GPU sizing on the compatibility CLI
+
+If the required result is AIC's estimate of the minimum GPUs or replicas needed for
+`--target-request-rate` or `--target-concurrency` under an SLA, continue using
+`aiconfigurator cli recommend`. The corresponding AISimulate YAML fields preserve the workload shape
+only; they do not preserve that capacity-sizing behavior.
 
 ## SLA translation details
 
@@ -203,6 +238,7 @@ from request-level goodput.
 
 Continue using the compatibility command for:
 
+- minimum-GPU procurement sizing from `--target-request-rate` or `--target-concurrency`;
 - deployment manifest generation and `--deployment-target` outputs;
 - exact AIC support-matrix checks;
 - AIC experiment YAML that has not been manually translated;
