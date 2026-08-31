@@ -179,7 +179,9 @@ def test_optional_backend_runtime_values_are_forwarded():
     assert engine["aic_nextn"] == 2
 
 
-def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_into_engine_args(monkeypatch):
+def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_into_engine_args(
+    monkeypatch,
+):
     monkeypatch.setattr(
         deploy_module,
         "materialize_aic_num_gpu_blocks",
@@ -245,9 +247,14 @@ def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_i
         "systems_paths": ["/custom/systems"],
         "fallback_policy": "error",
     }
-    assert deployment.performance_model_metadata["aggregated"]["config"] == expected_config
+    assert (
+        deployment.performance_model_metadata["aggregated"]["config"] == expected_config
+    )
     assert engine["timing_model"]["config"] == expected_config
-    assert deployment.performance_model_metadata["aggregated"]["selection"]["source"] == "aic"
+    assert (
+        deployment.performance_model_metadata["aggregated"]["selection"]["source"]
+        == "aic"
+    )
 
 
 def test_backend_deployment_contains_no_dynamo_policy_fields():

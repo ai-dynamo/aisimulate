@@ -549,22 +549,15 @@ class SearchSpace(BaseModel):
         elif isinstance(self.backend_version, dict):
             unknown = sorted(set(self.backend_version) - set(configured))
             if unknown:
-                raise ValueError(
-                    f"backend_version contains unconfigured backend(s): {unknown}"
-                )
+                raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
             invalid = [
                 backend
                 for backend, version in self.backend_version.items()
                 if not isinstance(version, str) or not version.strip()
             ]
             if invalid:
-                raise ValueError(
-                    f"backend_version needs a non-empty version for {sorted(invalid)}"
-                )
-            self.backend_version = {
-                backend: version.strip()
-                for backend, version in self.backend_version.items()
-            }
+                raise ValueError(f"backend_version needs a non-empty version for {sorted(invalid)}")
+            self.backend_version = {backend: version.strip() for backend, version in self.backend_version.items()}
         return self
 
     def requested_backend_version(self, backend: str) -> str | None:

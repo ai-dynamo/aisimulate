@@ -24,6 +24,7 @@ from aisimulate.sweeper.replay import (
     ReplayReport,
     RunnerCapabilities,
 )
+from aisimulate.sweeper.result import ReasonCategory
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search_space import BranchSpace
 
@@ -61,12 +62,16 @@ def _run_sweep(
     sampler_factory,
     show_progress: bool,
 ):
-    return search_module.Sweeper(
-        runner_factory=runner_factory,
-        providers=providers,
-        sampler_factory=sampler_factory,
-        show_progress=show_progress,
-    ).run(config)
+    return (
+        search_module.Sweeper(
+            runner_factory=runner_factory,
+            providers=providers,
+            sampler_factory=sampler_factory,
+            show_progress=show_progress,
+        )
+        .run(config, top_n=None)
+        .selected_candidates
+    )
 
 
 class _Adapter:
@@ -246,7 +251,11 @@ def _stub_branch(monkeypatch) -> None:
     monkeypatch.setattr(
         search_module,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None, forward_pass_estimator_specs=None: [branch],
+        lambda config,
+        *,
+        max_seq_len=None,
+        runner_capabilities=None,
+        forward_pass_estimator_specs=None: [branch],
     )
     forward_pass_estimator = ForwardPassEstimatorSpec(
         config={
@@ -422,8 +431,9 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
 
     assert prepared is None
     assert result is not None
-    assert result[2] == "infeasible"
-    assert "invalid correlated leaves" in result[3]
+    assert result.outcome == "infeasible"
+    assert result.reason_category is ReasonCategory.ADAPTER_CONSTRAINT
+    assert "invalid correlated leaves" in result.reason
 
 
 def test_runner_hook_capability_is_checked_before_runner_creation(monkeypatch) -> None:

@@ -205,9 +205,7 @@ class RustForwardPassPerfModel:
         config_payload["systems_paths"] = _resolve_forward_pass_systems_paths(
             tuple(config_payload.get("systems_paths") or ())
         )
-        config_payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(
-            config_payload.get("transfer_policy")
-        )
+        config_payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(config_payload.get("transfer_policy"))
         options_payload = options.to_dict() if isinstance(options, ForwardPassPerfOptions) else options
         inner = aiconfigurator_core.RustForwardPassPerfModel.best_available(
             _json_dumps(config_payload),

@@ -45,8 +45,13 @@ def _stub_core(monkeypatch, systems_root, *, versions=("0.10.0", "0.11.0")):
         @staticmethod
         def best_available(config, options):
             calls.append((config, options))
-            if config.backend_version is not None and config.backend_version not in versions:
-                raise ValueError(f"unsupported backend_version {config.backend_version!r}")
+            if (
+                config.backend_version is not None
+                and config.backend_version not in versions
+            ):
+                raise ValueError(
+                    f"unsupported backend_version {config.backend_version!r}"
+                )
             if config.transfer_policy == "mystery":
                 raise ValueError("invalid transfer_policy 'mystery'")
             if config.forward_model == "fpm" and config.nextn:
@@ -58,10 +63,14 @@ def _stub_core(monkeypatch, systems_root, *, versions=("0.10.0", "0.11.0")):
                     for path in systems_root.rglob("fpm_forward_perf.parquet")
                 )
                 if not complete:
-                    raise ValueError("forward_model='fpm' requires fpm_forward_perf data")
+                    raise ValueError(
+                        "forward_model='fpm' requires fpm_forward_perf data"
+                    )
 
             resolved = asdict(config)
-            resolved["backend_version"] = config.backend_version or (versions[-1] if versions else None)
+            resolved["backend_version"] = config.backend_version or (
+                versions[-1] if versions else None
+            )
             if config.transfer_policy is None:
                 resolved["transfer_policy"] = ["xshape", "xquant", "xprofile", "xop"]
             elif config.transfer_policy == "balanced,xop":
@@ -84,7 +93,9 @@ def _stub_core(monkeypatch, systems_root, *, versions=("0.10.0", "0.11.0")):
     return calls
 
 
-def test_default_resolution_is_core_owned_concrete_and_reproducible(monkeypatch, tmp_path):
+def test_default_resolution_is_core_owned_concrete_and_reproducible(
+    monkeypatch, tmp_path
+):
     calls = _stub_core(monkeypatch, tmp_path)
 
     spec = resolve_forward_pass_estimator_specs(_space(tmp_path))["vllm"]
@@ -102,7 +113,9 @@ def test_default_resolution_is_core_owned_concrete_and_reproducible(monkeypatch,
     assert spec.config == spec.diagnostics["provenance"]["config"]
 
 
-def test_pinned_policy_and_options_reach_the_canonical_constructor(monkeypatch, tmp_path):
+def test_pinned_policy_and_options_reach_the_canonical_constructor(
+    monkeypatch, tmp_path
+):
     calls = _stub_core(monkeypatch, tmp_path)
     search = _space(
         tmp_path,
@@ -127,7 +140,9 @@ def test_invalid_transfer_policy_fails_through_core(monkeypatch, tmp_path):
     calls = _stub_core(monkeypatch, tmp_path)
 
     with pytest.raises(ForwardPassEstimatorResolutionError, match="transfer_policy"):
-        resolve_forward_pass_estimator_specs(_space(tmp_path, transfer_policy="mystery"))
+        resolve_forward_pass_estimator_specs(
+            _space(tmp_path, transfer_policy="mystery")
+        )
 
     assert len(calls) == 1
 
@@ -135,7 +150,9 @@ def test_invalid_transfer_policy_fails_through_core(monkeypatch, tmp_path):
 def test_unknown_pinned_version_fails_through_core(monkeypatch, tmp_path):
     calls = _stub_core(monkeypatch, tmp_path)
 
-    with pytest.raises(ForwardPassEstimatorResolutionError, match="unsupported backend_version"):
+    with pytest.raises(
+        ForwardPassEstimatorResolutionError, match="unsupported backend_version"
+    ):
         resolve_forward_pass_estimator_specs(_space(tmp_path, backend_version="9.9.9"))
 
     assert len(calls) == 1
@@ -145,7 +162,9 @@ def test_fpm_support_is_validated_by_core_before_search(monkeypatch, tmp_path):
     _stub_core(monkeypatch, tmp_path)
     search = _space(tmp_path, backend_version="0.11.0", forward_model="fpm")
 
-    with pytest.raises(ForwardPassEstimatorResolutionError, match="requires fpm_forward_perf"):
+    with pytest.raises(
+        ForwardPassEstimatorResolutionError, match="requires fpm_forward_perf"
+    ):
         resolve_forward_pass_estimator_specs(search)
 
     version_dir = tmp_path / "data/example_system/dense/vllm/0.11.0"
@@ -160,7 +179,9 @@ def test_fpm_support_is_validated_by_core_before_search(monkeypatch, tmp_path):
 def test_fpm_rejects_mtp_through_core_before_search(monkeypatch, tmp_path):
     _stub_core(monkeypatch, tmp_path)
 
-    with pytest.raises(ForwardPassEstimatorResolutionError, match="does not support aic_nextn"):
+    with pytest.raises(
+        ForwardPassEstimatorResolutionError, match="does not support aic_nextn"
+    ):
         resolve_forward_pass_estimator_specs(
             _space(
                 tmp_path,
@@ -172,5 +193,7 @@ def test_fpm_rejects_mtp_through_core_before_search(monkeypatch, tmp_path):
 
 
 def test_invalid_system_path_fails_concisely(tmp_path):
-    with pytest.raises(ForwardPassEstimatorResolutionError, match="not an existing directory"):
+    with pytest.raises(
+        ForwardPassEstimatorResolutionError, match="not an existing directory"
+    ):
         resolve_forward_pass_estimator_specs(_space(tmp_path / "missing"))

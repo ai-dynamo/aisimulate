@@ -435,5 +435,5 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
         show_progress=False,
     ).run(config)
 
-    assert result == []
+    assert result.selected_candidates == []
     assert _CountingSampler.suggested == 1

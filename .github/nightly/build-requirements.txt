@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Hash-pinned build toolchain for the nightly artifact workflow
+# (.github/workflows/nightly-ci.yml). maturin satisfies the manifest
+# constraint "maturin>=1.12,<2" in python/aisimulate/pyproject.toml.
+# Hashes cover the x86_64 wheel, the aarch64 wheel, and the sdist.
+maturin==1.15.0 \
+    --hash=sha256:653020a63525bb224e5ab0adf02e17a2e08bc86dbea7fc1399c9a56d7529b99e \
+    --hash=sha256:0ebf9767892725083138e671c34482c660317a2f3d6a29fc0e0f34e9d8c99136 \
+    --hash=sha256:94b26cc8e8aba61a5f2099715fe640e18c5f678e9a500408b38761263954228a

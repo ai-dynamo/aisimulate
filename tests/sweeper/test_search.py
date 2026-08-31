@@ -54,11 +54,15 @@ def _run_sweep(
     show_progress: bool,
     on_round=None,
 ):
-    return Sweeper(
-        runner_factory=runner_factory,
-        sampler_factory=sampler_factory,
-        show_progress=show_progress,
-    ).run(config, on_round=on_round)
+    return (
+        Sweeper(
+            runner_factory=runner_factory,
+            sampler_factory=sampler_factory,
+            show_progress=show_progress,
+        )
+        .run(config, top_n=None, on_round=on_round)
+        .selected_candidates
+    )
 
 
 def _selection(seqs: int) -> dict:
@@ -163,13 +167,18 @@ def _stub(monkeypatch, branch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None, forward_pass_estimator_specs=None: [branch],
+        lambda config,
+        *,
+        max_seq_len=None,
+        runner_capabilities=None,
+        forward_pass_estimator_specs=None: [branch],
     )
     monkeypatch.setattr(
         search_mod,
         "resolve_forward_pass_estimator_specs",
         lambda search_space: {
-            backend: _forward_pass_estimator_spec(backend) for backend in search_space.backend
+            backend: _forward_pass_estimator_spec(backend)
+            for backend in search_space.backend
         },
     )
 
@@ -207,7 +216,8 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     assert all(isinstance(spec, ReplaySpec) for spec in factory.runner.specs)
     assert all(
         spec.backend_deployment.forward_pass_estimator is not None
-        and spec.backend_deployment.forward_pass_estimator.backend_version == "1.3.0rc10"
+        and spec.backend_deployment.forward_pass_estimator.backend_version
+        == "1.3.0rc10"
         for spec in factory.runner.specs
     )
     assert factory.runner.closed
@@ -218,7 +228,11 @@ def test_resolved_pinned_backend_version_reaches_candidates(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None, forward_pass_estimator_specs=None: [branch],
+        lambda config,
+        *,
+        max_seq_len=None,
+        runner_capabilities=None,
+        forward_pass_estimator_specs=None: [branch],
     )
     monkeypatch.setattr(
         search_mod,
@@ -677,7 +691,9 @@ def test_forward_pass_estimator_identity_fails_before_branch_enumeration(monkeyp
         branch_called = True
         return []
 
-    monkeypatch.setattr(search_mod, "resolve_forward_pass_estimator_specs", fail_resolution)
+    monkeypatch.setattr(
+        search_mod, "resolve_forward_pass_estimator_specs", fail_resolution
+    )
     monkeypatch.setattr(search_mod, "enumerate_branches", enumerate_never)
 
     with pytest.raises(ValueError, match="pinned forward-pass estimator unavailable"):
@@ -787,7 +803,8 @@ def test_candidate_build_error_is_reported_not_raised(monkeypatch, capsys):
     assert "candidate build failed" in scored[0][1]
     output = capsys.readouterr().out
     assert "Sweeper failure reason(s): candidate build failed" in output
-    assert "(x33)" in output
+    assert "(x11)" in output
+    assert "22 cache hit(s)" in output
 
 
 def test_duplicate_full_samples_use_cache_and_are_replaced(monkeypatch):
@@ -871,13 +888,18 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None, forward_pass_estimator_specs=None: [agg, disagg],
+        lambda config,
+        *,
+        max_seq_len=None,
+        runner_capabilities=None,
+        forward_pass_estimator_specs=None: [agg, disagg],
     )
     monkeypatch.setattr(
         search_mod,
         "resolve_forward_pass_estimator_specs",
         lambda search_space: {
-            backend: _forward_pass_estimator_spec(backend) for backend in search_space.backend
+            backend: _forward_pass_estimator_spec(backend)
+            for backend in search_space.backend
         },
     )
     seen = []

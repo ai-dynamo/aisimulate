@@ -56,9 +56,7 @@ def resolve_backend_version(
 ) -> str:
     """Pinned or latest perf-DB version for the native memory estimate."""
 
-    resolved_paths = (
-        list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None
-    )
+    resolved_paths = list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None
     if requested_version is not None:
         from aiconfigurator_core.sdk.perf_database import get_supported_databases
 
@@ -71,9 +69,7 @@ def resolve_backend_version(
                 f"available versions: {versions}"
             )
         return requested_version
-    version = get_latest_database_version(
-        hardware_sku, backend, systems_paths=resolved_paths
-    )
+    version = get_latest_database_version(hardware_sku, backend, systems_paths=resolved_paths)
     if version is None:
         raise NoPerfDatabase(
             f"no perf database for hardware_sku={hardware_sku!r}, backend={backend!r}; "
@@ -116,11 +112,7 @@ def estimate_kv_tokens(
             moe_tp_size=shape.moe_tp,
             moe_ep_size=shape.moe_ep,
             nextn=nextn,
-            systems_path=(
-                list(resolve_systems_paths(systems_paths))
-                if systems_paths is not None
-                else None
-            ),
+            systems_path=(list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None),
             allow_naive_fallback=False,
         )
     except ValueError as exc:
@@ -157,9 +149,7 @@ def feasible_shape_tokens(
     per distinct shape, so repeated shapes across replica counts are free.
     """
     if backend_version is None:
-        backend_version = resolve_backend_version(
-            hardware_sku, backend, systems_paths=systems_paths
-        )
+        backend_version = resolve_backend_version(hardware_sku, backend, systems_paths=systems_paths)
     feasible: dict[ParallelShape, int] = {}
     for shape in dict.fromkeys(shapes):  # dedup, preserve first-seen order
         tokens = estimate_kv_tokens(
