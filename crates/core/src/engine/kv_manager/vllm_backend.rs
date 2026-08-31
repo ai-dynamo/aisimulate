@@ -9,6 +9,7 @@
 
 use uuid::Uuid;
 
+pub(crate) use crate::engine::cache::vllm_block_pool::SourceReuseDependency;
 use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, ReserveOutcome, VllmBlockPool,
 };
@@ -24,12 +25,27 @@ struct PendingStore {
     token_ids: Option<Vec<u32>>,
 }
 
+struct LeaseCommitOptions<'a> {
+    cache_fresh: bool,
+    sequence: Option<&'a RequestSequence>,
+    write_dependencies: &'a [SourceReuseDependency],
+}
+
+#[derive(Debug)]
+struct PendingCapacityWrites {
+    block_indices: Vec<usize>,
+    dependencies: Vec<SourceReuseDependency>,
+}
+
 #[derive(Debug)]
 struct BlockLeaseEntry {
     identity: BlockIdentity,
     copy: Option<BlockCopyId>,
     /// Whether a freshly allocated full block still needs to become cache-visible.
     pending_cache: bool,
+    /// Fresh capacity can be owned while an earlier transfer still reads it.
+    /// The scheduler must authorize its next write after installing a fence.
+    capacity_write_pending: bool,
 }
 
 /// Move-only native-G1 ownership token attached to one scheduler request.
@@ -39,6 +55,9 @@ pub(crate) struct BlockRequestLease {
     owner: Uuid,
     entries: Vec<BlockLeaseEntry>,
     allocated_tokens: usize,
+    /// Present only while newly acquired capacity awaits a scheduler-installed
+    /// write fence. The default path does not allocate this state.
+    pending_capacity_writes: Option<Box<PendingCapacityWrites>>,
 }
 
 impl BlockRequestLease {
@@ -48,11 +67,13 @@ impl BlockRequestLease {
             identity,
             copy: None,
             pending_cache: false,
+            capacity_write_pending: false,
         }));
         Self {
             owner,
             entries,
             allocated_tokens: 0,
+            pending_capacity_writes: None,
         }
     }
 
@@ -71,6 +92,14 @@ impl BlockRequestLease {
             .count()
     }
 
+    /// Project one framework-native identity without exposing physical G1
+    /// copy identity.
+    pub(crate) fn sequence_hash(&self, block_index: usize) -> Option<SequenceHash> {
+        self.entries
+            .get(block_index)
+            .and_then(|entry| entry.identity.sequence_hash)
+    }
+
     #[cfg(test)]
     pub(crate) fn entry_capacity(&self) -> usize {
         self.entries.capacity()
@@ -86,6 +115,7 @@ impl BlockRequestLease {
             identity: BlockIdentity::partial(),
             copy: None,
             pending_cache: false,
+            capacity_write_pending: false,
         });
     }
 
@@ -141,8 +171,10 @@ pub(crate) struct DecodeBlockReservation {
     pool: BlockReservation,
 }
 
+#[must_use = "a destination reservation must be activated or explicitly cancelled"]
 pub(crate) struct DestinationReservation {
     request_id: Uuid,
+    block_count: usize,
     pool: BlockReservation,
 }
 
@@ -155,6 +187,44 @@ impl DestinationReservation {
     pub(crate) fn len(&self) -> usize {
         self.pool.len()
     }
+}
+
+/// Short-lived, unpinned source view used by the synchronous
+/// snapshot/prepare/attach transition.
+#[must_use = "a native store source snapshot must be attached or discarded synchronously"]
+pub(crate) struct StoreSourceSnapshot<'a> {
+    owner: Uuid,
+    lease: &'a BlockRequestLease,
+    block_indices: &'a [usize],
+    copies: Vec<BlockCopyId>,
+}
+
+impl StoreSourceSnapshot<'_> {
+    pub(crate) fn len(&self) -> usize {
+        self.copies.len()
+    }
+
+    pub(crate) fn sequence_hashes(&self) -> impl ExactSizeIterator<Item = SequenceHash> + '_ {
+        self.block_indices.iter().map(|&block_index| {
+            self.lease.entries[block_index]
+                .identity
+                .sequence_hash
+                .expect("validated store source lost its sequence hash")
+        })
+    }
+}
+
+/// Result of ordinary request-owned G1 allocation.
+///
+/// Capacity acquisition is complete in `Ready`, but the scheduler must fence
+/// and authorize any returned dependencies before the write-producing pass.
+#[must_use = "allocation dependencies must be fenced before compute"]
+pub(crate) enum NativeAllocation<T> {
+    Ready {
+        value: T,
+        dependencies: Vec<SourceReuseDependency>,
+    },
+    CapacityExhausted,
 }
 
 pub(super) enum VllmAcquire<T> {
@@ -203,7 +273,7 @@ impl VllmKvManager {
         lease: &mut BlockRequestLease,
         cumulative_tokens: usize,
         reusable_prefix_blocks: usize,
-    ) -> VllmAcquire<usize> {
+    ) -> NativeAllocation<usize> {
         lease.debug_assert_owner(owner);
         let previous_blocks = lease
             .allocated_tokens
@@ -213,21 +283,28 @@ impl VllmKvManager {
             .div_ceil(self.block_size)
             .min(lease.entries.len());
         if target_blocks <= previous_blocks {
-            lease.allocated_tokens = cumulative_tokens;
-            return VllmAcquire::Ready(0);
+            // A dependency-bearing earlier attempt may already own a larger
+            // suffix than this pass can compute. Keep physical ownership
+            // monotonic and report the same pending write dependency again.
+            lease.allocated_tokens = lease.allocated_tokens.max(cumulative_tokens);
+            return NativeAllocation::Ready {
+                value: 0,
+                dependencies: self.pending_capacity_write_dependencies(lease),
+            };
         }
         assert!(
-            reusable_prefix_blocks == 0 || previous_blocks == 0,
-            "only a request's first allocation may reuse a prefix"
+            lease.pending_capacity_writes.is_none(),
+            "native lease cannot grow before prior write dependencies are authorized"
         );
+        let newly_reusable_prefix_blocks = reusable_prefix_blocks.saturating_sub(previous_blocks);
         assert!(
-            reusable_prefix_blocks <= target_blocks - previous_blocks,
+            newly_reusable_prefix_blocks <= target_blocks - previous_blocks,
             "reusable prefix exceeds the newly allocated block range"
         );
         assert!(self.enable_prefix_caching || reusable_prefix_blocks == 0);
 
         let count = target_blocks - previous_blocks;
-        let prefix = lease.entries[previous_blocks..previous_blocks + reusable_prefix_blocks]
+        let prefix = lease.entries[previous_blocks..previous_blocks + newly_reusable_prefix_blocks]
             .iter()
             .map(|entry| {
                 entry
@@ -240,26 +317,86 @@ impl VllmKvManager {
             removed,
         }) = self.pool.reserve_exact_prefix(prefix, count)
         else {
-            return VllmAcquire::CapacityExhausted;
+            return NativeAllocation::CapacityExhausted;
         };
         assert_eq!(
             reservation.len() - reservation.fresh_len(),
-            reusable_prefix_blocks,
+            newly_reusable_prefix_blocks,
             "exact native prefix reservation returned the wrong hit count"
         );
+        let fresh_blocks = count - newly_reusable_prefix_blocks;
+        let dependencies = self
+            .pool
+            .reservation_next_pending_dependencies(&reservation, fresh_blocks);
         self.publish_removed(removed);
         self.commit_lease_range(
             lease,
             previous_blocks,
             target_blocks,
             &mut reservation,
-            false,
-            None,
+            LeaseCommitOptions {
+                cache_fresh: false,
+                sequence: None,
+                write_dependencies: &dependencies,
+            },
         );
         assert_eq!(reservation.len(), 0, "native reservation was not consumed");
         self.pool.cancel(reservation);
         lease.allocated_tokens = cumulative_tokens;
-        VllmAcquire::Ready(count)
+        NativeAllocation::Ready {
+            value: count,
+            dependencies,
+        }
+    }
+
+    /// Record that the scheduler ordered every pending write behind its source
+    /// dependencies. This authorizes writes without terminalizing the reads.
+    pub(crate) fn authorize_lease_writes_after_dependencies(
+        &mut self,
+        owner: Uuid,
+        lease: &mut BlockRequestLease,
+        dependencies: &[SourceReuseDependency],
+    ) {
+        lease.debug_assert_owner(owner);
+        assert!(
+            !dependencies.is_empty(),
+            "native compute authorization requires at least one dependency"
+        );
+        let pending = lease
+            .pending_capacity_writes
+            .as_ref()
+            .expect("native compute authorization has no pending capacity writes");
+        assert_eq!(
+            pending.dependencies.as_slice(),
+            dependencies,
+            "native compute fence does not cover acquired capacity dependencies"
+        );
+        #[cfg(debug_assertions)]
+        {
+            let actual = self
+                .pool
+                .copies_pending_dependencies(pending.block_indices.iter().map(|&block_index| {
+                    lease.entries[block_index]
+                        .copy
+                        .expect("pending capacity write lost its request-owned copy")
+                }));
+            debug_assert_eq!(actual.as_slice(), dependencies);
+        }
+        self.pool.authorize_source_reuse_writes(
+            pending.block_indices.iter().map(|&block_index| {
+                lease.entries[block_index]
+                    .copy
+                    .expect("pending capacity write lost its request-owned copy")
+            }),
+            dependencies,
+        );
+        let pending = lease
+            .pending_capacity_writes
+            .take()
+            .expect("checked pending write state disappeared");
+        for block_index in pending.block_indices {
+            lease.entries[block_index].capacity_write_pending = false;
+        }
     }
 
     pub(crate) fn allocate_lease_from_decode_reservation(
@@ -268,7 +405,7 @@ impl VllmKvManager {
         lease: &mut BlockRequestLease,
         cumulative_tokens: usize,
         reservation: &mut DecodeBlockReservation,
-    ) {
+    ) -> NativeAllocation<usize> {
         lease.debug_assert_owner(owner);
         let previous_blocks = lease
             .allocated_tokens
@@ -278,23 +415,40 @@ impl VllmKvManager {
             .div_ceil(self.block_size)
             .min(lease.entries.len());
         if target_blocks <= previous_blocks {
-            lease.allocated_tokens = cumulative_tokens;
-            return;
+            lease.allocated_tokens = lease.allocated_tokens.max(cumulative_tokens);
+            return NativeAllocation::Ready {
+                value: 0,
+                dependencies: self.pending_capacity_write_dependencies(lease),
+            };
         }
+        assert!(
+            lease.pending_capacity_writes.is_none(),
+            "native lease cannot grow before prior write dependencies are authorized"
+        );
         let count = target_blocks - previous_blocks;
         assert!(
             reservation.pool.fresh_len() >= count,
             "decode reservation does not cover the native lease growth"
         );
+        let dependencies = self
+            .pool
+            .reservation_next_pending_dependencies(&reservation.pool, count);
         self.commit_lease_range(
             lease,
             previous_blocks,
             target_blocks,
             &mut reservation.pool,
-            false,
-            None,
+            LeaseCommitOptions {
+                cache_fresh: false,
+                sequence: None,
+                write_dependencies: &dependencies,
+            },
         );
         lease.allocated_tokens = cumulative_tokens;
+        NativeAllocation::Ready {
+            value: count,
+            dependencies,
+        }
     }
 
     pub(crate) fn finalize_lease_computed_prefix(
@@ -331,6 +485,10 @@ impl VllmKvManager {
             }
 
             let entry = &mut lease.entries[position];
+            assert!(
+                !entry.capacity_write_pending,
+                "cannot finalize dependency-bearing capacity before write authorization"
+            );
             if !entry.pending_cache {
                 if let Some(stores) = &mut stores {
                     stores.push(None);
@@ -401,8 +559,146 @@ impl VllmKvManager {
         self.publish_removed(outcome.removed);
         VllmAcquire::Ready(DestinationReservation {
             request_id: owner,
+            block_count: prompt_blocks,
             pool: outcome.reservation,
         })
+    }
+
+    /// Reserve an exact already-authorized G1 prefix plus only the contiguous
+    /// suffix selected by an external logical-cache lookup.
+    pub(crate) fn reserve_external_prefix_lease(
+        &mut self,
+        owner: Uuid,
+        lease: &BlockRequestLease,
+        g1_prefix_blocks: usize,
+        transferred_suffix: &[SequenceHash],
+    ) -> VllmAcquire<DestinationReservation> {
+        lease.debug_assert_owner(owner);
+        assert_eq!(
+            lease.resident_block_count(),
+            0,
+            "external destination request already owns physical blocks"
+        );
+        assert!(
+            !transferred_suffix.is_empty(),
+            "external destination suffix must not be empty"
+        );
+        let block_count = g1_prefix_blocks
+            .checked_add(transferred_suffix.len())
+            .expect("external destination block count overflow");
+        assert!(
+            block_count <= lease.entries.len(),
+            "external destination exceeds the request block table"
+        );
+        for (offset, &hash) in transferred_suffix.iter().enumerate() {
+            assert_eq!(
+                lease.entries[g1_prefix_blocks + offset]
+                    .identity
+                    .sequence_hash,
+                Some(hash),
+                "external suffix does not match the request sequence"
+            );
+        }
+        let prefix = lease.entries[..g1_prefix_blocks].iter().map(|entry| {
+            entry
+                .identity
+                .sequence_hash
+                .expect("G1 destination prefix must contain complete blocks")
+        });
+        let Some(outcome) = self.pool.reserve_exact_prefix(prefix, block_count) else {
+            return VllmAcquire::CapacityExhausted;
+        };
+        assert_eq!(
+            outcome.reservation.fresh_len(),
+            transferred_suffix.len(),
+            "external reservation changed the exact tier boundary"
+        );
+        self.publish_removed(outcome.removed);
+        VllmAcquire::Ready(DestinationReservation {
+            request_id: owner,
+            block_count,
+            pool: outcome.reservation,
+        })
+    }
+
+    pub(crate) fn destination_pending_dependencies(
+        &self,
+        reservation: &DestinationReservation,
+    ) -> Vec<SourceReuseDependency> {
+        self.pool
+            .reservation_pending_dependencies(&reservation.pool)
+    }
+
+    /// Capture a pure, unpinned view of completed request-owned source blocks.
+    ///
+    /// The returned snapshot also proves that dependency attachment is valid
+    /// at this point. The caller may synchronously admit a store using the
+    /// projected hashes, then consume the snapshot through
+    /// [`Self::attach_store_source_dependency`] without yielding or mutating G1.
+    pub(crate) fn snapshot_store_sources<'a>(
+        &self,
+        owner: Uuid,
+        lease: &'a BlockRequestLease,
+        block_indices: &'a [usize],
+    ) -> Option<StoreSourceSnapshot<'a>> {
+        lease.debug_assert_owner(owner);
+        assert!(
+            !block_indices.is_empty(),
+            "native store source cohort must not be empty"
+        );
+        let mut copies = Vec::with_capacity(block_indices.len());
+        let mut previous = None;
+        for &block_index in block_indices {
+            if previous.is_some_and(|previous| previous >= block_index) {
+                return None;
+            }
+            previous = Some(block_index);
+            let entry = lease.entries.get(block_index)?;
+            entry.identity.sequence_hash?;
+            let copy = entry.copy?;
+            if entry.pending_cache || entry.capacity_write_pending {
+                return None;
+            }
+            copies.push(copy);
+        }
+        if !self.pool.can_attach_source_reuse_dependency(&copies) {
+            return None;
+        }
+        Some(StoreSourceSnapshot {
+            owner,
+            lease,
+            block_indices,
+            copies,
+        })
+    }
+
+    /// Infallibly attach one prepared transfer identity to a validated source
+    /// snapshot. Callers must keep this in the same non-yielding transition as
+    /// snapshot validation and external store admission.
+    pub(crate) fn attach_store_source_dependency(
+        &mut self,
+        owner: Uuid,
+        snapshot: StoreSourceSnapshot<'_>,
+        dependency: SourceReuseDependency,
+    ) {
+        snapshot.lease.debug_assert_owner(owner);
+        assert_eq!(snapshot.owner, owner, "native store source owner mismatch");
+        self.pool
+            .attach_source_reuse_dependency(&snapshot.copies, dependency);
+    }
+
+    pub(crate) fn satisfy_source_reuse_dependency(
+        &mut self,
+        dependency: SourceReuseDependency,
+    ) -> bool {
+        self.pool.satisfy_source_reuse_dependency(dependency)
+    }
+
+    pub(crate) fn is_source_reuse_dependency_pending(
+        &self,
+        dependency: SourceReuseDependency,
+    ) -> bool {
+        self.pool.is_source_reuse_dependency_pending(dependency)
     }
 
     pub(crate) fn activate_destination_lease(
@@ -419,19 +715,33 @@ impl VllmKvManager {
             "destination request already owns physical blocks"
         );
         assert_eq!(reservation.request_id, owner, "destination owner mismatch");
-        let prompt_blocks = sequence
-            .num_input_tokens()
-            .div_ceil(self.block_size)
-            .min(lease.entries.len());
+        let prompt_blocks = reservation.block_count;
+        assert!(
+            prompt_blocks
+                <= sequence
+                    .num_input_tokens()
+                    .div_ceil(self.block_size)
+                    .min(lease.entries.len()),
+            "destination reservation exceeds the request prompt"
+        );
+        assert!(
+            self.pool
+                .reservation_pending_dependencies(&reservation.pool)
+                .is_empty(),
+            "cannot activate a destination before source reuse dependencies are terminal"
+        );
         self.commit_lease_range(
             lease,
             0,
             prompt_blocks,
             &mut reservation.pool,
-            self.enable_prefix_caching,
-            Some(sequence),
+            LeaseCommitOptions {
+                cache_fresh: self.enable_prefix_caching,
+                sequence: Some(sequence),
+                write_dependencies: &[],
+            },
         );
-        lease.allocated_tokens = sequence.num_input_tokens();
+        lease.allocated_tokens = (prompt_blocks * self.block_size).min(sequence.num_input_tokens());
         assert_eq!(
             reservation.pool.len(),
             0,
@@ -453,11 +763,37 @@ impl VllmKvManager {
     }
 
     fn release_lease_entries(&mut self, lease: &mut BlockRequestLease) {
+        lease.pending_capacity_writes = None;
         for entry in lease.entries.iter_mut().rev() {
             if let Some(copy) = entry.copy.take() {
                 self.pool.release(copy);
             }
             entry.pending_cache = false;
+            entry.capacity_write_pending = false;
+        }
+    }
+
+    fn pending_capacity_write_dependencies(
+        &self,
+        lease: &mut BlockRequestLease,
+    ) -> Vec<SourceReuseDependency> {
+        let Some(pending) = lease.pending_capacity_writes.as_mut() else {
+            return Vec::new();
+        };
+        pending
+            .dependencies
+            .retain(|dependency| self.pool.is_source_reuse_dependency_pending(*dependency));
+        if pending.dependencies.is_empty() {
+            let pending = lease
+                .pending_capacity_writes
+                .take()
+                .expect("checked pending write state disappeared");
+            for block_index in pending.block_indices {
+                lease.entries[block_index].capacity_write_pending = false;
+            }
+            Vec::new()
+        } else {
+            pending.dependencies.clone()
         }
     }
 
@@ -467,13 +803,20 @@ impl VllmKvManager {
         start: usize,
         end: usize,
         reservation: &mut BlockReservation,
-        cache_fresh: bool,
-        sequence: Option<&RequestSequence>,
+        options: LeaseCommitOptions<'_>,
     ) {
+        let LeaseCommitOptions {
+            cache_fresh,
+            sequence,
+            write_dependencies,
+        } = options;
+        let fresh_write_pending = !write_dependencies.is_empty();
         assert!(start <= end && end <= lease.entries.len());
         let prefix_len = reservation.len() - reservation.fresh_len();
         let mut prefix_copies = self.pool.activate_prefix(reservation);
         assert_eq!(prefix_copies.len(), prefix_len);
+        let mut pending_indices = fresh_write_pending
+            .then(|| Vec::with_capacity((end - start).saturating_sub(prefix_len)));
         let materialize_store_events = self.materialize_store_events();
         let mut stores =
             (cache_fresh && materialize_store_events).then(|| Vec::with_capacity(end - start));
@@ -498,6 +841,7 @@ impl VllmKvManager {
                 );
                 entry.copy = Some(copy);
                 entry.pending_cache = false;
+                entry.capacity_write_pending = false;
                 if let Some(stores) = &mut stores {
                     stores.push(None);
                 }
@@ -507,6 +851,10 @@ impl VllmKvManager {
             let Some(hash) = entry.identity.sequence_hash else {
                 entry.copy = Some(self.pool.allocate_private(reservation));
                 entry.pending_cache = false;
+                entry.capacity_write_pending = fresh_write_pending;
+                if let Some(indices) = &mut pending_indices {
+                    indices.push(position);
+                }
                 if let Some(stores) = &mut stores {
                     stores.push(None);
                 }
@@ -516,6 +864,10 @@ impl VllmKvManager {
                 let (copy, became_visible) = self.pool.allocate_cached(reservation, hash);
                 entry.copy = Some(copy);
                 entry.pending_cache = false;
+                entry.capacity_write_pending = fresh_write_pending;
+                if let Some(indices) = &mut pending_indices {
+                    indices.push(position);
+                }
                 if let Some(stores) = &mut stores {
                     stores.push(became_visible.then(|| StoredBlock {
                         hash,
@@ -529,12 +881,26 @@ impl VllmKvManager {
             } else {
                 entry.copy = Some(self.pool.allocate_private(reservation));
                 entry.pending_cache = self.enable_prefix_caching;
+                entry.capacity_write_pending = fresh_write_pending;
+                if let Some(indices) = &mut pending_indices {
+                    indices.push(position);
+                }
                 if let Some(stores) = &mut stores {
                     stores.push(None);
                 }
             }
         }
         assert!(prefix_copies.next().is_none());
+        if let Some(block_indices) = pending_indices {
+            assert!(
+                lease.pending_capacity_writes.is_none(),
+                "new capacity was acquired before prior write dependencies were authorized"
+            );
+            lease.pending_capacity_writes = Some(Box::new(PendingCapacityWrites {
+                block_indices,
+                dependencies: write_dependencies.to_vec(),
+            }));
+        }
         if let Some(stores) = stores {
             self.publish_store_sequence(stores);
         }
@@ -762,11 +1128,63 @@ mod tests {
         (sequence, BlockRequestLease::new(owner, identities))
     }
 
-    fn ready<T>(outcome: VllmAcquire<T>) -> T {
-        match outcome {
-            VllmAcquire::Ready(value) => value,
-            _ => panic!("unexpected allocation failure"),
+    trait TestReady<T> {
+        fn ready(self) -> T;
+    }
+
+    impl<T> TestReady<T> for VllmAcquire<T> {
+        fn ready(self) -> T {
+            match self {
+                VllmAcquire::Ready(value) => value,
+                VllmAcquire::CapacityExhausted => panic!("unexpected allocation failure"),
+            }
         }
+    }
+
+    impl<T> TestReady<T> for NativeAllocation<T> {
+        fn ready(self) -> T {
+            match self {
+                NativeAllocation::Ready {
+                    value,
+                    dependencies,
+                } => {
+                    assert!(dependencies.is_empty());
+                    value
+                }
+                NativeAllocation::CapacityExhausted => {
+                    panic!("unexpected allocation failure")
+                }
+            }
+        }
+    }
+
+    fn ready<T>(outcome: impl TestReady<T>) -> T {
+        outcome.ready()
+    }
+
+    fn finish_source_with_dependency(
+        manager: &mut VllmKvManager,
+        owner: Uuid,
+        hashes: &[u64],
+        block_indices: &[usize],
+        dependency: SourceReuseDependency,
+    ) {
+        let (mut sequence, mut lease) = request(owner, hashes, false);
+        ready(manager.allocate_lease(owner, &mut lease, hashes.len() * 4, 0));
+        manager.finalize_lease_computed_prefix(
+            owner,
+            &mut sequence,
+            &mut lease,
+            0,
+            hashes.len() * 4,
+        );
+        let snapshot = manager
+            .snapshot_store_sources(owner, &lease, block_indices)
+            .expect("completed source should be snapshotable");
+        assert!(snapshot.sequence_hashes().eq(hashes.iter().copied()));
+        manager.attach_store_source_dependency(owner, snapshot, dependency);
+        manager.finish_lease(owner, lease);
+        assert_eq!(manager.num_inactive_blocks(), hashes.len());
     }
 
     #[test]
@@ -785,7 +1203,7 @@ mod tests {
         let (_, mut third_lease) = request(third, &[8], false);
         assert!(matches!(
             manager.allocate_lease(third, &mut third_lease, 4, 0),
-            VllmAcquire::CapacityExhausted
+            NativeAllocation::CapacityExhausted
         ));
         assert_eq!(third_lease.allocated_tokens(), 0);
         assert_eq!(third_lease.resident_block_count(), 0);
@@ -809,15 +1227,27 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "only a request's first allocation may reuse a prefix")]
-    fn later_native_allocation_rejects_prefix_reuse() {
+    fn later_native_allocation_does_not_reacquire_owned_prefix() {
         let mut manager =
             VllmKvManager::new_with_event_sink(2, 4, true, KvEventPublishers::default(), 0);
+
+        let seed = Uuid::from_u128(1);
+        let (mut seed_sequence, mut seed_lease) = request(seed, &[7], false);
+        ready(manager.allocate_lease(seed, &mut seed_lease, 4, 0));
+        manager.finalize_lease_computed_prefix(seed, &mut seed_sequence, &mut seed_lease, 0, 4);
+        let prefix_copy = seed_lease.entries[0].copy;
+        manager.finish_lease(seed, seed_lease);
+
         let owner = Uuid::from_u128(3);
         let (_, mut lease) = request(owner, &[7, 8], false);
-        ready(manager.allocate_lease(owner, &mut lease, 4, 0));
+        assert_eq!(ready(manager.allocate_lease(owner, &mut lease, 4, 1)), 1);
+        assert_eq!(lease.entries[0].copy, prefix_copy);
 
-        let _ = manager.allocate_lease(owner, &mut lease, 8, 1);
+        assert_eq!(ready(manager.allocate_lease(owner, &mut lease, 8, 1)), 1);
+        assert_eq!(lease.entries[0].copy, prefix_copy);
+        assert_eq!(lease.allocated_tokens(), 8);
+        assert_eq!(lease.resident_block_count(), 2);
+        assert_eq!(manager.num_active_blocks(), 2);
     }
 
     #[test]
@@ -1042,6 +1472,111 @@ mod tests {
         manager.finish_lease(pressure_owner, pressure_lease);
         assert_eq!(manager.num_active_blocks(), 0);
         assert_eq!(manager.num_inactive_blocks(), 10);
+    }
+
+    #[test]
+    fn external_destination_reserves_exact_prefix_and_suffix_then_becomes_real_hit() {
+        let mut manager =
+            VllmKvManager::new_with_event_sink(3, 4, true, KvEventPublishers::default(), 0);
+        let seed = Uuid::from_u128(1);
+        let (mut seed_sequence, mut seed_lease) = request(seed, &[7], false);
+        ready(manager.allocate_lease(seed, &mut seed_lease, 4, 0));
+        manager.finalize_lease_computed_prefix(seed, &mut seed_sequence, &mut seed_lease, 0, 4);
+        let prefix_copy = seed_lease.entries[0].copy.unwrap();
+        manager.finish_lease(seed, seed_lease);
+
+        let owner = Uuid::from_u128(2);
+        let (sequence, mut lease) = request(owner, &[7, 8, 9], false);
+        let reservation = ready(manager.reserve_external_prefix_lease(owner, &lease, 1, &[8]));
+        assert_eq!(reservation.block_count, 2);
+        assert_eq!(reservation.pool.fresh_len(), 1);
+        assert_eq!(manager.num_active_blocks(), 2);
+
+        manager.activate_destination_lease(owner, &sequence, &mut lease, reservation);
+        assert_eq!(lease.resident_block_count(), 2);
+        assert_eq!(lease.allocated_tokens(), 8);
+        assert_eq!(lease.entries[0].copy, Some(prefix_copy));
+        assert!(manager.pool.prefix_hit(8).is_some());
+        assert!(manager.pool.prefix_hit(9).is_none());
+        assert_eq!(
+            manager
+                .get_lease_prefill_cost(&sequence, &lease)
+                .cached_tokens,
+            8
+        );
+    }
+
+    #[test]
+    fn source_dependency_propagates_but_write_authorization_is_not_terminal() {
+        let mut manager =
+            VllmKvManager::new_with_event_sink(1, 4, true, KvEventPublishers::default(), 0);
+        let source = Uuid::from_u128(1);
+        let dependency = SourceReuseDependency::from_adapter_id(23);
+        finish_source_with_dependency(&mut manager, source, &[7], &[0], dependency);
+
+        let owner = Uuid::from_u128(2);
+        let (mut sequence, mut lease) = request(owner, &[8], false);
+        let dependencies = match manager.allocate_lease(owner, &mut lease, 4, 0) {
+            NativeAllocation::Ready {
+                value: 1,
+                dependencies,
+            } => dependencies,
+            _ => panic!("dependency-bearing capacity must still be acquired"),
+        };
+        assert_eq!(dependencies, vec![dependency]);
+        manager.authorize_lease_writes_after_dependencies(owner, &mut lease, &dependencies);
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 0, 4);
+        assert!(manager.pool.prefix_hit(8).is_some());
+        assert!(manager.is_source_reuse_dependency_pending(dependency));
+
+        assert!(
+            manager
+                .snapshot_store_sources(owner, &lease, &[0])
+                .is_none(),
+            "new stores must wait until the old source reader is terminal"
+        );
+        assert!(manager.satisfy_source_reuse_dependency(dependency));
+        assert!(
+            manager
+                .snapshot_store_sources(owner, &lease, &[0])
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn fenced_multiblock_allocation_keeps_owned_suffix_across_smaller_target() {
+        let mut manager =
+            VllmKvManager::new_with_event_sink(2, 4, true, KvEventPublishers::default(), 0);
+        let source = Uuid::from_u128(1);
+        let dependency = SourceReuseDependency::from_adapter_id(29);
+        finish_source_with_dependency(&mut manager, source, &[7, 8], &[0, 1], dependency);
+
+        let owner = Uuid::from_u128(2);
+        let (mut sequence, mut lease) = request(owner, &[9, 10], false);
+        let dependencies = match manager.allocate_lease(owner, &mut lease, 8, 0) {
+            NativeAllocation::Ready {
+                value: 2,
+                dependencies,
+            } => dependencies,
+            _ => panic!("dependency-bearing suffix must still be acquired"),
+        };
+        assert_eq!(dependencies, vec![dependency]);
+        manager.authorize_lease_writes_after_dependencies(owner, &mut lease, &dependencies);
+        assert!(matches!(
+            manager.allocate_lease(owner, &mut lease, 4, 0),
+            NativeAllocation::Ready {
+                value: 0,
+                ref dependencies,
+            } if dependencies.is_empty()
+        ));
+        assert_eq!(lease.allocated_tokens(), 8);
+        assert_eq!(lease.resident_block_count(), 2);
+
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 0, 4);
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 4, 8);
+        assert!(manager.satisfy_source_reuse_dependency(dependency));
+        assert!(manager.pool.prefix_hit(9).is_some());
+        assert!(manager.pool.prefix_hit(10).is_some());
     }
 
     #[test]

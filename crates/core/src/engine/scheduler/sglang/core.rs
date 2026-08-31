@@ -416,7 +416,7 @@ impl SglangCore {
         let transfer_timing = prefill_handoff_transfer_timing(
             request.prompt_len(),
             self.config.kv_transfer_bandwidth,
-            self.config.kv_bytes_per_token,
+            self.config.kv_transfer_bytes_per_token,
             self.config.kv_transfer_timing_mode,
         );
         let payload = HeldSglangPrefill { request };
@@ -873,6 +873,7 @@ impl SglangCore {
             admissions.push(crate::engine::scheduler::AdmissionEvent {
                 uuid: request.uuid,
                 reused_input_tokens: 0,
+                cache_tier_attribution: None,
             });
             self.running.push(request);
         }

@@ -12,7 +12,7 @@ use crate::engine::KvEventData;
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, KvEventPublishers, MockEngineArgs, PrefillCost, SchedulingPolicy,
 };
-use crate::engine::kv_manager::{G1Acquire, G1Manager};
+use crate::engine::kv_manager::{G1Manager, NativeAllocation};
 use crate::engine::scheduler::vllm::request::RequestKvState;
 use crate::engine::scheduler::vllm::{RequestStatus, VllmCore};
 
@@ -56,7 +56,7 @@ mod vllm {
     ) {
         assert!(matches!(
             manager.allocate_native(owner, &mut request.lease, computed_tokens, 0),
-            G1Acquire::Ready(_)
+            NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
         ));
         manager.finalize_native_computed_prefix(
             owner,
@@ -164,7 +164,7 @@ mod vllm {
         }
         assert!(matches!(
             manager.allocate_native(owner, &mut request.lease, 9, 0),
-            G1Acquire::Ready(_)
+            NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
         ));
         manager.finalize_native_computed_prefix(
             owner,
