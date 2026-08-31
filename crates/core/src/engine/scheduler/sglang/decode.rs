@@ -258,7 +258,7 @@ pub(super) fn simulate_decode_step_with_sampler(
                     true,
                     req.prompt_len(),
                     config.kv_transfer_bandwidth,
-                    config.kv_bytes_per_token,
+                    config.kv_transfer_bytes_per_token,
                 ),
             }
         })
@@ -373,7 +373,7 @@ pub(super) fn simulate_decode_step_with_sampler(
                     is_complete,
                     req.prompt_len(),
                     config.kv_transfer_bandwidth,
-                    config.kv_bytes_per_token,
+                    config.kv_transfer_bytes_per_token,
                 ),
             });
 

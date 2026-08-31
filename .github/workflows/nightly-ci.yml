@@ -1,0 +1,606 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Nightly CI
+
+# Nightly build of the approved AISimulate release artifacts — the
+# `aisimulate` wheel and the `aisimulate-core` crate — via
+# scripts/build_release_artifacts.py, the artifact contract's only sanctioned
+# entry point. The build job runs only hash-pinned tooling and
+# lockfile-resolved crates; the wheel's unpinned PyPI dependency tree is
+# installed in a separate smoke job after the artifacts are stored.
+#
+# Versioning: every run stamps the tree with scripts/apply_dev_version.py —
+# wheels get `<base>.devYYYYMMDD` (the ai-dynamo/dynamo nightly convention),
+# the crate `<base>-dev.YYYYMMDD` (dotted so SemVer orders the date
+# numerically). The date is computed once in the guard job so both arch
+# legs agree across a UTC midnight.
+#
+# Staging: uploads the built wheels to the internal PyPI repo and the
+# crate to the internal Cargo repo, both under nightly/<run_id>/ — the
+# ai-dynamo staging path convention (the future release workflow will use
+# a release/ prefix). Files are checksum-verified against the build job's
+# SHA256SUMS before upload and server-side on PUT. The stage job is gated
+# by the `automated-release` environment.
+#
+# Environment prerequisite: create `automated-release` BEFORE merging —
+# a referenced-but-missing environment is auto-created UNPROTECTED and the
+# job runs ungated. Store ARTIFACTORY_URL and ARTIFACTORY_TOKEN as
+# environment secrets only (repo-level secrets would flow to modified
+# workflow copies on pull-request/* refs). With required reviewers set,
+# each night's staging waits for approval — approve or reject promptly,
+# since a waiting run holds the nightly-ci concurrency group.
+#
+# Runs on the repository-specific self-hosted runners (OPS-8249). Jobs run
+# in pinned manylinux_2_28 containers: the default runner image has no C
+# compiler (run 33052185267), and manylinux also fixes the wheels' glibc
+# floor at 2.28 — the AIC platform-wheel precedent. quay.io reachability
+# and registry egress from this runner set are first exercised here.
+
+on:
+  schedule:
+    # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
+    - cron: "0 8 * * *"
+
+# Read-only default token; only the guard job adds actions:read.
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-ci
+  cancel-in-progress: false
+
+jobs:
+  changes-guard:
+    name: Skip when main is unchanged
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      should-build: ${{ steps.decide.outputs.should-build }}
+      dev-date: ${{ steps.version.outputs.dev-date }}
+    steps:
+      # Computed once here so both arch legs stamp the same date even if the
+      # run crosses a UTC midnight.
+      - name: Compute nightly version date
+        id: version
+        run: echo "dev-date=$(date -u +%Y%m%d)" >> "${GITHUB_OUTPUT}"
+
+      - name: Compare HEAD with the last successful nightly
+        id: decide
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            // Only scheduled runs dedup; any other event (e.g. a future
+            // workflow_dispatch) always builds.
+            if (context.eventName !== 'schedule') {
+              core.setOutput('should-build', 'true');
+              return;
+            }
+            try {
+              const runs = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'nightly-ci.yml',
+                branch: 'main',
+                status: 'success',
+                per_page: 1,
+              });
+              const last = runs.data.workflow_runs[0];
+              if (last && last.head_sha === context.sha) {
+                core.notice(
+                  `No new commits since successful run ${last.html_url}; skipping.`,
+                );
+                core.setOutput('should-build', 'false');
+                return;
+              }
+            } catch (error) {
+              // Fail open: a guard outage must never block the nightly.
+              core.warning(`Could not query previous runs (${error.message}); building.`);
+            }
+            core.setOutput('should-build', 'true');
+
+  build-artifacts:
+    name: Build artifacts (${{ matrix.arch }})
+    needs: changes-guard
+    if: needs.changes-guard.outputs.should-build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: prod-aisimulate-default-amd64-v1
+            rust_target: x86_64-unknown-linux-gnu
+            rustup_init_sha256: 4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
+            uv_target: x86_64-unknown-linux-gnu
+            uv_sha256: 8681d8921e7d520fb368991dcf5f9c1905b80f5bf2a265a0ed085c8d8e342477
+            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+          - arch: arm64
+            runner: prod-aisimulate-default-arm64-v1
+            rust_target: aarch64-unknown-linux-gnu
+            rustup_init_sha256: 9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792
+            uv_target: aarch64-unknown-linux-gnu
+            uv_sha256: d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
+            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    container:
+      # Digest-pinned manylinux_2_28: ships the C toolchain the native build
+      # needs and audit-tags wheels at glibc 2.28 — also the minimum glibc
+      # for the runner's node24-based actions.
+      image: ${{ matrix.container_image }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+    defaults:
+      run:
+        shell: bash
+    env:
+      UV_VERSION: "0.12.6"
+      RUSTUP_VERSION: "1.29.0"
+      RUST_TOOLCHAIN: "1.98.0"
+      PYTHON_SERIES: "3.12"
+      # Use uv's managed interpreter (not the image's python) and ignore any
+      # uv.toml discovered in the workspace.
+      UV_PYTHON_PREFERENCE: only-managed
+      UV_NO_CONFIG: "1"
+      # Recorded in provenance.json.
+      CONTAINER_IMAGE: ${{ matrix.container_image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # HOME above is the checked-out workspace: anything written there
+      # trips check_manifests()'s repo-wide manifest scan and dirties the
+      # tree `cargo package --allow-dirty` snapshots. TMPDIR redirect keeps
+      # the multi-GB crate verify build off container-overlay /tmp.
+      - name: Isolate toolchain paths outside the workspace
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/tmp"
+          {
+            echo "TOOLS_DIR=${RUNNER_TEMP}/tools"
+            echo "DIST_DIR=${RUNNER_TEMP}/nightly-dist"
+            echo "CARGO_HOME=${RUNNER_TEMP}/cargo"
+            echo "RUSTUP_HOME=${RUNNER_TEMP}/rustup"
+            echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache"
+            echo "UV_PYTHON_INSTALL_DIR=${RUNNER_TEMP}/uv-python"
+            echo "TMPDIR=${RUNNER_TEMP}/tmp"
+          } >> "${GITHUB_ENV}"
+
+      # Inventory the image's tools before failing, so a bad image yields a
+      # complete diagnosis in one run, then fail fast unless the C toolchain
+      # the native build needs (zstd-sys, blake3, cdylib link) works.
+      - name: Preflight image toolchain
+        run: |
+          set -euo pipefail
+          for tool in cc gcc clang curl tar sha256sum git python3; do
+            if path="$(command -v "${tool}" 2>/dev/null)"; then
+              echo "found   ${tool} -> ${path}"
+            else
+              echo "missing ${tool}"
+            fi
+          done
+          for tool in cc curl tar sha256sum; do
+            command -v "${tool}" >/dev/null 2>&1 || {
+              echo "::error::runner image is missing required tool: ${tool}"
+              exit 1
+            }
+          done
+          printf 'int main(void){return 0;}\n' > "${RUNNER_TEMP}/preflight.c"
+          cc "${RUNNER_TEMP}/preflight.c" -o "${RUNNER_TEMP}/preflight"
+          "${RUNNER_TEMP}/preflight"
+
+      - name: Install uv (checksum-verified)
+        env:
+          UV_TARGET: ${{ matrix.uv_target }}
+          UV_SHA256: ${{ matrix.uv_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${TOOLS_DIR}"
+          archive="${TOOLS_DIR}/uv.tar.gz"
+          # -q must be curl's first argument: HOME is the workspace, so this
+          # ignores any repo-root .curlrc.
+          curl -q --fail --location --silent --show-error --retry 3 \
+            --output "${archive}" \
+            "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TARGET}.tar.gz"
+          echo "${UV_SHA256}  ${archive}" | sha256sum --check
+          tar -xzf "${archive}" -C "${TOOLS_DIR}" --strip-components=1
+          rm "${archive}"
+          echo "${TOOLS_DIR}" >> "${GITHUB_PATH}"
+          "${TOOLS_DIR}/uv" --version
+
+      - name: Install Rust toolchain (checksum-verified rustup)
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          RUSTUP_INIT_SHA256: ${{ matrix.rustup_init_sha256 }}
+        run: |
+          set -euo pipefail
+          rustup_init="${TOOLS_DIR}/rustup-init"
+          curl -q --fail --location --silent --show-error --retry 3 \
+            --output "${rustup_init}" \
+            "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TARGET}/rustup-init"
+          echo "${RUSTUP_INIT_SHA256}  ${rustup_init}" | sha256sum --check
+          chmod 0755 "${rustup_init}"
+          "${rustup_init}" -y --no-modify-path --profile minimal \
+            --default-toolchain "${RUST_TOOLCHAIN}"
+          rm "${rustup_init}"
+          echo "${CARGO_HOME}/bin" >> "${GITHUB_PATH}"
+          "${CARGO_HOME}/bin/cargo" --version
+
+      - name: Create build environment
+        run: |
+          set -euo pipefail
+          uv venv --python "${PYTHON_SERIES}" "${TOOLS_DIR}/venv-build"
+          uv pip install \
+            --python "${TOOLS_DIR}/venv-build/bin/python" \
+            --require-hashes \
+            --requirements .github/nightly/build-requirements.txt
+          "${TOOLS_DIR}/venv-build/bin/python" -m maturin --version
+
+      - name: Stamp nightly dev version
+        env:
+          DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
+        run: |
+          set -euo pipefail
+          "${TOOLS_DIR}/venv-build/bin/python" scripts/apply_dev_version.py ".dev${DEV_DATE}"
+
+      - name: Validate release manifests
+        run: |
+          set -euo pipefail
+          "${TOOLS_DIR}/venv-build/bin/python" scripts/build_release_artifacts.py --check-only
+
+      - name: Build release artifacts
+        run: |
+          set -euo pipefail
+          "${TOOLS_DIR}/venv-build/bin/python" scripts/build_release_artifacts.py \
+            --output-dir "${DIST_DIR}"
+
+      - name: Drop duplicate crate (non-amd64 legs)
+        if: matrix.arch != 'amd64'
+        run: |
+          set -euo pipefail
+          # The .crate is arch-independent source; the amd64 leg's copy is
+          # canonical, so drop this leg's duplicate before upload.
+          rm "${DIST_DIR}"/aisimulate-core-*.crate
+
+      - name: Write checksums and provenance
+        env:
+          MATRIX_ARCH: ${{ matrix.arch }}
+          MATRIX_RUNNER: ${{ matrix.runner }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GH_REF: ${{ github.ref }}
+          GH_SHA: ${{ github.sha }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          (cd "${DIST_DIR}" && sha256sum -- * > SHA256SUMS.txt)
+          "${TOOLS_DIR}/venv-build/bin/python" - <<'EOF'
+          import importlib.metadata as metadata
+          import json
+          import os
+          import platform
+          import tomllib
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          dist = Path(os.environ["DIST_DIR"])
+          pyproject = Path("python/aisimulate/pyproject.toml")
+          version = tomllib.loads(pyproject.read_text())["project"]["version"]
+          provenance = {
+              "version": version,
+              "repository": os.environ["GH_REPOSITORY"],
+              "workflow_ref": os.environ["GH_WORKFLOW_REF"],
+              "ref": os.environ["GH_REF"],
+              "commit": os.environ["GH_SHA"],
+              "run_url": (
+                  f"{os.environ['GH_SERVER_URL']}/{os.environ['GH_REPOSITORY']}"
+                  f"/actions/runs/{os.environ['GH_RUN_ID']}"
+                  f"/attempts/{os.environ['GH_RUN_ATTEMPT']}"
+              ),
+              "event": os.environ["GH_EVENT_NAME"],
+              "arch": os.environ["MATRIX_ARCH"],
+              "runner_label": os.environ["MATRIX_RUNNER"],
+              "container_image": os.environ["CONTAINER_IMAGE"],
+              "built_at_utc": datetime.now(timezone.utc).isoformat(),
+              "toolchain": {
+                  "python": platform.python_version(),
+                  "rust": os.environ["RUST_TOOLCHAIN"],
+                  "uv": os.environ["UV_VERSION"],
+                  "maturin": metadata.version("maturin"),
+              },
+              "artifacts": {
+                  line.split(maxsplit=1)[1]: line.split(maxsplit=1)[0]
+                  for line in (dist / "SHA256SUMS.txt").read_text().splitlines()
+                  if not line.endswith("SHA256SUMS.txt")
+              },
+          }
+          (dist / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          EOF
+          # Cover provenance.json too, so the smoke and staging jobs'
+          # `sha256sum --check` verifies every file crossing the artifact store.
+          (cd "${DIST_DIR}" && sha256sum provenance.json >> SHA256SUMS.txt)
+          {
+            echo "### Nightly artifacts (${MATRIX_ARCH})"
+            echo '```'
+            cat "${DIST_DIR}/SHA256SUMS.txt"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-dist-${{ matrix.arch }}
+          path: ${{ runner.temp }}/nightly-dist/*
+          if-no-files-found: error
+          # Wheels and crates are already compressed; skip recompression.
+          compression-level: 0
+          # Matches the Dynamo nightly compliance policy's 30-day window.
+          retention-days: 30
+
+  # Installing the wheel pulls its unpinned PyPI dependency tree — untrusted
+  # code that must not share a job with artifact production, so this runs
+  # after the artifacts are immutable in the artifact store. A red smoke job
+  # fails the run, the signal staging consumers gate on.
+  smoke-test:
+    name: Smoke-test wheel (${{ matrix.arch }})
+    needs: [changes-guard, build-artifacts]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: prod-aisimulate-default-amd64-v1
+            uv_target: x86_64-unknown-linux-gnu
+            uv_sha256: 8681d8921e7d520fb368991dcf5f9c1905b80f5bf2a265a0ed085c8d8e342477
+            # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+          - arch: arm64
+            runner: prod-aisimulate-default-arm64-v1
+            uv_target: aarch64-unknown-linux-gnu
+            uv_sha256: d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
+            # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
+            container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    container:
+      image: ${{ matrix.container_image }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+    defaults:
+      run:
+        shell: bash
+    env:
+      UV_VERSION: "0.12.6"
+      # The abi3 wheel claims every Python in requires-python; prove each one.
+      PYTHON_SERIES_LIST: "3.11 3.12 3.13"
+      UV_PYTHON_PREFERENCE: only-managed
+      UV_NO_CONFIG: "1"
+      DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
+    steps:
+      # No checkout: this job needs only the stored artifact, keeping the
+      # untrusted dependency install away from repo content.
+      - name: Isolate toolchain paths outside the workspace
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/tmp"
+          {
+            echo "TOOLS_DIR=${RUNNER_TEMP}/tools"
+            echo "DIST_DIR=${RUNNER_TEMP}/nightly-dist"
+            echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache"
+            echo "UV_PYTHON_INSTALL_DIR=${RUNNER_TEMP}/uv-python"
+            echo "TMPDIR=${RUNNER_TEMP}/tmp"
+          } >> "${GITHUB_ENV}"
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-dist-${{ matrix.arch }}
+          path: ${{ runner.temp }}/nightly-dist
+
+      - name: Install uv (checksum-verified)
+        env:
+          UV_TARGET: ${{ matrix.uv_target }}
+          UV_SHA256: ${{ matrix.uv_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${TOOLS_DIR}"
+          archive="${TOOLS_DIR}/uv.tar.gz"
+          curl -q --fail --location --silent --show-error --retry 3 \
+            --output "${archive}" \
+            "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TARGET}.tar.gz"
+          echo "${UV_SHA256}  ${archive}" | sha256sum --check
+          tar -xzf "${archive}" -C "${TOOLS_DIR}" --strip-components=1
+          rm "${archive}"
+          echo "${TOOLS_DIR}" >> "${GITHUB_PATH}"
+          "${TOOLS_DIR}/uv" --version
+
+      - name: Verify artifact checksums
+        run: |
+          set -euo pipefail
+          (cd "${DIST_DIR}" && sha256sum --check --strict SHA256SUMS.txt)
+
+      # The wheel's name is a contract: stamped dev version (catches a
+      # silent stamping failure) and cp311-abi3-manylinux_2_28 tags for this
+      # arch (catches a build-container regression that would mistag wheels).
+      # The parsed version is re-asserted against installed metadata below.
+      - name: Verify wheel name, tags, and stamped version
+        env:
+          UV_TARGET: ${{ matrix.uv_target }}
+        run: |
+          set -euo pipefail
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          plat="${UV_TARGET%%-*}"
+          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
+            echo "::error::unexpected wheel name: ${wheel}"
+            exit 1
+          }
+          version="${wheel#aisimulate-}"
+          version="${version%%-*}"
+          echo "EXPECTED_VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "wheel OK: ${wheel} (version ${version})"
+
+      - name: Smoke-test the wheel on every supported Python
+        run: |
+          set -euo pipefail
+          cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
+          import importlib.metadata as metadata
+          import os
+
+          import aiconfigurator
+          import aiconfigurator_core
+          import aisimulate
+          import aisimulate_core
+
+          expected = os.environ["EXPECTED_VERSION"]
+          assert (
+              aisimulate.__version__
+              == aisimulate_core.__version__
+              == metadata.version("aisimulate")
+              == expected
+          ), (aisimulate.__version__, expected)
+          installed = {dist.metadata["Name"].lower() for dist in metadata.distributions()}
+          forbidden = {"aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
+          assert installed.isdisjoint(forbidden), installed & forbidden
+          EOF
+          for series in ${PYTHON_SERIES_LIST}; do
+            venv="${TOOLS_DIR}/venv-smoke-${series}"
+            uv venv --python "${series}" "${venv}"
+            uv pip install --python "${venv}/bin/python" "${DIST_DIR}"/aisimulate-*.whl
+            uv pip check --python "${venv}/bin/python"
+            "${venv}/bin/python" "${TOOLS_DIR}/smoke_asserts.py"
+            "${venv}/bin/aisimulate" --help
+            "${venv}/bin/aiconfigurator" version
+            echo "smoke OK on Python ${series}"
+          done
+
+  # Uploads the smoke-tested wheels and crate to internal Artifactory under
+  # nightly/<run_id>/, checksum-verified before upload and server-side on
+  # PUT. Runs only for scheduled runs on main (never on pull-request/*
+  # copies, which contain unreviewed PR content), behind the protected
+  # environment that scopes the ARTIFACTORY_* secrets.
+  stage-artifactory:
+    name: Stage to Artifactory
+    needs: [build-artifacts, smoke-test]
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 30
+    environment: automated-release
+    container:
+      # Keep in sync with the amd64 build-matrix image.
+      # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
+      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+      env:
+        HOME: /__w/aisimulate/aisimulate
+    defaults:
+      run:
+        shell: bash
+    env:
+      ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+      ARTIFACTORY_CARGO_REPO: ${{ secrets.ARTIFACTORY_CARGO_REPO_NAME }}
+    steps:
+      - name: Prepare staging directory
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/stage/amd64" "${RUNNER_TEMP}/stage/arm64" "${RUNNER_TEMP}/stage/upload"
+          echo "STAGE_DIR=${RUNNER_TEMP}/stage" >> "${GITHUB_ENV}"
+
+      - name: Download amd64 artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-dist-amd64
+          path: ${{ runner.temp }}/stage/amd64
+
+      - name: Download arm64 artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-dist-arm64
+          path: ${{ runner.temp }}/stage/arm64
+
+      - name: Verify checksums and assemble upload set
+        env:
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # nightly/<run_id>/ — the ai-dynamo staging path convention.
+          echo "STAGE_SUBPATH=nightly/${GH_RUN_ID}" >> "${GITHUB_ENV}"
+          for arch in amd64 arm64; do
+            (cd "${STAGE_DIR}/${arch}" && sha256sum --check --strict SHA256SUMS.txt)
+          done
+          # Wheels and the crate. The build job's SHA256SUMS/provenance stay
+          # in the workflow artifact and are not staged.
+          cp "${STAGE_DIR}"/amd64/*.whl "${STAGE_DIR}"/arm64/*.whl "${STAGE_DIR}/upload/"
+          cp "${STAGE_DIR}"/amd64/*.crate "${STAGE_DIR}/upload/"
+          wheels=("${STAGE_DIR}"/upload/*.whl)
+          [ "${#wheels[@]}" -eq 2 ] || { echo "::error::expected 2 wheels"; exit 1; }
+          crates=("${STAGE_DIR}"/upload/*.crate)
+          [ "${#crates[@]}" -eq 1 ] || { echo "::error::expected 1 crate"; exit 1; }
+
+      - name: Upload to Artifactory
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in ARTIFACTORY_URL ARTIFACTORY_TOKEN \
+                      ARTIFACTORY_PYPI_REPO ARTIFACTORY_CARGO_REPO; do
+            [ -n "${!name}" ] || { echo "::error::secret ${name} is not configured"; exit 1; }
+          done
+          subpath="${STAGE_SUBPATH}"
+          [ -n "${subpath}" ] || { echo "::error::STAGE_SUBPATH not set"; exit 1; }
+          put() {
+            local file="$1" repo="$2" label="$3"
+            local sha url existing
+            sha="$(sha256sum "${file}" | cut -d' ' -f1)"
+            url="${ARTIFACTORY_URL%/}/${repo}/${subpath}/$(basename "${file}")"
+            # Re-runs reuse the same run_id path and the deploy-only token
+            # cannot overwrite, so make staging idempotent: skip files a
+            # prior attempt already uploaded (verified byte-identical via
+            # the server's checksum) and fail loudly on a real mismatch.
+            existing="$(curl -q --silent --head \
+              -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" "${url}" \
+              | tr -d '\r' | awk 'tolower($1)=="x-checksum-sha256:" {print $2}')"
+            if [ "${existing}" = "${sha}" ]; then
+              echo "already staged (${label}): $(basename "${file}")"
+              return 0
+            fi
+            if [ -n "${existing}" ]; then
+              echo "::error::${label} file exists with a different checksum: $(basename "${file}")"
+              return 1
+            fi
+            echo "uploading $(basename "${file}") -> ${label} repo"
+            # --retry covers timeouts and retryable HTTP codes; the image's
+            # curl (7.61, AlmaLinux 8) predates --retry-all-errors. Hard
+            # network failures are recovered by re-running the failed job,
+            # which skips already-staged files via the probe above.
+            curl -q --fail --silent --show-error --retry 3 \
+              --output /dev/null \
+              -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
+              -H "X-Checksum-Sha256: ${sha}" \
+              --upload-file "${file}" \
+              "${url}"
+            echo "staged (${label}): $(basename "${file}")"
+          }
+          cd "${STAGE_DIR}/upload"
+          for file in *.crate; do
+            put "${file}" "${ARTIFACTORY_CARGO_REPO}" cargo
+          done
+          for file in *.whl; do
+            put "${file}" "${ARTIFACTORY_PYPI_REPO}" pypi
+          done
+          {
+            echo "### Staged to Artifactory"
+            echo "Subpath: \`${subpath}/\`"
+            echo '```'
+            ls -l
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

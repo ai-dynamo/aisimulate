@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use crate::engine::{Backend, TimingModel, TimingModelConfig};
 use crate::replay::{
-    ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec,
-    ReplayTopology, Replayer,
+    ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayEngineConfig, ReplayEngineFactory,
+    ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
     loadgen::{
         ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
         WorkloadDriver, load_agentic_mooncake,
@@ -699,20 +699,33 @@ fn run_with_input(
     spec: ReplaySpec,
     factory: ReplayEngineFactory,
     input: Option<ReplayRuntimeInput>,
-) -> crate::replay::ReplayResult<crate::replay::ReplayReport> {
-    let replayer = Replayer::new(spec, factory)?;
-    match input {
-        Some(input) => replayer.with_runtime_input(input).run(),
-        None => replayer.run(),
+    capture_artifacts: bool,
+) -> crate::replay::ReplayResult<(crate::replay::ReplayReport, Option<ReplayArtifacts>)> {
+    let replayer = match input {
+        Some(input) => Replayer::new(spec, factory)?.with_runtime_input(input),
+        None => Replayer::new(spec, factory)?,
+    };
+    if capture_artifacts {
+        let (report, artifacts) =
+            replayer.run_with_artifacts(ReplayArtifactKvEventVisibility::Native)?;
+        Ok((report, Some(artifacts)))
+    } else {
+        Ok((replayer.run()?, None))
     }
 }
 
-fn execute_json(payload: &str) -> Result<String> {
+fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let (mut spec, mut traffic) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
             ExecutionPayload::Configured { spec, traffic } => (spec, Some(traffic)),
             ExecutionPayload::Legacy(spec) => (spec, None),
         };
+    if capture_artifacts {
+        ensure!(
+            matches!(&spec.topology, ReplayTopology::Aggregated { .. }),
+            "detailed replay artifacts require aggregated topology"
+        );
+    }
     let serialized_engine = spec.engine.clone();
     let mut engine_config: ReplayEngineConfig = if spec.engine.is_null() {
         ReplayEngineConfig::default()
@@ -721,7 +734,7 @@ fn execute_json(payload: &str) -> Result<String> {
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
 
-    let report = match spec.topology.clone() {
+    let (report, artifacts) = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
             let mut role = aggregated_role(&engine_config);
             let timing = resolve_role_timing(
@@ -754,7 +767,7 @@ fn execute_json(payload: &str) -> Result<String> {
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
-            run_with_input(spec, factory, input)
+            run_with_input(spec, factory, input, capture_artifacts)
         }
         ReplayTopology::Disaggregated { .. } => {
             let mut prefill = engine_config
@@ -811,14 +824,15 @@ fn execute_json(payload: &str) -> Result<String> {
                     decode_timing,
                 ),
                 input,
+                capture_artifacts,
             )
         }
     }
     .context("AISimulate replay failed")?;
-    let mut serialized =
+    let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
     if !report.per_request.is_empty() {
-        let object = serialized
+        let object = report_json
             .as_object_mut()
             .context("AISimulate replay report did not serialize as an object")?;
         object.insert(
@@ -827,13 +841,28 @@ fn execute_json(payload: &str) -> Result<String> {
                 .context("serializing AISimulate per-request report records")?,
         );
     }
-    serde_json::to_string(&serialized).context("serializing AISimulate replay report")
+    let output = if let Some(artifacts) = artifacts {
+        serde_json::json!({
+            "report": report_json,
+            "artifacts": artifacts,
+        })
+    } else {
+        report_json
+    };
+    serde_json::to_string(&output).context("serializing AISimulate replay output")
 }
 
 /// Execute one canonical serialized ReplaySpec and return serialized report JSON.
 #[pyfunction]
 fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
-    py.allow_threads(|| execute_json(payload))
+    py.allow_threads(|| execute_json(payload, false))
+        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+}
+
+/// Execute one fixed aggregated ReplaySpec and return report plus parity artifacts.
+#[pyfunction]
+fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<String> {
+    py.allow_threads(|| execute_json(payload, true))
         .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
 }
 
@@ -841,6 +870,7 @@ fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
+    module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
     crate::perfmodel::register_python(module)?;
     Ok(())
 }
@@ -927,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn json_binding_retains_authored_per_request_correlation() {
+    fn json_bindings_share_report_and_retain_request_correlation() {
         let spec = ReplaySpec {
             version: 1,
             topology: ReplayTopology::Aggregated {
@@ -970,12 +1000,29 @@ mod tests {
             }],
         };
 
-        let output = execute_json(&serde_json::to_string(&spec).unwrap()).unwrap();
+        let payload = serde_json::to_string(&spec).unwrap();
+        let output = execute_json(&payload, false).unwrap();
         let report: serde_json::Value = serde_json::from_str(&output).unwrap();
         let record = &report["per_request"][0];
         assert_eq!(record["request_id"], "authored-id");
         assert_eq!(record["session_id"], "session-a");
         assert_eq!(record["turn_index"], 2);
         assert_eq!(record["metadata"]["caller_tag"], "binding");
+
+        let captured: serde_json::Value =
+            serde_json::from_str(&execute_json(&payload, true).unwrap()).unwrap();
+        assert_eq!(captured["report"]["completed_requests"], 1);
+        assert_eq!(
+            captured["report"]["per_request"][0]["request_id"],
+            "authored-id"
+        );
+        assert_eq!(
+            captured["artifacts"]["requests"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            captured["artifacts"]["requests"][0]["request_id"],
+            captured["report"]["per_request"][0]["uuid"]
+        );
     }
 }

@@ -24,7 +24,8 @@ mod vllm_backend;
 #[cfg(test)]
 mod vllm_firewall_tests;
 
-pub(crate) use g1_manager::DestinationReservation;
-pub(crate) use g1_manager::G1Manager;
+pub(crate) use g1_manager::{
+    DestinationReservation, G1Manager, NativeAllocation, SourceReuseDependency,
+};
 pub(crate) use sglang_backend::SglangKvManager;
 pub(crate) use vllm_backend::BlockRequestLease;

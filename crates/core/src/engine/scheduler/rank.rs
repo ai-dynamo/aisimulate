@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 use uuid::Uuid;
 
 use crate::engine::common::perf_model::PerfModel;
@@ -17,8 +17,9 @@ use crate::engine::common::protocols::{
 use crate::engine::generalized::{CommandContext, RankEngine, RankIdentity, RankPass};
 use crate::engine::{
     Admission, Backend, Command, CommandEffects, CommandResult, EngineConfig, ForwardPassMetrics,
-    HandoffId, LifecycleEvent, Metrics, Output, PassCompletionEffects, PassStartEffects,
-    PendingPass, PreemptionMode, Request, TimingModel, TransferTimingMode, WorkerType,
+    HandoffId, HostOffloadObserver, LifecycleEvent, Metrics, Output, PassCompletionEffects,
+    PassStartEffects, PendingPass, PreemptionMode, Request, TimingModel, TransferTimingMode,
+    WorkerType,
 };
 
 use super::{
@@ -43,6 +44,10 @@ pub struct SchedulerRank {
 }
 
 impl SchedulerRank {
+    pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
+        self.core.set_host_offload_observer(observer);
+    }
+
     pub fn new_with_timing_model(
         identity: RankIdentity,
         config: &EngineConfig,
@@ -50,6 +55,10 @@ impl SchedulerRank {
         seed_offset: u64,
     ) -> Result<Self> {
         config.validate()?;
+        ensure!(
+            config.native_host_offload.is_none() || identity.dp_size.get() == 1,
+            "native_host_offload supports only dp_size=1 in the initial implementation"
+        );
         let args = core_args(config, timing);
         let capture_kv_events = config.emit_kv_events;
         let core = match config.backend {
@@ -119,7 +128,7 @@ impl RankEngine for SchedulerRank {
     type PassStartEffects = PassStartEffects;
     type PendingPass = PendingPass;
     type PassCompletionEffects = PassCompletionEffects;
-    type InternalEffects = ();
+    type InternalEffects = PassStartEffects;
 
     fn new(identity: RankIdentity, config: &Self::Config) -> Result<Self> {
         let timing = config.built_in_timing_model()?;
@@ -136,15 +145,19 @@ impl RankEngine for SchedulerRank {
         let pending_suppression = pending_output_suppression(&command, &self.handoff_requests);
         let handoff_update = handoff_tracking_update(&command);
         let core_command = Self::core_command(command);
-        let mut effects = self
-            .core
-            .apply_command_effects(core_command, context.allow_immediate_admission())?;
-        // Preserve the scheduler's command boundary: native G1 publishes KV
-        // mutations into the rank-local capture sink, while command effects
-        // are the only observation returned to the driver at this point. If
-        // these events remain buffered, a later pass may drain and discard an
-        // incomplete prefix of the stream before the Router observes it.
-        effects.kv_events.extend(self.core.drain_kv_events());
+        let mut effects = self.core.apply_command_effects_at(
+            core_command,
+            context.allow_immediate_admission(),
+            context.now_ms,
+        )?;
+        // Preserve the scheduler's command boundary when no model step is in
+        // flight: native G1 mutations produced by the command belong to its
+        // returned effects. Mid-pass mutations remain buffered so neither a
+        // command nor a due physical transfer can expose KV state before the
+        // shared completion boundary.
+        if !context.pass_in_flight {
+            effects.kv_events.extend(self.core.drain_kv_events());
+        }
         let suppressed_pending_output = if let (Some((request_id, discard_on_noop)), Some(pending)) =
             (pending_suppression, pending_pass)
             && (effects.result != CoreCommandResult::Noop || discard_on_noop)
@@ -178,7 +191,7 @@ impl RankEngine for SchedulerRank {
     }
 
     fn is_ready(&self) -> bool {
-        !self.core.is_drained()
+        self.core.is_ready()
     }
 
     fn waiting_for_external_command(&self) -> bool {
@@ -208,6 +221,7 @@ impl RankEngine for SchedulerRank {
         mut pending: Self::PendingPass,
         end_ms: f64,
     ) -> Result<Self::PassCompletionEffects> {
+        self.core.complete_engine_boundary(end_ms);
         // The preserved scheduler retries deferred destination reservations
         // when a forward pass releases capacity. Keep that wakeup at the
         // pass-completion boundary: command-time retry is suppressed while a
@@ -246,6 +260,7 @@ impl RankEngine for SchedulerRank {
         started_at_ms: f64,
         end_ms: f64,
     ) -> Result<Option<Self::PassCompletionEffects>> {
+        self.core.complete_engine_boundary(end_ms);
         let lifecycle_events = self
             .core
             .retry_pending_destinations()
@@ -266,15 +281,22 @@ impl RankEngine for SchedulerRank {
     }
 
     fn next_internal_deadline_ms(&self) -> Option<f64> {
-        None
+        self.core.next_internal_deadline_ms()
     }
 
     fn process_internal_work(
         &mut self,
-        _now_ms: f64,
-        _pass_in_flight: bool,
+        now_ms: f64,
+        pass_in_flight: bool,
     ) -> Result<Self::InternalEffects> {
-        Ok(())
+        if pass_in_flight {
+            return Ok(PassStartEffects::default());
+        }
+        self.core.process_internal_work(now_ms);
+        Ok(PassStartEffects {
+            kv_events: self.core.drain_kv_events(),
+            ..PassStartEffects::default()
+        })
     }
 
     fn is_drained(&self) -> bool {
@@ -354,7 +376,9 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         aic_nextn: config.aic_nextn,
         aic_nextn_accept_rates: config.aic_nextn_accept_rates.clone(),
         aic_mtp_seed: config.aic_mtp_seed,
-        kv_bytes_per_token: config.kv_bytes_per_token,
+        kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,
+        kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
+        native_host_offload: config.native_host_offload,
         kv_transfer_bandwidth: config.kv_transfer_bandwidth,
         kv_transfer_timing_mode: match config.kv_transfer_timing_mode {
             TransferTimingMode::FullPrompt => KvTransferTimingMode::FullPrompt,
@@ -504,6 +528,7 @@ fn split_pass(
             .map(|admission| Admission {
                 request_id: admission.uuid,
                 reused_input_tokens: admission.reused_input_tokens,
+                cache_tier_attribution: admission.cache_tier_attribution,
             })
             .collect(),
         pressure_events,
@@ -550,9 +575,52 @@ fn map_fpm(fpm: crate::engine::common::protocols::ForwardPassSnapshot) -> Forwar
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
+    use std::sync::Mutex;
 
     use super::*;
-    use crate::engine::{PressureKind, TimingModelConfig};
+    use crate::engine::{
+        HostOffloadObservation, HostOffloadObservationData, NativeHostOffloadConfig, PressureKind,
+        TimingModelConfig,
+    };
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct CapturedHostEvent {
+        request_id: Uuid,
+        kind: &'static str,
+        at_ms: f64,
+    }
+
+    #[derive(Default)]
+    struct HostEventCapture(Mutex<Vec<CapturedHostEvent>>);
+
+    impl HostEventCapture {
+        fn snapshot(&self) -> Vec<CapturedHostEvent> {
+            self.0.lock().expect("host event capture poisoned").clone()
+        }
+    }
+
+    impl HostOffloadObserver for HostEventCapture {
+        fn record(&self, observation: HostOffloadObservation<'_>) {
+            let (kind, at_ms) = match observation.event {
+                HostOffloadObservationData::LoadQueued { at_ms, .. } => ("load_queued", at_ms),
+                HostOffloadObservationData::LoadCompleted { at_ms, .. } => {
+                    ("load_completed", at_ms)
+                }
+                HostOffloadObservationData::LoadCancelled { at_ms, .. } => {
+                    ("load_cancelled", at_ms)
+                }
+                _ => return,
+            };
+            self.0
+                .lock()
+                .expect("host event capture poisoned")
+                .push(CapturedHostEvent {
+                    request_id: observation.request_id,
+                    kind,
+                    at_ms,
+                });
+        }
+    }
 
     fn rank() -> SchedulerRank {
         rank_for_worker(WorkerType::Aggregated)
@@ -581,6 +649,117 @@ mod tests {
             &config,
         )
         .unwrap()
+    }
+
+    fn host_rank(observer: Arc<HostEventCapture>) -> SchedulerRank {
+        host_rank_with_capacity(observer, 2, 4)
+    }
+
+    fn host_rank_with_capacity(
+        observer: Arc<HostEventCapture>,
+        g1_blocks: usize,
+        host_blocks: usize,
+    ) -> SchedulerRank {
+        let config = EngineConfig {
+            num_gpu_blocks: g1_blocks,
+            block_size: 4,
+            max_num_seqs: 4,
+            max_num_batched_tokens: 16,
+            kv_cache_bytes_per_token: Some(250_000),
+            native_host_offload: Some(
+                NativeHostOffloadConfig::new(host_blocks).with_bandwidths(1.0, 1.0),
+            ),
+            speedup_ratio: 0.0,
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 10.0,
+                decode_ms: 10.0,
+            },
+            ..EngineConfig::default()
+        };
+        let mut rank = SchedulerRank::new(
+            RankIdentity {
+                worker_id: 2,
+                dp_rank: 0,
+                dp_size: NonZeroU32::MIN,
+            },
+            &config,
+        )
+        .unwrap();
+        rank.set_host_offload_observer(observer);
+        rank
+    }
+
+    fn submit_completed_prompt(
+        rank: &mut SchedulerRank,
+        request_id: Uuid,
+        tokens: Vec<u32>,
+        now_ms: f64,
+    ) -> f64 {
+        let effects = rank
+            .apply_command_effects(
+                Command::Submit(Request {
+                    request_id,
+                    tokens,
+                    max_output_tokens: 0,
+                    output_token_ids: None,
+                }),
+                CommandContext {
+                    now_ms,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(effects.result, CommandResult::Submitted(request_id));
+        let pass = rank.execute_pass(now_ms).unwrap();
+        let end_ms = pass.end_ms;
+        rank.complete_pass(pass.pending, end_ms).unwrap();
+        end_ms
+    }
+
+    /// Seed G2 with one prompt, evict it from G1, then queue an H2D owned by a
+    /// still-pending source handoff. Returns `(handoff_id, request_id, due_ms)`.
+    fn queue_source_h2d(rank: &mut SchedulerRank) -> (HandoffId, Uuid, f64) {
+        let seed_id = Uuid::from_u128(93_001);
+        let seed_end = submit_completed_prompt(rank, seed_id, vec![1, 2, 3, 4], 0.0);
+        let store_due = rank.next_internal_deadline_ms().unwrap();
+        assert!(store_due >= seed_end);
+        rank.process_internal_work(store_due, false).unwrap();
+
+        let evict_id = Uuid::from_u128(93_002);
+        let evict_end =
+            submit_completed_prompt(rank, evict_id, vec![5, 6, 7, 8, 9, 10, 11, 12], store_due);
+        let mut restore_at_ms = evict_end;
+        while let Some(deadline) = rank.next_internal_deadline_ms() {
+            restore_at_ms = restore_at_ms.max(deadline);
+            rank.process_internal_work(restore_at_ms, false).unwrap();
+        }
+
+        let handoff_id = HandoffId::from(Uuid::from_u128(93_003));
+        let restore_id = Uuid::from_u128(93_004);
+        let effects = rank
+            .apply_command_effects(
+                Command::SubmitHandoffPrefill {
+                    handoff_id,
+                    request: Request {
+                        request_id: restore_id,
+                        tokens: vec![1, 2, 3, 4],
+                        max_output_tokens: 0,
+                        output_token_ids: None,
+                    },
+                },
+                CommandContext {
+                    now_ms: restore_at_ms,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(effects.result, CommandResult::Submitted(restore_id));
+        let pass = rank.execute_pass(restore_at_ms).unwrap();
+        rank.complete_pass(pass.pending, pass.end_ms).unwrap();
+        let due_ms = rank.next_internal_deadline_ms().unwrap();
+        (handoff_id, restore_id, due_ms)
     }
 
     fn start_request_pass(
@@ -688,6 +867,274 @@ mod tests {
         assert_eq!(effects.result, CommandResult::Noop);
         assert!(effects.suppressed_pending_output);
         assert!(pending.effects.outputs.is_empty());
+    }
+
+    #[test]
+    fn mid_pass_command_and_internal_call_keep_due_h2d_hidden() {
+        let observer = Arc::new(HostEventCapture::default());
+        let mut rank = host_rank(Arc::clone(&observer));
+        let (_handoff_id, restore_id, h2d_due_ms) = queue_source_h2d(&mut rank);
+        assert!(
+            observer
+                .snapshot()
+                .iter()
+                .any(|event| { event.request_id == restore_id && event.kind == "load_queued" })
+        );
+
+        let busy_id = Uuid::from_u128(93_005);
+        let submission = rank
+            .apply_command_effects(
+                Command::Submit(Request {
+                    request_id: busy_id,
+                    tokens: vec![21, 22, 23, 24],
+                    max_output_tokens: 0,
+                    output_token_ids: None,
+                }),
+                CommandContext {
+                    now_ms: h2d_due_ms - 0.5,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(submission.result, CommandResult::Submitted(busy_id));
+        let pass = rank.execute_pass(h2d_due_ms - 0.5).unwrap();
+        assert!(pass.end_ms > h2d_due_ms);
+        let mut pending = pass.pending;
+
+        let arrival_id = Uuid::from_u128(93_006);
+        let arrival = rank
+            .apply_command_effects(
+                Command::Submit(Request {
+                    request_id: arrival_id,
+                    tokens: vec![31, 32, 33, 34],
+                    max_output_tokens: 0,
+                    output_token_ids: None,
+                }),
+                CommandContext {
+                    now_ms: h2d_due_ms + 0.5,
+                    pass_in_flight: true,
+                },
+                Some(&mut pending),
+            )
+            .unwrap();
+        assert_eq!(arrival.result, CommandResult::Submitted(arrival_id));
+        assert!(arrival.kv_events.is_empty());
+        assert!(
+            !observer
+                .snapshot()
+                .iter()
+                .any(|event| { event.request_id == restore_id && event.kind == "load_completed" })
+        );
+
+        let internal = rank.process_internal_work(h2d_due_ms + 0.5, true).unwrap();
+        assert_eq!(internal, PassStartEffects::default());
+        assert!(
+            !observer
+                .snapshot()
+                .iter()
+                .any(|event| { event.request_id == restore_id && event.kind == "load_completed" })
+        );
+
+        rank.complete_pass(pending, pass.end_ms).unwrap();
+        let events = observer.snapshot();
+        assert!(
+            events.iter().any(|event| {
+                event.request_id == restore_id
+                    && event.kind == "load_completed"
+                    // The observation retains the physical completion timestamp,
+                    // even though it is emitted only at the later model boundary.
+                    && event.at_ms == h2d_due_ms
+            }),
+            "events: {events:?}, pass end: {}",
+            pass.end_ms
+        );
+    }
+
+    #[test]
+    fn rejected_submit_at_due_deadline_does_not_settle_host_work() {
+        let observer = Arc::new(HostEventCapture::default());
+        let mut rank = host_rank(Arc::clone(&observer));
+        let (_handoff_id, restore_id, h2d_due_ms) = queue_source_h2d(&mut rank);
+        let events_before = observer.snapshot();
+        let metrics_before = rank.metrics();
+        let deadline_before = rank.next_internal_deadline_ms();
+
+        let error = rank
+            .apply_command_effects(
+                Command::Submit(Request {
+                    request_id: restore_id,
+                    tokens: vec![41, 42, 43, 44],
+                    max_output_tokens: 0,
+                    output_token_ids: None,
+                }),
+                CommandContext {
+                    now_ms: h2d_due_ms + 1.0,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("already active"));
+        assert_eq!(rank.metrics(), metrics_before);
+        assert_eq!(rank.next_internal_deadline_ms(), deadline_before);
+        assert_eq!(observer.snapshot(), events_before);
+        assert!(rank.core.drain_kv_events().is_empty());
+    }
+
+    #[test]
+    fn same_pass_queues_multiple_host_loads_with_checked_headroom_updates() {
+        let observer = Arc::new(HostEventCapture::default());
+        let mut rank = host_rank_with_capacity(Arc::clone(&observer), 4, 8);
+        let mut now_ms = 0.0;
+        for (request_id, tokens) in [
+            (Uuid::from_u128(95_001), vec![1, 2, 3, 4]),
+            (Uuid::from_u128(95_002), vec![11, 12, 13, 14]),
+        ] {
+            now_ms = submit_completed_prompt(&mut rank, request_id, tokens, now_ms);
+            while let Some(deadline) = rank.next_internal_deadline_ms() {
+                now_ms = now_ms.max(deadline);
+                rank.process_internal_work(now_ms, false).unwrap();
+            }
+        }
+        now_ms = submit_completed_prompt(
+            &mut rank,
+            Uuid::from_u128(95_003),
+            (100..116).collect(),
+            now_ms,
+        );
+        while let Some(deadline) = rank.next_internal_deadline_ms() {
+            now_ms = now_ms.max(deadline);
+            rank.process_internal_work(now_ms, false).unwrap();
+        }
+
+        let loads = [
+            (Uuid::from_u128(95_004), vec![1, 2, 3, 4, 21, 22, 23, 24]),
+            (
+                Uuid::from_u128(95_005),
+                vec![11, 12, 13, 14, 31, 32, 33, 34],
+            ),
+        ];
+        for (request_id, tokens) in &loads {
+            let effects = rank
+                .apply_command_effects(
+                    Command::Submit(Request {
+                        request_id: *request_id,
+                        tokens: tokens.clone(),
+                        max_output_tokens: 0,
+                        output_token_ids: None,
+                    }),
+                    CommandContext {
+                        now_ms,
+                        pass_in_flight: false,
+                    },
+                    None,
+                )
+                .unwrap();
+            assert_eq!(effects.result, CommandResult::Submitted(*request_id));
+        }
+
+        let pass = rank.execute_pass(now_ms).unwrap();
+        let events = observer.snapshot();
+        for (request_id, _) in loads {
+            assert!(events.iter().any(|event| {
+                event.request_id == request_id
+                    && event.kind == "load_queued"
+                    && event.at_ms == now_ms
+            }));
+        }
+        rank.complete_pass(pass.pending, pass.end_ms).unwrap();
+    }
+
+    #[test]
+    fn mid_pass_request_and_source_cancel_observe_command_time_without_completing_h2d() {
+        for cancel_source in [false, true] {
+            let observer = Arc::new(HostEventCapture::default());
+            let mut rank = host_rank(Arc::clone(&observer));
+            let (handoff_id, restore_id, h2d_due_ms) = queue_source_h2d(&mut rank);
+
+            let busy_id = Uuid::from_u128(94_000 + u128::from(cancel_source));
+            rank.apply_command_effects(
+                Command::Submit(Request {
+                    request_id: busy_id,
+                    tokens: vec![21, 22, 23, 24],
+                    max_output_tokens: 0,
+                    output_token_ids: None,
+                }),
+                CommandContext {
+                    now_ms: h2d_due_ms - 0.5,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+            let pass = rank.execute_pass(h2d_due_ms - 0.5).unwrap();
+            assert!(pass.end_ms > h2d_due_ms);
+            let mut pending = pass.pending;
+            let cancel_at_ms = h2d_due_ms + 0.5;
+            let command = if cancel_source {
+                Command::CancelSource { handoff_id }
+            } else {
+                Command::CancelRequest {
+                    request_id: restore_id,
+                    discard_pending_output: false,
+                }
+            };
+            let effects = rank
+                .apply_command_effects(
+                    command,
+                    CommandContext {
+                        now_ms: cancel_at_ms,
+                        pass_in_flight: true,
+                    },
+                    Some(&mut pending),
+                )
+                .unwrap();
+            assert_eq!(effects.result, CommandResult::Applied);
+            let events = observer.snapshot();
+            assert!(events.iter().any(|event| {
+                event.request_id == restore_id
+                    && event.kind == "load_cancelled"
+                    && event.at_ms == cancel_at_ms
+            }));
+            assert!(
+                !events.iter().any(|event| {
+                    event.request_id == restore_id && event.kind == "load_completed"
+                })
+            );
+
+            rank.complete_pass(pending, pass.end_ms).unwrap();
+            assert!(
+                !observer.snapshot().iter().any(|event| {
+                    event.request_id == restore_id && event.kind == "load_completed"
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_source_uses_command_time_outside_a_pass() {
+        let observer = Arc::new(HostEventCapture::default());
+        let mut rank = host_rank(Arc::clone(&observer));
+        let (handoff_id, restore_id, h2d_due_ms) = queue_source_h2d(&mut rank);
+        let cancel_at_ms = h2d_due_ms - 0.25;
+
+        let effects = rank
+            .apply_command_effects(
+                Command::CancelSource { handoff_id },
+                CommandContext {
+                    now_ms: cancel_at_ms,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(effects.result, CommandResult::Applied);
+        assert!(observer.snapshot().iter().any(|event| {
+            event.request_id == restore_id
+                && event.kind == "load_cancelled"
+                && event.at_ms == cancel_at_ms
+        }));
     }
 
     #[test]
