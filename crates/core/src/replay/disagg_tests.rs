@@ -2085,6 +2085,35 @@ fn telemetry_heartbeats_do_not_advance_disagg_through_a_capped_idle_gap() {
 }
 
 #[test]
+fn telemetry_only_timestamps_do_not_enter_the_disagg_semantic_drain() {
+    let config = disagg_config();
+    let pending = VecDeque::from([request(9_403, 64, 2, 10.0)]);
+    let (_, baseline_stats) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .run()
+            .unwrap();
+
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let (_, observed_stats) =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_telemetry_observer(1.0, Box::new(observer))
+            .run()
+            .unwrap();
+
+    assert!(baseline_stats.semantic_drain_count > 1);
+    assert_eq!(
+        observed_stats.semantic_drain_count, baseline_stats.semantic_drain_count,
+        "telemetry-only heartbeats must not wake disaggregate semantic replay work"
+    );
+    assert!(samples.lock().unwrap().len() > 2);
+}
+
+#[test]
 fn capped_disagg_telemetry_flushes_t0_observations_without_advancing_accounting() {
     let config = disagg_config();
     let pending = VecDeque::from([request(9_402, 64, 2, 0.0)]);

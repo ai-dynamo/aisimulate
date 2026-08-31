@@ -41,7 +41,10 @@ use std::collections::BinaryHeap;
 use uuid::Uuid;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct AggRuntimeStats;
+pub(crate) struct AggRuntimeStats {
+    #[cfg(test)]
+    semantic_drain_count: usize,
+}
 
 pub(crate) struct AggRuntimeImpl<PlacementPolicyImpl, Observation, Metadata>
 where
@@ -128,7 +131,7 @@ where
             events: BinaryHeap::new(),
             placement,
             progress,
-            stats: AggRuntimeStats,
+            stats: AggRuntimeStats::default(),
             fpm_buffer: LatestFpmBuffer::default(),
             traffic: TrafficAccumulators::new(),
             max_sim_time_ms: None,
@@ -718,6 +721,10 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> anyhow::Result<()> {
+        #[cfg(test)]
+        {
+            self.stats.semantic_drain_count += 1;
+        }
         loop {
             let mut changed = false;
             changed |= self.apply_worker_completions()?;
@@ -981,6 +988,18 @@ where
         self.now_ms = new_now_ms;
     }
 
+    /// Advance to an observational heartbeat without waking semantic replay
+    /// work. Entering `drain_current_timestamp` here would retry deferred
+    /// workers and make native scheduler progress depend on sample cadence.
+    fn sample_telemetry_only_timestamp(&mut self, at_ms: f64) -> anyhow::Result<()> {
+        self.advance_now_ms(at_ms);
+        let sampled = self.apply_telemetry_ticks()?;
+        if !sampled {
+            bail!("telemetry-only timestamp did not publish its scheduled sample");
+        }
+        Ok(())
+    }
+
     fn apply_scaling_with_tick(
         &mut self,
         target_workers: usize,
@@ -1194,6 +1213,10 @@ where
             }
             let next_timestamp_ms = next_timestamp_ms
                 .expect("canonical replay activity must have a next scheduled timestamp");
+            if next_timestamp_ms < canonical_timestamp_ms {
+                self.sample_telemetry_only_timestamp(next_timestamp_ms)?;
+                continue;
+            }
             self.advance_now_ms(next_timestamp_ms);
             self.drain_current_timestamp()?;
         }
@@ -1211,3 +1234,7 @@ where
         Ok((self.collector, self.stats))
     }
 }
+
+#[cfg(test)]
+#[path = "agg_tests.rs"]
+mod tests;

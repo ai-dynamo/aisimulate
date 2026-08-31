@@ -90,6 +90,7 @@ pub(crate) struct DisaggRuntimeStats {
     max_prefill_router_pending_count: usize,
     max_decode_router_pending_count: usize,
     transition_log: Vec<DisaggTransition>,
+    semantic_drain_count: usize,
 }
 
 #[cfg(not(test))]
@@ -2420,6 +2421,10 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> Result<()> {
+        #[cfg(test)]
+        {
+            self.stats.semantic_drain_count += 1;
+        }
         loop {
             let mut changed = self.prune_stale_transfer_events();
             changed |= self.apply_worker_completions()?;
@@ -2829,6 +2834,18 @@ where
         self.now_ms = new_now_ms;
     }
 
+    /// Advance to an observational heartbeat without waking semantic replay
+    /// work. Entering `drain_current_timestamp` here would retry deferred
+    /// workers or pending handoff actions and make progress sample-dependent.
+    fn sample_telemetry_only_timestamp(&mut self, at_ms: f64) -> Result<()> {
+        self.advance_now_ms(at_ms);
+        let sampled = self.apply_telemetry_ticks()?;
+        if !sampled {
+            bail!("telemetry-only timestamp did not publish its scheduled sample");
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn total_prefill_count(&self) -> usize {
         self.prefill_engine.worker_count()
@@ -3222,6 +3239,10 @@ where
             }
             let next_timestamp_ms = next_timestamp_ms
                 .expect("canonical replay activity must have a next scheduled timestamp");
+            if next_timestamp_ms < canonical_timestamp_ms {
+                self.sample_telemetry_only_timestamp(next_timestamp_ms)?;
+                continue;
+            }
             self.advance_now_ms(next_timestamp_ms);
             self.drain_current_timestamp()?;
         }
