@@ -387,7 +387,7 @@ impl Dsv4ModuleOp {
             Err(err) => return Err(err),
         };
         let interp_prefix = prefix_bounds
-            .is_some_and(|(count, first, last)| count >= 2 && first <= prefix && prefix <= last);
+            .is_some_and(|(first, last)| first < last && first <= prefix && prefix <= last);
 
         // Grid cache key mirrors Python's
         // (key_tag, quants, num_heads, cr, depth); `architecture` stands in
@@ -406,7 +406,7 @@ impl Dsv4ModuleOp {
             let sol3 = |c: &[f64]| sol_at(c[2] as i64, c[1] as i64, c[0] as i64); // c=(prefix, s, b)
             let key = format!("dsv4_ctx_attn:{key_stem}:3");
             let grid = db.util_grids.get_or_try_build(&key, || {
-                let points = match db.dsv4.context_points(
+                match db.dsv4.context_points(
                     self.attn_kind,
                     self.num_heads,
                     self.native_heads,
@@ -414,11 +414,12 @@ impl Dsv4ModuleOp {
                     fmha,
                     gemm,
                 ) {
-                    Ok(points) => Some(points),
-                    Err(err) if err.is_missing_perf_data() => None,
-                    Err(err) => return Err(err),
-                };
-                Ok(points.map(|points| UtilGrid::new(util_empirical::build_samples(points, sol3))))
+                    Ok(points) => Ok(Some(UtilGrid::new(util_empirical::build_samples(
+                        points, sol3,
+                    )))),
+                    Err(err) if err.is_missing_perf_data() => Ok(None),
+                    Err(err) => Err(err),
+                }
             })?;
             let query = [f64::from(prefix), f64::from(s), f64::from(b)];
             let (latency, _) = util_empirical::estimate(sol_q, &query, grid.as_deref(), 1.0)?;
@@ -431,21 +432,20 @@ impl Dsv4ModuleOp {
             let grid = db.util_grids.get_or_try_build(&key, || {
                 // Python `require_data_slice(_slice(), 0)`: no prefix=0 rows
                 // is a typed coverage miss -> no grid.
-                let p0_points = match db.dsv4.context_prefix_points(
+                match db.dsv4.context_p0_points(
                     self.attn_kind,
                     self.num_heads,
                     self.native_heads,
                     kv,
                     fmha,
                     gemm,
-                    0,
                 ) {
-                    Ok(points) => points,
-                    Err(err) if err.is_missing_perf_data() => None,
-                    Err(err) => return Err(err),
-                };
-                Ok(p0_points
-                    .map(|points| UtilGrid::new(util_empirical::build_samples(points, sol2))))
+                    Ok(points) => Ok(Some(UtilGrid::new(util_empirical::build_samples(
+                        points, sol2,
+                    )))),
+                    Err(err) if err.is_missing_perf_data() => Ok(None),
+                    Err(err) => Err(err),
+                }
             })?;
             let query = [f64::from(s) + f64::from(prefix), f64::from(b)];
             let (latency, _) = util_empirical::estimate(sol_q, &query, grid.as_deref(), 1.0)?;

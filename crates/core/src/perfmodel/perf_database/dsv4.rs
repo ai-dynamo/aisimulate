@@ -590,9 +590,8 @@ impl Dsv4Table {
         )
     }
 
-    /// Number and inclusive bounds of the collected prefix keys. This reads
-    /// only the resolved context node's top-level map; it does not flatten
-    /// the `(prefix, s, batch)` tree.
+    /// Inclusive bounds of collected prefix keys whose subtree has a leaf.
+    /// This does not flatten the `(prefix, s, batch)` tree.
     pub(crate) fn context_prefix_bounds(
         &self,
         attn_kind: AttnKind,
@@ -601,7 +600,7 @@ impl Dsv4Table {
         kv_quant: KvCacheQuantMode,
         fmha_quant: FmhaQuantMode,
         gemm_quant: GemmQuantMode,
-    ) -> Result<(usize, u32, u32), AicError> {
+    ) -> Result<(u32, u32), AicError> {
         let node = self.select_context_node(
             attn_kind,
             local_heads,
@@ -610,12 +609,7 @@ impl Dsv4Table {
             fmha_quant,
             gemm_quant,
         )?;
-        context_prefix_bounds(node).ok_or_else(|| {
-            AicError::PerfDatabase(format!(
-                "DSV4 context module data empty for local_heads={local_heads}, \
-                 attn_kind={attn_kind:?}"
-            ))
-        })
+        context_prefix_bounds(node).ok_or_else(|| context_empty_err(local_heads, attn_kind))
     }
 
     /// Collected context-module points `(prefix, s, b) -> latency` for the
@@ -644,18 +638,14 @@ impl Dsv4Table {
         )?;
         let points = perf_interp::node_points(node);
         if points.is_empty() {
-            return Err(AicError::PerfDatabase(format!(
-                "DSV4 context module data empty for local_heads={local_heads}, \
-                 attn_kind={attn_kind:?}"
-            )));
+            return Err(context_empty_err(local_heads, attn_kind));
         }
         Ok(points)
     }
 
-    /// Collected `(s, b) -> latency` points under one exact context prefix.
-    /// The subtree is selected before flattening, so the prefix-zero fallback
-    /// does not visit rows for other prefixes.
-    pub(crate) fn context_prefix_points(
+    /// Collected `(s, b) -> latency` points under context prefix zero. The
+    /// subtree is selected before flattening, so other prefixes are not visited.
+    pub(crate) fn context_p0_points(
         &self,
         attn_kind: AttnKind,
         local_heads: u32,
@@ -663,8 +653,7 @@ impl Dsv4Table {
         kv_quant: KvCacheQuantMode,
         fmha_quant: FmhaQuantMode,
         gemm_quant: GemmQuantMode,
-        prefix: u32,
-    ) -> Result<Option<Vec<(Vec<f64>, f64)>>, AicError> {
+    ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
         let node = self.select_context_node(
             attn_kind,
             local_heads,
@@ -673,7 +662,7 @@ impl Dsv4Table {
             fmha_quant,
             gemm_quant,
         )?;
-        Ok(context_prefix_points(node, prefix))
+        context_p0_points(node).ok_or_else(|| context_empty_err(local_heads, attn_kind))
     }
 
     /// Collected generation-module points `(b, s_total) -> latency` for the
@@ -1143,20 +1132,39 @@ fn select_resolved<'a>(
     Ok(&by_local[&head])
 }
 
-fn context_prefix_bounds(node: &Node) -> Option<(usize, u32, u32)> {
-    let Node::Branch(prefixes) = node else {
-        return None;
-    };
-    let (&first, _) = prefixes.first_key_value()?;
-    let (&last, _) = prefixes.last_key_value()?;
-    Some((prefixes.len(), first, last))
+fn context_empty_err(local_heads: u32, attn_kind: AttnKind) -> AicError {
+    AicError::PerfDatabase(format!(
+        "DSV4 context module data empty for local_heads={local_heads}, \
+         attn_kind={attn_kind:?}"
+    ))
 }
 
-fn context_prefix_points(node: &Node, prefix: u32) -> Option<Vec<(Vec<f64>, f64)>> {
+fn node_has_leaf(node: &Node) -> bool {
+    match node {
+        Node::Leaf(_) => true,
+        Node::Branch(children) => children.values().any(node_has_leaf),
+    }
+}
+
+fn context_prefix_bounds(node: &Node) -> Option<(u32, u32)> {
     let Node::Branch(prefixes) = node else {
         return None;
     };
-    let points = perf_interp::node_points(prefixes.get(&prefix)?);
+    let first = prefixes
+        .iter()
+        .find_map(|(&prefix, child)| node_has_leaf(child).then_some(prefix))?;
+    let last = prefixes
+        .iter()
+        .rev()
+        .find_map(|(&prefix, child)| node_has_leaf(child).then_some(prefix))?;
+    Some((first, last))
+}
+
+fn context_p0_points(node: &Node) -> Option<Vec<(Vec<f64>, f64)>> {
+    let Node::Branch(prefixes) = node else {
+        return None;
+    };
+    let points = perf_interp::node_points(prefixes.get(&0)?);
     (!points.is_empty()).then_some(points)
 }
 
@@ -1606,18 +1614,30 @@ mod tests {
     }
 
     #[test]
-    fn context_prefix_helpers_read_only_the_selected_subtree() {
+    fn context_prefix_helpers_ignore_empty_subtrees_and_flatten_p0() {
         let mut node = Node::branch();
         node.insert(&[1024, 512, 8], 2.0);
         node.insert(&[0, 256, 4], 1.0);
         node.insert(&[0, 128, 8], 0.5);
+        let Node::Branch(prefixes) = &mut node else {
+            unreachable!("branch constructor returned a leaf")
+        };
+        prefixes.insert(2048, Node::Branch(BTreeMap::from([(1, Node::branch())])));
 
-        assert_eq!(context_prefix_bounds(&node), Some((2, 0, 1024)));
+        assert_eq!(context_prefix_bounds(&node), Some((0, 1024)));
         assert_eq!(
-            context_prefix_points(&node, 0),
+            context_p0_points(&node),
             Some(vec![(vec![128.0, 8.0], 0.5), (vec![256.0, 4.0], 1.0),])
         );
-        assert_eq!(context_prefix_points(&node, 1), None);
+        assert_eq!(context_prefix_bounds(&Node::branch()), None);
+        assert_eq!(context_p0_points(&Node::branch()), None);
+
+        let leaf = Node::Leaf(LeafValue::latency_only(1.0));
+        assert_eq!(context_prefix_bounds(&leaf), None);
+        assert_eq!(context_p0_points(&leaf), None);
+
+        let err = context_empty_err(16, AttnKind::Csa);
+        assert!(err.is_missing_perf_data(), "got {err:?}");
     }
 
     #[test]
