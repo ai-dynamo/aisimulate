@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::super::scaling::{ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::*;
@@ -11,7 +12,6 @@ use crate::engine::{
     Backend as EngineType, EngineConfig as MockEngineArgs, KvEvent, KvEventData,
     TransferTimingMode as KvTransferTimingMode, WorkerType,
 };
-use crate::replay::ReplayReport;
 use crate::replay::components::{AdmissionQueue, NoReplayMetadata, ReplayEngineObservation};
 use crate::replay::core::round_robin::PoolRoundRobinPlacement;
 use crate::replay::core::{EngineEventBatch, NoEngineEvents, PlacementEffects};
@@ -21,6 +21,9 @@ use crate::replay::loadgen::{
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope, AgenticMooncakeHeader,
     AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace, ReplayRequestPayload, SessionTrace,
     Trace, TurnTrace,
+};
+use crate::replay::{
+    ReplayReport, ReplayTelemetryObserver, ReplayTelemetrySampleKind, ReplayTelemetrySnapshot,
 };
 
 struct CaptureOncePolicy {
@@ -44,6 +47,17 @@ impl ReplayScalingPolicy for CaptureOncePolicy {
 
 struct CaptureAndScaleOncePolicy {
     captured: Rc<RefCell<Option<ReplayScalingSnapshot>>>,
+}
+
+struct CaptureTelemetryObserver {
+    samples: Arc<Mutex<Vec<ReplayTelemetrySnapshot>>>,
+}
+
+impl ReplayTelemetryObserver for CaptureTelemetryObserver {
+    fn on_sample(&mut self, snapshot: ReplayTelemetrySnapshot) -> anyhow::Result<()> {
+        self.samples.lock().unwrap().push(snapshot);
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -663,23 +677,10 @@ fn scaling_tick_emits_idle_fpm_for_both_disagg_pools() {
         assert_eq!(snapshots[0].1.num_queued_prefill, 0);
         assert_eq!(snapshots[0].1.num_queued_decode, 0);
     }
-    assert_eq!(metrics.prefill_scheduler_metrics.len(), 1);
-    assert_eq!(metrics.decode_scheduler_metrics.len(), 1);
-    for snapshots in [
-        &metrics.prefill_scheduler_metrics,
-        &metrics.decode_scheduler_metrics,
-    ] {
-        assert_eq!(snapshots[0].worker_id, 0);
-        assert_eq!(snapshots[0].dp_rank, 0);
-        assert_eq!(snapshots[0].sampled_at_ms, 2_000.0);
-        assert_eq!(snapshots[0].total_blocks, 256);
-    }
-    assert_eq!(metrics.router_pending_prefill_requests, 0);
-    assert_eq!(metrics.router_pending_decode_requests, 0);
 }
 
 #[test]
-fn scaling_snapshot_reports_each_disagg_router_queue_before_scale_up() {
+fn telemetry_samples_router_queues_before_a_coincident_scale_up() {
     let mut config = disagg_config();
     config.num_prefill_workers = 1;
     config.num_decode_workers = 1;
@@ -688,6 +689,10 @@ fn scaling_snapshot_reports_each_disagg_router_queue_before_scale_up() {
     let captured = Rc::new(RefCell::new(None));
     let policy = CaptureAndScaleOncePolicy {
         captured: Rc::clone(&captured),
+    };
+    let telemetry_samples = Arc::new(Mutex::new(Vec::new()));
+    let telemetry_observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&telemetry_samples),
     };
 
     let runtime_config = config.runtime_config(false).unwrap();
@@ -703,6 +708,7 @@ fn scaling_snapshot_reports_each_disagg_router_queue_before_scale_up() {
         },
     )
     .unwrap()
+    .with_telemetry_observer(0.1, Box::new(telemetry_observer))
     .with_scaling_policy(Box::new(policy))
     .run()
     .unwrap();
@@ -712,10 +718,21 @@ fn scaling_snapshot_reports_each_disagg_router_queue_before_scale_up() {
         .take()
         .expect("initial scaling tick must fire");
     assert_eq!(snapshot.now_ms, 0.1);
-    assert_eq!(snapshot.router_pending_prefill_requests, 1);
-    assert_eq!(snapshot.router_pending_decode_requests, 0);
-    assert_eq!(snapshot.prefill_scheduler_metrics.len(), 1);
-    assert_eq!(snapshot.decode_scheduler_metrics.len(), 1);
+    assert_eq!(snapshot.traffic.num_req, 1);
+    assert_eq!(snapshot.active_prefill_ids, vec![0]);
+    assert_eq!(snapshot.active_decode_ids, vec![0]);
+
+    let samples = telemetry_samples.lock().unwrap();
+    let coincident = samples
+        .iter()
+        .find(|sample| {
+            sample.kind == ReplayTelemetrySampleKind::Periodic && sample.sampled_at_ms == 0.1
+        })
+        .expect("telemetry must sample at the coincident scaling timestamp");
+    assert_eq!(coincident.router_pending_prefill_requests, 1);
+    assert_eq!(coincident.router_pending_decode_requests, 0);
+    assert_eq!(coincident.active_prefill_ids, vec![0]);
+    assert_eq!(coincident.active_decode_ids, vec![0]);
 }
 
 fn run_trace_with_details(

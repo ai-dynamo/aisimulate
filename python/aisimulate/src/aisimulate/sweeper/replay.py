@@ -10,6 +10,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
+from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
@@ -72,6 +73,21 @@ class ReplayOutputRequirements:
 
     include_raw_report: bool = False
     capture_per_request: bool = False
+    capture_telemetry: bool = False
+    telemetry_sample_interval_ms: float = 1000.0
+
+    def __post_init__(self) -> None:
+        interval = self.telemetry_sample_interval_ms
+        if self.capture_telemetry and (
+            isinstance(interval, bool)
+            or not isinstance(interval, Real)
+            or not math.isfinite(interval)
+            or interval <= 0.0
+        ):
+            raise ValueError(
+                "telemetry_sample_interval_ms must be finite and positive "
+                "when capture_telemetry is enabled"
+            )
 
 
 @dataclass(frozen=True, order=True)

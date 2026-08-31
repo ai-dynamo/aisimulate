@@ -87,7 +87,8 @@ pub(super) fn pop_ready_worker_completions<Events: EngineEventBatch>(
         SimulationEventKind::EnginePassCompletion(completion) => Some(completion),
         SimulationEventKind::TransferComplete { .. }
         | SimulationEventKind::WorkerReady { .. }
-        | SimulationEventKind::ScalingTick => {
+        | SimulationEventKind::ScalingTick
+        | SimulationEventKind::TelemetryTick => {
             unreachable!("peeked engine completion event must match popped event")
         }
     }
@@ -184,6 +185,36 @@ pub(super) fn pop_ready_scaling_tick<Events: EngineEventBatch>(
         return false;
     }
     if !matches!(event.kind, SimulationEventKind::ScalingTick) {
+        return false;
+    }
+    events.pop().expect("event must exist after peek");
+    true
+}
+
+pub(super) fn push_telemetry_tick<Events: EngineEventBatch>(
+    events: &mut BinaryHeap<SimulationEvent<Events>>,
+    next_event_seq: &mut u64,
+    at_ms: f64,
+) {
+    events.push(SimulationEvent {
+        at_ms,
+        seq_no: *next_event_seq,
+        kind: SimulationEventKind::TelemetryTick,
+    });
+    *next_event_seq += 1;
+}
+
+pub(super) fn pop_ready_telemetry_tick<Events: EngineEventBatch>(
+    events: &mut BinaryHeap<SimulationEvent<Events>>,
+    now_ms: f64,
+) -> bool {
+    let Some(event) = events.peek() else {
+        return false;
+    };
+    if event.at_ms != now_ms {
+        return false;
+    }
+    if !matches!(event.kind, SimulationEventKind::TelemetryTick) {
         return false;
     }
     events.pop().expect("event must exist after peek");

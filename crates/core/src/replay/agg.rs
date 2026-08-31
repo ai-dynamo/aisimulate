@@ -14,14 +14,19 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_worker_completions,
-    pop_ready_worker_ready, push_scaling_tick, push_worker_completions, push_worker_ready,
+    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
+    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
+    push_worker_completions, push_worker_ready,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
+use super::telemetry::{
+    ReplaySchedulerIntervalMetrics, ReplayTelemetryObserver, ReplayTelemetryRuntime,
+    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
+};
 use super::{
     components::{
         AdmissionQueue, EngineComponent, EngineEffects, EnginePassMode, ReplayAdmissionMetadata,
-        ReplayEngineObservation, ReplayReadyArrival, TrafficAccumulator,
+        ReplayEngineObservation, ReplayReadyArrival, TrafficAccumulators,
     },
     state::AggRequestState,
 };
@@ -61,13 +66,15 @@ where
     /// Latest forward pass metric per worker/rank since the previous scaling tick.
     fpm_buffer: LatestFpmBuffer,
     /// Traffic statistics accumulated between scaling ticks.
-    traffic: TrafficAccumulator,
+    traffic: TrafficAccumulators,
     /// Optional cap on simulated wall-clock time. When set, `run()` exits
     /// gracefully once the next scheduled timestamp exceeds this cap, leaving
     /// any in-flight requests as incomplete in the report.
     max_sim_time_ms: Option<f64>,
     /// Optional scaling component. When set, `run()` seeds recurring `ScalingTick` events.
     scaling_policy: Option<Box<dyn ReplayScalingPolicy>>,
+    /// Optional policy-neutral virtual-time telemetry sampler.
+    telemetry: Option<ReplayTelemetryRuntime>,
     /// Whether to retain the latest FPM snapshot per worker/rank. Only the planner
     /// consumes them, so the plain `run()` path leaves this `false`.
     collect_fpm: bool,
@@ -123,9 +130,10 @@ where
             progress,
             stats: AggRuntimeStats,
             fpm_buffer: LatestFpmBuffer::default(),
-            traffic: TrafficAccumulator::new(),
+            traffic: TrafficAccumulators::new(),
             max_sim_time_ms: None,
             scaling_policy: None,
+            telemetry: None,
             collect_fpm: false,
         })
     }
@@ -176,6 +184,18 @@ where
                 .activate_worker(worker_id, self.dp_size, self.now_ms);
         }
         self.scaling_policy = Some(policy);
+        self
+    }
+
+    pub(crate) fn with_telemetry_observer(
+        mut self,
+        sample_interval_ms: f64,
+        observer: Box<dyn ReplayTelemetryObserver>,
+    ) -> Self {
+        debug_assert!(sample_interval_ms.is_finite() && sample_interval_ms > 0.0);
+        self.engine.enable_telemetry();
+        self.traffic.enable_telemetry();
+        self.telemetry = Some(ReplayTelemetryRuntime::new(sample_interval_ms, observer));
         self
     }
 
@@ -331,7 +351,7 @@ where
         Ok(uuid)
     }
 
-    /// Return true once no request work remains. Lingering `WorkerReady`/`ScalingTick`
+    /// Return true once no request work remains. Lingering worker/control tick
     /// events carry no work and do not
     /// keep the run alive — otherwise a recurring tick would never let `run()` exit.
     fn is_done(&self) -> bool {
@@ -342,7 +362,7 @@ where
     }
 
     /// Return true once the request workload is complete, even if `WorkerReady`
-    /// or `ScalingTick` events remain in the queue. Lingering startup events for
+    /// or control-tick events remain in the queue. Lingering startup events for
     /// workers that will never receive requests should not block completion.
     fn is_workload_done(&self) -> bool {
         self.cluster_in_flight() == 0
@@ -352,14 +372,15 @@ where
     }
 
     /// True if the event heap is empty or contains only "idle" events that carry no
-    /// pending request work: `WorkerReady` (a worker still starting up) or
-    /// `ScalingTick` (a re-armed scaling heartbeat).
+    /// pending request work: `WorkerReady` or a re-armed control heartbeat.
     fn only_idle_events_remain(&self) -> bool {
         use super::events::SimulationEventKind;
         self.events.iter().all(|e| {
             matches!(
                 e.kind,
-                SimulationEventKind::WorkerReady { .. } | SimulationEventKind::ScalingTick
+                SimulationEventKind::WorkerReady { .. }
+                    | SimulationEventKind::ScalingTick
+                    | SimulationEventKind::TelemetryTick
             )
         })
     }
@@ -742,7 +763,11 @@ where
                 );
             }
             changed |= !removed.is_empty();
-            // Scaling ticks fire last so the policy observes a settled timestamp.
+            // Telemetry observes settled pre-decision state; scaling then fires
+            // last and retains its existing controller semantics.
+            if self.telemetry.is_some() {
+                changed |= self.apply_telemetry_ticks()?;
+            }
             if self.scaling_policy.is_some() {
                 changed |= self.apply_scaling_ticks()?;
             }
@@ -752,6 +777,98 @@ where
             }
         }
 
+        Ok(())
+    }
+
+    fn publish_telemetry_sample(&mut self, kind: ReplayTelemetrySampleKind) -> anyhow::Result<()> {
+        let Some(telemetry) = self.telemetry.as_ref() else {
+            return Ok(());
+        };
+        let sample_ordinal = telemetry.next_sample_ordinal();
+        let interval_start_ms = telemetry.interval_start_ms();
+        let (decode_scheduler_metrics, decode_interval_metrics, traffic) = match kind {
+            ReplayTelemetrySampleKind::Baseline => (
+                self.engine.telemetry_gauges_snapshot(),
+                ReplaySchedulerIntervalMetrics::default(),
+                ReplayTrafficMetricsSnapshot::default(),
+            ),
+            ReplayTelemetrySampleKind::Periodic | ReplayTelemetrySampleKind::Final => {
+                let (gauges, interval) = self.engine.take_telemetry_snapshot()?;
+                (gauges, interval, self.traffic.drain_telemetry(self.now_ms))
+            }
+        };
+        let snapshot = ReplayTelemetrySnapshot {
+            sample_ordinal,
+            kind,
+            interval_start_ms,
+            sampled_at_ms: self.now_ms,
+            traffic,
+            prefill_scheduler_metrics: Vec::new(),
+            decode_scheduler_metrics,
+            prefill_interval_metrics: ReplaySchedulerIntervalMetrics::default(),
+            decode_interval_metrics,
+            router_pending_prefill_requests: 0,
+            router_pending_decode_requests: self.placement.pending_count(),
+            active_prefill_ids: Vec::new(),
+            active_decode_ids: self.engine.active_group_ids(),
+            starting_prefill_ids: Vec::new(),
+            starting_decode_ids: self.engine.starting_group_ids(),
+            draining_prefill_ids: Vec::new(),
+            draining_decode_ids: self.engine.draining_group_ids(),
+        };
+
+        let mut telemetry = self
+            .telemetry
+            .take()
+            .expect("telemetry must remain attached while publishing");
+        let result = telemetry.publish(snapshot);
+        if result.is_ok() && kind != ReplayTelemetrySampleKind::Baseline {
+            telemetry.close_interval(self.now_ms);
+        }
+        self.telemetry = Some(telemetry);
+        result
+    }
+
+    /// Emit a gauge-only baseline and schedule the first periodic sample.
+    fn seed_first_telemetry_tick(&mut self) -> anyhow::Result<()> {
+        let Some(telemetry) = self.telemetry.as_mut() else {
+            return Ok(());
+        };
+        telemetry.start_at(self.now_ms);
+        self.publish_telemetry_sample(ReplayTelemetrySampleKind::Baseline)?;
+        let at_ms = self
+            .telemetry
+            .as_ref()
+            .expect("telemetry must remain attached")
+            .next_periodic_at_ms()?;
+        push_telemetry_tick(&mut self.events, &mut self.next_event_seq, at_ms);
+        Ok(())
+    }
+
+    fn apply_telemetry_ticks(&mut self) -> anyhow::Result<bool> {
+        let mut changed = false;
+        while pop_ready_telemetry_tick(&mut self.events, self.now_ms) {
+            self.publish_telemetry_sample(ReplayTelemetrySampleKind::Periodic)?;
+            changed = true;
+            if !self.is_workload_done() {
+                let next_ms = self
+                    .telemetry
+                    .as_ref()
+                    .expect("telemetry must remain attached")
+                    .next_periodic_at_ms()?;
+                push_telemetry_tick(&mut self.events, &mut self.next_event_seq, next_ms);
+            }
+        }
+        Ok(changed)
+    }
+
+    fn publish_final_telemetry_sample(&mut self) -> anyhow::Result<()> {
+        let Some(telemetry) = self.telemetry.as_ref() else {
+            return Ok(());
+        };
+        if self.now_ms > telemetry.interval_start_ms() {
+            self.publish_telemetry_sample(ReplayTelemetrySampleKind::Final)?;
+        }
         Ok(())
     }
 
@@ -794,11 +911,7 @@ where
                 now_ms: self.now_ms,
                 prefill_fpm: Vec::new(),
                 decode_fpm: self.fpm_buffer.take(),
-                prefill_scheduler_metrics: Vec::new(),
-                decode_scheduler_metrics: self.engine.take_scheduler_metrics_snapshot(self.now_ms),
-                router_pending_prefill_requests: 0,
-                router_pending_decode_requests: self.placement.pending_count(),
-                traffic: self.traffic.drain(self.now_ms),
+                traffic: self.traffic.drain_planner(self.now_ms),
                 active_prefill_ids: Vec::new(),
                 active_decode_ids,
                 starting_prefill_ids: Vec::new(),
@@ -1040,6 +1153,7 @@ where
             bail!("max_sim_time_ms must be a finite, non-negative value; got {cap_ms}");
         }
         self.drain_current_timestamp()?;
+        self.seed_first_telemetry_tick()?;
         // With a planner attached, seed the recurring heartbeat; ticks then fire as
         // events inside drain_current_timestamp.
         self.seed_first_scaling_tick()?;
@@ -1070,6 +1184,8 @@ where
             self.advance_now_ms(next_timestamp_ms);
             self.drain_current_timestamp()?;
         }
+
+        self.publish_final_telemetry_sample()?;
 
         self.progress.finish();
         if let Some(snapshot) = self.admission.agentic_trajectory_snapshot() {

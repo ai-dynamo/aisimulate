@@ -33,6 +33,7 @@ mod runtime_utils;
 pub(crate) mod scaling;
 mod spec;
 pub(crate) mod state;
+mod telemetry;
 
 #[derive(Clone)]
 pub(crate) struct OfflineDisaggReplayConfig {
@@ -164,11 +165,12 @@ pub use report::{
     TraceGoodputStats, TraceInterTokenLatencyStats, TraceLatencyStats, TraceRequestCounts,
     TraceThroughputStats, TraceTrajectoryStats,
 };
-pub use scaling::{
-    NoScaling, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot,
-    SchedulerMetricsSnapshot,
-};
+pub use scaling::{NoScaling, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot};
 pub use spec::{
     CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayRequest,
     ReplayRoutingMetadata, ReplaySpec, ReplayTopology, WorkerPoolSpec, WorkerStage,
+};
+pub use telemetry::{
+    ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot, ReplayTelemetryObserver,
+    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
 };
