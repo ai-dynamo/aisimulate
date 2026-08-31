@@ -88,7 +88,7 @@ class BackendDeploymentSpec:
     num_decode_workers: int = 0
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
     # Appended to preserve the positional constructor slots above.
-    forward_pass_estimator: ForwardPassEstimatorSpec | None = None
+    forward_pass_estimators: dict[str, ForwardPassEstimatorSpec] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

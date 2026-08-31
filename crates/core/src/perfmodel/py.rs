@@ -13,8 +13,11 @@
 //!   Rust `run_agg`. Each method
 //!   releases the GIL around the Rust compute via [`Python::allow_threads`],
 //!   so the Rust compute runs without holding the GIL.
-//! * **Rust → Python → Rust (embedded path).** [`AicEngineBuilder`] is the
-//!   Rust entry point. It crosses into Python once to run
+//! * **Rust → Python → Rust (low-level compiled-engine path).**
+//!   [`AicEngineBuilder`] is reserved for embedders such as Dynamo Mocker that
+//!   need an [`AicEngine`] hot-path handle. It does not construct a
+//!   `ForwardPassPerfModel` and is not exposed to Python Planner, Replay, or
+//!   Sweeper. It crosses into Python once to run
 //!   `aiconfigurator_core.sdk.engine.compile_engine`, then build an [`Engine`]
 //!   from the returned bincode bytes. After that the `predict_*` hot path is
 //!   pure Rust with no GIL.
@@ -835,11 +838,19 @@ struct EngineBuildRequest {
     transfer_policy: Option<Vec<String>>,
 }
 
-/// Ergonomic builder for the Rust -> Python -> Rust compiled-engine entry point.
+/// Low-level builder for a Rust -> Python -> Rust [`AicEngine`] handle.
 ///
-/// Only the model, system, and backend are required. Parallelism defaults to
-/// one, speculative decoding defaults to disabled, and all other options defer
-/// to Python's `compile_engine` defaults.
+/// This is intentionally **not** a forward-pass estimator constructor. It is
+/// retained for Rust embedders such as Dynamo Mocker that directly call the
+/// compiled engine's step-latency methods. Planner, Replay, and Sweeper must use
+/// [`crate::ForwardPassPerfModel::best_available`] with
+/// [`crate::ForwardPassPerfModelConfig`] instead. The builder is not registered
+/// on the Python extension module, which prevents those Python consumers from
+/// treating its independent engine-compilation request as an estimator schema.
+///
+/// Only the model, system, and backend are required for this low-level engine
+/// handle. Parallelism defaults to one, speculative decoding defaults to
+/// disabled, and all other options defer to Python's `compile_engine` defaults.
 #[derive(Clone, Debug)]
 pub struct AicEngineBuilder {
     request: EngineBuildRequest,

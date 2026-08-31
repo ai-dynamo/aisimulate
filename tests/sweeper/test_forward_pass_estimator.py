@@ -12,8 +12,8 @@ import pytest
 import aisimulate.sweeper.forward_pass_estimator as forward_pass_estimator_mod
 from aisimulate.sweeper.config import SearchSpace
 from aisimulate.sweeper.forward_pass_estimator import (
+    ForwardPassEstimatorResolver,
     ForwardPassEstimatorResolutionError,
-    resolve_forward_pass_estimator_specs,
 )
 
 
@@ -26,6 +26,42 @@ def _space(systems_root, **overrides):
     }
     values.update(overrides)
     return SearchSpace(**values)
+
+
+def _agg_sample(**overrides):
+    values = {
+        "deployment_mode": "agg",
+        "backend": "vllm",
+        "tp": 4,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 4,
+        "agg_block_size": 16,
+    }
+    values.update(overrides)
+    return values
+
+
+def _disagg_sample(**overrides):
+    values = {
+        "deployment_mode": "disagg",
+        "backend": "vllm",
+        "prefill_tp": 2,
+        "prefill_pp": 1,
+        "prefill_attention_dp": 1,
+        "prefill_moe_tp": 1,
+        "prefill_moe_ep": 2,
+        "prefill_block_size": 16,
+        "decode_tp": 4,
+        "decode_pp": 1,
+        "decode_attention_dp": 1,
+        "decode_moe_tp": 1,
+        "decode_moe_ep": 4,
+        "decode_block_size": 32,
+    }
+    values.update(overrides)
+    return values
 
 
 def _stub_core(monkeypatch, systems_root, *, versions=("0.10.0", "0.11.0")):
@@ -98,7 +134,9 @@ def test_default_resolution_is_core_owned_concrete_and_reproducible(
 ):
     calls = _stub_core(monkeypatch, tmp_path)
 
-    spec = resolve_forward_pass_estimator_specs(_space(tmp_path))["vllm"]
+    spec = ForwardPassEstimatorResolver(_space(tmp_path)).resolve_candidate(
+        _agg_sample()
+    )["agg"]
 
     assert spec.model_path == "example/model"
     assert spec.system == "example_system"
@@ -110,6 +148,9 @@ def test_default_resolution_is_core_owned_concrete_and_reproducible(
     assert spec.systems_paths == (str(tmp_path),)
     assert spec.performance_data_root == str(tmp_path)
     assert calls[0][0].backend_version is None
+    assert calls[0][0].tp == 4
+    assert calls[0][0].moe_ep_size == 4
+    assert calls[0][0].kv_block_size == 16
     assert spec.config == spec.diagnostics["provenance"]["config"]
 
 
@@ -125,7 +166,7 @@ def test_pinned_policy_and_options_reach_the_canonical_constructor(
         forward_pass_options={"min_observations": 3},
     )
 
-    spec = resolve_forward_pass_estimator_specs(search)["vllm"]
+    spec = ForwardPassEstimatorResolver(search).resolve_candidate(_agg_sample())["agg"]
 
     request, options = calls[0]
     assert request.backend_version == "0.10.0"
@@ -140,9 +181,9 @@ def test_invalid_transfer_policy_fails_through_core(monkeypatch, tmp_path):
     calls = _stub_core(monkeypatch, tmp_path)
 
     with pytest.raises(ForwardPassEstimatorResolutionError, match="transfer_policy"):
-        resolve_forward_pass_estimator_specs(
+        ForwardPassEstimatorResolver(
             _space(tmp_path, transfer_policy="mystery")
-        )
+        ).resolve_candidate(_agg_sample())
 
     assert len(calls) == 1
 
@@ -153,7 +194,9 @@ def test_unknown_pinned_version_fails_through_core(monkeypatch, tmp_path):
     with pytest.raises(
         ForwardPassEstimatorResolutionError, match="unsupported backend_version"
     ):
-        resolve_forward_pass_estimator_specs(_space(tmp_path, backend_version="9.9.9"))
+        ForwardPassEstimatorResolver(
+            _space(tmp_path, backend_version="9.9.9")
+        ).resolve_candidate(_agg_sample())
 
     assert len(calls) == 1
 
@@ -161,18 +204,19 @@ def test_unknown_pinned_version_fails_through_core(monkeypatch, tmp_path):
 def test_fpm_support_is_validated_by_core_before_search(monkeypatch, tmp_path):
     _stub_core(monkeypatch, tmp_path)
     search = _space(tmp_path, backend_version="0.11.0", forward_model="fpm")
+    resolver = ForwardPassEstimatorResolver(search)
 
     with pytest.raises(
         ForwardPassEstimatorResolutionError, match="requires fpm_forward_perf"
     ):
-        resolve_forward_pass_estimator_specs(search)
+        resolver.resolve_candidate(_agg_sample())
 
     version_dir = tmp_path / "data/example_system/dense/vllm/0.11.0"
     version_dir.mkdir(parents=True)
     (version_dir / "fpm_forward_perf.parquet").touch()
     (version_dir / "fpm_forward_perf.metadata.json").write_text("{}")
 
-    spec = resolve_forward_pass_estimator_specs(search)["vllm"]
+    spec = resolver.resolve_candidate(_agg_sample())["agg"]
     assert spec.forward_model == "fpm"
 
 
@@ -182,18 +226,39 @@ def test_fpm_rejects_mtp_through_core_before_search(monkeypatch, tmp_path):
     with pytest.raises(
         ForwardPassEstimatorResolutionError, match="does not support aic_nextn"
     ):
-        resolve_forward_pass_estimator_specs(
+        ForwardPassEstimatorResolver(
             _space(
                 tmp_path,
                 backend_version="0.11.0",
                 forward_model="fpm",
                 aic_nextn=2,
             )
-        )
+        ).resolve_candidate(_agg_sample())
 
 
 def test_invalid_system_path_fails_concisely(tmp_path):
     with pytest.raises(
         ForwardPassEstimatorResolutionError, match="not an existing directory"
     ):
-        resolve_forward_pass_estimator_specs(_space(tmp_path / "missing"))
+        ForwardPassEstimatorResolver(_space(tmp_path / "missing"))
+
+
+def test_disaggregated_roles_are_resolved_exactly_and_cached(monkeypatch, tmp_path):
+    calls = _stub_core(monkeypatch, tmp_path)
+    resolver = ForwardPassEstimatorResolver(_space(tmp_path))
+
+    first = resolver.resolve_candidate(_disagg_sample())
+    second = resolver.resolve_candidate(_disagg_sample())
+
+    assert second == first
+    assert len(calls) == 2
+    assert first["prefill"].config["tp"] == 2
+    assert first["prefill"].config["moe_ep_size"] == 2
+    assert first["prefill"].config["kv_block_size"] == 16
+    assert first["decode"].config["tp"] == 4
+    assert first["decode"].config["moe_ep_size"] == 4
+    assert first["decode"].config["kv_block_size"] == 32
+    assert all(
+        spec.config == spec.diagnostics["provenance"]["config"]
+        for spec in first.values()
+    )

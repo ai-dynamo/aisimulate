@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
@@ -44,37 +45,10 @@ def _performance_model_metadata(
         }
     return {
         "provider": "aic",
-        "config": _role_forward_pass_config(sample, role, forward_pass_estimator),
+        "config": dict(forward_pass_estimator.config),
         "options": forward_pass_estimator.options,
         "selection": forward_pass_estimator.diagnostics,
     }
-
-
-def _role_forward_pass_config(
-    sample: dict[str, Any],
-    role: str,
-    estimator: ForwardPassEstimatorSpec,
-) -> dict[str, Any]:
-    """Derive only candidate topology from Core's already-resolved config."""
-    prefix = _role_prefix(role)
-    moe_tp = int(sample[f"{prefix}moe_tp"])
-    moe_ep = int(sample[f"{prefix}moe_ep"])
-    block_size = sample[f"{role}_block_size"]
-    if block_size is None:
-        block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[sample["backend"]]
-    config = dict(estimator.config)
-    config.update(
-        {
-            "tp": int(sample[f"{prefix}tp"]),
-            "pp": int(sample[f"{prefix}pp"]),
-            "attention_dp": int(sample[f"{prefix}attention_dp"]),
-            "moe_tp_size": moe_tp if moe_tp * moe_ep > 1 else None,
-            "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
-            "nextn": int(sample.get("aic_nextn") or 0),
-            "kv_block_size": int(block_size),
-        }
-    )
-    return config
 
 
 def _engine_args_payload(
@@ -136,7 +110,7 @@ def _engine_args_payload(
         payload.pop(memory_fraction_field, None)
     authored_timing_model = sample.get(f"{role}_timing_model")
     if authored_timing_model is None and forward_pass_estimator is not None:
-        timing_config = _role_forward_pass_config(sample, role, forward_pass_estimator)
+        timing_config = dict(forward_pass_estimator.config)
         if forward_pass_estimator.options is not None:
             timing_config["options"] = dict(forward_pass_estimator.options)
         payload["timing_model"] = {
@@ -184,23 +158,28 @@ def build_backend_deployment(
     sample: dict[str, Any],
     *,
     backend_version: str,
-    forward_pass_estimator: ForwardPassEstimatorSpec | None = None,
+    forward_pass_estimators: Mapping[str, ForwardPassEstimatorSpec] | None = None,
 ) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
-    if forward_pass_estimator is not None and (
-        forward_pass_estimator.backend != sample["backend"] or forward_pass_estimator.backend_version != backend_version
-    ):
+    roles = ("agg",) if mode == "agg" else ("prefill", "decode")
+    resolved_estimators = dict(forward_pass_estimators or {})
+    if resolved_estimators and set(resolved_estimators) != set(roles):
         raise ValueError(
-            "forward-pass estimator identity does not match the sampled backend/version: "
-            f"{forward_pass_estimator.backend}/{forward_pass_estimator.backend_version} != "
-            f"{sample['backend']}/{backend_version}"
+            f"forward-pass estimators must exactly match candidate roles {roles}, got {sorted(resolved_estimators)}"
         )
+    for role, estimator in resolved_estimators.items():
+        if estimator.backend != sample["backend"] or estimator.backend_version != backend_version:
+            raise ValueError(
+                "forward-pass estimator identity does not match the sampled backend/version: "
+                f"role={role}, {estimator.backend}/{estimator.backend_version} != "
+                f"{sample['backend']}/{backend_version}"
+            )
     common = {
         "deployment_mode": mode,
         "backend": sample["backend"],
         "backend_version": backend_version,
-        "forward_pass_estimator": forward_pass_estimator,
+        "forward_pass_estimators": resolved_estimators,
         "parallel_config": {
             key: value
             for key, value in sample.items()
@@ -234,9 +213,9 @@ def build_backend_deployment(
                 sample,
                 role,
                 backend_version=backend_version,
-                forward_pass_estimator=forward_pass_estimator,
+                forward_pass_estimator=resolved_estimators.get(role),
             )
-            for role in (("agg",) if mode == "agg" else ("prefill", "decode"))
+            for role in roles
         },
     }
     if mode == "agg":
@@ -245,7 +224,7 @@ def build_backend_deployment(
                 sample,
                 "agg",
                 backend_version=backend_version,
-                forward_pass_estimator=forward_pass_estimator,
+                forward_pass_estimator=resolved_estimators.get("agg"),
             ),
             num_workers=int(sample["replicas"]),
             **common,
@@ -254,13 +233,13 @@ def build_backend_deployment(
         sample,
         "prefill",
         backend_version=backend_version,
-        forward_pass_estimator=forward_pass_estimator,
+        forward_pass_estimator=resolved_estimators.get("prefill"),
     )
     decode_args = _engine_args_payload(
         sample,
         "decode",
         backend_version=backend_version,
-        forward_pass_estimator=forward_pass_estimator,
+        forward_pass_estimator=resolved_estimators.get("decode"),
     )
     if sample.get("kv_transfer_bytes_per_token") == "auto":
         resolved = max(

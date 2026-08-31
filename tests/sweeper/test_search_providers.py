@@ -36,6 +36,17 @@ _HOOK = RuntimeHookSpec(
 )
 
 
+class _StaticResolver:
+    def __init__(self, spec):
+        self.spec = spec
+
+    def resolve_candidate(self, sample):
+        roles = (
+            ("agg",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
+        )
+        return {role: self.spec for role in roles}
+
+
 def _config() -> SmartSearchConfig:
     return SmartSearchConfig(
         search_space={
@@ -251,11 +262,7 @@ def _stub_branch(monkeypatch) -> None:
     monkeypatch.setattr(
         search_module,
         "enumerate_branches",
-        lambda config,
-        *,
-        max_seq_len=None,
-        runner_capabilities=None,
-        forward_pass_estimator_specs=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
     forward_pass_estimator = ForwardPassEstimatorSpec(
         config={
@@ -272,8 +279,8 @@ def _stub_branch(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         search_module,
-        "resolve_forward_pass_estimator_specs",
-        lambda search_space: {"vllm": forward_pass_estimator},
+        "ForwardPassEstimatorResolver",
+        lambda search_space: _StaticResolver(forward_pass_estimator),
     )
 
 
@@ -412,8 +419,8 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
         providers={"test.feature": InfeasibleAdapter()},
         provider_plans={"test.feature": AdapterSearchPlan()},
         runner_factory=_RunnerFactory(),
-        forward_pass_estimator_specs={
-            "vllm": ForwardPassEstimatorSpec(
+        forward_pass_estimator_resolver=_StaticResolver(
+            ForwardPassEstimatorSpec(
                 config={
                     "model": "model",
                     "system": "h200_sxm",
@@ -426,7 +433,7 @@ def test_adapter_infeasible_selection_is_gated_before_replay(monkeypatch) -> Non
                 },
                 diagnostics={"provenance": {"selected_systems_root": "/systems"}},
             )
-        },
+        ),
     )
 
     assert prepared is None

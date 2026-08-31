@@ -193,9 +193,13 @@ def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_i
             "system": "example_sku",
             "backend": "trtllm",
             "backend_version": BACKEND_VERSION,
-            "tp": 1,
+            "tp": 4,
             "pp": 1,
             "attention_dp": 1,
+            "moe_tp_size": 1,
+            "moe_ep_size": 4,
+            "nextn": 0,
+            "kv_block_size": 64,
             "database_mode": "HYBRID",
             "transfer_policy": ["xshape", "xquant"],
             "forward_model": "fpm",
@@ -204,7 +208,27 @@ def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_i
         },
         diagnostics={
             "source": "aic",
-            "provenance": {"selected_systems_root": "/custom/systems"},
+            "provenance": {
+                "config": {
+                    "model": "example/model",
+                    "system": "example_sku",
+                    "backend": "trtllm",
+                    "backend_version": BACKEND_VERSION,
+                    "tp": 4,
+                    "pp": 1,
+                    "attention_dp": 1,
+                    "moe_tp_size": 1,
+                    "moe_ep_size": 4,
+                    "nextn": 0,
+                    "kv_block_size": 64,
+                    "database_mode": "HYBRID",
+                    "transfer_policy": ["xshape", "xquant"],
+                    "forward_model": "fpm",
+                    "systems_paths": ["/custom/systems"],
+                    "fallback_policy": "error",
+                },
+                "selected_systems_root": "/custom/systems",
+            },
         },
     )
     sample = unroll_sample(
@@ -216,10 +240,10 @@ def test_resolved_forward_pass_estimator_contract_is_preserved_without_leaking_i
     deployment = build_backend_deployment(
         sample,
         backend_version=BACKEND_VERSION,
-        forward_pass_estimator=forward_pass_estimator,
+        forward_pass_estimators={"agg": forward_pass_estimator},
     )
 
-    assert deployment.forward_pass_estimator is forward_pass_estimator
+    assert deployment.forward_pass_estimators == {"agg": forward_pass_estimator}
     engine = deployment.agg_engine_args
     assert engine is not None
     assert {

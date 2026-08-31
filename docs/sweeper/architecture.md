@@ -26,12 +26,12 @@ replay runtime.
 ```mermaid
 flowchart TD
     A["Validate SmartSearchConfig"] --> B["Preflight Runner capabilities"]
-    B --> R["Resolve forward-pass estimator and performance-data identities"]
-    R --> C["Enumerate backend branches"]
+    B --> C["Enumerate backend branches"]
     C --> D["Resolve configured providers"]
     D --> E["Generate namespaced search dimensions"]
     E --> F["Ask sampler for suggestions"]
-    F --> G["Materialize backend and adapter config"]
+    F --> R["Resolve exact per-role estimator identities through Core"]
+    R --> G["Materialize backend and adapter config"]
     G --> H["Build ReplaySpec"]
     H --> I["Worker-local Runner executes replay"]
     I --> J["Score and tell sampler"]
@@ -46,14 +46,20 @@ replays.
 AIConfigurator Core owns the typed `ForwardPassPerfModelConfig` (immutable identity and selection
 policy), `ForwardPassPerfOptions` (tuning behavior), and the sole production constructor,
 `ForwardPassPerfModel::best_available`. Sweeper parses YAML into those types and calls the Core
-constructor before branch enumeration; it does not load databases or select versions itself.
+constructor only after a suggestion has concrete aggregated/prefill/decode topology and block-size
+values. Resolution happens on the main process before the candidate reaches a replay runner, and
+identical exact requests are cached for the rest of the run.
 
-`ReplaySpec.backend_deployment.forward_pass_estimator` stores Core's resolved config, options, and
-diagnostics/provenance. Candidate topology is the only per-role derivation. The resulting exact
-role config is used both as Replay's AIC timing-provider config and as performance-model metadata,
-so worker processes never consult mutable global system paths or choose a newer data version
-independently. Planner and other consumers use the same public Core facade instead of defining a
-parallel constructor schema.
+`ReplaySpec.backend_deployment.forward_pass_estimators` stores one Core-resolved config, options,
+and diagnostics/provenance record for every engine role. Sweeper does not edit those returned
+configs. The same exact role config is used both as Replay's AIC timing-provider config and as
+performance-model metadata, so worker processes never consult mutable global system paths or
+choose a newer data version independently. Planner and other estimator consumers use the same
+public Core facade instead of defining a parallel constructor schema.
+
+`AicEngineBuilder` is separate and deliberately narrower: it is a Rust-only, low-level compiled
+`AicEngine` handle for Mocker-style step-latency embedders. It is not registered on the Python
+extension and is not an estimator construction path for Planner, Replay, or Sweeper.
 
 ## Provider Preparation
 

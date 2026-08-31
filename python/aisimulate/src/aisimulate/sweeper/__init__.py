@@ -74,8 +74,8 @@ from .result import (
 
 _LAZY_EXPORTS = {
     "build_backend_deployment": (".deploy", "build_backend_deployment"),
+    "ForwardPassEstimatorResolver": (".forward_pass_estimator", "ForwardPassEstimatorResolver"),
     "ForwardPassEstimatorResolutionError": (".forward_pass_estimator", "ForwardPassEstimatorResolutionError"),
-    "resolve_forward_pass_estimator_specs": (".forward_pass_estimator", "resolve_forward_pass_estimator_specs"),
     "NoPerfDatabase": (".kv_estimate", "NoPerfDatabase"),
     "estimate_kv_tokens": (".kv_estimate", "estimate_kv_tokens"),
     "feasible_shape_tokens": (".kv_estimate", "feasible_shape_tokens"),
@@ -140,6 +140,7 @@ __all__ = [
     "DisaggParallelConfig",
     "ForwardModel",
     "ForwardPassEstimatorResolutionError",
+    "ForwardPassEstimatorResolver",
     "ForwardPassEstimatorSpec",
     "HookCapability",
     "InfeasibleCandidate",
@@ -192,7 +193,6 @@ __all__ = [
     "objective_value",
     "parallel_configs_for",
     "rank",
-    "resolve_forward_pass_estimator_specs",
     "resolve_model_hardware",
     "resolve_providers",
     "score_report",

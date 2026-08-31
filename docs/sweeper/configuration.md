@@ -86,12 +86,14 @@ configuration for each candidate.
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
 
-Estimator controls resolve through Core before branch enumeration. `latest` becomes one concrete
-backend/performance-data version per run, custom system paths remain request-scoped, and every
-`ReplaySpec` plus returned candidate records the same resolved config, options, and provenance.
-Unavailable identities fail before a sampler study is created. Regression is never an implicit
-degradation: it must be requested with `forward_pass_fallback_policy: regression`, and it remains
-unready until `tune_with_fpms` supplies enough observations for the workload kind.
+Estimator controls are parsed once, then each concrete candidate role resolves through Core after
+its TP, PP, attention-DP, MoE parallelism, and block size are known. `latest` becomes the exact
+backend/performance-data version returned by Core, custom system paths remain request-scoped, and
+every `ReplaySpec` plus returned candidate records the same unmodified resolved config, options,
+and provenance. An unavailable exact identity fails candidate materialization before the replay
+runner executes that trial. Regression is never an implicit degradation: it must be requested with
+`forward_pass_fallback_policy: regression`, and it remains unready until `tune_with_fpms` supplies
+enough observations for the workload kind.
 
 Database modes choose the source of each operation estimate:
 

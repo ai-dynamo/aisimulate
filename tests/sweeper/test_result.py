@@ -65,8 +65,19 @@ def _config(*, target: str = "throughput") -> SmartSearchConfig:
     )
 
 
-def _forward_pass_estimator_specs(search_space):
-    return {
+class _StaticResolver:
+    def __init__(self, specs):
+        self.specs = specs
+
+    def resolve_candidate(self, sample):
+        roles = (
+            ("agg",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
+        )
+        return {role: self.specs[sample["backend"]] for role in roles}
+
+
+def _forward_pass_estimator_resolver(search_space):
+    specs = {
         backend: ForwardPassEstimatorSpec(
             config={
                 "model": search_space.model_name,
@@ -83,6 +94,7 @@ def _forward_pass_estimator_specs(search_space):
         )
         for backend in search_space.backend
     }
+    return _StaticResolver(specs)
 
 
 def _stub_optimizer_dependencies(monkeypatch, branch: BranchSpace) -> None:
@@ -93,8 +105,8 @@ def _stub_optimizer_dependencies(monkeypatch, branch: BranchSpace) -> None:
     )
     monkeypatch.setattr(
         search_module,
-        "resolve_forward_pass_estimator_specs",
-        _forward_pass_estimator_specs,
+        "ForwardPassEstimatorResolver",
+        _forward_pass_estimator_resolver,
     )
 
 

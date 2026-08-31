@@ -163,23 +163,32 @@ def _forward_pass_estimator_spec(backend="trtllm", version="1.3.0rc10"):
     )
 
 
+class _StaticResolver:
+    def __init__(self, specs):
+        self.specs = specs
+
+    def resolve_candidate(self, sample):
+        roles = (
+            ("agg",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
+        )
+        return {role: self.specs[sample["backend"]] for role in roles}
+
+
 def _stub(monkeypatch, branch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config,
-        *,
-        max_seq_len=None,
-        runner_capabilities=None,
-        forward_pass_estimator_specs=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
     monkeypatch.setattr(
         search_mod,
-        "resolve_forward_pass_estimator_specs",
-        lambda search_space: {
-            backend: _forward_pass_estimator_spec(backend)
-            for backend in search_space.backend
-        },
+        "ForwardPassEstimatorResolver",
+        lambda search_space: _StaticResolver(
+            {
+                backend: _forward_pass_estimator_spec(backend)
+                for backend in search_space.backend
+            }
+        ),
     )
 
 
@@ -207,7 +216,7 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
         candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates
     )
     assert all(
-        candidate.config["forward_pass_estimator"]["config"]["model"]
+        candidate.config["forward_pass_estimators"]["agg"]["config"]["model"]
         == "deepseek-ai/DeepSeek-V3"
         for candidate in candidates
     )
@@ -215,8 +224,7 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     assert factory.worker_ids == [0]
     assert all(isinstance(spec, ReplaySpec) for spec in factory.runner.specs)
     assert all(
-        spec.backend_deployment.forward_pass_estimator is not None
-        and spec.backend_deployment.forward_pass_estimator.backend_version
+        spec.backend_deployment.forward_pass_estimators["agg"].backend_version
         == "1.3.0rc10"
         for spec in factory.runner.specs
     )
@@ -228,20 +236,18 @@ def test_resolved_pinned_backend_version_reaches_candidates(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config,
-        *,
-        max_seq_len=None,
-        runner_capabilities=None,
-        forward_pass_estimator_specs=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
     monkeypatch.setattr(
         search_mod,
-        "resolve_forward_pass_estimator_specs",
-        lambda search_space: {
-            "trtllm": _forward_pass_estimator_spec(
-                version=search_space.requested_backend_version("trtllm")
-            )
-        },
+        "ForwardPassEstimatorResolver",
+        lambda search_space: _StaticResolver(
+            {
+                "trtllm": _forward_pass_estimator_spec(
+                    version=search_space.requested_backend_version("trtllm")
+                )
+            }
+        ),
     )
     config = _config()
     config.search_space.backend_version = "0.18.0"
@@ -678,34 +684,36 @@ def test_replay_spec_version_is_checked_before_runner_creation(monkeypatch):
     assert factory.worker_ids == []
 
 
-def test_forward_pass_estimator_identity_fails_before_branch_enumeration(monkeypatch):
+def test_forward_pass_estimator_identity_fails_before_replay_execution(monkeypatch):
     factory = _FakeRunnerFactory()
     branch_called = False
 
-    def fail_resolution(search_space):
-        del search_space
-        raise ValueError("pinned forward-pass estimator unavailable")
+    class FailingResolver:
+        def __init__(self, search_space):
+            del search_space
 
-    def enumerate_never(*args, **kwargs):
+        def resolve_candidate(self, sample):
+            del sample
+            raise ValueError("pinned forward-pass estimator unavailable")
+
+    def enumerate_branch(*args, **kwargs):
         nonlocal branch_called
         branch_called = True
-        return []
+        return [_branch(_pc())]
 
-    monkeypatch.setattr(
-        search_mod, "resolve_forward_pass_estimator_specs", fail_resolution
+    monkeypatch.setattr(search_mod, "ForwardPassEstimatorResolver", FailingResolver)
+    monkeypatch.setattr(search_mod, "enumerate_branches", enumerate_branch)
+
+    candidates = _run_sweep(
+        _config(),
+        runner_factory=factory,
+        sampler_factory=_FakeSampler,
+        show_progress=False,
     )
-    monkeypatch.setattr(search_mod, "enumerate_branches", enumerate_never)
 
-    with pytest.raises(ValueError, match="pinned forward-pass estimator unavailable"):
-        _run_sweep(
-            _config(),
-            runner_factory=factory,
-            sampler_factory=_FakeSampler,
-            show_progress=False,
-        )
-
-    assert not branch_called
-    assert factory.worker_ids == []
+    assert branch_called
+    assert candidates == []
+    assert factory.runner.calls == 0
 
 
 def test_unsupported_backend_pair_never_reaches_runner(monkeypatch):
@@ -888,19 +896,17 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config,
-        *,
-        max_seq_len=None,
-        runner_capabilities=None,
-        forward_pass_estimator_specs=None: [agg, disagg],
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
     )
     monkeypatch.setattr(
         search_mod,
-        "resolve_forward_pass_estimator_specs",
-        lambda search_space: {
-            backend: _forward_pass_estimator_spec(backend)
-            for backend in search_space.backend
-        },
+        "ForwardPassEstimatorResolver",
+        lambda search_space: _StaticResolver(
+            {
+                backend: _forward_pass_estimator_spec(backend)
+                for backend in search_space.backend
+            }
+        ),
     )
     seen = []
 

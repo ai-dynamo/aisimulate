@@ -206,6 +206,10 @@ impl ForwardPassPerfModel {
                         resolved_config.database_mode = engine.database().database_mode;
                         resolved_config.transfer_policy =
                             Some(transfer_policy_tokens(engine.database().transfer_policy));
+                        // Provenance is also the replayable construction input. Pin the
+                        // root that actually supplied the engine instead of returning the
+                        // caller's search list and requiring every consumer to rewrite it.
+                        resolved_config.systems_paths = vec![systems_root.clone()];
                         let provenance = ForwardPassPerfProvenance {
                             config: resolved_config,
                             selected_systems_root: Some(systems_root),

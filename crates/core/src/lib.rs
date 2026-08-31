@@ -43,7 +43,14 @@ pub use perfmodel::{
 };
 
 #[cfg(feature = "python")]
-pub use perfmodel::{AicEngine, AicEngineBuilder, estimate_kv_cache};
+pub use perfmodel::{
+    AicEngine,
+    // Low-level Rust embedder API for compiled step-latency handles. This is
+    // deliberately not registered on the Python module and is not an
+    // alternative ForwardPassPerfModel construction boundary.
+    AicEngineBuilder,
+    estimate_kv_cache,
+};
 
 // The imported perf-model sources historically used additional crate-root
 // module paths. Keep these module aliases crate-private so the mirror subtree

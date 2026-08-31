@@ -4,7 +4,8 @@
 //! Compile-time contract tests from an external crate's point of view.
 
 use aiconfigurator_core::{
-    AicEngine, AicEngineBuilder, AicError, BackendKind, ForwardPassPerfModel,
+    AicEngine, AicEngineBuilder, AicError, BackendKind, ForwardPassFallbackPolicy,
+    ForwardPassModelKind, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassPerfOptions, KvCacheEstimateRequest,
 };
 
@@ -33,9 +34,43 @@ pub fn build_engine(builder: AicEngineBuilder) -> Result<AicEngine, AicError> {
     builder.build()
 }
 
-/// Compile the forward-pass model's public constructor and telemetry type.
-pub fn regression_model() -> Result<ForwardPassPerfModel, AicError> {
-    ForwardPassPerfModel::from_regression(ForwardPassPerfOptions::default())
+/// Compile the forward-pass model's sole public production constructor.
+///
+/// The function is intentionally not called because construction loads model
+/// and systems data. Its signature proves an external crate can use the
+/// canonical config/options boundary without reaching internal constructors.
+pub fn forward_pass_model(
+    config: ForwardPassPerfModelConfig,
+    options: Option<ForwardPassPerfOptions>,
+) -> Result<ForwardPassPerfModel, AicError> {
+    ForwardPassPerfModel::best_available(config, options)
+}
+
+/// Compile construction of the canonical config from an external crate.
+pub fn forward_pass_config() -> ForwardPassPerfModelConfig {
+    ForwardPassPerfModelConfig {
+        model: "Qwen/Qwen3-32B".into(),
+        system: "h200_sxm".into(),
+        backend: BackendKind::Vllm,
+        backend_version: Some("0.10.2".into()),
+        tp: 2,
+        pp: 1,
+        attention_dp: 1,
+        moe_tp_size: None,
+        moe_ep_size: None,
+        gemm_quant_mode: None,
+        moe_quant_mode: None,
+        fmha_quant_mode: None,
+        kvcache_quant_mode: None,
+        comm_quant_mode: None,
+        nextn: 0,
+        kv_block_size: Some(16),
+        forward_model: ForwardPassModelKind::OpLevel,
+        database_mode: Default::default(),
+        transfer_policy: None,
+        systems_paths: Vec::new(),
+        fallback_policy: ForwardPassFallbackPolicy::Error,
+    }
 }
 
 /// Keep the KV request type in the external-consumer contract without
@@ -82,7 +117,9 @@ mod tests {
     }
 
     #[test]
-    fn regression_constructor_is_environment_independent() {
-        let _model = regression_model().expect("construct regression model");
+    fn canonical_forward_pass_config_is_external() {
+        let config = forward_pass_config();
+        assert_eq!(config.tp, 2);
+        let _constructor = forward_pass_model;
     }
 }
