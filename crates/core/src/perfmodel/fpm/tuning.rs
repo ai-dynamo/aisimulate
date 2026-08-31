@@ -25,7 +25,7 @@ pub(crate) const DEFAULT_MAX_KV_TOKENS: u32 = 2_000_000;
 /// workload kind, and bound native correction factors to `[0.5, 2.0]`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ForwardPassPerfOptions {
+pub struct ForwardPassPerfTuningConfig {
     /// Maximum retained observations across all buckets for each inferred workload kind.
     #[serde(default = "default_max_observations")]
     pub max_observations: usize,
@@ -71,7 +71,7 @@ pub struct ForwardPassPerfOptions {
     pub max_kv_tokens: u32,
 }
 
-impl Default for ForwardPassPerfOptions {
+impl Default for ForwardPassPerfTuningConfig {
     fn default() -> Self {
         Self {
             max_observations: DEFAULT_MAX_OBSERVATIONS,
@@ -86,58 +86,62 @@ impl Default for ForwardPassPerfOptions {
     }
 }
 
-pub(crate) fn validate_options(options: &ForwardPassPerfOptions) -> Result<(), AicError> {
-    if options.max_observations == 0 {
-        return Err(invalid_perf_options("max_observations must be >= 1"));
+pub(crate) fn validate_tuning_config(
+    tuning_config: &ForwardPassPerfTuningConfig,
+) -> Result<(), AicError> {
+    if tuning_config.max_observations == 0 {
+        return Err(invalid_perf_tuning_config("max_observations must be >= 1"));
     }
-    if options.min_observations == 0 {
-        return Err(invalid_perf_options("min_observations must be >= 1"));
+    if tuning_config.min_observations == 0 {
+        return Err(invalid_perf_tuning_config("min_observations must be >= 1"));
     }
-    if let Some(min_faster_correction_factor) = options.min_faster_correction_factor {
+    if let Some(min_faster_correction_factor) = tuning_config.min_faster_correction_factor {
         if !min_faster_correction_factor.is_finite()
             || min_faster_correction_factor <= 0.0
             || min_faster_correction_factor > 1.0
         {
-            return Err(invalid_perf_options(
+            return Err(invalid_perf_tuning_config(
                 "min_faster_correction_factor must be finite and in (0.0, 1.0]",
             ));
         }
     }
-    if let Some(max_slower_correction_factor) = options.max_slower_correction_factor {
+    if let Some(max_slower_correction_factor) = tuning_config.max_slower_correction_factor {
         if !max_slower_correction_factor.is_finite() || max_slower_correction_factor < 1.0 {
-            return Err(invalid_perf_options(
+            return Err(invalid_perf_tuning_config(
                 "max_slower_correction_factor must be finite and >= 1.0",
             ));
         }
     }
-    if options.bucket_count == 0 {
-        return Err(invalid_perf_options("bucket_count must be >= 1"));
+    if tuning_config.bucket_count == 0 {
+        return Err(invalid_perf_tuning_config("bucket_count must be >= 1"));
     }
-    if options.max_num_tokens == 0 {
-        return Err(invalid_perf_options("max_num_tokens must be >= 1"));
+    if tuning_config.max_num_tokens == 0 {
+        return Err(invalid_perf_tuning_config("max_num_tokens must be >= 1"));
     }
-    if options.max_batch_size == 0 {
-        return Err(invalid_perf_options("max_batch_size must be >= 1"));
+    if tuning_config.max_batch_size == 0 {
+        return Err(invalid_perf_tuning_config("max_batch_size must be >= 1"));
     }
-    if options.max_kv_tokens == 0 {
-        return Err(invalid_perf_options("max_kv_tokens must be >= 1"));
+    if tuning_config.max_kv_tokens == 0 {
+        return Err(invalid_perf_tuning_config("max_kv_tokens must be >= 1"));
     }
-    if options.min_observations > options.max_observations {
-        return Err(invalid_perf_options(
+    if tuning_config.min_observations > tuning_config.max_observations {
+        return Err(invalid_perf_tuning_config(
             "min_observations must be <= max_observations",
         ));
     }
-    let sqrt = integer_sqrt(options.bucket_count);
-    if sqrt * sqrt != options.bucket_count {
-        return Err(invalid_perf_options(
+    let sqrt = integer_sqrt(tuning_config.bucket_count);
+    if sqrt * sqrt != tuning_config.bucket_count {
+        return Err(invalid_perf_tuning_config(
             "bucket_count must be a perfect square",
         ));
     }
     Ok(())
 }
 
-fn invalid_perf_options(message: &str) -> AicError {
-    AicError::InvalidEngineConfig(format!("invalid forward pass perf options: {message}"))
+fn invalid_perf_tuning_config(message: &str) -> AicError {
+    AicError::InvalidEngineConfig(format!(
+        "invalid forward pass perf tuning config: {message}"
+    ))
 }
 
 fn default_max_observations() -> usize {

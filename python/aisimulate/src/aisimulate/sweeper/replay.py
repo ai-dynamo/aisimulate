@@ -29,7 +29,7 @@ class ForwardPassEstimatorSpec:
     """
 
     config: dict[str, JSONValue]
-    options: dict[str, JSONValue] | None = None
+    tuning_config: dict[str, JSONValue] | None = None
     diagnostics: dict[str, JSONValue] = field(default_factory=dict)
 
     @property

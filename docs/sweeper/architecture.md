@@ -44,11 +44,11 @@ do not import or pickle provider objects. Each worker creates one runner and reu
 replays.
 
 AIConfigurator Core owns the typed `ForwardPassPerfModelConfig` (immutable identity and selection
-policy), `ForwardPassPerfOptions` (tuning behavior), and the sole production constructor,
+policy), `ForwardPassPerfTuningConfig` (tuning behavior), and the sole production constructor,
 `ForwardPassPerfModel::best_available`. Sweeper parses YAML into those types and calls the Core
 constructor before branch enumeration; it does not load databases or select versions itself.
 
-`ReplaySpec.backend_deployment.forward_pass_estimator` stores Core's resolved config, options, and
+`ReplaySpec.backend_deployment.forward_pass_estimator` stores Core's resolved model config, tuning config, and
 diagnostics/provenance. Candidate topology is the only per-role derivation. The resulting exact
 role config is used both as Replay's AIC timing-provider config and as performance-model metadata,
 so worker processes never consult mutable global system paths or choose a newer data version

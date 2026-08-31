@@ -7,15 +7,18 @@
 //! observations partitioned into per-axis buckets, used by both the native
 //! correction grid ([`super::correction`]) and the regression fallback
 //! ([`super::regression`]). [`AxisRange`] describes a fixed correction axis
-//! bound, and the [`WithOptions`] / [`StoreStats`] traits let the workload
+//! bound, and the [`WithTuningConfig`] / [`StoreStats`] traits let the workload
 //! store dispatch generically over either backend.
 
 use std::collections::HashMap;
 
-use super::options::ForwardPassPerfOptions;
+use super::tuning::ForwardPassPerfTuningConfig;
 
-pub(crate) trait WithOptions {
-    fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self;
+pub(crate) trait WithTuningConfig {
+    fn with_tuning_config(
+        tuning_config: &ForwardPassPerfTuningConfig,
+        axis_ranges: &[AxisRange],
+    ) -> Self;
 }
 
 pub(crate) trait StoreStats {
@@ -50,11 +53,11 @@ impl AxisRange {
 }
 
 impl<T: Clone> BucketedSamples<T> {
-    pub(crate) fn new_dynamic(options: &ForwardPassPerfOptions, ndim: usize) -> Self {
+    pub(crate) fn new_dynamic(tuning_config: &ForwardPassPerfTuningConfig, ndim: usize) -> Self {
         let buckets_per_axis = if ndim == 1 {
-            options.bucket_count
+            tuning_config.bucket_count
         } else {
-            integer_sqrt(options.bucket_count)
+            integer_sqrt(tuning_config.bucket_count)
         };
         Self {
             buckets: HashMap::new(),
@@ -63,12 +66,15 @@ impl<T: Clone> BucketedSamples<T> {
             axis_max: vec![f64::NEG_INFINITY; ndim],
             fixed_bounds: false,
             buckets_per_axis: buckets_per_axis.max(1),
-            max_observations: options.max_observations,
+            max_observations: tuning_config.max_observations,
         }
     }
 
-    pub(crate) fn new_fixed(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self {
-        let mut samples = Self::new_dynamic(options, axis_ranges.len());
+    pub(crate) fn new_fixed(
+        tuning_config: &ForwardPassPerfTuningConfig,
+        axis_ranges: &[AxisRange],
+    ) -> Self {
+        let mut samples = Self::new_dynamic(tuning_config, axis_ranges.len());
         samples.axis_min = axis_ranges.iter().map(|range| range.min).collect();
         samples.axis_max = axis_ranges.iter().map(|range| range.max).collect();
         samples.fixed_bounds = true;

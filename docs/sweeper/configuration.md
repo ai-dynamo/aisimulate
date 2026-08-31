@@ -27,7 +27,7 @@ search_space:
   transfer_policy: balanced
   forward_model: op_level
   forward_pass_fallback_policy: error
-  forward_pass_options:
+  forward_pass_tuning_config:
     min_observations: 5
   systems_paths: [default]
 
@@ -74,7 +74,7 @@ configuration for each candidate.
 | `transfer_policy` | `None` (all) | Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
 | `forward_model` | `op_level` | granular `op_level` or exact-data `fpm` forward estimation |
 | `forward_pass_fallback_policy` | `error` | fail closed, or explicitly use observation-gated `regression` when native construction is unsupported |
-| `forward_pass_options` | `None` (Core defaults) | runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
+| `forward_pass_tuning_config` | `None` (Core defaults) | observation-driven tuning controls such as retention limits, regression buckets, correction bounds, and workload-axis ranges |
 | `systems_paths` | `[default]` | ordered request-scoped system/data roots; `default` is the packaged Core root |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
@@ -88,7 +88,7 @@ size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a 
 
 Estimator controls resolve through Core before branch enumeration. `latest` becomes one concrete
 backend/performance-data version per run, custom system paths remain request-scoped, and every
-`ReplaySpec` plus returned candidate records the same resolved config, options, and provenance.
+`ReplaySpec` plus returned candidate records the same resolved model config, tuning config, and provenance.
 Unavailable identities fail before a sampler study is created. Regression is never an implicit
 degradation: it must be requested with `forward_pass_fallback_policy: regression`, and it remains
 unready until `tune_with_fpms` supplies enough observations for the workload kind.

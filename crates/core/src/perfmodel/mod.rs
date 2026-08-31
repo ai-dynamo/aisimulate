@@ -42,8 +42,8 @@ pub use common::AicError;
 // `RustForwardPassPerfModel` pyclass in `py.rs`.
 pub use fpm::{
     ForwardPassFallbackPolicy, ForwardPassModelKind, ForwardPassPerfDiagnostics,
-    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfOptions,
-    ForwardPassPerfProvenance, ForwardPassPerfReadiness, ForwardPassPerfSource,
+    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfProvenance,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassPerfTuningConfig,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing

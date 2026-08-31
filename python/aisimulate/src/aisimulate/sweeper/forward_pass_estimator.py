@@ -11,7 +11,7 @@ from typing import Any
 
 from aiconfigurator_core.sdk import (
     ForwardPassPerfModelConfig,
-    ForwardPassPerfOptions,
+    ForwardPassPerfTuningConfig,
     RustForwardPassPerfModel,
 )
 
@@ -45,11 +45,11 @@ def resolve_forward_pass_estimator_specs(search_space: SearchSpace) -> dict[str,
     """
 
     systems_paths = resolve_systems_paths(search_space.systems_paths)
-    raw_options = search_space.forward_pass_options
+    raw_tuning_config = search_space.forward_pass_tuning_config
     try:
-        options = None if raw_options is None else ForwardPassPerfOptions(**raw_options)
+        tuning_config = None if raw_tuning_config is None else ForwardPassPerfTuningConfig(**raw_tuning_config)
     except TypeError as exc:
-        raise ForwardPassEstimatorResolutionError(f"invalid forward_pass_options: {exc}") from exc
+        raise ForwardPassEstimatorResolutionError(f"invalid forward_pass_tuning_config: {exc}") from exc
 
     resolved: dict[str, ForwardPassEstimatorSpec] = {}
     for backend in dict.fromkeys(search_space.backend):
@@ -70,7 +70,7 @@ def resolve_forward_pass_estimator_specs(search_space: SearchSpace) -> dict[str,
         )
         model: RustForwardPassPerfModel | None = None
         try:
-            model = RustForwardPassPerfModel.best_available(request, options)
+            model = RustForwardPassPerfModel.best_available(request, tuning_config)
             diagnostics = model.diagnostics()
         except Exception as exc:
             raise ForwardPassEstimatorResolutionError(
@@ -96,7 +96,7 @@ def resolve_forward_pass_estimator_specs(search_space: SearchSpace) -> dict[str,
             )
         resolved[backend] = ForwardPassEstimatorSpec(
             config=resolved_config,
-            options=None if options is None else options.to_dict(),
+            tuning_config=None if tuning_config is None else tuning_config.to_dict(),
             diagnostics=diagnostics,
         )
     return resolved

@@ -43,20 +43,20 @@ def _stub_core(monkeypatch, systems_root, *, versions=("0.10.0", "0.11.0")):
 
     class _Core:
         @staticmethod
-        def best_available(config, options):
-            calls.append((config, options))
+        def best_available(model_config, tuning_config):
+            calls.append((model_config, tuning_config))
             if (
-                config.backend_version is not None
-                and config.backend_version not in versions
+                model_config.backend_version is not None
+                and model_config.backend_version not in versions
             ):
                 raise ValueError(
-                    f"unsupported backend_version {config.backend_version!r}"
+                    f"unsupported backend_version {model_config.backend_version!r}"
                 )
-            if config.transfer_policy == "mystery":
+            if model_config.transfer_policy == "mystery":
                 raise ValueError("invalid transfer_policy 'mystery'")
-            if config.forward_model == "fpm" and config.nextn:
+            if model_config.forward_model == "fpm" and model_config.nextn:
                 raise ValueError("forward_model='fpm' does not support aic_nextn/MTP")
-            if config.forward_model == "fpm":
+            if model_config.forward_model == "fpm":
                 complete = any(
                     path.name == "fpm_forward_perf.parquet"
                     and (path.parent / "fpm_forward_perf.metadata.json").is_file()
@@ -67,16 +67,16 @@ def _stub_core(monkeypatch, systems_root, *, versions=("0.10.0", "0.11.0")):
                         "forward_model='fpm' requires fpm_forward_perf data"
                     )
 
-            resolved = asdict(config)
-            resolved["backend_version"] = config.backend_version or (
+            resolved = asdict(model_config)
+            resolved["backend_version"] = model_config.backend_version or (
                 versions[-1] if versions else None
             )
-            if config.transfer_policy is None:
+            if model_config.transfer_policy is None:
                 resolved["transfer_policy"] = ["xshape", "xquant", "xprofile", "xop"]
-            elif config.transfer_policy == "balanced,xop":
+            elif model_config.transfer_policy == "balanced,xop":
                 resolved["transfer_policy"] = ["xshape", "xquant", "xop"]
             else:
-                resolved["transfer_policy"] = list(config.transfer_policy)
+                resolved["transfer_policy"] = list(model_config.transfer_policy)
             resolved["systems_paths"] = [str(systems_root)]
             return _Model(
                 {
@@ -113,7 +113,7 @@ def test_default_resolution_is_core_owned_concrete_and_reproducible(
     assert spec.config == spec.diagnostics["provenance"]["config"]
 
 
-def test_pinned_policy_and_options_reach_the_canonical_constructor(
+def test_pinned_policy_and_tuning_config_reach_the_canonical_constructor(
     monkeypatch, tmp_path
 ):
     calls = _stub_core(monkeypatch, tmp_path)
@@ -122,18 +122,19 @@ def test_pinned_policy_and_options_reach_the_canonical_constructor(
         backend_version="0.10.0",
         database_mode="HYBRID",
         transfer_policy="balanced,xop",
-        forward_pass_options={"min_observations": 3},
+        forward_pass_tuning_config={"min_observations": 3},
     )
 
     spec = resolve_forward_pass_estimator_specs(search)["vllm"]
 
-    request, options = calls[0]
+    request, tuning_config = calls[0]
     assert request.backend_version == "0.10.0"
     assert request.database_mode == "HYBRID"
     assert request.transfer_policy == "balanced,xop"
-    assert options is not None and options.min_observations == 3
+    assert tuning_config is not None and tuning_config.min_observations == 3
     assert spec.transfer_policy == ("xshape", "xquant", "xop")
-    assert spec.options is not None and spec.options["min_observations"] == 3
+    assert spec.tuning_config is not None
+    assert spec.tuning_config["min_observations"] == 3
 
 
 def test_invalid_transfer_policy_fails_through_core(monkeypatch, tmp_path):

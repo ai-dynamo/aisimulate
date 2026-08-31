@@ -674,6 +674,37 @@ def test_normalize_tuning_iterations_handles_convenience_forms() -> None:
     assert rust_engine_step._normalize_tuning_iterations([]) == []
 
 
+def test_forward_pass_constructor_names_model_and_tuning_configs(monkeypatch, tmp_path) -> None:
+    """The Python facade exposes explicit model/tuning keyword names end to end."""
+    import aiconfigurator_core
+
+    calls = []
+    inner = object()
+
+    class _CoreModel:
+        @staticmethod
+        def best_available(model_config_json, tuning_config_json):
+            calls.append((json.loads(model_config_json), json.loads(tuning_config_json)))
+            return inner
+
+    monkeypatch.setattr(aiconfigurator_core, "RustForwardPassPerfModel", _CoreModel, raising=False)
+    monkeypatch.setattr(rust_engine_step, "_configure_default_data_roots", lambda: None)
+
+    model = rust_engine_step.RustForwardPassPerfModel.best_available(
+        model_config=rust_engine_step.ForwardPassPerfModelConfig(
+            model="example/model",
+            system="example_system",
+            backend="vllm",
+            systems_paths=(str(tmp_path),),
+        ),
+        tuning_config=rust_engine_step.ForwardPassPerfTuningConfig(min_observations=3),
+    )
+
+    assert model._inner is inner
+    assert calls[0][0]["model"] == "example/model"
+    assert calls[0][1]["min_observations"] == 3
+
+
 def test_forward_pass_perf_model_regression_marshalling(monkeypatch) -> None:
     """The wrapper marshals FPM dicts to JSON and unwraps the Rust results,
     without needing a native engine (regression-only fake inner)."""

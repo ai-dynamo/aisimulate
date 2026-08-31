@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::engine::{Backend, TimingModel, TimingModelConfig};
 use crate::perfmodel::{
     FPM_VERSION, ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
-    ForwardPassPerfOptions, QueuedRequestMetrics, ScheduledRequestMetrics,
+    ForwardPassPerfTuningConfig, QueuedRequestMetrics, ScheduledRequestMetrics,
 };
 use crate::replay::{
     ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec,
@@ -90,7 +90,7 @@ struct AicTimingConfig {
     #[serde(flatten)]
     perf_model: ForwardPassPerfModelConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    options: Option<ForwardPassPerfOptions>,
+    tuning_config: Option<ForwardPassPerfTuningConfig>,
     #[serde(default)]
     gpu_memory_utilization: Option<f64>,
     #[serde(default)]
@@ -162,13 +162,13 @@ struct AicTimingModel {
 
 impl AicTimingModel {
     fn build(config: &AicTimingConfig) -> Result<Self> {
-        let model =
-            ForwardPassPerfModel::best_available(config.perf_model.clone(), config.options.clone())
-                .map_err(|error| {
-                    anyhow!(
-                        "AIC timing provider could not construct the requested estimator: {error}"
-                    )
-                })?;
+        let model = ForwardPassPerfModel::best_available(
+            config.perf_model.clone(),
+            config.tuning_config.clone(),
+        )
+        .map_err(|error| {
+            anyhow!("AIC timing provider could not construct the requested estimator: {error}")
+        })?;
         Ok(Self { model })
     }
 
@@ -843,7 +843,7 @@ mod tests {
                 "backend_version": "test-version"
             }))
             .unwrap(),
-            options: None,
+            tuning_config: None,
             gpu_memory_utilization: None,
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
@@ -867,19 +867,19 @@ mod tests {
             "transfer_policy": ["xshape", "xquant"],
             "systems_paths": ["/tmp/aic-systems"],
             "fallback_policy": "error",
-            "options": {"min_observations": 7},
+            "tuning_config": {"min_observations": 7},
             "gpu_memory_utilization": 0.85
         });
         let parsed: AicTimingConfig = serde_json::from_value(authored.clone()).unwrap();
         assert_eq!(parsed.perf_model.tp, 4);
         assert_eq!(parsed.perf_model.attention_dp, 2);
-        assert_eq!(parsed.options.as_ref().unwrap().min_observations, 7);
+        assert_eq!(parsed.tuning_config.as_ref().unwrap().min_observations, 7);
         assert_eq!(parsed.gpu_memory_utilization, Some(0.85));
 
         let round_trip = serde_json::to_value(parsed).unwrap();
         assert_eq!(round_trip["model"], authored["model"]);
         assert_eq!(round_trip["database_mode"], authored["database_mode"]);
-        assert_eq!(round_trip["options"]["min_observations"], 7);
+        assert_eq!(round_trip["tuning_config"]["min_observations"], 7);
         let reparsed: AicTimingConfig = serde_json::from_value(round_trip).unwrap();
         assert_eq!(reparsed.perf_model.tp, 4);
         assert_eq!(

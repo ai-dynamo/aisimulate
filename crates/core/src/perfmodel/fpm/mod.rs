@@ -20,15 +20,15 @@
 //! - [`correction`]: the native online-correction grid.
 //! - [`regression`]: the regression fallback.
 //! - [`samples`]: shared bucketed-sample infrastructure.
-//! - [`options`]: tuning controls.
+//! - [`tuning`]: tuning controls.
 
 mod config;
 mod correction;
 mod metrics;
 mod model;
-mod options;
 mod regression;
 mod samples;
+mod tuning;
 
 #[cfg(test)]
 mod tests;
@@ -40,4 +40,4 @@ pub use model::{
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfProvenance,
     ForwardPassPerfReadiness, ForwardPassPerfSource,
 };
-pub use options::ForwardPassPerfOptions;
+pub use tuning::ForwardPassPerfTuningConfig;

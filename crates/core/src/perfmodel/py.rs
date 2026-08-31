@@ -1231,7 +1231,7 @@ fn kvcache_quant_name(dtype: Option<&DataType>) -> Option<&'static str> {
 /// `with_gil`, which is re-entrant, so calling it from inside a `#[pymethod]`
 /// staticmethod is fine.
 ///
-/// The constructor takes the canonical config + options as JSON strings (the same
+/// The constructor takes the canonical model config + tuning config as JSON strings (the same
 /// marshalling the Python `RustForwardPassPerfModel` wrapper used to pass over
 /// ctypes), so the Python wrapper's public surface is unchanged.
 #[pyclass(name = "RustForwardPassPerfModel")]
@@ -1239,16 +1239,16 @@ pub struct PyForwardPassPerfModel {
     inner: crate::ForwardPassPerfModel,
 }
 
-/// Parse optional runtime/tuning options. `None` lets the core own defaults.
-fn parse_fpm_options(
-    options_json: Option<&str>,
-) -> PyResult<Option<crate::ForwardPassPerfOptions>> {
-    match options_json {
+/// Parse the optional tuning configuration. `None` lets the core own defaults.
+fn parse_fpm_tuning_config(
+    tuning_config_json: Option<&str>,
+) -> PyResult<Option<crate::ForwardPassPerfTuningConfig>> {
+    match tuning_config_json {
         None => Ok(None),
         Some(s) if s.trim().is_empty() => Ok(None),
         Some(s) => serde_json::from_str(s)
             .map(Some)
-            .map_err(|e| PyValueError::new_err(format!("invalid options JSON: {e}"))),
+            .map_err(|e| PyValueError::new_err(format!("invalid tuning config JSON: {e}"))),
     }
 }
 
@@ -1269,17 +1269,19 @@ fn parse_fpm_iteration(fpm_json: &str) -> PyResult<Vec<crate::ForwardPassMetrics
 
 #[pymethods]
 impl PyForwardPassPerfModel {
-    /// `RustForwardPassPerfModel.best_available(config_json, options_json=None)`:
-    /// the sole production constructor. The config's explicit fallback policy
+    /// `RustForwardPassPerfModel.best_available(model_config_json, tuning_config_json=None)`:
+    /// the sole production constructor. The model config's explicit fallback policy
     /// decides whether unsupported native input fails or uses regression.
     #[staticmethod]
-    #[pyo3(signature = (config_json, options_json=None))]
-    fn best_available(config_json: &str, options_json: Option<&str>) -> PyResult<Self> {
-        let config: crate::ForwardPassPerfModelConfig = serde_json::from_str(config_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid forward-pass config JSON: {e}")))?;
-        let options = parse_fpm_options(options_json)?;
-        let inner =
-            crate::ForwardPassPerfModel::best_available(config, options).map_err(aic_to_py)?;
+    #[pyo3(signature = (model_config_json, tuning_config_json=None))]
+    fn best_available(model_config_json: &str, tuning_config_json: Option<&str>) -> PyResult<Self> {
+        let model_config: crate::ForwardPassPerfModelConfig =
+            serde_json::from_str(model_config_json).map_err(|e| {
+                PyValueError::new_err(format!("invalid forward-pass config JSON: {e}"))
+            })?;
+        let tuning_config = parse_fpm_tuning_config(tuning_config_json)?;
+        let inner = crate::ForwardPassPerfModel::best_available(model_config, tuning_config)
+            .map_err(aic_to_py)?;
         Ok(Self { inner })
     }
 

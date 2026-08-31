@@ -21,9 +21,9 @@ use super::config::ForwardPassFallbackPolicy;
 use super::config::ForwardPassPerfModelConfig;
 use super::correction::CorrectionBuckets;
 use super::metrics::validate_forward_pass_metrics;
-use super::options::{ForwardPassPerfOptions, validate_options};
 use super::regression::BucketedRegression;
-use super::samples::{AxisRange, StoreStats, WithOptions};
+use super::samples::{AxisRange, StoreStats, WithTuningConfig};
+use super::tuning::{ForwardPassPerfTuningConfig, validate_tuning_config};
 
 /// Current readiness and tuning state for a `ForwardPassPerfModel`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -100,7 +100,7 @@ pub enum ForwardPassPerfReadiness {
 ///   used for tuning
 ///
 /// Native correction grids use fixed constructor-time ranges from
-/// `ForwardPassPerfOptions`: `max_num_tokens` bounds `sum_prefill_tokens`,
+/// `ForwardPassPerfTuningConfig`: `max_num_tokens` bounds `sum_prefill_tokens`,
 /// `max_batch_size` bounds `num_decode_requests`, and `max_kv_tokens` bounds
 /// `sum_decode_kv_tokens`. `min_faster_correction_factor` and
 /// `max_slower_correction_factor` place independent absolute bounds on learned
@@ -118,7 +118,7 @@ pub enum ForwardPassPerfReadiness {
 #[derive(Clone, Debug)]
 pub struct ForwardPassPerfModel {
     mode: ForwardPassPerfMode,
-    options: ForwardPassPerfOptions,
+    tuning_config: ForwardPassPerfTuningConfig,
     last_warning: Option<String>,
     provenance: Option<ForwardPassPerfProvenance>,
 }
@@ -144,64 +144,69 @@ impl ForwardPassPerfModel {
     /// into Python) and calls this.
     /// Used by the `#[cfg(test)]` suite to construct a native model from a
     /// hand-built fixture `Engine` without Python.
-    pub(crate) fn from_engine(engine: Arc<Engine>, options: ForwardPassPerfOptions) -> Self {
+    pub(crate) fn from_engine(
+        engine: Arc<Engine>,
+        tuning_config: ForwardPassPerfTuningConfig,
+    ) -> Self {
         Self {
             mode: ForwardPassPerfMode::Native {
                 engine,
-                corrections: WorkloadStores::with_options(&options),
+                corrections: WorkloadStores::with_tuning_config(&tuning_config),
             },
-            options,
+            tuning_config,
             last_warning: None,
             provenance: None,
         }
     }
 
     /// API:
-    /// `ForwardPassPerfModel::from_regression(options) -> Result<Self, AicError>`
+    /// `ForwardPassPerfModel::from_regression(tuning_config) -> Result<Self, AicError>`
     ///
     /// Description: create a regression-only forward-pass model.
     ///
     /// This mode is for native-AIC-unsupported models. It returns `None` from
     /// `estimate_forward_pass_time_ms` for non-empty iterations until the
-    /// inferred workload kind has at least `options.min_observations` tuning samples.
+    /// inferred workload kind has at least `tuning_config.min_observations` tuning samples.
     /// Correction factor getters always return `None` in this mode.
-    pub(crate) fn from_regression(options: ForwardPassPerfOptions) -> Result<Self, AicError> {
-        validate_options(&options)?;
+    pub(crate) fn from_regression(
+        tuning_config: ForwardPassPerfTuningConfig,
+    ) -> Result<Self, AicError> {
+        validate_tuning_config(&tuning_config)?;
         Ok(Self {
             mode: ForwardPassPerfMode::Regression {
-                regressions: WorkloadStores::with_options(&options),
+                regressions: WorkloadStores::with_tuning_config(&tuning_config),
             },
-            options,
+            tuning_config,
             last_warning: None,
             provenance: None,
         })
     }
 
     /// API:
-    /// `ForwardPassPerfModel::best_available(config, options) -> Result<Self, AicError>`
+    /// `ForwardPassPerfModel::best_available(model_config, tuning_config) -> Result<Self, AicError>`
     ///
     /// Description: create a native model when possible. Regression fallback
-    /// occurs only when `config.fallback_policy` explicitly requests it.
+    /// occurs only when `model_config.fallback_policy` explicitly requests it.
     ///
     /// Fallback reason is preserved in `diagnostics().last_warning`. The
     /// resulting model still uses the same FPM workload-kind inference and
     /// tuning input contract as native mode.
     #[cfg(feature = "python")]
     pub fn best_available(
-        config: ForwardPassPerfModelConfig,
-        options: Option<ForwardPassPerfOptions>,
+        model_config: ForwardPassPerfModelConfig,
+        tuning_config: Option<ForwardPassPerfTuningConfig>,
     ) -> Result<Self, AicError> {
-        config.validate()?;
-        let options = options.unwrap_or_default();
-        validate_options(&options)?;
+        model_config.validate()?;
+        let tuning_config = tuning_config.unwrap_or_default();
+        validate_tuning_config(&tuning_config)?;
 
-        let roots = resolve_systems_roots(&config)?;
+        let roots = resolve_systems_roots(&model_config)?;
         let mut failures = Vec::new();
         for systems_root in roots {
-            match build_engine_via_python(&config, &systems_root) {
+            match build_engine_via_python(&model_config, &systems_root) {
                 Ok(engine) => match engine.validate_forward_pass_readiness() {
                     Ok(()) => {
-                        let mut resolved_config = config.clone();
+                        let mut resolved_config = model_config.clone();
                         resolved_config.backend_version = Some(engine.database().version.clone());
                         resolved_config.database_mode = engine.database().database_mode;
                         resolved_config.transfer_policy =
@@ -210,7 +215,7 @@ impl ForwardPassPerfModel {
                             config: resolved_config,
                             selected_systems_root: Some(systems_root),
                         };
-                        let mut model = Self::from_engine(Arc::new(engine), options);
+                        let mut model = Self::from_engine(Arc::new(engine), tuning_config);
                         model.provenance = Some(provenance);
                         return Ok(model);
                     }
@@ -225,9 +230,9 @@ impl ForwardPassPerfModel {
         let err = failures.pop().unwrap_or_else(|| {
             AicError::DataRoot("no systems root was available for forward-pass construction".into())
         });
-        match config.fallback_policy {
+        match model_config.fallback_policy {
             ForwardPassFallbackPolicy::Regression => {
-                Self::regression_with_warning(config, options, err)
+                Self::regression_with_warning(model_config, tuning_config, err)
             }
             ForwardPassFallbackPolicy::Error => Err(err),
         }
@@ -235,16 +240,16 @@ impl ForwardPassPerfModel {
 
     #[cfg(feature = "python")]
     fn regression_with_warning(
-        config: ForwardPassPerfModelConfig,
-        options: ForwardPassPerfOptions,
+        model_config: ForwardPassPerfModelConfig,
+        tuning_config: ForwardPassPerfTuningConfig,
         err: AicError,
     ) -> Result<Self, AicError> {
-        let mut model = Self::from_regression(options)?;
+        let mut model = Self::from_regression(tuning_config)?;
         model.last_warning = Some(format!(
             "native forward-pass estimator unavailable; using fallback regression: {err}"
         ));
         model.provenance = Some(ForwardPassPerfProvenance {
-            config,
+            config: model_config,
             selected_systems_root: None,
         });
         Ok(model)
@@ -266,7 +271,7 @@ impl ForwardPassPerfModel {
     /// default to `1.0` for inferred workload kinds with fewer than
     /// `min_observations` total samples, empty regions, and queries outside the
     /// configured correction-grid workload ranges in
-    /// `ForwardPassPerfOptions`. Regression models return `Ok(None)` until the
+    /// `ForwardPassPerfTuningConfig`. Regression models return `Ok(None)` until the
     /// matching inferred workload kind has enough tuning samples. Empty
     /// scheduled work returns `Ok(Some(0.0))`.
     ///
@@ -441,11 +446,11 @@ impl ForwardPassPerfModel {
     }
 
     /// API:
-    /// `model.options() -> &ForwardPassPerfOptions`
+    /// `model.tuning_config() -> &ForwardPassPerfTuningConfig`
     ///
-    /// Description: return the immutable tuning options used by this model.
-    pub fn options(&self) -> &ForwardPassPerfOptions {
-        &self.options
+    /// Description: return the immutable tuning configuration used by this model.
+    pub fn tuning_config(&self) -> &ForwardPassPerfTuningConfig {
+        &self.tuning_config
     }
 
     /// Exact immutable construction identity and selected systems root.
@@ -604,22 +609,25 @@ pub(crate) struct WorkloadStores<T> {
     mixed: T,
 }
 
-impl<T: WithOptions> WorkloadStores<T> {
-    fn with_options(options: &ForwardPassPerfOptions) -> Self {
+impl<T: WithTuningConfig> WorkloadStores<T> {
+    fn with_tuning_config(tuning_config: &ForwardPassPerfTuningConfig) -> Self {
         Self {
-            prefill: T::with_options(options, &[AxisRange::from_zero_to(options.max_num_tokens)]),
-            decode: T::with_options(
-                options,
+            prefill: T::with_tuning_config(
+                tuning_config,
+                &[AxisRange::from_zero_to(tuning_config.max_num_tokens)],
+            ),
+            decode: T::with_tuning_config(
+                tuning_config,
                 &[
-                    AxisRange::from_zero_to(options.max_batch_size),
-                    AxisRange::from_zero_to(options.max_kv_tokens),
+                    AxisRange::from_zero_to(tuning_config.max_batch_size),
+                    AxisRange::from_zero_to(tuning_config.max_kv_tokens),
                 ],
             ),
-            mixed: T::with_options(
-                options,
+            mixed: T::with_tuning_config(
+                tuning_config,
                 &[
-                    AxisRange::from_zero_to(options.max_num_tokens),
-                    AxisRange::from_zero_to(options.max_kv_tokens),
+                    AxisRange::from_zero_to(tuning_config.max_num_tokens),
+                    AxisRange::from_zero_to(tuning_config.max_kv_tokens),
                 ],
             ),
         }
@@ -679,7 +687,7 @@ impl<T> WorkloadStores<T> {
 ///
 /// [`AicError::InvalidEngineConfig`] is deliberately NOT fallback-safe: it is
 /// used for hard caller/config errors (e.g. a non-UTF-8 `systems_path`, invalid
-/// FPM options, a malformed spec). Those must surface rather than silently
+/// FPM tuning configuration, a malformed spec). Those must surface rather than silently
 /// degrade `best_available` to regression mode.
 #[cfg(feature = "python")]
 fn can_fallback_to_regression(err: &AicError) -> bool {

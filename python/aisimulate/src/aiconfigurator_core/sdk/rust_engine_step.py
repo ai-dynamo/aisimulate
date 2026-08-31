@@ -118,7 +118,7 @@ class ForwardPassPerfModelConfig:
 
 
 @dataclass(frozen=True)
-class ForwardPassPerfOptions:
+class ForwardPassPerfTuningConfig:
     """Runtime observation, regression, correction, and capacity controls."""
 
     max_observations: int = 64
@@ -169,7 +169,7 @@ class RustForwardPassPerfModel:
     iter1_rank1]]``. Each iteration is merged using max-rank load features and
     max positive ``wall_time`` across ranks.
 
-    Correction grids use fixed constructor-time ranges from ``options``:
+    Correction grids use fixed constructor-time ranges from ``tuning_config``:
     ``max_num_tokens`` bounds ``sum_prefill_tokens`` and defaults to ``8192``,
     ``max_batch_size`` bounds ``num_decode_requests`` and defaults to ``512``,
     and ``max_kv_tokens`` bounds ``sum_decode_kv_tokens`` and defaults to
@@ -180,7 +180,7 @@ class RustForwardPassPerfModel:
     bound on corrections above ``1.0`` and must be finite and at least ``1.0``.
     It defaults to ``2.0``, limiting learned slowdowns to ``2x``. Passing
     ``None`` for either option leaves that direction unbounded. Regression
-    fallback ignores both options.
+    fallback ignores both correction bounds.
     """
 
     def __init__(self, inner: Any) -> None:
@@ -189,27 +189,34 @@ class RustForwardPassPerfModel:
     @classmethod
     def best_available(
         cls,
-        config: ForwardPassPerfModelConfig | Mapping[str, Any],
-        options: ForwardPassPerfOptions | Mapping[str, Any] | None = None,
+        model_config: ForwardPassPerfModelConfig | Mapping[str, Any],
+        tuning_config: ForwardPassPerfTuningConfig | Mapping[str, Any] | None = None,
     ) -> RustForwardPassPerfModel:
-        """API: ``RustForwardPassPerfModel.best_available(config, options=None)``.
+        """API: ``RustForwardPassPerfModel.best_available(model_config, tuning_config=None)``.
 
-        This is the only production constructor. ``config`` owns immutable
-        identity and selection policy; ``options`` owns runtime tuning controls.
-        Regression fallback occurs only when ``fallback_policy="regression"``.
+        This is the only production constructor. ``model_config`` owns immutable
+        identity and selection policy; ``tuning_config`` owns observation-driven
+        correction and regression controls. Regression fallback occurs only when
+        ``fallback_policy="regression"``.
         """
         _configure_default_data_roots()
         import aiconfigurator_core
 
-        config_payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
-        config_payload["systems_paths"] = _resolve_forward_pass_systems_paths(
-            tuple(config_payload.get("systems_paths") or ())
+        model_config_payload = (
+            model_config.to_dict() if isinstance(model_config, ForwardPassPerfModelConfig) else dict(model_config)
         )
-        config_payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(config_payload.get("transfer_policy"))
-        options_payload = options.to_dict() if isinstance(options, ForwardPassPerfOptions) else options
+        model_config_payload["systems_paths"] = _resolve_forward_pass_systems_paths(
+            tuple(model_config_payload.get("systems_paths") or ())
+        )
+        model_config_payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(
+            model_config_payload.get("transfer_policy")
+        )
+        tuning_config_payload = (
+            tuning_config.to_dict() if isinstance(tuning_config, ForwardPassPerfTuningConfig) else tuning_config
+        )
         inner = aiconfigurator_core.RustForwardPassPerfModel.best_available(
-            _json_dumps(config_payload),
-            _optional_json_dumps(options_payload),
+            _json_dumps(model_config_payload),
+            _optional_json_dumps(tuning_config_payload),
         )
         return cls(inner)
 

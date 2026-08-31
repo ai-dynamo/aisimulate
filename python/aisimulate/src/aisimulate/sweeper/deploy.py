@@ -45,7 +45,7 @@ def _performance_model_metadata(
     return {
         "provider": "aic",
         "config": _role_forward_pass_config(sample, role, forward_pass_estimator),
-        "options": forward_pass_estimator.options,
+        "tuning_config": forward_pass_estimator.tuning_config,
         "selection": forward_pass_estimator.diagnostics,
     }
 
@@ -137,8 +137,8 @@ def _engine_args_payload(
     authored_timing_model = sample.get(f"{role}_timing_model")
     if authored_timing_model is None and forward_pass_estimator is not None:
         timing_config = _role_forward_pass_config(sample, role, forward_pass_estimator)
-        if forward_pass_estimator.options is not None:
-            timing_config["options"] = dict(forward_pass_estimator.options)
+        if forward_pass_estimator.tuning_config is not None:
+            timing_config["tuning_config"] = dict(forward_pass_estimator.tuning_config)
         payload["timing_model"] = {
             "type": "external",
             "provider": "aic",

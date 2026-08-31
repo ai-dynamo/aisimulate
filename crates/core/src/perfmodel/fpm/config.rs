@@ -49,7 +49,7 @@ pub enum ForwardPassFallbackPolicy {
 ///
 /// This is the one public construction schema shared by Rust, Python, Replay,
 /// Sweeper, and Planner. Runtime learning/tuning controls deliberately live in
-/// [`super::ForwardPassPerfOptions`].
+/// [`super::ForwardPassPerfTuningConfig`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardPassPerfModelConfig {
