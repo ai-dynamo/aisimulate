@@ -73,6 +73,7 @@
 /crates/core/deny.toml                               @ai-dynamo/aisimulate-infra-codeowners
 /crates/core/Cargo.toml                              @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_aic_sync.py                              @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_pages_site.py                            @ai-dynamo/aisimulate-infra-codeowners
 
 # === Path overrides: a subsystem nested inside another area's tree.
 # More specific, so they win via last-match over the area globs above. ===
@@ -114,6 +115,7 @@
 /crates/core/src/replay/                             @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/tests/public-api/                            @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_cli_config.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_pages_site.py                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/python.rs                           @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/artifact-contract.md                           @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/docker/                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain

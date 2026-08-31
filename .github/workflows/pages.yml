@@ -1,0 +1,68 @@
+name: GitHub Pages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/pages.yml"
+      - "scripts/build_pages_site.py"
+      - "tests/test_pages_site.py"
+      - "python/aisimulate/docs/index.html"
+      - "python/aisimulate/docs/support-matrix/**"
+      - "python/aisimulate/docs/e2e-accuracy/**"
+      - "python/aisimulate/docs/fpe-support-matrix/**"
+      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
+      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/pages.yml"
+      - "scripts/build_pages_site.py"
+      - "python/aisimulate/docs/index.html"
+      - "python/aisimulate/docs/support-matrix/**"
+      - "python/aisimulate/docs/e2e-accuracy/**"
+      - "python/aisimulate/docs/fpe-support-matrix/**"
+      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
+      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build allowlisted public site
+        run: python scripts/build_pages_site.py --output-dir _site
+      - name: Test public artifact contract
+        run: python -m unittest discover -s tests -p test_pages_site.py
+      - name: Configure GitHub Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: Upload GitHub Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
