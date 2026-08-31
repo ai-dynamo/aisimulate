@@ -96,7 +96,7 @@ fn host_offload_spec(capacity_blocks: usize) -> ReplaySpec {
         prefill_ms: 0.0,
         decode_ms: 0.0,
     };
-    engine.rank.kv_bytes_per_token = Some(250_000);
+    engine.rank.kv_cache_bytes_per_token = Some(250_000);
     engine.rank.native_host_offload =
         Some(NativeHostOffloadConfig::new(capacity_blocks).with_bandwidths(1.0, 1.0));
     replay_spec.engine = serde_json::to_value(engine).unwrap();

@@ -125,6 +125,7 @@ pub(super) enum HostLookup {
 pub(super) enum StartLoad {
     Queued,
     Deferred,
+    Retry,
     CapacityBlocked,
 }
 
@@ -132,6 +133,11 @@ pub(super) enum StartLoad {
 pub(super) struct CompletedLoad {
     pub(super) uuid: Uuid,
     pub(super) transfer_id: TransferId,
+}
+
+pub(super) struct HostTransferProgress {
+    pub(super) completed_loads: Vec<CompletedLoad>,
+    pub(super) completed_any: bool,
 }
 
 pub(super) struct VllmHostOffloadAdapter {
@@ -285,7 +291,7 @@ impl VllmHostOffloadAdapter {
                 LoadOutcome::Queued(transfer_id) => transfer_id,
                 LoadOutcome::Miss => {
                     kv_manager.cancel_destination(reservation);
-                    return StartLoad::Deferred;
+                    return StartLoad::Retry;
                 }
             };
 
@@ -309,8 +315,9 @@ impl VllmHostOffloadAdapter {
         &mut self,
         kv_manager: &mut G1Manager,
         now_ms: f64,
-    ) -> Vec<CompletedLoad> {
+    ) -> HostTransferProgress {
         let completed = self.tier.tick(now_ms);
+        let completed_any = !completed.is_empty();
         for transfer in &completed {
             let CompletedTransfer::Store {
                 request_id: _,
@@ -338,7 +345,10 @@ impl VllmHostOffloadAdapter {
             }
             loads.push(CompletedLoad { uuid, transfer_id });
         }
-        loads
+        HostTransferProgress {
+            completed_loads: loads,
+            completed_any,
+        }
     }
 
     /// Submit the stores prepared by the completed scheduler pass, then settle
@@ -347,11 +357,13 @@ impl VllmHostOffloadAdapter {
         &mut self,
         kv_manager: &mut G1Manager,
         now_ms: f64,
-    ) -> Vec<CompletedLoad> {
-        let mut loads = self.advance(kv_manager, now_ms);
+    ) -> HostTransferProgress {
+        let mut progress = self.advance(kv_manager, now_ms);
         self.tier.submit_prepared_stores(now_ms);
-        loads.extend(self.advance(kv_manager, now_ms));
-        loads
+        let settled = self.advance(kv_manager, now_ms);
+        progress.completed_loads.extend(settled.completed_loads);
+        progress.completed_any |= settled.completed_any;
+        progress
     }
 
     pub(super) fn activate_completed_load(
@@ -546,12 +558,12 @@ impl VllmHostOffloadAdapter {
         kv_manager: &mut G1Manager,
         mutation_now_ms: f64,
         observed_at_ms: f64,
-    ) {
+    ) -> bool {
         let Some(load) = request.load.take() else {
-            return;
+            return false;
         };
         let LoadState::Loading(load) = load else {
-            return;
+            return false;
         };
         for key in &load.keys {
             assert_eq!(self.load_by_key.remove(key), Some(load.transfer_id));
@@ -561,6 +573,7 @@ impl VllmHostOffloadAdapter {
                 .cancel_load(load.transfer_id, mutation_now_ms, observed_at_ms)
         );
         kv_manager.cancel_destination(load.reservation);
+        true
     }
 
     pub(super) fn compute_not_before_ms(&self, now_ms: f64) -> f64 {
@@ -680,7 +693,7 @@ mod tests {
             .max_num_batched_tokens(Some(4))
             .enable_chunked_prefill(true)
             .enable_prefix_caching(true)
-            .kv_bytes_per_token(Some(250_000))
+            .kv_cache_bytes_per_token(Some(250_000))
             .native_host_offload(Some(NativeHostOffloadConfig {
                 num_host_blocks: 4,
                 d2h_bandwidth_gbps: 0.0,
@@ -893,7 +906,7 @@ mod tests {
             _ => panic!("request must be loading"),
         };
         let deadline = adapter.tier.transfer_deadline(transfer_id).unwrap();
-        let completed = adapter.advance(&mut manager, deadline);
+        let completed = adapter.advance(&mut manager, deadline).completed_loads;
         assert_eq!(completed.len(), 1);
         adapter.activate_completed_load(
             owner,

@@ -98,10 +98,9 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         ):
             payload.pop(name, None)
     host_offload = sample.get(f"{role}_native_host_offload")
-    legacy_geometry = sample.get("kv_transfer_bytes_per_token")
-    if sample.get("kv_transfer_enabled", False) or host_offload is not None:
-        configured_bytes = legacy_geometry if legacy_geometry is not None else sample[f"{role}_kv_bytes_per_token"]
-        payload["kv_bytes_per_token"] = (
+    if host_offload is not None:
+        configured_bytes = sample[f"{role}_kv_bytes_per_token"]
+        payload["kv_cache_bytes_per_token"] = (
             estimate_kv_bytes_per_token(
                 str(sample["model_name"]),
                 tp_size=tp,
@@ -111,6 +110,19 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
             )
             if configured_bytes == "auto"
             else int(configured_bytes)
+        )
+    transfer_geometry = sample.get("kv_transfer_bytes_per_token")
+    if role in {"prefill", "decode"} and transfer_geometry is not None:
+        payload["kv_transfer_bytes_per_token"] = (
+            estimate_kv_bytes_per_token(
+                str(sample["model_name"]),
+                tp_size=int(sample["prefill_tp"]),
+                pp_size=int(sample["prefill_pp"]),
+                moe_tp_size=int(sample["prefill_moe_tp"]),
+                moe_ep_size=int(sample["prefill_moe_ep"]),
+            )
+            if transfer_geometry == "auto"
+            else int(transfer_geometry)
         )
     if host_offload is not None:
         payload["native_host_offload"] = dict(host_offload)

@@ -202,7 +202,9 @@ pub(crate) struct MockEngineArgs {
     #[builder(default = "42")]
     pub aic_mtp_seed: u64,
     #[builder(default = "None")]
-    pub kv_bytes_per_token: Option<usize>,
+    pub kv_transfer_bytes_per_token: Option<usize>,
+    #[builder(default = "None")]
+    pub kv_cache_bytes_per_token: Option<usize>,
     #[builder(default = "None")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,
     #[builder(default = "None")]

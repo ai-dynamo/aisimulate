@@ -111,7 +111,6 @@ def recommendation_to_sweeper(
     search_space.update(_role_search_space(workers, modes))
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
-        search_space["kv_transfer_enabled"] = True
         search_space["kv_transfer_bytes_per_token"] = transfer.get("bytes_per_token")
         search_space["kv_transfer_bandwidth"] = transfer.get("bandwidth_gb_per_second")
         search_space["kv_transfer_timing_mode"] = transfer.get("timing_mode", "destination_missing")
@@ -654,8 +653,8 @@ def _candidate_prediction(
             if role == "prefill"
             else deployment.decode_engine_args
         )
-        if isinstance(role_args, dict) and role_args.get("kv_bytes_per_token") is not None:
-            kv_cache["bytes_per_token"] = role_args["kv_bytes_per_token"]
+        if isinstance(role_args, dict) and role_args.get("kv_cache_bytes_per_token") is not None:
+            kv_cache["bytes_per_token"] = role_args["kv_cache_bytes_per_token"]
         if sample.get(f"{role}_native_host_offload") is not None:
             kv_cache["host_offload"] = deepcopy(sample[f"{role}_native_host_offload"])
         engine["workers"][public_role] = {
@@ -678,9 +677,7 @@ def _candidate_prediction(
             else raw_worker.get("startup_seconds", 0),
         }
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
-        transfer = deepcopy(raw_engine["kv_transfer"])
-        transfer.pop("bytes_per_token", None)
-        engine["kv_transfer"] = transfer
+        engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 
     traffic = _candidate_traffic(
         source.traffic.model_dump(mode="python", exclude_none=True) if source.traffic is not None else None,

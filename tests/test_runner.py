@@ -182,7 +182,8 @@ def test_runner_lowers_sglang_with_prefix_caching_disabled():
 def test_runner_preserves_native_host_offload_rank_config():
     runtime = RecordingRuntime()
     engine_args = _engine_args()
-    engine_args["kv_bytes_per_token"] = 131_072
+    engine_args["kv_transfer_bytes_per_token"] = 333
+    engine_args["kv_cache_bytes_per_token"] = 131_072
     engine_args["native_host_offload"] = {
         "num_host_blocks": 4096,
         "d2h_bandwidth_gbps": 7.0,
@@ -201,7 +202,8 @@ def test_runner_preserves_native_host_offload_rank_config():
     )
 
     rank = runtime.execution_spec["engine"]["rank"]
-    assert rank["kv_bytes_per_token"] == 131_072
+    assert rank["kv_transfer_bytes_per_token"] == 333
+    assert rank["kv_cache_bytes_per_token"] == 131_072
     assert rank["native_host_offload"] == engine_args["native_host_offload"]
 
 
@@ -256,7 +258,7 @@ def test_public_host_offload_config_reaches_native_execution_rank():
     )
 
     rank = runtime.execution_spec["spec"]["engine"]["rank"]
-    assert rank["kv_bytes_per_token"] == 131_072
+    assert rank["kv_cache_bytes_per_token"] == 131_072
     assert rank["native_host_offload"] == {
         "num_host_blocks": 4096,
         "d2h_bandwidth_gbps": 7.0,

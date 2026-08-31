@@ -119,7 +119,6 @@ def unroll_sample(
         sample[key] = selection.get(key, getattr(search_space, key))
     if mode == "disagg":
         for key in (
-            "kv_transfer_enabled",
             "kv_transfer_bytes_per_token",
             "kv_transfer_bandwidth",
             "kv_transfer_timing_mode",

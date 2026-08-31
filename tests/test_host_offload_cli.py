@@ -6,6 +6,13 @@ from __future__ import annotations
 import json
 
 import pytest
+
+pytest.importorskip(
+    "aisimulate.runner",
+    reason="standalone AISimulate runtime is not installed",
+    exc_type=ImportError,
+)
+
 import yaml
 from pydantic import ValidationError
 
@@ -108,7 +115,7 @@ def test_predict_yaml_accepts_canonical_host_offload_schema(tmp_path) -> None:
     rank = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
 
     assert config.engine.workers.aggregated.kv_cache.bytes_per_token == 131_072
-    assert rank["kv_bytes_per_token"] == 131_072
+    assert rank["kv_cache_bytes_per_token"] == 131_072
     assert rank["native_host_offload"] == {
         "num_host_blocks": 4096,
         "d2h_bandwidth_gbps": 32.0,
@@ -151,7 +158,7 @@ def test_predict_cli_reaches_native_rank_host_offload(
 
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
     rank = runtime.execution_spec["spec"]["engine"]["rank"]
-    assert rank["kv_bytes_per_token"] == 131_072
+    assert rank["kv_cache_bytes_per_token"] == 131_072
     assert rank["native_host_offload"] == _host_offload()
 
 
@@ -172,7 +179,7 @@ def test_prediction_host_offload_auto_geometry_uses_aggregated_shape(
         CorePredictionConfig.model_validate({"engine": engine})
     ).backend_deployment.agg_engine_args
 
-    assert rank["kv_bytes_per_token"] == 444_444
+    assert rank["kv_cache_bytes_per_token"] == 444_444
     assert rank["native_host_offload"] == _host_offload()
     assert calls == [
         {
@@ -184,7 +191,9 @@ def test_prediction_host_offload_auto_geometry_uses_aggregated_shape(
     ]
 
 
-def test_prediction_auto_geometry_resolves_per_pd_role(monkeypatch) -> None:
+def test_prediction_auto_transfer_geometry_uses_prefill_source_shape(
+    monkeypatch,
+) -> None:
     engine = _prediction_engine(mode="disaggregated")
     engine["kv_transfer"] = {
         "bandwidth_gb_per_second": 400.0,
@@ -201,9 +210,9 @@ def test_prediction_auto_geometry_resolves_per_pd_role(monkeypatch) -> None:
         CorePredictionConfig.model_validate({"engine": engine})
     ).backend_deployment
 
-    assert deployment.prefill_engine_args["kv_bytes_per_token"] == 20_001
-    assert deployment.decode_engine_args["kv_bytes_per_token"] == 10_001
-    assert [call["tp_size"] for call in calls] == [2, 1]
+    assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 20_001
+    assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 20_001
+    assert [call["tp_size"] for call in calls] == [2]
     assert deployment.prefill_engine_args["kv_transfer_bandwidth"] == 400.0
     assert (
         deployment.decode_engine_args["kv_transfer_timing_mode"]
@@ -211,9 +220,12 @@ def test_prediction_auto_geometry_resolves_per_pd_role(monkeypatch) -> None:
     )
 
 
-def test_prediction_explicit_geometry_passes_through_per_pd_role(monkeypatch) -> None:
+def test_prediction_transfer_and_cache_geometry_are_independent(monkeypatch) -> None:
     engine = _prediction_engine(mode="disaggregated")
-    engine["kv_transfer"] = {"bandwidth_gb_per_second": 400.0}
+    engine["kv_transfer"] = {
+        "bytes_per_token": 333,
+        "bandwidth_gb_per_second": 400.0,
+    }
     engine["workers"]["prefill"]["kv_cache"]["bytes_per_token"] = 111
     engine["workers"]["decode"]["kv_cache"]["bytes_per_token"] = 222
     monkeypatch.setattr(
@@ -227,8 +239,10 @@ def test_prediction_explicit_geometry_passes_through_per_pd_role(monkeypatch) ->
         CorePredictionConfig.model_validate({"engine": engine})
     ).backend_deployment
 
-    assert deployment.prefill_engine_args["kv_bytes_per_token"] == 111
-    assert deployment.decode_engine_args["kv_bytes_per_token"] == 222
+    assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 333
+    assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 333
+    assert "kv_cache_bytes_per_token" not in deployment.prefill_engine_args
+    assert "kv_cache_bytes_per_token" not in deployment.decode_engine_args
 
 
 def test_explicit_legacy_kv_transfer_geometry_yaml_remains_supported(tmp_path) -> None:
@@ -244,17 +258,36 @@ def test_explicit_legacy_kv_transfer_geometry_yaml_remains_supported(tmp_path) -
         CorePredictionConfig.from_yaml(path)
     ).backend_deployment
 
-    assert deployment.prefill_engine_args["kv_bytes_per_token"] == 333
-    assert deployment.decode_engine_args["kv_bytes_per_token"] == 333
+    assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 333
+    assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 333
 
 
-def test_duplicate_legacy_and_canonical_geometry_is_rejected() -> None:
+def test_recommendation_keeps_transfer_and_cache_geometry_independent() -> None:
     engine = _prediction_engine(mode="disaggregated")
-    engine["kv_transfer"] = {"bytes_per_token": 333}
+    for worker in engine["workers"].values():
+        worker["parallelism"] = {"preset": False, **worker["parallelism"]}
+    engine["kv_transfer"] = {
+        "bytes_per_token": 333,
+        "bandwidth_gb_per_second": 400.0,
+    }
     engine["workers"]["prefill"]["kv_cache"]["bytes_per_token"] = 111
+    engine["workers"]["decode"]["kv_cache"]["bytes_per_token"] = 222
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": engine,
+            "optimization": {"constraints": {"max_candidate_gpus": 8}},
+        }
+    )
 
-    with pytest.raises(ValidationError, match="explicitly configured in both"):
-        CorePredictionConfig.model_validate({"engine": engine})
+    reparsed = CoreRecommendationConfig.model_validate(config.model_dump(mode="json"))
+    space = recommendation_to_sweeper(reparsed).search_space
+
+    assert reparsed.engine.kv_transfer.bytes_per_token == 333
+    assert reparsed.engine.workers.prefill.kv_cache.bytes_per_token == 111
+    assert reparsed.engine.workers.decode.kv_cache.bytes_per_token == 222
+    assert space.kv_transfer_bytes_per_token == 333
+    assert space.prefill_kv_bytes_per_token == 111
+    assert space.decode_kv_bytes_per_token == 222
 
 
 def test_recommendation_carries_fixed_host_descriptor_without_search_dimension() -> (

@@ -197,11 +197,11 @@ def test_fixed_host_offload_descriptor_lowers_into_aggregated_engine_args():
         parallel_config=dense,
     ).agg_engine_args
 
-    assert engine["kv_bytes_per_token"] == 131_072
+    assert engine["kv_cache_bytes_per_token"] == 131_072
     assert engine["native_host_offload"] == host_offload
 
 
-def test_disagg_auto_kv_geometry_is_resolved_independently_per_role(monkeypatch):
+def test_disagg_auto_transfer_geometry_uses_prefill_source_shape(monkeypatch):
     monkeypatch.setattr(
         deploy_module,
         "estimate_kv_bytes_per_token",
@@ -221,9 +221,7 @@ def test_disagg_auto_kv_geometry_is_resolved_independently_per_role(monkeypatch)
     )
     sample = unroll_sample(
         search_space=_space(
-            prefill_kv_bytes_per_token="auto",
-            decode_kv_bytes_per_token="auto",
-            kv_transfer_enabled=True,
+            kv_transfer_bytes_per_token="auto",
             kv_transfer_bandwidth=400.0,
         ),
         selection=selection,
@@ -232,8 +230,38 @@ def test_disagg_auto_kv_geometry_is_resolved_independently_per_role(monkeypatch)
 
     deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
 
-    assert deployment.prefill_engine_args["kv_bytes_per_token"] == 20_001
-    assert deployment.decode_engine_args["kv_bytes_per_token"] == 10_001
+    assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 20_001
+    assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 20_001
+
+
+def test_serialized_search_space_transfer_geometry_enables_pd_transfer():
+    legacy = _space(
+        kv_transfer_bytes_per_token=333,
+        kv_transfer_bandwidth=400.0,
+    ).model_dump(mode="json")
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), 1),
+        decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), 1),
+    )
+    sample = unroll_sample(
+        search_space=SearchSpace.model_validate(legacy),
+        selection=_agg_selection(
+            deployment_mode="disagg",
+            backend="vllm",
+            prefill_max_num_batched_tokens=8192,
+            prefill_max_num_seqs=1,
+            decode_max_num_batched_tokens=8192,
+            decode_max_num_seqs=256,
+        ),
+        parallel_config=parallel,
+    )
+
+    deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+    assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 333
+    assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 333
+    assert deployment.prefill_engine_args["kv_transfer_bandwidth"] == 400.0
+    assert deployment.decode_engine_args["kv_transfer_bandwidth"] == 400.0
 
 
 def test_backend_deployment_contains_no_dynamo_policy_fields():

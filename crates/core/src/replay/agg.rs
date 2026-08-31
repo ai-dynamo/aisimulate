@@ -1284,7 +1284,7 @@ mod tests {
                 max_num_seqs: 2,
                 max_num_batched_tokens: 8,
                 enable_prefix_caching: true,
-                kv_bytes_per_token: Some(250_000),
+                kv_cache_bytes_per_token: Some(250_000),
                 native_host_offload: Some(
                     NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0),
                 ),

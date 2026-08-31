@@ -123,6 +123,10 @@ pub(crate) struct SchedulerState {
     /// queue without searching or removing from the middle of that queue.
     connector_waiting: VecDeque<Uuid>,
     connector_waiting_members: FxHashSet<Uuid>,
+    /// Connector waiters whose only possible wakeup is physical transfer
+    /// progress. They retain connector FIFO membership without making the
+    /// worker runnable at unrelated coordinator timestamps.
+    connector_deadline_waiting_members: FxHashSet<Uuid>,
     /// Auxiliary FIFO of queued requests whose prompt is already materialized.
     /// Entries are lazily discarded, preserving the ordinary queue's order.
     materialized_waiting: VecDeque<Uuid>,
@@ -228,6 +232,7 @@ impl SchedulerState {
     fn remove_from_waiting(&mut self, uuid: Uuid) {
         let ordinary = self.waiting_members.remove(&uuid);
         let connector = self.connector_waiting_members.remove(&uuid);
+        self.connector_deadline_waiting_members.remove(&uuid);
         debug_assert!(!(ordinary && connector));
         if ordinary && self.waiting.front() == Some(&uuid) {
             self.waiting.pop_front();
@@ -240,12 +245,25 @@ impl SchedulerState {
         }
     }
 
-    fn restore_connector_waiting_front(&mut self, uuid: Uuid) {
+    fn restore_connector_waiting_front(&mut self, uuid: Uuid, deadline_only: bool) {
         debug_assert!(!self.waiting_members.contains(&uuid));
         if self.connector_waiting_members.insert(uuid) {
             self.connector_waiting.push_front(uuid);
         }
+        if deadline_only {
+            self.connector_deadline_waiting_members.insert(uuid);
+        } else {
+            self.connector_deadline_waiting_members.remove(&uuid);
+        }
         self.mark_materialized_waiting(uuid);
+    }
+
+    fn wake_connector_deadline_waiters(&mut self) {
+        self.connector_deadline_waiting_members.clear();
+    }
+
+    fn has_ready_connector_waiter(&self) -> bool {
+        self.connector_waiting_members.len() > self.connector_deadline_waiting_members.len()
     }
 
     fn mark_materialized_waiting(&mut self, uuid: Uuid) {
@@ -304,9 +322,13 @@ impl SchedulerState {
             return self.materialized_waiting.front().copied();
         }
 
-        if prioritize_connector_waiting {
+        if prioritize_connector_waiting && self.has_ready_connector_waiter() {
             self.compact_connector_waiting_front();
-            if let Some(uuid) = self.connector_waiting.front().copied() {
+            let ready = self.connector_waiting.iter().copied().find(|uuid| {
+                self.connector_waiting_members.contains(uuid)
+                    && !self.connector_deadline_waiting_members.contains(uuid)
+            });
+            if let Some(uuid) = ready {
                 #[cfg(test)]
                 {
                     self.connector_waiting_selections += 1;
@@ -361,6 +383,7 @@ impl SchedulerState {
     pub(crate) fn take_completed(&mut self, uuid: &Uuid) -> Option<VllmRequestState> {
         self.waiting_members.remove(uuid);
         self.connector_waiting_members.remove(uuid);
+        self.connector_deadline_waiting_members.remove(uuid);
         self.running_members.remove(uuid);
         self.requests.remove(uuid)
     }
@@ -465,6 +488,11 @@ impl SchedulerState {
             debug_assert!(
                 self.connector_waiting.len() >= self.connector_waiting_members.len(),
                 "connector waiting queue dropped live membership entries"
+            );
+            debug_assert!(
+                self.connector_deadline_waiting_members
+                    .is_subset(&self.connector_waiting_members),
+                "deadline-only connector waiters must retain connector membership"
             );
             debug_assert!(
                 self.running.len() >= self.running_members.len(),
@@ -587,7 +615,7 @@ impl VllmCore {
             VllmHostOffloadAdapter::new(
                 config,
                 args.block_size,
-                args.kv_bytes_per_token
+                args.kv_cache_bytes_per_token
                     .expect("validated native host offload requires KV byte geometry"),
             )
             .expect("validated native host-offload configuration must construct")
@@ -1062,7 +1090,7 @@ impl VllmCore {
             prefill_handoff_transfer_timing(
                 request.sequence.num_input_tokens(),
                 self.args.kv_transfer_bandwidth,
-                self.args.kv_bytes_per_token,
+                self.args.kv_transfer_bytes_per_token,
                 self.args.kv_transfer_timing_mode,
             )
         });
@@ -1125,7 +1153,7 @@ impl VllmCore {
     pub(crate) fn is_ready(&self) -> bool {
         !self.state.running_members.is_empty()
             || !self.state.waiting_members.is_empty()
-            || !self.state.connector_waiting_members.is_empty()
+            || self.state.has_ready_connector_waiter()
     }
 
     #[allow(dead_code)]
@@ -1157,16 +1185,22 @@ impl VllmCore {
         let Some(adapter) = self.native_host_offload.as_mut() else {
             return;
         };
-        let completed = adapter.advance(&mut self.kv_manager, now_ms);
-        self.activate_completed_loads(completed);
+        let progress = adapter.advance(&mut self.kv_manager, now_ms);
+        self.activate_completed_loads(progress.completed_loads);
+        if progress.completed_any {
+            self.state.wake_connector_deadline_waiters();
+        }
     }
 
     pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
         let Some(adapter) = self.native_host_offload.as_mut() else {
             return;
         };
-        let completed = adapter.complete_engine_boundary(&mut self.kv_manager, now_ms);
-        self.activate_completed_loads(completed);
+        let progress = adapter.complete_engine_boundary(&mut self.kv_manager, now_ms);
+        self.activate_completed_loads(progress.completed_loads);
+        if progress.completed_any {
+            self.state.wake_connector_deadline_waiters();
+        }
     }
 
     fn activate_completed_loads(&mut self, completed: Vec<CompletedLoad>) {
@@ -1507,7 +1541,7 @@ impl VllmCore {
                             HostLookup::Hit(hit) => host_hit = Some(hit),
                             HostLookup::Deferred => {
                                 self.state.remove_from_waiting(uuid);
-                                host_step_skipped.push(uuid);
+                                host_step_skipped.push((uuid, true));
                                 continue;
                             }
                         }
@@ -1634,12 +1668,17 @@ impl VllmCore {
                             request_reservation_before,
                         );
                         self.state.remove_from_waiting(uuid);
-                        host_step_skipped.push(uuid);
+                        host_step_skipped.push((uuid, true));
                         continue;
                     }
                     StartLoad::Deferred => {
                         self.state.remove_from_waiting(uuid);
-                        host_step_skipped.push(uuid);
+                        host_step_skipped.push((uuid, true));
+                        continue;
+                    }
+                    StartLoad::Retry => {
+                        self.state.remove_from_waiting(uuid);
+                        host_step_skipped.push((uuid, false));
                         continue;
                     }
                     StartLoad::CapacityBlocked => break,
@@ -1686,9 +1725,10 @@ impl VllmCore {
             }
         }
 
-        for uuid in host_step_skipped.into_iter().rev() {
+        for (uuid, deadline_only) in host_step_skipped.into_iter().rev() {
             if self.state.requests.contains_key(&uuid) {
-                self.state.restore_connector_waiting_front(uuid);
+                self.state
+                    .restore_connector_waiting_front(uuid, deadline_only);
             }
         }
 
@@ -1779,6 +1819,7 @@ impl VllmCore {
         mutation_now_ms: Option<f64>,
         observed_at_ms: Option<f64>,
     ) {
+        let mut cancelled_host_load = false;
         if let Some(adapter) = self.native_host_offload.as_mut() {
             let mutation_now_ms = mutation_now_ms.unwrap_or_else(|| adapter.current_time_ms());
             let observed_at_ms = observed_at_ms.unwrap_or(mutation_now_ms);
@@ -1788,8 +1829,16 @@ impl VllmCore {
                 .get_mut(&uuid)
                 .and_then(|request| request.host_offload.as_deref_mut())
             {
-                adapter.cancel_request(host, &mut self.kv_manager, mutation_now_ms, observed_at_ms);
+                cancelled_host_load = adapter.cancel_request(
+                    host,
+                    &mut self.kv_manager,
+                    mutation_now_ms,
+                    observed_at_ms,
+                );
             }
+        }
+        if cancelled_host_load {
+            self.state.wake_connector_deadline_waiters();
         }
         let active_blocks_before = self.kv_manager.num_active_blocks();
         let Some(request) = self.state.requests.get(&uuid) else {
@@ -2230,7 +2279,7 @@ impl VllmCore {
                     true,
                     request.sequence.num_input_tokens(),
                     self.args.kv_transfer_bandwidth,
-                    self.args.kv_bytes_per_token,
+                    self.args.kv_transfer_bytes_per_token,
                 );
                 already_complete.push((uuid, handoff_delay_ms));
                 continue;
@@ -2319,7 +2368,7 @@ impl VllmCore {
 
             let worker_type = self.args.worker_type;
             let kv_transfer_bandwidth = self.args.kv_transfer_bandwidth;
-            let kv_bytes_per_token = self.args.kv_bytes_per_token;
+            let kv_transfer_bytes_per_token = self.args.kv_transfer_bytes_per_token;
             let (handoff_delay_ms, cached_tokens) = match self.state.requests.get_mut(&uuid) {
                 Some(request) => {
                     request.debug_assert_progress(uuid);
@@ -2328,7 +2377,7 @@ impl VllmCore {
                         completed,
                         request.sequence.num_input_tokens(),
                         kv_transfer_bandwidth,
-                        kv_bytes_per_token,
+                        kv_transfer_bytes_per_token,
                     );
                     (handoff_delay_ms, request.take_cached_tokens_for_signal())
                 }
@@ -2538,7 +2587,7 @@ impl VllmCore {
                         is_complete,
                         prompt_tokens,
                         self.args.kv_transfer_bandwidth,
-                        self.args.kv_bytes_per_token,
+                        self.args.kv_transfer_bytes_per_token,
                     ),
                 });
                 if is_complete {
@@ -2621,7 +2670,7 @@ mod waiting_queue_tests {
             .max_num_seqs(Some(8))
             .max_num_batched_tokens(Some(32))
             .enable_prefix_caching(true)
-            .kv_bytes_per_token(Some(250_000))
+            .kv_cache_bytes_per_token(Some(250_000))
             .native_host_offload(Some(NativeHostOffloadConfig::new(8)))
             .build()
             .unwrap();
@@ -2643,7 +2692,7 @@ mod waiting_queue_tests {
             core.state.remove_from_waiting(uuid);
         }
         for uuid in connector.into_iter().rev() {
-            core.state.restore_connector_waiting_front(uuid);
+            core.state.restore_connector_waiting_front(uuid, false);
         }
 
         assert_eq!(core.state.waiting.len(), ORDINARY + 2);
@@ -2667,5 +2716,51 @@ mod waiting_queue_tests {
         assert_eq!(core.state.next_waiting_uuid(false, true), Some(ids[0]));
         assert_eq!(core.state.connector_waiting_selections(), 2);
         assert_eq!(core.state.waiting.len(), ORDINARY + 2);
+    }
+
+    #[test]
+    fn deadline_only_connector_waiters_sleep_until_transfer_progress() {
+        let args = MockEngineArgs::builder()
+            .num_gpu_blocks(8)
+            .block_size(4)
+            .max_num_seqs(Some(8))
+            .max_num_batched_tokens(Some(32))
+            .enable_prefix_caching(true)
+            .kv_cache_bytes_per_token(Some(250_000))
+            .native_host_offload(Some(NativeHostOffloadConfig::new(8)))
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new(args);
+        let deadline_waiter = Uuid::from_u128(100_100);
+        core.receive(DirectRequest {
+            tokens: vec![1, 2, 3, 4],
+            max_output_tokens: 0,
+            uuid: Some(deadline_waiter),
+            ..DirectRequest::default()
+        });
+        core.state.remove_from_waiting(deadline_waiter);
+        core.state
+            .restore_connector_waiting_front(deadline_waiter, true);
+
+        assert!(!core.is_ready());
+        let selections = core.connector_waiting_selections();
+
+        let ordinary = Uuid::from_u128(100_101);
+        core.receive(DirectRequest {
+            tokens: vec![5, 6, 7, 8],
+            max_output_tokens: 0,
+            uuid: Some(ordinary),
+            ..DirectRequest::default()
+        });
+        assert!(core.is_ready());
+        assert_eq!(core.state.next_waiting_uuid(false, true), Some(ordinary));
+        assert_eq!(core.connector_waiting_selections(), selections);
+
+        core.state.wake_connector_deadline_waiters();
+        assert_eq!(
+            core.state.next_waiting_uuid(false, true),
+            Some(deadline_waiter)
+        );
+        assert_eq!(core.connector_waiting_selections(), selections + 1);
     }
 }

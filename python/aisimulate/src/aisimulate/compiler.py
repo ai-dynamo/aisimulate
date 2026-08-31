@@ -55,13 +55,20 @@ def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
         return BackendDeploymentSpec(
             parallel_config=parallel,
             performance_model_metadata={"aggregated": _worker_performance_model_metadata(engine, worker)},
-            agg_engine_args=_worker_engine_args(engine, worker, "aggregated"),
+            agg_engine_args=_worker_engine_args(engine, worker, "aggregated", transfer_bytes_per_token=None),
             num_workers=worker.parallelism.replicas,
             **common,
         )
     assert engine.workers.prefill is not None and engine.workers.decode is not None
     prefill = engine.workers.prefill
     decode = engine.workers.decode
+    transfer_bytes_per_token = None
+    if engine.kv_transfer is not None:
+        transfer_bytes_per_token = _resolve_kv_bytes_per_token(
+            engine,
+            prefill,
+            engine.kv_transfer.bytes_per_token,
+        )
     parallel = {
         **_parallel_mapping(prefill, prefix="prefill_"),
         **_parallel_mapping(decode, prefix="decode_"),
@@ -72,8 +79,12 @@ def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
             "prefill": _worker_performance_model_metadata(engine, prefill),
             "decode": _worker_performance_model_metadata(engine, decode),
         },
-        prefill_engine_args=_worker_engine_args(engine, prefill, "prefill"),
-        decode_engine_args=_worker_engine_args(engine, decode, "decode"),
+        prefill_engine_args=_worker_engine_args(
+            engine, prefill, "prefill", transfer_bytes_per_token=transfer_bytes_per_token
+        ),
+        decode_engine_args=_worker_engine_args(
+            engine, decode, "decode", transfer_bytes_per_token=transfer_bytes_per_token
+        ),
         num_prefill_workers=prefill.parallelism.replicas,
         num_decode_workers=decode.parallelism.replicas,
         **common,
@@ -114,7 +125,11 @@ def _worker_performance_model_metadata(
 
 
 def _worker_engine_args(
-    engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str
+    engine: EnginePredictionConfig,
+    worker: WorkerPredictionConfig,
+    role: str,
+    *,
+    transfer_bytes_per_token: int | None,
 ) -> dict[str, JSONValue]:
     backend = engine.backend
     parallel = worker.parallelism
@@ -185,26 +200,14 @@ def _worker_engine_args(
         ):
             payload.pop(name, None)
     host_offload = cache.host_offload
-    if engine.kv_transfer is not None or host_offload is not None:
-        transfer = engine.kv_transfer
-        legacy_geometry = (
-            transfer is not None
-            and transfer.bytes_per_token is not None
-            and "bytes_per_token" in transfer.model_fields_set
+    if host_offload is not None:
+        payload["kv_cache_bytes_per_token"] = _resolve_kv_bytes_per_token(
+            engine,
+            worker,
+            cache.bytes_per_token,
         )
-        configured_bytes = transfer.bytes_per_token if legacy_geometry else cache.bytes_per_token
-        assert configured_bytes is not None
-        payload["kv_bytes_per_token"] = (
-            estimate_kv_bytes_per_token(
-                engine.model,
-                tp_size=parallel.tensor,
-                pp_size=parallel.pipeline,
-                moe_tp_size=parallel.moe_tensor,
-                moe_ep_size=parallel.moe_expert,
-            )
-            if configured_bytes == "auto"
-            else configured_bytes
-        )
+    if transfer_bytes_per_token is not None:
+        payload["kv_transfer_bytes_per_token"] = transfer_bytes_per_token
     if host_offload is not None:
         payload["native_host_offload"] = host_offload.model_dump(mode="json")
     if engine.kv_transfer is not None:
@@ -213,6 +216,23 @@ def _worker_engine_args(
             payload["kv_transfer_bandwidth"] = transfer.bandwidth_gb_per_second
         payload["kv_transfer_timing_mode"] = transfer.timing_mode
     return payload
+
+
+def _resolve_kv_bytes_per_token(
+    engine: EnginePredictionConfig,
+    worker: WorkerPredictionConfig,
+    configured: int | str,
+) -> int:
+    if configured != "auto":
+        return configured
+    parallel = worker.parallelism
+    return estimate_kv_bytes_per_token(
+        engine.model,
+        tp_size=parallel.tensor,
+        pp_size=parallel.pipeline,
+        moe_tp_size=parallel.moe_tensor,
+        moe_ep_size=parallel.moe_expert,
+    )
 
 
 def _traffic(

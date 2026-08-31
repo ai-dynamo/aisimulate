@@ -442,7 +442,6 @@ class SearchSpace(BaseModel):
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
     agg_startup_time: float | None = None
-    kv_transfer_enabled: bool = False
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
     kv_transfer_timing_mode: str = "destination_missing"

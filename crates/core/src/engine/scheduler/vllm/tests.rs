@@ -1148,7 +1148,7 @@ mod core_behavior {
             .enable_chunked_prefill(true)
             .worker_type(crate::engine::common::protocols::WorkerType::Prefill)
             .kv_transfer_bandwidth(Some(1.0))
-            .kv_bytes_per_token(Some(1_000_000))
+            .kv_transfer_bytes_per_token(Some(1_000_000))
             .speedup_ratio(0.0)
             .build()
             .unwrap();

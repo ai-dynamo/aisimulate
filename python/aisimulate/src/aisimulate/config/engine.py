@@ -109,7 +109,7 @@ class WorkersPredictionConfig(StrictModel):
 
 
 class KvTransferConfig(StrictModel):
-    bytes_per_token: KvBytesPerToken | None = None
+    bytes_per_token: KvBytesPerToken = "auto"
     bandwidth_gb_per_second: PositiveFloat | None = None
     timing_mode: Literal["full_prompt", "destination_missing"] = "destination_missing"
 
@@ -147,7 +147,6 @@ class EnginePredictionConfig(StrictModel):
         )
         if self.mode == "disaggregated" and self.backend == "trtllm":
             raise ValueError("TensorRT-LLM disaggregated mode is unsupported")
-        _validate_kv_geometry_authority(self.workers, self.kv_transfer)
         _validate_prediction_host_offload(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         return self
@@ -294,7 +293,6 @@ class EngineRecommendationConfig(StrictModel):
             has_transfer=self.kv_transfer is not None,
         )
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
-        _validate_kv_geometry_authority(self.workers, self.kv_transfer)
         _validate_recommendation_host_offload(self)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
@@ -306,21 +304,6 @@ def _workers_with_host_offload(workers) -> list[tuple[str, Any]]:
         for role in ("aggregated", "prefill", "decode")
         if (worker := getattr(workers, role)) is not None and worker.kv_cache.host_offload is not None
     ]
-
-
-def _validate_kv_geometry_authority(workers, transfer: KvTransferConfig | None) -> None:
-    if transfer is None or transfer.bytes_per_token is None or "bytes_per_token" not in transfer.model_fields_set:
-        return
-    duplicate_roles = [
-        role
-        for role in ("aggregated", "prefill", "decode")
-        if (worker := getattr(workers, role)) is not None and "bytes_per_token" in worker.kv_cache.model_fields_set
-    ]
-    if duplicate_roles:
-        raise ValueError(
-            "KV bytes_per_token is explicitly configured in both engine.kv_transfer and "
-            f"workers.{duplicate_roles[0]}.kv_cache"
-        )
 
 
 def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:

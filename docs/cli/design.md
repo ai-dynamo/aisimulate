@@ -618,7 +618,7 @@ engine:
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.startup_seconds` | `0` | `x` | `-` | Nonnegative. |
-| `engine.kv_transfer.bytes_per_token` | `null` | `x` | `-` | Backward-compatible input alias for per-role `kv_cache.bytes_per_token`; positive or `auto` when explicitly authored. It conflicts with any explicitly authored canonical location. |
+| `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
 | `engine.kv_transfer.timing_mode` | `destination_missing` | `x` | `-` | `full_prompt` or `destination_missing`; disaggregated mode only. |
 
@@ -690,7 +690,8 @@ candidate GPU count is the sum of the prefill and decode worker counts.
 `full_prompt` charges transfer for the complete prompt KV footprint. `destination_missing` charges
 only the prompt KV not already present at the selected decode worker. `kv_transfer` is rejected for
 aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range is `x`, and
-`recommend` rejects domains on them.
+`recommend` rejects domains on them. Transfer bytes per token describe the PD link payload and may
+differ from each worker role's physical `kv_cache.bytes_per_token`.
 
 ### Native vLLM host-offload prediction
 

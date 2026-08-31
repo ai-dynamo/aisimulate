@@ -202,7 +202,7 @@ pub struct TrtllmConfig {
 /// descriptor intentionally contains only shared capacity and transfer
 /// parameters so additional framework profiles can reuse it without exposing
 /// unsupported policy combinations. Physical bytes per block are derived from
-/// [`EngineConfig::block_size`] and [`EngineConfig::kv_bytes_per_token`].
+/// [`EngineConfig::block_size`] and [`EngineConfig::kv_cache_bytes_per_token`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -312,11 +312,11 @@ pub struct EngineConfig {
     pub emit_kv_events: bool,
     /// Retain block token IDs alongside neutral KV events.
     pub emit_kv_token_ids: bool,
-    /// KV-cache bytes occupied by one token for transfer timing.
-    ///
-    /// This is shared by disaggregated handoff and framework-native host
-    /// offload so both paths use the same physical KV geometry.
-    pub kv_bytes_per_token: Option<usize>,
+    /// Bytes transferred per prompt token for disaggregated handoff timing.
+    pub kv_transfer_bytes_per_token: Option<usize>,
+    /// Physical KV-cache bytes occupied by one token for host offload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kv_cache_bytes_per_token: Option<usize>,
     /// Optional framework-native host-offload simulation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,
@@ -369,8 +369,10 @@ struct EngineConfigWire {
     emit_kv_events: bool,
     #[serde(default)]
     emit_kv_token_ids: bool,
+    #[serde(default, alias = "kv_bytes_per_token")]
+    kv_transfer_bytes_per_token: Option<usize>,
     #[serde(default)]
-    kv_bytes_per_token: Option<usize>,
+    kv_cache_bytes_per_token: Option<usize>,
     #[serde(default)]
     native_host_offload: Option<NativeHostOffloadConfig>,
     #[serde(default)]
@@ -411,7 +413,8 @@ impl<'de> Deserialize<'de> for EngineConfig {
             preemption_mode: wire.preemption_mode,
             emit_kv_events: wire.emit_kv_events,
             emit_kv_token_ids: wire.emit_kv_token_ids,
-            kv_bytes_per_token: wire.kv_bytes_per_token,
+            kv_transfer_bytes_per_token: wire.kv_transfer_bytes_per_token,
+            kv_cache_bytes_per_token: wire.kv_cache_bytes_per_token,
             native_host_offload: wire.native_host_offload,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
             kv_transfer_timing_mode: wire.kv_transfer_timing_mode,
@@ -442,7 +445,8 @@ impl Default for EngineConfig {
             preemption_mode: PreemptionMode::Lifo,
             emit_kv_events: false,
             emit_kv_token_ids: false,
-            kv_bytes_per_token: None,
+            kv_transfer_bytes_per_token: None,
+            kv_cache_bytes_per_token: None,
             native_host_offload: None,
             kv_transfer_bandwidth: None,
             kv_transfer_timing_mode: TransferTimingMode::FullPrompt,
@@ -524,8 +528,13 @@ impl EngineConfig {
             "emit_kv_token_ids requires emit_kv_events"
         );
         ensure!(
-            self.kv_bytes_per_token.is_none_or(|bytes| bytes > 0),
-            "kv_bytes_per_token must be positive"
+            self.kv_transfer_bytes_per_token
+                .is_none_or(|bytes| bytes > 0),
+            "kv_transfer_bytes_per_token must be positive"
+        );
+        ensure!(
+            self.kv_cache_bytes_per_token.is_none_or(|bytes| bytes > 0),
+            "kv_cache_bytes_per_token must be positive"
         );
         if let Some(host_offload) = &self.native_host_offload {
             host_offload.validate()?;
@@ -545,9 +554,9 @@ impl EngineConfig {
                 self.aic_nextn.is_none(),
                 "native_host_offload does not support aic_nextn in the initial implementation"
             );
-            let kv_bytes_per_token = self.kv_bytes_per_token.ok_or_else(|| {
+            let kv_bytes_per_token = self.kv_cache_bytes_per_token.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "native_host_offload requires kv_bytes_per_token to derive the physical host block size"
+                    "native_host_offload requires kv_cache_bytes_per_token to derive the physical host block size"
                 )
             })?;
             let block_bytes = self
@@ -556,7 +565,7 @@ impl EngineConfig {
                 .filter(|bytes| *bytes > 0)
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "native_host_offload requires block_size * kv_bytes_per_token to produce a positive, representable block size"
+                        "native_host_offload requires block_size * kv_cache_bytes_per_token to produce a positive, representable block size"
                     )
                 })?;
             let capacity_bytes = host_offload
@@ -621,7 +630,7 @@ mod tests {
     fn native_host_offload_config() -> EngineConfig {
         EngineConfig {
             block_size: 16,
-            kv_bytes_per_token: Some(128 * 1024),
+            kv_cache_bytes_per_token: Some(128 * 1024),
             native_host_offload: Some(NativeHostOffloadConfig {
                 num_host_blocks: 4_096,
                 d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
@@ -673,6 +682,29 @@ mod tests {
     }
 
     #[test]
+    fn legacy_kv_bytes_per_token_deserializes_to_transfer_geometry() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "kv_bytes_per_token": 131_072
+        }))
+        .unwrap();
+        assert_eq!(config.kv_transfer_bytes_per_token, Some(131_072));
+
+        let encoded = serde_json::to_value(config).unwrap();
+        assert_eq!(encoded["kv_transfer_bytes_per_token"], 131_072);
+        assert!(encoded.get("kv_bytes_per_token").is_none());
+    }
+
+    #[test]
+    fn transfer_geometry_rejects_duplicate_new_and_legacy_keys() {
+        let error = serde_json::from_value::<EngineConfig>(serde_json::json!({
+            "kv_transfer_bytes_per_token": 131_072,
+            "kv_bytes_per_token": 65_536
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate field"));
+    }
+
+    #[test]
     fn deserialization_still_rejects_unknown_fields() {
         let error = serde_json::from_value::<EngineConfig>(serde_json::json!({
             "backend": "vllm",
@@ -696,7 +728,7 @@ mod tests {
         let config: EngineConfig = serde_json::from_value(serde_json::json!({
             "backend": "vllm",
             "block_size": 16,
-            "kv_bytes_per_token": 131_072,
+            "kv_cache_bytes_per_token": 131_072,
             "native_host_offload": {
                 "num_host_blocks": 4_096
             }
@@ -768,13 +800,13 @@ mod tests {
             (
                 |config| {
                     config.block_size = usize::MAX;
-                    config.kv_bytes_per_token = Some(2);
+                    config.kv_cache_bytes_per_token = Some(2);
                 },
                 "positive, representable block size",
             ),
             (
-                |config| config.kv_bytes_per_token = None,
-                "requires kv_bytes_per_token",
+                |config| config.kv_cache_bytes_per_token = None,
+                "requires kv_cache_bytes_per_token",
             ),
             (
                 |config| {

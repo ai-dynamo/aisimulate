@@ -87,7 +87,7 @@ fn native_host_offload_config(
     config.rank.num_gpu_blocks = 2;
     config.rank.max_num_seqs = 2;
     config.rank.max_num_batched_tokens = 8;
-    config.rank.kv_bytes_per_token = Some(250_000);
+    config.rank.kv_cache_bytes_per_token = Some(250_000);
     config.rank.native_host_offload =
         Some(NativeHostOffloadConfig::new(host_capacity_blocks).with_bandwidths(1.0, 1.0));
     config
@@ -248,7 +248,7 @@ fn vllm_native_host_offload_restores_an_evicted_prefix_through_internal_work() {
     config.rank.num_gpu_blocks = 1;
     config.rank.max_num_seqs = 1;
     config.rank.max_num_batched_tokens = 4;
-    config.rank.kv_bytes_per_token = Some(250_000);
+    config.rank.kv_cache_bytes_per_token = Some(250_000);
     config.rank.native_host_offload =
         Some(NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0));
 
@@ -392,7 +392,7 @@ fn native_host_offload_rejects_attention_dp_and_disaggregated_roles() {
         prefill_ms: 0.0,
         decode_ms: 0.0,
     });
-    config.rank.kv_bytes_per_token = Some(1);
+    config.rank.kv_cache_bytes_per_token = Some(1);
     config.rank.native_host_offload =
         Some(NativeHostOffloadConfig::new(1).with_bandwidths(1.0, 1.0));
 
