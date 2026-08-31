@@ -18,6 +18,17 @@ This is not an executable rename. The two CLIs do not share flags or input files
 automatic AIC-to-AISimulate configuration converter. Migrate the workflow's intent and validate the
 result on the target hardware.
 
+## Repository and release transition
+
+The standalone [AIConfigurator repository](https://github.com/ai-dynamo/aiconfigurator) will publish
+its final 0.12.0 `aiconfigurator` and `aiconfigurator-core` artifacts and then be archived. AISimulate
+is the canonical home for ongoing development, releases, issues, and pull requests; open all new
+issues and pull requests in the [AISimulate repository](https://github.com/ai-dynamo/aisimulate).
+
+AISimulate 0.12.0 keeps the `aiconfigurator` compatibility command for workflows that do not yet have
+a unified CLI replacement. The command is targeted for removal in AISimulate 0.13.0, after every
+remaining AIC workflow has a verified replacement in the `aisimulate` CLI.
+
 ## AIC workflow support
 
 | AIC workflow | What AIC provides | Unified CLI status | What to do |
@@ -268,8 +279,9 @@ Continue using the compatibility command for:
 - heterogeneous P/D systems, backends, or versions;
 - AIC-specific database modes, forward-model selection, and expert estimator flags.
 
-The compatibility CLI is planned for deprecation, but its removal date is a separate release decision.
-Do not infer removal from the availability of `predict` and `recommend`.
+The compatibility command remains available in AISimulate 0.12.0 and is targeted for removal in
+AISimulate 0.13.0. Removal is gated on verified unified CLI replacements for every remaining workflow
+above; continue using the compatibility command until the applicable replacement is documented.
 
 ## Related documentation
 

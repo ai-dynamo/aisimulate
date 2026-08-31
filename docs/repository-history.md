@@ -129,9 +129,14 @@ the remaining parity and product evidence.
 
 Keep using `aiconfigurator` for the no-direct-replacement workflows in the
 [AIC migration guide](cli/migrate-from-aiconfigurator.md) until an explicit
-replacement and migration path land. The compatibility command is planned for
-deprecation, but its removal schedule is a separate release decision and must
-not be inferred from the presence of the new CLI.
+replacement and migration path land. The standalone AIConfigurator repository
+will publish its final 0.12.0 `aiconfigurator` and `aiconfigurator-core`
+artifacts and then be archived; ongoing development, releases, issues, and pull
+requests move to AISimulate.
+
+The compatibility command remains in the AISimulate 0.12.0 wheel and is
+targeted for removal in AISimulate 0.13.0. Removal is gated on verified unified
+CLI replacements for every remaining workflow in the migration guide.
 
 For features already implemented by the standalone Sweeper, see
 [Migrate from AIConfigurator](cli/migrate-from-aiconfigurator.md) for explicit legacy

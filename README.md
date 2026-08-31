@@ -149,8 +149,8 @@ contract.
 ## AIConfigurator compatibility CLI
 
 The `aisimulate` wheel preserves the established `aiconfigurator` command for
-workflows that have not yet moved to the unified CLI. This compatibility
-surface is planned for deprecation, so new prediction and search integrations
+workflows that have not yet moved to the unified CLI. AISimulate 0.12.0 keeps
+this compatibility surface, while new prediction and search integrations
 should start with `aisimulate predict` and `aisimulate recommend`.
 
 ```bash
@@ -182,6 +182,20 @@ complete compatibility surface. The
 [AIC migration guide](docs/cli/migrate-from-aiconfigurator.md)
 explains which AIC workflows map to `predict` or `recommend` and which ones
 must continue using the compatibility command for now.
+
+## AIConfigurator repository transition
+
+The standalone [AIConfigurator repository](https://github.com/ai-dynamo/aiconfigurator)
+will publish its final 0.12.0 `aiconfigurator` and `aiconfigurator-core`
+artifacts and then be archived. AISimulate is the canonical home for ongoing
+development, releases, issues, and pull requests; open all new issues and pull
+requests in this repository.
+
+The `aiconfigurator` compatibility command remains available from the
+`aisimulate` wheel in 0.12.0. It is targeted for removal in AISimulate 0.13.0,
+after every remaining AIC workflow has a verified replacement in the unified
+`aisimulate` CLI. Until then, use the compatibility command for the workflows
+identified in the migration guide.
 
 ## Experimental status and validation boundary
 
