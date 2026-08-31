@@ -17,6 +17,7 @@ from aisimulate.sweeper.replay import (
     ReplaySpec,
     RunnerCapabilities,
 )
+from aisimulate.sweeper.result import CandidateStatus, ReasonCategory
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search import Sweeper
 from aisimulate.sweeper.search_space import BranchSpace
@@ -53,11 +54,15 @@ def _run_sweep(
     show_progress: bool,
     on_round=None,
 ):
-    return Sweeper(
-        runner_factory=runner_factory,
-        sampler_factory=sampler_factory,
-        show_progress=show_progress,
-    ).run(config, on_round=on_round)
+    return (
+        Sweeper(
+            runner_factory=runner_factory,
+            sampler_factory=sampler_factory,
+            show_progress=show_progress,
+        )
+        .run(config, top_n=None, on_round=on_round)
+        .selected_candidates
+    )
 
 
 def _selection(seqs: int) -> dict:
@@ -530,16 +535,43 @@ def test_minimum_gpu_goal_gates_goodput_rate_before_ranking(monkeypatch):
             )
         }
     )
-    candidates = _run_sweep(
-        config,
+    result = Sweeper(
         runner_factory=_FakeRunnerFactory(runner=GoodputRunner()),
         sampler_factory=sampler_factory,
         show_progress=False,
+    ).run(
+        config,
+        top_n=None,
     )
+    candidates = result.selected_candidates
 
     assert len(candidates) == 2
     assert all(candidate.score == -8.0 for candidate in candidates)
-    assert all(candidate.metrics["goodput_request_throughput_rps"] >= 5.0 for candidate in candidates)
+    assert all(
+        candidate.metrics["goodput_request_throughput_rps"] >= 5.0
+        for candidate in candidates
+    )
+    assert result.counts.feasible == 2
+    assert result.counts.infeasible >= 1
+    assert result.counts.evaluated == result.counts.feasible + result.counts.infeasible
+    assert (
+        result.counts.unsupported
+        == result.counts.timed_out
+        == result.counts.failed
+        == 0
+    )
+    rejected = [
+        record
+        for record in result.candidates
+        if record.status is CandidateStatus.INFEASIBLE
+    ]
+    assert len(rejected) == result.counts.infeasible
+    assert all(
+        record.reason_category is ReasonCategory.SLA_CONSTRAINT for record in rejected
+    )
+    assert all(
+        record.metrics["goodput_request_throughput_rps"] < 5.0 for record in rejected
+    )
     assert any(
         item[0] == "infeasible" and "below required 5 rps" in item[1]
         for item in sampler_seen["sampler"].scored
@@ -776,7 +808,8 @@ def test_candidate_build_error_is_reported_not_raised(monkeypatch, capsys):
     assert "candidate build failed" in scored[0][1]
     output = capsys.readouterr().out
     assert "Sweeper failure reason(s): candidate build failed" in output
-    assert "(x33)" in output
+    assert "(x11)" in output
+    assert "22 cache hit(s)" in output
 
 
 def test_duplicate_full_samples_use_cache_and_are_replaced(monkeypatch):

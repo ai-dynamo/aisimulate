@@ -25,6 +25,7 @@ by the unified command surface. A legacy command becomes an AISimulate recommend
 | `--osl` | `traffic.source.output_tokens` | Synthetic output length |
 | `--ttft` | `evaluation.sla.ttft_ms` | Time-to-first-token bound in milliseconds |
 | `--tpot` | `evaluation.sla.itl_ms` | Per-request goodput uses average ITL; strict mode compares aggregate mean TPOT |
+| `--request-latency` | `evaluation.sla.e2e_ms` plus `optimization.strict_sla: true` | Fixed-output synthetic migration; applies per-request E2E and filters aggregate mean E2E |
 | `--strict-sla` | `optimization.strict_sla: true` | Reject before scalar ranking or Pareto dominance |
 | `--target-request-rate` | `optimization.target: min_gpus` plus `optimization.constraints.min_goodput_rps` | See the constrained sizing example below; this is not legacy linear replica extrapolation |
 | `--target-concurrency` | No exact equivalent yet | Keep the compatibility CLI for this case; concurrency is a load shape, not an absolute served-rate constraint |
@@ -102,6 +103,78 @@ samples reject the candidate.
 Request-level goodput and strict filtering both accept `ttft_ms` or `itl_ms` independently; an unset
 field is unbounded. `strict_sla` changes only whether the configured bounds additionally reject a
 candidate based on its aggregate means.
+
+## Request-latency translation
+
+For a fixed-output-length synthetic workload, translate AIConfigurator's `--request-latency` to
+AISimulate's existing end-to-end SLA and enable strict candidate filtering.
+
+Legacy command:
+
+```bash
+aiconfigurator cli default \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system gb200 \
+  --backend trtllm \
+  --total-gpus 8 \
+  --isl 1024 \
+  --osl 128 \
+  --request-latency 12000
+```
+
+Save this AISimulate configuration as `recommendation.yaml`:
+
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: constant_rate
+    requests_per_second: 4
+  stop:
+    requests_per_load_unit: 10
+
+engine:
+  mode: aggregated
+  model: meta-llama/Meta-Llama-3.1-8B
+  hardware: gb200
+  backend: trtllm
+  workers:
+    aggregated: {}
+
+evaluation:
+  sla:
+    e2e_ms: 12000
+
+optimization:
+  target: throughput
+  strict_sla: true
+  constraints:
+    max_candidate_gpus: 8
+```
+
+Run the AISimulate command:
+
+```bash
+aisimulate recommend --config recommendation.yaml
+```
+
+With a fixed output length, the aggregate values satisfy:
+
+```text
+mean_e2e_latency_ms = mean_ttft_ms + mean_tpot_ms * (output_tokens - 1)
+```
+
+The existing `e2e_ms` field therefore expresses the same numerical bound without introducing a
+second request-latency alias. It is a per-request E2E bound when computing goodput, and
+`strict_sla: true` additionally rejects candidates whose aggregate mean E2E latency exceeds the
+bound. `e2e_ms` is mutually exclusive with `ttft_ms` and `itl_ms`.
+
+This translation is not an aggregate-only constraint. AISimulate does not currently expose a
+public mapping for a bound that filters aggregate mean E2E latency but must not participate in
+request-level goodput.
 
 ## Minimum GPUs for an SLA-good request rate
 

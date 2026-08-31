@@ -28,6 +28,7 @@
 /docs/                                               @ai-dynamo/access-aisimulate-maintain
 /LICENSE                                             @ai-dynamo/access-aisimulate-maintain
 /README.md                                           @ai-dynamo/access-aisimulate-maintain
+/SECURITY.md                                         @ai-dynamo/access-aisimulate-maintain
 /CONTRIBUTING.md                                     @ai-dynamo/access-aisimulate-maintain
 /CONTRIBUTORS.md                                     @ai-dynamo/access-aisimulate-maintain
 /tests/conftest.py                                   @ai-dynamo/access-aisimulate-maintain
@@ -89,6 +90,7 @@
 /Cargo.toml                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /pytest.ini                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/e2e/                                          @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
+/SECURITY.md                                         @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/sweeper/                                       @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /.gitattributes                                      @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/sweeper/                                      @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain

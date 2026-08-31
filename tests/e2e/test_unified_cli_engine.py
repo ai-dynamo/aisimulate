@@ -43,9 +43,14 @@ _EXPECTED_RECOMMEND_CASES = (
     "04-mixed-disagg-pareto.yaml",
     "05-kv-fraction-goodput.yaml",
     "06-override-parallel-mappings-agg-disagg.yaml",
+    "07-constrained-minimum-gpus.yaml",
 )
-_PREDICT_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glob("*.yaml")))
-_RECOMMEND_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml")))
+_PREDICT_CASES = tuple(
+    sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glob("*.yaml"))
+)
+_RECOMMEND_CASES = tuple(
+    sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml"))
+)
 
 
 def _run_cli(*args: str, timeout: float = 120.0) -> subprocess.CompletedProcess[str]:
@@ -104,7 +109,9 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("config_path", _RECOMMEND_CASES, ids=lambda path: path.stem)
-def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path) -> None:
+def test_engine_recommend_cli_cases_round_trip(
+    config_path: Path, tmp_path: Path
+) -> None:
     output = tmp_path / config_path.stem
     result = _run_cli(
         "recommend",
@@ -122,7 +129,9 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
     recommendation_paths = sorted((output / "recommendations").glob("*.yaml"))
     assert rows
     assert len(recommendation_paths) == len(rows)
-    assert len({path.read_bytes() for path in recommendation_paths}) == len(recommendation_paths)
+    assert len({path.read_bytes() for path in recommendation_paths}) == len(
+        recommendation_paths
+    )
 
     generated_modes = set()
     for index, recommendation_path in enumerate(recommendation_paths):
@@ -147,4 +156,25 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
 
     if config_path.name == "06-override-parallel-mappings-agg-disagg.yaml":
         assert generated_modes == {"aggregated", "disaggregated"}
-        assert [row["score"] for row in rows] == sorted((row["score"] for row in rows), reverse=True)
+        assert [row["score"] for row in rows] == sorted(
+            (row["score"] for row in rows), reverse=True
+        )
+    if config_path.name == "07-constrained-minimum-gpus.yaml":
+        payload = json.loads(
+            (output / "recommendation.json").read_text(encoding="utf-8")
+        )
+        selected_ids = set(payload["views"]["top_n"])
+        selected_records = [
+            record
+            for record in payload["candidates"]
+            if record["candidate_id"] in selected_ids
+        ]
+        assert rows[0]["used_gpus"] == 1
+        assert selected_records
+        assert all(
+            record["score"] == -record["used_gpus"] for record in selected_records
+        )
+        assert all(
+            record["metrics"]["goodput_request_throughput_rps"] >= 4.0
+            for record in selected_records
+        )
