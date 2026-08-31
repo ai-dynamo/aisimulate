@@ -1,0 +1,186 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Forward Prediction Performance (advisory)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to compare
+        required: true
+        type: number
+  push:
+    # Velonix admits canonical pushes, not untrusted pull_request events.
+    branches:
+      - "pull-request/*"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: forward-prediction-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Forward Prediction Performance (advisory)
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - name: Resolve pull request
+        id: pr
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            let number;
+            if (context.eventName === 'workflow_dispatch') {
+              number = Number(context.payload.inputs.pr_number);
+            } else {
+              const match = context.ref.match(/^refs\/heads\/pull-request\/(\d+)$/);
+              if (!match) {
+                core.setFailed(`Cannot resolve a PR number from ${context.ref}`);
+                return;
+              }
+              number = Number(match[1]);
+            }
+            const {data: pull} = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: number,
+            });
+            core.setOutput('number', String(number));
+            core.setOutput('head_ref', `refs/pull/${number}/head`);
+            core.setOutput('head_sha', pull.head.sha);
+            core.setOutput('base_head_sha', pull.base.sha);
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.head_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Configure Python linker path
+        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+
+      - name: Install native build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential util-linux
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install wheel builder
+        run: python -m pip install 'maturin>=1.12,<2'
+
+      - name: Prepare exact revisions
+        env:
+          PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BASE_HEAD_SHA: ${{ steps.pr.outputs.base_head_sha }}
+        run: |
+          set -euo pipefail
+          actual_head="$(git rev-parse HEAD)"
+          if [[ "${actual_head}" != "${PR_HEAD_SHA}" ]]; then
+            echo "checked out ${actual_head}, expected PR head ${PR_HEAD_SHA}" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "${BASE_HEAD_SHA}"
+          base_sha="$(git merge-base "${PR_HEAD_SHA}" "${BASE_HEAD_SHA}")"
+
+          base_src="${RUNNER_TEMP}/forward-perf-base-src"
+          head_src="${RUNNER_TEMP}/forward-perf-head-src"
+          git worktree add --detach "${base_src}" "${base_sha}"
+          git worktree add --detach "${head_src}" "${PR_HEAD_SHA}"
+
+          {
+            echo "BASE_SHA=${base_sha}"
+            echo "HEAD_SHA=${PR_HEAD_SHA}"
+            echo "BASE_SRC=${base_src}"
+            echo "HEAD_SRC=${head_src}"
+            echo "BASE_DIST=${RUNNER_TEMP}/forward-perf-base-dist"
+            echo "HEAD_DIST=${RUNNER_TEMP}/forward-perf-head-dist"
+            echo "BASE_VENV=${RUNNER_TEMP}/forward-perf-base-venv"
+            echo "HEAD_VENV=${RUNNER_TEMP}/forward-perf-head-venv"
+          } >> "${GITHUB_ENV}"
+
+      - name: Build and install both revisions
+        run: |
+          set -euo pipefail
+          mkdir -p "${BASE_DIST}" "${HEAD_DIST}"
+          (
+            cd "${BASE_SRC}/python/aisimulate"
+            CARGO_TARGET_DIR="${RUNNER_TEMP}/forward-perf-base-target" \
+              python -m maturin build --release --out "${BASE_DIST}"
+          )
+          (
+            cd "${HEAD_SRC}/python/aisimulate"
+            CARGO_TARGET_DIR="${RUNNER_TEMP}/forward-perf-head-target" \
+              python -m maturin build --release --out "${HEAD_DIST}"
+          )
+          python -m venv "${BASE_VENV}"
+          python -m venv "${HEAD_VENV}"
+          "${BASE_VENV}/bin/python" -m pip install "${BASE_DIST}"/aisimulate-*.whl
+          "${HEAD_VENV}/bin/python" -m pip install "${HEAD_DIST}"/aisimulate-*.whl
+
+      - name: Run paired benchmark
+        id: benchmark
+        run: |
+          set +e
+          PYTHONPATH="${HEAD_SRC}/python/aisimulate" \
+            "${HEAD_VENV}/bin/python" \
+            "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" \
+            --base-python "${BASE_VENV}/bin/python" \
+            --base-worker "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
+            --base-revision "${BASE_SHA}" \
+            --head-python "${HEAD_VENV}/bin/python" \
+            --head-worker "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
+            --head-revision "${HEAD_SHA}" \
+            --output-dir "${RUNNER_TEMP}/forward-perf-results"
+          status=$?
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+          exit 0
+
+      - name: Publish summary and annotations
+        if: always()
+        run: |
+          results="${RUNNER_TEMP}/forward-perf-results"
+          if [[ -f "${results}/summary.md" ]]; then
+            cat "${results}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          if [[ -f "${results}/annotations.txt" ]]; then
+            while IFS= read -r annotation; do
+              [[ -n "${annotation}" ]] && echo "::error::${annotation}"
+            done < "${results}/annotations.txt"
+          fi
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forward-prediction-performance-pr-${{ steps.pr.outputs.number }}
+          path: ${{ runner.temp }}/forward-perf-results
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Set advisory result
+        if: always()
+        env:
+          BENCHMARK_STATUS: ${{ steps.benchmark.outputs.status }}
+        run: |
+          if [[ "${BENCHMARK_STATUS}" != "0" ]]; then
+            echo "Forward-prediction performance comparison failed with status ${BENCHMARK_STATUS}." >&2
+            exit 1
+          fi
