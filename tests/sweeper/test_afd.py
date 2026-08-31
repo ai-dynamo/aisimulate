@@ -4,10 +4,16 @@
 """First-class AFD topology, evaluator, and rate-matching contracts."""
 
 import json
+import re
+from pathlib import Path
 
 import pytest
+import yaml
+from pydantic import ValidationError
 
 from aiconfigurator.sdk.task_v2 import build_afd_parallel_lists
+from aisimulate.config import CoreRecommendationConfig
+from aisimulate.recommend import recommendation_to_sweeper
 from aisimulate.sweeper import (
     AFDCompanionOption,
     AFDInfeasible,
@@ -23,6 +29,30 @@ from aisimulate.sweeper import (
     require_afd_adapter_support,
     require_afd_runner_support,
 )
+
+
+_AFD_MIGRATION_GUIDE = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "cli"
+    / "migrate-from-aiconfigurator.md"
+)
+
+
+def _documented_afd_recommendation() -> dict:
+    text = _AFD_MIGRATION_GUIDE.read_text(encoding="utf-8")
+    match = re.search(
+        r"<!-- afd-migration-contract-start -->\s*```yaml\s*(.*?)\s*```\s*"
+        r"<!-- afd-migration-contract-end -->",
+        text,
+        flags=re.DOTALL,
+    )
+    assert match is not None, (
+        "AFD migration guide must contain one marked YAML contract"
+    )
+    payload = yaml.safe_load(match.group(1))
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _topology(**overrides):
@@ -53,6 +83,51 @@ def _times(phase="decode", **overrides):
     }
     values.update(overrides)
     return AFDLayerTimes(**values)
+
+
+def test_documented_afd_migration_contract_is_well_formed():
+    payload = _documented_afd_recommendation()
+
+    assert payload["traffic"]["source"] == {
+        "type": "synthetic",
+        "input_tokens": 1024,
+        "output_tokens": 128,
+    }
+    assert payload["engine"] == {
+        "mode": "afd",
+        "model": "Qwen/Qwen3-32B",
+        "hardware": "h200_sxm",
+        "backend": "trtllm",
+        "afd": {
+            "phase": "decode",
+            "combined_with_pd": True,
+        },
+    }
+    assert payload["evaluation"]["sla"] == {
+        "ttft_ms": 800,
+        "itl_ms": 30,
+    }
+    assert payload["optimization"] == {
+        "target": "throughput_per_gpu",
+        "strict_sla": True,
+        "constraints": {"max_candidate_gpus": 32},
+    }
+
+
+@pytest.mark.xfail(
+    reason=(
+        "AIC-1775 PR 17 defines the AFD Sweeper-core contract; the public "
+        "recommendation schema and lowering land in a later PR"
+    ),
+    raises=ValidationError,
+    strict=True,
+)
+def test_documented_afd_migration_contract_lowers_to_sweeper():
+    config = CoreRecommendationConfig.model_validate(_documented_afd_recommendation())
+
+    lowered = recommendation_to_sweeper(config)
+
+    assert lowered.search_space.deployment_mode == ["afd"]
 
 
 def test_topology_derives_workers_batch_and_gpu_accounting():
