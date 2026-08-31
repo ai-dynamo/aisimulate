@@ -784,6 +784,8 @@ where
                 continue;
             }
             let active_decode_ids = self.engine.active_group_ids();
+            let starting_decode_ids = self.engine.starting_group_ids();
+            let draining_decode_ids = self.engine.draining_group_ids();
             self.fpm_buffer
                 .emit_idle_due(&active_decode_ids, self.dp_size, self.now_ms);
             let tick_ordinal = self.next_scaling_tick_ordinal;
@@ -792,13 +794,17 @@ where
                 now_ms: self.now_ms,
                 prefill_fpm: Vec::new(),
                 decode_fpm: self.fpm_buffer.take(),
+                prefill_scheduler_metrics: Vec::new(),
+                decode_scheduler_metrics: self.engine.take_scheduler_metrics_snapshot(self.now_ms),
+                router_pending_prefill_requests: 0,
+                router_pending_decode_requests: self.placement.pending_count(),
                 traffic: self.traffic.drain(self.now_ms),
                 active_prefill_ids: Vec::new(),
                 active_decode_ids,
                 starting_prefill_ids: Vec::new(),
-                starting_decode_ids: self.engine.starting_group_ids(),
+                starting_decode_ids,
                 draining_prefill_ids: Vec::new(),
-                draining_decode_ids: self.engine.draining_group_ids(),
+                draining_decode_ids,
             };
             self.next_scaling_tick_ordinal = self
                 .next_scaling_tick_ordinal

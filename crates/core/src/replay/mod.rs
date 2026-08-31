@@ -164,7 +164,10 @@ pub use report::{
     TraceGoodputStats, TraceInterTokenLatencyStats, TraceLatencyStats, TraceRequestCounts,
     TraceThroughputStats, TraceTrajectoryStats,
 };
-pub use scaling::{NoScaling, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot};
+pub use scaling::{
+    NoScaling, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot,
+    SchedulerMetricsSnapshot,
+};
 pub use spec::{
     CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayRequest,
     ReplayRoutingMetadata, ReplaySpec, ReplayTopology, WorkerPoolSpec, WorkerStage,

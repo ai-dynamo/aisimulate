@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 
 use crate::engine::generalized::{PassId, SameTimestampRetry, SchedulerCommand};
 use crate::engine::{
-    Command, CommandResult, Engine, ForwardPassMetrics, PassCompletionEffects, Request,
+    Command, CommandResult, Engine, ForwardPassMetrics, Metrics, PassCompletionEffects, Request,
 };
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
@@ -17,6 +17,7 @@ use super::{EngineEffects, EnginePassMode, ObservedCommandEffects, ReplayEngineO
 use crate::replay::TraceCollector;
 use crate::replay::engine::ReplayRoleFactory;
 use crate::replay::protocol::{DirectRequest, ForwardPassSnapshot, OutputSignal};
+use crate::replay::scaling::SchedulerMetricsSnapshot;
 
 // SGLang admission may require hundreds of effect-free passes while its
 // output-reservation ratio converges. Keep this above the native default of
@@ -58,6 +59,60 @@ struct SchedulerOwner {
     dp_rank: u32,
 }
 
+#[derive(Debug, Clone)]
+struct RankMetricsState {
+    latest: Metrics,
+    cache_hit_tokens_since_tick: u64,
+    cache_total_tokens_since_tick: u64,
+}
+
+impl RankMetricsState {
+    fn new(dp_rank: u32, total_blocks: u64) -> Self {
+        Self {
+            latest: Metrics {
+                dp_rank,
+                total_blocks,
+                ..Metrics::default()
+            },
+            cache_hit_tokens_since_tick: 0,
+            cache_total_tokens_since_tick: 0,
+        }
+    }
+
+    fn update(&mut self, metrics: Metrics, accumulate_cache: bool) -> Result<()> {
+        if accumulate_cache {
+            self.cache_hit_tokens_since_tick = self
+                .cache_hit_tokens_since_tick
+                .checked_add(metrics.sglang_cache_hit_tokens)
+                .context("scheduler cache-hit token counter overflow")?;
+            self.cache_total_tokens_since_tick = self
+                .cache_total_tokens_since_tick
+                .checked_add(metrics.sglang_cache_total_tokens)
+                .context("scheduler cache-total token counter overflow")?;
+        }
+        self.latest = metrics;
+        Ok(())
+    }
+
+    fn take_snapshot(&mut self, worker_id: usize, sampled_at_ms: f64) -> SchedulerMetricsSnapshot {
+        SchedulerMetricsSnapshot {
+            worker_id,
+            dp_rank: self.latest.dp_rank,
+            sampled_at_ms,
+            active_blocks: self.latest.active_blocks,
+            inactive_blocks: self.latest.inactive_blocks,
+            total_blocks: self.latest.total_blocks,
+            active_cache_usage: self.latest.cache_usage,
+            physical_cache_usage: self.latest.physical_cache_usage,
+            running_requests: self.latest.running_requests,
+            waiting_requests: self.latest.waiting_requests,
+            preemptions_total: self.latest.preemptions_total,
+            cache_hit_tokens: std::mem::take(&mut self.cache_hit_tokens_since_tick),
+            cache_total_tokens: std::mem::take(&mut self.cache_total_tokens_since_tick),
+        }
+    }
+}
+
 /// Fleet/lifecycle adapter around the authoritative generalized mock engine.
 ///
 /// This type owns stable scheduler IDs, startup/draining state, and replay
@@ -71,6 +126,9 @@ where
     _pass_mode: EnginePassMode,
     workers: Vec<Option<LogicalWorker>>,
     scheduler_owners: Vec<Option<SchedulerOwner>>,
+    /// Last scheduler state committed at a visible command/completion boundary,
+    /// keyed identically to `scheduler_owners`.
+    scheduler_metrics: Vec<Option<RankMetricsState>>,
     live_worker_count: usize,
     total_in_flight: usize,
     ready_workers: BTreeSet<usize>,
@@ -104,6 +162,9 @@ where
             _pass_mode: pass_mode,
             workers: Vec::with_capacity(num_workers),
             scheduler_owners: Vec::with_capacity(
+                num_workers.saturating_mul(factory.dp_size() as usize),
+            ),
+            scheduler_metrics: Vec::with_capacity(
                 num_workers.saturating_mul(factory.dp_size() as usize),
             ),
             live_worker_count: 0,
@@ -188,6 +249,10 @@ where
             let scheduler_id = self.scheduler_owners.len();
             self.scheduler_owners
                 .push(Some(SchedulerOwner { worker_id, dp_rank }));
+            self.scheduler_metrics.push(Some(RankMetricsState::new(
+                dp_rank,
+                self.factory.total_blocks(),
+            )));
             scheduler_ids.push(scheduler_id);
         }
         self.workers.push(Some(LogicalWorker {
@@ -225,6 +290,9 @@ where
             self.scheduler_owners
                 .get(*scheduler_id)
                 .context("worker owned an out-of-range scheduler during removal")?;
+            self.scheduler_metrics
+                .get(*scheduler_id)
+                .context("worker metrics referenced an out-of-range scheduler")?;
         }
 
         // Validate every fallible invariant before mutating the fleet. If a
@@ -244,6 +312,15 @@ where
                 .scheduler_owners
                 .get_mut(scheduler_id)
                 .context("worker owned an out-of-range scheduler during removal")? = None;
+            // A removed rank has no unambiguous instantaneous row in
+            // ReplayScalingSnapshot. Its undrained pass-local cache window is
+            // intentionally dropped here; preserve it later in a dedicated
+            // interval DTO rather than emitting a stale scheduler gauge row.
+            *self
+                .scheduler_metrics
+                .get_mut(scheduler_id)
+                .context("worker metrics referenced an out-of-range scheduler during removal")? =
+                None;
         }
         Ok(true)
     }
@@ -379,6 +456,53 @@ where
         Some((owner.worker_id, owner.dp_rank))
     }
 
+    fn update_scheduler_metrics(
+        &mut self,
+        scheduler_id: usize,
+        metrics: Metrics,
+        accumulate_cache: bool,
+    ) -> Result<()> {
+        let owner = self.scheduler_owner(scheduler_id)?;
+        if metrics.dp_rank != owner.dp_rank {
+            bail!(
+                "offline replay scheduler metrics rank mismatch: expected {}, got {}",
+                owner.dp_rank,
+                metrics.dp_rank
+            );
+        }
+        self.scheduler_metrics
+            .get_mut(scheduler_id)
+            .and_then(Option::as_mut)
+            .context("offline replay scheduler metrics referenced a removed rank")?
+            .update(metrics, accumulate_cache)
+    }
+
+    /// Return a full row set for every live worker/rank and drain pass-local
+    /// cache observations accumulated since the preceding call.
+    pub(crate) fn take_scheduler_metrics_snapshot(
+        &mut self,
+        now_ms: f64,
+    ) -> Vec<SchedulerMetricsSnapshot> {
+        let mut snapshots = Vec::with_capacity(
+            self.live_worker_count
+                .saturating_mul(self.factory.dp_size() as usize),
+        );
+        for (worker_id, worker) in self.workers.iter().enumerate() {
+            let Some(worker) = worker else {
+                continue;
+            };
+            for &scheduler_id in &worker.scheduler_ids {
+                let state = self
+                    .scheduler_metrics
+                    .get_mut(scheduler_id)
+                    .and_then(Option::as_mut)
+                    .expect("live worker rank must retain scheduler metrics");
+                snapshots.push(state.take_snapshot(worker_id, now_ms));
+            }
+        }
+        snapshots
+    }
+
     pub(crate) fn has_active_workers(&self) -> bool {
         !self.active_group_ids().is_empty()
     }
@@ -440,6 +564,7 @@ where
             CommandResult::Applied | CommandResult::Noop => None,
         };
         self.apply_request_accounting(owner, acquired, &effects.retired_requests)?;
+        self.update_scheduler_metrics(scheduler_id, effects.metrics.clone(), false)?;
         let engine_events = Observation::observe_engine_events(
             self.stage.into(),
             owner.worker_id,
@@ -699,6 +824,7 @@ where
                 None,
                 &completed_request_ids,
             )?;
+            self.update_scheduler_metrics(scheduler_id, rank.effects.metrics.clone(), true)?;
             payloads.push(lower_completion::<Observation>(
                 self.stage,
                 completion.worker_id,
@@ -937,6 +1063,148 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn scheduler_metrics_initialize_every_live_rank_with_capacity() {
+        let mut component = decode_component(2);
+
+        let rows = component.take_scheduler_metrics_snapshot(17.0);
+
+        assert_eq!(rows.len(), 2);
+        for (worker_id, row) in rows.iter().enumerate() {
+            assert_eq!(row.worker_id, worker_id);
+            assert_eq!(row.dp_rank, 0);
+            assert_eq!(row.sampled_at_ms, 17.0);
+            assert_eq!(row.total_blocks, 16);
+            assert_eq!(row.active_blocks, 0);
+            assert_eq!(row.inactive_blocks, 0);
+            assert_eq!(row.active_cache_usage, 0.0);
+            assert_eq!(row.physical_cache_usage, 0.0);
+            assert_eq!(row.running_requests, 0);
+            assert_eq!(row.waiting_requests, 0);
+        }
+    }
+
+    #[test]
+    fn scheduler_metrics_follow_command_and_completion_boundaries() {
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                backend: Backend::Vllm,
+                num_gpu_blocks: 16,
+                block_size: 4,
+                max_num_batched_tokens: 16,
+                max_num_seqs: 1,
+                enable_chunked_prefill: false,
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+                ..EngineConfig::for_backend(Backend::Vllm)
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            1,
+            None,
+        )
+        .unwrap();
+        component
+            .dispatch(
+                0,
+                DirectRequest {
+                    tokens: vec![1; 4],
+                    max_output_tokens: 1,
+                    uuid: Some(Uuid::from_u128(31)),
+                    ..Default::default()
+                },
+                0.0,
+            )
+            .unwrap();
+
+        let after_command = component.take_scheduler_metrics_snapshot(0.0);
+        assert_eq!(after_command.len(), 1);
+        assert_eq!(
+            after_command[0].running_requests + after_command[0].waiting_requests,
+            1
+        );
+
+        let mut started = component.drive_ready(0.0, None).unwrap();
+        let scheduled = started
+            .scheduled_completion
+            .take()
+            .expect("fixed timing must schedule a completion");
+        component
+            .on_scheduled_completion(scheduled.completion, scheduled.at_ms)
+            .unwrap();
+
+        let after_completion = component.take_scheduler_metrics_snapshot(scheduled.at_ms);
+        assert_eq!(after_completion.len(), 1);
+        let row = &after_completion[0];
+        assert_eq!(row.running_requests, 0);
+        assert_eq!(row.waiting_requests, 0);
+        assert_eq!(row.active_blocks, 0);
+        assert!(row.inactive_blocks > 0);
+        assert_eq!(row.active_cache_usage, 0.0);
+        assert!(row.physical_cache_usage > 0.0);
+        assert_eq!(
+            row.physical_cache_usage,
+            row.inactive_blocks as f64 / row.total_blocks as f64
+        );
+    }
+
+    #[test]
+    fn scheduler_cache_metrics_accumulate_and_drain_per_tick() {
+        let mut state = RankMetricsState::new(2, 100);
+        state
+            .update(
+                Metrics {
+                    dp_rank: 2,
+                    total_blocks: 100,
+                    sglang_cache_hit_tokens: 3,
+                    sglang_cache_total_tokens: 5,
+                    ..Metrics::default()
+                },
+                true,
+            )
+            .unwrap();
+        state
+            .update(
+                Metrics {
+                    dp_rank: 2,
+                    total_blocks: 100,
+                    sglang_cache_hit_tokens: 7,
+                    sglang_cache_total_tokens: 11,
+                    ..Metrics::default()
+                },
+                true,
+            )
+            .unwrap();
+        // Command snapshots refresh instantaneous state but are not pass-local
+        // cache observations and therefore must not alter the tick window.
+        state
+            .update(
+                Metrics {
+                    dp_rank: 2,
+                    total_blocks: 100,
+                    ..Metrics::default()
+                },
+                false,
+            )
+            .unwrap();
+
+        let first = state.take_snapshot(9, 25.0);
+        assert_eq!(first.cache_hit_tokens, 10);
+        assert_eq!(first.cache_total_tokens, 16);
+        let second = state.take_snapshot(9, 50.0);
+        assert_eq!(second.cache_hit_tokens, 0);
+        assert_eq!(second.cache_total_tokens, 0);
     }
 
     #[test]

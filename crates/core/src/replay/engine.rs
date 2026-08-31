@@ -150,6 +150,7 @@ pub struct ReplayRoleFactory {
     dp_size: NonZeroU32,
     tensor_parallel_size: u32,
     backend: Backend,
+    total_blocks: u64,
 }
 
 impl ReplayRoleFactory {
@@ -185,6 +186,11 @@ impl ReplayRoleFactory {
     #[doc(hidden)]
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    #[doc(hidden)]
+    pub fn total_blocks(&self) -> u64 {
+        self.total_blocks
     }
 }
 
@@ -247,6 +253,9 @@ impl ReplayEngineFactory {
             WorkerStage::Decode => self.decode_timing.as_ref().or(self.timing.as_ref()),
         };
         let backend = role.rank.backend;
+        let total_blocks = u64::try_from(role.rank.num_gpu_blocks).map_err(|_| {
+            ReplayError::InvalidSpec("engine KV block count exceeds the metrics range".into())
+        })?;
         let factory = match timing {
             Some(timing) => EngineFactory::with_timing_model(role.rank, Arc::clone(timing)),
             None => EngineFactory::new(role.rank),
@@ -257,6 +266,7 @@ impl ReplayEngineFactory {
             dp_size,
             tensor_parallel_size: role.tensor_parallel_size,
             backend,
+            total_blocks,
         })
     }
 }

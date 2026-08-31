@@ -13,13 +13,14 @@ use crate::engine::{
 };
 use crate::replay::ReplayReport;
 use crate::replay::components::{AdmissionQueue, NoReplayMetadata, ReplayEngineObservation};
-use crate::replay::core::EngineEventBatch;
 use crate::replay::core::round_robin::PoolRoundRobinPlacement;
+use crate::replay::core::{EngineEventBatch, NoEngineEvents, PlacementEffects};
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig};
 use crate::replay::loadgen::{
     AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope, AgenticMooncakeHeader,
-    AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace, SessionTrace, Trace, TurnTrace,
+    AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace, ReplayRequestPayload, SessionTrace,
+    Trace, TurnTrace,
 };
 
 struct CaptureOncePolicy {
@@ -38,6 +39,151 @@ impl ReplayScalingPolicy for CaptureOncePolicy {
     ) -> anyhow::Result<ReplayScalingDecision> {
         *self.captured.borrow_mut() = Some(snapshot);
         Ok(ReplayScalingDecision::default())
+    }
+}
+
+struct CaptureAndScaleOncePolicy {
+    captured: Rc<RefCell<Option<ReplayScalingSnapshot>>>,
+}
+
+#[derive(Debug)]
+struct QueueUntilWorkerPlacement {
+    scheduler_id: Option<usize>,
+    pending: VecDeque<Uuid>,
+}
+
+impl QueueUntilWorkerPlacement {
+    fn initially_blocked(_topology: Vec<WorkerTopology>) -> Self {
+        Self {
+            scheduler_id: None,
+            pending: VecDeque::new(),
+        }
+    }
+
+    fn release_pending(&mut self) -> Vec<Placement> {
+        let Some(scheduler_id) = self.scheduler_id else {
+            return Vec::new();
+        };
+        self.pending
+            .drain(..)
+            .map(|request_id| Placement {
+                request_id,
+                scheduler_id,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+            })
+            .collect()
+    }
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
+    type Metadata = ();
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        _metadata: Self::Metadata,
+        _session_id: Option<String>,
+        _now_ms: f64,
+    ) -> anyhow::Result<PlacementEffects> {
+        let request_id = request.metadata().uuid.expect("test request UUID");
+        let decision = match self.scheduler_id {
+            Some(scheduler_id) => PlacementDecision::Immediate(Placement {
+                request_id,
+                scheduler_id,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+            }),
+            None => {
+                self.pending.push_back(request_id);
+                PlacementDecision::Queued
+            }
+        };
+        Ok(PlacementEffects {
+            decision,
+            released: Vec::new(),
+        })
+    }
+
+    fn observe(&mut self, _observation: (), _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+        let before = self.pending.len();
+        self.pending.retain(|pending| *pending != request_id);
+        self.pending.len() != before
+    }
+
+    fn request_terminal(
+        &mut self,
+        _request_id: Uuid,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn prefill_completed(
+        &mut self,
+        _request_id: Uuid,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn worker_ready(
+        &mut self,
+        worker: WorkerTopology,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        self.scheduler_id = worker.scheduler_ids.first().copied();
+        Ok(self.release_pending())
+    }
+
+    fn worker_draining(
+        &mut self,
+        worker: WorkerTopology,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        if worker.scheduler_ids.first().copied() == self.scheduler_id {
+            self.scheduler_id = None;
+        }
+        Ok(Vec::new())
+    }
+
+    fn worker_removed(
+        &mut self,
+        worker: WorkerTopology,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        self.worker_draining(worker, now_ms)
+    }
+
+    fn topology_settled(&mut self, _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(self.release_pending())
+    }
+}
+
+impl ReplayScalingPolicy for CaptureAndScaleOncePolicy {
+    fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+        Ok(0.1)
+    }
+
+    fn on_tick(
+        &mut self,
+        snapshot: ReplayScalingSnapshot,
+    ) -> anyhow::Result<ReplayScalingDecision> {
+        *self.captured.borrow_mut() = Some(snapshot);
+        Ok(ReplayScalingDecision {
+            target_prefill: Some(2),
+            target_decode: Some(2),
+            next_tick_ms: None,
+        })
     }
 }
 
@@ -517,6 +663,59 @@ fn scaling_tick_emits_idle_fpm_for_both_disagg_pools() {
         assert_eq!(snapshots[0].1.num_queued_prefill, 0);
         assert_eq!(snapshots[0].1.num_queued_decode, 0);
     }
+    assert_eq!(metrics.prefill_scheduler_metrics.len(), 1);
+    assert_eq!(metrics.decode_scheduler_metrics.len(), 1);
+    for snapshots in [
+        &metrics.prefill_scheduler_metrics,
+        &metrics.decode_scheduler_metrics,
+    ] {
+        assert_eq!(snapshots[0].worker_id, 0);
+        assert_eq!(snapshots[0].dp_rank, 0);
+        assert_eq!(snapshots[0].sampled_at_ms, 2_000.0);
+        assert_eq!(snapshots[0].total_blocks, 256);
+    }
+    assert_eq!(metrics.router_pending_prefill_requests, 0);
+    assert_eq!(metrics.router_pending_decode_requests, 0);
+}
+
+#[test]
+fn scaling_snapshot_reports_each_disagg_router_queue_before_scale_up() {
+    let mut config = disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    let pending =
+        crate::replay::normalize_trace_requests(vec![request(9_303, 64, 1, 0.0)], 1.0).unwrap();
+    let captured = Rc::new(RefCell::new(None));
+    let policy = CaptureAndScaleOncePolicy {
+        captured: Rc::clone(&captured),
+    };
+
+    let runtime_config = config.runtime_config(false).unwrap();
+    DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+        &runtime_config,
+        AdmissionQueue::new_requests(pending, ReplayMode::Trace),
+        false,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+            ))
+        },
+    )
+    .unwrap()
+    .with_scaling_policy(Box::new(policy))
+    .run()
+    .unwrap();
+
+    let snapshot = captured
+        .borrow_mut()
+        .take()
+        .expect("initial scaling tick must fire");
+    assert_eq!(snapshot.now_ms, 0.1);
+    assert_eq!(snapshot.router_pending_prefill_requests, 1);
+    assert_eq!(snapshot.router_pending_decode_requests, 0);
+    assert_eq!(snapshot.prefill_scheduler_metrics.len(), 1);
+    assert_eq!(snapshot.decode_scheduler_metrics.len(), 1);
 }
 
 fn run_trace_with_details(

@@ -146,9 +146,15 @@ pub(crate) use vllm::VllmCore;
 #[derive(Clone, Default, Debug, PartialEq)]
 pub struct MockerMetrics {
     pub dp_rank: u32,
+    /// Backend-native legacy occupancy: active references for vLLM, occupied
+    /// page-pool blocks (including radix-resident pages) for SGLang.
     pub active_decode_blocks: u64,
+    /// Resident reusable blocks excluded from `active_decode_blocks`. vLLM
+    /// populates this; SGLang reports zero by construction.
+    pub inactive_decode_blocks: u64,
     pub total_blocks: u64,
     pub gpu_cache_usage_perc: f64,
+    pub physical_gpu_cache_usage_perc: f64,
     pub running_requests: u64,
     pub waiting_requests: u64,
     pub vllm_preemptions_total: u64,
@@ -168,16 +174,51 @@ impl MockerMetrics {
         sglang_cache_hit_tokens: u64,
         sglang_cache_total_tokens: u64,
     ) -> Self {
+        Self::from_parts_with_inactive(
+            dp_rank,
+            active_decode_blocks,
+            0,
+            total_blocks,
+            running_requests,
+            waiting_requests,
+            vllm_preemptions_total,
+            sglang_cache_hit_tokens,
+            sglang_cache_total_tokens,
+        )
+    }
+
+    /// Construct scheduler metrics with an explicit inactive reusable-cache
+    /// population. [`Self::from_parts`] remains the compatibility constructor
+    /// for backends whose resident occupancy is identical to active occupancy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts_with_inactive(
+        dp_rank: u32,
+        active_decode_blocks: u64,
+        inactive_decode_blocks: u64,
+        total_blocks: u64,
+        running_requests: u64,
+        waiting_requests: u64,
+        vllm_preemptions_total: u64,
+        sglang_cache_hit_tokens: u64,
+        sglang_cache_total_tokens: u64,
+    ) -> Self {
         let gpu_cache_usage_perc = if total_blocks == 0 {
             0.0
         } else {
             active_decode_blocks as f64 / total_blocks as f64
         };
+        let physical_gpu_cache_usage_perc = if total_blocks == 0 {
+            0.0
+        } else {
+            active_decode_blocks.saturating_add(inactive_decode_blocks) as f64 / total_blocks as f64
+        };
         Self {
             dp_rank,
             active_decode_blocks,
+            inactive_decode_blocks,
             total_blocks,
             gpu_cache_usage_perc,
+            physical_gpu_cache_usage_perc,
             running_requests,
             waiting_requests,
             vllm_preemptions_total,
@@ -388,6 +429,18 @@ mod tests {
             arrival_timestamp_ms: None,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn physical_cache_usage_includes_inactive_blocks_without_changing_legacy_usage() {
+        let legacy = MockerMetrics::from_parts(0, 4, 10, 1, 2, 3, 5, 8);
+        assert_eq!(legacy.inactive_decode_blocks, 0);
+        assert_eq!(legacy.gpu_cache_usage_perc, 0.4);
+        assert_eq!(legacy.physical_gpu_cache_usage_perc, 0.4);
+
+        let with_inactive = MockerMetrics::from_parts_with_inactive(0, 4, 3, 10, 1, 2, 3, 5, 8);
+        assert_eq!(with_inactive.gpu_cache_usage_perc, 0.4);
+        assert_eq!(with_inactive.physical_gpu_cache_usage_perc, 0.7);
     }
 
     fn destination_reservation_attempts(core: &EngineCore) -> usize {

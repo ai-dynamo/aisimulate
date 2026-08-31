@@ -190,6 +190,40 @@ mod tests {
     }
 }
 
+/// Rank-local scheduler state visible to a replay scaling policy at one tick.
+///
+/// Occupancy and request counts are the latest state committed at an engine
+/// command or pass-completion boundary. Cache-hit counters are pass-local
+/// observations accumulated since the preceding scaling tick for ranks that
+/// are still live when the tick fires. A dedicated interval DTO will be needed
+/// if retired-rank cache observations must outlive their scheduler-state row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchedulerMetricsSnapshot {
+    pub worker_id: usize,
+    pub dp_rank: u32,
+    pub sampled_at_ms: f64,
+    /// Backend-native legacy occupancy. vLLM counts active references; SGLang
+    /// counts occupied page-pool blocks, including radix-resident pages.
+    pub active_blocks: u64,
+    /// Reusable resident blocks excluded from `active_blocks` (vLLM only;
+    /// SGLang reports zero because its legacy occupancy already includes them).
+    pub inactive_blocks: u64,
+    pub total_blocks: u64,
+    /// Legacy/backend-native `active_blocks / total_blocks` utilization.
+    pub active_cache_usage: f64,
+    /// Physical resident utilization; equal to active utilization for SGLang.
+    pub physical_cache_usage: f64,
+    pub running_requests: u64,
+    pub waiting_requests: u64,
+    pub preemptions_total: u64,
+    /// SGLang scheduler cache-hit tokens observed in the tick window.
+    /// Backends without an equivalent pass-local metric report zero.
+    pub cache_hit_tokens: u64,
+    /// SGLang scheduler tokens considered in the tick window. A zero
+    /// denominator means scheduler reuse is unavailable, not a measured 0%.
+    pub cache_total_tokens: u64,
+}
+
 /// Snapshot handed to the scaling policy at one tick. The runtime has already advanced the clock to
 /// `now_ms` and settled all same-timestamp work before this is built, so the planner observes a
 /// consistent post-settlement snapshot (matching the old advance-then-tick ordering).
@@ -205,6 +239,14 @@ pub struct ReplayScalingSnapshot {
     /// Latest decode (agg: aggregated) FPM snapshot per worker/rank observed since the previous
     /// tick.
     pub decode_fpm: Vec<(usize, ForwardPassSnapshot)>,
+    /// Full rank-local scheduler state for every live worker, including
+    /// starting and draining workers. Aggregated replay reports decode only.
+    pub prefill_scheduler_metrics: Vec<SchedulerMetricsSnapshot>,
+    pub decode_scheduler_metrics: Vec<SchedulerMetricsSnapshot>,
+    /// Requests admitted by Replay but still awaiting worker placement.
+    /// Aggregated replay reports its single router queue as decode pending.
+    pub router_pending_prefill_requests: usize,
+    pub router_pending_decode_requests: usize,
     /// Traffic stats over `[previous tick, now]`. Drained every tick; the Python side merges
     /// partial windows across ticks that don't consume traffic.
     pub traffic: TrafficStats,

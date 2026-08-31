@@ -466,8 +466,10 @@ fn map_metrics(metrics: MockerMetrics) -> Metrics {
     Metrics {
         dp_rank: metrics.dp_rank,
         active_blocks: metrics.active_decode_blocks,
+        inactive_blocks: metrics.inactive_decode_blocks,
         total_blocks: metrics.total_blocks,
         cache_usage: metrics.gpu_cache_usage_perc,
+        physical_cache_usage: metrics.physical_gpu_cache_usage_perc,
         running_requests: metrics.running_requests,
         waiting_requests: metrics.waiting_requests,
         preemptions_total: metrics.vllm_preemptions_total,

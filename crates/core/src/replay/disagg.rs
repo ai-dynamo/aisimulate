@@ -48,7 +48,6 @@ use crate::replay::handoff::{
 #[cfg(test)]
 use crate::replay::loadgen::WorkloadDriver;
 use crate::replay::loadgen::{ReplayRequestHashes, ReplayRequestPayload};
-#[cfg(test)]
 use crate::replay::protocol::ForwardPassSnapshot;
 use crate::replay::protocol::{DirectRequest, OutputSignal};
 use crate::replay::{OfflineDisaggReplayConfig, ReplayTerminalStatus, TraceCollector};
@@ -1129,6 +1128,42 @@ where
         self.flow.logical_in_flight
     }
 
+    fn record_prefill_fpm(
+        &mut self,
+        scheduler_id: usize,
+        mut snapshot: ForwardPassSnapshot,
+    ) -> Result<()> {
+        let (worker_id, dp_rank) = self
+            .prefill_engine
+            .rank_identity(scheduler_id)
+            .with_context(|| {
+                format!("offline replay prefill FPM references unknown rank {scheduler_id}")
+            })?;
+        snapshot.worker_id = worker_id.to_string();
+        snapshot.dp_rank = dp_rank;
+        self.prefill_fpm_buffer
+            .insert(worker_id, snapshot, self.now_ms);
+        Ok(())
+    }
+
+    fn record_decode_fpm(
+        &mut self,
+        scheduler_id: usize,
+        mut snapshot: ForwardPassSnapshot,
+    ) -> Result<()> {
+        let (worker_id, dp_rank) = self
+            .decode_engine
+            .rank_identity(scheduler_id)
+            .with_context(|| {
+                format!("offline replay decode FPM references unknown rank {scheduler_id}")
+            })?;
+        snapshot.worker_id = worker_id.to_string();
+        snapshot.dp_rank = dp_rank;
+        self.decode_fpm_buffer
+            .insert(worker_id, snapshot, self.now_ms);
+        Ok(())
+    }
+
     /// Track the peak number of requests parked in each stage router.
     fn record_router_pending(&mut self) {
         #[cfg(test)]
@@ -2024,8 +2059,7 @@ where
                 if self.collect_fpm
                     && let Some(fpm) = payload.fpm
                 {
-                    self.prefill_fpm_buffer
-                        .insert(payload.worker_idx, fpm, self.now_ms);
+                    self.record_prefill_fpm(payload.worker_idx, fpm)?;
                 }
                 self.process_prefill_pass(
                     payload.worker_idx,
@@ -2040,8 +2074,7 @@ where
                 if self.collect_fpm
                     && let Some(fpm) = payload.fpm
                 {
-                    self.decode_fpm_buffer
-                        .insert(payload.worker_idx, fpm, self.now_ms);
+                    self.record_decode_fpm(payload.worker_idx, fpm)?;
                 }
                 self.process_decode_pass(
                     payload.output_signals,
@@ -2529,6 +2562,10 @@ where
             }
             let active_prefill_ids = self.prefill_engine.active_group_ids();
             let active_decode_ids = self.decode_engine.active_group_ids();
+            let starting_prefill_ids = self.prefill_engine.starting_group_ids();
+            let starting_decode_ids = self.decode_engine.starting_group_ids();
+            let draining_prefill_ids = self.prefill_engine.draining_group_ids();
+            let draining_decode_ids = self.decode_engine.draining_group_ids();
             self.prefill_fpm_buffer.emit_idle_due(
                 &active_prefill_ids,
                 self.prefill_engine.dp_size(),
@@ -2545,13 +2582,21 @@ where
                 now_ms: self.now_ms,
                 prefill_fpm: self.prefill_fpm_buffer.take(),
                 decode_fpm: self.decode_fpm_buffer.take(),
+                prefill_scheduler_metrics: self
+                    .prefill_engine
+                    .take_scheduler_metrics_snapshot(self.now_ms),
+                decode_scheduler_metrics: self
+                    .decode_engine
+                    .take_scheduler_metrics_snapshot(self.now_ms),
+                router_pending_prefill_requests: self.prefill_placement.pending_count(),
+                router_pending_decode_requests: self.decode_placement.pending_count(),
                 traffic: self.traffic.drain(self.now_ms),
                 active_prefill_ids,
                 active_decode_ids,
-                starting_prefill_ids: self.prefill_engine.starting_group_ids(),
-                starting_decode_ids: self.decode_engine.starting_group_ids(),
-                draining_prefill_ids: self.prefill_engine.draining_group_ids(),
-                draining_decode_ids: self.decode_engine.draining_group_ids(),
+                starting_prefill_ids,
+                starting_decode_ids,
+                draining_prefill_ids,
+                draining_decode_ids,
             };
             self.next_scaling_tick_ordinal = self
                 .next_scaling_tick_ordinal
