@@ -44,6 +44,11 @@ from tqdm import tqdm
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
+from .engine_request import (
+    EngineControlTemplate,
+    materialize_engine_request,
+    resolve_engine_controls,
+)
 from .kv_estimate import resolve_backend_version
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
@@ -547,6 +552,7 @@ def _materialize_one(
     providers: Mapping[str, SweepConfigProvider],
     provider_plans: Mapping[str, AdapterSearchPlan],
     runner_factory: RunnerFactory,
+    engine_controls: Mapping[str, EngineControlTemplate],
     prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
@@ -563,6 +569,10 @@ def _materialize_one(
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
         sample["backend_version"] = backend_version
+        engine_request = materialize_engine_request(
+            engine_controls[selection["backend"]], config=config, sample=sample
+        )
+        sample["engine_request"] = asdict(engine_request)
         concurrency = config.workload.concurrency
         workload_payload = config.workload.model_dump(mode="json")
         if "traffic_load" in selection:
@@ -602,7 +612,11 @@ def _materialize_one(
             # Preserve the concrete load on every candidate, including a fixed absolute
             # concurrency and one derived from kv_load_ratio.
             sample["concurrency"] = concurrency
-        backend_deployment = build_backend_deployment(sample, backend_version=backend_version)
+        backend_deployment = build_backend_deployment(
+            sample,
+            backend_version=backend_version,
+            engine_request=engine_request,
+        )
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
             candidate_context = CandidateContext(
@@ -999,12 +1013,14 @@ class Sweeper:
         goal = config.goal
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
+        engine_controls = resolve_engine_controls(config)
+        max_seq_len = next(iter(engine_controls.values())).max_seq_len
 
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
         branches = enumerate_branches(
             config,
-            max_seq_len=config.search_space.context_length,
+            max_seq_len=max_seq_len,
             runner_capabilities=capabilities,
         )
         resolved_providers, provider_plans = _prepare_providers(config, injected=providers, show_progress=show_progress)
@@ -1060,6 +1076,7 @@ class Sweeper:
                 "workload": config.workload.model_dump(mode="python"),
                 "goal": goal.model_dump(mode="python"),
                 "provider_plans": provider_plans,
+                "engine_controls": engine_controls,
             }
         )
         replay_cache: dict[Any, tuple[Candidate | None, dict[str, float]]] = {}
@@ -1393,6 +1410,7 @@ class Sweeper:
                             providers=resolved_providers,
                             provider_plans=provider_plans,
                             runner_factory=runner_factory,
+                            engine_controls=engine_controls,
                             prediction_config_factory=prediction_config_factory,
                         )
                         if build_result is not None:

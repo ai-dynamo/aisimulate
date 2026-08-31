@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
@@ -14,6 +17,8 @@ from aisimulate.config.engine import (
     WorkersPredictionConfig,
 )
 from aisimulate.recommend import recommendation_to_sweeper
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _engine() -> dict:
@@ -130,6 +135,102 @@ def test_recommendation_accepts_domains_and_parallel_preset() -> None:
 
     assert config.optimization.hardware == "h200_sxm"
     assert isinstance(config.engine, EngineRecommendationConfig)
+
+
+def test_aic_engine_controls_lower_as_pinned_flat_fields() -> None:
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "traffic": {
+                "source": {
+                    "type": "synthetic",
+                    "input_tokens": 4096,
+                    "output_tokens": 1024,
+                    "cached_prefix_tokens": 1024,
+                },
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+            "engine": {
+                "mode": "aggregated",
+                "model": "example/moe-model",
+                "hardware": "h200_sxm",
+                "backend": "sglang",
+                "context_length": 8192,
+                "nextn": 3,
+                "nextn_accepted": 1.5,
+                "enable_chunked_prefill": True,
+                "enable_wideep": True,
+                "enable_eplb": True,
+                "wideep_num_slots": 64,
+                "moe_backend": "deepep_moe",
+                "attention_backend": "fa3",
+                "gemm_quant_mode": "fp8",
+                "moe_quant_mode": "fp8",
+                "kvcache_quant_mode": "fp8",
+                "fmha_quant_mode": "fp8",
+                "comm_quant_mode": "fp8",
+                "free_gpu_memory_fraction": 0.85,
+                "workers": {"aggregated": {}},
+            },
+            "optimization": {"constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+
+    lowered = recommendation_to_sweeper(config)
+
+    assert lowered.workload.cached_prefix_tokens == 1024
+    assert lowered.search_space.aic_nextn == 3
+    assert lowered.search_space.nextn_accepted == 1.5
+    assert lowered.search_space.enable_chunked_prefill is True
+    assert lowered.search_space.enable_wideep is True
+    assert lowered.search_space.enable_eplb is True
+    assert lowered.search_space.wideep_num_slots == 64
+    assert lowered.search_space.moe_backend == "deepep_moe"
+    assert lowered.search_space.attention_backend == "fa3"
+    assert lowered.search_space.gemm_quant_mode == "fp8"
+    assert lowered.search_space.moe_quant_mode == "fp8"
+    assert lowered.search_space.kvcache_quant_mode == "fp8"
+    assert lowered.search_space.fmha_quant_mode == "fp8"
+    assert lowered.search_space.comm_quant_mode == "fp8"
+    assert lowered.search_space.free_gpu_memory_fraction == 0.85
+
+
+def test_aic_engine_controls_reject_implicit_speculative_acceptance() -> None:
+    with pytest.raises(ValidationError, match="requires explicit nextn_accepted"):
+        CoreRecommendationConfig.model_validate(
+            {
+                "engine": {**_engine(), "mode": "aggregated", "nextn": 2},
+                "optimization": {},
+            }
+        )
+    with pytest.raises(ValidationError, match="cannot exceed input_tokens"):
+        CorePredictionConfig.model_validate(
+            {
+                "traffic": {
+                    "source": {
+                        "type": "synthetic",
+                        "input_tokens": 8,
+                        "cached_prefix_tokens": 9,
+                    },
+                    "load": {"type": "concurrency"},
+                    "stop": {"requests": 1},
+                },
+                "engine": _engine(),
+            }
+        )
+
+
+def test_aic_migration_example_is_a_valid_recommendation() -> None:
+    text = (_REPO_ROOT / "docs/cli/migrate-from-aiconfigurator.md").read_text()
+    section = text.split("### Example with the new controls", 1)[1]
+    yaml_block = section.split("```yaml", 1)[1].split("```", 1)[0]
+
+    config = CoreRecommendationConfig.model_validate(yaml.safe_load(yaml_block))
+    lowered = recommendation_to_sweeper(config)
+
+    assert lowered.search_space.aic_nextn == 3
+    assert lowered.search_space.nextn_accepted == 1.5
+    assert lowered.workload.cached_prefix_tokens == 1024
 
 
 def test_parallel_preset_modes_lower_without_conflating_semantics() -> None:

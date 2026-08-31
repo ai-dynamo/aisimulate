@@ -194,6 +194,7 @@ class Workload(BaseModel):
     num_request_ratio: float | None = None  # request count multiplier for concrete concurrency or request_rate
     random_range_ratio: float = 1.0
     random_seed: int = 0
+    cached_prefix_tokens: int = 0  # exact already-cached prefix length per request
     shared_prefix_ratio: float = 0.0  # cache-locality / prefix sharing
     num_prefix_groups: int = 0
     turns_per_session: int = 1  # multi-turn sessions
@@ -232,6 +233,15 @@ class Workload(BaseModel):
     def _validate_random_seed_type(cls, value: Any) -> Any:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"random_seed must be an unsigned 64-bit integer, got {value!r}")
+        return value
+
+    @field_validator("cached_prefix_tokens", mode="before")
+    @classmethod
+    def _validate_cached_prefix_tokens_type(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"cached_prefix_tokens must be a non-negative integer, got {value!r}"
+            )
         return value
 
     @property
@@ -304,6 +314,8 @@ class Workload(BaseModel):
                 set_syn.append("random_range_ratio")
             if self.random_seed != 0:
                 set_syn.append("random_seed")
+            if self.cached_prefix_tokens != 0:
+                set_syn.append("cached_prefix_tokens")
             if set_syn:
                 raise ValueError(f"trace workload (trace_path set) must not set synthetic fields {set_syn}")
             if self.replay_concurrency is not None and self.replay_concurrency <= 0:
@@ -355,6 +367,12 @@ class Workload(BaseModel):
                 raise ValueError(
                     f"random_range_ratio={self.random_range_ratio} gives a zero-token lower bound for {name}={length}"
                 )
+        minimum_isl = int((self.isl or 0) * self.random_range_ratio)
+        if not 0 <= self.cached_prefix_tokens <= minimum_isl:
+            raise ValueError(
+                "cached_prefix_tokens must be within the shortest synthetic input "
+                f"length [0, {minimum_isl}], got {self.cached_prefix_tokens}"
+            )
         if isinstance(self.random_seed, bool) or self.random_seed < 0 or self.random_seed > 0xFFFF_FFFF_FFFF_FFFF:
             raise ValueError(f"random_seed must be an unsigned 64-bit integer, got {self.random_seed!r}")
         if self.random_range_ratio != 1.0 and self.turns_per_session != 1:
@@ -401,8 +419,25 @@ class SearchSpace(BaseModel):
     gpu_budget: int = 32  # max GPUs per candidate
     min_gpu_budget: int | None = None
     context_length: int | None = None
+    max_seq_len: int | None = Field(default=None, gt=0)
     startup_time: float | None = None
-    aic_nextn: int | None = None  # speculative-decode (MTP) depth, 1..5
+    aic_nextn: int | None = Field(default=None, ge=0, le=5)
+    nextn_accepted: float | None = None
+
+    # shared engine/request-modeling controls. Role-specific P/D overrides are
+    # intentionally a separate capability; these values apply to every active role.
+    enable_chunked_prefill: bool = False
+    enable_wideep: bool = False
+    enable_eplb: bool = False
+    wideep_num_slots: int | None = Field(default=None, gt=0)
+    moe_backend: str | None = None
+    attention_backend: str | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    free_gpu_memory_fraction: float | None = Field(default=None, gt=0, le=1)
 
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
@@ -444,6 +479,24 @@ class SearchSpace(BaseModel):
     engine_log_discrete: list[str] = Field(default_factory=list)
     engine_integer_log_ranges: dict[str, list[int]] = Field(default_factory=dict)
 
+    @field_validator(
+        "moe_backend",
+        "attention_backend",
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "kvcache_quant_mode",
+        "fmha_quant_mode",
+        "comm_quant_mode",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_engine_control_name(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("engine control names must be non-empty strings")
+        return value.strip().lower()
+
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
@@ -476,6 +529,47 @@ class SearchSpace(BaseModel):
             raise ValueError(
                 f"min_gpu_budget must satisfy 0 < min_gpu_budget <= gpu_budget "
                 f"(got min_gpu_budget={self.min_gpu_budget}, gpu_budget={self.gpu_budget})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_engine_controls(self) -> SearchSpace:
+        if (
+            self.context_length is not None
+            and self.max_seq_len is not None
+            and self.context_length != self.max_seq_len
+        ):
+            raise ValueError(
+                "context_length and max_seq_len describe the same sequence-capacity "
+                "limit and must match when both are set"
+            )
+        if not self.aic_nextn:
+            if self.nextn_accepted is not None:
+                raise ValueError(
+                    "nextn_accepted is only valid when aic_nextn is greater than zero"
+                )
+        elif self.nextn_accepted is None:
+            raise ValueError(
+                f"aic_nextn={self.aic_nextn} requires explicit nextn_accepted; "
+                "acceptance is never inferred"
+            )
+        elif (
+            not math.isfinite(self.nextn_accepted)
+            or not 0 <= self.nextn_accepted <= self.aic_nextn
+        ):
+            raise ValueError(
+                "nextn_accepted must be finite and within "
+                f"[0, aic_nextn={self.aic_nextn}], got {self.nextn_accepted!r}"
+            )
+        if self.attention_backend not in (None, "flashinfer", "fa3"):
+            raise ValueError(
+                "attention_backend must be 'flashinfer' or 'fa3', got "
+                f"{self.attention_backend!r}"
+            )
+        if self.moe_backend not in (None, "deepep_moe", "megamoe"):
+            raise ValueError(
+                "moe_backend must be 'deepep_moe' or 'megamoe', got "
+                f"{self.moe_backend!r}"
             )
         return self
 

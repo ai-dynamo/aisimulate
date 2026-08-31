@@ -7,7 +7,9 @@ import time
 from typing import ClassVar
 
 import aisimulate.sweeper.search as search_module
+import pytest
 from aisimulate.sweeper.config import SmartSearchConfig
+from aisimulate.sweeper.engine_request import EngineControlTemplate
 from aisimulate.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
@@ -20,6 +22,24 @@ from aisimulate.sweeper.sampler import (
     Suggestion,
 )
 from aisimulate.sweeper.search_space import BranchSpace
+
+
+@pytest.fixture(autouse=True)
+def _stub_engine_controls(monkeypatch) -> None:
+    monkeypatch.setattr(
+        search_module,
+        "resolve_engine_controls",
+        lambda config: {
+            backend: EngineControlTemplate(
+                backend=backend,
+                max_seq_len=10,
+                model_family="TEST",
+                is_moe=False,
+                memory_fraction_kind="of_total",
+            )
+            for backend in config.search_space.backend
+        },
+    )
 
 
 class _Runner:

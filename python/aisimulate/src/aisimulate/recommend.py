@@ -108,6 +108,24 @@ def recommendation_to_sweeper(
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
         "context_length": (resolve_model_context_length(model) if context == "max" else context),
     }
+    for public_name, internal_name in (
+        ("nextn", "aic_nextn"),
+        ("nextn_accepted", "nextn_accepted"),
+        ("enable_chunked_prefill", "enable_chunked_prefill"),
+        ("enable_wideep", "enable_wideep"),
+        ("enable_eplb", "enable_eplb"),
+        ("wideep_num_slots", "wideep_num_slots"),
+        ("moe_backend", "moe_backend"),
+        ("attention_backend", "attention_backend"),
+        ("gemm_quant_mode", "gemm_quant_mode"),
+        ("moe_quant_mode", "moe_quant_mode"),
+        ("kvcache_quant_mode", "kvcache_quant_mode"),
+        ("fmha_quant_mode", "fmha_quant_mode"),
+        ("comm_quant_mode", "comm_quant_mode"),
+        ("free_gpu_memory_fraction", "free_gpu_memory_fraction"),
+    ):
+        if public_name in engine:
+            search_space[internal_name] = engine[public_name]
     search_space.update(_role_search_space(workers, modes))
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
@@ -498,7 +516,11 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
     if source_type == "synthetic":
-        result.update(isl=source.get("input_tokens", 1024), osl=source.get("output_tokens", 128))
+        result.update(
+            isl=source.get("input_tokens", 1024),
+            osl=source.get("output_tokens", 128),
+            cached_prefix_tokens=source.get("cached_prefix_tokens", 0),
+        )
         count = stop.get("requests") if isinstance(stop, dict) else None
         ratio = stop.get("requests_per_load_unit") if isinstance(stop, dict) else None
     elif source_type == "synthetic-session":
@@ -615,6 +637,25 @@ def _candidate_prediction(
         "workers": {},
     }
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
+    for public_name, internal_name in (
+        ("nextn", "aic_nextn"),
+        ("nextn_accepted", "nextn_accepted"),
+        ("enable_chunked_prefill", "enable_chunked_prefill"),
+        ("enable_wideep", "enable_wideep"),
+        ("enable_eplb", "enable_eplb"),
+        ("wideep_num_slots", "wideep_num_slots"),
+        ("moe_backend", "moe_backend"),
+        ("attention_backend", "attention_backend"),
+        ("gemm_quant_mode", "gemm_quant_mode"),
+        ("moe_quant_mode", "moe_quant_mode"),
+        ("kvcache_quant_mode", "kvcache_quant_mode"),
+        ("fmha_quant_mode", "fmha_quant_mode"),
+        ("comm_quant_mode", "comm_quant_mode"),
+        ("free_gpu_memory_fraction", "free_gpu_memory_fraction"),
+    ):
+        value = sample.get(internal_name)
+        if value is not None:
+            engine[public_name] = value
     roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
     for role in roles:
         prefix = "" if role == "agg" else f"{role}_"

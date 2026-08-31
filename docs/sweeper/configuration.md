@@ -61,13 +61,24 @@ configuration for each candidate.
 | `backend` | `[vllm]` | engine backends to search |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
-| `context_length` | `None` | optional KV-feasibility sequence length |
+| `context_length` | `None` | compatibility alias for `max_seq_len`; both must match if set |
+| `max_seq_len` | model maximum | sequence capacity used by KV feasibility and every engine's `max_model_len` |
 | `parallel_configs` | `[]` | optional pinned parallel configurations |
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
+| `nextn_accepted` | `None` | required explicit expected accepted draft tokens when `aic_nextn` is set |
+| `enable_chunked_prefill` | `false` | enable chunking on aggregated/prefill roles; selected `max_num_batched_tokens` remains the exact context-token budget |
+| `enable_wideep`, `enable_eplb` | `false` | shared MoE WideEP/EPLB controls |
+| `wideep_num_slots` | `None` | positive EPLB slot count |
+| `moe_backend`, `attention_backend` | `None` | explicit supported MoE/MLA kernel backends |
+| `gemm_quant_mode`, `moe_quant_mode`, `kvcache_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | `None` | shared quantization overrides used by KV feasibility and AIC timing |
+| `free_gpu_memory_fraction` | role default | shared memory fraction, mapped to backend-native total/free-memory semantics |
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
+Shared controls apply to both active roles in a disaggregated candidate. Unsupported model/backend
+combinations are rejected before adapter preparation or replay, and the resolved values are retained
+in `Candidate.config.engine_request` and `ReplaySpec.backend_deployment.engine_request`.
 
 ## Pinned Parallel Configurations
 

@@ -108,7 +108,7 @@ def _worker_performance_model_metadata(
             "attention_dp_size": parallel.attention_data,
             "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
-            "nextn": None,
+            "nextn": engine.nextn or None,
         },
     }
 
@@ -120,7 +120,7 @@ def _worker_engine_args(
     parallel = worker.parallelism
     cache = worker.kv_cache
     capacity = cache.capacity
-    memory_fraction = capacity.memory_fraction
+    memory_fraction = engine.free_gpu_memory_fraction or capacity.memory_fraction
     if capacity.type == "default" and memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9
     block_size = cache.block_size
@@ -153,6 +153,32 @@ def _worker_engine_args(
             if isinstance(engine.context_length, int)
             else resolve_model_context_length(engine.model)
         )
+    chunked_prefill = bool(engine.enable_chunked_prefill and role != "decode")
+    if backend != "sglang" or chunked_prefill:
+        payload["enable_chunked_prefill"] = chunked_prefill
+    if engine.nextn:
+        payload["aic_nextn"] = engine.nextn
+        payload["aic_nextn_accepted"] = engine.nextn_accepted
+    for name in (
+        "enable_wideep",
+        "enable_eplb",
+        "wideep_num_slots",
+        "moe_backend",
+        "attention_backend",
+    ):
+        value = getattr(engine, name)
+        if value not in (None, False):
+            payload[f"aic_{name}"] = value
+    for name, argument in (
+        ("gemm_quant_mode", "aic_gemm_dtype"),
+        ("moe_quant_mode", "aic_moe_dtype"),
+        ("kvcache_quant_mode", "aic_kv_cache_dtype"),
+        ("fmha_quant_mode", "aic_fmha_dtype"),
+        ("comm_quant_mode", "aic_comm_dtype"),
+    ):
+        value = getattr(engine, name)
+        if value is not None:
+            payload[argument] = value
     if capacity.type == "fixed":
         assert capacity.blocks is not None
         payload["num_gpu_blocks"] = capacity.blocks
@@ -231,7 +257,11 @@ def _traffic(
         return workload, None
 
     if isinstance(source, SyntheticSource):
-        workload.update(isl=source.input_tokens, osl=source.output_tokens)
+        workload.update(
+            isl=source.input_tokens,
+            osl=source.output_tokens,
+            cached_prefix_tokens=source.cached_prefix_tokens,
+        )
         stop_count = stop.requests if stop is not None else None
         relative = stop.requests_per_load_unit if stop is not None else None
     else:

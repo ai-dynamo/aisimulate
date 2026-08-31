@@ -13,6 +13,7 @@ from aisimulate.sweeper.parallel_enum import (
     ParallelShape,
     ReplicaParallelConfig,
 )
+from aisimulate.sweeper.replay import EngineRequestSpec
 from aisimulate.sweeper.sample import unroll_sample
 
 BACKEND_VERSION = "1.3.0rc10"
@@ -171,11 +172,64 @@ def test_memory_fraction_uses_the_backend_native_field(backend, memory_field):
 
 def test_optional_backend_runtime_values_are_forwarded():
     engine = _agg_deployment(
-        space=_space(startup_time=45.0, aic_nextn=2)
+        space=_space(startup_time=45.0, aic_nextn=2, nextn_accepted=1.25)
     ).agg_engine_args
 
     assert engine["startup_time"] == 45.0
     assert engine["aic_nextn"] == 2
+
+
+def test_zero_speculative_depth_is_not_forwarded_to_the_runner():
+    engine = _agg_deployment(space=_space(aic_nextn=0)).agg_engine_args
+
+    assert "aic_nextn" not in engine
+
+
+def test_resolved_engine_request_controls_are_materialized_for_replay():
+    sample = unroll_sample(
+        search_space=_space(aic_nextn=2, nextn_accepted=1.25),
+        selection=_agg_selection(backend="sglang"),
+        parallel_config=AGG_MOE,
+    )
+    engine_request = EngineRequestSpec(
+        cached_prefix_tokens=512,
+        context_tokens={"agg": 16384},
+        enable_chunked_prefill=True,
+        enable_wideep=True,
+        enable_eplb=True,
+        wideep_num_slots=64,
+        moe_backend="deepep_moe",
+        attention_backend="fa3",
+        gemm_quant_mode="fp8",
+        moe_quant_mode="fp8",
+        kvcache_quant_mode="fp8",
+        fmha_quant_mode="fp8",
+        comm_quant_mode="fp8",
+        nextn=2,
+        nextn_accepted=1.25,
+        memory_fraction_kind="of_total",
+        memory_fraction_by_role={"agg": 0.82},
+        max_seq_len=8192,
+        model_family="DEEPSEEK",
+    )
+
+    deployment = build_backend_deployment(
+        sample,
+        backend_version=BACKEND_VERSION,
+        engine_request=engine_request,
+    )
+    engine = deployment.agg_engine_args
+
+    assert deployment.engine_request == engine_request
+    assert engine["max_num_batched_tokens"] == 16384
+    assert "max_model_len" not in engine
+    assert engine["enable_chunked_prefill"] is True
+    assert engine["mem_fraction_static"] == 0.82
+    assert engine["aic_nextn_accepted"] == 1.25
+    assert engine["aic_enable_eplb"] is True
+    assert engine["aic_wideep_num_slots"] == 64
+    assert engine["aic_attention_backend"] == "fa3"
+    assert engine["aic_kv_cache_dtype"] == "fp8"
 
 
 def test_backend_deployment_contains_no_dynamo_policy_fields():

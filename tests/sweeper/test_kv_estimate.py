@@ -30,13 +30,39 @@ def test_memory_fraction_kind():
 
 
 def test_estimate_kv_tokens_returns_capacity(monkeypatch):
+    calls = []
+
+    def estimate(*args, **kwargs):
+        calls.append(kwargs)
+        return {"total_kv_size_tokens": 123456}
+
     monkeypatch.setattr(
         kv_estimate_mod,
         "estimate_kv_cache",
-        lambda *args, **kwargs: {"total_kv_size_tokens": 123456},
+        estimate,
     )
     sh = ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4)
-    assert estimate_kv_tokens(sh, **_COMMON) == 123456
+    assert (
+        estimate_kv_tokens(
+            sh,
+            **_COMMON,
+            memory_fraction=0.82,
+            nextn=3,
+            gemm_quant_mode="fp8",
+            moe_quant_mode="fp8",
+            kvcache_quant_mode="fp8",
+            fmha_quant_mode="fp8",
+            comm_quant_mode="fp8",
+        )
+        == 123456
+    )
+    assert calls[0]["memory_fraction_value"] == 0.82
+    assert calls[0]["nextn"] == 3
+    assert calls[0]["gemm_quant_mode"] == "fp8"
+    assert calls[0]["moe_quant_mode"] == "fp8"
+    assert calls[0]["kvcache_quant_mode"] == "fp8"
+    assert calls[0]["fmha_quant_mode"] == "fp8"
+    assert calls[0]["comm_quant_mode"] == "fp8"
 
 
 def test_estimate_kv_tokens_oom_returns_none(monkeypatch):

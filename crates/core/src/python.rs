@@ -54,6 +54,8 @@ struct RuntimeTraffic {
     #[serde(default)]
     osl: Option<usize>,
     #[serde(default)]
+    cached_prefix_tokens: Option<usize>,
+    #[serde(default)]
     request_count: Option<usize>,
     #[serde(default)]
     turns_per_session: Option<usize>,
@@ -120,6 +122,16 @@ struct AicTimingConfig {
     free_gpu_memory_fraction: Option<f64>,
     #[serde(default)]
     systems_path: Option<String>,
+    #[serde(default)]
+    moe_backend: Option<String>,
+    #[serde(default)]
+    attention_backend: Option<String>,
+    #[serde(default)]
+    enable_wideep: bool,
+    #[serde(default)]
+    enable_eplb: bool,
+    #[serde(default)]
+    wideep_num_slots: Option<u32>,
 }
 
 const fn one() -> u32 {
@@ -231,6 +243,11 @@ impl AicTimingModel {
             kwargs.set_item("nextn", config.nextn)?;
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
+            kwargs.set_item("moe_backend", config.moe_backend.as_deref())?;
+            kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
+            kwargs.set_item("enable_wideep", config.enable_wideep)?;
+            kwargs.set_item("enable_eplb", config.enable_eplb)?;
+            kwargs.set_item("wideep_num_slots", config.wideep_num_slots)?;
             let spec = sdk.getattr("compile_engine")?.call(
                 (
                     config.model.as_str(),
@@ -660,8 +677,16 @@ fn build_runtime_input(
     } else {
         1
     };
+    let cached_prefix_tokens = traffic.cached_prefix_tokens.unwrap_or(0);
     let trace = Trace::synthetic(SyntheticTraceSpec {
-        block_size: engine_block_size,
+        // A one-token trace block preserves prefixes that are not aligned to
+        // the engine's scheduler block size. The driver still hashes them at
+        // `engine_block_size` when it constructs replay requests.
+        block_size: if cached_prefix_tokens == 0 {
+            engine_block_size
+        } else {
+            1
+        },
         num_sessions: sessions,
         turns_per_session: turns,
         input_tokens: LengthSpec {
@@ -672,6 +697,7 @@ fn build_runtime_input(
             mean: traffic.osl.context("synthetic traffic requires osl")?,
             stddev: 0.0,
         },
+        cached_prefix_tokens,
         shared_prefix_ratio: traffic.shared_prefix_ratio.unwrap_or(0.0),
         num_prefix_groups: traffic.num_prefix_groups.unwrap_or(0),
         first_turn_arrivals: synthetic_arrivals(&traffic)?,
@@ -877,6 +903,11 @@ mod tests {
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
             systems_path: None,
+            moe_backend: None,
+            attention_backend: None,
+            enable_wideep: false,
+            enable_eplb: false,
+            wideep_num_slots: None,
         }
     }
 
@@ -924,6 +955,28 @@ mod tests {
                 .to_string()
                 .contains("gpu_memory_utilization")
         );
+    }
+
+    #[test]
+    fn aic_timing_config_deserializes_engine_controls() {
+        let config: AicTimingConfig = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "backend": "sglang",
+            "system": "test-system",
+            "tp": 1,
+            "moe_backend": "deepep_moe",
+            "attention_backend": "fa3",
+            "enable_wideep": true,
+            "enable_eplb": true,
+            "wideep_num_slots": 64
+        }))
+        .unwrap();
+
+        assert_eq!(config.moe_backend.as_deref(), Some("deepep_moe"));
+        assert_eq!(config.attention_backend.as_deref(), Some("fa3"));
+        assert!(config.enable_wideep);
+        assert!(config.enable_eplb);
+        assert_eq!(config.wideep_num_slots, Some(64));
     }
 
     #[test]

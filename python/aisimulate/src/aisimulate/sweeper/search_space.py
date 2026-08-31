@@ -201,7 +201,11 @@ def enumerate_branches(
             memory = getattr(ss, f"{role}_gpu_memory_utilization")
             block_size = getattr(ss, f"{role}_block_size")
             blocks = getattr(ss, f"{role}_num_gpu_blocks")
-            memory_values = memory if isinstance(memory, list) else [memory]
+            memory_values = (
+                [ss.free_gpu_memory_fraction]
+                if ss.free_gpu_memory_fraction is not None
+                else (memory if isinstance(memory, list) else [memory])
+            )
             concrete_memory = [float(value) for value in memory_values if value is not None]
             default_memory = 0.88 if backend == "sglang" else 0.9
             block_values = block_size if isinstance(block_size, list) else [block_size]
@@ -243,6 +247,23 @@ def enumerate_branches(
             ):
                 continue
             try:
+                engine_kwargs: dict[str, Any] = {}
+                if ss.enable_wideep:
+                    engine_kwargs["enable_wideep"] = True
+                if ss.moe_backend is not None:
+                    engine_kwargs["moe_backend"] = ss.moe_backend
+                for name in (
+                    "gemm_quant_mode",
+                    "moe_quant_mode",
+                    "kvcache_quant_mode",
+                    "fmha_quant_mode",
+                    "comm_quant_mode",
+                ):
+                    value = getattr(ss, name)
+                    if value is not None:
+                        engine_kwargs[name] = value
+                if ss.aic_nextn is not None:
+                    engine_kwargs["nextn"] = ss.aic_nextn
                 legal = parallel_configs_for(
                     ss.model_name,
                     ss.hardware_sku,
@@ -252,6 +273,7 @@ def enumerate_branches(
                     backend_version=ss.backend_version,
                     min_gpu_budget=ss.min_gpu_budget,
                     max_seq_len=max_seq_len,
+                    **engine_kwargs,
                     role_runtime=role_runtime(backend, deployment_mode),
                 )
             except (NoPerfDatabase, NoViableParallelConfig):

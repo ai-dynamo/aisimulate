@@ -94,6 +94,7 @@ def _spec(
 def test_public_namespace_exports_engine_runner_contract():
     assert aisimulate.EngineReplayRunner is EngineReplayRunner
     assert aisimulate.EngineReplayRunnerFactory is EngineReplayRunnerFactory
+    assert aisimulate.EngineRequestSpec.__name__ == "EngineRequestSpec"
 
 
 def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
@@ -131,6 +132,78 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
     assert execution["record_per_request"] is False
     assert isinstance(runtime.execution_spec_json, str)
     assert report.metadata == {}
+
+
+def test_runner_materializes_exact_cached_prefix_tokens():
+    runtime = RecordingRuntime()
+    workload = {
+        "isl": 8,
+        "osl": 2,
+        "concurrency": 2,
+        "num_request_ratio": 1,
+        "cached_prefix_tokens": 3,
+    }
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(workload=workload, concurrency=2)
+    )
+
+    first, second = runtime.execution_spec["requests"]
+    assert first["input_token_ids"][:3] == [1, 2, 3]
+    assert second["input_token_ids"][:3] == [1, 2, 3]
+    assert first["input_token_ids"][3:] != second["input_token_ids"][3:]
+    assert len(first["input_token_ids"]) == first["input_tokens"] == 8
+
+
+def test_runner_lowers_engine_controls_into_scheduler_and_aic_timing():
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("timing_model")
+    engine_args.update(
+        {
+            "aic_backend_version": "test",
+            "max_model_len": 8192,
+            "max_num_batched_tokens": 32768,
+            "enable_chunked_prefill": True,
+            "aic_nextn": 3,
+            "aic_nextn_accepted": 1.5,
+            "aic_enable_wideep": True,
+            "aic_enable_eplb": True,
+            "aic_wideep_num_slots": 64,
+            "aic_moe_backend": "deepep_moe",
+            "aic_attention_backend": "fa3",
+            "aic_gemm_dtype": "fp8",
+            "aic_moe_dtype": "fp8",
+            "aic_kv_cache_dtype": "fp8",
+            "aic_fmha_dtype": "fp8",
+            "aic_comm_dtype": "fp8",
+        }
+    )
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    rank = runtime.execution_spec["engine"]["rank"]
+    timing = rank["timing_model"]["config"]
+    assert rank["max_model_len"] == 8192
+    assert rank["max_num_batched_tokens"] == 32768
+    assert rank["enable_chunked_prefill"] is True
+    assert rank["aic_nextn_accept_rates"] == "1,0.5,0"
+    assert timing["enable_wideep"] is True
+    assert timing["enable_eplb"] is True
+    assert timing["wideep_num_slots"] == 64
+    assert timing["moe_backend"] == "deepep_moe"
+    assert timing["attention_backend"] == "fa3"
+    assert timing["gemm_dtype"] == "fp8"
+    assert timing["kv_cache_dtype"] == "fp8"
 
 
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
@@ -211,7 +284,7 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     assert timing_config["systems_path"] == "/tmp/custom-systems.yaml"
     assert calls[0]["pp_size"] == 2
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
-    assert "nextn" not in calls[0]
+    assert calls[0]["nextn"] == 3
 
 
 def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch):

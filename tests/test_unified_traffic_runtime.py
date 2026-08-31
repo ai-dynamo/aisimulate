@@ -65,6 +65,48 @@ def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
     assert deployment.agg_engine_args["timing_model"]["type"] == "fixed"
 
 
+def test_prediction_compiles_aic_engine_and_cached_prefix_controls() -> None:
+    parsed = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {
+                    "type": "synthetic",
+                    "input_tokens": 8,
+                    "output_tokens": 2,
+                    "cached_prefix_tokens": 3,
+                },
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+            "engine": {
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 1024,
+                "nextn": 2,
+                "nextn_accepted": 1.25,
+                "enable_chunked_prefill": True,
+                "gemm_quant_mode": "fp8",
+                "kvcache_quant_mode": "fp8",
+                "free_gpu_memory_fraction": 0.85,
+                "workers": {"aggregated": {}},
+            },
+        }
+    )
+
+    spec = prediction_to_replay_spec(parsed)
+    args = spec.backend_deployment.agg_engine_args
+
+    assert spec.workload["cached_prefix_tokens"] == 3
+    assert args["max_model_len"] == 1024
+    assert args["enable_chunked_prefill"] is True
+    assert args["aic_nextn"] == 2
+    assert args["aic_nextn_accepted"] == 1.25
+    assert args["aic_gemm_dtype"] == "fp8"
+    assert args["aic_kv_cache_dtype"] == "fp8"
+    assert args["gpu_memory_utilization"] == 0.85
+
+
 def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
     report = _run(
         {
@@ -93,6 +135,29 @@ def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
         ("session_1", 2),
     ]
     assert [row["input_length"] for row in records[:3]] == [8, 18, 28]
+
+
+def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"]["kv_cache"]["block_size"] = 4
+    report = _run(
+        {
+            "traffic": {
+                "source": {
+                    "type": "synthetic",
+                    "input_tokens": 8,
+                    "output_tokens": 2,
+                    "cached_prefix_tokens": 4,
+                },
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 2},
+            },
+            "engine": engine,
+        }
+    )
+
+    records = report.metadata["native_report"]["per_request"]
+    assert [row["reused_input_tokens"] for row in records] == [0, 4]
 
 
 def test_engine_stack_runs_mooncake_delta(tmp_path) -> None:

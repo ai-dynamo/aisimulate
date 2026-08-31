@@ -320,6 +320,11 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    moe_backend: str | None = None,
+    attention_backend: str | None = None,
+    enable_wideep: bool = False,
+    enable_eplb: bool = False,
+    wideep_num_slots: int | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -345,6 +350,11 @@ def compile_engine(
         moe_quant_mode=moe_quant_mode,
         comm_quant_mode=comm_quant_mode,
         forward_model=forward_model,
+        moe_backend=moe_backend,
+        attention_backend=attention_backend,
+        enable_wideep=enable_wideep,
+        enable_eplb=enable_eplb,
+        wideep_num_slots=wideep_num_slots,
     )
     # Apply MTP BEFORE get_model so the walked op lists carry the
     # (L+nextn)/L compute scale; accepted-token progress is applied above core.

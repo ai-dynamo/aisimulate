@@ -28,6 +28,114 @@ by the unified command surface. A legacy command becomes an AISimulate recommend
 | `--request-latency` | `evaluation.sla.e2e_ms` plus `optimization.strict_sla: true` | Fixed-output synthetic migration; applies per-request E2E and filters aggregate mean E2E |
 | `--strict-sla` | `optimization.strict_sla: true` | Reject before scalar ranking or Pareto dominance |
 
+## Engine and request controls
+
+The additional controls below remain flat fields under `engine`. They are concrete, pinned inputs;
+adding them does not create new recommendation dimensions or enlarge the search space.
+
+| AIConfigurator input | AISimulate recommendation | Notes |
+|---|---|---|
+| `--prefix` | `traffic.source.cached_prefix_tokens` | Exact cached tokens shared by synthetic requests; must not exceed the input length |
+| `--max-seq-len` | `engine.context_length` | Search capacity limit; AISimulate also accepts `max`, and the engine runner enforces it directly for vLLM |
+| `--nextn` | `engine.nextn` | Concrete MTP draft depth from 0 through 5 |
+| `--nextn-accepted` | `engine.nextn_accepted` | Required when `nextn > 0`; measured average accepted draft tokens in `[0, nextn]` |
+| `--enable-chunked-prefill` | `engine.enable_chunked_prefill: true` | Enables chunking on aggregated and prefill workers; decode retains its backend default |
+| `--free-gpu-memory-fraction` | `engine.free_gpu_memory_fraction` | Shared override for every active worker role |
+| `--enable-wideep` / `Task.enable_wideep` | `engine.enable_wideep: true` | Requires an MoE model; the legacy CLI flag is deprecated even though the Task field remains available |
+| `Task.enable_eplb` | `engine.enable_eplb: true` | Requires an MoE model |
+| `Task.wideep_num_slots` | `engine.wideep_num_slots` | Positive EPLB slot count |
+| `--moe-backend` / `Task.moe_backend` | `engine.moe_backend` | `deepep_moe` or `megamoe`; SGLang only |
+| `Task.attention_backend` | `engine.attention_backend` | `flashinfer` or `fa3`; SGLang MLA models only |
+| `--gemm-quant-mode` | `engine.gemm_quant_mode` | Same AIConfigurator enum name |
+| `--moe-quant-mode` | `engine.moe_quant_mode` | Same AIConfigurator enum name; requires an MoE model |
+| `--kvcache-quant-mode` | `engine.kvcache_quant_mode` | Same AIConfigurator enum name |
+| `--fmha-quant-mode` | `engine.fmha_quant_mode` | Same AIConfigurator enum name |
+| `--comm-quant-mode` | `engine.comm_quant_mode` | Same AIConfigurator enum name |
+
+`--nextn auto` does not transfer as the string `auto`. Resolve it with AIConfigurator first, then
+copy the resulting integer depth and the measured `nextn_accepted` value. AISimulate does not infer
+an acceptance assumption.
+
+### Example with the new controls
+
+Legacy AIConfigurator command:
+
+```bash
+aiconfigurator cli default \
+  --model-path deepseek-ai/DeepSeek-R1 \
+  --system h200_sxm \
+  --backend sglang \
+  --total-gpus 8 \
+  --isl 4096 \
+  --osl 1024 \
+  --prefix 1024 \
+  --max-seq-len 8192 \
+  --nextn 3 \
+  --nextn-accepted 1.5 \
+  --enable-chunked-prefill \
+  --free-gpu-memory-fraction 0.85 \
+  --moe-backend deepep_moe \
+  --gemm-quant-mode fp8 \
+  --moe-quant-mode fp8 \
+  --kvcache-quant-mode fp8 \
+  --fmha-quant-mode fp8 \
+  --comm-quant-mode fp8
+```
+
+The equivalent pinned controls in `recommendation.yaml` are:
+
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 4096
+    output_tokens: 1024
+    cached_prefix_tokens: 1024
+  load:
+    type: constant_rate
+    requests_per_second: 4
+  stop:
+    requests_per_load_unit: 10
+
+engine:
+  mode: aggregated
+  model: deepseek-ai/DeepSeek-R1
+  hardware: h200_sxm
+  backend: sglang
+  context_length: 8192
+  nextn: 3
+  nextn_accepted: 1.5
+  enable_chunked_prefill: true
+  free_gpu_memory_fraction: 0.85
+  moe_backend: deepep_moe
+  gemm_quant_mode: fp8
+  moe_quant_mode: fp8
+  kvcache_quant_mode: fp8
+  fmha_quant_mode: fp8
+  comm_quant_mode: fp8
+  workers:
+    aggregated: {}
+
+evaluation: {}
+
+optimization:
+  target: throughput
+  constraints:
+    max_candidate_gpus: 8
+```
+
+Run it with:
+
+```bash
+aisimulate recommend --config recommendation.yaml
+```
+
+The traffic rate and stop condition are explicit AISimulate choices; the legacy capacity sweep did
+not define an equivalent offered load. For disaggregated configurations, the shared engine controls
+apply to both roles, except decode retains its backend chunking default. Keep using
+`workers.prefill.kv_cache.capacity.memory_fraction` and
+`workers.decode.kv_cache.capacity.memory_fraction` when the two roles need different memory limits.
+
 ## Illustrative strict SLA translation
 
 The examples below demonstrate how the strict-SLA fields map, but they are not behaviorally

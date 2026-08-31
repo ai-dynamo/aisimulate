@@ -12,8 +12,10 @@ from pydantic import Field, field_validator, model_validator
 from .common import Choices, IntegerRange, NumericRange, StrictModel
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
+NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 Fraction = Annotated[float, Field(strict=True, gt=0, le=1, allow_inf_nan=False)]
+NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
 EngineMode = Literal["aggregated", "disaggregated"]
 Backend = Literal["vllm", "sglang", "trtllm"]
 
@@ -111,6 +113,20 @@ class EnginePredictionConfig(StrictModel):
     backend: Backend = "vllm"
     backend_version: str | None = None
     context_length: PositiveInt | Literal["max"] = "max"
+    nextn: NonNegativeInt = Field(default=0, le=5)
+    nextn_accepted: NonNegativeFloat | None = None
+    enable_chunked_prefill: bool = False
+    enable_wideep: bool = False
+    enable_eplb: bool = False
+    wideep_num_slots: PositiveInt | None = None
+    moe_backend: Literal["deepep_moe", "megamoe"] | None = None
+    attention_backend: Literal["flashinfer", "fa3"] | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    free_gpu_memory_fraction: Fraction | None = None
     workers: WorkersPredictionConfig
     kv_transfer: KvTransferConfig | None = None
 
@@ -120,6 +136,18 @@ class EnginePredictionConfig(StrictModel):
         if not value:
             raise ValueError("value must be nonempty")
         return value
+
+    @field_validator(
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "kvcache_quant_mode",
+        "fmha_quant_mode",
+        "comm_quant_mode",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_quant_mode(cls, value: Any) -> Any:
+        return _normalize_engine_control_name(value)
 
     @field_validator("hardware")
     @classmethod
@@ -138,6 +166,7 @@ class EnginePredictionConfig(StrictModel):
         if self.mode == "disaggregated" and self.backend == "trtllm":
             raise ValueError("TensorRT-LLM disaggregated mode is unsupported")
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
+        _validate_engine_controls(self, backends={self.backend})
         return self
 
 
@@ -261,6 +290,20 @@ class EngineRecommendationConfig(StrictModel):
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | None = None
     context_length: PositiveInt | Literal["max"] = "max"
+    nextn: NonNegativeInt = Field(default=0, le=5)
+    nextn_accepted: NonNegativeFloat | None = None
+    enable_chunked_prefill: bool = False
+    enable_wideep: bool = False
+    enable_eplb: bool = False
+    wideep_num_slots: PositiveInt | None = None
+    moe_backend: Literal["deepep_moe", "megamoe"] | None = None
+    attention_backend: Literal["flashinfer", "fa3"] | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    free_gpu_memory_fraction: Fraction | None = None
     workers: WorkersRecommendationConfig
     kv_transfer: KvTransferConfig | None = None
 
@@ -270,6 +313,18 @@ class EngineRecommendationConfig(StrictModel):
         if not value:
             raise ValueError("value must be nonempty")
         return value
+
+    @field_validator(
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "kvcache_quant_mode",
+        "fmha_quant_mode",
+        "comm_quant_mode",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_quant_mode(cls, value: Any) -> Any:
+        return _normalize_engine_control_name(value)
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EngineRecommendationConfig:
@@ -281,7 +336,47 @@ class EngineRecommendationConfig(StrictModel):
         )
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
+        _validate_engine_controls(self, backends=backends)
         return self
+
+
+def _normalize_engine_control_name(value: Any) -> Any:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("engine control names must be non-empty strings")
+    return value.strip().lower()
+
+
+def _validate_engine_controls(engine, *, backends: set[str]) -> None:
+    if engine.nextn == 0:
+        if engine.nextn_accepted is not None:
+            raise ValueError("nextn_accepted requires nextn greater than zero")
+    elif engine.nextn_accepted is None:
+        raise ValueError(f"nextn={engine.nextn} requires explicit nextn_accepted")
+    elif engine.nextn_accepted > engine.nextn:
+        raise ValueError("nextn_accepted must be within [0, nextn]")
+    if (engine.moe_backend is not None or engine.attention_backend is not None) and backends != {"sglang"}:
+        raise ValueError("moe_backend and attention_backend require backend='sglang'")
+
+    from aiconfigurator_core.sdk.common import (
+        CommQuantMode,
+        FMHAQuantMode,
+        GEMMQuantMode,
+        KVCacheQuantMode,
+        MoEQuantMode,
+    )
+
+    for name, enum_type in (
+        ("gemm_quant_mode", GEMMQuantMode),
+        ("moe_quant_mode", MoEQuantMode),
+        ("kvcache_quant_mode", KVCacheQuantMode),
+        ("fmha_quant_mode", FMHAQuantMode),
+        ("comm_quant_mode", CommQuantMode),
+    ):
+        value = getattr(engine, name)
+        if value is not None and value not in enum_type.__members__:
+            raise ValueError(f"{name} has unsupported value {value!r}")
 
 
 def _validate_worker_roles(*, modes: set[str], workers, has_transfer: bool) -> None:

@@ -40,6 +40,11 @@ def _per_rank_capacity_tokens(
     max_batch_size: int,
     memory_fraction: float,
     nextn: int,
+    gemm_quant_mode: str | None,
+    moe_quant_mode: str | None,
+    kvcache_quant_mode: str | None,
+    fmha_quant_mode: str | None,
+    comm_quant_mode: str | None,
 ) -> int:
     tokens = estimate_kv_tokens(
         shape,
@@ -51,6 +56,11 @@ def _per_rank_capacity_tokens(
         max_batch_size=max_batch_size,
         memory_fraction=memory_fraction,
         nextn=nextn,
+        gemm_quant_mode=gemm_quant_mode,
+        moe_quant_mode=moe_quant_mode,
+        kvcache_quant_mode=kvcache_quant_mode,
+        fmha_quant_mode=fmha_quant_mode,
+        comm_quant_mode=comm_quant_mode,
     )
     if tokens is None:
         raise InfeasibleKVCapacity(
@@ -75,6 +85,13 @@ def _role_capacity_tokens(
     if fixed_blocks is not None:
         per_rank_tokens = int(fixed_blocks) * block_size
     else:
+        memory_fraction = (
+            sample.get("free_gpu_memory_fraction")
+            if sample.get("free_gpu_memory_fraction") is not None
+            else sample[f"{role}_gpu_memory_utilization"]
+        )
+        if memory_fraction is None:
+            memory_fraction = 0.88 if sample["backend"] == "sglang" else 0.9
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,
             model_name=str(sample["model_name"]),
@@ -83,8 +100,13 @@ def _role_capacity_tokens(
             backend_version=backend_version,
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
-            memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),
+            memory_fraction=float(memory_fraction),
             nextn=int(sample.get("aic_nextn") or 0),
+            gemm_quant_mode=sample.get("gemm_quant_mode"),
+            moe_quant_mode=sample.get("moe_quant_mode"),
+            kvcache_quant_mode=sample.get("kvcache_quant_mode"),
+            fmha_quant_mode=sample.get("fmha_quant_mode"),
+            comm_quant_mode=sample.get("comm_quant_mode"),
         )
     # Dynamo's AIC estimator returns per-rank blocks. Offline replay models one
     # engine-wide KV pool, so attention-DP ranks contribute independent capacity;
