@@ -129,6 +129,10 @@ command; `aisimulate` remains the distribution and Python namespace, not a
 second top-level executable. Future CLI actions must evolve the retained
 command identity and do not add another release artifact.
 
+For features already implemented by the standalone Sweeper, see
+[Migrate from AIConfigurator](cli/migrate-from-aiconfigurator.md) for explicit legacy
+command-to-configuration examples and current execution boundaries.
+
 ## Dynamo-to-AISimulate package migration
 
 The standalone Replay and Sweeper package migration is tracked by

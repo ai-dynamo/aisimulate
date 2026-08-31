@@ -524,8 +524,10 @@ def _materialize_engine_role(
     # The shared CLI/Sweeper form is flat. Nested rank descriptors are already
     # execution-level input and retain the native runtime's compatibility
     # fallback after their structure has been validated below.
+    capacity_materialized = False
     if "rank" not in role_config:
         role_config = materialize_aic_num_gpu_blocks(role_config)
+        capacity_materialized = role_config.get("num_gpu_blocks") is not None
     for name in ("engine_type", "aic_backend"):
         configured = role_config.pop(name, None)
         if configured is not None and configured != deployment_backend:
@@ -622,7 +624,9 @@ def _materialize_engine_role(
             raise ValueError(
                 f"engine provider {role} {memory_field} must be between 0 and 1"
             )
-        memory_fraction_overrides[memory_field] = float(value)
+        # Capacity estimation consumes memory fraction independently of timing.
+        if not capacity_materialized:
+            memory_fraction_overrides[memory_field] = float(value)
 
     aic_timing_overrides: dict[str, JSONValue] = {}
     for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
@@ -641,6 +645,12 @@ def _materialize_engine_role(
             raise ValueError(f"engine provider {role} {target} must be a string")
         aic_timing_overrides[target] = value
 
+    timing_model = rank.get("timing_model")
+    uses_aic_timing = timing_model is None or (
+        isinstance(timing_model, dict)
+        and timing_model.get("type") == "external"
+        and timing_model.get("provider") == "aic"
+    )
     if deployment_backend_version:
         configured_version = aic_timing_overrides.get("backend_version")
         if (
@@ -652,12 +662,6 @@ def _materialize_engine_role(
                 "conflicts with BackendDeploymentSpec backend_version="
                 f"{deployment_backend_version!r}"
             )
-        timing_model = rank.get("timing_model")
-        uses_aic_timing = timing_model is None or (
-            isinstance(timing_model, dict)
-            and timing_model.get("type") == "external"
-            and timing_model.get("provider") == "aic"
-        )
         if uses_aic_timing:
             timing_config = (
                 timing_model.get("config") if isinstance(timing_model, dict) else None
@@ -678,6 +682,12 @@ def _materialize_engine_role(
                     f"{deployment_backend_version!r}"
                 )
             aic_timing_overrides["backend_version"] = deployment_backend_version
+
+    # Identity and capacity inputs may coexist with a fixed/polynomial timing
+    # model. They have already served their non-timing purposes and must not be
+    # interpreted as an attempt to override that concrete timing model.
+    if not uses_aic_timing:
+        aic_timing_overrides.clear()
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:

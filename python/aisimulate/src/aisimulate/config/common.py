@@ -95,11 +95,13 @@ class SlaConfig(StrictModel):
     @model_validator(mode="after")
     def _validate_form(self) -> SlaConfig:
         token_form = self.ttft_ms is not None or self.itl_ms is not None
-        if token_form and (self.ttft_ms is None or self.itl_ms is None):
-            raise ValueError("ttft_ms and itl_ms must be supplied together")
         if token_form and self.e2e_ms is not None:
             raise ValueError("e2e_ms is mutually exclusive with ttft_ms/itl_ms")
         return self
+
+    @property
+    def has_bound(self) -> bool:
+        return any(value is not None for value in (self.ttft_ms, self.itl_ms, self.e2e_ms))
 
 
 class EvaluationConfig(StrictModel):
@@ -129,6 +131,7 @@ class OptimizationConfig(StrictModel):
         "pareto",
     ] = "throughput"
     hardware: str | None = None
+    strict_sla: bool = Field(default=False, strict=True)
     constraints: CandidateConstraints = Field(default_factory=CandidateConstraints)
 
     @field_validator("hardware")

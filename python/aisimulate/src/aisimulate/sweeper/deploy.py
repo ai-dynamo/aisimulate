@@ -16,6 +16,25 @@ def _role_prefix(role: str) -> str:
     return "" if role == "agg" else f"{role}_"
 
 
+def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_version: str) -> dict[str, Any]:
+    """Keep optional perf-model identity separate from runtime timing args."""
+    prefix = _role_prefix(role)
+    moe_tp = int(sample[f"{prefix}moe_tp"])
+    moe_ep = int(sample[f"{prefix}moe_ep"])
+    config: dict[str, Any] = {
+        "backend": sample["backend"],
+        "backend_version": backend_version,
+        "system": sample["hardware_sku"],
+        "model_path": sample["model_name"],
+        "tp_size": int(sample[f"{prefix}tp"]),
+        "attention_dp_size": int(sample[f"{prefix}attention_dp"]),
+        "moe_tp_size": moe_tp if moe_tp * moe_ep > 1 else None,
+        "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
+        "nextn": sample.get("aic_nextn"),
+    }
+    return {"provider": "aic", "config": config}
+
+
 def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: str) -> dict[str, Any]:
     """Build the runner-neutral engine argument payload for one role."""
     prefix = _role_prefix(role)
@@ -132,6 +151,12 @@ def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) ->
                 "decode_strategy",
                 "decode_replicas",
             }
+        },
+        "performance_model_metadata": {
+            ("aggregated" if role == "agg" else role): _performance_model_metadata(
+                sample, role, backend_version=backend_version
+            )
+            for role in (("agg",) if mode == "agg" else ("prefill", "decode"))
         },
     }
     if mode == "agg":

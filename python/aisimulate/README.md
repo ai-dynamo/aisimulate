@@ -94,7 +94,7 @@ Dynamo, without creating another CLI:
 aisimulate predict --stack dynamo --config prediction.yaml
 ```
 
-See [the unified CLI design](../../docs/cli-design.md) for the complete field, domain, preset, and
+See [the unified CLI design](../../docs/cli/design.md) for the complete field, domain, preset, and
 traffic contract. The `aiconfigurator` command below remains available for its existing AIC
 estimation and deployment-generation workflows.
 

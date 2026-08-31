@@ -22,6 +22,7 @@ from .config_adapter import (
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplaySpec, RunnerFactory
+from .sweeper.result import SweepResult
 
 
 def run_recommendation(
@@ -32,7 +33,7 @@ def run_recommendation(
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
     show_progress: bool = True,
-):
+) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
     from .sweeper.search import Sweeper
@@ -68,7 +69,7 @@ def run_recommendation(
             config, sample, spec, adapter_sections=adapter_sections
         ),
     )
-    return sweeper.run(smart)
+    return sweeper.run(smart, top_n=None)
 
 
 def recommendation_to_sweeper(
@@ -586,7 +587,10 @@ def _configure_load_domain(
 
 def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
     target = config.optimization.target
-    payload: dict[str, Any] = {"target": target}
+    payload: dict[str, Any] = {
+        "target": target,
+        "strict_sla": config.optimization.strict_sla,
+    }
     sla = config.evaluation.sla
     if sla is not None:
         payload["sla"] = sla.model_dump(mode="json", exclude_none=True)
