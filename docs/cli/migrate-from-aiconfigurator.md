@@ -22,12 +22,30 @@ result on the target hardware.
 
 | AIC workflow | What AIC provides | Unified CLI status | What to do |
 |---|---|---|---|
-| `aiconfigurator cli estimate` | One FPM point for an explicit batch, parallel configuration, and estimation mode | **Supported for deployment-level prediction, not behaviorally equivalent** | Use `aisimulate predict` when the goal is to predict one concrete serving deployment. Keep AIC for exact batch-level FPM, static, AFD, detail, per-op, or power semantics. |
+| `aiconfigurator cli estimate` | One FPM point for an explicit batch, parallel configuration, and estimation mode | **Supported for deployment-level prediction, not behaviorally equivalent** | Use `aisimulate predict` when the goal is to predict one concrete serving deployment. Keep AIC for exact batch-level FPM, multimodal/EPD, static, AFD, detail, per-op, or power semantics. |
 | `aiconfigurator cli default` | Capacity-oriented aggregated/disaggregated search and selection | **Partially supported** | Use `aisimulate recommend` after choosing explicit traffic, topology domains, GPU bounds, and an objective. Keep AIC when its capacity-sweep and ranking semantics are required. |
 | `aiconfigurator cli recommend` | Minimum-GPU procurement sizing for a load target and SLA | **Partially supported** | Use `aisimulate recommend` to search explicit candidates under a chosen traffic shape, SLA, GPU budget, and objective. The unified CLI does not reproduce AIC's minimum-GPU sizing from either a target request rate or target concurrency; keep using the compatibility CLI when that sizing result is required. |
 | `aiconfigurator cli exp` | AIC experiment YAML, including heterogeneous experiments | **Manual migration only** | Use `predict` for each concrete deployment or `recommend` for a search domain. AISimulate does not consume AIC experiment YAML directly. |
 | `aiconfigurator cli generate` | Deployment artifacts for Dynamo, llm-d, or FPM targets | **Not supported** | Continue using `aiconfigurator cli generate`. The unified CLI emits prediction and recommendation artifacts, not deployment manifests. |
 | `aiconfigurator cli support` | AIC command-level aggregated/disaggregated coverage | **Not supported as an `aisimulate` command** | Continue using `aiconfigurator cli support` or the published AIC support matrix. Do not substitute FPE estimator coverage for CLI coverage. |
+
+## Known gaps in the unified path
+
+The following limits apply to `aisimulate predict`, `aisimulate recommend`, and the new
+`aisimulate.sweeper` API. The `aisimulate` distribution also contains the compatibility AIC
+implementation and lower-level estimator, collector, and result-schema primitives. Their presence
+does not make a capability available through the unified path.
+
+| Capability | Current unified status | Migration action |
+|---|---|---|
+| Multimodal image inputs and EPD | **Not supported.** The public traffic schema has no image dimensions or image count, and the engine schema has only aggregated, prefill, and decode workers. It cannot represent AIC's E+agg or E+P+D topology. | Continue using AIC `--enable-epd` workflows. |
+| Attention/FFN disaggregation (AFD) | **Not supported.** There is no unified A/F worker topology or AFD prediction/search mode. | Continue using AIC `--estimate-mode afd` or AIC AFD experiments. |
+| Power and energy analysis | **Not AIC-equivalent.** Sweeper results can preserve optional runner-supplied power or energy metadata, but the unified engine path does not currently provide AIC's predicted `power_w`, coverage gate, or `--detail energy` report. | Continue using AIC estimate/reporting, and confirm that the selected model/system data has sufficient energy coverage. |
+| Static, per-operation, and source breakdowns | **Not supported.** Unified prediction simulates serving traffic; it does not expose AIC's `static`, `static_ctx`, or `static_gen` single-pass modes or `--detail` memory/time/source reports. | Continue using `aiconfigurator cli estimate`. |
+| Estimator and performance-data selection | **Not exposed by the unified CLI.** `engine.backend_version` is available, but database mode, forward model, transfer policy, custom system roots, and estimator tuning remain outside the public YAML. | Continue using AIC when those controls are required. |
+| Explicit quantization overrides | **Not exposed by the unified CLI.** There is no direct mapping for AIC's GEMM, KV-cache, FMHA, MoE, or communication quantization flags. | Let the unified engine resolve model/runtime defaults, or stay on AIC when an explicit estimator override is required. |
+| Heterogeneous P/D hardware or backends | **Partially supported.** Prefill and decode can use independent topology and scheduler settings, but one unified engine config still has one model, hardware, backend, and backend version. AIC role-specific system/backend experiments do not map directly. | Use unified disaggregated mode only for a homogeneous engine identity; keep heterogeneous experiments on AIC. |
+| TensorRT-LLM disaggregated serving | **Not supported by unified prediction.** TensorRT-LLM is accepted for aggregated prediction, but its disaggregated topology is rejected. | Continue using AIC for TensorRT-LLM P/D estimation. |
 
 ## Common input mapping
 
@@ -47,8 +65,11 @@ result on the target hardware.
 | `--request-latency` | `evaluation.sla.e2e_ms` | Mutually exclusive with `ttft_ms` and `itl_ms` |
 | `--strict-sla` | `optimization.strict_sla: true` | Recommendation-only aggregate-mean filter |
 | `--prefix` | No general direct mapping | Session shared-prefix controls have different semantics |
-| `--database-mode`, `--forward-model`, estimate detail/power flags | No unified CLI mapping | Continue using AIC when these controls are required |
-| `--save-dir`, `--deployment-target` | No unified CLI mapping | Continue using `aiconfigurator cli generate` |
+| `--database-mode`, `--forward-model`, `--transfer-policy`, `--systems-paths` | No unified CLI mapping | Continue using AIC when estimator/data-source selection is required |
+| GEMM, KV-cache, FMHA, MoE, and communication quantization flags | No unified CLI mapping | Continue using AIC when explicit estimator quantization overrides are required |
+| `--detail` and per-op memory/time/energy/source reports | No unified CLI mapping | Continue using AIC for single-point diagnostic breakdowns |
+| Predicted `power_w` and power coverage | No AIC-equivalent unified output | Optional runner metadata is not a replacement for AIC power analysis |
+| `--save-dir`, `--deployment-target` | No direct flag mapping on the new `aisimulate` CLI | `aisimulate recommend --output-dir` writes recommendation results and prediction-ready configs, not deployment manifests. For programmatic generation, select a candidate and use `from_sweeper_candidate(...)` with `generate_from_request(...)`; continue using `aiconfigurator cli generate` for a direct CLI workflow. |
 
 The examples below use the built-in engine runner. Use `--stack dynamo` only when `ai-dynamo` is
 installed and the workflow needs its runner or Router/Planner adapters. The stack selection is a CLI
@@ -112,7 +133,7 @@ aisimulate predict \
 ```
 
 This predicts deployment-level serving behavior. It does not reproduce AIC's batch-level estimate,
-per-op detail, power report, or static/AFD estimation modes.
+multimodal/EPD topology, per-op detail, power report, or static/AFD estimation modes.
 
 ## Preserve request-rate traffic during a configuration search
 
@@ -242,7 +263,9 @@ Continue using the compatibility command for:
 - deployment manifest generation and `--deployment-target` outputs;
 - exact AIC support-matrix checks;
 - AIC experiment YAML that has not been manually translated;
+- multimodal image-input and EPD modeling;
 - exact single-point FPM, static, AFD, per-op, detail, or power estimation;
+- heterogeneous P/D systems, backends, or versions;
 - AIC-specific database modes, forward-model selection, and expert estimator flags.
 
 The compatibility CLI is planned for deprecation, but its removal date is a separate release decision.
