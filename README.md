@@ -225,6 +225,9 @@ Support coverage and accuracy are separate evidence. A supported cell means a
 specific path can execute with the required data; it does not establish that
 the resulting end-to-end prediction is accurate.
 
+Memory-capacity accuracy is covered by the
+[profile-backed CUDA graph reservation DEP](python/aisimulate/docs/design/cuda_graph_reservation_estimation_dep.md).
+
 ### FPE support matrix — in development
 
 The new strict-native Forward Pass Engine (FPE) matrix measures estimator
