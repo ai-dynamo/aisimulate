@@ -34,7 +34,7 @@ use std::sync::OnceLock;
 use super::attention::generation_attn_flops;
 use super::gemm::quant_tc_flops;
 use super::interpolation::Grid3;
-use super::perf_interp::{self, LeafValue, Node, OpInterpConfig};
+use super::perf_interp::{self, LeafValue, Node, OpInterpConfig, PreparedGrid};
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
@@ -69,11 +69,11 @@ pub struct MlaTable {
 }
 
 struct ContextMlaGrids {
-    by_keys: BTreeMap<ContextKey, Node>,
+    by_keys: BTreeMap<ContextKey, PreparedGrid>,
 }
 
 struct GenerationMlaGrids {
-    by_keys: BTreeMap<KvOnlyKey, Node>,
+    by_keys: BTreeMap<KvOnlyKey, PreparedGrid>,
 }
 
 /// Module-level context MLA grids (fmha is a real axis for context). Inner
@@ -81,13 +81,13 @@ struct GenerationMlaGrids {
 /// [`mla_module_native_heads`] — never `num_heads * tp_size` (#1458; module
 /// rows are single-GPU rank-local head sweeps, tp is provenance).
 struct ModuleGrids {
-    by_keys: BTreeMap<ModuleKey, BTreeMap<u32, Node>>,
+    by_keys: BTreeMap<ModuleKey, BTreeMap<u32, PreparedGrid>>,
 }
 
 /// Generation twin of [`ModuleGrids`]; keyed (kv, gemm) only — the parquet's
 /// `mla_dtype` column is degenerate and dropped, mirroring Python.
 struct GenModuleGrids {
-    by_keys: BTreeMap<GenModuleKey, BTreeMap<u32, Node>>,
+    by_keys: BTreeMap<GenModuleKey, BTreeMap<u32, PreparedGrid>>,
 }
 
 /// Native-head pin for MLA module tables — byte-equal with Python's
@@ -135,7 +135,7 @@ fn resolve_module_native<T>(buckets: &BTreeMap<u32, T>, native_heads: Option<u32
 
 struct BmmGrids {
     // (bmm_quant, "mla_gen_pre" | "mla_gen_post") -> num_heads -> 1-D tokens curve
-    by_keys: BTreeMap<BmmKey, BTreeMap<u32, Node>>,
+    by_keys: BTreeMap<BmmKey, BTreeMap<u32, PreparedGrid>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -242,11 +242,7 @@ impl MlaTable {
         // c = (num_heads, seq_len, batch), prefix = 0 (see module docs).
         let sol = move |c: &[f64]| context_mla_sol_ms(spec, kv_quant, c[0], c[1], c[2], attn_flops);
         let cfg = OpInterpConfig::grid_sqrt_axis(CONTEXT_AXES, 1, &sol);
-        perf_interp::query_value(
-            &cfg,
-            node,
-            &[num_heads as f64, full_seq_tokens as f64, b as f64],
-        )
+        node.query_value(&cfg, &[num_heads as f64, full_seq_tokens as f64, b as f64])
     }
 
     /// Op-level generation MLA value (latency ms + power/energy).
@@ -275,7 +271,7 @@ impl MlaTable {
         let sol =
             move |c: &[f64]| generation_mla_sol_ms(spec, kv_quant, c[0], c[1], c[2], attn_flops);
         let cfg = OpInterpConfig::grid(GENERATION_AXES, &sol);
-        perf_interp::query_value(&cfg, node, &[num_heads as f64, b as f64, s as f64])
+        node.query_value(&cfg, &[num_heads as f64, b as f64, s as f64])
     }
 
     /// MLA BMM (pre or post) value (latency ms + power/energy; raw — the
@@ -336,7 +332,7 @@ impl MlaTable {
         let spec = &self.system_spec;
         let sol = move |c: &[f64]| mla_bmm_sol_ms(spec, quant, num_heads as f64, c[0], bmm_flops);
         let cfg = OpInterpConfig::grid(BMM_AXES, &sol);
-        perf_interp::query_value(&cfg, node, &[num_tokens as f64])
+        node.query_value(&cfg, &[num_tokens as f64])
     }
 
     /// Module-level context MLA value (latency ms + power/energy; raw — no
@@ -379,11 +375,7 @@ impl MlaTable {
         // was deliberately deferred there too).
         let sol = move |c: &[f64]| context_mla_sol_ms(spec, kv_quant, c[0], c[1], c[2], attn_flops);
         let cfg = OpInterpConfig::grid_sqrt_axis(CONTEXT_AXES, 1, &sol);
-        perf_interp::query_value(
-            &cfg,
-            node,
-            &[num_heads as f64, full_seq_tokens as f64, b as f64],
-        )
+        node.query_value(&cfg, &[num_heads as f64, full_seq_tokens as f64, b as f64])
     }
 
     /// Module-level generation MLA value (latency ms + power/energy). No
@@ -429,7 +421,7 @@ impl MlaTable {
             )
         };
         let cfg = OpInterpConfig::grid(GENERATION_AXES, &sol);
-        perf_interp::query_value(&cfg, node, &[num_heads as f64, b as f64, s as f64])
+        node.query_value(&cfg, &[num_heads as f64, b as f64, s as f64])
     }
 
     // -----------------------------------------------------------------------
@@ -455,7 +447,7 @@ impl MlaTable {
             .by_keys
             .get(&key)
             .ok_or_else(|| missing("context MLA", &self.data_root, format!("{key:?}")))?;
-        non_empty_points(node, "context MLA", &self.data_root)
+        non_empty_points(node.node(), "context MLA", &self.data_root)
     }
 
     /// Collected `(num_heads, batch, seq) -> latency` points of the op-level
@@ -472,7 +464,7 @@ impl MlaTable {
             .by_keys
             .get(&key)
             .ok_or_else(|| missing("generation MLA", &self.data_root, format!("{key:?}")))?;
-        non_empty_points(node, "generation MLA", &self.data_root)
+        non_empty_points(node.node(), "generation MLA", &self.data_root)
     }
 
     /// The BMM quant slice Python's `quant_mode in wrapper` membership check
@@ -529,7 +521,7 @@ impl MlaTable {
                     ),
                 )
             })?;
-        non_empty_points(node, "MLA BMM", &self.data_root)
+        non_empty_points(node.node(), "MLA BMM", &self.data_root)
     }
 
     /// Whether the `(quant, op_name, num_heads)` BMM slice has rows —
@@ -587,7 +579,7 @@ impl MlaTable {
                 format!("{key:?} native_heads={native_heads:?}"),
             )
         })?;
-        non_empty_points(node, "context MLA module", &self.data_root)
+        non_empty_points(node.node(), "context MLA module", &self.data_root)
     }
 
     /// Collected `(num_heads, batch, seq) -> latency` points of the
@@ -615,7 +607,7 @@ impl MlaTable {
                 format!("{key:?} native_heads={native_heads:?}"),
             )
         })?;
-        non_empty_points(node, "generation MLA module", &self.data_root)
+        non_empty_points(node.node(), "generation MLA module", &self.data_root)
     }
 
     fn load_context(&self) -> Result<&ContextMlaGrids, AicError> {
@@ -922,7 +914,7 @@ fn load_op_parquet(sources: &[PerfSource], is_context: bool) -> Result<ContextMl
     }
     let by_keys = raw
         .into_iter()
-        .map(|(key, grid)| (key, grid3_to_node(&grid)))
+        .map(|(key, grid)| (key, PreparedGrid::new(grid3_to_node(&grid))))
         .collect();
     Ok(ContextMlaGrids { by_keys })
 }
@@ -983,7 +975,7 @@ fn load_op_gen_parquet(sources: &[PerfSource]) -> Result<GenerationMlaGrids, Aic
     }
     let by_keys = raw
         .into_iter()
-        .map(|(key, grid)| (key, grid3_to_node(&grid)))
+        .map(|(key, grid)| (key, PreparedGrid::new(grid3_to_node(&grid))))
         .collect();
     Ok(GenerationMlaGrids { by_keys })
 }
@@ -1102,7 +1094,7 @@ fn load_context_module_parquet(sources: &[PerfSource]) -> Result<ModuleGrids, Ai
                 key,
                 by_native
                     .into_iter()
-                    .map(|(native, grid)| (native, grid3_to_node(&grid)))
+                    .map(|(native, grid)| (native, PreparedGrid::new(grid3_to_node(&grid))))
                     .collect(),
             )
         })
@@ -1188,7 +1180,7 @@ fn load_generation_module_parquet(sources: &[PerfSource]) -> Result<GenModuleGri
                 key,
                 by_native
                     .into_iter()
-                    .map(|(native, grid)| (native, grid3_to_node(&grid)))
+                    .map(|(native, grid)| (native, PreparedGrid::new(grid3_to_node(&grid))))
                     .collect(),
             )
         })
@@ -1248,7 +1240,7 @@ fn load_bmm_parquet(sources: &[PerfSource]) -> Result<BmmGrids, AicError> {
         .map(|(key, by_heads)| {
             let converted = by_heads
                 .into_iter()
-                .map(|(heads, curve)| (heads, curve_to_node(&curve)))
+                .map(|(heads, curve)| (heads, PreparedGrid::new(curve_to_node(&curve))))
                 .collect();
             (key, converted)
         })

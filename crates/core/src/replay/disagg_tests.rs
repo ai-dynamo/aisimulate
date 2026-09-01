@@ -85,6 +85,7 @@ impl QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                placement_replica_id: None,
             })
             .collect()
     }
@@ -108,6 +109,7 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                placement_replica_id: None,
             }),
             None => {
                 self.pending.push_back(request_id);
@@ -310,7 +312,7 @@ fn forced_chunked_handoff_config(engine_type: EngineType) -> TestDisaggConfig {
 fn disagg_config_with_handoff_delay() -> TestDisaggConfig {
     let mut config = disagg_config();
     config.prefill_args.kv_transfer_bandwidth = Some(1.0);
-    config.prefill_args.kv_bytes_per_token = Some(1_000_000);
+    config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
     config
 }
 
@@ -327,7 +329,7 @@ fn transfer_timing_config(
     config.num_prefill_workers = 1;
     config.num_decode_workers = decode_workers;
     config.prefill_args.kv_transfer_bandwidth = Some(1.0);
-    config.prefill_args.kv_bytes_per_token = Some(1_000_000);
+    config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
     config.prefill_args.kv_transfer_timing_mode = mode;
     config.decode_args.kv_transfer_timing_mode = mode;
     config
@@ -349,7 +351,7 @@ fn cleanup_overtake_args(engine_type: EngineType, worker_type: WorkerType) -> Mo
     };
     if worker_type == WorkerType::Prefill {
         args.kv_transfer_bandwidth = Some(100.0);
-        args.kv_bytes_per_token = Some(131_072);
+        args.kv_transfer_bytes_per_token = Some(131_072);
     }
     args
 }

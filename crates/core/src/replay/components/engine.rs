@@ -3,17 +3,22 @@
 
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use crate::engine::generalized::{PassId, SameTimestampRetry, SchedulerCommand};
 use crate::engine::{
-    Command, CommandResult, Engine, ForwardPassMetrics, Metrics, PassCompletionEffects, Request,
+    Command, CommandResult, Engine, ForwardPassMetrics, HostOffloadObserver, Metrics,
+    PassCompletionEffects, Request,
 };
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
 use super::super::core::{EngineEventBatch, EngineProgress, NoEngineEvents, WorkerTopology};
 use super::super::events::{EnginePassCompletion, SimulationWorkerStage, WorkerCompletionPayload};
-use super::{EngineEffects, EnginePassMode, ObservedCommandEffects, ReplayEngineObservation};
+use super::{
+    EngineEffects, EnginePassMode, InternalEngineEffects, ObservedCommandEffects,
+    ReplayEngineObservation,
+};
 use crate::replay::TraceCollector;
 use crate::replay::engine::ReplayRoleFactory;
 use crate::replay::protocol::{DirectRequest, ForwardPassSnapshot, OutputSignal};
@@ -222,6 +227,14 @@ where
         self.telemetry = Some(EngineTelemetryState {
             retired_interval: ReplaySchedulerIntervalMetrics::default(),
         });
+    }
+
+    pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
+        for worker in self.workers.iter_mut().filter_map(Option::as_mut) {
+            for rank in worker.engine.ranks_mut() {
+                rank.set_host_offload_observer(Arc::clone(&observer));
+            }
+        }
     }
 
     fn required_worker(&self, worker_id: usize) -> Result<&LogicalWorker> {
@@ -764,6 +777,7 @@ where
                         super::AdmissionEvent {
                             uuid: admission.request_id,
                             reused_input_tokens: admission.reused_input_tokens,
+                            cache_tier_attribution: admission.cache_tier_attribution,
                         }
                     }));
                 effects
@@ -936,6 +950,80 @@ where
 
     pub(crate) fn in_flight(&self) -> usize {
         self.total_in_flight
+    }
+
+    /// Earliest independently modeled deadline across every logical worker.
+    pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
+        self.workers
+            .iter()
+            .filter_map(Option::as_ref)
+            // vLLM consumes connector completions with model-step output.
+            // A transfer may physically finish mid-pass, but its residency and
+            // LRU effects become scheduler-visible only at the group boundary.
+            .filter(|worker| worker.pending_pass.is_none())
+            .filter_map(|worker| worker.engine.next_internal_deadline_ms())
+            .filter(|deadline| deadline.is_finite())
+            .min_by(f64::total_cmp)
+    }
+
+    /// Process every idle worker whose internal deadline is due at `now_ms`.
+    ///
+    /// Physical deadlines inside an eagerly committed pass remain hidden;
+    /// pass completion settles them before publishing boundary effects.
+    pub(crate) fn process_internal_work(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<InternalEngineEffects<Observation::Batch>> {
+        let mut observations = Observation::Batch::default();
+        let mut artifact_events = Vec::new();
+        let mut made_progress = false;
+
+        for worker_id in 0..self.workers.len() {
+            let due = self
+                .workers
+                .get(worker_id)
+                .and_then(Option::as_ref)
+                .filter(|worker| worker.pending_pass.is_none())
+                .and_then(|worker| worker.engine.next_internal_deadline_ms())
+                .is_some_and(|deadline| deadline.is_finite() && deadline <= now_ms);
+            if !due {
+                continue;
+            }
+
+            let effects = self
+                .required_worker_mut(worker_id)?
+                .engine
+                .process_internal_work(now_ms)
+                .map_err(crate::replay::error::engine_boundary)?;
+            for rank in effects.into_by_rank() {
+                if !rank.effects.admissions.is_empty() || !rank.effects.pressure_events.is_empty() {
+                    bail!(
+                        "engine internal work exposed pass-start scheduler effects for worker {worker_id} rank {}",
+                        rank.dp_rank
+                    );
+                }
+                let kv_events = rank.effects.kv_events;
+                if self.capture_artifact_kv_events {
+                    artifact_events.extend(kv_events.iter().cloned());
+                }
+                observations.append(Observation::observe_engine_events(
+                    self.stage.into(),
+                    worker_id,
+                    rank.dp_rank,
+                    kv_events,
+                ));
+                made_progress = true;
+            }
+            self.refresh_worker(worker_id);
+        }
+
+        Ok(InternalEngineEffects {
+            engine_events: observations,
+            made_progress,
+            artifact_kv_events: self
+                .capture_artifact_kv_events
+                .then(|| artifact_events.into_boxed_slice()),
+        })
     }
 
     pub(crate) fn is_drained(&self) -> bool {
@@ -1600,6 +1688,7 @@ mod tests {
         effects.admissions.push(AdmissionEvent {
             uuid: Uuid::from_u128(3),
             reused_input_tokens: 0,
+            cache_tier_attribution: None,
         });
 
         assert!(effects.should_retain_immediate_completion(EngineProgress::default()));

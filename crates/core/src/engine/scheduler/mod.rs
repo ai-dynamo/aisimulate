@@ -17,7 +17,7 @@ use crate::engine::common::protocols::DirectRequest;
 pub(crate) use crate::engine::common::protocols::ForwardPassSnapshot;
 use crate::engine::common::protocols::OutputSignal;
 use crate::engine::generalized::SameTimestampRetry;
-use crate::engine::{KvEvent, PressureEvent};
+use crate::engine::{CacheTierAttribution, HostOffloadObserver, KvEvent, PressureEvent};
 pub(crate) use kv_event_sink::{CapturedKvEventBuffer, capture_kv_event_sink};
 pub(crate) use source_holds::{
     ActiveHandoffRequests, DestinationHolds, PendingDestinations, RemovedSource, SourceCompletion,
@@ -26,6 +26,7 @@ pub(crate) use source_holds::{
 pub use source_holds::{
     SchedulerCommand, SchedulerCommandEffects, SchedulerCommandResult, SchedulerLifecycleEvent,
 };
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Welford's online algorithm for count / sum / population-variance.
@@ -232,6 +233,7 @@ impl MockerMetrics {
 pub(crate) struct AdmissionEvent {
     pub(crate) uuid: Uuid,
     pub(crate) reused_input_tokens: usize,
+    pub(crate) cache_tier_attribution: Option<CacheTierAttribution>,
 }
 
 #[derive(Debug, Clone)]
@@ -306,6 +308,12 @@ pub(crate) enum EngineCore {
 }
 
 impl EngineCore {
+    pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
+        if let Self::Vllm(core) = self {
+            core.set_host_offload_observer(observer);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn receive(&mut self, request: DirectRequest) -> Uuid {
         match self {
@@ -329,6 +337,32 @@ impl EngineCore {
         }
     }
 
+    pub(crate) fn is_ready(&self) -> bool {
+        match self {
+            Self::Vllm(core) => core.is_ready(),
+            Self::Sglang(core) => !core.is_drained(),
+        }
+    }
+
+    pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
+        match self {
+            Self::Vllm(core) => core.next_internal_deadline_ms(),
+            Self::Sglang(_) => None,
+        }
+    }
+
+    pub(crate) fn process_internal_work(&mut self, now_ms: f64) {
+        if let Self::Vllm(core) = self {
+            core.process_internal_work(now_ms);
+        }
+    }
+
+    pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
+        if let Self::Vllm(core) = self {
+            core.complete_engine_boundary(now_ms);
+        }
+    }
+
     pub(crate) fn waiting_for_external_command(&self) -> bool {
         match self {
             Self::Vllm(core) => core.waiting_for_external_command(),
@@ -347,6 +381,7 @@ impl EngineCore {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_command_effects(
         &mut self,
         command: SchedulerCommand,
@@ -354,6 +389,20 @@ impl EngineCore {
     ) -> anyhow::Result<SchedulerCommandEffects> {
         match self {
             Self::Vllm(core) => core.apply_command_effects(command, allow_destination_admission),
+            Self::Sglang(core) => core.apply_command_effects(command, allow_destination_admission),
+        }
+    }
+
+    pub(crate) fn apply_command_effects_at(
+        &mut self,
+        command: SchedulerCommand,
+        allow_destination_admission: bool,
+        now_ms: f64,
+    ) -> anyhow::Result<SchedulerCommandEffects> {
+        match self {
+            Self::Vllm(core) => {
+                core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
+            }
             Self::Sglang(core) => core.apply_command_effects(command, allow_destination_admission),
         }
     }

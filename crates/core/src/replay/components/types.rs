@@ -6,7 +6,10 @@ use uuid::Uuid;
 use super::super::core::{EngineEventBatch, EngineProgress, NoEngineEvents};
 use super::super::events::{EnginePassCompletion, WorkerCompletionPayload};
 use super::super::evidence::KvIngestEventEncoder;
-use crate::engine::{CommandResult, KvEvent, LifecycleEvent, PressureEvent as EnginePressureEvent};
+use crate::engine::{
+    CacheTierAttribution, CommandResult, KvEvent, LifecycleEvent,
+    PressureEvent as EnginePressureEvent,
+};
 use crate::replay::core::RequestIdentity;
 use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::protocol::DirectRequest;
@@ -110,6 +113,7 @@ impl ReplayEngineObservation for NoEngineEvents {
 pub(crate) struct AdmissionEvent {
     pub(crate) uuid: Uuid,
     pub(crate) reused_input_tokens: usize,
+    pub(crate) cache_tier_attribution: Option<CacheTierAttribution>,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +127,12 @@ pub(crate) struct ObservedCommandEffects<Events: EngineEventBatch> {
     pub(crate) result: CommandResult,
     pub(crate) lifecycle_events: Vec<LifecycleEvent>,
     pub(crate) engine_events: Events,
+}
+
+pub(crate) struct InternalEngineEffects<Events: EngineEventBatch> {
+    pub(crate) engine_events: Events,
+    pub(crate) made_progress: bool,
+    pub(crate) artifact_kv_events: Option<Box<[KvEvent]>>,
 }
 
 #[derive(Debug)]

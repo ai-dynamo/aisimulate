@@ -121,20 +121,36 @@ impl ReplayEngineConfig {
     }
 
     pub(crate) fn validate_topology(&self, topology: &ReplayTopology) -> ReplayResult<()> {
-        if matches!(topology, ReplayTopology::Disaggregated { .. }) {
-            for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
-                let role = self.role(stage);
-                if role.dp_size != 1 {
-                    // TODO(#12965): Carry logical-worker plus DP-rank identity through
-                    // disaggregated handoff before removing this fail-fast guard.
-                    let role_name = match stage {
-                        WorkerStage::Prefill => "prefill",
-                        WorkerStage::Decode => "decode",
-                        WorkerStage::Aggregated => unreachable!(),
-                    };
-                    return Err(ReplayError::InvalidSpec(format!(
-                        "disaggregated replay requires {role_name} dp_size=1; attention-DP handoff identity is not implemented"
-                    )));
+        match topology {
+            ReplayTopology::Aggregated { .. } => {
+                if self.rank.native_host_offload.is_some() && self.dp_size != 1 {
+                    return Err(ReplayError::InvalidSpec(
+                        "native_host_offload supports only dp_size=1 in the initial implementation"
+                            .to_string(),
+                    ));
+                }
+            }
+            ReplayTopology::Disaggregated { .. } => {
+                for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
+                    let role = self.role(stage);
+                    if role.rank.native_host_offload.is_some() {
+                        return Err(ReplayError::InvalidSpec(
+                            "native_host_offload supports only aggregated replay in the initial implementation"
+                                .to_string(),
+                        ));
+                    }
+                    if role.dp_size != 1 {
+                        // TODO(#12965): Carry logical-worker plus DP-rank identity through
+                        // disaggregated handoff before removing this fail-fast guard.
+                        let role_name = match stage {
+                            WorkerStage::Prefill => "prefill",
+                            WorkerStage::Decode => "decode",
+                            WorkerStage::Aggregated => unreachable!(),
+                        };
+                        return Err(ReplayError::InvalidSpec(format!(
+                            "disaggregated replay requires {role_name} dp_size=1; attention-DP handoff identity is not implemented"
+                        )));
+                    }
                 }
             }
         }

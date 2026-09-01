@@ -1,4 +1,4 @@
-# AISimulate source migrations
+# AISimulate repository history
 
 This repository combines two independently preserved source streams: the full
 AIConfigurator product and the former Dynamo `aisimulate/` package.
@@ -15,7 +15,7 @@ migration is tracked by
 | AIC 0.11 surface | AISimulate 0.12 surface | Compatibility |
 | --- | --- | --- |
 | Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command and import namespace ship inside `aisimulate` during the compatibility window |
-| CLI `aiconfigurator ...` | `aiconfigurator ...` from the `aisimulate` wheel | The distribution and source owner change; the command name does not |
+| CLI `aiconfigurator ...` | `aisimulate predict` / `aisimulate recommend` for new simulation workflows; `aiconfigurator ...` for compatibility-only workflows | See the [AIC migration guide](cli/migrate-from-aiconfigurator.md); this is not a flag-compatible rename |
 | Python distribution `aiconfigurator-core` | included in `aisimulate` | No separate core distribution is installed |
 | `aiconfigurator_core` | `aiconfigurator_core` from the `aisimulate` wheel | Existing import remains available in 0.12.0 |
 | `aiconfigurator_core.sdk` | `aisimulate_core.sdk` facade in the same wheel | Both import paths remain available in 0.12.0 |
@@ -118,16 +118,25 @@ path-rewritten workflow in [aic-sync.md](aic-sync.md) for later AIC code, data,
 and test commits. Packaging, CI, and repository-policy changes are adapted
 manually because AISimulate owns the combined release boundary.
 
-### CLI identity and evolution gate
+### CLI transition and compatibility gate
 
-Copying all AIC code removes repository-placement risk; it does not by itself
-prove that the newer `predict`/`recommend` CLI is a behavioral replacement.
-Until AIC-1480/AIC-1472/AIC-1476 have passing evidence or approved exceptions,
-the complete AIC command implementation remains the supported surface. The
-`aisimulate` wheel installs only the established `aiconfigurator` application
-command; `aisimulate` remains the distribution and Python namespace, not a
-second top-level executable. Future CLI actions must evolve the retained
-command identity and do not add another release artifact.
+The `aisimulate` wheel installs both the unified `aisimulate` application and
+the established `aiconfigurator` compatibility command. `predict` and
+`recommend` are the preferred entry points for new simulation and search
+integrations, but copying AIC code and adding the new commands does not prove
+behavioral parity for every legacy workflow. AIC-1480/AIC-1472/AIC-1476 track
+the remaining parity and product evidence.
+
+Keep using `aiconfigurator` for the no-direct-replacement workflows in the
+[AIC migration guide](cli/migrate-from-aiconfigurator.md) until an explicit
+replacement and migration path land. The standalone AIConfigurator repository
+will publish its final 0.12.0 `aiconfigurator` and `aiconfigurator-core`
+artifacts and then be archived; ongoing development, releases, issues, and pull
+requests move to AISimulate.
+
+The compatibility command remains in the AISimulate 0.12.0 wheel and is
+targeted for removal in AISimulate 0.13.0. Removal is gated on verified unified
+CLI replacements for every remaining workflow in the migration guide.
 
 For features already implemented by the standalone Sweeper, see
 [Migrate from AIConfigurator](cli/migrate-from-aiconfigurator.md) for explicit legacy

@@ -370,10 +370,11 @@ impl Dsv4ModuleOp {
         // True SOL(b, s, prefix) at the query (Python `sol_q = get_sol()[0]`).
         let sol_q = sol_at(i64::from(b), i64::from(s), i64::from(prefix));
 
-        // Own-slice `(prefix, s, b)` points; a typed coverage miss means no
-        // prefix keys (Python: `prefix_keys = ()`), so the p0-anchor branch
-        // then finds no grid and estimate() raises the empirical miss.
-        let points = match db.dsv4.context_points(
+        // Inspect only the top-level prefix map before the cache lookup. A
+        // typed coverage miss means no prefix keys (Python:
+        // `prefix_keys = ()`), so the p0-anchor branch then finds no grid and
+        // estimate() raises the empirical miss.
+        let prefix_bounds = match db.dsv4.context_prefix_bounds(
             self.attn_kind,
             self.num_heads,
             self.native_heads,
@@ -381,18 +382,12 @@ impl Dsv4ModuleOp {
             fmha,
             gemm,
         ) {
-            Ok(points) => Some(points),
+            Ok(bounds) => Some(bounds),
             Err(err) if err.is_missing_perf_data() => None,
             Err(err) => return Err(err),
         };
-        let prefix_keys: std::collections::BTreeSet<u32> = points
-            .iter()
-            .flatten()
-            .map(|(coords, _)| coords[0] as u32)
-            .collect();
-        let interp_prefix = prefix_keys.len() >= 2
-            && *prefix_keys.first().expect("non-empty") <= prefix
-            && prefix <= *prefix_keys.last().expect("non-empty");
+        let interp_prefix = prefix_bounds
+            .is_some_and(|(first, last)| first < last && first <= prefix && prefix <= last);
 
         // Grid cache key mirrors Python's
         // (key_tag, quants, num_heads, cr, depth); `architecture` stands in
@@ -411,7 +406,20 @@ impl Dsv4ModuleOp {
             let sol3 = |c: &[f64]| sol_at(c[2] as i64, c[1] as i64, c[0] as i64); // c=(prefix, s, b)
             let key = format!("dsv4_ctx_attn:{key_stem}:3");
             let grid = db.util_grids.get_or_try_build(&key, || {
-                Ok(points.map(|points| UtilGrid::new(util_empirical::build_samples(points, sol3))))
+                match db.dsv4.context_points(
+                    self.attn_kind,
+                    self.num_heads,
+                    self.native_heads,
+                    kv,
+                    fmha,
+                    gemm,
+                ) {
+                    Ok(points) => Ok(Some(UtilGrid::new(util_empirical::build_samples(
+                        points, sol3,
+                    )))),
+                    Err(err) if err.is_missing_perf_data() => Ok(None),
+                    Err(err) => Err(err),
+                }
             })?;
             let query = [f64::from(prefix), f64::from(s), f64::from(b)];
             let (latency, _) = util_empirical::estimate(sol_q, &query, grid.as_deref(), 1.0)?;
@@ -424,18 +432,20 @@ impl Dsv4ModuleOp {
             let grid = db.util_grids.get_or_try_build(&key, || {
                 // Python `require_data_slice(_slice(), 0)`: no prefix=0 rows
                 // is a typed coverage miss -> no grid.
-                let p0_points: Vec<(Vec<f64>, f64)> = points
-                    .into_iter()
-                    .flatten()
-                    .filter(|(coords, _)| coords[0] == 0.0)
-                    .map(|(coords, latency)| (vec![coords[1], coords[2]], latency))
-                    .collect();
-                if p0_points.is_empty() {
-                    return Ok(None);
+                match db.dsv4.context_p0_points(
+                    self.attn_kind,
+                    self.num_heads,
+                    self.native_heads,
+                    kv,
+                    fmha,
+                    gemm,
+                ) {
+                    Ok(points) => Ok(Some(UtilGrid::new(util_empirical::build_samples(
+                        points, sol2,
+                    )))),
+                    Err(err) if err.is_missing_perf_data() => Ok(None),
+                    Err(err) => Err(err),
                 }
-                Ok(Some(UtilGrid::new(util_empirical::build_samples(
-                    p0_points, sol2,
-                ))))
             })?;
             let query = [f64::from(s) + f64::from(prefix), f64::from(b)];
             let (latency, _) = util_empirical::estimate(sol_q, &query, grid.as_deref(), 1.0)?;
