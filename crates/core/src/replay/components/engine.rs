@@ -370,6 +370,7 @@ where
         Some(WorkerTopology {
             worker_id,
             scheduler_ids: self.workers.get(worker_id)?.as_ref()?.scheduler_ids.clone(),
+            cache_domain_ids: self.factory.cache_domain_ids().to_vec(),
         })
     }
 

@@ -336,14 +336,17 @@ mod tests {
             WorkerTopology {
                 worker_id: 0,
                 scheduler_ids: vec![10],
+                cache_domain_ids: vec![0],
             },
             WorkerTopology {
                 worker_id: 1,
                 scheduler_ids: vec![11],
+                cache_domain_ids: vec![0],
             },
             WorkerTopology {
                 worker_id: 2,
                 scheduler_ids: vec![12],
+                cache_domain_ids: vec![0],
             },
         ]);
 
@@ -358,6 +361,7 @@ mod tests {
             WorkerTopology {
                 worker_id: 2,
                 scheduler_ids: vec![12],
+                cache_domain_ids: vec![0],
             },
             0.0,
         )
@@ -389,10 +393,12 @@ mod tests {
                 WorkerTopology {
                     worker_id: 0,
                     scheduler_ids: vec![10, 11],
+                    cache_domain_ids: vec![0, 1],
                 },
                 WorkerTopology {
                     worker_id: 1,
                     scheduler_ids: vec![20, 21],
+                    cache_domain_ids: vec![0, 1],
                 },
             ],
         );

@@ -2379,6 +2379,7 @@ where
                     WorkerTopology {
                         worker_id: *worker_id,
                         scheduler_ids: Vec::new(),
+                        cache_domain_ids: Vec::new(),
                     },
                     self.now_ms,
                 )?;
@@ -2425,6 +2426,7 @@ where
                     WorkerTopology {
                         worker_id: *worker_id,
                         scheduler_ids: Vec::new(),
+                        cache_domain_ids: Vec::new(),
                     },
                     self.now_ms,
                 )?;
@@ -2733,6 +2735,7 @@ where
                 .unwrap_or(WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    cache_domain_ids: Vec::new(),
                 });
             let placements = self
                 .prefill_placement
@@ -2745,6 +2748,7 @@ where
                 WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    cache_domain_ids: Vec::new(),
                 },
                 self.now_ms,
             )?;
@@ -2812,6 +2816,7 @@ where
                 .unwrap_or(WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    cache_domain_ids: Vec::new(),
                 });
             let placements = self
                 .decode_placement
@@ -2824,6 +2829,7 @@ where
                 WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    cache_domain_ids: Vec::new(),
                 },
                 self.now_ms,
             )?;

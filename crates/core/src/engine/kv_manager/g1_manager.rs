@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost};
 use crate::engine::common::sequence::RequestSequence;
+use crate::engine::{StoredBlocks, common::hashing::SequenceHash};
 
 use super::G1Acquire;
 use super::vllm_backend::{
@@ -216,6 +217,26 @@ impl G1Manager {
         debug_assert_eq!(lease.owner(), owner, "native lease owner mismatch");
         self.inner
             .attach_store_source_dependency(owner, snapshot.inner, dependency);
+    }
+
+    pub(crate) fn native_host_store_events(
+        &self,
+        lease: &BlockRequestLease,
+        block_indices: &[usize],
+    ) -> Vec<StoredBlocks> {
+        self.inner.native_host_store_events(lease, block_indices)
+    }
+
+    pub(crate) fn emits_native_kv_events(&self) -> bool {
+        self.inner.emits_native_kv_events()
+    }
+
+    pub(crate) fn publish_native_host_stores(&mut self, stores: Vec<StoredBlocks>) {
+        self.inner.publish_native_host_stores(stores);
+    }
+
+    pub(crate) fn publish_native_host_removed(&mut self, hashes: Vec<SequenceHash>) {
+        self.inner.publish_native_host_removed(hashes);
     }
 
     pub(crate) fn satisfy_native_source_dependency(

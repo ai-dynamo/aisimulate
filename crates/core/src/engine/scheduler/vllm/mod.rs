@@ -12,6 +12,7 @@ mod policy;
 mod request;
 
 pub(crate) use core::VllmCore;
+pub(crate) use host_offload::VllmHostOffloadDomain;
 
 #[cfg(test)]
 pub(crate) use core::RequestStatus;

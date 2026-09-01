@@ -764,6 +764,7 @@ where
                     WorkerTopology {
                         worker_id: *worker_id,
                         scheduler_ids: Vec::new(),
+                        cache_domain_ids: Vec::new(),
                     },
                     self.now_ms,
                 )?;
@@ -959,6 +960,7 @@ where
             let topology = self.engine.worker_topology(id).unwrap_or(WorkerTopology {
                 worker_id: id,
                 scheduler_ids: Vec::new(),
+                cache_domain_ids: Vec::new(),
             });
             let placements = self.placement.worker_draining(topology, self.now_ms)?;
             released.extend(placements.iter().map(|placement| placement.request_id));
@@ -969,6 +971,7 @@ where
                 WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    cache_domain_ids: Vec::new(),
                 },
                 self.now_ms,
             )?;

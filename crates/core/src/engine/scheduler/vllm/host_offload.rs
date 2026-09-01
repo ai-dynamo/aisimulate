@@ -11,7 +11,7 @@
 //! tie-break inside that epoch.
 
 use rustc_hash::FxHashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use uuid::Uuid;
 
 use crate::engine::common::protocols::PrefillCost;
@@ -23,7 +23,7 @@ use crate::engine::host_offload::{
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReuseDependency,
 };
-use crate::engine::{HostOffloadObserver, NativeHostOffloadConfig};
+use crate::engine::{HostOffloadObserver, NativeHostOffloadConfig, StoredBlocks};
 
 struct LoadingPrefix {
     transfer_id: TransferId,
@@ -140,22 +140,22 @@ pub(super) struct HostTransferProgress {
     pub(super) completed_any: bool,
 }
 
-pub(super) struct VllmHostOffloadAdapter {
+struct HostCacheDomainState {
     tier: HostTier,
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
-    compute_not_before_ms: f64,
-    /// Present only for detailed artifact capture. Ordinary runs neither retain
-    /// request-local mapping state nor allocate mapping payloads.
-    observer: Option<Arc<dyn HostOffloadObserver>>,
+    transfer_owners: FxHashMap<TransferId, u32>,
+    completed_by_rank: FxHashMap<u32, Vec<CompletedTransfer>>,
+    completion_generation: u64,
 }
 
-impl VllmHostOffloadAdapter {
-    pub(super) fn set_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
-        self.tier.set_observer(Arc::clone(&observer));
-        self.observer = Some(observer);
-    }
+/// One physical host-cache domain shared by its attention-DP ranks.
+#[derive(Clone)]
+pub(crate) struct VllmHostOffloadDomain {
+    state: Arc<Mutex<HostCacheDomainState>>,
+}
 
-    pub(super) fn new(
+impl VllmHostOffloadDomain {
+    pub(crate) fn new(
         config: &NativeHostOffloadConfig,
         block_size: usize,
         kv_bytes_per_token: usize,
@@ -164,16 +164,227 @@ impl VllmHostOffloadAdapter {
             .checked_mul(kv_bytes_per_token)
             .ok_or_else(|| anyhow::anyhow!("native host block byte size overflow"))?;
         Ok(Self {
-            tier: HostTier::new(HostTierConfig {
-                capacity_blocks: config.num_host_blocks,
-                block_bytes,
-                d2h_bandwidth_gbps: config.d2h_bandwidth_gbps,
-                h2d_bandwidth_gbps: config.h2d_bandwidth_gbps,
-            })?,
-            load_by_key: FxHashMap::default(),
-            compute_not_before_ms: 0.0,
-            observer: None,
+            state: Arc::new(Mutex::new(HostCacheDomainState {
+                tier: HostTier::new(HostTierConfig {
+                    capacity_blocks: config.num_host_blocks,
+                    block_bytes,
+                    d2h_bandwidth_gbps: config.d2h_bandwidth_gbps,
+                    h2d_bandwidth_gbps: config.h2d_bandwidth_gbps,
+                })?,
+                load_by_key: FxHashMap::default(),
+                transfer_owners: FxHashMap::default(),
+                completed_by_rank: FxHashMap::default(),
+                completion_generation: 0,
+            })),
         })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HostCacheDomainState> {
+        self.state.lock().expect("host cache domain mutex poisoned")
+    }
+
+    fn set_observer(&self, observer: Arc<dyn HostOffloadObserver>) {
+        self.lock().tier.set_observer(observer);
+    }
+
+    fn has_transfer(&self, transfer_id: TransferId) -> bool {
+        self.lock().tier.has_transfer(transfer_id)
+    }
+
+    fn touch(&self, key: HostBlockKey) {
+        self.lock().tier.touch(key);
+    }
+
+    fn lookup(&self, key: HostBlockKey) -> Lookup {
+        self.lock().tier.lookup(key)
+    }
+
+    fn is_loading(&self, key: HostBlockKey) -> bool {
+        self.lock().load_by_key.contains_key(&key)
+    }
+
+    fn prepare_store(
+        &self,
+        dp_rank: u32,
+        request_id: Uuid,
+        blocks: &[HostBlockKey],
+        now_ms: f64,
+    ) -> StoreOutcome {
+        let mut state = self.lock();
+        let outcome = state.tier.prepare_store(request_id, blocks, now_ms);
+        if let StoreOutcome::Prepared { transfer_id, .. } = &outcome {
+            assert!(
+                state
+                    .transfer_owners
+                    .insert(*transfer_id, dp_rank)
+                    .is_none()
+            );
+        }
+        outcome
+    }
+
+    fn submit_prepared_stores(&self, now_ms: f64) -> usize {
+        self.lock().tier.submit_prepared_stores(now_ms)
+    }
+
+    fn schedule_load(
+        &self,
+        dp_rank: u32,
+        request_id: Uuid,
+        blocks: &[HostBlockKey],
+        now_ms: f64,
+        not_before_ms: f64,
+    ) -> LoadOutcome {
+        let mut state = self.lock();
+        if blocks.iter().any(|key| state.load_by_key.contains_key(key)) {
+            return LoadOutcome::Miss;
+        }
+        let outcome = state
+            .tier
+            .schedule_load(request_id, blocks, now_ms, not_before_ms);
+        if let LoadOutcome::Queued(transfer_id) = outcome {
+            assert!(state.transfer_owners.insert(transfer_id, dp_rank).is_none());
+            for key in blocks {
+                assert!(state.load_by_key.insert(*key, transfer_id).is_none());
+            }
+        }
+        outcome
+    }
+
+    fn tick_for_rank(&self, dp_rank: u32, now_ms: f64) -> (Vec<CompletedTransfer>, u64) {
+        let mut state = self.lock();
+        let completed = state.tier.tick(now_ms);
+        if !completed.is_empty() {
+            state.completion_generation = state
+                .completion_generation
+                .checked_add(1)
+                .expect("host cache-domain completion generation overflow");
+        }
+        for transfer in completed {
+            let transfer_id = match &transfer {
+                CompletedTransfer::Store { transfer_id, .. }
+                | CompletedTransfer::Load { transfer_id, .. } => *transfer_id,
+            };
+            let owner = state
+                .transfer_owners
+                .remove(&transfer_id)
+                .expect("completed host transfer lost its DP-rank owner");
+            if let CompletedTransfer::Load { blocks, .. } = &transfer {
+                for key in blocks {
+                    assert_eq!(state.load_by_key.remove(key), Some(transfer_id));
+                }
+            }
+            state
+                .completed_by_rank
+                .entry(owner)
+                .or_default()
+                .push(transfer);
+        }
+        let generation = state.completion_generation;
+        let completed = state.completed_by_rank.remove(&dp_rank).unwrap_or_default();
+        (completed, generation)
+    }
+
+    fn cancel_load(
+        &self,
+        dp_rank: u32,
+        transfer_id: TransferId,
+        keys: &[HostBlockKey],
+        mutation_now_ms: f64,
+        observed_at_ms: f64,
+    ) -> bool {
+        let mut state = self.lock();
+        if !state
+            .tier
+            .cancel_load(transfer_id, mutation_now_ms, observed_at_ms)
+        {
+            return false;
+        }
+        assert_eq!(state.transfer_owners.remove(&transfer_id), Some(dp_rank));
+        for key in keys {
+            assert_eq!(state.load_by_key.remove(key), Some(transfer_id));
+        }
+        true
+    }
+
+    fn transfer_deadline(&self, transfer_id: TransferId) -> Option<f64> {
+        self.lock().tier.transfer_deadline(transfer_id)
+    }
+
+    fn next_deadline_for_rank(&self, dp_rank: u32, seen_completion_generation: u64) -> Option<f64> {
+        let state = self.lock();
+        if state.completion_generation != seen_completion_generation
+            || state
+                .completed_by_rank
+                .get(&dp_rank)
+                .is_some_and(|completed| !completed.is_empty())
+        {
+            return Some(state.tier.current_time_ms());
+        }
+        state.tier.next_deadline()
+    }
+
+    fn current_time_ms(&self) -> f64 {
+        self.lock().tier.current_time_ms()
+    }
+
+    fn has_pending_work(&self) -> bool {
+        let state = self.lock();
+        state.tier.has_pending_work()
+            || state
+                .completed_by_rank
+                .values()
+                .any(|completed| !completed.is_empty())
+    }
+
+    #[cfg(test)]
+    fn resident_blocks(&self) -> usize {
+        self.lock().tier.resident_blocks()
+    }
+
+    #[cfg(test)]
+    fn is_resident(&self, key: HostBlockKey) -> bool {
+        self.lock().tier.is_resident(key)
+    }
+}
+
+pub(super) struct VllmHostOffloadAdapter {
+    domain: VllmHostOffloadDomain,
+    dp_rank: u32,
+    seen_completion_generation: u64,
+    compute_not_before_ms: f64,
+    pending_stores: FxHashMap<TransferId, Vec<StoredBlocks>>,
+    /// Present only for detailed artifact capture. Ordinary runs neither retain
+    /// request-local mapping state nor allocate mapping payloads.
+    observer: Option<Arc<dyn HostOffloadObserver>>,
+}
+
+impl VllmHostOffloadAdapter {
+    pub(super) fn set_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
+        self.domain.set_observer(Arc::clone(&observer));
+        self.observer = Some(observer);
+    }
+
+    pub(super) fn new(
+        config: &NativeHostOffloadConfig,
+        block_size: usize,
+        kv_bytes_per_token: usize,
+    ) -> anyhow::Result<Self> {
+        Ok(Self::in_domain(
+            VllmHostOffloadDomain::new(config, block_size, kv_bytes_per_token)?,
+            0,
+        ))
+    }
+
+    pub(super) fn in_domain(domain: VllmHostOffloadDomain, dp_rank: u32) -> Self {
+        Self {
+            domain,
+            dp_rank,
+            seen_completion_generation: 0,
+            compute_not_before_ms: 0.0,
+            pending_stores: FxHashMap::default(),
+            observer: None,
+        }
     }
 
     /// Query G2 after the scheduler's one authoritative G1 prefix lookup.
@@ -191,7 +402,7 @@ impl VllmHostOffloadAdapter {
             return HostLookup::Deferred;
         }
         if let Some(transfer_id) = request.latest_store {
-            if self.tier.has_transfer(transfer_id) {
+            if self.domain.has_transfer(transfer_id) {
                 return HostLookup::Deferred;
             }
             request.latest_store = None;
@@ -200,7 +411,7 @@ impl VllmHostOffloadAdapter {
         // Pinned vLLM 0.24 passes this ordered logical list to
         // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
         for key in request.prompt_keys.iter().rev().copied() {
-            self.tier.touch(key);
+            self.domain.touch(key);
         }
 
         debug_assert_eq!(g1_cost.cached_tokens % block_size, 0);
@@ -212,10 +423,10 @@ impl VllmHostOffloadAdapter {
         let mut matched = 0usize;
         let mut deferred = false;
         for key in request.prompt_keys[base_g1_blocks..].iter().copied() {
-            match self.tier.lookup(key) {
+            match self.domain.lookup(key) {
                 Lookup::Hit => {
                     matched += 1;
-                    deferred |= self.load_by_key.contains_key(&key);
+                    deferred |= self.domain.is_loading(key);
                 }
                 Lookup::Pending { .. } => {
                     matched += 1;
@@ -228,7 +439,7 @@ impl VllmHostOffloadAdapter {
             return HostLookup::Miss;
         }
         let keys = request.prompt_keys[base_g1_blocks..base_g1_blocks + matched].to_vec();
-        if deferred || keys.iter().any(|key| self.load_by_key.contains_key(key)) {
+        if deferred || keys.iter().any(|key| self.domain.is_loading(*key)) {
             return HostLookup::Deferred;
         }
         HostLookup::Hit(HostLookupHit {
@@ -249,11 +460,7 @@ impl VllmHostOffloadAdapter {
         kv_manager: &mut G1Manager,
         now_ms: f64,
     ) -> StartLoad {
-        if hit
-            .keys
-            .iter()
-            .any(|key| self.load_by_key.contains_key(key))
-        {
+        if hit.keys.iter().any(|key| self.domain.is_loading(*key)) {
             return StartLoad::Deferred;
         }
         let hashes = hit
@@ -276,28 +483,26 @@ impl VllmHostOffloadAdapter {
         for dependency in dependencies {
             assert!(kv_manager.is_native_source_dependency_pending(dependency));
             let deadline = self
-                .tier
+                .domain
                 .transfer_deadline(transfer_id(dependency))
                 .expect("pending source dependency must retain a submitted D2H");
             not_before_ms = not_before_ms.max(deadline);
         }
 
         let transfer_blocks = hit.keys.iter().rev().copied().collect::<Vec<_>>();
-        let transfer_id =
-            match self
-                .tier
-                .schedule_load(uuid, &transfer_blocks, now_ms, not_before_ms)
-            {
-                LoadOutcome::Queued(transfer_id) => transfer_id,
-                LoadOutcome::Miss => {
-                    kv_manager.cancel_destination(reservation);
-                    return StartLoad::Retry;
-                }
-            };
-
-        for key in &hit.keys {
-            assert!(self.load_by_key.insert(*key, transfer_id).is_none());
-        }
+        let transfer_id = match self.domain.schedule_load(
+            self.dp_rank,
+            uuid,
+            &transfer_blocks,
+            now_ms,
+            not_before_ms,
+        ) {
+            LoadOutcome::Queued(transfer_id) => transfer_id,
+            LoadOutcome::Miss => {
+                kv_manager.cancel_destination(reservation);
+                return StartLoad::Retry;
+            }
+        };
         request.load = Some(LoadState::Loading(LoadingPrefix {
             transfer_id,
             keys: hit.keys,
@@ -316,18 +521,25 @@ impl VllmHostOffloadAdapter {
         kv_manager: &mut G1Manager,
         now_ms: f64,
     ) -> HostTransferProgress {
-        let completed = self.tier.tick(now_ms);
-        let completed_any = !completed.is_empty();
+        let (completed, generation) = self.domain.tick_for_rank(self.dp_rank, now_ms);
+        let completed_any = generation != self.seen_completion_generation;
+        self.seen_completion_generation = generation;
         for transfer in &completed {
             let CompletedTransfer::Store {
                 request_id: _,
                 transfer_id,
-                blocks: _,
+                blocks,
             } = transfer
             else {
                 continue;
             };
             assert!(kv_manager.satisfy_native_source_dependency(source_dependency(*transfer_id)));
+            if let Some(stores) = self.pending_stores.remove(transfer_id) {
+                debug_assert_eq!(stores.len(), blocks.len());
+                kv_manager.publish_native_host_stores(stores);
+            } else {
+                debug_assert!(!kv_manager.emits_native_kv_events());
+            }
         }
 
         let mut loads = Vec::new();
@@ -335,14 +547,11 @@ impl VllmHostOffloadAdapter {
             let CompletedTransfer::Load {
                 request_id: uuid,
                 transfer_id,
-                blocks,
+                blocks: _,
             } = transfer
             else {
                 continue;
             };
-            for key in &blocks {
-                assert_eq!(self.load_by_key.remove(key), Some(transfer_id));
-            }
             loads.push(CompletedLoad { uuid, transfer_id });
         }
         HostTransferProgress {
@@ -359,7 +568,7 @@ impl VllmHostOffloadAdapter {
         now_ms: f64,
     ) -> HostTransferProgress {
         let mut progress = self.advance(kv_manager, now_ms);
-        self.tier.submit_prepared_stores(now_ms);
+        self.domain.submit_prepared_stores(now_ms);
         let settled = self.advance(kv_manager, now_ms);
         progress.completed_loads.extend(settled.completed_loads);
         progress.completed_any |= settled.completed_any;
@@ -460,7 +669,12 @@ impl VllmHostOffloadAdapter {
         }
         let start = request.next_store_block;
         let missing_indices = (start..end)
-            .filter(|index| matches!(self.tier.lookup(request.prompt_keys[*index]), Lookup::Miss))
+            .filter(|index| {
+                matches!(
+                    self.domain.lookup(request.prompt_keys[*index]),
+                    Lookup::Miss
+                )
+            })
             .collect::<Vec<_>>();
         if missing_indices.is_empty() {
             request.next_store_block = end;
@@ -478,17 +692,36 @@ impl VllmHostOffloadAdapter {
                 .zip(missing_indices.iter().copied())
                 .all(|(hash, index)| HostBlockKey::new(hash) == request.prompt_keys[index])
         );
-        match self
-            .tier
-            .prepare_store(uuid, &request.prompt_keys[start..end], now_ms)
-        {
+        match self.domain.prepare_store(
+            self.dp_rank,
+            uuid,
+            &request.prompt_keys[start..end],
+            now_ms,
+        ) {
             StoreOutcome::AlreadyPresent => request.next_store_block = end,
             StoreOutcome::RetryCapacity { .. } => {}
             StoreOutcome::Prepared {
                 transfer_id,
                 stored_blocks,
+                evicted,
             } => {
                 assert_eq!(stored_blocks, snapshot.len());
+                if kv_manager.emits_native_kv_events() {
+                    let store_events = kv_manager.native_host_store_events(lease, &missing_indices);
+                    assert_eq!(store_events.len(), stored_blocks);
+                    assert!(
+                        self.pending_stores
+                            .insert(transfer_id, store_events)
+                            .is_none(),
+                        "native host transfer ID was reused before completion"
+                    );
+                    kv_manager.publish_native_host_removed(
+                        evicted
+                            .into_iter()
+                            .map(HostBlockKey::sequence_hash)
+                            .collect(),
+                    );
+                }
                 kv_manager.attach_native_store_source_dependency(
                     uuid,
                     lease,
@@ -515,7 +748,7 @@ impl VllmHostOffloadAdapter {
                 request.latest_store = Some(transfer_id);
                 request.next_store_block = end;
                 for key in request.prompt_keys.iter().rev().copied() {
-                    self.tier.touch(key);
+                    self.domain.touch(key);
                 }
             }
         }
@@ -535,7 +768,7 @@ impl VllmHostOffloadAdapter {
         }
         for dependency in dependencies {
             let deadline = self
-                .tier
+                .domain
                 .transfer_deadline(transfer_id(*dependency))
                 .expect("pending dependency must retain a submitted D2H");
             self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
@@ -546,7 +779,7 @@ impl VllmHostOffloadAdapter {
     /// vLLM flushes this request's prepared stores before releasing its G1 capacity.
     pub(super) fn preempt_request(&mut self, request: &VllmHostRequestState) {
         if let Some(transfer_id) = request.latest_store
-            && let Some(deadline) = self.tier.transfer_deadline(transfer_id)
+            && let Some(deadline) = self.domain.transfer_deadline(transfer_id)
         {
             self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
         }
@@ -565,13 +798,13 @@ impl VllmHostOffloadAdapter {
         let LoadState::Loading(load) = load else {
             return false;
         };
-        for key in &load.keys {
-            assert_eq!(self.load_by_key.remove(key), Some(load.transfer_id));
-        }
-        assert!(
-            self.tier
-                .cancel_load(load.transfer_id, mutation_now_ms, observed_at_ms)
-        );
+        assert!(self.domain.cancel_load(
+            self.dp_rank,
+            load.transfer_id,
+            &load.keys,
+            mutation_now_ms,
+            observed_at_ms,
+        ));
         kv_manager.cancel_destination(load.reservation);
         true
     }
@@ -581,20 +814,21 @@ impl VllmHostOffloadAdapter {
     }
 
     pub(super) fn next_deadline(&self) -> Option<f64> {
-        self.tier.next_deadline()
+        self.domain
+            .next_deadline_for_rank(self.dp_rank, self.seen_completion_generation)
     }
 
     pub(super) fn current_time_ms(&self) -> f64 {
-        self.tier.current_time_ms()
+        self.domain.current_time_ms()
     }
 
     pub(super) fn has_work(&self) -> bool {
-        self.tier.has_pending_work()
+        self.domain.has_pending_work()
     }
 
     #[cfg(test)]
     pub(super) fn resident_blocks(&self) -> usize {
-        self.tier.resident_blocks()
+        self.domain.resident_blocks()
     }
 }
 
@@ -643,14 +877,17 @@ mod tests {
 
     fn seed_host(adapter: &mut VllmHostOffloadAdapter, key: HostBlockKey) -> f64 {
         let StoreOutcome::Prepared { transfer_id, .. } =
-            adapter.tier.prepare_store(Uuid::nil(), &[key], 0.0)
+            adapter
+                .domain
+                .prepare_store(adapter.dp_rank, Uuid::nil(), &[key], 0.0)
         else {
             panic!("host seed was prechecked as absent")
         };
-        assert_eq!(adapter.tier.submit_prepared_stores(0.0), 1);
-        let deadline = adapter.tier.transfer_deadline(transfer_id).unwrap();
+        assert_eq!(adapter.domain.submit_prepared_stores(0.0), 1);
+        let deadline = adapter.domain.transfer_deadline(transfer_id).unwrap();
+        let (completed, _) = adapter.domain.tick_for_rank(adapter.dp_rank, deadline);
         assert!(matches!(
-            adapter.tier.tick(deadline).as_slice(),
+            completed.as_slice(),
             [CompletedTransfer::Store { .. }]
         ));
         deadline
@@ -662,6 +899,132 @@ mod tests {
         lease: &BlockRequestLease,
     ) -> PrefillCost {
         manager.get_native_prefill_cost(sequence, lease)
+    }
+
+    #[test]
+    fn cache_domain_shares_capacity_and_transfer_lanes_across_ranks() {
+        let config = NativeHostOffloadConfig {
+            num_host_blocks: 2,
+            d2h_bandwidth_gbps: 1.0,
+            h2d_bandwidth_gbps: 1.0,
+        };
+        let domain = VllmHostOffloadDomain::new(&config, 4, 250_000).unwrap();
+        let rank_0 = VllmHostOffloadAdapter::in_domain(domain.clone(), 0);
+        let rank_1 = VllmHostOffloadAdapter::in_domain(domain.clone(), 1);
+        let key_0 = HostBlockKey::new(100);
+        let key_1 = HostBlockKey::new(200);
+
+        let StoreOutcome::Prepared {
+            transfer_id: store_0,
+            ..
+        } = domain.prepare_store(0, Uuid::from_u128(1), &[key_0], 0.0)
+        else {
+            panic!("rank 0 store must fit in the shared host domain")
+        };
+        let StoreOutcome::Prepared {
+            transfer_id: store_1,
+            ..
+        } = domain.prepare_store(1, Uuid::from_u128(2), &[key_1], 0.0)
+        else {
+            panic!("rank 1 store must fit in the shared host domain")
+        };
+        assert_eq!(domain.submit_prepared_stores(0.0), 2);
+        assert_eq!(domain.transfer_deadline(store_0), Some(1.0));
+        assert_eq!(
+            domain.transfer_deadline(store_1),
+            Some(2.0),
+            "both ranks must consume one host-scoped D2H lane"
+        );
+
+        let (rank_0_completions, _) = domain.tick_for_rank(0, 2.0);
+        let (rank_1_completions, _) = domain.tick_for_rank(1, 2.0);
+        assert_eq!(rank_0_completions.len(), 1);
+        assert_eq!(rank_1_completions.len(), 1);
+        assert_eq!(rank_0.resident_blocks(), 2);
+        assert_eq!(rank_1.resident_blocks(), 2);
+
+        let LoadOutcome::Queued(load_0) =
+            domain.schedule_load(0, Uuid::from_u128(3), &[key_0], 2.0, 2.0)
+        else {
+            panic!("rank 0 load must use the shared host domain")
+        };
+        let LoadOutcome::Queued(load_1) =
+            domain.schedule_load(1, Uuid::from_u128(4), &[key_1], 2.0, 2.0)
+        else {
+            panic!("rank 1 load must use the shared host domain")
+        };
+        assert_eq!(domain.transfer_deadline(load_0), Some(3.0));
+        assert_eq!(
+            domain.transfer_deadline(load_1),
+            Some(4.0),
+            "both ranks must consume one host-scoped H2D lane"
+        );
+
+        let isolated = VllmHostOffloadDomain::new(&config, 4, 250_000).unwrap();
+        assert_eq!(isolated.lookup(key_0), Lookup::Miss);
+        assert_eq!(isolated.lookup(key_1), Lookup::Miss);
+    }
+
+    #[test]
+    fn completed_host_stores_and_evictions_emit_host_pinned_kv_events() {
+        let args = MockEngineArgs::builder()
+            .num_gpu_blocks(1)
+            .block_size(4)
+            .max_num_seqs(Some(1))
+            .max_num_batched_tokens(Some(4))
+            .enable_prefix_caching(true)
+            .kv_cache_bytes_per_token(Some(250_000))
+            .native_host_offload(Some(
+                NativeHostOffloadConfig::new(1).with_bandwidths(0.0, 0.0),
+            ))
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new_with_kv_capture(args, 0);
+        let mut collector = TraceCollector::default();
+
+        let mut complete = |uuid, tokens: Vec<u32>, now_ms: f64| {
+            core.receive(DirectRequest {
+                tokens,
+                max_output_tokens: 0,
+                uuid: Some(uuid),
+                arrival_timestamp_ms: Some(now_ms),
+                ..Default::default()
+            });
+            let pass = core.execute_pass(&mut collector, now_ms);
+            let mut events = pass.kv_events;
+            core.complete_engine_boundary(pass.end_ms);
+            assert!(core.is_empty());
+            events.extend(core.drain_kv_events());
+            events
+        };
+
+        let first = complete(Uuid::from_u128(1), vec![1, 2, 3, 4], 0.0);
+        let first_host = first
+            .iter()
+            .find(|event| event.tier == crate::engine::KvEventTier::HostPinned)
+            .expect("completed D2H must publish host residency");
+        let crate::engine::KvEventData::Stored(first_store) = &first_host.data else {
+            panic!("first host event must store the completed block")
+        };
+        let first_hash = first_store.blocks[0].block_hash;
+        assert_ne!(first_store.blocks[0].tokens_hash, 0);
+
+        let second = complete(Uuid::from_u128(2), vec![5, 6, 7, 8], 1.0);
+        let host_events = second
+            .iter()
+            .filter(|event| event.tier == crate::engine::KvEventTier::HostPinned)
+            .collect::<Vec<_>>();
+        assert_eq!(host_events.len(), 2);
+        assert!(matches!(
+            &host_events[0].data,
+            crate::engine::KvEventData::Removed { block_hashes }
+                if block_hashes == &[first_hash]
+        ));
+        assert!(matches!(
+            &host_events[1].data,
+            crate::engine::KvEventData::Stored(store) if store.blocks.len() == 1
+        ));
     }
 
     #[derive(Default)]
@@ -870,7 +1233,7 @@ mod tests {
         assert_eq!(manager.num_active_blocks(), 1);
         adapter.cancel_request(&mut destination_host, &mut manager, now_ms, now_ms);
         assert_eq!(manager.num_active_blocks(), 0);
-        assert!(adapter.tier.is_resident(key));
+        assert!(adapter.domain.is_resident(key));
         assert!(matches!(
             adapter.lookup(
                 &mut follower_host,
@@ -905,7 +1268,7 @@ mod tests {
             Some(LoadState::Loading(load)) => load.transfer_id,
             _ => panic!("request must be loading"),
         };
-        let deadline = adapter.tier.transfer_deadline(transfer_id).unwrap();
+        let deadline = adapter.domain.transfer_deadline(transfer_id).unwrap();
         let completed = adapter.advance(&mut manager, deadline).completed_loads;
         assert_eq!(completed.len(), 1);
         adapter.activate_completed_load(
@@ -952,7 +1315,7 @@ mod tests {
         let store_id = source_host.latest_store.unwrap();
         assert!(manager.is_native_source_dependency_pending(source_dependency(store_id)));
         adapter.complete_engine_boundary(&mut manager, 0.0);
-        assert_eq!(adapter.tier.transfer_deadline(store_id), Some(1.0));
+        assert_eq!(adapter.domain.transfer_deadline(store_id), Some(1.0));
         assert!(matches!(
             adapter.lookup(
                 &mut source_host,

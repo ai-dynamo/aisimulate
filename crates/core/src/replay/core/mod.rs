@@ -91,6 +91,8 @@ pub struct PlacementEffects {
 pub struct WorkerTopology {
     pub worker_id: usize,
     pub scheduler_ids: Vec<usize>,
+    /// Host-cache domain for each scheduler in DP-rank order.
+    pub cache_domain_ids: Vec<u32>,
 }
 
 pub trait PlacementPolicy<Request> {

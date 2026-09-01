@@ -126,6 +126,17 @@ pub enum KvEventData {
     Removed { block_hashes: Vec<u64> },
 }
 
+/// Physical cache tier whose residency changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KvEventTier {
+    /// Rank-local device KV (G1).
+    #[default]
+    Device,
+    /// Host-pinned KV shared by one configured cache domain (G2).
+    HostPinned,
+}
+
 /// Ordered runtime-neutral KV event emitted by one rank.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvEvent {
@@ -133,6 +144,9 @@ pub struct KvEvent {
     pub event_id: u64,
     /// Attention-DP rank.
     pub dp_rank: u32,
+    /// Physical tier whose residency changed.
+    #[serde(default)]
+    pub tier: KvEventTier,
     /// Event payload.
     pub data: KvEventData,
 }

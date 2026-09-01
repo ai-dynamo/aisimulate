@@ -26,7 +26,7 @@ use super::{
     EngineCore, EnginePassResult, KvEventVisibility, MockerMetrics,
     SchedulerCommand as CoreCommand, SchedulerCommandEffects as CoreCommandEffects,
     SchedulerCommandResult as CoreCommandResult, SchedulerLifecycleEvent as CoreLifecycle,
-    SglangCore, VllmCore,
+    SglangCore, VllmCore, vllm::VllmHostOffloadDomain,
 };
 
 pub fn engine_seed_offset(identity: RankIdentity) -> Result<u64> {
@@ -57,18 +57,36 @@ impl SchedulerRank {
         config.validate()?;
         ensure!(
             config.native_host_offload.is_none() || identity.dp_size.get() == 1,
-            "native_host_offload supports only dp_size=1 in the initial implementation"
+            "attention-DP native_host_offload requires an explicit cache-domain topology"
+        );
+        Self::new_with_timing_model_and_host_domain(identity, config, timing, seed_offset, None)
+    }
+
+    pub(crate) fn new_with_timing_model_and_host_domain(
+        identity: RankIdentity,
+        config: &EngineConfig,
+        timing: Arc<dyn TimingModel>,
+        seed_offset: u64,
+        host_domain: Option<VllmHostOffloadDomain>,
+    ) -> Result<Self> {
+        config.validate()?;
+        ensure!(
+            config.native_host_offload.is_some() || host_domain.is_none(),
+            "cache-domain state requires native_host_offload"
         );
         let args = core_args(config, timing);
         let capture_kv_events = config.emit_kv_events;
         let core = match config.backend {
-            Backend::Vllm | Backend::Trtllm => EngineCore::Vllm(VllmCore::new_with_worker_rank(
-                args,
-                identity.worker_id,
-                identity.dp_rank,
-                seed_offset,
-                capture_kv_events,
-            )),
+            Backend::Vllm | Backend::Trtllm => {
+                EngineCore::Vllm(VllmCore::new_with_worker_rank_and_host_domain(
+                    args,
+                    identity.worker_id,
+                    identity.dp_rank,
+                    seed_offset,
+                    capture_kv_events,
+                    host_domain,
+                ))
+            }
             Backend::Sglang => EngineCore::Sglang(SglangCore::new_with_worker_rank(
                 args,
                 identity.worker_id,
