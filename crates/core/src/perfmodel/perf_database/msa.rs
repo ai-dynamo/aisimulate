@@ -33,7 +33,7 @@ use super::dsa::{
     DsaGrids, DsaKey, NodeCache, build_context_nodes, build_generation_nodes, clone_err,
     load_dsa_parquet, missing, select_dsa_backend,
 };
-use super::perf_interp::{self, OpInterpConfig};
+use super::perf_interp::OpInterpConfig;
 use super::source_resolution::SourceResolver;
 use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
@@ -108,9 +108,8 @@ impl MsaTable {
             .and_then(|by_backend| select_dsa_backend(by_backend, "trtllm"))
             .ok_or_else(|| missing("context MSA module", &self.data_root, format!("{key:?}")))?;
         let cfg = OpInterpConfig::grid(&["num_heads", "prefix", "seq_len", "batch"], sol);
-        perf_interp::query(
+        node.query(
             &cfg,
-            node,
             &[num_heads as f64, prefix as f64, isl as f64, b as f64],
         )
     }
@@ -145,11 +144,7 @@ impl MsaTable {
             .and_then(|by_backend| select_dsa_backend(by_backend, "trtllm"))
             .ok_or_else(|| missing("generation MSA module", &self.data_root, format!("{key:?}")))?;
         let cfg = OpInterpConfig::grid(&["num_heads", "batch", "seq_len"], sol);
-        perf_interp::query(
-            &cfg,
-            node,
-            &[num_heads as f64, b as f64, sequence_tokens as f64],
-        )
+        node.query(&cfg, &[num_heads as f64, b as f64, sequence_tokens as f64])
     }
 
     fn load_context_nodes(&self) -> Result<&NodeCache, AicError> {

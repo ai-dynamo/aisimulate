@@ -10,6 +10,7 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 use uuid::Uuid;
 
 use crate::engine::CacheTierAttribution;
+use crate::replay::PlacementCacheSample;
 use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
 
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
@@ -552,6 +553,10 @@ pub struct PerRequestRoutingRecord {
     pub scheduler_id: Option<usize>,
     pub dp_rank: Option<u32>,
     pub reported_overlap_tokens: Option<usize>,
+    pub selected_overlap_blocks: Option<u32>,
+    pub best_available_overlap_blocks: Option<u32>,
+    pub overlap_regret_blocks: Option<u32>,
+    pub placement_replica_id: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1148,6 +1153,8 @@ impl TraceCollector {
         scheduler_id: usize,
         dp_rank: u32,
         reported_overlap_tokens: usize,
+        cache_sample: Option<PlacementCacheSample>,
+        placement_replica_id: Option<usize>,
     ) {
         let Some(detail) = self.detail_mut(uuid) else {
             return;
@@ -1162,6 +1169,15 @@ impl TraceCollector {
             scheduler_id: Some(scheduler_id),
             dp_rank: Some(dp_rank),
             reported_overlap_tokens: Some(reported_overlap_tokens),
+            selected_overlap_blocks: cache_sample.map(|sample| sample.overlap_blocks),
+            best_available_overlap_blocks: cache_sample
+                .map(|sample| sample.best_available_overlap_blocks),
+            overlap_regret_blocks: cache_sample.map(|sample| {
+                sample
+                    .best_available_overlap_blocks
+                    .saturating_sub(sample.overlap_blocks)
+            }),
+            placement_replica_id,
         });
     }
 
@@ -1179,6 +1195,10 @@ impl TraceCollector {
             scheduler_id: None,
             dp_rank: None,
             reported_overlap_tokens: None,
+            selected_overlap_blocks: None,
+            best_available_overlap_blocks: None,
+            overlap_regret_blocks: None,
+            placement_replica_id: None,
         });
     }
 
@@ -1192,6 +1212,8 @@ impl TraceCollector {
         scheduler_id: usize,
         dp_rank: u32,
         reported_overlap_tokens: usize,
+        cache_sample: Option<PlacementCacheSample>,
+        placement_replica_id: Option<usize>,
     ) {
         let Some(detail) = self.detail_mut(uuid) else {
             return;
@@ -1210,6 +1232,15 @@ impl TraceCollector {
         route.scheduler_id = Some(scheduler_id);
         route.dp_rank = Some(dp_rank);
         route.reported_overlap_tokens = Some(reported_overlap_tokens);
+        route.selected_overlap_blocks = cache_sample.map(|sample| sample.overlap_blocks);
+        route.best_available_overlap_blocks =
+            cache_sample.map(|sample| sample.best_available_overlap_blocks);
+        route.overlap_regret_blocks = cache_sample.map(|sample| {
+            sample
+                .best_available_overlap_blocks
+                .saturating_sub(sample.overlap_blocks)
+        });
+        route.placement_replica_id = placement_replica_id;
     }
 
     pub(crate) fn on_pool_admission(
@@ -1974,6 +2005,36 @@ mod tests {
         assert_eq!(rec.prefill_route_overlap_tokens, Some(64));
         assert_eq!(rec.decode_route_overlap_tokens, Some(32));
         assert_eq!(rec.terminal_status, ReplayTerminalStatus::Completed);
+    }
+
+    #[test]
+    fn per_request_route_records_overlap_regret_and_policy_replica() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let uuid = Uuid::from_u128(2);
+        collector.on_arrival(uuid, 0.0, 2_048, 1);
+        collector.on_route_immediate(
+            uuid,
+            ReplayRequestPool::Agg,
+            3,
+            3,
+            0,
+            1_024,
+            Some(PlacementCacheSample {
+                overlap_blocks: 4,
+                best_available_overlap_blocks: 7,
+                isl_blocks: 8,
+            }),
+            Some(1),
+        );
+        collector.on_terminal(uuid, 1.0, ReplayTerminalStatus::Completed);
+
+        let report = collector.finish();
+        let route = &report.per_request[0].routing_history[0];
+        assert_eq!(route.selected_overlap_blocks, Some(4));
+        assert_eq!(route.best_available_overlap_blocks, Some(7));
+        assert_eq!(route.overlap_regret_blocks, Some(3));
+        assert_eq!(route.placement_replica_id, Some(1));
     }
 
     /// A conditional-prefill bypass is reflected by `prefill_worker_idx ==

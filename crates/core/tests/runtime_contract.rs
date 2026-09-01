@@ -517,6 +517,7 @@ impl ReleaseOnTopologyCallbacks {
                     scheduler_id,
                     reported_overlap_tokens: 0,
                     cache_sample: None,
+                    placement_replica_id: None,
                 }]
             })
             .unwrap_or_default()
