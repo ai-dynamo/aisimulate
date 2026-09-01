@@ -1355,9 +1355,10 @@ impl VllmCore {
     pub(crate) fn mocker_metrics(&self) -> MockerMetrics {
         let preactivation_destinations =
             self.pending_destinations.len() + self.destination_holds.len();
-        MockerMetrics::from_parts(
+        MockerMetrics::from_parts_with_inactive(
             self.dp_rank,
             self.kv_manager.num_active_blocks() as u64,
+            self.kv_manager.num_inactive_blocks() as u64,
             self.args.num_gpu_blocks as u64,
             self.state.running_members.len() as u64,
             (self.state.waiting_members.len()

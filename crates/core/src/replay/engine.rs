@@ -44,6 +44,10 @@ pub struct ReplayEngineConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    /// Whether `rank.num_gpu_blocks` came from the user rather than an
+    /// upstream capacity estimator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_gpu_blocks_is_explicit: Option<bool>,
     pub rank: EngineConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefill: Option<ReplayRoleConfig>,
@@ -56,6 +60,7 @@ impl Default for ReplayEngineConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
             prefill: None,
             decode: None,
@@ -71,6 +76,10 @@ pub struct ReplayRoleConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    /// Whether `rank.num_gpu_blocks` came from the user rather than an
+    /// upstream capacity estimator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_gpu_blocks_is_explicit: Option<bool>,
     pub rank: EngineConfig,
 }
 
@@ -79,6 +88,7 @@ impl Default for ReplayRoleConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
         }
     }
@@ -99,16 +109,19 @@ impl ReplayEngineConfig {
             WorkerStage::Aggregated => ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             },
             WorkerStage::Prefill => self.prefill.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
             WorkerStage::Decode => self.decode.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
         };
@@ -166,6 +179,7 @@ pub struct ReplayRoleFactory {
     dp_size: NonZeroU32,
     tensor_parallel_size: u32,
     backend: Backend,
+    total_blocks: u64,
 }
 
 impl ReplayRoleFactory {
@@ -201,6 +215,11 @@ impl ReplayRoleFactory {
     #[doc(hidden)]
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    #[doc(hidden)]
+    pub fn total_blocks(&self) -> u64 {
+        self.total_blocks
     }
 }
 
@@ -263,6 +282,9 @@ impl ReplayEngineFactory {
             WorkerStage::Decode => self.decode_timing.as_ref().or(self.timing.as_ref()),
         };
         let backend = role.rank.backend;
+        let total_blocks = u64::try_from(role.rank.num_gpu_blocks).map_err(|_| {
+            ReplayError::InvalidSpec("engine KV block count exceeds the metrics range".into())
+        })?;
         let factory = match timing {
             Some(timing) => EngineFactory::with_timing_model(role.rank, Arc::clone(timing)),
             None => EngineFactory::new(role.rank),
@@ -273,6 +295,7 @@ impl ReplayEngineFactory {
             dp_size,
             tensor_parallel_size: role.tensor_parallel_size,
             backend,
+            total_blocks,
         })
     }
 }

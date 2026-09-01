@@ -278,7 +278,6 @@ impl G1Manager {
         self.inner.num_active_blocks()
     }
 
-    #[cfg(test)]
     pub(crate) fn num_inactive_blocks(&self) -> usize {
         self.inner.num_inactive_blocks()
     }

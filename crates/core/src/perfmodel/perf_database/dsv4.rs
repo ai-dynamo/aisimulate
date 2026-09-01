@@ -581,7 +581,7 @@ impl Dsv4Table {
         kv_quant: KvCacheQuantMode,
         fmha_quant: FmhaQuantMode,
         gemm_quant: GemmQuantMode,
-    ) -> Result<&Node, AicError> {
+    ) -> Result<&PreparedGrid, AicError> {
         let grids = match attn_kind {
             AttnKind::Csa => self.load_csa_context()?,
             AttnKind::Hca => self.load_hca_context()?,
@@ -615,7 +615,7 @@ impl Dsv4Table {
             fmha_quant,
             gemm_quant,
         )?;
-        context_prefix_bounds(node).ok_or_else(|| context_empty_err(local_heads, attn_kind))
+        context_prefix_bounds(node.node()).ok_or_else(|| context_empty_err(local_heads, attn_kind))
     }
 
     /// Collected context-module points `(prefix, s, b) -> latency` for the
@@ -668,7 +668,7 @@ impl Dsv4Table {
             fmha_quant,
             gemm_quant,
         )?;
-        context_p0_points(node).ok_or_else(|| context_empty_err(local_heads, attn_kind))
+        context_p0_points(node.node()).ok_or_else(|| context_empty_err(local_heads, attn_kind))
     }
 
     /// Collected generation-module points `(b, s_total) -> latency` for the
