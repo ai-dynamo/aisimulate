@@ -12,6 +12,7 @@ import sys
 
 import aiconfigurator_core
 import aiconfigurator_core.sdk as sdk
+from aiconfigurator_core.sdk.common import AttentionBackend, MoEBackend
 from aiconfigurator_core.sdk.config import ModelConfig, RuntimeConfig
 from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
 from aiconfigurator_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
@@ -19,8 +20,10 @@ from aiconfigurator_core.sdk.operations import ElementWise, Embedding, MoEDispat
 from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
 EXPECTED_FACADE = {
+    "AttentionBackend",
     "EngineHandle",
     "ModelConfig",
+    "MoEBackend",
     "RuntimeConfig",
     "RustForwardPassPerfModel",
     "compile_engine",
@@ -48,8 +51,10 @@ assert not loaded_modules, f"SDK facade eagerly loaded: {sorted(loaded_modules)}
 
 def test_sdk_facade_exports_the_canonical_objects() -> None:
     assert set(sdk.__all__) == EXPECTED_FACADE
+    assert sdk.AttentionBackend is AttentionBackend
     assert sdk.EngineHandle is EngineHandle
     assert sdk.ModelConfig is ModelConfig
+    assert sdk.MoEBackend is MoEBackend
     assert sdk.RuntimeConfig is RuntimeConfig
     assert sdk.RustForwardPassPerfModel is RustForwardPassPerfModel
     assert sdk.compile_engine is compile_engine
