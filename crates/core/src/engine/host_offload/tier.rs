@@ -3,9 +3,8 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
-use std::sync::Arc;
 
-use super::{HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver};
+use super::{HostOffloadObservation, HostOffloadObservationData};
 use crate::engine::common::hashing::SequenceHash;
 use anyhow::{Result, bail};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -289,9 +288,7 @@ pub(crate) struct HostTier {
     warned_structurally_unfittable: bool,
     /// Installed only by detailed replay artifacts; ordinary runs retain no
     /// host-event buffer and allocate no observation payloads.
-    observer: Option<Arc<dyn HostOffloadObserver>>,
-    buffer_observations: bool,
-    pending_observations: Vec<HostOffloadObservation>,
+    observations: Option<Vec<HostOffloadObservation>>,
 }
 
 impl HostTier {
@@ -309,26 +306,21 @@ impl HostTier {
             next_transfer_id: 0,
             current_time_ms: 0.0,
             warned_structurally_unfittable: false,
-            observer: None,
-            buffer_observations: false,
-            pending_observations: Vec::new(),
+            observations: None,
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
-        assert!(!self.buffer_observations);
-        self.observer = Some(observer);
-    }
-
     pub(crate) fn buffer_observer_events(&mut self) {
-        assert!(self.observer.is_none());
-        self.buffer_observations = true;
+        assert!(self.observations.is_none());
+        self.observations = Some(Vec::new());
     }
 
     pub(crate) fn drain_observations(&mut self) -> Vec<HostOffloadObservation> {
-        assert!(self.buffer_observations);
-        std::mem::take(&mut self.pending_observations)
+        std::mem::take(
+            self.observations
+                .as_mut()
+                .expect("host observation buffering is not enabled"),
+        )
     }
 
     /// Atomically admit the missing subset of one per-request store cohort.
@@ -723,20 +715,17 @@ impl HostTier {
     }
 
     fn observations_enabled(&self) -> bool {
-        self.observer.is_some() || self.buffer_observations
+        self.observations.is_some()
     }
 
     fn observe_with(&mut self, build: impl FnOnce() -> HostOffloadObservation) {
         if !self.observations_enabled() {
             return;
         }
-        let observation = build();
-        if let Some(observer) = &self.observer {
-            observer.record(observation);
-        } else {
-            debug_assert!(self.buffer_observations);
-            self.pending_observations.push(observation);
-        }
+        self.observations
+            .as_mut()
+            .expect("enabled host observation buffer disappeared")
+            .push(build());
     }
 
     #[cfg(test)]
@@ -835,8 +824,6 @@ fn assert_valid_time(label: &str, time_ms: f64) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
 
     #[derive(Debug, PartialEq)]
@@ -845,37 +832,6 @@ mod tests {
         at_ms: f64,
         transfer_id: u64,
         block_hashes: Vec<u64>,
-    }
-
-    #[derive(Default)]
-    struct CancellationObserver {
-        cancelled: Mutex<Option<Cancellation>>,
-    }
-
-    impl HostOffloadObserver for CancellationObserver {
-        fn record(&self, observation: HostOffloadObservation) {
-            let HostOffloadObservation {
-                request_id,
-                event:
-                    HostOffloadObservationData::LoadCancelled {
-                        at_ms,
-                        transfer_id,
-                        blocks,
-                    },
-            } = observation
-            else {
-                return;
-            };
-            *self
-                .cancelled
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Cancellation {
-                request_id,
-                at_ms,
-                transfer_id: transfer_id.get(),
-                block_hashes: blocks.iter().map(|block| block.sequence_hash()).collect(),
-            });
-        }
     }
 
     fn key(value: u64) -> HostBlockKey {
@@ -1117,8 +1073,7 @@ mod tests {
     #[test]
     fn cancelling_a_load_removes_its_exact_deadline_without_reflowing_the_lane() {
         let mut tier = tier(2);
-        let observer = Arc::new(CancellationObserver::default());
-        tier.set_observer(observer.clone());
+        tier.buffer_observer_events();
         let now = make_resident(&mut tier, &[key(1), key(2)], 0.0);
         let LoadOutcome::Queued(first) = tier.schedule_load(request_id(), &[key(1)], now, now)
         else {
@@ -1145,11 +1100,29 @@ mod tests {
             tier.prepare_store(request_id(), &[key(3)], now),
             StoreOutcome::Prepared { .. }
         ));
+        let cancelled = tier.drain_observations().into_iter().find_map(
+            |HostOffloadObservation { request_id, event }| {
+                let HostOffloadObservationData::LoadCancelled {
+                    at_ms,
+                    transfer_id,
+                    blocks,
+                } = event
+                else {
+                    return None;
+                };
+                Some(Cancellation {
+                    request_id,
+                    at_ms,
+                    transfer_id: transfer_id.get(),
+                    block_hashes: blocks
+                        .into_iter()
+                        .map(HostBlockKey::sequence_hash)
+                        .collect(),
+                })
+            },
+        );
         assert_eq!(
-            *observer
-                .cancelled
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            cancelled,
             Some(Cancellation {
                 request_id: request_id(),
                 at_ms: observed_at_ms,

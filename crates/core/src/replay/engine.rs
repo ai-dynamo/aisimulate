@@ -19,8 +19,8 @@ use crate::replay::OfflineDisaggReplayConfig;
 use crate::replay::components::{
     AdmissionQueue, NoReplayMetadata, ReplayEngineObservation, ReplayMode,
 };
+use crate::replay::core::EngineEventBatch;
 use crate::replay::core::round_robin::PoolRoundRobinPlacement;
-use crate::replay::core::{EngineEventBatch, SchedulerTopology};
 use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::error::runtime_error;
 use crate::replay::protocol::DirectRequest;
@@ -176,32 +176,17 @@ pub struct ReplayRoleFactory {
 
 impl ReplayRoleFactory {
     #[doc(hidden)]
-    pub fn build(
-        &self,
-        worker_id: usize,
-        schedulers: &[SchedulerTopology],
-    ) -> ReplayResult<Engine> {
+    pub fn build(&self, worker_id: usize) -> ReplayResult<Engine> {
         let worker_id = u64::try_from(worker_id).map_err(|_| {
             ReplayError::Engine(format!(
                 "worker id {worker_id} exceeds the native engine range"
             ))
         })?;
-        if schedulers.len() != self.dp_size.get() as usize {
-            return Err(ReplayError::InvalidSpec(format!(
-                "worker topology has {} schedulers but dp_size is {}",
-                schedulers.len(),
-                self.dp_size
-            )));
-        }
-        let cache_domain_ids = schedulers
-            .iter()
-            .map(|scheduler| scheduler.cache_domain_id)
-            .collect::<Vec<_>>();
         self.factory
             .build_with_cache_domains(
                 EngineIdentity::new(worker_id),
                 self.dp_size,
-                &cache_domain_ids,
+                &self.cache_domain_ids,
             )
             .map_err(engine_error)
     }

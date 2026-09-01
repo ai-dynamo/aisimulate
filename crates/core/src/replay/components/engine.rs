@@ -202,6 +202,7 @@ where
             "cache-domain topology does not match native engine dp_size"
         );
         let first_scheduler_id = self.scheduler_owners.len();
+        let engine = self.factory.build(worker_id)?;
         let schedulers = self
             .factory
             .cache_domain_ids()
@@ -213,7 +214,6 @@ where
                 cache_domain_id,
             })
             .collect::<Vec<_>>();
-        let engine = self.factory.build(worker_id, &schedulers)?;
         for (dp_rank, scheduler) in schedulers.iter().enumerate() {
             debug_assert_eq!(scheduler.scheduler_id, self.scheduler_owners.len());
             self.scheduler_owners.push(Some(SchedulerOwner {

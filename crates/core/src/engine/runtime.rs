@@ -44,20 +44,12 @@ impl EngineFactory {
 
     /// Build one scheduler/KV/timing rank with an explicit identity.
     pub fn build_rank(&self, identity: RankIdentity) -> Result<SchedulerRank> {
-        ensure!(
-            self.config.native_host_offload.is_none() || identity.dp_size.get() == 1,
-            "attention-DP native_host_offload requires an explicit cache-domain topology"
-        );
         let seed_offset = engine_seed_offset(identity)?;
-        let host_handle = self
-            .new_host_domain()?
-            .map(|domain| domain.bind_rank(identity.dp_rank));
-        SchedulerRank::new_with_timing_model_and_host_handle(
+        SchedulerRank::new_with_timing_model(
             identity,
             &self.config,
             Arc::clone(&self.timing),
             seed_offset,
-            host_handle,
         )
     }
 
@@ -67,8 +59,9 @@ impl EngineFactory {
             self.config.native_host_offload.is_none() || dp_size.get() == 1,
             "attention-DP native_host_offload requires an explicit cache-domain topology"
         );
-        let cache_domain_ids = vec![0; dp_size.get() as usize];
-        self.build_with_cache_domains(identity, dp_size, &cache_domain_ids)
+        GeneralizedMockerEngine::new_with_rank_factory(identity, dp_size, |rank_identity| {
+            self.build_rank(rank_identity)
+        })
     }
 
     /// Build a logical engine whose attention-DP ranks map to host-cache domains.
@@ -113,16 +106,5 @@ impl EngineFactory {
                 host_handle,
             )
         })
-    }
-
-    fn new_host_domain(&self) -> Result<Option<HostCacheDomain>> {
-        let Some(config) = &self.config.native_host_offload else {
-            return Ok(None);
-        };
-        let kv_bytes_per_token = self
-            .config
-            .kv_cache_bytes_per_token
-            .expect("validated native host offload requires KV byte geometry");
-        HostCacheDomain::new(config, self.config.block_size, kv_bytes_per_token).map(Some)
     }
 }
