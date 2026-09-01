@@ -573,6 +573,51 @@ impl Dsv4Table {
         }
     }
 
+    fn select_context_node(
+        &self,
+        attn_kind: AttnKind,
+        local_heads: u32,
+        native_heads: u32,
+        kv_quant: KvCacheQuantMode,
+        fmha_quant: FmhaQuantMode,
+        gemm_quant: GemmQuantMode,
+    ) -> Result<&Node, AicError> {
+        let grids = match attn_kind {
+            AttnKind::Csa => self.load_csa_context()?,
+            AttnKind::Hca => self.load_hca_context()?,
+        };
+        select_resolved(
+            grids,
+            Some(fmha_quant),
+            kv_quant,
+            gemm_quant,
+            native_heads,
+            local_heads,
+        )
+    }
+
+    /// Inclusive bounds of collected prefix keys whose subtree has a leaf.
+    /// This does not flatten the `(prefix, s, batch)` tree.
+    pub(crate) fn context_prefix_bounds(
+        &self,
+        attn_kind: AttnKind,
+        local_heads: u32,
+        native_heads: u32,
+        kv_quant: KvCacheQuantMode,
+        fmha_quant: FmhaQuantMode,
+        gemm_quant: GemmQuantMode,
+    ) -> Result<(u32, u32), AicError> {
+        let node = self.select_context_node(
+            attn_kind,
+            local_heads,
+            native_heads,
+            kv_quant,
+            fmha_quant,
+            gemm_quant,
+        )?;
+        context_prefix_bounds(node).ok_or_else(|| context_empty_err(local_heads, attn_kind))
+    }
+
     /// Collected context-module points `(prefix, s, b) -> latency` for the
     /// operator-layer util-calibration grid (Python
     /// `_query_context_attn_table::get_empirical`'s `_slice()`:
@@ -589,26 +634,41 @@ impl Dsv4Table {
         fmha_quant: FmhaQuantMode,
         gemm_quant: GemmQuantMode,
     ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
-        let grids = match attn_kind {
-            AttnKind::Csa => self.load_csa_context()?,
-            AttnKind::Hca => self.load_hca_context()?,
-        };
-        let node = select_resolved(
-            grids,
-            Some(fmha_quant),
-            kv_quant,
-            gemm_quant,
-            native_heads,
+        let node = self.select_context_node(
+            attn_kind,
             local_heads,
+            native_heads,
+            kv_quant,
+            fmha_quant,
+            gemm_quant,
         )?;
         let points = perf_interp::node_points(node);
         if points.is_empty() {
-            return Err(AicError::PerfDatabase(format!(
-                "DSV4 context module data empty for local_heads={local_heads}, \
-                 attn_kind={attn_kind:?}"
-            )));
+            return Err(context_empty_err(local_heads, attn_kind));
         }
         Ok(points)
+    }
+
+    /// Collected `(s, b) -> latency` points under context prefix zero. The
+    /// subtree is selected before flattening, so other prefixes are not visited.
+    pub(crate) fn context_p0_points(
+        &self,
+        attn_kind: AttnKind,
+        local_heads: u32,
+        native_heads: u32,
+        kv_quant: KvCacheQuantMode,
+        fmha_quant: FmhaQuantMode,
+        gemm_quant: GemmQuantMode,
+    ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
+        let node = self.select_context_node(
+            attn_kind,
+            local_heads,
+            native_heads,
+            kv_quant,
+            fmha_quant,
+            gemm_quant,
+        )?;
+        context_p0_points(node).ok_or_else(|| context_empty_err(local_heads, attn_kind))
     }
 
     /// Collected generation-module points `(b, s_total) -> latency` for the
@@ -1070,6 +1130,42 @@ fn select_resolved<'a>(
     Ok(&by_local[&head])
 }
 
+fn context_empty_err(local_heads: u32, attn_kind: AttnKind) -> AicError {
+    AicError::PerfDatabase(format!(
+        "DSV4 context module data empty for local_heads={local_heads}, \
+         attn_kind={attn_kind:?}"
+    ))
+}
+
+fn node_has_leaf(node: &Node) -> bool {
+    match node {
+        Node::Leaf(_) => true,
+        Node::Branch(children) => children.values().any(node_has_leaf),
+    }
+}
+
+fn context_prefix_bounds(node: &Node) -> Option<(u32, u32)> {
+    let Node::Branch(prefixes) = node else {
+        return None;
+    };
+    let first = prefixes
+        .iter()
+        .find_map(|(&prefix, child)| node_has_leaf(child).then_some(prefix))?;
+    let last = prefixes
+        .iter()
+        .rev()
+        .find_map(|(&prefix, child)| node_has_leaf(child).then_some(prefix))?;
+    Some((first, last))
+}
+
+fn context_p0_points(node: &Node) -> Option<Vec<(Vec<f64>, f64)>> {
+    let Node::Branch(prefixes) = node else {
+        return None;
+    };
+    let points = perf_interp::node_points(prefixes.get(&0)?);
+    (!points.is_empty()).then_some(points)
+}
+
 /// Resolve a requested head count against the available keys of one head
 /// axis (applied per level: native, then rank-local). Mirrors Python
 /// `operations.dsv4._dsv4_resolve_head_key`:
@@ -1513,6 +1609,33 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
             "../../python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/sglang/0.5.10",
         )
+    }
+
+    #[test]
+    fn context_prefix_helpers_ignore_empty_subtrees_and_flatten_p0() {
+        let mut node = Node::branch();
+        node.insert(&[1024, 512, 8], 2.0);
+        node.insert(&[0, 256, 4], 1.0);
+        node.insert(&[0, 128, 8], 0.5);
+        let Node::Branch(prefixes) = &mut node else {
+            unreachable!("branch constructor returned a leaf")
+        };
+        prefixes.insert(2048, Node::Branch(BTreeMap::from([(1, Node::branch())])));
+
+        assert_eq!(context_prefix_bounds(&node), Some((0, 1024)));
+        assert_eq!(
+            context_p0_points(&node),
+            Some(vec![(vec![128.0, 8.0], 0.5), (vec![256.0, 4.0], 1.0),])
+        );
+        assert_eq!(context_prefix_bounds(&Node::branch()), None);
+        assert_eq!(context_p0_points(&Node::branch()), None);
+
+        let leaf = Node::Leaf(LeafValue::latency_only(1.0));
+        assert_eq!(context_prefix_bounds(&leaf), None);
+        assert_eq!(context_p0_points(&leaf), None);
+
+        let err = context_empty_err(16, AttnKind::Csa);
+        assert!(err.is_missing_perf_data(), "got {err:?}");
     }
 
     #[test]
