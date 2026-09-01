@@ -1998,12 +1998,13 @@ mod tests {
         assert!((got - expected).abs() < 1e-9, "got {got}, want {expected}");
     }
 
-    /// The mixed baseline must be sampled at the SAME (batch, total-KV)
-    /// coordinate the decode query used, so a KV only one bracket row covers
-    /// drops that row from both sides. Blending the uncovered row's floor
-    /// leaves the shared-pass cost inside the marginal.
+    /// Both mixed-step paths must sample the baseline at the SAME
+    /// (batch, total-KV) coordinate the decode query used, so a KV only one
+    /// bracket row covers drops that row from both sides. Blending the
+    /// uncovered row's floor leaves the shared-pass cost inside the marginal.
     #[test]
     fn fpm_mixed_baseline_follows_the_query_off_a_ragged_bracket_row() {
+        use crate::fpm::{ForwardPassMetrics, ScheduledRequestMetrics};
         use crate::perf_database::fpm_forward::tests::RowSpec;
         let mk = |kind: &'static str, batch: u32, prefill: u32, kv: u32, lat: f64| RowSpec {
             workload_kind: kind,
@@ -2041,6 +2042,24 @@ mod tests {
         let prefill = 20.0 + (40.0 - 20.0) * (20.0 - 16.0) / (32.0 - 16.0);
         let decode = 9.0 + (10.0 - 9.0) * (90.0 - 32.0) / (96.0 - 32.0);
         let expected = prefill + (decode - 9.0);
+        assert!((ms - expected).abs() < 1e-9, "got {ms}, want {expected}");
+
+        // ForwardPassMetrics carries raw totals. Its mixed-rank path must
+        // pass sum_decode_kv_tokens=80 to the same baseline selector; only
+        // row 16 covers this coordinate too.
+        let mixed = ForwardPassMetrics {
+            scheduled_requests: ScheduledRequestMetrics {
+                num_prefill_requests: 1,
+                sum_prefill_tokens: 20,
+                num_decode_requests: 15,
+                sum_decode_kv_tokens: 80,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let decode = 9.0 + (10.0 - 9.0) * (80.0 - 32.0) / (96.0 - 32.0);
+        let expected = prefill + (decode - 9.0);
+        let ms = engine.forward_pass_time_ms(&[mixed]).unwrap();
         assert!((ms - expected).abs() < 1e-9, "got {ms}, want {expected}");
     }
 

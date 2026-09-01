@@ -202,7 +202,7 @@ reach that code:
 
 - add an explicit FPM branch ahead of the 3-pass split in both languages:
   - mixed step = `FPM_prefill(B_ctx, tokens_ctx, kv_ctx)` +
-    `[FPM_decode(B_gen, kv_gen) − FPM_decode_baseline(B_gen)]` — the **marginal-decode
+    `[FPM_decode(B_gen, kv_gen) − FPM_decode_baseline(B_gen, kv_gen)]` — the **marginal-decode
     composition** (owner-approved 2026-07-19, superseding the plain sum in the original
     plan §1/M3). A mixed step is one shared forward pass: weight reads, kernel launches,
     and fixed per-step overheads are paid once, by the prefill component; a full
