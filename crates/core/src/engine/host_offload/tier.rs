@@ -3,8 +3,9 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::Arc;
 
-use super::{HostOffloadObservation, HostOffloadObservationData};
+use super::{HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver};
 use crate::engine::common::hashing::SequenceHash;
 use anyhow::{Result, bail};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -288,7 +289,7 @@ pub(crate) struct HostTier {
     warned_structurally_unfittable: bool,
     /// Installed only by detailed replay artifacts; ordinary runs retain no
     /// host-event buffer and allocate no observation payloads.
-    observations: Option<Vec<HostOffloadObservation>>,
+    observer: Option<Arc<dyn HostOffloadObserver>>,
 }
 
 impl HostTier {
@@ -306,21 +307,12 @@ impl HostTier {
             next_transfer_id: 0,
             current_time_ms: 0.0,
             warned_structurally_unfittable: false,
-            observations: None,
+            observer: None,
         })
     }
 
-    pub(crate) fn buffer_observer_events(&mut self) {
-        assert!(self.observations.is_none());
-        self.observations = Some(Vec::new());
-    }
-
-    pub(crate) fn drain_observations(&mut self) -> Vec<HostOffloadObservation> {
-        std::mem::take(
-            self.observations
-                .as_mut()
-                .expect("host observation buffering is not enabled"),
-        )
+    pub(crate) fn set_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
+        self.observer = Some(observer);
     }
 
     /// Atomically admit the missing subset of one per-request store cohort.
@@ -362,11 +354,11 @@ impl HostTier {
                 );
                 self.warned_structurally_unfittable = true;
             }
-            self.observe_with(|| HostOffloadObservation {
+            self.observe(HostOffloadObservation {
                 request_id,
                 event: HostOffloadObservationData::CapacityRetry {
                     at_ms: now_ms,
-                    blocks: missing.clone(),
+                    blocks: &missing,
                     structurally_unfittable,
                 },
             });
@@ -383,7 +375,7 @@ impl HostTier {
             assert_eq!(entry.state, EntryState::Resident);
             assert_eq!(entry.load_pins, 0);
             self.lru.remove(*victim);
-            self.observe_with(|| HostOffloadObservation {
+            self.observe(HostOffloadObservation {
                 request_id,
                 event: HostOffloadObservationData::Evicted {
                     at_ms: now_ms,
@@ -407,12 +399,12 @@ impl HostTier {
             );
         }
         let stored_blocks = missing.len();
-        self.observe_with(|| HostOffloadObservation {
+        self.observe(HostOffloadObservation {
             request_id,
             event: HostOffloadObservationData::StorePrepared {
                 at_ms: now_ms,
                 transfer_id,
-                blocks: missing.clone(),
+                blocks: &missing,
             },
         });
         self.transfers.insert(
@@ -458,15 +450,12 @@ impl HostTier {
                 completion_order: 0,
                 transfer_id,
             }));
-            if self.observations_enabled() {
-                let (request_id, blocks) = match self.transfers.get(&transfer_id) {
-                    Some(Transfer::Store {
-                        request_id, blocks, ..
-                    }) => (*request_id, blocks.clone()),
-                    _ => unreachable!(),
-                };
-                self.observe_with(|| HostOffloadObservation {
-                    request_id,
+            if let Some(Transfer::Store {
+                request_id, blocks, ..
+            }) = self.transfers.get(&transfer_id)
+            {
+                self.observe(HostOffloadObservation {
+                    request_id: *request_id,
                     event: HostOffloadObservationData::StoreSubmitted {
                         at_ms: now_ms,
                         completes_at_ms,
@@ -555,13 +544,13 @@ impl HostTier {
             completion_order: 1,
             transfer_id,
         }));
-        self.observe_with(|| HostOffloadObservation {
+        self.observe(HostOffloadObservation {
             request_id,
             event: HostOffloadObservationData::LoadQueued {
                 at_ms: now_ms,
                 completes_at_ms,
                 transfer_id,
-                blocks: blocks.to_vec(),
+                blocks,
             },
         });
         LoadOutcome::Queued(transfer_id)
@@ -604,12 +593,12 @@ impl HostTier {
             "cancelled host load lost its deadline"
         );
         self.release_load_pins(&blocks);
-        self.observe_with(|| HostOffloadObservation {
+        self.observe(HostOffloadObservation {
             request_id,
             event: HostOffloadObservationData::LoadCancelled {
                 at_ms: observed_at_ms,
                 transfer_id,
-                blocks,
+                blocks: &blocks,
             },
         });
         true
@@ -652,12 +641,12 @@ impl HostTier {
                         entry.state = EntryState::Resident;
                     }
                     self.lru.touch_cohort(&blocks);
-                    self.observe_with(|| HostOffloadObservation {
+                    self.observe(HostOffloadObservation {
                         request_id,
                         event: HostOffloadObservationData::StoreCompleted {
                             at_ms: deadline.at_ms,
                             transfer_id,
-                            blocks: blocks.clone(),
+                            blocks: &blocks,
                         },
                     });
                     completed.push(CompletedTransfer::Store {
@@ -670,12 +659,12 @@ impl HostTier {
                     request_id, blocks, ..
                 } => {
                     self.release_load_pins(&blocks);
-                    self.observe_with(|| HostOffloadObservation {
+                    self.observe(HostOffloadObservation {
                         request_id,
                         event: HostOffloadObservationData::LoadCompleted {
                             at_ms: deadline.at_ms,
                             transfer_id,
-                            blocks: blocks.clone(),
+                            blocks: &blocks,
                         },
                     });
                     completed.push(CompletedTransfer::Load {
@@ -714,18 +703,10 @@ impl HostTier {
         !self.transfers.is_empty()
     }
 
-    fn observations_enabled(&self) -> bool {
-        self.observations.is_some()
-    }
-
-    fn observe_with(&mut self, build: impl FnOnce() -> HostOffloadObservation) {
-        if !self.observations_enabled() {
-            return;
+    fn observe(&self, observation: HostOffloadObservation<'_>) {
+        if let Some(observer) = &self.observer {
+            observer.record(observation);
         }
-        self.observations
-            .as_mut()
-            .expect("enabled host observation buffer disappeared")
-            .push(build());
     }
 
     #[cfg(test)]
@@ -824,6 +805,8 @@ fn assert_valid_time(label: &str, time_ms: f64) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     #[derive(Debug, PartialEq)]
@@ -832,6 +815,37 @@ mod tests {
         at_ms: f64,
         transfer_id: u64,
         block_hashes: Vec<u64>,
+    }
+
+    #[derive(Default)]
+    struct CancellationObserver {
+        cancelled: Mutex<Option<Cancellation>>,
+    }
+
+    impl HostOffloadObserver for CancellationObserver {
+        fn record(&self, observation: HostOffloadObservation<'_>) {
+            let HostOffloadObservation {
+                request_id,
+                event:
+                    HostOffloadObservationData::LoadCancelled {
+                        at_ms,
+                        transfer_id,
+                        blocks,
+                    },
+            } = observation
+            else {
+                return;
+            };
+            *self
+                .cancelled
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Cancellation {
+                request_id,
+                at_ms,
+                transfer_id: transfer_id.get(),
+                block_hashes: blocks.iter().map(|block| block.sequence_hash()).collect(),
+            });
+        }
     }
 
     fn key(value: u64) -> HostBlockKey {
@@ -1073,7 +1087,8 @@ mod tests {
     #[test]
     fn cancelling_a_load_removes_its_exact_deadline_without_reflowing_the_lane() {
         let mut tier = tier(2);
-        tier.buffer_observer_events();
+        let observer = Arc::new(CancellationObserver::default());
+        tier.set_observer(observer.clone());
         let now = make_resident(&mut tier, &[key(1), key(2)], 0.0);
         let LoadOutcome::Queued(first) = tier.schedule_load(request_id(), &[key(1)], now, now)
         else {
@@ -1100,29 +1115,11 @@ mod tests {
             tier.prepare_store(request_id(), &[key(3)], now),
             StoreOutcome::Prepared { .. }
         ));
-        let cancelled = tier.drain_observations().into_iter().find_map(
-            |HostOffloadObservation { request_id, event }| {
-                let HostOffloadObservationData::LoadCancelled {
-                    at_ms,
-                    transfer_id,
-                    blocks,
-                } = event
-                else {
-                    return None;
-                };
-                Some(Cancellation {
-                    request_id,
-                    at_ms,
-                    transfer_id: transfer_id.get(),
-                    block_hashes: blocks
-                        .into_iter()
-                        .map(HostBlockKey::sequence_hash)
-                        .collect(),
-                })
-            },
-        );
         assert_eq!(
-            cancelled,
+            *observer
+                .cancelled
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
             Some(Cancellation {
                 request_id: request_id(),
                 at_ms: observed_at_ms,

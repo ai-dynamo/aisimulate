@@ -152,7 +152,7 @@ impl EvictionCapture {
 }
 
 impl HostOffloadObserver for EvictionCapture {
-    fn record(&self, observation: HostOffloadObservation) {
+    fn record(&self, observation: HostOffloadObservation<'_>) {
         if let HostOffloadObservationData::Evicted { block, .. } = observation.event {
             self.0
                 .lock()

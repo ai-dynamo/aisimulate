@@ -502,7 +502,7 @@ impl VllmHostOffloadAdapter {
                         event: HostOffloadObservationData::StoreBlockMappings {
                             at_ms: now_ms,
                             transfer_id,
-                            mappings,
+                            mappings: &mappings,
                         },
                     });
                 }

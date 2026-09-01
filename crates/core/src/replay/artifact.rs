@@ -317,7 +317,7 @@ fn artifact_sink_poisoned() -> ReplayError {
 }
 
 impl HostOffloadObserver for ReplayArtifactShared {
-    fn record(&self, observation: HostOffloadObservation) {
+    fn record(&self, observation: HostOffloadObservation<'_>) {
         if self.failed.load(Ordering::Acquire) {
             return;
         }
@@ -331,7 +331,7 @@ impl HostOffloadObserver for ReplayArtifactShared {
                 at_ms,
                 ReplayArtifactHostOffloadEventData::StorePrepared {
                     transfer_id: transfer_id.get(),
-                    block_hashes: logical_hashes(&blocks),
+                    block_hashes: logical_hashes(blocks),
                 },
             ),
             HostOffloadObservationData::StoreBlockMappings {
@@ -360,7 +360,7 @@ impl HostOffloadObserver for ReplayArtifactShared {
                 at_ms,
                 ReplayArtifactHostOffloadEventData::StoreSubmitted {
                     transfer_id: transfer_id.get(),
-                    block_hashes: logical_hashes(&blocks),
+                    block_hashes: logical_hashes(blocks),
                     completes_at_ms,
                 },
             ),
@@ -372,7 +372,7 @@ impl HostOffloadObserver for ReplayArtifactShared {
                 at_ms,
                 ReplayArtifactHostOffloadEventData::StoreCompleted {
                     transfer_id: transfer_id.get(),
-                    block_hashes: logical_hashes(&blocks),
+                    block_hashes: logical_hashes(blocks),
                 },
             ),
             HostOffloadObservationData::LoadQueued {
@@ -384,7 +384,7 @@ impl HostOffloadObserver for ReplayArtifactShared {
                 at_ms,
                 ReplayArtifactHostOffloadEventData::LoadQueued {
                     transfer_id: transfer_id.get(),
-                    block_hashes: logical_hashes(&blocks),
+                    block_hashes: logical_hashes(blocks),
                     completes_at_ms,
                 },
             ),
@@ -396,7 +396,7 @@ impl HostOffloadObserver for ReplayArtifactShared {
                 at_ms,
                 ReplayArtifactHostOffloadEventData::LoadCompleted {
                     transfer_id: transfer_id.get(),
-                    block_hashes: logical_hashes(&blocks),
+                    block_hashes: logical_hashes(blocks),
                 },
             ),
             HostOffloadObservationData::LoadCancelled {
@@ -407,7 +407,7 @@ impl HostOffloadObserver for ReplayArtifactShared {
                 at_ms,
                 ReplayArtifactHostOffloadEventData::LoadCancelled {
                     transfer_id: transfer_id.get(),
-                    block_hashes: logical_hashes(&blocks),
+                    block_hashes: logical_hashes(blocks),
                 },
             ),
             HostOffloadObservationData::Evicted { at_ms, block } => (
@@ -423,7 +423,7 @@ impl HostOffloadObserver for ReplayArtifactShared {
             } => (
                 at_ms,
                 ReplayArtifactHostOffloadEventData::CapacityRetry {
-                    block_hashes: logical_hashes(&blocks),
+                    block_hashes: logical_hashes(blocks),
                     structurally_unfittable,
                 },
             ),
@@ -499,7 +499,7 @@ mod tests {
             request_id,
             event: HostOffloadObservationData::CapacityRetry {
                 at_ms: 4.5,
-                blocks: blocks.to_vec(),
+                blocks: &blocks,
                 structurally_unfittable: true,
             },
         });

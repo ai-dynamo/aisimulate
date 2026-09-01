@@ -638,7 +638,7 @@ mod tests {
     }
 
     impl HostOffloadObserver for HostEventCapture {
-        fn record(&self, observation: HostOffloadObservation) {
+        fn record(&self, observation: HostOffloadObservation<'_>) {
             let (kind, at_ms) = match observation.event {
                 HostOffloadObservationData::LoadQueued { at_ms, .. } => ("load_queued", at_ms),
                 HostOffloadObservationData::LoadCompleted { at_ms, .. } => {

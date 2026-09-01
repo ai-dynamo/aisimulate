@@ -3,7 +3,9 @@
 
 //! Physical host-cache domains shared by attention-DP ranks.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
@@ -20,13 +22,12 @@ struct HostCacheDomainState {
     transfer_owners: FxHashMap<TransferId, u32>,
     completed_by_rank: FxHashMap<u32, Vec<CompletedTransfer>>,
     completion_generation: u64,
-    observer: Option<Arc<dyn HostOffloadObserver>>,
 }
 
 /// One physical G2 cache, capacity budget, and pair of transfer lanes.
 #[derive(Clone)]
 pub(crate) struct HostCacheDomain {
-    state: Arc<Mutex<HostCacheDomainState>>,
+    state: Rc<RefCell<HostCacheDomainState>>,
 }
 
 impl HostCacheDomain {
@@ -39,7 +40,7 @@ impl HostCacheDomain {
             .checked_mul(kv_bytes_per_token)
             .ok_or_else(|| anyhow::anyhow!("native host block byte size overflow"))?;
         Ok(Self {
-            state: Arc::new(Mutex::new(HostCacheDomainState {
+            state: Rc::new(RefCell::new(HostCacheDomainState {
                 tier: HostTier::new(HostTierConfig {
                     capacity_blocks: config.num_host_blocks,
                     block_bytes,
@@ -50,7 +51,6 @@ impl HostCacheDomain {
                 transfer_owners: FxHashMap::default(),
                 completed_by_rank: FxHashMap::default(),
                 completion_generation: 0,
-                observer: None,
             })),
         })
     }
@@ -63,31 +63,8 @@ impl HostCacheDomain {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, HostCacheDomainState> {
-        self.state.lock().expect("host cache domain mutex poisoned")
-    }
-
     fn mutate<T>(&self, mutation: impl FnOnce(&mut HostCacheDomainState) -> T) -> T {
-        let (result, dispatch) = {
-            let mut state = self.lock();
-            let result = mutation(&mut state);
-            let sink = state.observer.clone();
-            let pending = if sink.is_some() {
-                state.tier.drain_observations()
-            } else {
-                Vec::new()
-            };
-            let dispatch = sink
-                .filter(|_| !pending.is_empty())
-                .map(|sink| (sink, pending));
-            (result, dispatch)
-        };
-        if let Some((sink, pending)) = dispatch {
-            for observation in pending {
-                sink.record(observation);
-            }
-        }
-        result
+        mutation(&mut self.state.borrow_mut())
     }
 
     fn tick_for_rank(&self, dp_rank: u32, now_ms: f64) -> (Vec<CompletedTransfer>, u64) {
@@ -140,32 +117,23 @@ pub(crate) struct HostCacheRankHandle {
 
 impl HostCacheRankHandle {
     pub(crate) fn set_observer(&self, observer: Arc<dyn HostOffloadObserver>) {
-        let mut state = self.domain.lock();
-        if let Some(installed) = &state.observer {
-            assert!(
-                Arc::ptr_eq(installed, &observer),
-                "host cache domain cannot install different observers per rank"
-            );
-            return;
-        }
-        state.tier.buffer_observer_events();
-        state.observer = Some(observer);
+        self.domain.state.borrow_mut().tier.set_observer(observer);
     }
 
     pub(crate) fn has_transfer(&self, transfer_id: TransferId) -> bool {
-        self.domain.lock().tier.has_transfer(transfer_id)
+        self.domain.state.borrow().tier.has_transfer(transfer_id)
     }
 
     pub(crate) fn touch(&self, key: HostBlockKey) {
-        self.domain.lock().tier.touch(key);
+        self.domain.state.borrow_mut().tier.touch(key);
     }
 
     pub(crate) fn lookup(&self, key: HostBlockKey) -> Lookup {
-        self.domain.lock().tier.lookup(key)
+        self.domain.state.borrow().tier.lookup(key)
     }
 
     pub(crate) fn is_loading(&self, key: HostBlockKey) -> bool {
-        self.domain.lock().load_by_key.contains_key(&key)
+        self.domain.state.borrow().load_by_key.contains_key(&key)
     }
 
     pub(crate) fn prepare_store(
@@ -255,11 +223,15 @@ impl HostCacheRankHandle {
     }
 
     pub(crate) fn transfer_deadline(&self, transfer_id: TransferId) -> Option<f64> {
-        self.domain.lock().tier.transfer_deadline(transfer_id)
+        self.domain
+            .state
+            .borrow()
+            .tier
+            .transfer_deadline(transfer_id)
     }
 
     pub(crate) fn next_deadline(&self) -> Option<f64> {
-        let state = self.domain.lock();
+        let state = self.domain.state.borrow();
         if state.completion_generation != self.seen_completion_generation
             || state
                 .completed_by_rank
@@ -272,11 +244,11 @@ impl HostCacheRankHandle {
     }
 
     pub(crate) fn current_time_ms(&self) -> f64 {
-        self.domain.lock().tier.current_time_ms()
+        self.domain.state.borrow().tier.current_time_ms()
     }
 
     pub(crate) fn has_pending_work(&self) -> bool {
-        let state = self.domain.lock();
+        let state = self.domain.state.borrow();
         state.tier.has_pending_work()
             || state
                 .completed_by_rank
@@ -286,63 +258,18 @@ impl HostCacheRankHandle {
 
     #[cfg(test)]
     pub(crate) fn resident_blocks(&self) -> usize {
-        self.domain.lock().tier.resident_blocks()
+        self.domain.state.borrow().tier.resident_blocks()
     }
 
     #[cfg(test)]
     pub(crate) fn is_resident(&self, key: HostBlockKey) -> bool {
-        self.domain.lock().tier.is_resident(key)
+        self.domain.state.borrow().tier.is_resident(key)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::HostOffloadObservation;
-    use std::sync::Weak;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct ReentrantObserver {
-        domain: Weak<Mutex<HostCacheDomainState>>,
-        records: AtomicUsize,
-    }
-
-    impl HostOffloadObserver for ReentrantObserver {
-        fn record(&self, _observation: HostOffloadObservation) {
-            self.records.fetch_add(1, Ordering::Relaxed);
-            let domain = HostCacheDomain {
-                state: self.domain.upgrade().expect("test domain was dropped"),
-            };
-            let _ = domain.bind_rank(99).lookup(HostBlockKey::new(999));
-        }
-    }
-
-    #[test]
-    fn domain_dispatches_observers_after_unlock_and_registration_is_idempotent() {
-        let config = NativeHostOffloadConfig {
-            num_host_blocks: 2,
-            d2h_bandwidth_gbps: 0.0,
-            h2d_bandwidth_gbps: 0.0,
-        };
-        let domain = HostCacheDomain::new(&config, 4, 1).unwrap();
-        let rank_0 = domain.bind_rank(0);
-        let rank_1 = domain.bind_rank(1);
-        let observer = Arc::new(ReentrantObserver {
-            domain: Arc::downgrade(&domain.state),
-            records: AtomicUsize::new(0),
-        });
-        rank_0.set_observer(observer.clone());
-        rank_1.set_observer(observer.clone());
-
-        let StoreOutcome::Prepared { .. } =
-            rank_0.prepare_store(Uuid::from_u128(10), &[HostBlockKey::new(10)], 0.0)
-        else {
-            panic!("test store must be prepared")
-        };
-        rank_0.submit_prepared_stores(0.0);
-
-        assert_eq!(observer.records.load(Ordering::Relaxed), 2);
-    }
 
     #[test]
     fn cache_domain_shares_capacity_and_transfer_lanes_across_ranks() {
