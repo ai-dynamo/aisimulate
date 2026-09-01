@@ -305,6 +305,19 @@ and usage do not require Git LFS. Install Git LFS and run `git lfs pull` only
 when working with retained legacy `*.txt` performance assets or their
 compatibility tests.
 
+## Accuracy evidence
+
+The public-ready [E2E Accuracy Overview](python/aisimulate/docs/e2e-accuracy/)
+reports matched client-observed TTFT and TPOT accuracy against measured silicon
+operating points. It keeps accuracy, evidence coverage, and curve-shape error
+separate and includes a machine-readable aggregate with exact snapshot digests.
+
+The checked-in snapshot excludes multi-node configurations and applies only to
+the exact model, hardware, framework, topology, workload, and concurrency cells
+that were measured. It is not a universal support or deployment-certification
+claim. Forward-pass accuracy and strict-native estimator coverage remain
+separate evidence lanes.
+
 Run the repository validation suites with:
 
 ```bash
