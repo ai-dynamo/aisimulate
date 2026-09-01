@@ -10,10 +10,12 @@ use crate::engine::{
     Command, CommandResult, Engine, ForwardPassMetrics, HostOffloadObserver, PassCompletionEffects,
     Request,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use uuid::Uuid;
 
-use super::super::core::{EngineEventBatch, EngineProgress, NoEngineEvents, WorkerTopology};
+use super::super::core::{
+    EngineEventBatch, EngineProgress, NoEngineEvents, SchedulerTopology, WorkerTopology,
+};
 use super::super::events::{EnginePassCompletion, SimulationWorkerStage, WorkerCompletionPayload};
 use super::{
     EngineEffects, EnginePassMode, InternalEngineEffects, ObservedCommandEffects,
@@ -37,7 +39,7 @@ struct PendingPass {
 
 struct LogicalWorker {
     engine: Engine,
-    scheduler_ids: Vec<usize>,
+    schedulers: Vec<SchedulerTopology>,
     /// Request IDs whose ownership is still counted by Replay for each rank.
     ///
     /// A handoff prefill can emit a terminal source signal before the later
@@ -193,19 +195,35 @@ where
             .live_worker_count
             .checked_add(1)
             .context("live worker count overflow")?;
-        let engine = self.factory.build(worker_id)?;
         let dp_size = usize::try_from(self.factory.dp_size())
             .context("native engine dp_size does not fit usize")?;
-        let mut scheduler_ids = Vec::with_capacity(dp_size);
-        for dp_rank in 0..self.factory.dp_size() {
-            let scheduler_id = self.scheduler_owners.len();
-            self.scheduler_owners
-                .push(Some(SchedulerOwner { worker_id, dp_rank }));
-            scheduler_ids.push(scheduler_id);
+        ensure!(
+            self.factory.cache_domain_ids().len() == dp_size,
+            "cache-domain topology does not match native engine dp_size"
+        );
+        let first_scheduler_id = self.scheduler_owners.len();
+        let engine = self.factory.build(worker_id)?;
+        let schedulers = self
+            .factory
+            .cache_domain_ids()
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(dp_rank, cache_domain_id)| SchedulerTopology {
+                scheduler_id: first_scheduler_id + dp_rank,
+                cache_domain_id,
+            })
+            .collect::<Vec<_>>();
+        for (dp_rank, scheduler) in schedulers.iter().enumerate() {
+            debug_assert_eq!(scheduler.scheduler_id, self.scheduler_owners.len());
+            self.scheduler_owners.push(Some(SchedulerOwner {
+                worker_id,
+                dp_rank: dp_rank as u32,
+            }));
         }
         self.workers.push(Some(LogicalWorker {
             engine,
-            scheduler_ids,
+            schedulers,
             in_flight_by_rank: vec![BTreeSet::new(); dp_size],
             pending_pass: None,
             consecutive_same_timestamp_retries: 0,
@@ -225,7 +243,11 @@ where
             bail!("cannot remove non-drained generalized engine {worker_id}");
         }
         let worker_in_flight = worker.total_in_flight();
-        let scheduler_ids = worker.scheduler_ids.clone();
+        let scheduler_ids = worker
+            .schedulers
+            .iter()
+            .map(|scheduler| scheduler.scheduler_id)
+            .collect::<Vec<_>>();
         let next_total_in_flight = self
             .total_in_flight
             .checked_sub(worker_in_flight)
@@ -367,9 +389,10 @@ where
     }
 
     pub(crate) fn worker_topology(&self, worker_id: usize) -> Option<WorkerTopology> {
+        let worker = self.workers.get(worker_id)?.as_ref()?;
         Some(WorkerTopology {
             worker_id,
-            scheduler_ids: self.workers.get(worker_id)?.as_ref()?.scheduler_ids.clone(),
+            schedulers: worker.schedulers.clone(),
         })
     }
 
@@ -695,9 +718,9 @@ where
         for rank in completed.effects.into_by_rank() {
             let scheduler_id = self
                 .required_worker(completion.worker_id)?
-                .scheduler_ids
+                .schedulers
                 .get(rank.dp_rank as usize)
-                .copied()
+                .map(|scheduler| scheduler.scheduler_id)
                 .context("native completion returned an out-of-range DP rank")?;
             let completed_request_ids = rank
                 .effects
@@ -1035,7 +1058,8 @@ mod tests {
         let scheduler_id = component
             .worker_topology(starting_worker)
             .unwrap()
-            .scheduler_ids[0];
+            .schedulers[0]
+            .scheduler_id;
         component
             .dispatch(
                 scheduler_id,

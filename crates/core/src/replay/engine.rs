@@ -44,6 +44,8 @@ pub struct ReplayEngineConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_domain_ids: Vec<u32>,
     pub rank: EngineConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefill: Option<ReplayRoleConfig>,
@@ -56,6 +58,7 @@ impl Default for ReplayEngineConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            cache_domain_ids: Vec::new(),
             rank: EngineConfig::default(),
             prefill: None,
             decode: None,
@@ -71,6 +74,8 @@ pub struct ReplayRoleConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_domain_ids: Vec<u32>,
     pub rank: EngineConfig,
 }
 
@@ -79,6 +84,7 @@ impl Default for ReplayRoleConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            cache_domain_ids: Vec::new(),
             rank: EngineConfig::default(),
         }
     }
@@ -99,16 +105,19 @@ impl ReplayEngineConfig {
             WorkerStage::Aggregated => ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                cache_domain_ids: self.cache_domain_ids.clone(),
                 rank: self.rank.clone(),
             },
             WorkerStage::Prefill => self.prefill.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                cache_domain_ids: self.cache_domain_ids.clone(),
                 rank: self.rank.clone(),
             }),
             WorkerStage::Decode => self.decode.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                cache_domain_ids: self.cache_domain_ids.clone(),
                 rank: self.rank.clone(),
             }),
         };
@@ -123,34 +132,12 @@ impl ReplayEngineConfig {
     pub(crate) fn validate_topology(&self, topology: &ReplayTopology) -> ReplayResult<()> {
         match topology {
             ReplayTopology::Aggregated { .. } => {
-                if self.rank.native_host_offload.is_some() && self.dp_size != 1 {
-                    return Err(ReplayError::InvalidSpec(
-                        "native_host_offload supports only dp_size=1 in the initial implementation"
-                            .to_string(),
-                    ));
-                }
+                resolve_cache_domain_ids(&self.role(WorkerStage::Aggregated))?;
             }
             ReplayTopology::Disaggregated { .. } => {
                 for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
                     let role = self.role(stage);
-                    if role.rank.native_host_offload.is_some() {
-                        return Err(ReplayError::InvalidSpec(
-                            "native_host_offload supports only aggregated replay in the initial implementation"
-                                .to_string(),
-                        ));
-                    }
-                    if role.dp_size != 1 {
-                        // TODO(#12965): Carry logical-worker plus DP-rank identity through
-                        // disaggregated handoff before removing this fail-fast guard.
-                        let role_name = match stage {
-                            WorkerStage::Prefill => "prefill",
-                            WorkerStage::Decode => "decode",
-                            WorkerStage::Aggregated => unreachable!(),
-                        };
-                        return Err(ReplayError::InvalidSpec(format!(
-                            "disaggregated replay requires {role_name} dp_size=1; attention-DP handoff identity is not implemented"
-                        )));
-                    }
+                    resolve_cache_domain_ids(&role)?;
                 }
             }
         }
@@ -165,7 +152,9 @@ pub struct ReplayRoleFactory {
     factory: EngineFactory,
     dp_size: NonZeroU32,
     tensor_parallel_size: u32,
+    cache_domain_ids: Vec<u32>,
     backend: Backend,
+    has_internal_work: bool,
 }
 
 impl ReplayRoleFactory {
@@ -177,13 +166,22 @@ impl ReplayRoleFactory {
             ))
         })?;
         self.factory
-            .build(EngineIdentity::new(worker_id), self.dp_size)
+            .build_with_cache_domains(
+                EngineIdentity::new(worker_id),
+                self.dp_size,
+                &self.cache_domain_ids,
+            )
             .map_err(engine_error)
     }
 
     #[doc(hidden)]
     pub fn dp_size(&self) -> u32 {
         self.dp_size.get()
+    }
+
+    #[doc(hidden)]
+    pub fn cache_domain_ids(&self) -> &[u32] {
+        &self.cache_domain_ids
     }
 
     #[doc(hidden)]
@@ -201,6 +199,10 @@ impl ReplayRoleFactory {
     #[doc(hidden)]
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    pub(crate) fn has_internal_work(&self) -> bool {
+        self.has_internal_work
     }
 }
 
@@ -252,6 +254,7 @@ impl ReplayEngineFactory {
         let dp_size = NonZeroU32::new(role.dp_size).ok_or_else(|| {
             ReplayError::InvalidSpec("native engine dp_size must be positive".into())
         })?;
+        let cache_domain_ids = resolve_cache_domain_ids(&role)?;
         if role.tensor_parallel_size == 0 {
             return Err(ReplayError::InvalidSpec(
                 "native tensor_parallel_size must be positive".into(),
@@ -263,6 +266,7 @@ impl ReplayEngineFactory {
             WorkerStage::Decode => self.decode_timing.as_ref().or(self.timing.as_ref()),
         };
         let backend = role.rank.backend;
+        let has_internal_work = role.rank.native_host_offload.is_some();
         let factory = match timing {
             Some(timing) => EngineFactory::with_timing_model(role.rank, Arc::clone(timing)),
             None => EngineFactory::new(role.rank),
@@ -272,9 +276,31 @@ impl ReplayEngineFactory {
             factory,
             dp_size,
             tensor_parallel_size: role.tensor_parallel_size,
+            cache_domain_ids,
             backend,
+            has_internal_work,
         })
     }
+}
+
+fn resolve_cache_domain_ids(role: &ReplayRoleConfig) -> ReplayResult<Vec<u32>> {
+    if role.cache_domain_ids.is_empty() {
+        if role.rank.native_host_offload.is_some() && role.dp_size > 1 {
+            return Err(ReplayError::InvalidSpec(
+                "attention-DP native_host_offload requires one cache_domain_id per DP rank"
+                    .to_string(),
+            ));
+        }
+        return Ok((0..role.dp_size).collect());
+    }
+    if role.cache_domain_ids.len() != role.dp_size as usize {
+        return Err(ReplayError::InvalidSpec(format!(
+            "cache_domain_ids has {} entries but dp_size is {}",
+            role.cache_domain_ids.len(),
+            role.dp_size
+        )));
+    }
+    Ok(role.cache_domain_ids.clone())
 }
 
 pub fn run_engine_replay(spec: ReplaySpec) -> ReplayResult<ReplayReport> {

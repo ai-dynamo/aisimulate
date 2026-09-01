@@ -17,7 +17,7 @@ use crate::engine::common::hashing::{BlockHash, SequenceHash};
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost};
 use crate::engine::common::sequence::{BlockIdentity, RequestSequence};
-use crate::engine::{KvBlock, KvEvent, KvEventData, StoredBlocks};
+use crate::engine::{KvBlock, KvEventData, KvEventPublisher, KvEventTier, StoredBlocks};
 
 struct PendingStore {
     parent_hash: Option<SequenceHash>,
@@ -98,6 +98,29 @@ impl BlockRequestLease {
         self.entries
             .get(block_index)
             .and_then(|entry| entry.identity.sequence_hash)
+    }
+
+    pub(crate) fn stored_block_event(&self, block_index: usize) -> StoredBlocks {
+        let entry = self
+            .entries
+            .get(block_index)
+            .expect("native host store index exceeds its request lease");
+        let block_hash = entry
+            .identity
+            .sequence_hash
+            .expect("native host store source lost its sequence hash");
+        let parent_hash = block_index
+            .checked_sub(1)
+            .and_then(|parent| self.entries[parent].identity.sequence_hash);
+        StoredBlocks {
+            parent_hash,
+            start_position: Some(block_index),
+            blocks: vec![KvBlock {
+                block_hash,
+                tokens_hash: entry.identity.local_hash.unwrap_or_default(),
+                token_ids: None,
+            }],
+        }
     }
 
     #[cfg(test)]
@@ -236,9 +259,7 @@ pub(crate) struct VllmKvManager {
     pool: VllmBlockPool,
     block_size: usize,
     enable_prefix_caching: bool,
-    kv_event_publishers: KvEventPublishers,
-    dp_rank: u32,
-    next_event_id: u64,
+    events: KvEventPublisher,
 }
 
 impl VllmKvManager {
@@ -249,17 +270,33 @@ impl VllmKvManager {
         kv_event_publishers: KvEventPublishers,
         dp_rank: u32,
     ) -> Self {
+        Self::new_with_event_publisher(
+            max_capacity,
+            block_size,
+            enable_prefix_caching,
+            KvEventPublisher::new(kv_event_publishers, dp_rank),
+        )
+    }
+
+    pub(crate) fn new_with_event_publisher(
+        max_capacity: usize,
+        block_size: usize,
+        enable_prefix_caching: bool,
+        events: KvEventPublisher,
+    ) -> Self {
         assert!(block_size > 0, "block_size must be > 0");
-        if !kv_event_publishers.is_empty() {
-            tracing::info!(dp_rank, block_size, "VllmKvManager initialized");
+        if events.is_enabled() {
+            tracing::info!(
+                dp_rank = events.dp_rank(),
+                block_size,
+                "VllmKvManager initialized"
+            );
         }
         Self {
             pool: VllmBlockPool::new(max_capacity),
             block_size,
             enable_prefix_caching,
-            kv_event_publishers,
-            dp_rank,
-            next_event_id: 0,
+            events,
         }
     }
 
@@ -962,7 +999,7 @@ impl VllmKvManager {
     }
 
     fn materialize_store_events(&self) -> bool {
-        !self.kv_event_publishers.is_empty() || *kv_cache_trace::KV_CACHE_TRACE_ENABLED
+        self.events.is_enabled() || *kv_cache_trace::KV_CACHE_TRACE_ENABLED
     }
 
     fn publish_store_sequence(&mut self, stores: Vec<Option<StoredBlock>>) {
@@ -1019,14 +1056,14 @@ impl VllmKvManager {
         if *kv_cache_trace::KV_CACHE_TRACE_ENABLED {
             kv_cache_trace::log_vllm_trace(
                 if is_store { "allocation" } else { "eviction" },
-                self.dp_rank,
+                self.events.dp_rank(),
                 self.block_size,
                 self.num_active_blocks(),
                 self.num_inactive_blocks(),
                 self.max_capacity(),
             );
         }
-        if self.kv_event_publishers.is_empty() {
+        if !self.events.is_enabled() {
             return;
         }
         assert!(local_hashes.is_empty() || local_hashes.len() == full_blocks.len());
@@ -1055,21 +1092,7 @@ impl VllmKvManager {
                 block_hashes: full_blocks,
             }
         };
-        let event = KvEvent {
-            event_id: self.next_event_id,
-            data,
-            dp_rank: self.dp_rank,
-        };
-        self.next_event_id = self
-            .next_event_id
-            .checked_add(1)
-            .unwrap_or_else(|| panic!("KV event ID overflow"));
-        if let Err(error) = self
-            .kv_event_publishers
-            .publish(event, token_ids.as_deref())
-        {
-            tracing::warn!(error = %error, "failed to publish native G1 KV event");
-        }
+        self.events.publish(data, KvEventTier::Device, token_ids);
     }
 
     pub(crate) fn num_active_blocks(&self) -> usize {
@@ -1090,6 +1113,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::engine::KvEvent;
     use crate::engine::common::protocols::KvCacheEventSink;
 
     #[derive(Default)]
@@ -1451,8 +1475,8 @@ mod tests {
             panic!("capacity pressure must emit one removal event")
         };
         assert_eq!(
-            block_hashes,
-            &vec![
+            block_hashes.as_slice(),
+            &[
                 first_hashes[3],
                 first_hashes[2],
                 second_divergent_hash,

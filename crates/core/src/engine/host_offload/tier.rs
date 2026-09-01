@@ -26,7 +26,7 @@ impl HostBlockKey {
     }
 }
 
-/// Rank-local transfer identity used to correlate scheduler state and events.
+/// Cache-domain-local transfer identity used to correlate scheduler state and events.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub(crate) struct TransferId(u64);
@@ -41,7 +41,7 @@ impl TransferId {
     }
 }
 
-/// Physical parameters for one rank-local host tier.
+/// Physical parameters for one host-cache domain.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct HostTierConfig {
     pub(crate) capacity_blocks: usize,
@@ -79,11 +79,12 @@ pub(crate) enum Lookup {
 }
 
 /// Result of atomically admitting one framework-selected store cohort.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum StoreOutcome {
     Prepared {
         transfer_id: TransferId,
         stored_blocks: usize,
+        evicted: Vec<HostBlockKey>,
     },
     AlreadyPresent,
     RetryCapacity {
@@ -366,19 +367,19 @@ impl HostTier {
             };
         }
 
-        for victim in victims {
+        for victim in &victims {
             let entry = self
                 .entries
-                .remove(&victim)
+                .remove(victim)
                 .expect("selected host victim disappeared");
             assert_eq!(entry.state, EntryState::Resident);
             assert_eq!(entry.load_pins, 0);
-            self.lru.remove(victim);
+            self.lru.remove(*victim);
             self.observe(HostOffloadObservation {
                 request_id,
                 event: HostOffloadObservationData::Evicted {
                     at_ms: now_ms,
-                    block: victim,
+                    block: *victim,
                 },
             });
         }
@@ -418,6 +419,7 @@ impl HostTier {
         StoreOutcome::Prepared {
             transfer_id,
             stored_blocks,
+            evicted: victims,
         }
     }
 
@@ -884,6 +886,7 @@ mod tests {
             StoreOutcome::Prepared {
                 transfer_id: TransferId::new(0),
                 stored_blocks: 2,
+                evicted: Vec::new(),
             }
         );
         assert!(tier.needs_engine_boundary());
@@ -974,6 +977,7 @@ mod tests {
             StoreOutcome::Prepared {
                 transfer_id: TransferId::new(1),
                 stored_blocks: 1,
+                evicted: vec![key(2)],
             }
         );
         assert!(tier.is_resident(key(1)));

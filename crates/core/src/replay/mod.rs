@@ -123,7 +123,7 @@ pub use core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlaceme
 pub use core::{EngineEventBatch, NoEngineEvents};
 pub use core::{
     Placement, PlacementCacheSample, PlacementDecision, PlacementEffects, PlacementPolicy,
-    RequestIdentity, WorkerTopology,
+    RequestIdentity, SchedulerTopology, WorkerTopology,
 };
 #[doc(hidden)]
 pub use engine::ReplayRoleFactory;

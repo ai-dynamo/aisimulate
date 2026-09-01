@@ -22,8 +22,8 @@ use super::core::NoEngineEvents;
 #[cfg(test)]
 use super::core::round_robin::PoolRoundRobinPlacement;
 use super::core::{
-    AdmissionSource as CoreAdmissionSource, Placement, PlacementDecision, PlacementPolicy,
-    ReadyArrival, WorkerTopology,
+    AdmissionSource as CoreAdmissionSource, EngineEventBatch, Placement, PlacementDecision,
+    PlacementPolicy, ReadyArrival, WorkerTopology,
 };
 use super::events::{SimulationEvent, SimulationWorkerStage, WorkerCompletionPayload};
 use super::evidence::{
@@ -53,6 +53,8 @@ use crate::replay::protocol::ForwardPassSnapshot;
 use crate::replay::protocol::{DirectRequest, OutputSignal};
 use crate::replay::{OfflineDisaggReplayConfig, ReplayTerminalStatus, TraceCollector};
 use crate::replay::{ReplayCaptureOptions, ReplayRequestPool};
+
+const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -930,6 +932,7 @@ where
     /// above. Only the planner consumes them, so the plain `run()` path leaves this
     /// `false`.
     collect_fpm: bool,
+    has_internal_work: bool,
 }
 
 #[cfg(test)]
@@ -1004,6 +1007,8 @@ where
             }
             _ => bail!("offline disaggregated replay requires matching backend engine types"),
         };
+        let has_internal_work =
+            prefill_factory.has_internal_work() || decode_factory.has_internal_work();
         let progress = ReplayProgress::new(
             CoreAdmissionSource::total_requests(&admission),
             "offline disagg replay",
@@ -1066,6 +1071,7 @@ where
             max_sim_time_ms: None,
             scaling_policy: None,
             collect_fpm: false,
+            has_internal_work,
         })
     }
 
@@ -1352,8 +1358,7 @@ where
 
     fn route_prefill(&mut self, uuid: Uuid, action: IssuedHandoffAction) -> Result<()> {
         self.state_mut(uuid)?.phase = DisaggPhase::QueuedPrefill;
-        let metadata =
-            Metadata::from_hashes(self.state_mut(uuid)?.take_replay_hashes()).for_prefill();
+        let metadata = Metadata::from_hashes(self.state(uuid)?.clone_replay_hashes()).for_prefill();
         let session_id = self.state(uuid)?.session_id().map(str::to_owned);
         let request = self.flow.state(uuid)?.request_payload()?;
         let effects = self
@@ -1406,13 +1411,11 @@ where
         // vLLM has already materialized at prefill worker submission.
         self.state_mut(uuid)?.materialize_original_request()?;
         let session_id = self.state(uuid)?.session_id().map(str::to_owned);
+        let metadata = Metadata::from_hashes(self.state_mut(uuid)?.take_replay_hashes());
         let request = self.flow.state(uuid)?.request_payload()?;
-        let effects = self.decode_placement.place(
-            request,
-            Metadata::from_hashes(None),
-            session_id,
-            self.now_ms,
-        )?;
+        let effects = self
+            .decode_placement
+            .place(request, metadata, session_id, self.now_ms)?;
         self.dispatch_decode_placements(effects.released)?;
         match effects.decision {
             PlacementDecision::Immediate(placement) => {
@@ -1832,7 +1835,18 @@ where
 
     /// Pick the next logical timestamp from arrivals, worker completions, or decode handoffs.
     fn next_timestamp(&mut self) -> Option<f64> {
-        let next_event_ms = self.events.peek().map(|event| event.at_ms);
+        let next_event_ms = if self.has_internal_work {
+            [
+                self.events.peek().map(|event| event.at_ms),
+                self.prefill_engine.next_internal_deadline_ms(),
+                self.decode_engine.next_internal_deadline_ms(),
+            ]
+            .into_iter()
+            .flatten()
+            .min_by(f64::total_cmp)
+        } else {
+            self.events.peek().map(|event| event.at_ms)
+        };
         choose_next_timestamp(
             CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
             next_event_ms,
@@ -2245,6 +2259,38 @@ where
         Ok(())
     }
 
+    fn apply_internal_work(&mut self) -> Result<bool> {
+        if !self.has_internal_work {
+            return Ok(false);
+        }
+        let prefill = self.prefill_engine.process_internal_work(self.now_ms)?;
+        if !prefill.engine_events.is_empty() {
+            self.apply_prefill_observations(prefill.engine_events, KvIngestBoundary::OffloadTick)?;
+        }
+        let decode = self.decode_engine.process_internal_work(self.now_ms)?;
+        if !decode.engine_events.is_empty() {
+            self.apply_decode_observations(decode.engine_events, KvIngestBoundary::OffloadTick)?;
+        }
+        Ok(prefill.made_progress || decode.made_progress)
+    }
+
+    fn settle_internal_work(&mut self, consecutive_steps: &mut usize) -> Result<bool> {
+        let mut changed = false;
+        while self.apply_internal_work()? {
+            *consecutive_steps = consecutive_steps
+                .checked_add(1)
+                .context("internal-work convergence counter overflow")?;
+            if *consecutive_steps >= MAX_CONSECUTIVE_INTERNAL_STEPS {
+                bail!(
+                    "offline disagg replay detected non-converging engine internal work at {} ms",
+                    self.now_ms
+                );
+            }
+            changed = true;
+        }
+        Ok(changed)
+    }
+
     /// Activate workers whose startup period has elapsed at the current timestamp.
     fn apply_worker_ready_events(&mut self) -> Result<bool> {
         let mut changed = false;
@@ -2360,9 +2406,15 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> Result<()> {
+        let mut consecutive_internal_steps = 0;
         loop {
             let mut changed = self.prune_stale_transfer_events();
-            changed |= self.apply_worker_completions()?;
+            changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            let completed = self.apply_worker_completions()?;
+            changed |= completed;
+            if completed {
+                changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
             changed |= self.release_ready_arrivals()?;
@@ -2375,13 +2427,9 @@ where
                 .context("failed to remove drained prefill workers")?;
             let mut prefill_releases = Vec::new();
             for worker_id in &removed_prefill {
-                let placements = self.prefill_placement.worker_removed(
-                    WorkerTopology {
-                        worker_id: *worker_id,
-                        scheduler_ids: Vec::new(),
-                    },
-                    self.now_ms,
-                )?;
+                let placements = self
+                    .prefill_placement
+                    .worker_removed(WorkerTopology::empty(*worker_id), self.now_ms)?;
                 prefill_releases.extend(placements.iter().map(|placement| placement.request_id));
                 self.dispatch_prefill_placements(placements)?;
             }
@@ -2421,13 +2469,9 @@ where
                 .context("failed to remove drained decode workers")?;
             let mut decode_releases = Vec::new();
             for worker_id in &removed_decode {
-                let placements = self.decode_placement.worker_removed(
-                    WorkerTopology {
-                        worker_id: *worker_id,
-                        scheduler_ids: Vec::new(),
-                    },
-                    self.now_ms,
-                )?;
+                let placements = self
+                    .decode_placement
+                    .worker_removed(WorkerTopology::empty(*worker_id), self.now_ms)?;
                 decode_releases.extend(placements.iter().map(|placement| placement.request_id));
                 self.dispatch_decode_placements(placements)?;
             }
@@ -2730,10 +2774,7 @@ where
             let topology = self
                 .prefill_engine
                 .worker_topology(id)
-                .unwrap_or(WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                });
+                .unwrap_or_else(|| WorkerTopology::empty(id));
             let placements = self
                 .prefill_placement
                 .worker_draining(topology, self.now_ms)?;
@@ -2741,13 +2782,9 @@ where
             self.dispatch_prefill_placements(placements)?;
         }
         for &id in &removed {
-            let placements = self.prefill_placement.worker_removed(
-                WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                },
-                self.now_ms,
-            )?;
+            let placements = self
+                .prefill_placement
+                .worker_removed(WorkerTopology::empty(id), self.now_ms)?;
             prefill_releases.extend(placements.iter().map(|placement| placement.request_id));
             self.dispatch_prefill_placements(placements)?;
         }
@@ -2809,10 +2846,7 @@ where
             let topology = self
                 .decode_engine
                 .worker_topology(id)
-                .unwrap_or(WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                });
+                .unwrap_or_else(|| WorkerTopology::empty(id));
             let placements = self
                 .decode_placement
                 .worker_draining(topology, self.now_ms)?;
@@ -2820,13 +2854,9 @@ where
             self.dispatch_decode_placements(placements)?;
         }
         for &id in &removed {
-            let placements = self.decode_placement.worker_removed(
-                WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                },
-                self.now_ms,
-            )?;
+            let placements = self
+                .decode_placement
+                .worker_removed(WorkerTopology::empty(id), self.now_ms)?;
             decode_releases.extend(placements.iter().map(|placement| placement.request_id));
             self.dispatch_decode_placements(placements)?;
         }

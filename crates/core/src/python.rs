@@ -394,6 +394,7 @@ fn aggregated_role(engine: &ReplayEngineConfig) -> ReplayRoleConfig {
         dp_size: engine.dp_size,
         tensor_parallel_size: engine.tensor_parallel_size,
         rank: engine.rank.clone(),
+        cache_domain_ids: engine.cache_domain_ids.clone(),
     }
 }
 
@@ -748,11 +749,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 && let ReplayTopology::Aggregated { workers } = &spec.topology
                 && let Some(concurrency) = resolve_kv_capacity_concurrency(
                     traffic,
-                    &ReplayRoleConfig {
-                        dp_size: engine_config.dp_size,
-                        tensor_parallel_size: engine_config.tensor_parallel_size,
-                        rank: engine_config.rank.clone(),
-                    },
+                    &aggregated_role(&engine_config),
                     workers.initial_workers,
                 )?
             {

@@ -8,6 +8,7 @@
 
 use uuid::Uuid;
 
+use crate::engine::KvEventPublisher;
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost};
 use crate::engine::common::sequence::RequestSequence;
 
@@ -93,6 +94,22 @@ impl G1Manager {
                 enable_prefix_caching,
                 kv_event_publishers,
                 dp_rank,
+            ),
+        }
+    }
+
+    pub(crate) fn new_with_event_publisher(
+        max_capacity: usize,
+        block_size: usize,
+        events: KvEventPublisher,
+        enable_prefix_caching: bool,
+    ) -> Self {
+        Self {
+            inner: VllmKvManager::new_with_event_publisher(
+                max_capacity,
+                block_size,
+                enable_prefix_caching,
+                events,
             ),
         }
     }

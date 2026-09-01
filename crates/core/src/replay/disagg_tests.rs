@@ -85,15 +85,18 @@ impl TestDisaggConfig {
         let engine = ReplayEngineConfig {
             dp_size: 1,
             tensor_parallel_size: 1,
+            cache_domain_ids: Vec::new(),
             rank: MockEngineArgs::default(),
             prefill: Some(ReplayRoleConfig {
                 dp_size: 1,
                 tensor_parallel_size: 1,
+                cache_domain_ids: Vec::new(),
                 rank: self.prefill_args.clone(),
             }),
             decode: Some(ReplayRoleConfig {
                 dp_size: 1,
                 tensor_parallel_size: 1,
+                cache_domain_ids: Vec::new(),
                 rank: self.decode_args.clone(),
             }),
         };

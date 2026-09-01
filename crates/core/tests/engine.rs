@@ -135,6 +135,7 @@ fn role_config(backend: Backend, timing_model: TimingModelConfig) -> ReplayRoleC
     ReplayRoleConfig {
         dp_size: 1,
         tensor_parallel_size: 1,
+        cache_domain_ids: Vec::new(),
         rank: EngineConfig {
             num_gpu_blocks: 32,
             max_num_seqs: 4,
@@ -164,7 +165,7 @@ fn disaggregated_spec(
 }
 
 #[test]
-fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
+fn disaggregated_replay_supports_attention_dp() {
     for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
         let mut spec = disaggregated_spec(
             Backend::Vllm,
@@ -185,21 +186,8 @@ fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
         }
         spec.engine = serde_json::to_value(config).unwrap();
 
-        let error = run_engine_replay(spec).unwrap_err();
-        assert!(matches!(
-            error,
-            aisimulate_core::replay::ReplayError::InvalidSpec(_)
-        ));
-        let role_name = match stage {
-            WorkerStage::Prefill => "prefill",
-            WorkerStage::Decode => "decode",
-            WorkerStage::Aggregated => unreachable!(),
-        };
-        assert!(
-            error
-                .to_string()
-                .contains(&format!("{role_name} dp_size=1"))
-        );
+        let report = run_engine_replay(spec).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 1);
     }
 }
 
@@ -384,33 +372,6 @@ fn host_store_capacity_retry_preserves_the_request_cursor() {
     assert_eq!(restored.first_admission_g1_reused_input_tokens, Some(0));
     assert_eq!(restored.first_admission_host_reused_input_tokens, Some(4));
     assert!(restored.first_admit_ms.is_some_and(|at_ms| at_ms >= 51.0));
-}
-
-#[test]
-fn native_host_offload_rejects_attention_dp_and_disaggregated_roles() {
-    let mut config = engine_config(TimingModelConfig::Fixed {
-        prefill_ms: 0.0,
-        decode_ms: 0.0,
-    });
-    config.rank.kv_cache_bytes_per_token = Some(1);
-    config.rank.native_host_offload =
-        Some(NativeHostOffloadConfig::new(1).with_bandwidths(1.0, 1.0));
-
-    let mut attention_dp = config.clone();
-    attention_dp.dp_size = 2;
-    let error = run_engine_replay(spec(attention_dp)).unwrap_err();
-    let message = format!("{error:#}");
-    assert!(message.contains("dp_size=1"), "{message}");
-
-    let mut disaggregated = spec(config);
-    disaggregated.topology = ReplayTopology::Disaggregated {
-        prefill: WorkerPoolSpec::default(),
-        decode: WorkerPoolSpec::default(),
-        handoff_latency_ms: 0.0,
-    };
-    let error = run_engine_replay(disaggregated).unwrap_err();
-    let message = format!("{error:#}");
-    assert!(message.contains("only aggregated replay"), "{message}");
 }
 
 #[test]

@@ -916,6 +916,7 @@ impl SglangKvManager {
                 blocks,
             }),
             dp_rank: self.dp_rank,
+            tier: crate::engine::KvEventTier::Device,
         };
         self.next_event_id += 1;
 
@@ -959,6 +960,7 @@ impl SglangKvManager {
             event_id: self.next_event_id,
             data: KvEventData::Removed { block_hashes },
             dp_rank: self.dp_rank,
+            tier: crate::engine::KvEventTier::Device,
         };
         self.next_event_id += 1;
 

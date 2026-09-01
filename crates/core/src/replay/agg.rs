@@ -760,13 +760,9 @@ where
                 .context("failed to remove drained aggregated workers")?;
             let mut released = Vec::new();
             for worker_id in &removed {
-                let placements = self.placement.worker_removed(
-                    WorkerTopology {
-                        worker_id: *worker_id,
-                        scheduler_ids: Vec::new(),
-                    },
-                    self.now_ms,
-                )?;
+                let placements = self
+                    .placement
+                    .worker_removed(WorkerTopology::empty(*worker_id), self.now_ms)?;
                 released.extend(placements.iter().map(|placement| placement.request_id));
                 self.dispatch_placements(placements)?;
             }
@@ -956,22 +952,18 @@ where
         }
 
         for &id in &newly_marked {
-            let topology = self.engine.worker_topology(id).unwrap_or(WorkerTopology {
-                worker_id: id,
-                scheduler_ids: Vec::new(),
-            });
+            let topology = self
+                .engine
+                .worker_topology(id)
+                .unwrap_or_else(|| WorkerTopology::empty(id));
             let placements = self.placement.worker_draining(topology, self.now_ms)?;
             released.extend(placements.iter().map(|placement| placement.request_id));
             self.dispatch_placements(placements)?;
         }
         for &id in &removed {
-            let placements = self.placement.worker_removed(
-                WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                },
-                self.now_ms,
-            )?;
+            let placements = self
+                .placement
+                .worker_removed(WorkerTopology::empty(id), self.now_ms)?;
             released.extend(placements.iter().map(|placement| placement.request_id));
             self.dispatch_placements(placements)?;
         }
@@ -1324,9 +1316,15 @@ mod tests {
                 assert_eq!(
                     topology
                         .iter()
-                        .map(|worker| worker.scheduler_ids.as_slice())
+                        .map(|worker| {
+                            worker
+                                .schedulers
+                                .iter()
+                                .map(|scheduler| scheduler.scheduler_id)
+                                .collect::<Vec<_>>()
+                        })
                         .collect::<Vec<_>>(),
-                    vec![&[0][..], &[1][..]]
+                    vec![vec![0], vec![1]]
                 );
                 Ok(ReleaseToIdleWorker { pending: None })
             },

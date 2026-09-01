@@ -500,7 +500,7 @@ struct ReleaseOnTopologyCallbacks {
 
 impl ReleaseOnTopologyCallbacks {
     fn new(topology: Vec<WorkerTopology>) -> Self {
-        let stable_scheduler_id = topology[0].scheduler_ids[0];
+        let stable_scheduler_id = topology[0].schedulers[0].scheduler_id;
         Self {
             pending: VecDeque::new(),
             stable_scheduler_id,
@@ -578,7 +578,7 @@ impl PlacementPolicy<ReplayRequestPayload> for ReleaseOnTopologyCallbacks {
         worker: WorkerTopology,
         _now_ms: f64,
     ) -> anyhow::Result<Vec<Placement>> {
-        Ok(self.release_next(worker.scheduler_ids[0]))
+        Ok(self.release_next(worker.schedulers[0].scheduler_id))
     }
 
     fn worker_draining(
