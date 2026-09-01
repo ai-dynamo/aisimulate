@@ -207,8 +207,10 @@ reach that code:
     plan §1/M3). A mixed step is one shared forward pass: weight reads, kernel launches,
     and fixed per-step overheads are paid once, by the prefill component; a full
     pure-decode step would pay them twice. The decode baseline uses each collected batch
-    curve's measured KV floor. An off-lattice batch holds both padded bracket curves at
-    their own floors, then interpolates along the batch axis. This narrow left-boundary
+    curve's measured KV floor. An off-lattice batch holds its padded bracket curves at
+    their own floors, then interpolates along the batch axis — over the same rows the
+    decode query itself resolved on, since a bracket row whose collected KV range misses
+    the queried coordinate is dropped from both sides. This narrow left-boundary
     hold applies only to the synthetic mixed-step baseline; ordinary decode queries remain
     strict. The subtraction therefore keeps only the KV-read/attention cost that genuinely
     adds to the iteration. Residuals: the gen tokens' GEMM marginal is dropped
