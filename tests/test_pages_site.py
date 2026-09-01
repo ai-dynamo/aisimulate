@@ -23,17 +23,25 @@ class PagesSiteTest(unittest.TestCase):
             files = PAGES.build_site(ROOT, output_dir)
 
             self.assertIn(Path("index.html"), files)
+            self.assertIn(Path("e2e-accuracy/index.html"), files)
+            self.assertIn(Path("e2e-accuracy/app.js"), files)
+            self.assertIn(Path("e2e-accuracy/styles.css"), files)
+            self.assertIn(Path("e2e-accuracy/summary.json"), files)
+            self.assertIn(Path("fpe-support-matrix/index.html"), files)
+            self.assertIn(Path("fpe-support-matrix/fpe-support-matrix-preview.png"), files)
             self.assertIn(Path("support-matrix/index.html"), files)
+            self.assertIn(Path("data/fpe-support-matrix/index.json"), files)
             self.assertIn(Path("data/support-matrix/index.json"), files)
-            self.assertTrue(
-                any(path.match("data/support-matrix/*.csv") for path in files)
-            )
+            self.assertTrue(any(path.match("data/fpe-support-matrix/*.csv") for path in files))
+            self.assertTrue(any(path.match("data/support-matrix/*.csv") for path in files))
 
             self.assertFalse(any(path.parts[0] == "universe" for path in files))
             self.assertFalse(any(path.suffix == ".md" for path in files))
             self.assertFalse(any("src" in path.parts for path in files))
 
             landing_page = (output_dir / "index.html").read_text()
+            self.assertIn('href="./e2e-accuracy/"', landing_page)
+            self.assertIn('href="./fpe-support-matrix/"', landing_page)
             self.assertIn('href="./support-matrix/"', landing_page)
             self.assertNotIn('href="./universe/"', landing_page)
 
@@ -44,14 +52,20 @@ class PagesSiteTest(unittest.TestCase):
                 self.assertNotIn("raw.githubusercontent.com", text)
                 self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", text)
 
-    def test_deployed_legacy_matrix_uses_packaged_public_data(self) -> None:
+    def test_deployed_matrices_use_packaged_public_data(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_dir = Path(temporary_directory) / "site"
             PAGES.build_site(ROOT, output_dir)
 
-            page = (output_dir / "support-matrix" / "index.html").read_text()
-            self.assertIn("../data/support-matrix", page)
-            self.assertNotIn("raw.githubusercontent.com", page)
+            legacy_page = (output_dir / "support-matrix" / "index.html").read_text()
+            self.assertIn("../data/support-matrix", legacy_page)
+            self.assertNotIn("raw.githubusercontent.com", legacy_page)
+
+            fpe_page = (output_dir / "fpe-support-matrix" / "index.html").read_text()
+            self.assertIn("../data/fpe-support-matrix", fpe_page)
+            self.assertIn('href="../"', fpe_page)
+            self.assertNotIn("raw.githubusercontent.com", fpe_page)
+            self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", fpe_page)
 
     def test_public_artifact_rejects_symlinked_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

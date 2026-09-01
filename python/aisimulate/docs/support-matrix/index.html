@@ -658,8 +658,12 @@ function isLocalPreview() {
   return ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
 }
 
+function isSourceTreePreview() {
+  return isLocalPreview() && window.location.pathname.includes('/python/aisimulate/docs/');
+}
+
 function rawUrl(path) {
-  if (isLocalPreview()) return `/${path}?localPreviewTs=${Date.now()}`;
+  if (isSourceTreePreview()) return `/${path}?localPreviewTs=${Date.now()}`;
   const prefix = `${SUPPORT_MATRIX_PATH}/`;
   if (!path.startsWith(prefix)) throw new Error(`Unexpected support matrix path: ${path}`);
   return `${DEPLOYED_SUPPORT_MATRIX_PATH}/${path.slice(prefix.length)}`;

@@ -16,12 +16,12 @@ DOCS_ROOT = Path("python/aisimulate/docs")
 SYSTEMS_ROOT = Path("python/aisimulate/src/aiconfigurator_core/systems")
 
 # Directories are opt-in so adding internal documentation under docs/ never
-# publishes it accidentally. Optional pages become public when their owning PR
-# lands without requiring a deployment-workflow edit.
+# publishes it accidentally. Every listed page is now part of the required
+# public surface and its absence must fail the build.
 PUBLIC_PAGE_DIRECTORIES = {
     "support-matrix": True,
-    "e2e-accuracy": False,
-    "fpe-support-matrix": False,
+    "e2e-accuracy": True,
+    "fpe-support-matrix": True,
 }
 PUBLIC_ASSET_SUFFIXES = {".css", ".html", ".js", ".json", ".png", ".svg", ".webp"}
 PUBLIC_DATASETS = {
@@ -58,9 +58,7 @@ def _copy_dataset(source: Path, destination: Path) -> None:
     try:
         index = json.loads(index_path.read_text())
     except (json.JSONDecodeError, OSError) as exc:
-        raise PagesBuildError(
-            f"cannot read public dataset index: {index_path}"
-        ) from exc
+        raise PagesBuildError(f"cannot read public dataset index: {index_path}") from exc
 
     files = index.get("files") if isinstance(index, dict) else None
     if not isinstance(files, list) or not files:
@@ -68,14 +66,8 @@ def _copy_dataset(source: Path, destination: Path) -> None:
 
     _copy_file(index_path, destination / "index.json")
     for filename in files:
-        if (
-            not isinstance(filename, str)
-            or Path(filename).name != filename
-            or Path(filename).suffix.lower() != ".csv"
-        ):
-            raise PagesBuildError(
-                f"unsafe public dataset entry in {index_path}: {filename!r}"
-            )
+        if not isinstance(filename, str) or Path(filename).name != filename or Path(filename).suffix.lower() != ".csv":
+            raise PagesBuildError(f"unsafe public dataset entry in {index_path}: {filename!r}")
         csv_path = source / filename
         if not csv_path.is_file():
             raise PagesBuildError(f"public dataset file is missing: {csv_path}")
@@ -87,9 +79,7 @@ def build_site(repo_root: Path, output_dir: Path) -> set[Path]:
     repo_root = repo_root.resolve()
     output_dir = output_dir.resolve()
     if output_dir == repo_root:
-        raise PagesBuildError(
-            "the Pages output directory cannot be the repository root"
-        )
+        raise PagesBuildError("the Pages output directory cannot be the repository root")
     if output_dir.exists() and any(output_dir.iterdir()):
         raise PagesBuildError(f"the Pages output directory must be empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -116,9 +106,7 @@ def build_site(repo_root: Path, output_dir: Path) -> set[Path]:
                 output_dir / "data" / public_name,
             )
 
-    return {
-        path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()
-    }
+    return {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}
 
 
 def main() -> None:
