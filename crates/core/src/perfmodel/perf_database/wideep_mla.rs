@@ -46,7 +46,7 @@ use std::sync::OnceLock;
 use super::attention::generation_attn_mode;
 use super::gemm::quant_tc_flops;
 use super::interpolation::Grid3;
-use super::perf_interp::{self, Node, OpInterpConfig};
+use super::perf_interp::{self, Node, OpInterpConfig, PreparedGrid};
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::enums::{FmhaQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
@@ -69,8 +69,8 @@ pub struct WideEpMlaTable {
     /// default (`WideEpMlaTable::new`).
     context_sources: Vec<PerfSource>,
     generation_sources: Vec<PerfSource>,
-    context: OnceLock<Result<WideEpContextMlaGrids, AicError>>,
-    generation: OnceLock<Result<WideEpGenerationMlaGrids, AicError>>,
+    context: OnceLock<Result<PreparedWideEpContextMlaGrids, AicError>>,
+    generation: OnceLock<Result<PreparedWideEpGenerationMlaGrids, AicError>>,
 }
 
 /// Context grids keyed by `(kernel_source, fmha_quant, kv_quant)`.
@@ -84,6 +84,14 @@ pub struct WideEpContextMlaGrids {
 /// `isl + step` from the CSV (Python collapses them at load time).
 pub struct WideEpGenerationMlaGrids {
     pub by_keys: BTreeMap<GenerationKey, Node>,
+}
+
+struct PreparedWideEpContextMlaGrids {
+    by_keys: BTreeMap<ContextKey, PreparedGrid>,
+}
+
+struct PreparedWideEpGenerationMlaGrids {
+    by_keys: BTreeMap<GenerationKey, PreparedGrid>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -183,11 +191,7 @@ impl WideEpMlaTable {
             )
         };
         let cfg = OpInterpConfig::grid_sqrt_axis(CONTEXT_AXES, 1, &sol);
-        perf_interp::query(
-            &cfg,
-            node,
-            &[num_heads as f64, full_seq_tokens as f64, b as f64],
-        )
+        node.query(&cfg, &[num_heads as f64, full_seq_tokens as f64, b as f64])
     }
 
     /// Raw generation WideEP MLA latency. `sequence_tokens` is the
@@ -241,11 +245,7 @@ impl WideEpMlaTable {
             )
         };
         let cfg = OpInterpConfig::grid(GENERATION_AXES, &sol);
-        perf_interp::query(
-            &cfg,
-            node,
-            &[num_heads as f64, b as f64, sequence_tokens as f64],
-        )
+        node.query(&cfg, &[num_heads as f64, b as f64, sequence_tokens as f64])
     }
 
     // -----------------------------------------------------------------------
@@ -274,7 +274,7 @@ impl WideEpMlaTable {
             .by_keys
             .get(&key)
             .ok_or_else(|| missing("WideEP context MLA", &self.data_root, format!("{key:?}")))?;
-        non_empty_points(node, "WideEP context MLA", &self.data_root)
+        non_empty_points(node.node(), "WideEP context MLA", &self.data_root)
     }
 
     /// Collected `(num_heads, batch, seq) -> latency` points of the
@@ -293,7 +293,7 @@ impl WideEpMlaTable {
             .by_keys
             .get(&key)
             .ok_or_else(|| missing("WideEP generation MLA", &self.data_root, format!("{key:?}")))?;
-        non_empty_points(node, "WideEP generation MLA", &self.data_root)
+        non_empty_points(node.node(), "WideEP generation MLA", &self.data_root)
     }
 
     /// Probe the context table load. Typed missing-data error when the
@@ -309,17 +309,31 @@ impl WideEpMlaTable {
         self.load_generation().map(|_| ())
     }
 
-    fn load_context(&self) -> Result<&WideEpContextMlaGrids, AicError> {
-        let cell = self
-            .context
-            .get_or_init(|| load_context_parquet(&self.context_sources));
+    fn load_context(&self) -> Result<&PreparedWideEpContextMlaGrids, AicError> {
+        let cell = self.context.get_or_init(|| {
+            load_context_parquet(&self.context_sources).map(|grids| PreparedWideEpContextMlaGrids {
+                by_keys: grids
+                    .by_keys
+                    .into_iter()
+                    .map(|(key, node)| (key, PreparedGrid::new(node)))
+                    .collect(),
+            })
+        });
         cell.as_ref().map_err(clone_err)
     }
 
-    fn load_generation(&self) -> Result<&WideEpGenerationMlaGrids, AicError> {
-        let cell = self
-            .generation
-            .get_or_init(|| load_generation_parquet(&self.generation_sources));
+    fn load_generation(&self) -> Result<&PreparedWideEpGenerationMlaGrids, AicError> {
+        let cell = self.generation.get_or_init(|| {
+            load_generation_parquet(&self.generation_sources).map(|grids| {
+                PreparedWideEpGenerationMlaGrids {
+                    by_keys: grids
+                        .by_keys
+                        .into_iter()
+                        .map(|(key, node)| (key, PreparedGrid::new(node)))
+                        .collect(),
+                }
+            })
+        });
         cell.as_ref().map_err(clone_err)
     }
 }

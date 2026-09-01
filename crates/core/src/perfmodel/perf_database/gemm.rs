@@ -23,7 +23,7 @@ use quick_cache::{DefaultHashBuilder, OptionsBuilder, UnitWeighter};
 
 use super::interpolation::Grid3;
 use super::perf_interp::{
-    self, LeafValue, Node, OpInterpConfig, Resolver, SiteIndex, ValueTransform,
+    LeafValue, Node, OpInterpConfig, PreparedGrid, Resolver, SiteIndex, ValueTransform,
 };
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::enums::GemmQuantMode;
@@ -179,7 +179,7 @@ struct GemmEngineGrids {
 /// (`{latency, power, energy}`, mirroring Python `load_compute_scale_data`
 /// / `load_scale_matrix_data`).
 struct TwoDGrids {
-    by_quant: BTreeMap<String, Node>,
+    by_quant: BTreeMap<String, PreparedGrid>,
 }
 
 impl GemmTable {
@@ -408,7 +408,7 @@ impl GemmTable {
                 data_root.display()
             ))
         })?;
-        let points = crate::perf_database::perf_interp::node_points(node);
+        let points = crate::perf_database::perf_interp::node_points(node.node());
         if points.is_empty() {
             return Err(AicError::PerfDatabase(format!(
                 "{table_name} perf data empty for quant '{quant_name}' at {}",
@@ -628,7 +628,7 @@ fn grid3_to_node(grid: &Grid3<LeafValue>) -> Node {
 /// energy=interpolated.energy * ratio)`). Mirrors Python
 /// `_query_compute_scale_table` / `_query_scale_matrix_table`.
 fn query_scale_table(
-    by_quant: &BTreeMap<String, Node>,
+    by_quant: &BTreeMap<String, PreparedGrid>,
     quant_name: &str,
     m: u32,
     k: u32,
@@ -636,14 +636,14 @@ fn query_scale_table(
     sol_ratio_beyond_grid: bool,
     data_root: &Path,
 ) -> Result<LeafValue, AicError> {
-    let node = by_quant.get(quant_name).ok_or_else(|| {
+    let prepared = by_quant.get(quant_name).ok_or_else(|| {
         AicError::PerfDatabase(format!(
             "perf data missing for quant '{quant_name}' at {}; available: {:?}",
             data_root.display(),
             by_quant.keys().collect::<Vec<_>>(),
         ))
     })?;
-    let Node::Branch(rows) = node else {
+    let Node::Branch(rows) = prepared.node() else {
         return Err(AicError::PerfDatabase("malformed scale table".to_string()));
     };
     if rows.is_empty() {
@@ -666,7 +666,7 @@ fn query_scale_table(
     let k_c = k.clamp(k_min, k_max);
 
     let cfg = OpInterpConfig::grid(&["m", "k"], sol);
-    let value = perf_interp::query_value(&cfg, node, &[m_c as f64, k_c as f64])?;
+    let value = prepared.query_value(&cfg, &[m_c as f64, k_c as f64])?;
     if !sol_ratio_beyond_grid || (m_c == m && k_c == k) {
         return Ok(value);
     }
@@ -829,7 +829,7 @@ fn load_two_d_parquet(sources: &[PerfSource]) -> Result<TwoDGrids, AicError> {
                     node.insert_value(&[m, k], leaf);
                 }
             }
-            (quant, node)
+            (quant, PreparedGrid::new(node))
         })
         .collect();
     Ok(TwoDGrids { by_quant })

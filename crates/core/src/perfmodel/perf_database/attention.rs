@@ -38,7 +38,7 @@ use std::sync::OnceLock;
 
 use super::gemm::quant_tc_flops;
 use super::interpolation::Grid3;
-use super::perf_interp::{self, LeafValue, Node, OpInterpConfig};
+use super::perf_interp::{self, LeafValue, Node, OpInterpConfig, PreparedGrid};
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::enums::{FmhaQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
@@ -63,15 +63,15 @@ pub struct AttentionTable {
 
 /// Engine-ready tables: per discrete key, the raw nested grid as a `Node`.
 struct ContextGrids {
-    by_keys: BTreeMap<ContextKey, Node>,
+    by_keys: BTreeMap<ContextKey, PreparedGrid>,
 }
 
 struct GenerationGrids {
-    by_keys: BTreeMap<GenerationKey, Node>,
+    by_keys: BTreeMap<GenerationKey, PreparedGrid>,
 }
 
 struct EncoderGrids {
-    by_keys: BTreeMap<EncoderKey, Node>,
+    by_keys: BTreeMap<EncoderKey, PreparedGrid>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -191,7 +191,7 @@ impl AttentionTable {
             )
         };
         let cfg = OpInterpConfig::grid_sqrt_axis(&["num_heads", "seq_len", "batch"], 1, &sol);
-        perf_interp::query_value(&cfg, node, &[n as f64, full_seq_tokens as f64, b as f64])
+        node.query_value(&cfg, &[n as f64, full_seq_tokens as f64, b as f64])
     }
 
     /// Raw interpolated generation attention value (latency ms + energy,
@@ -260,7 +260,7 @@ impl AttentionTable {
             // Match Python integer arithmetic: multiply before integer divide.
             let s_i = s_min
                 + ((u64::from(s_max - s_min) * u64::from(i)) / u64::from(SAMPLE_CNT - 1)) as u32;
-            let sample = perf_interp::query_value(&cfg, node, &[n as f64, b as f64, s_i as f64])?;
+            let sample = node.query_value(&cfg, &[n as f64, b as f64, s_i as f64])?;
             latency_sum += sample.latency;
             energy_sum += sample.energy;
         }
@@ -303,7 +303,7 @@ impl AttentionTable {
             encoder_attention_sol_ms(spec, head_size, c[0], c[1], c[2], attn_flops)
         };
         let cfg = OpInterpConfig::grid_sqrt_axis(&["num_heads", "seq_len", "batch"], 1, &sol);
-        perf_interp::query_value(&cfg, node, &[n as f64, s as f64, b as f64])
+        node.query_value(&cfg, &[n as f64, s as f64, b as f64])
     }
 
     /// Collected `(num_heads, full_seq, batch) -> latency` points of one
@@ -333,7 +333,7 @@ impl AttentionTable {
             .by_keys
             .get(&key)
             .ok_or_else(|| missing_key(&self.data_root, &key))?;
-        let points = perf_interp::node_points(node);
+        let points = perf_interp::node_points(node.node());
         if points.is_empty() {
             return Err(missing_key(&self.data_root, &key));
         }
@@ -400,7 +400,7 @@ impl AttentionTable {
             .by_keys
             .get(&key)
             .ok_or_else(|| missing_gen_key(&self.data_root, &key))?;
-        let points = perf_interp::node_points(node);
+        let points = perf_interp::node_points(node.node());
         if points.is_empty() {
             return Err(missing_gen_key(&self.data_root, &key));
         }
@@ -452,7 +452,7 @@ impl AttentionTable {
             .by_keys
             .get(&key)
             .ok_or_else(|| missing_encoder_key(&self.data_root, &key))?;
-        let points = perf_interp::node_points(node);
+        let points = perf_interp::node_points(node.node());
         if points.is_empty() {
             return Err(missing_encoder_key(&self.data_root, &key));
         }
@@ -467,7 +467,7 @@ impl AttentionTable {
             Ok(ContextGrids {
                 by_keys: raw
                     .into_iter()
-                    .map(|(k, g)| (k, grid3_to_node(&g)))
+                    .map(|(k, g)| (k, PreparedGrid::new(grid3_to_node(&g))))
                     .collect(),
             })
         });
@@ -486,7 +486,7 @@ impl AttentionTable {
             Ok(GenerationGrids {
                 by_keys: raw
                     .into_iter()
-                    .map(|(k, g)| (k, grid3_to_node(&g)))
+                    .map(|(k, g)| (k, PreparedGrid::new(grid3_to_node(&g))))
                     .collect(),
             })
         });
@@ -499,7 +499,7 @@ impl AttentionTable {
             Ok(EncoderGrids {
                 by_keys: raw
                     .into_iter()
-                    .map(|(k, g)| (k, grid3_to_node(&g)))
+                    .map(|(k, g)| (k, PreparedGrid::new(grid3_to_node(&g))))
                     .collect(),
             })
         });
