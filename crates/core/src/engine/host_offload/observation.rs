@@ -14,51 +14,50 @@ pub(crate) struct HostStoreBlockMapping {
     pub(crate) logical_block_index: usize,
 }
 
-/// Borrowed host-offload transition emitted only when a caller installs an
-/// observer. The observer owns any retention or serialization policy.
-pub(crate) struct HostOffloadObservation<'a> {
+/// Host-offload transition emitted only when a caller installs an observer.
+pub(crate) struct HostOffloadObservation {
     pub(crate) request_id: Uuid,
-    pub(crate) event: HostOffloadObservationData<'a>,
+    pub(crate) event: HostOffloadObservationData,
 }
 
-pub(crate) enum HostOffloadObservationData<'a> {
+pub(crate) enum HostOffloadObservationData {
     StorePrepared {
         at_ms: f64,
         transfer_id: TransferId,
-        blocks: &'a [HostBlockKey],
+        blocks: Vec<HostBlockKey>,
     },
     /// Framework-owned identity seam for the corresponding prepared store.
     StoreBlockMappings {
         at_ms: f64,
         transfer_id: TransferId,
-        mappings: &'a [HostStoreBlockMapping],
+        mappings: Vec<HostStoreBlockMapping>,
     },
     StoreSubmitted {
         at_ms: f64,
         completes_at_ms: f64,
         transfer_id: TransferId,
-        blocks: &'a [HostBlockKey],
+        blocks: Vec<HostBlockKey>,
     },
     StoreCompleted {
         at_ms: f64,
         transfer_id: TransferId,
-        blocks: &'a [HostBlockKey],
+        blocks: Vec<HostBlockKey>,
     },
     LoadQueued {
         at_ms: f64,
         completes_at_ms: f64,
         transfer_id: TransferId,
-        blocks: &'a [HostBlockKey],
+        blocks: Vec<HostBlockKey>,
     },
     LoadCompleted {
         at_ms: f64,
         transfer_id: TransferId,
-        blocks: &'a [HostBlockKey],
+        blocks: Vec<HostBlockKey>,
     },
     LoadCancelled {
         at_ms: f64,
         transfer_id: TransferId,
-        blocks: &'a [HostBlockKey],
+        blocks: Vec<HostBlockKey>,
     },
     Evicted {
         at_ms: f64,
@@ -66,12 +65,12 @@ pub(crate) enum HostOffloadObservationData<'a> {
     },
     CapacityRetry {
         at_ms: f64,
-        blocks: &'a [HostBlockKey],
+        blocks: Vec<HostBlockKey>,
         structurally_unfittable: bool,
     },
 }
 
 /// Optional synchronous destination for parity observations.
 pub(crate) trait HostOffloadObserver: Send + Sync {
-    fn record(&self, observation: HostOffloadObservation<'_>);
+    fn record(&self, observation: HostOffloadObservation);
 }

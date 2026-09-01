@@ -18,8 +18,6 @@ use crate::engine::common::speculative::{
 use crate::engine::common::utils::{
     compute_prefill_handoff_delay_ms, prefill_handoff_transfer_timing,
 };
-#[cfg(test)]
-use crate::engine::host_offload::HostCacheDomain;
 use crate::engine::host_offload::HostCacheRankHandle;
 use crate::engine::kv_manager::G1Manager;
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
@@ -39,7 +37,7 @@ use crate::engine::scheduler::{
 };
 use crate::engine::trace::TraceCollector;
 use crate::engine::{
-    CacheTierAttribution, HandoffId, PressureEvent, PressureKind, PressureState,
+    CacheTierAttribution, HandoffId, KvEventPublisher, PressureEvent, PressureKind, PressureState,
     modeled_duration_ms,
 };
 
@@ -570,40 +568,12 @@ impl VllmCore {
 
     #[cfg(test)]
     pub(crate) fn new(args: MockEngineArgs) -> Self {
-        Self::new_with_worker_rank(args, 0, 0, 0, false)
+        Self::new_with_worker_rank_and_host_handle(args, 0, 0, 0, false, None)
     }
 
     #[cfg(test)]
     pub(crate) fn new_with_kv_capture(args: MockEngineArgs, worker_id: u64) -> Self {
-        Self::new_with_worker_rank(args, worker_id, 0, worker_id, true)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_with_worker_rank(
-        args: MockEngineArgs,
-        worker_id: u64,
-        dp_rank: u32,
-        seed_offset: u64,
-        capture_kv_events: bool,
-    ) -> Self {
-        let host_handle = args.native_host_offload.as_ref().map(|config| {
-            HostCacheDomain::new(
-                config,
-                args.block_size,
-                args.kv_cache_bytes_per_token
-                    .expect("validated native host offload requires KV byte geometry"),
-            )
-            .expect("validated native host-offload configuration must construct")
-            .bind_rank(dp_rank)
-        });
-        Self::new_with_worker_rank_and_host_handle(
-            args,
-            worker_id,
-            dp_rank,
-            seed_offset,
-            capture_kv_events,
-            host_handle,
-        )
+        Self::new_with_worker_rank_and_host_handle(args, worker_id, 0, worker_id, true, None)
     }
 
     pub(crate) fn new_with_worker_rank_and_host_handle(
@@ -641,7 +611,8 @@ impl VllmCore {
         } else {
             KvEventPublishers::default()
         };
-        let retain_local_hashes = !kv_event_publishers.is_empty() || args.emit_kv_events;
+        let events = KvEventPublisher::new(kv_event_publishers, dp_rank);
+        let retain_local_hashes = events.is_enabled() || args.emit_kv_events;
         let emit_token_ids = args.emit_kv_token_ids;
         let speculative_sampler = args.aic_nextn.map(|nextn| {
             let rates =
@@ -649,13 +620,13 @@ impl VllmCore {
                     .expect("normalized MTP acceptance rates");
             SpeculativeDecodeSampler::new(rates, args.aic_mtp_seed.wrapping_add(seed_offset))
         });
-        let native_host_offload = host_handle.map(VllmHostOffloadAdapter::new);
+        let native_host_offload =
+            host_handle.map(|domain| VllmHostOffloadAdapter::new(domain, events.clone()));
         Self {
-            kv_manager: G1Manager::new_with_caching(
+            kv_manager: G1Manager::new_with_event_publisher(
                 args.num_gpu_blocks,
                 args.block_size,
-                kv_event_publishers,
-                dp_rank,
+                events,
                 args.enable_prefix_caching,
             ),
             args,
@@ -2690,6 +2661,26 @@ fn scale_decode_time(decode_ms: f64, args: &MockEngineArgs) -> anyhow::Result<Du
 mod waiting_queue_tests {
     use super::*;
     use crate::engine::NativeHostOffloadConfig;
+    use crate::engine::host_offload::HostCacheDomain;
+
+    fn host_core(args: MockEngineArgs) -> VllmCore {
+        let domain = HostCacheDomain::new(
+            args.native_host_offload
+                .as_ref()
+                .expect("host fixture requires native host offload"),
+            args.block_size,
+            250_000,
+        )
+        .unwrap();
+        VllmCore::new_with_worker_rank_and_host_handle(
+            args,
+            0,
+            0,
+            0,
+            false,
+            Some(domain.bind_rank(0)),
+        )
+    }
 
     #[test]
     fn connector_queue_is_fifo_without_scanning_or_shifting_ordinary_waiters() {
@@ -2700,11 +2691,10 @@ mod waiting_queue_tests {
             .max_num_seqs(Some(8))
             .max_num_batched_tokens(Some(32))
             .enable_prefix_caching(true)
-            .kv_cache_bytes_per_token(Some(250_000))
             .native_host_offload(Some(NativeHostOffloadConfig::new(8)))
             .build()
             .unwrap();
-        let mut core = VllmCore::new(args);
+        let mut core = host_core(args);
         let ids = (0..ORDINARY + 2)
             .map(|index| Uuid::from_u128(100_000 + index as u128))
             .collect::<Vec<_>>();
@@ -2756,11 +2746,10 @@ mod waiting_queue_tests {
             .max_num_seqs(Some(8))
             .max_num_batched_tokens(Some(32))
             .enable_prefix_caching(true)
-            .kv_cache_bytes_per_token(Some(250_000))
             .native_host_offload(Some(NativeHostOffloadConfig::new(8)))
             .build()
             .unwrap();
-        let mut core = VllmCore::new(args);
+        let mut core = host_core(args);
         let deadline_waiter = Uuid::from_u128(100_100);
         core.receive(DirectRequest {
             tokens: vec![1, 2, 3, 4],

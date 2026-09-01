@@ -37,16 +37,7 @@ impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
             counter,
             workers: workers
                 .into_iter()
-                .map(|worker| {
-                    (
-                        worker.worker_id,
-                        worker
-                            .schedulers
-                            .into_iter()
-                            .map(|scheduler| scheduler.scheduler_id)
-                            .collect(),
-                    )
-                })
+                .map(|worker| (worker.worker_id, worker.scheduler_ids()))
                 .collect(),
             events: PhantomData,
         }
@@ -120,14 +111,8 @@ where
 
     fn worker_ready(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
         self.counter.worker_ready(worker.worker_id);
-        self.workers.insert(
-            worker.worker_id,
-            worker
-                .schedulers
-                .into_iter()
-                .map(|scheduler| scheduler.scheduler_id)
-                .collect(),
-        );
+        self.workers
+            .insert(worker.worker_id, worker.scheduler_ids());
         Ok(Vec::new())
     }
 
@@ -161,16 +146,7 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
             next: 0,
             workers: workers
                 .into_iter()
-                .map(|worker| {
-                    (
-                        worker.worker_id,
-                        worker
-                            .schedulers
-                            .into_iter()
-                            .map(|scheduler| scheduler.scheduler_id)
-                            .collect(),
-                    )
-                })
+                .map(|worker| (worker.worker_id, worker.scheduler_ids()))
                 .collect(),
             events: PhantomData,
         }
@@ -240,14 +216,8 @@ where
     }
 
     fn worker_ready(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
-        self.workers.insert(
-            worker.worker_id,
-            worker
-                .schedulers
-                .into_iter()
-                .map(|scheduler| scheduler.scheduler_id)
-                .collect(),
-        );
+        self.workers
+            .insert(worker.worker_id, worker.scheduler_ids());
         Ok(Vec::new())
     }
 

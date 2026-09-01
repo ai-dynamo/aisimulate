@@ -14,6 +14,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::engine::HostOffloadObserver;
+use crate::engine::KvEventPublisher;
 use crate::engine::common::protocols::PrefillCost;
 use crate::engine::common::sequence::RequestSequence;
 use crate::engine::host_offload::{
@@ -24,6 +25,10 @@ use crate::engine::host_offload::{
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReuseDependency,
 };
+
+mod events;
+
+use events::HostKvEventTransactions;
 
 struct LoadingPrefix {
     transfer_id: TransferId,
@@ -142,6 +147,7 @@ pub(super) struct HostTransferProgress {
 
 pub(super) struct VllmHostOffloadAdapter {
     domain: HostCacheRankHandle,
+    events: HostKvEventTransactions,
     compute_not_before_ms: f64,
     /// Present only for detailed artifact capture. Ordinary runs neither retain
     /// request-local mapping state nor allocate mapping payloads.
@@ -154,9 +160,10 @@ impl VllmHostOffloadAdapter {
         self.observer = Some(observer);
     }
 
-    pub(super) fn new(domain: HostCacheRankHandle) -> Self {
+    pub(super) fn new(domain: HostCacheRankHandle, events: KvEventPublisher) -> Self {
         Self {
             domain,
+            events: HostKvEventTransactions::new(events),
             compute_not_before_ms: 0.0,
             observer: None,
         }
@@ -306,7 +313,7 @@ impl VllmHostOffloadAdapter {
             };
             let dependency = source_dependency(*transfer_id);
             assert!(kv_manager.satisfy_native_source_dependency(dependency));
-            kv_manager.complete_native_host_store(dependency);
+            self.events.complete_store(dependency);
         }
 
         let mut loads = Vec::new();
@@ -472,7 +479,7 @@ impl VllmHostOffloadAdapter {
             } => {
                 assert_eq!(stored_blocks, snapshot.len());
                 let dependency = source_dependency(transfer_id);
-                kv_manager.stage_native_host_store(
+                self.events.stage_store(
                     dependency,
                     lease,
                     &missing_indices,
@@ -495,7 +502,7 @@ impl VllmHostOffloadAdapter {
                         event: HostOffloadObservationData::StoreBlockMappings {
                             at_ms: now_ms,
                             transfer_id,
-                            mappings: &mappings,
+                            mappings,
                         },
                     });
                 }

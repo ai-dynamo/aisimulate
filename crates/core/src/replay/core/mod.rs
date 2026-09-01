@@ -107,6 +107,13 @@ impl WorkerTopology {
             schedulers: Vec::new(),
         }
     }
+
+    pub fn scheduler_ids(&self) -> Vec<usize> {
+        self.schedulers
+            .iter()
+            .map(|scheduler| scheduler.scheduler_id)
+            .collect()
+    }
 }
 
 pub trait PlacementPolicy<Request> {

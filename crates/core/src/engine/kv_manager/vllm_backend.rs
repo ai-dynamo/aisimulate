@@ -9,8 +9,6 @@
 
 use uuid::Uuid;
 
-use rustc_hash::FxHashMap;
-
 pub(crate) use crate::engine::cache::vllm_block_pool::SourceReuseDependency;
 use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, ReserveOutcome, VllmBlockPool,
@@ -19,7 +17,7 @@ use crate::engine::common::hashing::{BlockHash, SequenceHash};
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost};
 use crate::engine::common::sequence::{BlockIdentity, RequestSequence};
-use crate::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
+use crate::engine::{KvBlock, KvEventData, KvEventPublisher, KvEventTier, StoredBlocks};
 
 struct PendingStore {
     parent_hash: Option<SequenceHash>,
@@ -102,7 +100,7 @@ impl BlockRequestLease {
             .and_then(|entry| entry.identity.sequence_hash)
     }
 
-    fn native_host_store(&self, block_index: usize) -> StoredBlocks {
+    pub(crate) fn stored_block_event(&self, block_index: usize) -> StoredBlocks {
         let entry = self
             .entries
             .get(block_index)
@@ -261,10 +259,7 @@ pub(crate) struct VllmKvManager {
     pool: VllmBlockPool,
     block_size: usize,
     enable_prefix_caching: bool,
-    kv_event_publishers: KvEventPublishers,
-    dp_rank: u32,
-    next_event_id: u64,
-    pending_host_stores: FxHashMap<SourceReuseDependency, Vec<StoredBlocks>>,
+    events: KvEventPublisher,
 }
 
 impl VllmKvManager {
@@ -275,18 +270,29 @@ impl VllmKvManager {
         kv_event_publishers: KvEventPublishers,
         dp_rank: u32,
     ) -> Self {
+        Self::new_with_event_publisher(
+            max_capacity,
+            block_size,
+            enable_prefix_caching,
+            KvEventPublisher::new(kv_event_publishers, dp_rank),
+        )
+    }
+
+    pub(crate) fn new_with_event_publisher(
+        max_capacity: usize,
+        block_size: usize,
+        enable_prefix_caching: bool,
+        events: KvEventPublisher,
+    ) -> Self {
         assert!(block_size > 0, "block_size must be > 0");
-        if !kv_event_publishers.is_empty() {
-            tracing::info!(dp_rank, block_size, "VllmKvManager initialized");
+        if events.is_enabled() {
+            tracing::info!(block_size, "VllmKvManager initialized with KV events");
         }
         Self {
             pool: VllmBlockPool::new(max_capacity),
             block_size,
             enable_prefix_caching,
-            kv_event_publishers,
-            dp_rank,
-            next_event_id: 0,
-            pending_host_stores: FxHashMap::default(),
+            events,
         }
     }
 
@@ -988,53 +994,8 @@ impl VllmKvManager {
         self.pool.cancel(reservation.pool);
     }
 
-    pub(crate) fn stage_native_host_store(
-        &mut self,
-        dependency: SourceReuseDependency,
-        lease: &BlockRequestLease,
-        block_indices: &[usize],
-        evicted: Vec<SequenceHash>,
-    ) {
-        if self.kv_event_publishers.is_empty() {
-            return;
-        }
-        let stores = block_indices
-            .iter()
-            .map(|&index| lease.native_host_store(index))
-            .collect();
-        assert!(
-            self.pending_host_stores
-                .insert(dependency, stores)
-                .is_none(),
-            "native host store dependency was reused before completion"
-        );
-        self.publish_native_host_removed(evicted);
-    }
-
-    pub(crate) fn complete_native_host_store(&mut self, dependency: SourceReuseDependency) {
-        let Some(stores) = self.pending_host_stores.remove(&dependency) else {
-            debug_assert!(self.kv_event_publishers.is_empty());
-            return;
-        };
-        for store in stores {
-            self.publish_event_data(KvEventData::Stored(store), KvEventTier::HostPinned, None);
-        }
-    }
-
-    fn publish_native_host_removed(&mut self, hashes: Vec<SequenceHash>) {
-        if !hashes.is_empty() {
-            self.publish_event_data(
-                KvEventData::Removed {
-                    block_hashes: hashes,
-                },
-                KvEventTier::HostPinned,
-                None,
-            );
-        }
-    }
-
     fn materialize_store_events(&self) -> bool {
-        !self.kv_event_publishers.is_empty() || *kv_cache_trace::KV_CACHE_TRACE_ENABLED
+        self.events.is_enabled() || *kv_cache_trace::KV_CACHE_TRACE_ENABLED
     }
 
     fn publish_store_sequence(&mut self, stores: Vec<Option<StoredBlock>>) {
@@ -1091,14 +1052,14 @@ impl VllmKvManager {
         if *kv_cache_trace::KV_CACHE_TRACE_ENABLED {
             kv_cache_trace::log_vllm_trace(
                 if is_store { "allocation" } else { "eviction" },
-                self.dp_rank,
+                self.events.dp_rank(),
                 self.block_size,
                 self.num_active_blocks(),
                 self.num_inactive_blocks(),
                 self.max_capacity(),
             );
         }
-        if self.kv_event_publishers.is_empty() {
+        if !self.events.is_enabled() {
             return;
         }
         assert!(local_hashes.is_empty() || local_hashes.len() == full_blocks.len());
@@ -1127,30 +1088,8 @@ impl VllmKvManager {
                 block_hashes: full_blocks,
             }
         };
-        self.publish_event_data(data, KvEventTier::Device, token_ids.as_deref());
-    }
-
-    fn publish_event_data(
-        &mut self,
-        data: KvEventData,
-        tier: KvEventTier,
-        token_ids: Option<&[Vec<u32>]>,
-    ) {
-        if !self.enable_prefix_caching || self.kv_event_publishers.is_empty() {
-            return;
-        }
-        let event = KvEvent {
-            event_id: self.next_event_id,
-            data,
-            dp_rank: self.dp_rank,
-            tier,
-        };
-        self.next_event_id = self
-            .next_event_id
-            .checked_add(1)
-            .unwrap_or_else(|| panic!("KV event ID overflow"));
-        if let Err(error) = self.kv_event_publishers.publish(event, token_ids) {
-            tracing::warn!(error = %error, "failed to publish native G1 KV event");
+        if self.enable_prefix_caching {
+            self.events.publish(data, KvEventTier::Device, token_ids);
         }
     }
 
@@ -1172,6 +1111,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::engine::KvEvent;
     use crate::engine::common::protocols::KvCacheEventSink;
 
     #[derive(Default)]
@@ -1533,8 +1473,8 @@ mod tests {
             panic!("capacity pressure must emit one removal event")
         };
         assert_eq!(
-            block_hashes,
-            &vec![
+            block_hashes.as_slice(),
+            &[
                 first_hashes[3],
                 first_hashes[2],
                 second_divergent_hash,

@@ -416,8 +416,6 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         aic_nextn_accept_rates: config.aic_nextn_accept_rates.clone(),
         aic_mtp_seed: config.aic_mtp_seed,
         kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,
-        #[cfg(test)]
-        kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
         native_host_offload: config.native_host_offload,
         kv_transfer_bandwidth: config.kv_transfer_bandwidth,
         kv_transfer_timing_mode: match config.kv_transfer_timing_mode {
@@ -640,7 +638,7 @@ mod tests {
     }
 
     impl HostOffloadObserver for HostEventCapture {
-        fn record(&self, observation: HostOffloadObservation<'_>) {
+        fn record(&self, observation: HostOffloadObservation) {
             let (kind, at_ms) = match observation.event {
                 HostOffloadObservationData::LoadQueued { at_ms, .. } => ("load_queued", at_ms),
                 HostOffloadObservationData::LoadCompleted { at_ms, .. } => {

@@ -8,7 +8,7 @@
 
 use uuid::Uuid;
 
-use crate::engine::common::hashing::SequenceHash;
+use crate::engine::KvEventPublisher;
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost};
 use crate::engine::common::sequence::RequestSequence;
 
@@ -94,6 +94,22 @@ impl G1Manager {
                 enable_prefix_caching,
                 kv_event_publishers,
                 dp_rank,
+            ),
+        }
+    }
+
+    pub(crate) fn new_with_event_publisher(
+        max_capacity: usize,
+        block_size: usize,
+        events: KvEventPublisher,
+        enable_prefix_caching: bool,
+    ) -> Self {
+        Self {
+            inner: VllmKvManager::new_with_event_publisher(
+                max_capacity,
+                block_size,
+                enable_prefix_caching,
+                events,
             ),
         }
     }
@@ -217,21 +233,6 @@ impl G1Manager {
         debug_assert_eq!(lease.owner(), owner, "native lease owner mismatch");
         self.inner
             .attach_store_source_dependency(owner, snapshot.inner, dependency);
-    }
-
-    pub(crate) fn stage_native_host_store(
-        &mut self,
-        dependency: SourceReuseDependency,
-        lease: &BlockRequestLease,
-        block_indices: &[usize],
-        evicted: Vec<SequenceHash>,
-    ) {
-        self.inner
-            .stage_native_host_store(dependency, lease, block_indices, evicted);
-    }
-
-    pub(crate) fn complete_native_host_store(&mut self, dependency: SourceReuseDependency) {
-        self.inner.complete_native_host_store(dependency);
     }
 
     pub(crate) fn satisfy_native_source_dependency(

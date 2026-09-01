@@ -22,7 +22,29 @@ fn adapter(capacity_blocks: usize) -> VllmHostOffloadAdapter {
         250_000,
     )
     .unwrap();
-    VllmHostOffloadAdapter::new(domain.bind_rank(0))
+    VllmHostOffloadAdapter::new(
+        domain.bind_rank(0),
+        crate::engine::KvEventPublisher::new(KvEventPublishers::default(), 0),
+    )
+}
+
+fn host_core(args: MockEngineArgs, capture_kv_events: bool) -> VllmCore {
+    let domain = HostCacheDomain::new(
+        args.native_host_offload
+            .as_ref()
+            .expect("host fixture requires native host offload"),
+        args.block_size,
+        250_000,
+    )
+    .unwrap();
+    VllmCore::new_with_worker_rank_and_host_handle(
+        args,
+        0,
+        0,
+        0,
+        capture_kv_events,
+        Some(domain.bind_rank(0)),
+    )
 }
 
 fn request(
@@ -67,14 +89,13 @@ fn completed_host_stores_and_evictions_emit_host_pinned_kv_events() {
         .max_num_seqs(Some(1))
         .max_num_batched_tokens(Some(4))
         .enable_prefix_caching(true)
-        .kv_cache_bytes_per_token(Some(250_000))
         .native_host_offload(Some(
             NativeHostOffloadConfig::new(1).with_bandwidths(0.0, 0.0),
         ))
         .speedup_ratio(0.0)
         .build()
         .unwrap();
-    let mut core = VllmCore::new_with_kv_capture(args, 0);
+    let mut core = host_core(args, true);
     let mut collector = TraceCollector::default();
 
     let mut complete = |uuid, tokens: Vec<u32>, now_ms: f64| {
@@ -131,7 +152,7 @@ impl EvictionCapture {
 }
 
 impl HostOffloadObserver for EvictionCapture {
-    fn record(&self, observation: HostOffloadObservation<'_>) {
+    fn record(&self, observation: HostOffloadObservation) {
         if let HostOffloadObservationData::Evicted { block, .. } = observation.event {
             self.0
                 .lock()
@@ -150,7 +171,6 @@ fn exhausted_pass_budget_does_not_touch_a_waiting_requests_host_prefix() {
         .max_num_batched_tokens(Some(4))
         .enable_chunked_prefill(true)
         .enable_prefix_caching(true)
-        .kv_cache_bytes_per_token(Some(250_000))
         .native_host_offload(Some(NativeHostOffloadConfig {
             num_host_blocks: 4,
             d2h_bandwidth_gbps: 0.0,
@@ -159,7 +179,7 @@ fn exhausted_pass_budget_does_not_touch_a_waiting_requests_host_prefix() {
         .speedup_ratio(0.0)
         .build()
         .unwrap();
-    let mut core = VllmCore::new(args);
+    let mut core = host_core(args, false);
     let evictions = Arc::new(EvictionCapture::default());
     core.set_host_offload_observer(evictions.clone());
     let mut collector = TraceCollector::default();

@@ -9,6 +9,7 @@ mod config;
 pub mod generalized;
 mod handoff;
 mod host_offload;
+mod kv_events;
 mod kv_manager;
 mod protocol;
 mod runtime;
@@ -19,6 +20,7 @@ mod trace;
 pub(crate) use host_offload::{
     HostBlockKey, HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver,
 };
+pub(crate) use kv_events::KvEventPublisher;
 
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;

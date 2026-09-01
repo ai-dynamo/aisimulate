@@ -290,6 +290,8 @@ pub(crate) struct HostTier {
     /// Installed only by detailed replay artifacts; ordinary runs retain no
     /// host-event buffer and allocate no observation payloads.
     observer: Option<Arc<dyn HostOffloadObserver>>,
+    buffer_observations: bool,
+    pending_observations: Vec<HostOffloadObservation>,
 }
 
 impl HostTier {
@@ -308,11 +310,25 @@ impl HostTier {
             current_time_ms: 0.0,
             warned_structurally_unfittable: false,
             observer: None,
+            buffer_observations: false,
+            pending_observations: Vec::new(),
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn set_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
+        assert!(!self.buffer_observations);
         self.observer = Some(observer);
+    }
+
+    pub(crate) fn buffer_observer_events(&mut self) {
+        assert!(self.observer.is_none());
+        self.buffer_observations = true;
+    }
+
+    pub(crate) fn drain_observations(&mut self) -> Vec<HostOffloadObservation> {
+        assert!(self.buffer_observations);
+        std::mem::take(&mut self.pending_observations)
     }
 
     /// Atomically admit the missing subset of one per-request store cohort.
@@ -354,11 +370,11 @@ impl HostTier {
                 );
                 self.warned_structurally_unfittable = true;
             }
-            self.observe(HostOffloadObservation {
+            self.observe_with(|| HostOffloadObservation {
                 request_id,
                 event: HostOffloadObservationData::CapacityRetry {
                     at_ms: now_ms,
-                    blocks: &missing,
+                    blocks: missing.clone(),
                     structurally_unfittable,
                 },
             });
@@ -375,7 +391,7 @@ impl HostTier {
             assert_eq!(entry.state, EntryState::Resident);
             assert_eq!(entry.load_pins, 0);
             self.lru.remove(*victim);
-            self.observe(HostOffloadObservation {
+            self.observe_with(|| HostOffloadObservation {
                 request_id,
                 event: HostOffloadObservationData::Evicted {
                     at_ms: now_ms,
@@ -399,12 +415,12 @@ impl HostTier {
             );
         }
         let stored_blocks = missing.len();
-        self.observe(HostOffloadObservation {
+        self.observe_with(|| HostOffloadObservation {
             request_id,
             event: HostOffloadObservationData::StorePrepared {
                 at_ms: now_ms,
                 transfer_id,
-                blocks: &missing,
+                blocks: missing.clone(),
             },
         });
         self.transfers.insert(
@@ -450,12 +466,15 @@ impl HostTier {
                 completion_order: 0,
                 transfer_id,
             }));
-            if let Some(Transfer::Store {
-                request_id, blocks, ..
-            }) = self.transfers.get(&transfer_id)
-            {
-                self.observe(HostOffloadObservation {
-                    request_id: *request_id,
+            if self.observations_enabled() {
+                let (request_id, blocks) = match self.transfers.get(&transfer_id) {
+                    Some(Transfer::Store {
+                        request_id, blocks, ..
+                    }) => (*request_id, blocks.clone()),
+                    _ => unreachable!(),
+                };
+                self.observe_with(|| HostOffloadObservation {
+                    request_id,
                     event: HostOffloadObservationData::StoreSubmitted {
                         at_ms: now_ms,
                         completes_at_ms,
@@ -544,13 +563,13 @@ impl HostTier {
             completion_order: 1,
             transfer_id,
         }));
-        self.observe(HostOffloadObservation {
+        self.observe_with(|| HostOffloadObservation {
             request_id,
             event: HostOffloadObservationData::LoadQueued {
                 at_ms: now_ms,
                 completes_at_ms,
                 transfer_id,
-                blocks,
+                blocks: blocks.to_vec(),
             },
         });
         LoadOutcome::Queued(transfer_id)
@@ -593,12 +612,12 @@ impl HostTier {
             "cancelled host load lost its deadline"
         );
         self.release_load_pins(&blocks);
-        self.observe(HostOffloadObservation {
+        self.observe_with(|| HostOffloadObservation {
             request_id,
             event: HostOffloadObservationData::LoadCancelled {
                 at_ms: observed_at_ms,
                 transfer_id,
-                blocks: &blocks,
+                blocks,
             },
         });
         true
@@ -641,12 +660,12 @@ impl HostTier {
                         entry.state = EntryState::Resident;
                     }
                     self.lru.touch_cohort(&blocks);
-                    self.observe(HostOffloadObservation {
+                    self.observe_with(|| HostOffloadObservation {
                         request_id,
                         event: HostOffloadObservationData::StoreCompleted {
                             at_ms: deadline.at_ms,
                             transfer_id,
-                            blocks: &blocks,
+                            blocks: blocks.clone(),
                         },
                     });
                     completed.push(CompletedTransfer::Store {
@@ -659,12 +678,12 @@ impl HostTier {
                     request_id, blocks, ..
                 } => {
                     self.release_load_pins(&blocks);
-                    self.observe(HostOffloadObservation {
+                    self.observe_with(|| HostOffloadObservation {
                         request_id,
                         event: HostOffloadObservationData::LoadCompleted {
                             at_ms: deadline.at_ms,
                             transfer_id,
-                            blocks: &blocks,
+                            blocks: blocks.clone(),
                         },
                     });
                     completed.push(CompletedTransfer::Load {
@@ -703,9 +722,20 @@ impl HostTier {
         !self.transfers.is_empty()
     }
 
-    fn observe(&self, observation: HostOffloadObservation<'_>) {
+    fn observations_enabled(&self) -> bool {
+        self.observer.is_some() || self.buffer_observations
+    }
+
+    fn observe_with(&mut self, build: impl FnOnce() -> HostOffloadObservation) {
+        if !self.observations_enabled() {
+            return;
+        }
+        let observation = build();
         if let Some(observer) = &self.observer {
             observer.record(observation);
+        } else {
+            debug_assert!(self.buffer_observations);
+            self.pending_observations.push(observation);
         }
     }
 
@@ -823,7 +853,7 @@ mod tests {
     }
 
     impl HostOffloadObserver for CancellationObserver {
-        fn record(&self, observation: HostOffloadObservation<'_>) {
+        fn record(&self, observation: HostOffloadObservation) {
             let HostOffloadObservation {
                 request_id,
                 event:
