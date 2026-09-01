@@ -13,6 +13,7 @@ use crate::engine::{
 use crate::replay::core::RequestIdentity;
 use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::protocol::DirectRequest;
+use crate::replay::telemetry::ReplayTrafficMetricsSnapshot;
 
 impl RequestIdentity for DirectRequest {
     fn request_id(&self) -> Option<Uuid> {
@@ -298,6 +299,15 @@ impl TrafficAccumulator {
         }
     }
 
+    fn has_observations(&self) -> bool {
+        self.offered_count != 0
+            || self.shape_count != 0
+            || self.ttft_count != 0
+            || self.itl_count != 0
+            || self.hit_rate_count != 0
+            || self.accept_length_forward_count != 0
+    }
+
     /// Record one request offered to the replay runtime.
     pub(crate) fn on_arrival(&mut self) {
         self.offered_count += 1;
@@ -426,6 +436,102 @@ impl TrafficAccumulator {
             hit_rate_count,
             accept_length_forward_count,
         }
+    }
+}
+
+/// Planner and optional telemetry traffic windows fed from the same replay
+/// boundaries. The planner accumulator retains its existing destructive-drain
+/// cadence; enabling telemetry adds an independent window so observation
+/// cannot perturb scaling inputs.
+#[derive(Debug)]
+pub(crate) struct TrafficAccumulators {
+    planner: TrafficAccumulator,
+    telemetry: Option<TrafficAccumulator>,
+}
+
+impl TrafficAccumulators {
+    pub(crate) fn new() -> Self {
+        Self {
+            planner: TrafficAccumulator::new(),
+            telemetry: None,
+        }
+    }
+
+    pub(crate) fn enable_telemetry(&mut self) {
+        if self.telemetry.is_none() {
+            self.telemetry = Some(TrafficAccumulator::new());
+        }
+    }
+
+    pub(crate) fn on_arrival(&mut self) {
+        self.planner.on_arrival();
+        if let Some(telemetry) = self.telemetry.as_mut() {
+            telemetry.on_arrival();
+        }
+    }
+
+    pub(crate) fn on_completion(
+        &mut self,
+        input_tokens: usize,
+        output_tokens: usize,
+        latencies: Option<(f64, f64)>,
+    ) {
+        self.planner
+            .on_completion(input_tokens, output_tokens, latencies);
+        if let Some(telemetry) = self.telemetry.as_mut() {
+            telemetry.on_completion(input_tokens, output_tokens, latencies);
+        }
+    }
+
+    pub(crate) fn on_admission(&mut self, overlap_blocks: u32, isl_blocks: u32) {
+        self.planner.on_admission(overlap_blocks, isl_blocks);
+        if let Some(telemetry) = self.telemetry.as_mut() {
+            telemetry.on_admission(overlap_blocks, isl_blocks);
+        }
+    }
+
+    pub(crate) fn on_accept_length_sample(
+        &mut self,
+        visible_output_tokens: usize,
+        decode_forwards: usize,
+    ) {
+        self.planner
+            .on_accept_length_sample(visible_output_tokens, decode_forwards);
+        if let Some(telemetry) = self.telemetry.as_mut() {
+            telemetry.on_accept_length_sample(visible_output_tokens, decode_forwards);
+        }
+    }
+
+    pub(crate) fn drain_planner(&mut self, now_ms: f64) -> TrafficStats {
+        self.planner.drain(now_ms)
+    }
+
+    pub(crate) fn drain_telemetry(&mut self, now_ms: f64) -> ReplayTrafficMetricsSnapshot {
+        let Some(telemetry) = self.telemetry.as_mut() else {
+            return ReplayTrafficMetricsSnapshot::default();
+        };
+        let stats = telemetry.drain(now_ms);
+        ReplayTrafficMetricsSnapshot {
+            duration_s: stats.duration_s,
+            arriving_requests: stats.num_req,
+            completed_requests: stats.shape_count,
+            avg_isl: stats.avg_isl,
+            avg_osl: stats.avg_osl,
+            avg_ttft_ms: stats.avg_ttft_ms,
+            avg_itl_ms: stats.avg_itl_ms,
+            ttft_count: stats.ttft_count,
+            itl_count: stats.itl_count,
+            avg_router_kv_hit_rate: stats.avg_kv_hit_rate,
+            router_kv_hit_rate_count: stats.hit_rate_count,
+            avg_accept_length: stats.avg_accept_length,
+            accept_length_forward_count: stats.accept_length_forward_count,
+        }
+    }
+
+    pub(crate) fn telemetry_has_observations(&self) -> bool {
+        self.telemetry
+            .as_ref()
+            .is_some_and(TrafficAccumulator::has_observations)
     }
 }
 

@@ -82,17 +82,20 @@ pub(crate) enum SimulationEventKind<Events: EngineEventBatch = ()> {
     /// gathered from live runtime state when the tick fires. Re-enqueues itself
     /// at the time the scaling policy returns.
     ScalingTick,
+    /// A policy-neutral telemetry sample scheduled on the replay virtual clock.
+    /// Payload-free: the settled snapshot is gathered when the event fires.
+    TelemetryTick,
 }
 
 impl<Events: EngineEventBatch> SimulationEventKind<Events> {
-    /// Tie-breaker among events at the *same* `at_ms`: a `ScalingTick` always
-    /// sorts after every other kind, so the policy observes a fully settled
-    /// timestamp (all worker completions / ready / handoff events at that time
-    /// drain first). `seq_no` is globally unique, so this only ever reorders a
-    /// tick relative to same-timestamp events — never two real events.
+    /// Tie-breaker among events at the *same* `at_ms`: telemetry first observes
+    /// fully settled workload state, then scaling makes a decision from that
+    /// timestamp. `seq_no` is globally unique, so this only reorders control
+    /// events relative to same-timestamp work.
     fn ordering_rank(&self) -> u8 {
         match self {
-            SimulationEventKind::ScalingTick => 1,
+            SimulationEventKind::TelemetryTick => 1,
+            SimulationEventKind::ScalingTick => 2,
             _ => 0,
         }
     }

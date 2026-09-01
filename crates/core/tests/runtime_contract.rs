@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use aisimulate_core::engine::{Backend, EngineConfig, TimingModel, TimingModelConfig};
 use aisimulate_core::replay::loadgen::ReplayRequestPayload;
@@ -13,7 +13,8 @@ use aisimulate_core::replay::{
     PlacementPolicy, PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters, ReplayCaptureOptions,
     ReplayComposition, ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayError,
     ReplayRequest, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot, ReplaySpec,
-    ReplayTopology, Replayer, WorkerPoolSpec, WorkerTopology,
+    ReplayTelemetryObserver, ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTopology,
+    Replayer, WorkerPoolSpec, WorkerTopology,
 };
 use uuid::Uuid;
 
@@ -77,6 +78,271 @@ fn aggregated_spec(
         sla: Default::default(),
         requests,
     }
+}
+
+struct RecordingTelemetryObserver {
+    samples: Arc<Mutex<Vec<ReplayTelemetrySnapshot>>>,
+}
+
+impl ReplayTelemetryObserver for RecordingTelemetryObserver {
+    fn on_sample(&mut self, snapshot: ReplayTelemetrySnapshot) -> anyhow::Result<()> {
+        self.samples.lock().unwrap().push(snapshot);
+        Ok(())
+    }
+}
+
+struct FailingTelemetryObserver;
+
+impl ReplayTelemetryObserver for FailingTelemetryObserver {
+    fn on_sample(&mut self, _snapshot: ReplayTelemetrySnapshot) -> anyhow::Result<()> {
+        anyhow::bail!("telemetry sink failed")
+    }
+}
+
+#[test]
+fn telemetry_baseline_preserves_t0_activity_and_emits_a_positive_final_tail() {
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = RecordingTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let spec = aggregated_spec(Backend::Vllm, 1, 0.0, vec![request("telemetry", 0.0, 4, 2)]);
+
+    let report = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_telemetry_observer(6.0, Box::new(observer))
+        .unwrap()
+        .run()
+        .unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 1);
+    let samples = samples.lock().unwrap();
+    assert!(samples.len() >= 3);
+
+    let baseline = &samples[0];
+    assert_eq!(baseline.sample_ordinal, 0);
+    assert_eq!(baseline.kind, ReplayTelemetrySampleKind::Baseline);
+    assert_eq!(baseline.interval_start_ms, 0.0);
+    assert_eq!(baseline.sampled_at_ms, 0.0);
+    assert_eq!(baseline.traffic.arriving_requests, 0);
+    assert_eq!(baseline.traffic.completed_requests, 0);
+    assert_eq!(baseline.decode_interval_metrics.cache_hit_tokens, 0);
+    assert_eq!(baseline.decode_interval_metrics.cache_total_tokens, 0);
+    assert_eq!(baseline.decode_interval_metrics.preemptions, 0);
+
+    let first_interval = &samples[1];
+    assert_eq!(first_interval.kind, ReplayTelemetrySampleKind::Periodic);
+    assert_eq!(first_interval.sampled_at_ms, 6.0);
+    assert_eq!(first_interval.traffic.arriving_requests, 1);
+
+    assert_eq!(
+        samples
+            .iter()
+            .skip(1)
+            .map(|sample| sample.traffic.arriving_requests)
+            .sum::<usize>(),
+        1
+    );
+    assert_eq!(
+        samples
+            .iter()
+            .skip(1)
+            .map(|sample| sample.traffic.completed_requests)
+            .sum::<usize>(),
+        1
+    );
+    let final_sample = samples.last().unwrap();
+    assert_eq!(final_sample.kind, ReplayTelemetrySampleKind::Final);
+    assert!(final_sample.sampled_at_ms > final_sample.interval_start_ms);
+    assert!(final_sample.traffic.duration_s > 0.0);
+}
+
+#[test]
+fn telemetry_observer_failures_keep_their_native_error_classification() {
+    let spec = aggregated_spec(
+        Backend::Vllm,
+        1,
+        0.0,
+        vec![request("telemetry-error", 0.0, 4, 1)],
+    );
+
+    let error = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_telemetry_observer(1.0, Box::new(FailingTelemetryObserver))
+        .unwrap()
+        .run()
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ReplayError::Telemetry(message) if message.contains("telemetry sink failed")
+    ));
+}
+
+#[test]
+fn telemetry_interval_must_be_positive_and_finite() {
+    for interval_ms in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+        let spec = aggregated_spec(Backend::Vllm, 1, 0.0, Vec::new());
+        let error = match Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .with_telemetry_observer(interval_ms, Box::new(FailingTelemetryObserver))
+        {
+            Ok(_) => panic!("invalid telemetry interval {interval_ms} was accepted"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, ReplayError::InvalidSpec(_)));
+    }
+}
+
+#[test]
+fn telemetry_sampling_does_not_perturb_the_replay_report() {
+    let spec = aggregated_spec(
+        Backend::Vllm,
+        1,
+        0.0,
+        vec![request("telemetry-neutral", 0.0, 4, 2)],
+    );
+    let capture = ReplayCaptureOptions {
+        determinism: ReplayDeterminism::CanonicalV1,
+        ..ReplayCaptureOptions::default()
+    };
+    let mut baseline = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .run()
+        .unwrap();
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = RecordingTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let mut observed = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .with_telemetry_observer(0.1, Box::new(observer))
+        .unwrap()
+        .run()
+        .unwrap();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert!(
+        (baseline.throughput.decode_worker_seconds - observed.throughput.decode_worker_seconds)
+            .abs()
+            < 1e-12
+    );
+    assert!((baseline.throughput.gpu_hours - observed.throughput.gpu_hours).abs() < 1e-12);
+    // Sampling splits the same resource integral into more floating-point
+    // additions, so normalize its sub-ULP representation before comparing all
+    // other compact-report fields exactly.
+    observed.throughput.decode_worker_seconds = baseline.throughput.decode_worker_seconds;
+    observed.throughput.gpu_hours = baseline.throughput.gpu_hours;
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&baseline.per_request).unwrap(),
+        serde_json::to_value(&observed.per_request).unwrap()
+    );
+    assert!(samples.lock().unwrap().len() > 2);
+}
+
+#[test]
+fn capped_telemetry_does_not_advance_agg_accounting_and_flushes_t0_observations() {
+    let mut spec = aggregated_spec(
+        Backend::Vllm,
+        1,
+        0.0,
+        vec![request("capped-telemetry", 0.0, 4, 2)],
+    );
+    spec.max_sim_time_ms = Some(0.0);
+    let capture = ReplayCaptureOptions {
+        determinism: ReplayDeterminism::CanonicalV1,
+        ..ReplayCaptureOptions::default()
+    };
+    let mut baseline = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .run()
+        .unwrap();
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = RecordingTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let mut observed = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .with_telemetry_observer(0.1, Box::new(observer))
+        .unwrap()
+        .run()
+        .unwrap();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(baseline.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(observed.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(baseline.throughput.gpu_hours, 0.0);
+    assert_eq!(observed.throughput.gpu_hours, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 2);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    let final_sample = &samples[1];
+    assert_eq!(final_sample.kind, ReplayTelemetrySampleKind::Final);
+    assert_eq!(final_sample.interval_start_ms, 0.0);
+    assert_eq!(final_sample.sampled_at_ms, 0.0);
+    assert_eq!(final_sample.traffic.duration_s, 0.0);
+    assert_eq!(final_sample.traffic.arriving_requests, 1);
+}
+
+#[test]
+fn telemetry_heartbeats_do_not_advance_agg_through_a_capped_idle_gap() {
+    let mut spec = aggregated_spec(
+        Backend::Vllm,
+        1,
+        0.0,
+        vec![request("after-cap", 10.0, 4, 2)],
+    );
+    spec.max_sim_time_ms = Some(5.0);
+    let capture = ReplayCaptureOptions {
+        determinism: ReplayDeterminism::CanonicalV1,
+        ..ReplayCaptureOptions::default()
+    };
+    let mut baseline = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .run()
+        .unwrap();
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = RecordingTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let mut observed = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(capture)
+        .with_telemetry_observer(1.0, Box::new(observer))
+        .unwrap()
+        .run()
+        .unwrap();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    assert_eq!(samples[0].sampled_at_ms, 0.0);
 }
 
 struct GeneralRoundRobinComposition {
