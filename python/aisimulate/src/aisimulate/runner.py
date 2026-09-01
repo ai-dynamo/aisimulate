@@ -160,6 +160,10 @@ class EngineReplayRunner:
         output_requirements: ReplayOutputRequirements | None = None,
     ) -> ReplayReport:
         output_requirements = output_requirements or ReplayOutputRequirements()
+        if output_requirements.capture_telemetry:
+            raise InvalidRunnerError(
+                "EngineReplayRunner's JSON runtime does not yet expose replay telemetry"
+            )
         self.capabilities.require_compatible(spec)
         execution_spec = _materialize_engine_execution_spec(
             spec,
