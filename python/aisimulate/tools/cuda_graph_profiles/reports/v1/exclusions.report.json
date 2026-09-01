@@ -1,0 +1,16 @@
+{
+  "measurements": [
+    {
+      "exclusion_reason": "graph_disabled",
+      "measurement_id": "cgrm-3f1968a2197df69434f8"
+    },
+    {
+      "exclusion_reason": "actual_only_legacy_log",
+      "measurement_id": "cgrm-b527ab30bba91268a345"
+    },
+    {
+      "exclusion_reason": "actual_only_legacy_log",
+      "measurement_id": "cgrm-d3016ef011762b112a8c"
+    }
+  ]
+}

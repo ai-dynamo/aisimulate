@@ -20,11 +20,14 @@ New Python code should import from the small facade:
 
 ```python
 from aisimulate_core.sdk import (
+    CudaGraphReservationEstimate,
+    CudaGraphReservationRequest,
     EngineHandle,
     ModelConfig,
     RuntimeConfig,
     RustForwardPassPerfModel,
     compile_engine,
+    estimate_cuda_graph_reservation,
     estimate_kv_cache,
     estimate_num_gpu_blocks,
 )
@@ -34,6 +37,11 @@ The explicit module paths remain supported:
 
 ```python
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
+from aisimulate_core.sdk.cuda_graph import (
+    CudaGraphReservationEstimate,
+    CudaGraphReservationRequest,
+    estimate_cuda_graph_reservation,
+)
 from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
 ```
@@ -53,6 +61,58 @@ extension contract:
 
 The wheel includes `py.typed` and a stub for that native extension. The SDK
 Python modules carry their own annotations.
+
+## CUDA graph reservation API
+
+The vLLM-only Python API predicts the rank-local CUDA graph reservation without
+starting vLLM or requiring a GPU. Resolution is safety ordered: disabled graphs
+return zero, an exact semantic profile returns the largest rank-local estimate,
+an enabled in-domain model returns its calibrated upper bound, and every other
+request returns `unavailable`.
+
+```python
+from aisimulate_core.sdk import (
+    CudaGraphReservationRequest,
+    estimate_cuda_graph_reservation,
+)
+
+request = CudaGraphReservationRequest(
+    model_id="nvidia/MiniMax-M3-NVFP4",
+    system="b200_sxm",
+    backend_version="0.27.2rc1.dev77+gac7509e2b",
+    backend_build="vllm/vllm-openai:nightly-ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9",
+    tp_size=4,
+    moe_tp_size=4,
+    quantization="fp4",
+    compute_dtype="bfloat16",
+    kv_cache_dtype="fp8",
+    cuda_graph_mode="FULL_AND_PIECEWISE",
+    cuda_graph_capture_sizes=(1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64,
+                              72, 80, 88, 96, 104, 112, 120, 128, 136,
+                              144, 152, 160, 168, 176, 184, 192, 200,
+                              208, 216, 224, 232, 240, 248, 256, 272,
+                              288, 304, 320, 336, 352, 368, 384, 400,
+                              416, 432, 448, 464, 480, 496, 512),
+    max_num_seqs=128,
+    max_num_batched_tokens=16384,
+    max_model_len=1048576,
+    attention_backend="FLASH_ATTN",
+    speculative_method="mtp",
+    speculative_tokens=3,
+)
+estimate = estimate_cuda_graph_reservation(request)
+print(estimate.source, estimate.reservation_bytes)
+```
+
+`reservation_bytes` is conservative: it equals the exact measured reservation
+or the model's upper interval bound. `central_estimate_bytes` and the interval
+remain available for diagnostics. `identity_completeness` is
+`unversioned_model` when neither an immutable model revision nor a model-config
+digest is supplied. Use the `database_path` keyword only for reviewed external
+database testing; checksum and model-gate validation still apply.
+
+This API does not yet alter `estimate_kv_cache`. KV-capacity integration is a
+separate milestone so existing KV behavior remains unchanged.
 
 ## Choosing a forward-pass API
 

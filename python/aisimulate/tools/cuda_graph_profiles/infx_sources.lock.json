@@ -1,0 +1,442 @@
+{
+  "manifest_sha256": "ffded864d3738457570d4716de8894e768b112212b3d98e196f5a67119f909fd",
+  "repository": "SemiAnalysisAI/InferenceX",
+  "schema_version": 1,
+  "sources": [
+    {
+      "artifacts": [
+        {
+          "artifact_id": 9783372446,
+          "artifact_name": "server_logs_minimaxm3_tp8_conc13_kvdram+nvme-vllm-native_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc13_h100-dgxc-slurm_01_recipe-87e33050111f395b",
+          "artifact_size_bytes": 136494,
+          "created_at": "2026-09-01T02:12:58Z",
+          "extracted_content_sha256": "09b5376d6eb1d9759a4d2de408edaa5aff13f9c7478386a9bfa1457231750aa0",
+          "files": [
+            {
+              "relative_path": "results/benchmark.log",
+              "sha256": "fd0710ab207883040ee114a60f115f0697a05766a84c59abc4e7d3d86a5a9271",
+              "size_bytes": 209219
+            },
+            {
+              "relative_path": "results/server.log",
+              "sha256": "e162341c1aec60f7e82e8aee00ca62fd38047e69cbcea81c4c76f32fbffc0e7e",
+              "size_bytes": 2865614
+            }
+          ],
+          "profile_key": "minimax-m3-h100-tp8",
+          "role": "server_logs"
+        },
+        {
+          "artifact_id": 9783367050,
+          "artifact_name": "bmk_agentic_minimaxm3_tp8_conc13_kvdram+nvme-vllm-native_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc13_h100-dgxc-slurm_01_recipe-87e33050111f395b",
+          "artifact_size_bytes": 2308,
+          "created_at": "2026-09-01T02:12:44Z",
+          "extracted_content_sha256": "0683df331527fa313de7af649ff9463e7b92f3bec84c417813ce1dc0f59ef03f",
+          "files": [
+            {
+              "relative_path": "minimaxm3_tp8_conc13_kvdram+nvme-vllm-native_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc13_h100-dgxc-slurm_01_recipe-87e33050111f395b.json",
+              "sha256": "df2bca981ca978ddb80ddbf2cd5543322ec6549ced6fa9be258a9fef6fa16dd4",
+              "size_bytes": 5980
+            }
+          ],
+          "profile_key": "minimax-m3-h100-tp8",
+          "role": "benchmark"
+        }
+      ],
+      "head_sha": "893cd1f6f38c1ec501730a5f5c19d669db5fe413",
+      "html_url": "https://github.com/SemiAnalysisAI/InferenceX/actions/runs/33221188566",
+      "run_attempt": 3,
+      "run_id": 33221188566
+    },
+    {
+      "artifacts": [
+        {
+          "artifact_id": 9129463762,
+          "artifact_name": "server_logs_minimaxm3_tp8_conc1_kvnone_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc1_h200-dgxc-slurm_06",
+          "artifact_size_bytes": 55069,
+          "created_at": "2026-08-12T05:16:46Z",
+          "extracted_content_sha256": "8fd5f95e60b5c3232eb7ca906b656982c5540d1227ea8fa658342b5f0dc707de",
+          "files": [
+            {
+              "relative_path": "results/benchmark.log",
+              "sha256": "27591c5bd74ce805d48ef01dc8f2a26b209ef6844eb42fbc08c97bec83cdb722",
+              "size_bytes": 175425
+            },
+            {
+              "relative_path": "results/server.log",
+              "sha256": "3cfdb4f54769644ea4afcd36c4225c583d6ae984b99830cfa4922cdf3809a74b",
+              "size_bytes": 1192057
+            }
+          ],
+          "profile_key": "minimax-m3-h200-tp8",
+          "role": "server_logs"
+        },
+        {
+          "artifact_id": 9129462278,
+          "artifact_name": "bmk_agentic_minimaxm3_tp8_conc1_kvnone_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc1_h200-dgxc-slurm_06",
+          "artifact_size_bytes": 1929,
+          "created_at": "2026-08-12T05:16:41Z",
+          "extracted_content_sha256": "74d5bd6fa31c20bd9ce7f023d139717a36fa6d284157c3bcee2dd9e9197d219f",
+          "files": [
+            {
+              "relative_path": "minimaxm3_tp8_conc1_kvnone_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc1_h200-dgxc-slurm_06.json",
+              "sha256": "6746318cfa88b0d6448668997e8a9b3113701f03f06b1968eb219d88cd0a8801",
+              "size_bytes": 5299
+            }
+          ],
+          "profile_key": "minimax-m3-h200-tp8",
+          "role": "benchmark"
+        }
+      ],
+      "head_sha": "d621268bed643afa3e33be318481c7e37871806a",
+      "html_url": "https://github.com/SemiAnalysisAI/InferenceX/actions/runs/31561686847",
+      "run_attempt": 1,
+      "run_id": 31561686847
+    },
+    {
+      "artifacts": [
+        {
+          "artifact_id": 9236141405,
+          "artifact_name": "server_logs_minimaxm3_tp4_conc34_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc34_b200-dgxc_06",
+          "artifact_size_bytes": 98646,
+          "created_at": "2026-08-14T22:27:52Z",
+          "extracted_content_sha256": "173d64860cb9b85f56ef0c55ce9981f8f0b4b9f64831a204b434cfb97305869b",
+          "files": [
+            {
+              "relative_path": "results/benchmark.log",
+              "sha256": "821aea040c7a6e0a87645de89865dbc261b5357bc4b249da2ac9e60147fce0de",
+              "size_bytes": 197009
+            },
+            {
+              "relative_path": "results/server.log",
+              "sha256": "48976a35aa1e221ca0848d9bdecf20b1df06c2e048e64c1f29d482e07c3e3e06",
+              "size_bytes": 1885351
+            }
+          ],
+          "profile_key": "minimax-m3-b200-tp4",
+          "role": "server_logs"
+        },
+        {
+          "artifact_id": 9236137930,
+          "artifact_name": "bmk_agentic_minimaxm3_tp4_conc34_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc34_b200-dgxc_06",
+          "artifact_size_bytes": 2126,
+          "created_at": "2026-08-14T22:27:42Z",
+          "extracted_content_sha256": "b0657bc911c4f15ce0a1bf09e5da3372f93dadf62d1fd81f26f27417b75eef10",
+          "files": [
+            {
+              "relative_path": "minimaxm3_tp4_conc34_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc34_b200-dgxc_06.json",
+              "sha256": "c54fc9b3ac2e047946f1202148739e8abb0951bc1ac6341c3ed8a71dd74412b1",
+              "size_bytes": 5662
+            }
+          ],
+          "profile_key": "minimax-m3-b200-tp4",
+          "role": "benchmark"
+        }
+      ],
+      "head_sha": "5c3e65cf4c59db9966a9b16eb0035702bc5cf692",
+      "html_url": "https://github.com/SemiAnalysisAI/InferenceX/actions/runs/31833401868",
+      "run_attempt": 1,
+      "run_id": 31833401868
+    },
+    {
+      "artifacts": [
+        {
+          "artifact_id": 9235289035,
+          "artifact_name": "server_logs_minimaxm3_tp4_conc30_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc30_b300-nv_04",
+          "artifact_size_bytes": 96955,
+          "created_at": "2026-08-14T21:50:11Z",
+          "extracted_content_sha256": "81545ce3f13f124039303b9fc19ae86d802ac333d534528f25d5b019fc1610c3",
+          "files": [
+            {
+              "relative_path": "results/benchmark.log",
+              "sha256": "bf91db133fef26c8662f38d704d5e9228848671f0c40db6bb80659d999018c74",
+              "size_bytes": 213624
+            },
+            {
+              "relative_path": "results/server.log",
+              "sha256": "b7c9f82641d74c3f32f28725f2bb16413464e51f9f893f5a12af05c46454e20c",
+              "size_bytes": 1710383
+            }
+          ],
+          "profile_key": "minimax-m3-b300-tp4",
+          "role": "server_logs"
+        },
+        {
+          "artifact_id": 9235287207,
+          "artifact_name": "bmk_agentic_minimaxm3_tp4_conc30_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc30_b300-nv_04",
+          "artifact_size_bytes": 2097,
+          "created_at": "2026-08-14T21:50:06Z",
+          "extracted_content_sha256": "76a4310cbc613094c0e7e677bbb0f706ef5f1745793a251ea958459919ed7afe",
+          "files": [
+            {
+              "relative_path": "minimaxm3_tp4_conc30_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc30_b300-nv_04.json",
+              "sha256": "aefff6cf9f2c826248cdee03e1cde1d4b548bef3d4fb79434cbb16f9e66ebe93",
+              "size_bytes": 5652
+            }
+          ],
+          "profile_key": "minimax-m3-b300-tp4",
+          "role": "benchmark"
+        }
+      ],
+      "head_sha": "086298aefe1180e56d5594c39d3308951b96aa91",
+      "html_url": "https://github.com/SemiAnalysisAI/InferenceX/actions/runs/31833066181",
+      "run_attempt": 1,
+      "run_id": 31833066181
+    },
+    {
+      "artifacts": [
+        {
+          "artifact_id": 9469749522,
+          "artifact_name": "server_logs_dsv4_tp8_conc4_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b200-dgxc_00_recipe-3d6643e1f0bf6e78",
+          "artifact_size_bytes": 59605,
+          "created_at": "2026-08-22T03:49:36Z",
+          "extracted_content_sha256": "897de52a30d86ae85198c17cd520bcf423dddff9c3899d5066ef360665bdd484",
+          "files": [
+            {
+              "relative_path": "results/benchmark.log",
+              "sha256": "1fab9cf57989ae29be95a24443b657bc8b8c3ad9844ac0f2f66c1ab3aab5caca",
+              "size_bytes": 179802
+            },
+            {
+              "relative_path": "results/server.log",
+              "sha256": "60dd1b2cbe34ca23a6c430ad5d6ba00df6253f3966fcdd44ca17a0e969ac56b0",
+              "size_bytes": 357028
+            }
+          ],
+          "profile_key": "deepseek-v4-b200-tp8-legacy",
+          "role": "server_logs"
+        },
+        {
+          "artifact_id": 9469747659,
+          "artifact_name": "bmk_agentic_dsv4_tp8_conc4_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b200-dgxc_00_recipe-3d6643e1f0bf6e78",
+          "artifact_size_bytes": 2268,
+          "created_at": "2026-08-22T03:49:28Z",
+          "extracted_content_sha256": "463299a21299b3bc41c82182cea777d2603287996b874fb48ab55a6e618ae8a9",
+          "files": [
+            {
+              "relative_path": "dsv4_tp8_conc4_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b200-dgxc_00_recipe-3d6643e1f0bf6e78.json",
+              "sha256": "acfb4f6a40eff9775cfcdef1745c22c1f04031245c0365e5446e84331ebbd821",
+              "size_bytes": 5965
+            }
+          ],
+          "profile_key": "deepseek-v4-b200-tp8-legacy",
+          "role": "benchmark"
+        }
+      ],
+      "head_sha": "4552491d40b179c3323a3485c63090e5b8c964ad",
+      "html_url": "https://github.com/SemiAnalysisAI/InferenceX/actions/runs/32526153588",
+      "run_attempt": 3,
+      "run_id": 32526153588
+    },
+    {
+      "artifacts": [
+        {
+          "artifact_id": 9396432510,
+          "artifact_name": "server_logs_dsv4_tp4_conc4_kvnone_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b300-nv_06_recipe-141adc5778d36e41",
+          "artifact_size_bytes": 58025,
+          "created_at": "2026-08-20T06:50:55Z",
+          "extracted_content_sha256": "84f0d99de7baee5627fab6a338cdc4c9c0b5874e78b748cb61defe00fc23c6d1",
+          "files": [
+            {
+              "relative_path": "results/benchmark.log",
+              "sha256": "3946d8e4967236d34291bdabe5d3fc53b38461041e4670f12f799a75177fd91b",
+              "size_bytes": 193150
+            },
+            {
+              "relative_path": "results/server.log",
+              "sha256": "6f242aa139ff2b706a6a65d992970ed17b3f8107e15f8a67d9a82bedb4edc8fc",
+              "size_bytes": 284528
+            }
+          ],
+          "profile_key": "deepseek-v4-b300-tp4-legacy",
+          "role": "server_logs"
+        },
+        {
+          "artifact_id": 9396431248,
+          "artifact_name": "bmk_agentic_dsv4_tp4_conc4_kvnone_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b300-nv_06_recipe-141adc5778d36e41",
+          "artifact_size_bytes": 2222,
+          "created_at": "2026-08-20T06:50:52Z",
+          "extracted_content_sha256": "9de4f1afe9e8eeaca35e5edbac6bd5620a7c8fe171294138c6b481563676af11",
+          "files": [
+            {
+              "relative_path": "dsv4_tp4_conc4_kvnone_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b300-nv_06_recipe-141adc5778d36e41.json",
+              "sha256": "f56e59f7305e8b385bf09901d77a13bb5acd5f4b2800d8a2ca85d4e942432e77",
+              "size_bytes": 5937
+            }
+          ],
+          "profile_key": "deepseek-v4-b300-tp4-legacy",
+          "role": "benchmark"
+        }
+      ],
+      "head_sha": "aafd99e914e686106e9ab1e836dda22e1e52d235",
+      "html_url": "https://github.com/SemiAnalysisAI/InferenceX/actions/runs/32315429801",
+      "run_attempt": 1,
+      "run_id": 32315429801
+    },
+    {
+      "artifacts": [
+        {
+          "artifact_id": 8903711405,
+          "artifact_name": "multinode_server_logs_kimik3_p4x8_d0x8_conc4_fp4_vllm_prefill-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw4_decode-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw0_disagg-false_spec-mtp_conc4_h200-dgxc-slurm_11",
+          "artifact_size_bytes": 2780211,
+          "created_at": "2026-08-04T18:12:03Z",
+          "extracted_content_sha256": "a23d68dc6a2e7f6645dd7a2169f284dd8c8b85dadb1d0cbc20f61f706d39521b",
+          "files": [
+            {
+              "relative_path": "multinode_server_logs.extracted/65963.json",
+              "sha256": "17e1da7bf1cab344b09798da62a5242e0e5741100e31f86cf87c9144e637174e",
+              "size_bytes": 1970
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/aiperf_artifacts/logs/aiperf.log",
+              "sha256": "8c961635653539bda44dc0991564b7680c9dc4739c86d730975ff69ab5a1768a",
+              "size_bytes": 168525
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/aiperf_artifacts/profile_export.jsonl",
+              "sha256": "64278284ddebc922a8638d192b9d2b26c492a2bb734be9e5220d0f9ee07e597f",
+              "size_bytes": 559515
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/aiperf_artifacts/profile_export_aiperf.csv",
+              "sha256": "635cb00cb5b32bb9275b8f6103b950e5641b219e6db44335d73613489c5f61a2",
+              "size_bytes": 6662
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/aiperf_artifacts/profile_export_aiperf.json",
+              "sha256": "1155cbcbc6c80e2bdea2bccda18a627a64ccd7298cc92f7d9f9ac1c3414ba379",
+              "size_bytes": 41295
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/aiperf_artifacts/profile_export_aiperf_timeslices.csv",
+              "sha256": "ab12ba9a341cd4ed005828fae0499984121dfb651bb1f731b325378d498b22ce",
+              "size_bytes": 4191391
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/aiperf_artifacts/profile_export_aiperf_timeslices.json",
+              "sha256": "9d0a5f7a8bb5671795d4b68c12c1f0d4b32a817730c444509df2c9178fd75949",
+              "size_bytes": 1787323
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/aiperf_artifacts/profile_export_console.txt",
+              "sha256": "cd74a9e19c448d45f218ccbbdbd9c8dd23f1c51e8854af030eb7b2db28c3450e",
+              "size_bytes": 13184
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/aiperf_artifacts/server_metrics_export.csv",
+              "sha256": "8d99c6ed627c9f5efceb8f4d0a3dafb60e6db36f4c950ca53dd785016d729820",
+              "size_bytes": 73209
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/aiperf_artifacts/server_metrics_export.json",
+              "sha256": "f5dad18ba471721f40d8a863406fac1e839fd0212dd5056093a25f8f775f4eae",
+              "size_bytes": 416673742
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/benchmark.log",
+              "sha256": "3d893c927998843c3d51e2725d7e6a438f115f25ab280e0ea27615ffb4e8ecd2",
+              "size_bytes": 177943
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/benchmark_command.txt",
+              "sha256": "1f513e7ee389cc6409fea62e4b0d38b91ddef48899f9ef4d403be7a91607f06a",
+              "size_bytes": 709
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/metrics_plots.png",
+              "sha256": "d1d9c3dbf9e631e8ca75f56a3942c8f2aa0c5ce4328ce0f993762d6afca792ad",
+              "size_bytes": 511233
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/workload_distribution_plots.png",
+              "sha256": "a091b1e1e0dd26d6264f99d63196f41ac09f0aef4e3940625e4394ef97774959",
+              "size_bytes": 102579
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/agentic/conc_4/workload_distribution_summary.txt",
+              "sha256": "aba1427e4fa84063548ec67970c0107dbda71ae7fbbb33c4ee1c13531c33998e",
+              "size_bytes": 445
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/benchmark.out",
+              "sha256": "026302d6f1484d425e384a1697dc07a88696d74023592e471069ddc8c03b3cc0",
+              "size_bytes": 199240
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/config.yaml",
+              "sha256": "fa58b692aede1a96eac7216be0102e4bdf1d898fb8364d8a75bd0b1f5e0ff452",
+              "size_bytes": 2663
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/fingerprint_agg_w0.json",
+              "sha256": "eea2a71320c32f9aa8ef88882435759fcc0e4151e1595a00ea6161df950f5b6d",
+              "size_bytes": 30573
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/resource_snapshot.json",
+              "sha256": "412b08472b65d5d78567c9ed8b41d63a2d8dcda6a0103dac370da0665f5fbdaf",
+              "size_bytes": 1733
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/sbatch_script.sh",
+              "sha256": "a72664f41308418d3039229cfbdaa616a1ed8b8bcc3d269b1bb3e9a67d13f6bd",
+              "size_bytes": 5113
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/sweep_65963.log",
+              "sha256": "f3db69b311605360e648d495a67bf77e525d4d4ebc0abb2ceaa9ac48be506d15",
+              "size_bytes": 20278
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/worker-0_agg_w0.out",
+              "sha256": "1461d2203242bef97ed8cbfbd5ddbda8508098ddc19224a97125fd98c199f572",
+              "size_bytes": 1294988
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/worker-12_agg_w0.out",
+              "sha256": "aee1c5341ab5e7311df29e68b8f5a40a32ba2bb5f822edb01838c0a9df4a57ad",
+              "size_bytes": 230215
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/worker-2_agg_w0.out",
+              "sha256": "1f6d49386a0d53be0640df0a744cd6ce0d0a9a93eadda6476cccba21de4b2db7",
+              "size_bytes": 317793
+            },
+            {
+              "relative_path": "multinode_server_logs.extracted/worker-5_agg_w0.out",
+              "sha256": "33fa1d413757a802542a39fedc6ea87f5418fe976f4d6f10888dbe4b491e9888",
+              "size_bytes": 152121
+            },
+            {
+              "relative_path": "multinode_server_logs.tar.gz",
+              "sha256": "559103678b83e9095fa88e74c860e74100a79928ed0c6c3154d1597c304c4430",
+              "size_bytes": 10408312
+            }
+          ],
+          "profile_key": "kimi-k3-h200-multinode-disabled",
+          "role": "server_logs"
+        },
+        {
+          "artifact_id": 8903712134,
+          "artifact_name": "bmk_agentic_kimik3_p4x8_d0x8_conc4_fp4_vllm_prefill-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw4_decode-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw0_disagg-false_spec-mtp_conc4_h200-dgxc-slurm_11",
+          "artifact_size_bytes": 2157,
+          "created_at": "2026-08-04T18:12:05Z",
+          "extracted_content_sha256": "ef9c5efb4955e4b802ffba64bce8f1d4b14b7f5b473cefd96f25d856683a22e6",
+          "files": [
+            {
+              "relative_path": "kimik3_p4x8_d0x8_conc4_fp4_vllm_prefill-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw4_decode-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw0_disagg-false_spec-mtp_conc4_h200-dgxc-slurm_11_conc4.json",
+              "sha256": "0fb21f630e4c8535edb21432e227ed53f050742370cab6750e37dc79c5b95cb8",
+              "size_bytes": 6073
+            }
+          ],
+          "profile_key": "kimi-k3-h200-multinode-disabled",
+          "role": "benchmark"
+        }
+      ],
+      "head_sha": "114c1bd140ba75e082100ad11f34e3cf0adf9e3d",
+      "html_url": "https://github.com/SemiAnalysisAI/InferenceX/actions/runs/30781313910",
+      "run_attempt": 3,
+      "run_id": 30781313910
+    }
+  ]
+}

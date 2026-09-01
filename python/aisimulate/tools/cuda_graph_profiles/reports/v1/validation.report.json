@@ -1,0 +1,8 @@
+{
+  "measurement_count": 7,
+  "model_enabled": false,
+  "model_version": "cuda-graph-ridge-v1",
+  "parquet_sha256": "ce590633d0f0e7cad365b41601e9a36aad8804f646d8404636ca59b958778e49",
+  "profile_count": 7,
+  "status": "valid"
+}

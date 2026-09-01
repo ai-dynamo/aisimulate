@@ -1,0 +1,60 @@
+{
+  "measurements": [
+    {
+      "artifact_id": 9129463762,
+      "head_sha": "d621268bed643afa3e33be318481c7e37871806a",
+      "measurement_id": "cgrm-0f15caea5407be98ffef",
+      "profile_id": "cgrp-54ba532e745f9fc44a65",
+      "run_attempt": 1,
+      "run_id": 31561686847
+    },
+    {
+      "artifact_id": 8903711405,
+      "head_sha": "114c1bd140ba75e082100ad11f34e3cf0adf9e3d",
+      "measurement_id": "cgrm-3f1968a2197df69434f8",
+      "profile_id": "cgrp-6cca1debfea7de8dd22c",
+      "run_attempt": 3,
+      "run_id": 30781313910
+    },
+    {
+      "artifact_id": 9783372446,
+      "head_sha": "893cd1f6f38c1ec501730a5f5c19d669db5fe413",
+      "measurement_id": "cgrm-7e94ccf3e9bde4e6ad1f",
+      "profile_id": "cgrp-e871c6df819966fdbb55",
+      "run_attempt": 3,
+      "run_id": 33221188566
+    },
+    {
+      "artifact_id": 9235289035,
+      "head_sha": "086298aefe1180e56d5594c39d3308951b96aa91",
+      "measurement_id": "cgrm-915d8263662089c67590",
+      "profile_id": "cgrp-2e1fc66145db2e4df5a1",
+      "run_attempt": 1,
+      "run_id": 31833066181
+    },
+    {
+      "artifact_id": 9469749522,
+      "head_sha": "4552491d40b179c3323a3485c63090e5b8c964ad",
+      "measurement_id": "cgrm-b527ab30bba91268a345",
+      "profile_id": "cgrp-ee10fb89ad734b086c24",
+      "run_attempt": 3,
+      "run_id": 32526153588
+    },
+    {
+      "artifact_id": 9236141405,
+      "head_sha": "5c3e65cf4c59db9966a9b16eb0035702bc5cf692",
+      "measurement_id": "cgrm-b8c11b5539640d1bffc8",
+      "profile_id": "cgrp-d6875e9e2e228e4e257c",
+      "run_attempt": 1,
+      "run_id": 31833401868
+    },
+    {
+      "artifact_id": 9396432510,
+      "head_sha": "aafd99e914e686106e9ab1e836dda22e1e52d235",
+      "measurement_id": "cgrm-d3016ef011762b112a8c",
+      "profile_id": "cgrp-b474aa27c6aa43325f2d",
+      "run_attempt": 1,
+      "run_id": 32315429801
+    }
+  ]
+}

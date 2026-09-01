@@ -227,6 +227,11 @@ the resulting end-to-end prediction is accurate.
 
 Memory-capacity accuracy is covered by the
 [profile-backed CUDA graph reservation DEP](python/aisimulate/docs/design/cuda_graph_reservation_estimation_dep.md).
+The first milestone packages a reviewed InfX profile database and a safety-gated
+[Python reservation API](docs/core-api.md#cuda-graph-reservation-api). Its
+[maintenance workflow](python/aisimulate/tools/cuda_graph_profiles/README.md)
+reproduces the Parquet and model artifacts without checking in raw logs. This
+milestone does not change KV-cache capacity.
 
 ### FPE support matrix — in development
 

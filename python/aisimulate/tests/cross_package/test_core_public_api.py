@@ -17,6 +17,11 @@ import aiconfigurator_core
 import aiconfigurator_core.sdk as sdk
 from aiconfigurator_core.sdk.common import AttentionBackend, MoEBackend
 from aiconfigurator_core.sdk.config import ModelConfig, RuntimeConfig
+from aiconfigurator_core.sdk.cuda_graph import (
+    CudaGraphReservationEstimate,
+    CudaGraphReservationRequest,
+    estimate_cuda_graph_reservation,
+)
 from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
 from aiconfigurator_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
 from aiconfigurator_core.sdk.operations import ElementWise, Embedding, MoEDispatch
@@ -24,12 +29,15 @@ from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
 EXPECTED_FACADE = {
     "AttentionBackend",
+    "CudaGraphReservationEstimate",
+    "CudaGraphReservationRequest",
     "EngineHandle",
     "ModelConfig",
     "MoEBackend",
     "RuntimeConfig",
     "RustForwardPassPerfModel",
     "compile_engine",
+    "estimate_cuda_graph_reservation",
     "estimate_kv_cache",
     "estimate_num_gpu_blocks",
 }
@@ -42,6 +50,7 @@ import sys
 import aiconfigurator_core.sdk
 
 protected_modules = {
+    "aiconfigurator_core.sdk.cuda_graph",
     "aiconfigurator_core.sdk.engine",
     "aiconfigurator_core.sdk.memory",
     "aiconfigurator_core.sdk.rust_engine_step",
@@ -56,11 +65,14 @@ def test_sdk_facade_exports_the_canonical_objects() -> None:
     assert set(sdk.__all__) == EXPECTED_FACADE
     assert sdk.AttentionBackend is AttentionBackend
     assert sdk.EngineHandle is EngineHandle
+    assert sdk.CudaGraphReservationEstimate is CudaGraphReservationEstimate
+    assert sdk.CudaGraphReservationRequest is CudaGraphReservationRequest
     assert sdk.ModelConfig is ModelConfig
     assert sdk.MoEBackend is MoEBackend
     assert sdk.RuntimeConfig is RuntimeConfig
     assert sdk.RustForwardPassPerfModel is RustForwardPassPerfModel
     assert sdk.compile_engine is compile_engine
+    assert sdk.estimate_cuda_graph_reservation is estimate_cuda_graph_reservation
     assert sdk.estimate_kv_cache is estimate_kv_cache
     assert sdk.estimate_num_gpu_blocks is estimate_num_gpu_blocks
 
@@ -289,3 +301,17 @@ def test_distribution_carries_typing_contract() -> None:
     root = importlib.resources.files("aiconfigurator_core")
     assert (root / "py.typed").is_file()
     assert (root / "_aiconfigurator_core.pyi").is_file()
+
+
+def test_distribution_carries_cuda_graph_profile_artifacts_and_alias() -> None:
+    root = importlib.resources.files("aiconfigurator_core") / "systems/cuda_graph_profiles/v1"
+    for name in (
+        "cuda_graph_profiles.parquet",
+        "cuda_graph_profiles.metadata.json",
+        "cuda_graph_reservation_model.json",
+    ):
+        assert (root / name).is_file()
+
+    from aisimulate_core.sdk.cuda_graph import estimate_cuda_graph_reservation as alias
+
+    assert alias is estimate_cuda_graph_reservation

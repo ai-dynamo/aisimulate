@@ -1,0 +1,193 @@
+{
+  "artifact_version": "cuda-graph-ridge-v1",
+  "categorical_features": [
+    "model_id",
+    "gpu_family",
+    "vllm_family",
+    "quantization",
+    "compute_dtype",
+    "kv_cache_dtype",
+    "cuda_graph_mode",
+    "attention_backend",
+    "speculative_method"
+  ],
+  "categorical_levels": {
+    "attention_backend": [
+      "FLASH_ATTN",
+      "TRITON_ATTN"
+    ],
+    "compute_dtype": [
+      "bfloat16"
+    ],
+    "cuda_graph_mode": [
+      "FULL_AND_PIECEWISE"
+    ],
+    "gpu_family": [
+      "b200",
+      "b300",
+      "h100",
+      "h200"
+    ],
+    "kv_cache_dtype": [
+      "fp8"
+    ],
+    "model_id": [
+      "MiniMaxAI/MiniMax-M3-MXFP8",
+      "nvidia/MiniMax-M3-NVFP4"
+    ],
+    "quantization": [
+      "fp4",
+      "fp8"
+    ],
+    "speculative_method": [
+      "mtp"
+    ],
+    "vllm_family": [
+      "0.1",
+      "0.27"
+    ]
+  },
+  "coefficients": [
+    0.06251859850745069,
+    0.0928397343594098,
+    0.09024117730767829,
+    0.03440141907046029,
+    -1.1876441051375228e-13,
+    -0.02917486571387398,
+    -5.1625370645069755e-15,
+    -5.162824129949261e-15,
+    -5.1612045995664676e-15,
+    -5.15091145180379e-15,
+    -0.02917486571387398,
+    -5.16485913342675e-15,
+    -1.0325635948610209e-14,
+    -0.049635126919277295,
+    0.04963512691928311,
+    -0.03121945444628041,
+    0.08085458136556352,
+    -0.043894679132261305,
+    -0.005740447787021919,
+    -0.04389467913226132,
+    0.04389467913225488,
+    0.04963512691928372,
+    -0.049635126919277274,
+    6.540371947714658e-15,
+    6.5400275348350574e-15,
+    -3.693829429060491e-18,
+    0.04963512691928432,
+    -0.049635126919277225,
+    0.0
+  ],
+  "enabled": false,
+  "feature_schema": [
+    "log1p:cuda_graph_capture_count",
+    "log1p:cuda_graph_largest_capture_size",
+    "log1p:max_num_seqs",
+    "log1p:max_num_batched_tokens",
+    "log1p:max_model_len",
+    "log1p:tp_size",
+    "log1p:pp_size",
+    "log1p:attention_dp_size",
+    "log1p:dcp_size",
+    "log1p:pcp_size",
+    "log1p:moe_tp_size",
+    "log1p:moe_ep_size",
+    "log1p:speculative_tokens",
+    "model_id=MiniMaxAI/MiniMax-M3-MXFP8",
+    "model_id=nvidia/MiniMax-M3-NVFP4",
+    "gpu_family=b200",
+    "gpu_family=b300",
+    "gpu_family=h100",
+    "gpu_family=h200",
+    "vllm_family=0.1",
+    "vllm_family=0.27",
+    "quantization=fp4",
+    "quantization=fp8",
+    "compute_dtype=bfloat16",
+    "kv_cache_dtype=fp8",
+    "cuda_graph_mode=FULL_AND_PIECEWISE",
+    "attention_backend=FLASH_ATTN",
+    "attention_backend=TRITON_ATTN",
+    "speculative_method=mtp"
+  ],
+  "gate_failures": [
+    "profiles:4<20",
+    "median_mape:0.207132",
+    "maximum_underprediction:0.266200"
+  ],
+  "gates": {
+    "median_mape_max": 0.2,
+    "minimum_gpu_families": 2,
+    "minimum_model_identities": 2,
+    "minimum_profiles": 20,
+    "p90_ape_max": 0.4,
+    "underprediction_max": 0.2,
+    "upper_bound_coverage_min": 0.95
+  },
+  "holdout_metrics": {
+    "maximum_underprediction": 0.2661995490047028,
+    "median_mape": 0.20713231967620416,
+    "p90_ape": 0.32479209503693685,
+    "upper_bound_coverage": 1.0
+  },
+  "intercept": 19.847336658217916,
+  "numeric_features": [
+    "cuda_graph_capture_count",
+    "cuda_graph_largest_capture_size",
+    "max_num_seqs",
+    "max_num_batched_tokens",
+    "max_model_len",
+    "tp_size",
+    "pp_size",
+    "attention_dp_size",
+    "dcp_size",
+    "pcp_size",
+    "moe_tp_size",
+    "moe_ep_size",
+    "speculative_tokens"
+  ],
+  "parquet_sha256": "ce590633d0f0e7cad365b41601e9a36aad8804f646d8404636ca59b958778e49",
+  "residual_log_interval": [
+    -0.2757396435708605,
+    0.3095181523229833
+  ],
+  "ridge_alpha": 1.0,
+  "target_transform": "log1p_bytes",
+  "training_domain": {
+    "attention_backend": [
+      "FLASH_ATTN",
+      "TRITON_ATTN"
+    ],
+    "compute_dtype": [
+      "bfloat16"
+    ],
+    "cuda_graph_mode": [
+      "FULL_AND_PIECEWISE"
+    ],
+    "gpu_family": [
+      "b200",
+      "b300",
+      "h100",
+      "h200"
+    ],
+    "kv_cache_dtype": [
+      "fp8"
+    ],
+    "model_id": [
+      "MiniMaxAI/MiniMax-M3-MXFP8",
+      "nvidia/MiniMax-M3-NVFP4"
+    ],
+    "quantization": [
+      "fp4",
+      "fp8"
+    ],
+    "speculative_method": [
+      "mtp"
+    ],
+    "vllm_family": [
+      "0.1",
+      "0.27"
+    ]
+  },
+  "training_profile_count": 4
+}

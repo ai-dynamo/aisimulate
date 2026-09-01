@@ -1,0 +1,4 @@
+(Worker_TP0 pid=10) Estimated CUDA graph memory: 1.99 GiB total
+(Worker_TP1 pid=11) Estimated CUDA graph memory: 1.99 GiB total
+(Worker_TP2 pid=12) Estimated CUDA graph memory: 1.99 GiB total
+(Worker_TP3 pid=13) Estimated CUDA graph memory: 1.99 GiB total

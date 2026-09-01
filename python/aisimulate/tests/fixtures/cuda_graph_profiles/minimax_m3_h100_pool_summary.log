@@ -1,0 +1,2 @@
+(Worker_TP0 pid=10) CUDA graph pool memory: 0.50 GiB (actual), 0.87 GiB (estimated), difference: 0.37 GiB.
+(Worker_TP1 pid=11) CUDA graph pool memory: 0.48 GiB (actual), 0.87 GiB (estimated), difference: 0.39 GiB.

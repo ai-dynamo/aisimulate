@@ -135,6 +135,17 @@ For a full end-to-end walkthrough (support check, sweep, deploy, benchmark), see
 
 Refer to [CLI User Guide](docs/cli_user_guide.md)
 
+### CUDA graph reservation API
+
+The wheel includes a reviewed InfX CUDA graph profile database and the typed
+`aisimulate_core.sdk.cuda_graph` API. It returns an exact vLLM pre-KV
+reservation when the full semantic identity matches, otherwise a validated
+in-domain upper bound or an explicit `unavailable` result. CUDA-graph-disabled
+requests return zero. See the [core API contract](../../docs/core-api.md#cuda-graph-reservation-api)
+and [profile maintenance guide](tools/cuda_graph_profiles/README.md).
+
+This predictor is not yet connected to KV-cache capacity estimation.
+
 ### Python API
 
 You can also use `aiconfigurator` programmatically in Python:
