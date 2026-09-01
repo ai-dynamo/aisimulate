@@ -543,10 +543,6 @@ impl EngineConfig {
                 "native_host_offload is supported only for backend=vllm"
             );
             ensure!(
-                self.worker_type == WorkerType::Aggregated,
-                "native_host_offload is supported only for worker_type=aggregated"
-            );
-            ensure!(
                 self.enable_prefix_caching,
                 "native_host_offload requires enable_prefix_caching=true"
             );
@@ -834,10 +830,6 @@ mod tests {
     fn native_host_offload_rejects_unsupported_scheduler_modes() {
         let cases: &[InvalidHostConfigCase] = &[
             (|config| config.backend = Backend::Sglang, "backend=vllm"),
-            (
-                |config| config.worker_type = WorkerType::Prefill,
-                "worker_type=aggregated",
-            ),
             (
                 |config| config.enable_prefix_caching = false,
                 "enable_prefix_caching=true",

@@ -196,6 +196,10 @@ impl DisaggRequestState {
         self.replay_hashes.take()
     }
 
+    pub(crate) fn clone_replay_hashes(&self) -> Option<ReplayRequestHashes> {
+        self.replay_hashes.clone()
+    }
+
     pub(crate) fn start_prefill(&mut self, worker_idx: usize) {
         self.phase = DisaggPhase::RunningPrefill;
         self.prefill_worker_idx = Some(worker_idx);

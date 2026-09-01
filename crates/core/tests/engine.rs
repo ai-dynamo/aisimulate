@@ -165,7 +165,7 @@ fn disaggregated_spec(
 }
 
 #[test]
-fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
+fn disaggregated_replay_supports_attention_dp() {
     for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
         let mut spec = disaggregated_spec(
             Backend::Vllm,
@@ -186,21 +186,8 @@ fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
         }
         spec.engine = serde_json::to_value(config).unwrap();
 
-        let error = run_engine_replay(spec).unwrap_err();
-        assert!(matches!(
-            error,
-            aisimulate_core::replay::ReplayError::InvalidSpec(_)
-        ));
-        let role_name = match stage {
-            WorkerStage::Prefill => "prefill",
-            WorkerStage::Decode => "decode",
-            WorkerStage::Aggregated => unreachable!(),
-        };
-        assert!(
-            error
-                .to_string()
-                .contains(&format!("{role_name} dp_size=1"))
-        );
+        let report = run_engine_replay(spec).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 1);
     }
 }
 

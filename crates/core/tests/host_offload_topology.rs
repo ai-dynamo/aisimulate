@@ -66,7 +66,7 @@ fn request(id: &str, arrival_time_ms: f64, tokens: Vec<u32>) -> ReplayRequest {
 }
 
 #[test]
-fn attention_dp_native_host_offload_requires_cache_domains_and_rejects_disaggregated_roles() {
+fn attention_dp_native_host_offload_requires_cache_domains() {
     let mut config = engine_config();
     config.rank.kv_cache_bytes_per_token = Some(1);
     config.rank.native_host_offload =
@@ -78,15 +78,19 @@ fn attention_dp_native_host_offload_requires_cache_domains_and_rejects_disaggreg
     let message = format!("{error:#}");
     assert!(message.contains("cache_domain_id"), "{message}");
 
+    config.dp_size = 2;
+    config.cache_domain_ids = vec![0, 0];
     let mut disaggregated = spec(config);
     disaggregated.topology = ReplayTopology::Disaggregated {
         prefill: WorkerPoolSpec::default(),
         decode: WorkerPoolSpec::default(),
         handoff_latency_ms: 0.0,
     };
-    let error = run_engine_replay(disaggregated).unwrap_err();
-    let message = format!("{error:#}");
-    assert!(message.contains("only aggregated replay"), "{message}");
+    let mut replay_request = request("disagg-attention-dp", 0.0, vec![1, 2, 3, 4]);
+    replay_request.output_tokens = 1;
+    disaggregated.requests.push(replay_request);
+    let report = run_engine_replay(disaggregated).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 1);
 }
 
 #[test]

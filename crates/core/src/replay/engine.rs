@@ -138,24 +138,6 @@ impl ReplayEngineConfig {
                 for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
                     let role = self.role(stage);
                     resolve_cache_domain_ids(&role)?;
-                    if role.rank.native_host_offload.is_some() {
-                        return Err(ReplayError::InvalidSpec(
-                            "native_host_offload supports only aggregated replay in the initial implementation"
-                                .to_string(),
-                        ));
-                    }
-                    if role.dp_size != 1 {
-                        // TODO(#12965): Carry logical-worker plus DP-rank identity through
-                        // disaggregated handoff before removing this fail-fast guard.
-                        let role_name = match stage {
-                            WorkerStage::Prefill => "prefill",
-                            WorkerStage::Decode => "decode",
-                            WorkerStage::Aggregated => unreachable!(),
-                        };
-                        return Err(ReplayError::InvalidSpec(format!(
-                            "disaggregated replay requires {role_name} dp_size=1; attention-DP handoff identity is not implemented"
-                        )));
-                    }
                 }
             }
         }
@@ -172,6 +154,7 @@ pub struct ReplayRoleFactory {
     tensor_parallel_size: u32,
     cache_domain_ids: Vec<u32>,
     backend: Backend,
+    has_internal_work: bool,
 }
 
 impl ReplayRoleFactory {
@@ -216,6 +199,10 @@ impl ReplayRoleFactory {
     #[doc(hidden)]
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    pub(crate) fn has_internal_work(&self) -> bool {
+        self.has_internal_work
     }
 }
 
@@ -279,6 +266,7 @@ impl ReplayEngineFactory {
             WorkerStage::Decode => self.decode_timing.as_ref().or(self.timing.as_ref()),
         };
         let backend = role.rank.backend;
+        let has_internal_work = role.rank.native_host_offload.is_some();
         let factory = match timing {
             Some(timing) => EngineFactory::with_timing_model(role.rank, Arc::clone(timing)),
             None => EngineFactory::new(role.rank),
@@ -290,6 +278,7 @@ impl ReplayEngineFactory {
             tensor_parallel_size: role.tensor_parallel_size,
             cache_domain_ids,
             backend,
+            has_internal_work,
         })
     }
 }
