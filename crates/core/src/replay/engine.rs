@@ -44,6 +44,10 @@ pub struct ReplayEngineConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    /// Whether `rank.num_gpu_blocks` came from the user rather than an
+    /// upstream capacity estimator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_gpu_blocks_is_explicit: Option<bool>,
     pub rank: EngineConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefill: Option<ReplayRoleConfig>,
@@ -56,6 +60,7 @@ impl Default for ReplayEngineConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
             prefill: None,
             decode: None,
@@ -71,6 +76,10 @@ pub struct ReplayRoleConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    /// Whether `rank.num_gpu_blocks` came from the user rather than an
+    /// upstream capacity estimator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_gpu_blocks_is_explicit: Option<bool>,
     pub rank: EngineConfig,
 }
 
@@ -79,6 +88,7 @@ impl Default for ReplayRoleConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
         }
     }
@@ -99,16 +109,19 @@ impl ReplayEngineConfig {
             WorkerStage::Aggregated => ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             },
             WorkerStage::Prefill => self.prefill.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
             WorkerStage::Decode => self.decode.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
         };

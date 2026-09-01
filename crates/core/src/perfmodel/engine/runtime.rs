@@ -555,6 +555,34 @@ impl Engine {
             .total_ms)
     }
 
+    /// Predict one decode step from exact FPM iteration totals.
+    ///
+    /// `total_past_kv_tokens` excludes the one current token processed by each
+    /// decode request, matching the collector's `total_kv_read_tokens` axis.
+    pub fn predict_decode_latency_total(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> Result<f64, AicError> {
+        self.forward_pass_time_ms(&[ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_decode_requests: batch_size,
+                sum_decode_kv_tokens: total_past_kv_tokens,
+                ..Default::default()
+            },
+            ..Default::default()
+        }])
+    }
+
+    /// Highest decode KV-read total covered by a compiled FPM engine.
+    /// Op-level engines return `None`.
+    pub fn fpm_decode_kv_ceiling(&self) -> Result<Option<u32>, AicError> {
+        let Some((_prefill, decode)) = self.fpm_ops() else {
+            return Ok(None);
+        };
+        decode.decode_kv_ceiling(&self.db)
+    }
+
     /// One mixed (chunked-prefill + decode) step latency. LITERAL mirror of
     /// Python `_get_mix_step_latency` / `run_mixed`, which composes three
     /// filtered phase passes (`_run_context_phase` / `_run_generation_phase`
@@ -885,13 +913,16 @@ impl Engine {
             };
             let gen_ms = self.run_generation_phase(&rt, DEFAULT_STATIC_STRIDE)?;
             let baseline_ms = if ctx_tokens > 0 {
-                // run_generation_phase scaled the batch by (nextn + 1); the
-                // baseline must be sampled at the same effective batch.
+                // run_generation_phase scaled the batch by (nextn + 1) and
+                // sampled its single step at `s = rt.isl + 1`, so the decode
+                // query above landed on `(bs, bs * s)`. The baseline must be
+                // taken at that SAME coordinate: it selects its bracket rows
+                // by KV coverage, and a different KV can select different
+                // rows than the query used.
+                let baseline_batch = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
+                let baseline_kv = baseline_batch as f64 * (rt.isl as f64 + 1.0);
                 decode_op
-                    .query_pass_baseline(
-                        &self.db,
-                        gen_tokens.saturating_mul(self.nextn.saturating_add(1)),
-                    )?
+                    .query_pass_baseline(&self.db, baseline_batch, baseline_kv)?
                     .latency_ms
             } else {
                 0.0
@@ -1306,7 +1337,11 @@ impl Engine {
                     // `_get_fpm_mix_step_latency` (counts already packed, no
                     // `(nextn + 1)` — FPM engines enforce nextn == 0).
                     let baseline_ms = decode_op
-                        .query_pass_baseline(&self.db, sched.num_decode_requests)?
+                        .query_pass_baseline(
+                            &self.db,
+                            sched.num_decode_requests,
+                            sched.sum_decode_kv_tokens as f64,
+                        )?
                         .latency_ms;
                     total += (decode_ms - baseline_ms).max(0.0);
                 } else {
@@ -1910,6 +1945,122 @@ mod tests {
         let expected = 21.0 + (decode - 6.0);
         let got = engine.forward_pass_time_ms(&[mixed]).unwrap();
         assert!((got - expected).abs() < 1e-9, "got {got}, want {expected}");
+    }
+
+    /// Mixed telemetry may request a synthetic decode baseline below the KV
+    /// floor of its padded bracket rows. Only that baseline holds each row at
+    /// its measured floor; the actual decode query remains in-range and strict.
+    #[test]
+    fn fpm_rank_mixed_baseline_holds_bracket_curve_floors() {
+        use crate::fpm::{ForwardPassMetrics, ScheduledRequestMetrics};
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |kind: &'static str, batch: u32, prefill: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: kind,
+            batch_size: batch,
+            total_prefill_tokens: prefill,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        let rows = vec![
+            mk("prefill", 1, 2048, 0, 20.0),
+            mk("decode", 1, 0, 2, 2.0),
+            mk("decode", 1, 0, 64, 3.0),
+            mk("decode", 2, 0, 4, 2.5),
+            mk("decode", 2, 0, 64, 3.5),
+            mk("decode", 8, 0, 16, 4.0),
+            mk("decode", 8, 0, 64, 5.0),
+            mk("decode", 9, 0, 18, 5.0),
+            mk("decode", 9, 0, 64, 6.0),
+            mk("decode", 16, 0, 32, 9.0),
+            mk("decode", 16, 0, 64, 10.0),
+            mk("decode", 17, 0, 34, 10.0),
+            mk("decode", 17, 0, 64, 11.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_fpm_engine_with_rows(tmp.path(), &rows).unwrap();
+        let mixed = ForwardPassMetrics {
+            scheduled_requests: ScheduledRequestMetrics {
+                num_prefill_requests: 1,
+                sum_prefill_tokens: 2048,
+                num_decode_requests: 15,
+                sum_decode_kv_tokens: 64,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let weight = (15.0 - 9.0) / (16.0 - 9.0);
+        let decode = 6.0 + (10.0 - 6.0) * weight;
+        let baseline = 5.0 + (9.0 - 5.0) * weight;
+        let expected = 20.0 + decode - baseline;
+        let got = engine.forward_pass_time_ms(&[mixed]).unwrap();
+        assert!((got - expected).abs() < 1e-9, "got {got}, want {expected}");
+    }
+
+    /// Both mixed-step paths must sample the baseline at the SAME
+    /// (batch, total-KV) coordinate the decode query used, so a KV only one
+    /// bracket row covers drops that row from both sides. Blending the
+    /// uncovered row's floor leaves the shared-pass cost inside the marginal.
+    #[test]
+    fn fpm_mixed_baseline_follows_the_query_off_a_ragged_bracket_row() {
+        use crate::fpm::{ForwardPassMetrics, ScheduledRequestMetrics};
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |kind: &'static str, batch: u32, prefill: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: kind,
+            batch_size: batch,
+            total_prefill_tokens: prefill,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        // Bracket (9, 16) with ragged curves: row 9 stops at kv=64, row 16
+        // starts at kv=32 and runs to 96.
+        let rows = vec![
+            mk("prefill", 1, 16, 0, 20.0),
+            mk("prefill", 1, 32, 0, 40.0),
+            mk("decode", 1, 0, 2, 2.0),
+            mk("decode", 1, 0, 96, 3.0),
+            mk("decode", 2, 0, 4, 2.5),
+            mk("decode", 2, 0, 96, 3.5),
+            mk("decode", 8, 0, 16, 4.0),
+            mk("decode", 8, 0, 96, 5.0),
+            mk("decode", 9, 0, 18, 5.0),
+            mk("decode", 9, 0, 64, 6.0),
+            mk("decode", 16, 0, 32, 9.0),
+            mk("decode", 16, 0, 96, 10.0),
+            mk("decode", 17, 0, 34, 10.0),
+            mk("decode", 17, 0, 96, 11.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_fpm_engine_with_rows(tmp.path(), &rows).unwrap();
+
+        // ctx 5 tokens / isl 5 -> prefill batch 1, totals (1, 5 + 15, 0).
+        // gen: batch 15, osl clamps to 1 -> isl' = 5, one step at s = 6 ->
+        // kv = 15 * 6 = 90, which ONLY row 16 covers.
+        let ms = engine.mixed_step_latency(5, 15, 5, 0, 0, 1.0, 1.0).unwrap();
+        let prefill = 20.0 + (40.0 - 20.0) * (20.0 - 16.0) / (32.0 - 16.0);
+        let decode = 9.0 + (10.0 - 9.0) * (90.0 - 32.0) / (96.0 - 32.0);
+        let expected = prefill + (decode - 9.0);
+        assert!((ms - expected).abs() < 1e-9, "got {ms}, want {expected}");
+
+        // ForwardPassMetrics carries raw totals. Its mixed-rank path must
+        // pass sum_decode_kv_tokens=80 to the same baseline selector; only
+        // row 16 covers this coordinate too.
+        let mixed = ForwardPassMetrics {
+            scheduled_requests: ScheduledRequestMetrics {
+                num_prefill_requests: 1,
+                sum_prefill_tokens: 20,
+                num_decode_requests: 15,
+                sum_decode_kv_tokens: 80,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let decode = 9.0 + (10.0 - 9.0) * (80.0 - 32.0) / (96.0 - 32.0);
+        let expected = prefill + (decode - 9.0);
+        let ms = engine.forward_pass_time_ms(&[mixed]).unwrap();
+        assert!((ms - expected).abs() < 1e-9, "got {ms}, want {expected}");
     }
 
     /// The FPM rank dispatch queries RAW iteration totals — the tables'

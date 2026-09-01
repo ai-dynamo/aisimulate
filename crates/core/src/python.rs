@@ -120,6 +120,8 @@ struct AicTimingConfig {
     free_gpu_memory_fraction: Option<f64>,
     #[serde(default)]
     systems_path: Option<String>,
+    #[serde(default)]
+    forward_model: Option<String>,
 }
 
 const fn one() -> u32 {
@@ -190,6 +192,8 @@ impl AicTimingConfig {
 
 struct AicTimingModel {
     engine: Py<PyAny>,
+    use_fpm_decode_totals: bool,
+    fpm_decode_kv_ceiling: Option<u32>,
 }
 
 impl AicTimingModel {
@@ -214,7 +218,8 @@ impl AicTimingModel {
         );
         config.resolved_memory_fraction()?;
 
-        let engine = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
+        let use_fpm_decode_totals = config.forward_model.as_deref() == Some("fpm");
+        let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
             let sdk = PyModule::import(py, "aiconfigurator_core.sdk.engine")?;
             let kwargs = PyDict::new(py);
             kwargs.set_item("backend_version", config.resolved_backend_version())?;
@@ -231,6 +236,7 @@ impl AicTimingModel {
             kwargs.set_item("nextn", config.nextn)?;
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
+            kwargs.set_item("forward_model", config.forward_model.as_deref())?;
             let spec = sdk.getattr("compile_engine")?.call(
                 (
                     config.model.as_str(),
@@ -242,12 +248,22 @@ impl AicTimingModel {
             let aic = PyModule::import(py, "aiconfigurator_core")?
                 .getattr("AicEngine")?
                 .call_method1("from_spec", (spec, config.systems_path.as_deref()))?;
-            Ok(aic.unbind())
+            let fpm_decode_kv_ceiling = if use_fpm_decode_totals {
+                aic.call_method0("fpm_decode_kv_ceiling")?
+                    .extract::<Option<u32>>()?
+            } else {
+                None
+            };
+            Ok((aic.unbind(), fpm_decode_kv_ceiling))
         })
         .map_err(|error| {
             anyhow!("AIC timing provider could not compile the requested engine: {error}")
         })?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            use_fpm_decode_totals,
+            fpm_decode_kv_ceiling,
+        })
     }
 }
 
@@ -276,10 +292,29 @@ impl TimingModel for AicTimingModel {
     fn predict_decode_ms(
         &self,
         batch_size: usize,
-        _active_kv_tokens: usize,
+        active_kv_tokens: usize,
         mean_context_length: usize,
-        _total_kv_tokens: usize,
+        total_kv_tokens: usize,
     ) -> Result<f64> {
+        if self.use_fpm_decode_totals {
+            let total_past_kv_tokens = active_kv_tokens
+                .checked_sub(batch_size)
+                .context("active decode tokens must include one current token per request")?
+                .min(total_kv_tokens);
+            let batch_size = checked_u32(batch_size, "decode batch size")?;
+            let total_past_kv_tokens = checked_u32(total_past_kv_tokens, "total past KV tokens")?;
+            return Python::with_gil(|py| {
+                self.engine
+                    .bind(py)
+                    .call_method1(
+                        "predict_decode_latency_total",
+                        (batch_size, total_past_kv_tokens),
+                    )?
+                    .extract::<f64>()
+            })
+            .map_err(|error| anyhow!("AIC decode prediction failed: {error}"));
+        }
+
         let batch_size = checked_u32(batch_size, "decode batch size")?;
         let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
         Python::with_gil(|py| {
@@ -389,10 +424,32 @@ fn materialize_aic_capacity(
     Ok(())
 }
 
+fn cap_role_capacity_to_fpm_decode_domain(
+    role: &mut ReplayRoleConfig,
+    decode_kv_ceiling: Option<u32>,
+    capacity_is_explicit: bool,
+) -> Result<()> {
+    let Some(decode_kv_ceiling) = decode_kv_ceiling else {
+        return Ok(());
+    };
+    if capacity_is_explicit {
+        return Ok(());
+    }
+    let covered_blocks = decode_kv_ceiling as usize / role.rank.block_size;
+    ensure!(
+        covered_blocks > 0,
+        "FPM decode KV ceiling {decode_kv_ceiling} does not cover one scheduler block of {} tokens",
+        role.rank.block_size
+    );
+    role.rank.num_gpu_blocks = role.rank.num_gpu_blocks.min(covered_blocks);
+    Ok(())
+}
+
 fn aggregated_role(engine: &ReplayEngineConfig) -> ReplayRoleConfig {
     ReplayRoleConfig {
         dp_size: engine.dp_size,
         tensor_parallel_size: engine.tensor_parallel_size,
+        num_gpu_blocks_is_explicit: engine.num_gpu_blocks_is_explicit,
         rank: engine.rank.clone(),
     }
 }
@@ -427,7 +484,13 @@ fn resolve_role_timing(
         capacity_is_explicit,
         estimate_aic_num_gpu_blocks,
     )?;
-    Ok(Some(Arc::new(AicTimingModel::build(config)?)))
+    let timing = AicTimingModel::build(config)?;
+    cap_role_capacity_to_fpm_decode_domain(
+        role,
+        timing.fpm_decode_kv_ceiling,
+        capacity_is_explicit,
+    )?;
+    Ok(Some(Arc::new(timing)))
 }
 
 fn runtime_paths(traffic: &RuntimeTraffic) -> Result<Vec<PathBuf>> {
@@ -737,12 +800,13 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let (report, artifacts) = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
             let mut role = aggregated_role(&engine_config);
-            let timing = resolve_role_timing(
-                &mut role,
-                role_capacity_is_explicit(&serialized_engine, None),
-            )?;
+            let capacity_is_explicit = role
+                .num_gpu_blocks_is_explicit
+                .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, None));
+            let timing = resolve_role_timing(&mut role, capacity_is_explicit)?;
             engine_config.dp_size = role.dp_size;
             engine_config.tensor_parallel_size = role.tensor_parallel_size;
+            engine_config.num_gpu_blocks_is_explicit = role.num_gpu_blocks_is_explicit;
             engine_config.rank = role.rank;
             if let Some(traffic) = traffic.as_mut()
                 && let ReplayTopology::Aggregated { workers } = &spec.topology
@@ -751,6 +815,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                     &ReplayRoleConfig {
                         dp_size: engine_config.dp_size,
                         tensor_parallel_size: engine_config.tensor_parallel_size,
+                        num_gpu_blocks_is_explicit: engine_config.num_gpu_blocks_is_explicit,
                         rank: engine_config.rank.clone(),
                     },
                     workers.initial_workers,
@@ -778,14 +843,14 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .decode
                 .clone()
                 .unwrap_or_else(|| aggregated_role(&engine_config));
-            let prefill_timing = resolve_role_timing(
-                &mut prefill,
-                role_capacity_is_explicit(&serialized_engine, Some("prefill")),
-            )?;
-            let decode_timing = resolve_role_timing(
-                &mut decode,
-                role_capacity_is_explicit(&serialized_engine, Some("decode")),
-            )?;
+            let prefill_capacity_is_explicit = prefill
+                .num_gpu_blocks_is_explicit
+                .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("prefill")));
+            let decode_capacity_is_explicit = decode
+                .num_gpu_blocks_is_explicit
+                .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("decode")));
+            let prefill_timing = resolve_role_timing(&mut prefill, prefill_capacity_is_explicit)?;
+            let decode_timing = resolve_role_timing(&mut decode, decode_capacity_is_explicit)?;
             engine_config.prefill = Some(prefill);
             engine_config.decode = Some(decode);
             if let Some(traffic) = traffic.as_mut()
@@ -885,6 +950,25 @@ mod tests {
 
     use super::*;
 
+    #[pyclass]
+    struct DecodeCoordinateProbe;
+
+    #[pymethods]
+    impl DecodeCoordinateProbe {
+        fn predict_decode_latency(
+            &self,
+            batch_size: u32,
+            mean_context_length: u32,
+            _osl: u32,
+        ) -> u64 {
+            u64::from(batch_size) * u64::from(mean_context_length + 1)
+        }
+
+        fn predict_decode_latency_total(&self, _batch_size: u32, total_past_kv_tokens: u32) -> u64 {
+            u64::from(total_past_kv_tokens)
+        }
+    }
+
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
             model: "test-model".into(),
@@ -907,6 +991,7 @@ mod tests {
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
             systems_path: None,
+            forward_model: None,
         }
     }
 
@@ -934,6 +1019,30 @@ mod tests {
     }
 
     #[test]
+    fn inferred_capacity_is_capped_to_the_fpm_decode_domain() {
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+        role.rank.block_size = 16;
+        role.rank.num_gpu_blocks = 34_483;
+
+        cap_role_capacity_to_fpm_decode_domain(&mut role, Some(546_046), false).unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 34_127);
+
+        role.rank.num_gpu_blocks = 17;
+        cap_role_capacity_to_fpm_decode_domain(&mut role, Some(546_046), false).unwrap();
+        assert_eq!(
+            role.rank.num_gpu_blocks, 17,
+            "coverage must never grow capacity"
+        );
+
+        role.rank.num_gpu_blocks = 34_483;
+        cap_role_capacity_to_fpm_decode_domain(&mut role, Some(546_046), true).unwrap();
+        assert_eq!(
+            role.rank.num_gpu_blocks, 34_483,
+            "explicit capacity is authoritative"
+        );
+    }
+
+    #[test]
     fn capacity_is_detected_independently_per_role() {
         let engine = serde_json::json!({
             "prefill": {"rank": {"num_gpu_blocks": 17}},
@@ -954,6 +1063,70 @@ mod tests {
                 .to_string()
                 .contains("gpu_memory_utilization")
         );
+    }
+
+    #[test]
+    fn aic_timing_config_accepts_fpm_forward_model() {
+        let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+            "model": "test-model",
+            "backend": "vllm",
+            "system": "test-system",
+            "tp": 1,
+            "forward_model": "fpm"
+        }))
+        .unwrap();
+        assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+    }
+
+    #[test]
+    fn fpm_decode_timing_queries_exact_past_kv_total() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let timing = AicTimingModel {
+            engine,
+            use_fpm_decode_totals: true,
+            fpm_decode_kv_ceiling: None,
+        };
+
+        let latency = timing
+            .predict_decode_ms(35, 546_081, 15_602, 546_048)
+            .unwrap();
+
+        assert_eq!(latency, 546_046.0);
+    }
+
+    #[test]
+    fn fpm_decode_timing_caps_logical_past_kv_at_physical_capacity() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let timing = AicTimingModel {
+            engine,
+            use_fpm_decode_totals: true,
+            fpm_decode_kv_ceiling: None,
+        };
+
+        let latency = timing
+            .predict_decode_ms(35, 546_116, 15_603, 546_048)
+            .unwrap();
+
+        assert_eq!(latency, 546_048.0);
+    }
+
+    #[test]
+    fn op_level_decode_timing_keeps_legacy_mean_coordinate() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let timing = AicTimingModel {
+            engine,
+            use_fpm_decode_totals: false,
+            fpm_decode_kv_ceiling: None,
+        };
+
+        let latency = timing
+            .predict_decode_ms(35, 546_081, 15_602, 546_048)
+            .unwrap();
+
+        assert_eq!(latency, 546_105.0);
     }
 
     #[test]
