@@ -98,9 +98,7 @@ def _ladder_upto(max_value: int, ladder: tuple[int, ...] = _DIM_LADDER) -> list[
     return [v for v in ladder if v <= max_value]
 
 
-def _backend_allows_moe_tp(
-    backend: str, *, enable_wideep: bool, moe_backend: str | None
-) -> bool:
+def _backend_allows_moe_tp(backend: str, *, enable_wideep: bool, moe_backend: str | None) -> bool:
     """sglang's EP-only MoE *kernels* (deepep_moe / megamoe) require moe_tp=1. wideEP
     (multinode wide expert-parallelism) does NOT force it on its own: real GLM-5 sglang
     deployments run MoE tensor-parallel multinode (InferenceX reports EP=1), so MoE-TP
@@ -173,9 +171,7 @@ def enumerate_worker_shapes(
                     )
                     if not (is_tep or is_dep or is_moe_tp):
                         continue
-                    shapes.append(
-                        ParallelShape(tp=tp, dp=dp, moe_tp=moe_tp, moe_ep=moe_ep)
-                    )
+                    shapes.append(ParallelShape(tp=tp, dp=dp, moe_tp=moe_tp, moe_ep=moe_ep))
     return shapes
 
 

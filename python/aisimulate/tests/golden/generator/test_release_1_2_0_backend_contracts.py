@@ -44,6 +44,7 @@ _ALLOWED_CLI_FLAGS = {
         "--data-parallel-size",
         "--enable-expert-parallel",
         "--block-size",
+        "--gpu-memory-utilization",
         "--kv-cache-dtype",
         "--gpu-memory-utilization",
         "--max-model-len",

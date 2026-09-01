@@ -3,7 +3,7 @@
 
 [upstream]
 repository = "https://github.com/ai-dynamo/aiconfigurator.git"
-last_synced = "095f58a51c4ca8e61b66ec108d86f223f8d559ce"
+last_synced = "ce2824e8abd9bef71c3b162f651e63704a0eb4c1"
 
 # These are stable mirror boundaries. Keep AISimulate-specific integration
 # changes outside them so an upstream diff can be path-rewritten mechanically.

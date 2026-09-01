@@ -42,6 +42,7 @@ dependencies = [
  "derive_builder",
  "flate2",
  "indicatif",
+ "log",
  "parquet",
  "pep440_rs",
  "pyo3",

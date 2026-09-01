@@ -1444,8 +1444,14 @@ pub(crate) fn node_points(node: &Node) -> Vec<(Vec<f64>, f64)> {
         .collect()
 }
 
-/// Visit every leaf without materializing a full leaf vector.
-fn visit_leaves(node: &Node, prefix: &mut Vec<u32>, f: &mut impl FnMut(&[u32], LeafValue)) {
+/// Visit every leaf without materializing a leaf vector (the hold and attention
+/// density paths use this; `walk_leaves` remains for callers that genuinely
+/// need the full collection).
+pub(crate) fn visit_leaves(
+    node: &Node,
+    prefix: &mut Vec<u32>,
+    f: &mut impl FnMut(&[u32], LeafValue),
+) {
     match node {
         Node::Leaf(v) => f(prefix, *v),
         Node::Branch(map) => {

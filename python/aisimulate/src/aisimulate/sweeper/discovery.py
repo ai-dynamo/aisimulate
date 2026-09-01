@@ -39,11 +39,7 @@ class ProviderABIError(ProviderResolutionError):
 
 
 def _installed_entry_points() -> list[importlib.metadata.EntryPoint]:
-    return list(
-        importlib.metadata.entry_points().select(
-            group=SWEEP_CONFIG_PROVIDER_ENTRY_POINT_GROUP
-        )
-    )
+    return list(importlib.metadata.entry_points().select(group=SWEEP_CONFIG_PROVIDER_ENTRY_POINT_GROUP))
 
 
 def _validate(provider: Any, *, requested_name: str) -> SweepConfigProvider:
@@ -68,9 +64,7 @@ def resolve_providers(
 
     names = list(dict.fromkeys(configured_names))
     injected = injected or {}
-    installed = (
-        list(entry_points) if entry_points is not None else _installed_entry_points()
-    )
+    installed = list(entry_points) if entry_points is not None else _installed_entry_points()
     resolved: dict[str, SweepConfigProvider] = {}
 
     for name in names:
@@ -80,19 +74,15 @@ def resolve_providers(
 
         matches = [entry_point for entry_point in installed if entry_point.name == name]
         if not matches:
-            available = sorted(
-                set(injected).union(entry_point.name for entry_point in installed)
-            )
+            available = sorted(set(injected).union(entry_point.name for entry_point in installed))
             choices = ", ".join(available) if available else "<none>"
             raise ProviderNotFoundError(
-                f"provider for adapter {name!r} is not installed or injected; "
-                f"available providers: {choices}"
+                f"provider for adapter {name!r} is not installed or injected; available providers: {choices}"
             )
         if len(matches) > 1:
             providers = ", ".join(
                 sorted(
-                    f"{entry_point.value} "
-                    f"({getattr(entry_point, 'dist', None) or 'unknown distribution'})"
+                    f"{entry_point.value} ({getattr(entry_point, 'dist', None) or 'unknown distribution'})"
                     for entry_point in matches
                 )
             )
@@ -106,20 +96,17 @@ def resolve_providers(
             factory = entry_point.load()
         except Exception as exc:
             raise ProviderLoadError(
-                f"failed to load provider {name!r} from {entry_point.value!r}: "
-                f"{type(exc).__name__}: {exc}"
+                f"failed to load provider {name!r} from {entry_point.value!r}: {type(exc).__name__}: {exc}"
             ) from exc
         if not callable(factory):
             raise ProviderFactoryError(
-                f"provider {name!r} entry point {entry_point.value!r} "
-                "must resolve to a callable factory"
+                f"provider {name!r} entry point {entry_point.value!r} must resolve to a callable factory"
             )
         try:
             provider = factory()
         except Exception as exc:
             raise ProviderFactoryError(
-                f"provider {name!r} factory {entry_point.value!r} failed: "
-                f"{type(exc).__name__}: {exc}"
+                f"provider {name!r} factory {entry_point.value!r} failed: {type(exc).__name__}: {exc}"
             ) from exc
         resolved[name] = _validate(provider, requested_name=name)
 

@@ -24,6 +24,7 @@ ddsketchy = "0.1.7"
 derive_builder = { workspace = true }
 flate2 = { workspace = true }
 indicatif = "0.18"
+log = "0.4"
 parquet = { version = "55", default-features = false, features = ["zstd", "snap"] }
 pep440_rs = "0.7.3"
 pyo3 = { version = "0.23.4", features = ["abi3-py311"], optional = true }
