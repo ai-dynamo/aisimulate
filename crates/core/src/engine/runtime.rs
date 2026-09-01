@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{Result, ensure};
 
 use crate::engine::generalized::{EngineIdentity, GeneralizedMockerEngine, RankIdentity};
-use crate::engine::scheduler::vllm::VllmHostOffloadDomain;
+use crate::engine::host_offload::HostCacheDomain;
 use crate::engine::scheduler::{SchedulerRank, engine_seed_offset};
 use crate::engine::{EngineConfig, TimingModel};
 
@@ -44,12 +44,20 @@ impl EngineFactory {
 
     /// Build one scheduler/KV/timing rank with an explicit identity.
     pub fn build_rank(&self, identity: RankIdentity) -> Result<SchedulerRank> {
+        ensure!(
+            self.config.native_host_offload.is_none() || identity.dp_size.get() == 1,
+            "attention-DP native_host_offload requires an explicit cache-domain topology"
+        );
         let seed_offset = engine_seed_offset(identity)?;
-        SchedulerRank::new_with_timing_model(
+        let host_handle = self
+            .new_host_domain()?
+            .map(|domain| domain.bind_rank(identity.dp_rank));
+        SchedulerRank::new_with_timing_model_and_host_handle(
             identity,
             &self.config,
             Arc::clone(&self.timing),
             seed_offset,
+            host_handle,
         )
     }
 
@@ -88,22 +96,33 @@ impl EngineFactory {
                 }
                 host_domains.insert(
                     cache_domain_id,
-                    VllmHostOffloadDomain::new(config, self.config.block_size, kv_bytes_per_token)?,
+                    HostCacheDomain::new(config, self.config.block_size, kv_bytes_per_token)?,
                 );
             }
         }
         GeneralizedMockerEngine::new_with_rank_factory(identity, dp_size, |rank_identity| {
-            let host_domain = host_domains
+            let host_handle = host_domains
                 .get(&cache_domain_ids[rank_identity.dp_rank as usize])
-                .cloned();
+                .map(|domain| domain.bind_rank(rank_identity.dp_rank));
             let seed_offset = engine_seed_offset(rank_identity)?;
-            SchedulerRank::new_with_timing_model_and_host_domain(
+            SchedulerRank::new_with_timing_model_and_host_handle(
                 rank_identity,
                 &self.config,
                 Arc::clone(&self.timing),
                 seed_offset,
-                host_domain,
+                host_handle,
             )
         })
+    }
+
+    fn new_host_domain(&self) -> Result<Option<HostCacheDomain>> {
+        let Some(config) = &self.config.native_host_offload else {
+            return Ok(None);
+        };
+        let kv_bytes_per_token = self
+            .config
+            .kv_cache_bytes_per_token
+            .expect("validated native host offload requires KV byte geometry");
+        HostCacheDomain::new(config, self.config.block_size, kv_bytes_per_token).map(Some)
     }
 }

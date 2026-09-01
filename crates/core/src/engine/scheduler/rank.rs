@@ -15,6 +15,7 @@ use crate::engine::common::protocols::{
     PreemptionMode as CorePreemptionMode, SglangArgs, WorkerType as CoreWorkerType,
 };
 use crate::engine::generalized::{CommandContext, RankEngine, RankIdentity, RankPass};
+use crate::engine::host_offload::{HostCacheDomain, HostCacheRankHandle};
 use crate::engine::{
     Admission, Backend, Command, CommandEffects, CommandResult, EngineConfig, ForwardPassMetrics,
     HandoffId, HostOffloadObserver, LifecycleEvent, Metrics, Output, PassCompletionEffects,
@@ -26,7 +27,7 @@ use super::{
     EngineCore, EnginePassResult, KvEventVisibility, MockerMetrics,
     SchedulerCommand as CoreCommand, SchedulerCommandEffects as CoreCommandEffects,
     SchedulerCommandResult as CoreCommandResult, SchedulerLifecycleEvent as CoreLifecycle,
-    SglangCore, VllmCore, vllm::VllmHostOffloadDomain,
+    SglangCore, VllmCore,
 };
 
 pub fn engine_seed_offset(identity: RankIdentity) -> Result<u64> {
@@ -59,32 +60,52 @@ impl SchedulerRank {
             config.native_host_offload.is_none() || identity.dp_size.get() == 1,
             "attention-DP native_host_offload requires an explicit cache-domain topology"
         );
-        Self::new_with_timing_model_and_host_domain(identity, config, timing, seed_offset, None)
+        let host_handle = config
+            .native_host_offload
+            .as_ref()
+            .map(|host| {
+                HostCacheDomain::new(
+                    host,
+                    config.block_size,
+                    config
+                        .kv_cache_bytes_per_token
+                        .expect("validated native host offload requires KV byte geometry"),
+                )
+                .map(|domain| domain.bind_rank(identity.dp_rank))
+            })
+            .transpose()?;
+        Self::new_with_timing_model_and_host_handle(
+            identity,
+            config,
+            timing,
+            seed_offset,
+            host_handle,
+        )
     }
 
-    pub(crate) fn new_with_timing_model_and_host_domain(
+    pub(crate) fn new_with_timing_model_and_host_handle(
         identity: RankIdentity,
         config: &EngineConfig,
         timing: Arc<dyn TimingModel>,
         seed_offset: u64,
-        host_domain: Option<VllmHostOffloadDomain>,
+        host_handle: Option<HostCacheRankHandle>,
     ) -> Result<Self> {
         config.validate()?;
         ensure!(
-            config.native_host_offload.is_some() || host_domain.is_none(),
-            "cache-domain state requires native_host_offload"
+            config.native_host_offload.is_some() == host_handle.is_some(),
+            "native host offload and its rank handle must be configured together"
         );
         let args = core_args(config, timing);
         let capture_kv_events = config.emit_kv_events;
         let core = match config.backend {
             Backend::Vllm | Backend::Trtllm => {
-                EngineCore::Vllm(VllmCore::new_with_worker_rank_and_host_domain(
+                EngineCore::Vllm(VllmCore::new_with_worker_rank_and_host_handle(
                     args,
                     identity.worker_id,
                     identity.dp_rank,
                     seed_offset,
                     capture_kv_events,
-                    host_domain,
+                    host_handle,
                 ))
             }
             Backend::Sglang => EngineCore::Sglang(SglangCore::new_with_worker_rank(
@@ -395,6 +416,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         aic_nextn_accept_rates: config.aic_nextn_accept_rates.clone(),
         aic_mtp_seed: config.aic_mtp_seed,
         kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,
+        #[cfg(test)]
         kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
         native_host_offload: config.native_host_offload,
         kv_transfer_bandwidth: config.kv_transfer_bandwidth,

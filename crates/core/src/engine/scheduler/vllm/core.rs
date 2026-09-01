@@ -18,13 +18,15 @@ use crate::engine::common::speculative::{
 use crate::engine::common::utils::{
     compute_prefill_handoff_delay_ms, prefill_handoff_transfer_timing,
 };
+#[cfg(test)]
+use crate::engine::host_offload::HostCacheDomain;
+use crate::engine::host_offload::HostCacheRankHandle;
 use crate::engine::kv_manager::G1Manager;
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
 #[cfg(test)]
 use crate::engine::scheduler::accept_length_sample;
 use crate::engine::scheduler::vllm::host_offload::{
-    CompletedLoad, HostLookup, StartLoad, VllmHostOffloadAdapter, VllmHostOffloadDomain,
-    VllmHostRequestState,
+    CompletedLoad, HostLookup, StartLoad, VllmHostOffloadAdapter, VllmHostRequestState,
 };
 use crate::engine::scheduler::vllm::policy::{self, AdmissionDecision, PolicySequence};
 use crate::engine::scheduler::vllm::request::RequestKvState;
@@ -568,7 +570,7 @@ impl VllmCore {
 
     #[cfg(test)]
     pub(crate) fn new(args: MockEngineArgs) -> Self {
-        Self::new_internal(args, 0, 0, None, KvEventPublishers::default(), None)
+        Self::new_with_worker_rank(args, 0, 0, 0, false)
     }
 
     #[cfg(test)]
@@ -584,23 +586,33 @@ impl VllmCore {
         seed_offset: u64,
         capture_kv_events: bool,
     ) -> Self {
-        Self::new_with_worker_rank_and_host_domain(
+        let host_handle = args.native_host_offload.as_ref().map(|config| {
+            HostCacheDomain::new(
+                config,
+                args.block_size,
+                args.kv_cache_bytes_per_token
+                    .expect("validated native host offload requires KV byte geometry"),
+            )
+            .expect("validated native host-offload configuration must construct")
+            .bind_rank(dp_rank)
+        });
+        Self::new_with_worker_rank_and_host_handle(
             args,
             worker_id,
             dp_rank,
             seed_offset,
             capture_kv_events,
-            None,
+            host_handle,
         )
     }
 
-    pub(crate) fn new_with_worker_rank_and_host_domain(
+    pub(crate) fn new_with_worker_rank_and_host_handle(
         args: MockEngineArgs,
         _worker_id: u64,
         dp_rank: u32,
         seed_offset: u64,
         capture_kv_events: bool,
-        host_domain: Option<VllmHostOffloadDomain>,
+        host_handle: Option<HostCacheRankHandle>,
     ) -> Self {
         let (buffer, publishers) = if capture_kv_events {
             let (buffer, sink) = capture_kv_event_sink();
@@ -608,7 +620,7 @@ impl VllmCore {
         } else {
             (None, KvEventPublishers::default())
         };
-        Self::new_internal(args, dp_rank, seed_offset, buffer, publishers, host_domain)
+        Self::new_internal(args, dp_rank, seed_offset, buffer, publishers, host_handle)
     }
 
     fn new_internal(
@@ -617,8 +629,13 @@ impl VllmCore {
         seed_offset: u64,
         kv_event_buffer: Option<CapturedKvEventBuffer>,
         kv_event_publishers: KvEventPublishers,
-        host_domain: Option<VllmHostOffloadDomain>,
+        host_handle: Option<HostCacheRankHandle>,
     ) -> Self {
+        assert_eq!(
+            args.native_host_offload.is_some(),
+            host_handle.is_some(),
+            "native host offload and its rank handle must be configured together"
+        );
         let kv_event_publishers = if args.enable_prefix_caching {
             kv_event_publishers
         } else {
@@ -632,20 +649,7 @@ impl VllmCore {
                     .expect("normalized MTP acceptance rates");
             SpeculativeDecodeSampler::new(rates, args.aic_mtp_seed.wrapping_add(seed_offset))
         });
-        let native_host_offload = args.native_host_offload.as_ref().map(|config| {
-            host_domain.map_or_else(
-                || {
-                    VllmHostOffloadAdapter::new(
-                        config,
-                        args.block_size,
-                        args.kv_cache_bytes_per_token
-                            .expect("validated native host offload requires KV byte geometry"),
-                    )
-                    .expect("validated native host-offload configuration must construct")
-                },
-                |domain| VllmHostOffloadAdapter::in_domain(domain, dp_rank),
-            )
-        });
+        let native_host_offload = host_handle.map(VllmHostOffloadAdapter::new);
         Self {
             kv_manager: G1Manager::new_with_caching(
                 args.num_gpu_blocks,

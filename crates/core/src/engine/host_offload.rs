@@ -8,9 +8,11 @@
 //! deadlines. Transfers are synchronous state transitions driven by virtual
 //! time; no runtime, thread, or distributed-storage dependency is involved.
 
+mod domain;
 mod observation;
 mod tier;
 
+pub(crate) use domain::{HostCacheDomain, HostCacheRankHandle};
 pub(crate) use observation::{
     HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver, HostStoreBlockMapping,
 };

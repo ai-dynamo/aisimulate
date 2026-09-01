@@ -204,6 +204,7 @@ pub(crate) struct MockEngineArgs {
     #[builder(default = "None")]
     pub kv_transfer_bytes_per_token: Option<usize>,
     #[builder(default = "None")]
+    #[cfg(test)]
     pub kv_cache_bytes_per_token: Option<usize>,
     #[builder(default = "None")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,

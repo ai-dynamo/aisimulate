@@ -88,11 +88,25 @@ pub struct PlacementEffects {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedulerTopology {
+    pub scheduler_id: usize,
+    pub cache_domain_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerTopology {
     pub worker_id: usize,
-    pub scheduler_ids: Vec<usize>,
-    /// Host-cache domain for each scheduler in DP-rank order.
-    pub cache_domain_ids: Vec<u32>,
+    /// Scheduler identity paired with its physical host-cache domain.
+    pub schedulers: Vec<SchedulerTopology>,
+}
+
+impl WorkerTopology {
+    pub fn empty(worker_id: usize) -> Self {
+        Self {
+            worker_id,
+            schedulers: Vec::new(),
+        }
+    }
 }
 
 pub trait PlacementPolicy<Request> {

@@ -9,6 +9,8 @@
 
 use uuid::Uuid;
 
+use rustc_hash::FxHashMap;
+
 pub(crate) use crate::engine::cache::vllm_block_pool::SourceReuseDependency;
 use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, ReserveOutcome, VllmBlockPool,
@@ -262,6 +264,7 @@ pub(crate) struct VllmKvManager {
     kv_event_publishers: KvEventPublishers,
     dp_rank: u32,
     next_event_id: u64,
+    pending_host_stores: FxHashMap<SourceReuseDependency, Vec<StoredBlocks>>,
 }
 
 impl VllmKvManager {
@@ -283,6 +286,7 @@ impl VllmKvManager {
             kv_event_publishers,
             dp_rank,
             next_event_id: 0,
+            pending_host_stores: FxHashMap::default(),
         }
     }
 
@@ -984,28 +988,40 @@ impl VllmKvManager {
         self.pool.cancel(reservation.pool);
     }
 
-    pub(crate) fn native_host_store_events(
-        &self,
+    pub(crate) fn stage_native_host_store(
+        &mut self,
+        dependency: SourceReuseDependency,
         lease: &BlockRequestLease,
         block_indices: &[usize],
-    ) -> Vec<StoredBlocks> {
-        block_indices
+        evicted: Vec<SequenceHash>,
+    ) {
+        if self.kv_event_publishers.is_empty() {
+            return;
+        }
+        let stores = block_indices
             .iter()
             .map(|&index| lease.native_host_store(index))
-            .collect()
+            .collect();
+        assert!(
+            self.pending_host_stores
+                .insert(dependency, stores)
+                .is_none(),
+            "native host store dependency was reused before completion"
+        );
+        self.publish_native_host_removed(evicted);
     }
 
-    pub(crate) fn emits_native_kv_events(&self) -> bool {
-        !self.kv_event_publishers.is_empty()
-    }
-
-    pub(crate) fn publish_native_host_stores(&mut self, stores: Vec<StoredBlocks>) {
+    pub(crate) fn complete_native_host_store(&mut self, dependency: SourceReuseDependency) {
+        let Some(stores) = self.pending_host_stores.remove(&dependency) else {
+            debug_assert!(self.kv_event_publishers.is_empty());
+            return;
+        };
         for store in stores {
             self.publish_event_data(KvEventData::Stored(store), KvEventTier::HostPinned, None);
         }
     }
 
-    pub(crate) fn publish_native_host_removed(&mut self, hashes: Vec<SequenceHash>) {
+    fn publish_native_host_removed(&mut self, hashes: Vec<SequenceHash>) {
         if !hashes.is_empty() {
             self.publish_event_data(
                 KvEventData::Removed {

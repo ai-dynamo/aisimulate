@@ -13,7 +13,9 @@ use crate::engine::{
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
-use super::super::core::{EngineEventBatch, EngineProgress, NoEngineEvents, WorkerTopology};
+use super::super::core::{
+    EngineEventBatch, EngineProgress, NoEngineEvents, SchedulerTopology, WorkerTopology,
+};
 use super::super::events::{EnginePassCompletion, SimulationWorkerStage, WorkerCompletionPayload};
 use super::{
     EngineEffects, EnginePassMode, InternalEngineEffects, ObservedCommandEffects,
@@ -367,10 +369,20 @@ where
     }
 
     pub(crate) fn worker_topology(&self, worker_id: usize) -> Option<WorkerTopology> {
+        let scheduler_ids = &self.workers.get(worker_id)?.as_ref()?.scheduler_ids;
+        let cache_domain_ids = self.factory.cache_domain_ids();
+        assert_eq!(scheduler_ids.len(), cache_domain_ids.len());
         Some(WorkerTopology {
             worker_id,
-            scheduler_ids: self.workers.get(worker_id)?.as_ref()?.scheduler_ids.clone(),
-            cache_domain_ids: self.factory.cache_domain_ids().to_vec(),
+            schedulers: scheduler_ids
+                .iter()
+                .copied()
+                .zip(cache_domain_ids.iter().copied())
+                .map(|(scheduler_id, cache_domain_id)| SchedulerTopology {
+                    scheduler_id,
+                    cache_domain_id,
+                })
+                .collect(),
         })
     }
 
@@ -1036,7 +1048,8 @@ mod tests {
         let scheduler_id = component
             .worker_topology(starting_worker)
             .unwrap()
-            .scheduler_ids[0];
+            .schedulers[0]
+            .scheduler_id;
         component
             .dispatch(
                 scheduler_id,

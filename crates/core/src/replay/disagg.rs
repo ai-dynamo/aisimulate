@@ -2375,14 +2375,9 @@ where
                 .context("failed to remove drained prefill workers")?;
             let mut prefill_releases = Vec::new();
             for worker_id in &removed_prefill {
-                let placements = self.prefill_placement.worker_removed(
-                    WorkerTopology {
-                        worker_id: *worker_id,
-                        scheduler_ids: Vec::new(),
-                        cache_domain_ids: Vec::new(),
-                    },
-                    self.now_ms,
-                )?;
+                let placements = self
+                    .prefill_placement
+                    .worker_removed(WorkerTopology::empty(*worker_id), self.now_ms)?;
                 prefill_releases.extend(placements.iter().map(|placement| placement.request_id));
                 self.dispatch_prefill_placements(placements)?;
             }
@@ -2422,14 +2417,9 @@ where
                 .context("failed to remove drained decode workers")?;
             let mut decode_releases = Vec::new();
             for worker_id in &removed_decode {
-                let placements = self.decode_placement.worker_removed(
-                    WorkerTopology {
-                        worker_id: *worker_id,
-                        scheduler_ids: Vec::new(),
-                        cache_domain_ids: Vec::new(),
-                    },
-                    self.now_ms,
-                )?;
+                let placements = self
+                    .decode_placement
+                    .worker_removed(WorkerTopology::empty(*worker_id), self.now_ms)?;
                 decode_releases.extend(placements.iter().map(|placement| placement.request_id));
                 self.dispatch_decode_placements(placements)?;
             }
@@ -2732,11 +2722,7 @@ where
             let topology = self
                 .prefill_engine
                 .worker_topology(id)
-                .unwrap_or(WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                    cache_domain_ids: Vec::new(),
-                });
+                .unwrap_or_else(|| WorkerTopology::empty(id));
             let placements = self
                 .prefill_placement
                 .worker_draining(topology, self.now_ms)?;
@@ -2744,14 +2730,9 @@ where
             self.dispatch_prefill_placements(placements)?;
         }
         for &id in &removed {
-            let placements = self.prefill_placement.worker_removed(
-                WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                    cache_domain_ids: Vec::new(),
-                },
-                self.now_ms,
-            )?;
+            let placements = self
+                .prefill_placement
+                .worker_removed(WorkerTopology::empty(id), self.now_ms)?;
             prefill_releases.extend(placements.iter().map(|placement| placement.request_id));
             self.dispatch_prefill_placements(placements)?;
         }
@@ -2813,11 +2794,7 @@ where
             let topology = self
                 .decode_engine
                 .worker_topology(id)
-                .unwrap_or(WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                    cache_domain_ids: Vec::new(),
-                });
+                .unwrap_or_else(|| WorkerTopology::empty(id));
             let placements = self
                 .decode_placement
                 .worker_draining(topology, self.now_ms)?;
@@ -2825,14 +2802,9 @@ where
             self.dispatch_decode_placements(placements)?;
         }
         for &id in &removed {
-            let placements = self.decode_placement.worker_removed(
-                WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                    cache_domain_ids: Vec::new(),
-                },
-                self.now_ms,
-            )?;
+            let placements = self
+                .decode_placement
+                .worker_removed(WorkerTopology::empty(id), self.now_ms)?;
             decode_releases.extend(placements.iter().map(|placement| placement.request_id));
             self.dispatch_decode_placements(placements)?;
         }

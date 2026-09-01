@@ -37,7 +37,16 @@ impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
             counter,
             workers: workers
                 .into_iter()
-                .map(|worker| (worker.worker_id, worker.scheduler_ids))
+                .map(|worker| {
+                    (
+                        worker.worker_id,
+                        worker
+                            .schedulers
+                            .into_iter()
+                            .map(|scheduler| scheduler.scheduler_id)
+                            .collect(),
+                    )
+                })
                 .collect(),
             events: PhantomData,
         }
@@ -111,7 +120,14 @@ where
 
     fn worker_ready(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
         self.counter.worker_ready(worker.worker_id);
-        self.workers.insert(worker.worker_id, worker.scheduler_ids);
+        self.workers.insert(
+            worker.worker_id,
+            worker
+                .schedulers
+                .into_iter()
+                .map(|scheduler| scheduler.scheduler_id)
+                .collect(),
+        );
         Ok(Vec::new())
     }
 
@@ -145,7 +161,16 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
             next: 0,
             workers: workers
                 .into_iter()
-                .map(|worker| (worker.worker_id, worker.scheduler_ids))
+                .map(|worker| {
+                    (
+                        worker.worker_id,
+                        worker
+                            .schedulers
+                            .into_iter()
+                            .map(|scheduler| scheduler.scheduler_id)
+                            .collect(),
+                    )
+                })
                 .collect(),
             events: PhantomData,
         }
@@ -215,7 +240,14 @@ where
     }
 
     fn worker_ready(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
-        self.workers.insert(worker.worker_id, worker.scheduler_ids);
+        self.workers.insert(
+            worker.worker_id,
+            worker
+                .schedulers
+                .into_iter()
+                .map(|scheduler| scheduler.scheduler_id)
+                .collect(),
+        );
         Ok(Vec::new())
     }
 
@@ -330,24 +362,26 @@ mod tests {
         placement.scheduler_id
     }
 
+    fn worker_topology(worker_id: usize, scheduler_ids: &[usize]) -> WorkerTopology {
+        WorkerTopology {
+            worker_id,
+            schedulers: scheduler_ids
+                .iter()
+                .enumerate()
+                .map(|(rank, &scheduler_id)| crate::replay::SchedulerTopology {
+                    scheduler_id,
+                    cache_domain_id: rank as u32,
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn pool_rotation_preserves_position_after_topology_change() {
         let mut policy = PoolRoundRobinPlacement::<()>::new(vec![
-            WorkerTopology {
-                worker_id: 0,
-                scheduler_ids: vec![10],
-                cache_domain_ids: vec![0],
-            },
-            WorkerTopology {
-                worker_id: 1,
-                scheduler_ids: vec![11],
-                cache_domain_ids: vec![0],
-            },
-            WorkerTopology {
-                worker_id: 2,
-                scheduler_ids: vec![12],
-                cache_domain_ids: vec![0],
-            },
+            worker_topology(0, &[10]),
+            worker_topology(1, &[11]),
+            worker_topology(2, &[12]),
         ]);
 
         assert_eq!(
@@ -358,11 +392,7 @@ mod tests {
         );
         PlacementPolicy::<TestRequest>::worker_draining(
             &mut policy,
-            WorkerTopology {
-                worker_id: 2,
-                scheduler_ids: vec![12],
-                cache_domain_ids: vec![0],
-            },
+            worker_topology(2, &[12]),
             0.0,
         )
         .unwrap();
@@ -389,18 +419,7 @@ mod tests {
     fn aggregated_round_robin_honors_authored_dp_rank_within_each_worker() {
         let mut policy = AggregatedRoundRobinPlacement::<()>::new(
             2,
-            vec![
-                WorkerTopology {
-                    worker_id: 0,
-                    scheduler_ids: vec![10, 11],
-                    cache_domain_ids: vec![0, 1],
-                },
-                WorkerTopology {
-                    worker_id: 1,
-                    scheduler_ids: vec![20, 21],
-                    cache_domain_ids: vec![0, 1],
-                },
-            ],
+            vec![worker_topology(0, &[10, 11]), worker_topology(1, &[20, 21])],
         );
 
         let place = |policy: &mut AggregatedRoundRobinPlacement<()>, ordinal, rank| {
