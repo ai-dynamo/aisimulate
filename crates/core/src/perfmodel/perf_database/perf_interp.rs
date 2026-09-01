@@ -2109,6 +2109,24 @@ mod tests {
     }
 
     #[test]
+    fn prepared_grid_reuses_its_hold_index() {
+        let prepared = PreparedGrid::new(gen_split_table());
+        let cfg = OpInterpConfig::grid(&["num_heads", "batch", "seq_len"], &gen_lat);
+        let coords = [64.0, 256.0, 4096.0];
+        assert!(prepared.hold_index.get().is_none());
+
+        let first = prepared.query(&cfg, &coords).unwrap();
+        let index = prepared.hold_index.get().unwrap() as *const FlatHoldIndex;
+        let second = prepared.query(&cfg, &coords).unwrap();
+
+        assert_eq!(first.to_bits(), second.to_bits());
+        assert_eq!(
+            prepared.hold_index.get().unwrap() as *const FlatHoldIndex,
+            index
+        );
+    }
+
+    #[test]
     fn flat_hold_index_preserves_ties_and_invalid_fallback() {
         let sol = |_: &[f64]| 1.0;
 

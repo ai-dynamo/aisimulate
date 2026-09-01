@@ -66,9 +66,8 @@ use crate::config::{PerfDbSources, PerfSource};
 use crate::perf_database::parquet_loader::{PerfReader, PerfRow};
 
 /// `(comm_backend, phase, comm_dtype, ep_size, node_num, hidden_size, topk,
-/// num_experts, sms)` — every level of the Python store above the token axis,
-/// in the same order, so a `BTreeMap` range scan over one `sms` span yields
-/// the `by_sms` slice the query walks.
+/// num_experts, sms)` — identifies one token-latency curve in the merged
+/// loader map.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MoeA2aKey {
     pub comm_backend: String,
@@ -107,6 +106,7 @@ impl MoeA2aShapeKey {
 struct SmsGrid {
     curves: BTreeMap<u32, AxisCurve>,
     grid: OnceLock<PreparedGrid>,
+    // Initialized only for DeepEP-HT dispatch slices.
     combined: OnceLock<BTreeMap<String, PreparedGrid>>,
 }
 
@@ -2597,6 +2597,27 @@ mod tests {
     // sms resolution: exact -> 1-D token curve, else 2-D (sms, tokens) Grid
     // ------------------------------------------------------------------
 
+    #[test]
+    fn disjoint_deepep_ht_surfaces_preserve_the_phase_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_a2a_parquet(
+            &tmp.path().join("moe_a2a_perf.parquet"),
+            &[
+                a2a_row("deepep_ht", "dispatch", "fp8", 16, 2, Some(20), 0, 100.0),
+                a2a_row("deepep_ht", "combine", "fp8", 16, 2, Some(32), 64, 200.0),
+            ],
+            true,
+        );
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+
+        approx(
+            table
+                .query("deepep_ht", "dispatch", "fp8", 16, 2, 7168, 8, 256, 0, 20)
+                .unwrap(),
+            0.1,
+        );
+    }
+
     /// An exact `sms` key resolves its OWN token curve (1-D); an off-grid
     /// `sms` resolves the 2-D `(sms, num_tokens)` Grid — interior lerp on the
     /// sms axis, nearest-snap outside it. Python oracle from
@@ -2689,16 +2710,15 @@ mod tests {
         assert!(dispatch.combined.get().is_none());
 
         // An off-grid SMS prepares both phase grids and the combined surface.
-        query("dispatch", 24);
+        approx(query("dispatch", 24), 0.266_666_666_666_666_66);
         assert!(dispatch.grid.get().is_some());
         assert!(combine.grid.get().is_some());
         let combined = dispatch.combined.get().unwrap();
-        assert_eq!(combined.len(), 1);
-        let combined_ptr = &combined["fp8"] as *const PreparedGrid;
+        let combined_ptr = combined.get("fp8").unwrap() as *const PreparedGrid;
 
         query("combine", 24);
         assert_eq!(
-            &dispatch.combined.get().unwrap()["fp8"] as *const PreparedGrid,
+            dispatch.combined.get().unwrap().get("fp8").unwrap() as *const PreparedGrid,
             combined_ptr
         );
     }
