@@ -30,6 +30,25 @@ from aiconfigurator.sdk.utils import get_model_config_from_model_path
 pytestmark = pytest.mark.unit
 
 
+def test_model_config_normalizes_kernel_backend_enums():
+    model_config = config.ModelConfig(
+        attention_backend="fa3",
+        moe_backend="megamoe",
+    )
+
+    assert model_config.attention_backend is common.AttentionBackend.fa3
+    assert model_config.moe_backend is common.MoEBackend.megamoe
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("attention_backend", "torch"), ("moe_backend", "triton")],
+)
+def test_model_config_rejects_unknown_kernel_backend(field, value):
+    with pytest.raises(ValueError, match=field):
+        config.ModelConfig(**{field: value})
+
+
 class TestSupportedModels:
     """Test default models configuration from support_matrix.csv."""
 

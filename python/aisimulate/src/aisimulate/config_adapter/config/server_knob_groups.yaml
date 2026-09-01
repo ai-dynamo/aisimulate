@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: server-knob-groups/1.1.0
+mapping_version: 1.1.0
+
+# Keys are normalized AISimulate config names, not backend CLI flag names.
+# Membership categorizes a knob; backend CLI/override support is separate.
+# Group order and knob order are presentation-significant.
+backends:
+  - vllm
+  - sglang
+  - trtllm
+
+groups:
+  ModelConfig:
+    - model
+  BackendConfig:
+    - backend_version
+  ParallelConfig:
+    - workers
+    - tp
+    - pp
+    - attention_dp
+    - moe_tp
+    - moe_ep
+  KernelConfig:
+    - attention_backend
+    - context_attention_kernel_source
+    - generation_attention_kernel_source
+    - moe_backend
+    - moe_kernel_source
+    - gemm_kernel_source
+  SpeculativeConfig:
+    - speculative_method
+  CacheConfig:
+    - block_size
+    - enable_prefix_caching
+    - kv_cache_dtype
+  SchedulerConfig:
+    - max_num_seqs
+    - max_num_batched_tokens
+  QuantizationConfig:
+    - gemm_dtype
+    - moe_dtype
+    - fmha_dtype
+    - comm_dtype
+
+# These normalized knobs are useful comparison targets, but the current
+# AISimulate ReplaySpec cannot carry them into AIC timing configuration.
+aisimulate_replay:
+  not_represented:
+    - attention_backend
+    - context_attention_kernel_source
+    - generation_attention_kernel_source
+    - moe_backend
+    - moe_kernel_source
+    - gemm_kernel_source
