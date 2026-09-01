@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import sys
+import time
 import traceback
 from dataclasses import replace
 from pathlib import Path
@@ -70,6 +71,9 @@ GROUP_KEYS = (
     "moe_tp_size",
     "moe_ep_size",
 )
+
+DEMO_REGRESSION_CASE_ID = "qwen3-32b/silicon/context/bs1-isl1024"
+DEMO_REGRESSION_DELAY_SECONDS = 0.000_100
 
 
 def canonical_case_hash(case: dict) -> str:
@@ -300,6 +304,15 @@ def _run_case_group(cases: list[dict], *, warmup: int, iterations: int, revision
                 phase=case["phase"],
                 stride=case["stride"],
             )
+            if case["case_id"] == DEMO_REGRESSION_CASE_ID:
+                target_call = call
+
+                def delayed_call() -> float:
+                    predicted_value = target_call()
+                    time.sleep(DEMO_REGRESSION_DELAY_SECONDS)
+                    return predicted_value
+
+                call = delayed_call
             with redirect_output(True):
                 predicted_value, cold_us, warm_samples, warm_stats = measure_cold_and_warm(
                     call,
