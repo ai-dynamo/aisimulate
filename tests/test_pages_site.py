@@ -8,7 +8,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "build_pages_site.py"
 SPEC = importlib.util.spec_from_file_location("build_pages_site", SCRIPT_PATH)
@@ -34,6 +33,10 @@ class PagesSiteTest(unittest.TestCase):
             self.assertFalse(any(path.suffix == ".md" for path in files))
             self.assertFalse(any("src" in path.parts for path in files))
 
+            landing_page = (output_dir / "index.html").read_text()
+            self.assertIn('href="./support-matrix/"', landing_page)
+            self.assertNotIn('href="./universe/"', landing_page)
+
             for path in files:
                 if path.suffix not in {".html", ".js"}:
                     continue
@@ -49,6 +52,18 @@ class PagesSiteTest(unittest.TestCase):
             page = (output_dir / "support-matrix" / "index.html").read_text()
             self.assertIn("../data/support-matrix", page)
             self.assertNotIn("raw.githubusercontent.com", page)
+
+    def test_public_artifact_rejects_symlinked_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            private_file = temporary_root / "private.html"
+            symlink = temporary_root / "public.html"
+            destination = temporary_root / "site" / "public.html"
+            private_file.write_text("private")
+            symlink.symlink_to(private_file)
+
+            with self.assertRaisesRegex(PAGES.PagesBuildError, "cannot be a symlink"):
+                PAGES._copy_file(symlink, destination)
 
 
 if __name__ == "__main__":

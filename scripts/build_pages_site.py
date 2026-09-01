@@ -11,7 +11,6 @@ import json
 import shutil
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = Path("python/aisimulate/docs")
 SYSTEMS_ROOT = Path("python/aisimulate/src/aiconfigurator_core/systems")
@@ -36,6 +35,8 @@ class PagesBuildError(RuntimeError):
 
 
 def _copy_file(source: Path, destination: Path) -> None:
+    if source.is_symlink():
+        raise PagesBuildError(f"public artifact source cannot be a symlink: {source}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
 
