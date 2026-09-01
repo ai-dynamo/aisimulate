@@ -128,6 +128,7 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
         "workers": {"initial_workers": 2, "startup_delay_ms": 0.0},
     }
     assert execution["engine"]["tensor_parallel_size"] == 2
+    assert execution["engine"]["num_gpu_blocks_is_explicit"] is True
     assert execution["engine"]["rank"]["backend"] == "vllm"
     assert execution["requests"][0]["input_tokens"] == 8
     assert execution["record_per_request"] is False
@@ -295,6 +296,7 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     )
 
     assert runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 321
+    assert runtime.execution_spec["engine"]["num_gpu_blocks_is_explicit"] is False
     timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
     assert timing_config["pp"] == 2
     assert timing_config["systems_path"] == "/tmp/custom-systems.yaml"

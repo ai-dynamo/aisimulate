@@ -148,6 +148,20 @@ impl FpmForwardOp {
         self.resolve(db, cell, coords)
     }
 
+    /// Highest collected decode KV-read total for this op's selected cell.
+    pub fn decode_kv_ceiling(&self, db: &PerfDatabase) -> Result<Option<u32>, AicError> {
+        if self.phase != FpmPhase::Decode {
+            return Err(data_err(format!(
+                "decode_kv_ceiling is decode-only, called on phase {:?}",
+                self.phase.as_str()
+            )));
+        }
+        let cell = db
+            .fpm_forward
+            .select_cell(&self.match_identity, &self.model_path)?;
+        Ok(cell.decode_domain.as_ref().map(|domain| domain[1].1))
+    }
+
     /// Decode-pass baseline at each collected batch curve's own KV floor.
     /// Exact batches use their measured floor directly; off-lattice batches
     /// interpolate the two bracket rows' floor latencies along the batch axis.

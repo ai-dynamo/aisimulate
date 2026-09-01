@@ -555,6 +555,34 @@ impl Engine {
             .total_ms)
     }
 
+    /// Predict one decode step from exact FPM iteration totals.
+    ///
+    /// `total_past_kv_tokens` excludes the one current token processed by each
+    /// decode request, matching the collector's `total_kv_read_tokens` axis.
+    pub fn predict_decode_latency_total(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> Result<f64, AicError> {
+        self.forward_pass_time_ms(&[ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_decode_requests: batch_size,
+                sum_decode_kv_tokens: total_past_kv_tokens,
+                ..Default::default()
+            },
+            ..Default::default()
+        }])
+    }
+
+    /// Highest decode KV-read total covered by a compiled FPM engine.
+    /// Op-level engines return `None`.
+    pub fn fpm_decode_kv_ceiling(&self) -> Result<Option<u32>, AicError> {
+        let Some((_prefill, decode)) = self.fpm_ops() else {
+            return Ok(None);
+        };
+        decode.decode_kv_ceiling(&self.db)
+    }
+
     /// One mixed (chunked-prefill + decode) step latency. LITERAL mirror of
     /// Python `_get_mix_step_latency` / `run_mixed`, which composes three
     /// filtered phase passes (`_run_context_phase` / `_run_generation_phase`
