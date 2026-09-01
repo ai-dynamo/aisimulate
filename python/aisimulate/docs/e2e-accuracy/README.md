@@ -13,7 +13,7 @@ service links.
 ## Published snapshot
 
 The checked-in `summary.json` is derived from the public
-[SemiAnalysis InferenceX `db-dump/2026-07-20` release](https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-07-20)
+[SemiAnalysis InferenceX `db-dump/2026-08-24` release](https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-08-24)
 and a completed AISimulate 0.12.0 engine-replay evaluation. The summary records
 the source digests and artifact versions needed to identify that exact evidence.
 
@@ -48,7 +48,7 @@ python scripts/build_e2e_accuracy_overview.py \
   --predictions /path/to/predictions.json \
   --metadata /path/to/aisimulate_points.meta.json \
   --coverage /path/to/coverage.json \
-  --source-url https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-07-20 \
+  --source-url https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-08-24 \
   --output python/aisimulate/docs/e2e-accuracy/summary.json
 ```
 

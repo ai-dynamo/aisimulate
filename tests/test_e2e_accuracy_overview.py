@@ -154,7 +154,10 @@ def _summary() -> dict[str, object]:
         metadata,
         coverage,
         predictions_sha256="c" * 64,
-        source_url="https://github.com/example/releases/tag/db-dump-fixture",
+        source_url=(
+            "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
+            "db-dump/fixture"
+        ),
     )
 
 
@@ -228,7 +231,44 @@ def test_inconsistent_snapshot_fails_closed() -> None:
             metadata,
             coverage,
             predictions_sha256="c" * 64,
-            source_url="https://github.com/example/releases/tag/db-dump-fixture",
+            source_url=(
+                "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
+                "db-dump/fixture"
+            ),
+        )
+
+
+def test_source_url_must_match_validated_release_tag() -> None:
+    predictions, metadata, coverage = _inputs()
+
+    with pytest.raises(OVERVIEW.SnapshotError, match="source URL"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url=(
+                "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
+                "db-dump/other"
+            ),
+        )
+
+
+def test_unknown_hardware_requires_explicit_multinode_scope() -> None:
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0]["hardware"] = "rtx_6000_ada"
+    predictions["rows"][0].pop("is_multinode")
+
+    with pytest.raises(OVERVIEW.SnapshotError, match="unknown hardware family"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url=(
+                "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
+                "db-dump/fixture"
+            ),
         )
 
 
@@ -298,3 +338,12 @@ def test_public_page_uses_compact_dashboard_structure() -> None:
     assert 'class="summary-grid"' in page
     assert 'class="matrix-panel"' in page
     assert 'class="hero"' not in page
+
+
+def test_public_page_validates_snapshot_urls_and_nested_schema() -> None:
+    script = (
+        ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "app.js"
+    ).read_text()
+
+    assert "isSafeHttpsUrl(snapshot.measurement_source_url)" in script
+    assert "!Array.isArray(model.workloads)" in script

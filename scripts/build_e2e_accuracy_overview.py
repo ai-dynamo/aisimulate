@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
+INFERENCEX_RELEASE_URL_PREFIX = (
+    "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
+)
 FORBIDDEN_PUBLIC_FRAGMENTS = (
     "gitlab-master.nvidia.com",
     "linear.app/nvidia",
@@ -123,7 +126,12 @@ def _is_multinode(row: dict[str, Any]) -> bool:
         None,
     )
     if gpus_per_node is None:
-        return bool(row.get("is_multinode"))
+        is_multinode = row.get("is_multinode")
+        if not isinstance(is_multinode, bool):
+            raise SnapshotError(
+                "row with unknown hardware family must provide boolean is_multinode"
+            )
+        return is_multinode
     return _total_gpus(row) > gpus_per_node
 
 
@@ -434,9 +442,12 @@ def build_summary(
     source_url: str,
     exclude_multinode: bool = True,
 ) -> dict[str, Any]:
-    if not source_url.startswith("https://"):
-        raise SnapshotError("source URL must use https")
     all_rows = _validate_inputs(predictions, metadata, coverage)
+    expected_source_url = f"{INFERENCEX_RELEASE_URL_PREFIX}{predictions['release_tag']}"
+    if source_url != expected_source_url:
+        raise SnapshotError(
+            "source URL does not match the validated predictions.release_tag"
+        )
     scoped_rows = [
         row for row in all_rows if not (exclude_multinode and _is_multinode(row))
     ]

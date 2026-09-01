@@ -48,6 +48,15 @@ function formatDate(value) {
   }).format(date);
 }
 
+function isSafeHttpsUrl(value) {
+  if (typeof value !== "string") return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch (_) {
+    return false;
+  }
+}
+
 function basicCard(label, value, accent = false) {
   return `
     <article class="summary-card">
@@ -90,6 +99,9 @@ function renderSummary() {
 
 function renderSnapshot() {
   const { snapshot, scope, totals } = state.data;
+  if (!isSafeHttpsUrl(snapshot.measurement_source_url)) {
+    throw new Error("unsafe measurement source URL");
+  }
   releaseLabel.textContent = `release: ${snapshot.release_tag}`;
   multinodeLabel.textContent = `Exclude multi-node predictions (${scope.excluded_multinode_rows.toLocaleString()} hidden)`;
   identityLine.textContent = `GPU SKUs: ${totals.gpu_skus.join(", ")} · Precisions: ${totals.precisions.join(", ")}`;
@@ -283,7 +295,11 @@ fetch("./summary.json")
     if (
       data.schema_version !== 1 ||
       !Array.isArray(data.models) ||
-      data.models.some((model) => model.workloads.some((workload) => !Array.isArray(workload.gpus)))
+      data.models.some(
+        (model) =>
+          !Array.isArray(model.workloads) ||
+          model.workloads.some((workload) => !Array.isArray(workload.gpus)),
+      )
     ) {
       throw new Error("unsupported accuracy summary schema");
     }
