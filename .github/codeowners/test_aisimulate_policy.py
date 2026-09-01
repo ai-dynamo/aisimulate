@@ -150,6 +150,7 @@ def test_representative_routing_contract() -> None:
     assert _owners("deny.toml") == {INFRA, MAINTAINERS}
     assert _owners("CODEOWNERS") == {INFRA, MAINTAINERS}
     assert _owners("README.md") == {MAINTAINERS}
+    assert _owners("SECURITY.md") == {INFRA, MAINTAINERS}
     assert _owners("CONTRIBUTING.md") == {MAINTAINERS}
 
 

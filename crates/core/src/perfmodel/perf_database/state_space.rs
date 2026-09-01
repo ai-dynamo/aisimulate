@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use super::perf_interp::{self, LeafValue, Node, OpInterpConfig};
+use super::perf_interp::{LeafValue, Node, OpInterpConfig, PreparedGrid};
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::error::AicError;
 use crate::config::{PerfDbSources, PerfSource};
@@ -46,15 +46,15 @@ pub struct StateSpaceTable {
 /// node; generation keys hold a 1-level `[batch]` node (Python v2 keys
 /// generation leaves by batch only).
 struct Mamba2Grids {
-    by_keys: BTreeMap<Mamba2Key, Node>,
+    by_keys: BTreeMap<Mamba2Key, PreparedGrid>,
 }
 
 struct GdnGrids {
-    by_keys: BTreeMap<GdnKey, Node>,
+    by_keys: BTreeMap<GdnKey, PreparedGrid>,
 }
 
 struct KdaGrids {
-    by_keys: BTreeMap<KdaKey, Node>,
+    by_keys: BTreeMap<KdaKey, PreparedGrid>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -442,7 +442,7 @@ impl StateSpaceTable {
 ///   query's `seq_len` is forwarded to `sol` only (Python passes the op's
 ///   `seq_len=None` there; generation SOL formulas ignore it either way).
 fn engine_query(
-    node: &Node,
+    node: &PreparedGrid,
     phase: &str,
     batch_size: u32,
     seq_len: u32,
@@ -452,7 +452,7 @@ fn engine_query(
         let s = seq_len as f64;
         let sol1 = move |c: &[f64]| sol(c[0], s);
         let cfg = OpInterpConfig::grid(&["batch"], &sol1);
-        perf_interp::query_value(&cfg, node, &[batch_size as f64])
+        node.query_value(&cfg, &[batch_size as f64])
     } else {
         // Python: `if seq_len is None or seq_len <= 0: return SOL` — surface
         // as a PerfDatabase error so the operator's SOL branch fires.
@@ -463,7 +463,7 @@ fn engine_query(
         }
         let sol2 = move |c: &[f64]| sol(c[0], c[1]);
         let cfg = OpInterpConfig::grid(&["batch", "seq_len"], &sol2);
-        perf_interp::query_value(&cfg, node, &[batch_size as f64, seq_len as f64])
+        node.query_value(&cfg, &[batch_size as f64, seq_len as f64])
     }
 }
 
@@ -479,6 +479,13 @@ fn insert_first_wins(root: &mut Node, path: &[u32], value: LeafValue) {
         let child = map.entry(path[0]).or_insert_with(Node::branch);
         insert_first_wins(child, &path[1..], value);
     }
+}
+
+fn prepare_nodes<K: Ord>(by_keys: BTreeMap<K, Node>) -> BTreeMap<K, PreparedGrid> {
+    by_keys
+        .into_iter()
+        .map(|(key, node)| (key, PreparedGrid::new(node)))
+        .collect()
 }
 
 /// Load the Mamba2 table from an ordered, priority-sorted source list. Sources
@@ -555,7 +562,9 @@ fn load_mamba2_parquet(sources: &[PerfSource]) -> Result<Mamba2Grids, AicError> 
                 .unwrap_or_default()
         )));
     }
-    Ok(Mamba2Grids { by_keys })
+    Ok(Mamba2Grids {
+        by_keys: prepare_nodes(by_keys),
+    })
 }
 
 /// Load the GDN table from an ordered, priority-sorted source list. Same
@@ -640,7 +649,9 @@ fn load_gdn_parquet(sources: &[PerfSource]) -> Result<GdnGrids, AicError> {
                 .unwrap_or_default()
         )));
     }
-    Ok(GdnGrids { by_keys })
+    Ok(GdnGrids {
+        by_keys: prepare_nodes(by_keys),
+    })
 }
 
 /// Load the KDA table from an ordered, priority-sorted source list. Same
@@ -715,7 +726,9 @@ fn load_kda_parquet(sources: &[PerfSource]) -> Result<KdaGrids, AicError> {
                 .unwrap_or_default()
         )));
     }
-    Ok(KdaGrids { by_keys })
+    Ok(KdaGrids {
+        by_keys: prepare_nodes(by_keys),
+    })
 }
 
 fn missing(table: &str, data_root: &Path, descriptor: String) -> AicError {
@@ -753,6 +766,22 @@ mod tests {
         1.0
     }
 
+    #[test]
+    fn first_wins_keeps_existing_leaf_at_mixed_depth() {
+        let first = LeafValue::latency_only(1.0);
+        let mut node = Node::branch();
+        insert_first_wins(&mut node, &[4], first);
+        insert_first_wins(&mut node, &[4, 8], LeafValue::latency_only(2.0));
+
+        let Node::Branch(root) = node else {
+            panic!("expected root branch");
+        };
+        match root.get(&4) {
+            Some(Node::Leaf(actual)) => assert_eq!(*actual, first),
+            other => panic!("expected first leaf, got {other:?}"),
+        }
+    }
+
     /// In-memory GDN table over one fixed model shape (d_model=5120,
     /// heads 16/128, v-dim 128), varying only `(kernel_source, phase,
     /// num_v_heads)`. Context rows land at `[batch=1][seq=1024]`, generation
@@ -784,7 +813,14 @@ mod tests {
             }
         }
         let table = StateSpaceTable::new(PathBuf::from("test-data"), backend, version);
-        assert!(table.gdn.set(Ok(GdnGrids { by_keys })).is_ok());
+        assert!(
+            table
+                .gdn
+                .set(Ok(GdnGrids {
+                    by_keys: prepare_nodes(by_keys),
+                }))
+                .is_ok()
+        );
         table
     }
 
@@ -950,7 +986,14 @@ mod tests {
             }
         }
         let table = StateSpaceTable::new(PathBuf::from("test-data"), "sglang", "0.5.14");
-        assert!(table.kda.set(Ok(KdaGrids { by_keys })).is_ok());
+        assert!(
+            table
+                .kda
+                .set(Ok(KdaGrids {
+                    by_keys: prepare_nodes(by_keys),
+                }))
+                .is_ok()
+        );
         table
     }
 

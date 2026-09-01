@@ -22,6 +22,7 @@ from .config_adapter import (
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplaySpec, RunnerFactory
+from .sweeper.result import SweepResult
 
 
 def run_recommendation(
@@ -32,7 +33,7 @@ def run_recommendation(
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
     show_progress: bool = True,
-):
+) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
     from .sweeper.search import Sweeper
@@ -68,7 +69,7 @@ def run_recommendation(
             config, sample, spec, adapter_sections=adapter_sections
         ),
     )
-    return sweeper.run(smart)
+    return sweeper.run(smart, top_n=None)
 
 
 def recommendation_to_sweeper(
@@ -110,8 +111,7 @@ def recommendation_to_sweeper(
     search_space.update(_role_search_space(workers, modes))
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
-        bytes_per_token = transfer.get("bytes_per_token", "auto")
-        search_space["kv_transfer_bytes_per_token"] = bytes_per_token
+        search_space["kv_transfer_bytes_per_token"] = transfer.get("bytes_per_token")
         search_space["kv_transfer_bandwidth"] = transfer.get("bandwidth_gb_per_second")
         search_space["kv_transfer_timing_mode"] = transfer.get("timing_mode", "destination_missing")
     (
@@ -270,6 +270,8 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
         else:
             result[memory_name] = memory_value
         result[f"{legacy_role}_enable_prefix_caching"] = cache.get("prefix_caching", True)
+        result[f"{legacy_role}_kv_bytes_per_token"] = cache.get("bytes_per_token", "auto")
+        result[f"{legacy_role}_native_host_offload"] = deepcopy(cache.get("host_offload"))
         capacity_type = capacity.get("type", "default")
         result[f"{legacy_role}_num_gpu_blocks"] = capacity.get("blocks") if capacity_type == "fixed" else None
         timing = raw.get("timing") or {}
@@ -638,6 +640,23 @@ def _candidate_prediction(
             timing = deepcopy(timing_model)
         else:
             timing = {"type": "default"}
+        kv_cache = {
+            "block_size": block_size,
+            "prefix_caching": sample[f"{role}_enable_prefix_caching"],
+            "bytes_per_token": sample[f"{role}_kv_bytes_per_token"],
+            "capacity": capacity,
+        }
+        role_args = (
+            deployment.agg_engine_args
+            if role == "agg"
+            else deployment.prefill_engine_args
+            if role == "prefill"
+            else deployment.decode_engine_args
+        )
+        if isinstance(role_args, dict) and role_args.get("kv_cache_bytes_per_token") is not None:
+            kv_cache["bytes_per_token"] = role_args["kv_cache_bytes_per_token"]
+        if sample.get(f"{role}_native_host_offload") is not None:
+            kv_cache["host_offload"] = deepcopy(sample[f"{role}_native_host_offload"])
         engine["workers"][public_role] = {
             "parallelism": {
                 "replicas": sample[f"{prefix}replicas"],
@@ -651,34 +670,14 @@ def _candidate_prediction(
                 "max_batched_tokens": sample[f"{role}_max_num_batched_tokens"],
                 "max_sequences": sample[f"{role}_max_num_seqs"],
             },
-            "kv_cache": {
-                "block_size": block_size,
-                "prefix_caching": sample[f"{role}_enable_prefix_caching"],
-                "capacity": capacity,
-            },
+            "kv_cache": kv_cache,
             "timing": timing,
             "startup_seconds": sample.get(f"{role}_startup_time")
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
-        transfer = deepcopy(raw_engine["kv_transfer"])
-        if transfer.get("bytes_per_token") == "auto":
-            values = {
-                args.get("kv_bytes_per_token")
-                for args in (
-                    deployment.prefill_engine_args,
-                    deployment.decode_engine_args,
-                )
-                if isinstance(args, dict) and args.get("kv_bytes_per_token") is not None
-            }
-            if len(values) != 1:
-                raise ValueError(
-                    "kv_transfer.bytes_per_token auto resolved differently across "
-                    "prefill/decode roles; provide one concrete value"
-                )
-            transfer["bytes_per_token"] = values.pop()
-        engine["kv_transfer"] = transfer
+        engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 
     traffic = _candidate_traffic(
         source.traffic.model_dump(mode="python", exclude_none=True) if source.traffic is not None else None,

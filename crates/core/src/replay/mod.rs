@@ -107,8 +107,9 @@ pub(crate) fn normalize_trace_requests(
 
 pub use crate::engine::{HandoffId, HandoffTransferTiming};
 pub use artifact::{
-    ReplayArtifactKvEvent, ReplayArtifactKvEventVisibility, ReplayArtifactOutput,
-    ReplayArtifactRequest, ReplayArtifacts,
+    ReplayArtifactHostOffloadEvent, ReplayArtifactHostOffloadEventData,
+    ReplayArtifactHostStoreBlockMapping, ReplayArtifactKvEvent, ReplayArtifactKvEventVisibility,
+    ReplayArtifactOutput, ReplayArtifactRequest, ReplayArtifacts,
 };
 pub use canonical::{
     CANONICAL_RESULT_EXCLUSIONS, CANONICAL_SCHEMA_VERSION, CanonicalReplayCoverage,

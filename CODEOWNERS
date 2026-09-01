@@ -28,6 +28,7 @@
 /docs/                                               @ai-dynamo/access-aisimulate-maintain
 /LICENSE                                             @ai-dynamo/access-aisimulate-maintain
 /README.md                                           @ai-dynamo/access-aisimulate-maintain
+/SECURITY.md                                         @ai-dynamo/access-aisimulate-maintain
 /CONTRIBUTING.md                                     @ai-dynamo/access-aisimulate-maintain
 /CONTRIBUTORS.md                                     @ai-dynamo/access-aisimulate-maintain
 /tests/conftest.py                                   @ai-dynamo/access-aisimulate-maintain
@@ -54,6 +55,7 @@
 /tests/test_cli_config.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_cli.py                           @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners
 
 # === mocker  (@ai-dynamo/aisimulate-mocker-codeowners) ===
@@ -90,6 +92,7 @@
 /Cargo.toml                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /pytest.ini                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/e2e/                                          @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
+/SECURITY.md                                         @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/sweeper/                                       @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /.gitattributes                                      @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/sweeper/                                      @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -126,6 +129,7 @@
 /python/aisimulate/pytest.ini                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/SECURITY.md                       @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.dockerignore                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /.github/workflows/codeowners.yml                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/engine/timing.rs                    @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain

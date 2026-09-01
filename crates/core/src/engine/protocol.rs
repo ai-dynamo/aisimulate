@@ -137,13 +137,25 @@ pub struct KvEvent {
     pub data: KvEventData,
 }
 
+/// First-admission provenance for prompt tokens reused across cache tiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CacheTierAttribution {
+    /// Reused prompt tokens already resident in device KV before any H2D.
+    pub g1_reused_input_tokens: usize,
+    /// Additional reused prompt tokens restored from the native host tier.
+    pub host_reused_input_tokens: usize,
+}
+
 /// Request admission exposed at pass start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Admission {
     /// Admitted request.
     pub request_id: Uuid,
-    /// Prompt tokens reused from native G1.
+    /// Prompt tokens reused from all KV-cache tiers.
     pub reused_input_tokens: usize,
+    /// Tier provenance captured before a host-loaded prefix becomes G1.
+    pub cache_tier_attribution: Option<CacheTierAttribution>,
 }
 
 /// Scheduler action taken to relieve KV pressure.
