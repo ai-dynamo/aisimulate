@@ -45,6 +45,7 @@ _ALLOWED_CLI_FLAGS = {
         "--enable-expert-parallel",
         "--block-size",
         "--kv-cache-dtype",
+        "--gpu-memory-utilization",
         "--max-model-len",
         "--max-num-seqs",
         "--max-num-batched-tokens",
@@ -310,6 +311,7 @@ def test_vllm_0_20_1_cli_args_golden_contract():
     assert _value_after(tokens, "--tensor-parallel-size") == "8"
     assert _value_after(tokens, "--data-parallel-size") == "1"
     assert _value_after(tokens, "--kv-cache-dtype") == "auto"
+    assert _value_after(tokens, "--gpu-memory-utilization") == "0.82"
     assert _value_after(tokens, "--max-num-batched-tokens") == "4060"
     assert "--enable-expert-parallel" in flags
     assert "--enforce-eager" in flags
