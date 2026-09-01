@@ -3,7 +3,7 @@
 
 """Identity-preserving alias for the migrated forward-pass wrapper."""
 
-from importlib import import_module as _import_module
 import sys as _sys
+from importlib import import_module as _import_module
 
 _sys.modules[__name__] = _import_module("aiconfigurator_core.sdk.rust_engine_step")

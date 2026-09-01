@@ -7,7 +7,6 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).resolve().parents[1] / "build_runner.py"
 SPEC = importlib.util.spec_from_file_location("build_runner", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None

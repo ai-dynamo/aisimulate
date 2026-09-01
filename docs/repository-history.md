@@ -52,9 +52,9 @@ The migration branch keeps the earlier path-filtered AIC core history. The
 complete upper application was initially imported as a snapshot from
 AIConfigurator source commit `13b5cf2697876692b0a52098266c81162add11fc`.
 The current synchronization boundary is source commit
-`095f58a51c4ca8e61b66ec108d86f223f8d559ce`. It includes the initial boundary
-at `ff2be1fd434fd516474e42b77f94cd5a5f841b9b` plus the 18 first-parent commits
-in the frozen `ff2be1f..095f58a` range. The final tree moves the upper
+`ce2824e8abd9bef71c3b162f651e63704a0eb4c1`. It includes the initial boundary
+at `ff2be1fd434fd516474e42b77f94cd5a5f841b9b` plus the 41 first-parent commits
+in the frozen `ff2be1f..ce2824e8` range. The final tree moves the upper
 application and Python core beneath `python/aisimulate/`, and moves the AIC
 Rust core beneath `crates/core/src/perfmodel/`, without copying a second
 buildable manifest.
@@ -72,7 +72,7 @@ fetched, for example:
 git log --follow -- crates/core/src/perfmodel/mod.rs
 git log --follow -- python/aisimulate/src/aiconfigurator_core/sdk/engine.py
 git -C ../aiconfigurator fetch origin
-diff -u <(git -C ../aiconfigurator show 095f58a51c4ca8e61b66ec108d86f223f8d559ce:src/aiconfigurator/main.py) <(git show HEAD:python/aisimulate/src/aiconfigurator/main.py)
+diff -u <(git -C ../aiconfigurator show ce2824e8abd9bef71c3b162f651e63704a0eb4c1:src/aiconfigurator/main.py) <(git show HEAD:python/aisimulate/src/aiconfigurator/main.py)
 ```
 
 ### Bulk synchronization ledger
@@ -101,6 +101,42 @@ diff -u <(git -C ../aiconfigurator show 095f58a51c4ca8e61b66ec108d86f223f8d559ce
 | [#1475](https://github.com/ai-dynamo/aiconfigurator/pull/1475) | [`095f58a`](https://github.com/ai-dynamo/aiconfigurator/commit/095f58a) | AIC-1799 | Mapped the FPM forward-pass collection workflow. |
 
 The closure audit accounts for all 406 source paths and all six detected renames. Its exact-data envelope contains 96 changed Parquet blobs totaling 26,373,223 bytes.
+
+#### September 2026 tail synchronization
+
+The next synchronization advances the boundary from `095f58a` through
+`ce2824e8`. It preserves the following 23 first-parent review units in source
+order:
+
+| AIC PR | Source commit | AISimulate disposition |
+| --- | --- | --- |
+| [#1578](https://github.com/ai-dynamo/aiconfigurator/pull/1578) | [`2ab190d`](https://github.com/ai-dynamo/aiconfigurator/commit/2ab190d) | Mapped cross-node EP resolution through DeepEP data. |
+| [#1551](https://github.com/ai-dynamo/aiconfigurator/pull/1551) | [`2dc2406`](https://github.com/ai-dynamo/aiconfigurator/commit/2dc2406) | Removed the completed Rust-core migration ladder documents. |
+| [#1591](https://github.com/ai-dynamo/aiconfigurator/pull/1591) | [`805a14e`](https://github.com/ai-dynamo/aiconfigurator/commit/805a14e) | Confirmed the combined wheel already constrains `plotext<6`. |
+| [#1557](https://github.com/ai-dynamo/aiconfigurator/pull/1557) | [`0e3aaa5`](https://github.com/ai-dynamo/aiconfigurator/commit/0e3aaa5) | Mapped GLM-5.3 BF16, FP8, and NVFP4 support. |
+| [#1478](https://github.com/ai-dynamo/aiconfigurator/pull/1478) | [`231c1e4`](https://github.com/ai-dynamo/aiconfigurator/commit/231c1e4) | Mapped two-column intra-batch prefill imbalance pricing. |
+| [#1441](https://github.com/ai-dynamo/aiconfigurator/pull/1441) | [`5261c8c`](https://github.com/ai-dynamo/aiconfigurator/commit/5261c8c) | Mapped the vLLM XPU Collector 0.26.0 upgrade. |
+| [#1506](https://github.com/ai-dynamo/aiconfigurator/pull/1506) | [`dafcd61`](https://github.com/ai-dynamo/aiconfigurator/commit/dafcd61) | Mapped Kimi-K3 DSPARK recommendation defaults. |
+| [#1590](https://github.com/ai-dynamo/aiconfigurator/pull/1590) | [`2ed278a`](https://github.com/ai-dynamo/aiconfigurator/commit/2ed278a) | Mapped missing-power normalization. |
+| [#1598](https://github.com/ai-dynamo/aiconfigurator/pull/1598) | [`ea551a0`](https://github.com/ai-dynamo/aiconfigurator/commit/ea551a0) | Mapped FPM fake-fallback latency extrapolation. |
+| [#1554](https://github.com/ai-dynamo/aiconfigurator/pull/1554) | [`17e8169`](https://github.com/ai-dynamo/aiconfigurator/commit/17e8169) | Mapped GB300 multi-node custom all-reduce collection. |
+| [#1581](https://github.com/ai-dynamo/aiconfigurator/pull/1581) | [`d2e6290`](https://github.com/ai-dynamo/aiconfigurator/commit/d2e6290) | Mapped three queryable version slots and the old-version data prune. |
+| [#1542](https://github.com/ai-dynamo/aiconfigurator/pull/1542) | [`4ca39f9`](https://github.com/ai-dynamo/aiconfigurator/commit/4ca39f9) | Mapped vLLM and TensorRT-LLM MoE all-to-all collectors. |
+| [#1574](https://github.com/ai-dynamo/aiconfigurator/pull/1574) | [`e6a151c`](https://github.com/ai-dynamo/aiconfigurator/commit/e6a151c) | Mapped recovered Lightning and DeepSeek-V4 NVFP4 recipes. |
+| [#1559](https://github.com/ai-dynamo/aiconfigurator/pull/1559) | [`93d6974`](https://github.com/ai-dynamo/aiconfigurator/commit/93d6974) | Mapped vLLM KDA serving metadata and GB300 0.27.0 data. |
+| [#1576](https://github.com/ai-dynamo/aiconfigurator/pull/1576) | [`af2bc05`](https://github.com/ai-dynamo/aiconfigurator/commit/af2bc05) | Mapped AISimulate migration warnings into the compatibility package. |
+| [#1482](https://github.com/ai-dynamo/aiconfigurator/pull/1482) | [`2b76936`](https://github.com/ai-dynamo/aiconfigurator/commit/2b76936) | Mapped WideEP MLA kernel-source resolution. |
+| [#1558](https://github.com/ai-dynamo/aiconfigurator/pull/1558) | [`f7fa7b5`](https://github.com/ai-dynamo/aiconfigurator/commit/f7fa7b5) | Replaced borrowed GB300 measurements with B300 silicon data. |
+| [#1562](https://github.com/ai-dynamo/aiconfigurator/pull/1562) | [`32e3c41`](https://github.com/ai-dynamo/aiconfigurator/commit/32e3c41) | Mapped MLA 0.27.0 and exact Kimi-K3 module rows. |
+| [#1471](https://github.com/ai-dynamo/aiconfigurator/pull/1471) | [`5995bb0`](https://github.com/ai-dynamo/aiconfigurator/commit/5995bb0) | Mapped implicit framework communication-data reuse. |
+| [#1533](https://github.com/ai-dynamo/aiconfigurator/pull/1533) | [`b31d899`](https://github.com/ai-dynamo/aiconfigurator/commit/b31d899) | Mapped Blackwell GEMM and GDN serving parity. |
+| [#1594](https://github.com/ai-dynamo/aiconfigurator/pull/1594) | [`340bba0`](https://github.com/ai-dynamo/aiconfigurator/commit/340bba0) | Mapped explicit DSPARK acceptance. |
+| [#1600](https://github.com/ai-dynamo/aiconfigurator/pull/1600) | [`b2a80e9`](https://github.com/ai-dynamo/aiconfigurator/commit/b2a80e9) | Removed a duplicate WideEP version override. |
+| [#1519](https://github.com/ai-dynamo/aiconfigurator/pull/1519) | [`ce2824e`](https://github.com/ai-dynamo/aiconfigurator/commit/ce2824e) | Mapped attention lane selection and Qwen3.5-397B NVFP4 MoE cases. |
+
+This tail changes 1,445 upstream mirror paths, including 554 binary blobs. The
+manual-path decisions and the bounded final-tree adaptations are recorded in
+[`aic-sync-095f58a-to-ce2824e-manual.md`](aic-sync-095f58a-to-ce2824e-manual.md).
 
 ### Intentional AISimulate adaptations
 

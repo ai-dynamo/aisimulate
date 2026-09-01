@@ -66,7 +66,16 @@ class ModelConfig:
     # model builder falvors
     sms: int = 20
     moe_backend: common.MoEBackend | None = None
-    attention_backend: common.AttentionBackend | None = common.AttentionBackend.flashinfer
+    # Attention kernel selection. Two consumers, one knob:
+    #   * sglang WideEP MLA picks its kernel-source table ('flashinfer' | 'fa3';
+    #     the ops apply the 'flashinfer' default themselves when unset).
+    #   * dense attention (AIC-1715) uses it as the kernel-LANE override that
+    #     heads the precedence order resolved by
+    #     ``attention_lanes.resolve_attention_lane_order``.
+    # ``None`` means "no override": the framework default for the database's
+    # (backend, version, sm_version) wins. Do NOT default this to a lane name —
+    # that would silently pin every model to that lane.
+    attention_backend: common.AttentionBackend | None = None
     # DEPRECATED and ignored (large-EP is selected per tuple via
     # moe_comm_backend); kept for a compatibility window because ModelConfig
     # is exported through the supported core SDK facade and removal breaks
@@ -86,6 +95,9 @@ class ModelConfig:
     # No default: a wrong node width silently mis-prices cross-node all-to-all, so
     # large-EP construction raises when it is missing (models.helpers.large_ep_gpus_per_node).
     num_gpus_per_node: int | None = None
+    # Internal system identity used by phase/quantization-specific communication
+    # dtype selection.  It travels with ModelConfig through sweep replacements.
+    system: str | None = None
 
     def __post_init__(self) -> None:
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")

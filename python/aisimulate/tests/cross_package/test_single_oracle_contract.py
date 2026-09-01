@@ -17,9 +17,9 @@ accidental.
 If you are here because this test failed: per-op performance math belongs in
 ``aic-core/rust/aiconfigurator-core`` (one oracle, cross-checked by the
 frozen parity goldens). Python owns model/topology composition and data
-loading, not per-op latency values. See
-``aic-core/rust/aiconfigurator-core/docs/python-dedup-plan.md``
-(post-PR-5 invariant section).
+loading, not per-op latency values. The policy, including where the correct
+home is for what you were trying to add, is ``.claude/rules/rust-core/parity.md``
+Rule 2 (the single-oracle invariant).
 """
 
 from __future__ import annotations
@@ -35,13 +35,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 OPERATIONS_DIR = (
-    Path(__file__).resolve().parents[4]
-    / "python"
-    / "aisimulate"
-    / "src"
-    / "aiconfigurator_core"
-    / "sdk"
-    / "operations"
+    Path(__file__).resolve().parents[4] / "python" / "aisimulate" / "src" / "aiconfigurator_core" / "sdk" / "operations"
 )
 PERF_DATABASE_PATH = OPERATIONS_DIR.parent / "perf_database.py"
 
@@ -118,6 +112,23 @@ OPERATIONS_DEF_INVENTORY = {
             "GenerationAttention.clear_cache",
             "GenerationAttention.load_data",
             "_cache_key",
+            # AIC-1715/1716: attention kernel-lane PRECEDENCE resolution — which
+            # kernel_source lane a query should prefer, not a per-op VALUE. Reads
+            # a YAML map (attention_lanes.resolve_attention_lane_order) and ranks
+            # a loaded table's own lanes by measured coverage; never computes a
+            # latency/energy/SOL number itself, so it stays outside the single
+            # per-op-value-in-Rust-only rule.
+            "_lane_order_cached",
+            "_source_tiered_lane_walk_order",
+            "resolve_lane_order",
+            "lane_walk_order",
+            "lane_walk_order._rank",
+            # Same rationale: called from engine.py::_resolve_attention_lane_orders
+            # once a database is bound to a built model's op lists (models are
+            # constructed WITHOUT a database — pure shape graphs — since the
+            # pyo3 op unification); composes the two entries above, never
+            # computes a latency/energy/SOL number itself.
+            "resolved_lane_order_for_op",
         }
     ),
     "base.py": frozenset(
@@ -266,6 +277,7 @@ OPERATIONS_DEF_INVENTORY = {
             "MoEExpertCompute.clear_cache",
             "MoEExpertCompute.load_data",
             "_cache_key",
+            "communication_dtype_for",
             "_validate_a2a_request",
             "_validate_ep_phase",
             "nodes_for",

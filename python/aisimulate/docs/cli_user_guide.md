@@ -126,7 +126,8 @@ aiconfigurator cli estimate --model-path Qwen/Qwen3-32B --system h200_sxm --tp-s
 **Optional arguments (shared):**
 - `--estimate-mode`: `agg` (default, IFB) or `disagg` (separate prefill/decode workers), or one of the single-pass static breakdown modes `static` / `static_ctx` / `static_gen`
 - `--backend`: Backend name (`trtllm`, `vllm`, `sglang`). Default: `trtllm`
-- `--backend-version`: Backend database version. Default: latest
+- `--backend-version`: Backend database version — a queryable slot version or the aliases `current` / `previous` / `next` (see `systems/query_versions.yaml`). Default: `current`.
+- `--attention-backend`: Attention kernel backend — one of `fa3`, `triton`, `trtllm_mha`, `flashinfer`, `fla`, or `default`. It applies to every model graph with standard dense `ContextAttention`/`GenerationAttention` operations and to supported DeepSeek MLA/WideEP paths. Support is backend-, performance-table-, and version-specific; unsupported named values fail closed. For modeling, unset or `default` uses the mapped framework default when available and otherwise the safe `default` fallback. SGLang WideEP maps unset/`default` to `flashinfer` and also supports `fa3`. The deployment generator emits supported named SGLang values, omits unset/`default`, and rejects `fla` for SGLang 0.5.14.
 - `--database-mode`: Database mode (`SILICON`, `HYBRID`, `EMPIRICAL`, `SOL`). Default: `SILICON`
 - `--isl`: Input sequence length. Default: `1024`
 - `--osl`: Output sequence length. Default: `1024`
@@ -265,6 +266,16 @@ aiconfigurator cli estimate \
 
 `--detail` replaces the removed `--print-per-ops-latency` (the old flag still works as a deprecation alias).
 
+#### MoE communication topology provenance
+
+For SGLang DeepEP communication (`deepep_ht` or `deepep_ll`), AIConfigurator always uses silicon data collected at the exact requested EP size and node count when that topology is available. If a multi-node request has no exact all-to-all row but the same MoE shape has the canonical legacy EP8/node1 row, AIConfigurator may use that row as a substitute; all other frameworks, communication backends, single-node requests, and missing donor rows remain exact-topology only. A compatible MoE expert-compute row is still required at the requested EP size.
+
+A successfully executed EP8/node1 substitution keeps the generic per-op source as `estimated` and records separate requested-versus-measurement coordinates. The CLI emits a warning by default, for example `context/deepep_ht: requested EP32/node8; using EP8/node1 silicon data`. Add `--detail source` to show the same executed provenance alongside the per-op source table. Exact hits and failed substitute lookups do not produce a fallback record.
+
+The Python `cli_estimate` API exposes the ordered, de-duplicated records through `EstimateResult.moe_comm_fallbacks`. Each `MoECommFallback` identifies the inference phase, communication backend, requested EP size and node count, and measurement EP size and node count.
+
+`Task.run_single_agg`, `Task.run_single_disagg`, and aggregate/disaggregate sweep result rows retain the records in the hidden object column `_moe_comm_fallbacks`, including through rate matching, Pareto selection, and visible-column deduplication. Saved `best_config_topn.csv` and `pareto.csv` files omit this object column; for every selected configuration that used a substitution, the corresponding `topN/moe_comm_fallbacks.json` sidecar contains the records and the CLI logs a warning naming that file.
+
 ```bash
 aiconfigurator cli estimate \
   --model-path Qwen/Qwen3-32B --system h200_sxm \
@@ -334,7 +345,7 @@ aiconfigurator cli support --model-path Qwen/Qwen3-32B-FP8 --system h200_sxm
 
 **Optional arguments:**
 - `--backend`: Filter by specific backend (`trtllm`, `vllm`, `sglang`). Defaults to `trtllm`.
-- `--backend-version`: Filter by a specific backend version. Defaults to the latest version found in the support matrix for the given model/architecture/system/backend combination.
+- `--backend-version`: Filter by a specific backend version (slot versions / `current` / `previous` / `next` aliases). Defaults to the current slot for the given system/backend.
 - `--systems-paths`: Override system YAML/data search paths (comma-separated; `default` maps to the built-in systems path). First match wins for identical system/backend/version.
 
 **Example output:**
@@ -395,8 +406,8 @@ aiconfigurator cli recommend --model-path Qwen/Qwen3-32B --system h200_sxm --bac
 - `--ttft`, `--tpot`: SLA targets in ms (default: 2000ms, 30ms)
 - `--request-latency`: End-to-end request latency target in ms
 - `--isl`, `--osl`: Input/output sequence lengths (default: 4000, 1000)
-- `--nextn`: MTP draft length, or `auto` to use the checkpoint's `num_nextn_predict_layers`
-- `--nextn-accepted`: Required when the resolved draft depth is greater than 0; it must be a measured average in the range `0 <= nextn_accepted <= nextn`
+- `--nextn`: MTP draft length, or `auto` to use the checkpoint's `num_nextn_predict_layers` and then DSPARK architecture metadata. Omitted or `0` keeps speculation disabled unless a DSPARK model is paired with an explicit `--nextn-accepted` measurement.
+- `--nextn-accepted`: Required when the resolved draft depth is greater than 0; it must be a measured average in the range `0 <= nextn_accepted <= nextn`. AIC never infers this workload-dependent value.
 - All other arguments match `default` mode (quantization, prefix caching, etc.)
 
 The output includes `total_gpus_needed` and `replicas_needed` columns, showing both agg and disagg configurations ranked by fewest GPUs first.
@@ -431,11 +442,12 @@ If you want to specify your problem with more details, we allow to define `ttft`
 Beyond `--ttft`, `--tpot`, `--isl`, `--osl`, and `--prefix`, `default` mode accepts:
 
 - `--decode-system`: System (GPU type) for disagg decode workers. Defaults to `--system`. Use it for heterogeneous prefill/decode (e.g. B200 prefill + H200 decode).
-- `--backend-version`: Backend database version. Default: latest.
+- `--backend-version`: Backend database version — a queryable slot version or the aliases `current` / `previous` / `next`. Default: `current`.
 - `--free-gpu-memory-fraction`: Fraction of free GPU memory TRT-LLM allocates for KV cache (default: `1.0`). Filters batch sizes that would exceed KV cache capacity.
 - `--max-seq-len`: TRT-LLM `--max_seq_len` (default: `isl + osl`). Controls how many KV blocks are pre-allocated per sequence; set to match your deployment for accurate KV-capacity filtering.
 - `--enable-chunked-prefill`: Enable chunked prefill for a finer-grained context-token sweep. When off (default), the context-token stride is aligned to ISL for faster sweeping.
 - `--enable-wideep`: **Deprecated and ignored for large-EP modeling** (accepted with a one-time warning). On SGLang, it still narrows the default `moe_tp` candidates to `[1]`; explicit `*_moe_tp_candidates` values take precedence. Large-EP (wideEP) is explored automatically — see the note below.
+- `--attention-backend`: Attention kernel backend — one of `fa3`, `triton`, `trtllm_mha`, `flashinfer`, `fla`, or `default`. It applies to every model graph with standard dense `ContextAttention`/`GenerationAttention` operations and to supported DeepSeek MLA/WideEP paths. Support is backend-, performance-table-, and version-specific; unsupported named values fail closed. For modeling, unset or `default` uses the mapped framework default when available and otherwise the safe `default` fallback. SGLang WideEP maps unset/`default` to `flashinfer` and also supports `fa3`. The deployment generator emits supported named SGLang values, omits unset/`default`, and rejects `fla` for SGLang 0.5.14.
 - `--moe-backend`: Explicit SGLang MoE backend. `megamoe` is a real kernel selection (use it to model DeepSeek-V4 MegaMoE on Blackwell); `deepep_moe` is deprecated: it is ignored for modeling (large-EP is explored automatically from data coverage), but on SGLang it still narrows the default `moe_tp` candidates to `[1]` — explicit `*_moe_tp_candidates` always win.
 
 > **Large-EP (wideEP) is explored automatically.** For MoE models, multi-node EP-only
@@ -953,16 +965,18 @@ Hybrid mode is a quick solution to support new models without modeling the opera
 #### Speculative Decoding (`--nextn`, `--nextn-accepted`)
 
 These flags enable MTP (Multi-Token Prediction) speculative decoding in the
-configuration search. MTP is **never enabled implicitly** — omitting `--nextn`
-keeps it off even for models that ship MTP layers (the CLI logs a hint when
-the checkpoint declares them):
+configuration search. MTP is **never enabled implicitly** — omitting both flags
+keeps it off even for models that ship MTP layers. In recommend mode only, an
+explicit `--nextn-accepted` measurement can pair with an omitted depth to select
+a DSPARK architecture's fixed block size:
 
 - `--nextn N` — MTP draft length (compute cost side: extra MTP-layer forward
   plus the wider verify batch; no fixed upper bound). Default: 0 (disabled).
 - `--nextn auto` — take the draft depth from the checkpoint's
-  `num_nextn_predict_layers` (absent or 0 keeps MTP disabled). Only the depth
-  comes from the checkpoint — the acceptance value below is still required,
-  because it is a property of your workload, not of the model.
+  `num_nextn_predict_layers`. If that value is absent or 0 for a DSPARK model,
+  use its fixed architectural block size instead. Only the depth is resolved —
+  the acceptance value below is still required because it is a property of
+  your backend and workload, not of the model.
 - `--nextn-accepted A` — Average accepted draft tokens per decode step
   (`0 <= nextn_accepted <= nextn`); each step yields `1 + nextn_accepted` output tokens.
   Required whenever the draft depth is > 0 (explicit or via `auto`) — there is

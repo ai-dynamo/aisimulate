@@ -222,7 +222,7 @@ pub use moe_a2a::MoeA2aTable;
 pub use moe_expert_compute::MoeExpertComputeTable;
 pub use msa::MsaTable;
 #[allow(unused_imports)]
-pub use source_resolution::{ResolveCtx, ResolveReport, SourceResolver, resolve_one};
+pub use source_resolution::{ResolveCtx, SourceResolver, resolve_one};
 pub use state_space::StateSpaceTable;
 pub use trtllm_alltoall::TrtllmAlltoallTable;
 pub use wideep_mla::WideEpMlaTable;
@@ -324,7 +324,7 @@ impl PerfDatabase {
     ///
     /// `systems_root` points at `python/aisimulate/src/aiconfigurator_core/systems`. `system` is a
     /// basename like `b200_sxm`. `backend` is `vllm` / `sglang` / `trtllm`.
-    /// `version` is the backend version directory name (e.g. `0.19.0`).
+    /// `version` is the backend version directory name (e.g. `0.24.0`).
     pub fn load(
         systems_root: &Path,
         system: &str,
@@ -539,6 +539,7 @@ impl PerfDatabase {
                 data_root.clone(),
                 backend,
                 version,
+                spec.gpu.sm_version,
                 &resolver,
             )?,
             // Deliberately NOT shared-layer aware: FPM whole-model data is
@@ -916,11 +917,11 @@ mod tests {
 
     #[test]
     fn load_b200_sxm_vllm_database() {
-        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.19.0")
-            .expect("b200_sxm/vllm/0.19.0 must load");
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .expect("b200_sxm/vllm/0.24.0 must load");
         assert_eq!(db.system, "b200_sxm");
         assert_eq!(db.backend, "vllm");
-        assert_eq!(db.version, "0.19.0");
+        assert_eq!(db.version, "0.24.0");
         let gemm_sources = resolve_op_sources(
             &PerfDbSources::default(),
             "gemm_perf.parquet",
@@ -947,7 +948,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             false,
             false,
             false,
@@ -958,7 +959,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             false,
             false,
             false,
@@ -1027,7 +1028,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             false,
             false,
             false,
@@ -1037,7 +1038,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             true,
             false,
             false,
@@ -1052,7 +1053,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             &PerfDbSources::default(),
         )
         .expect("map load must succeed");
@@ -1060,7 +1061,7 @@ mod tests {
             &systems_root(),
             "b200_sxm",
             "vllm",
-            "0.19.0",
+            "0.24.0",
             &PerfDbSources::default(),
         )
         .expect("map load must succeed");
@@ -1097,8 +1098,8 @@ mod tests {
 
     #[test]
     fn provenance_cell_accumulates_worst_tier_and_is_shared_with_views() {
-        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.19.0")
-            .expect("b200_sxm/vllm/0.19.0 must load");
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .expect("b200_sxm/vllm/0.24.0 must load");
         assert_eq!(db.worst_provenance(), ProvenanceTier::Silicon);
 
         // Max-rank accumulation: a lower tier never overwrites a higher one.
