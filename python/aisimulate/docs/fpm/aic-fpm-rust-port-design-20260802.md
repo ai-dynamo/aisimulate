@@ -114,9 +114,11 @@ FpmForwardOp {
   32 and the residual batch log2 distance remains at most 2. This connects the
   zero/first-block region without weakening the batch gate. The result must be
   finite and > 0. Energy 0.0, source Silicon.
-- **`query_pass_baseline(batch)`** (decode only): kv_floor =
-  `max(batch, decode-domain KV min)`, resolve `(B, kv_floor)` through the same
-  path.
+- **`query_pass_baseline(batch)`** (decode only): exact batches use their
+  collected curve's minimum-KV latency. Off-lattice batches hold both padded
+  bracket curves at their own KV floors, then interpolate those latencies on
+  the batch axis. This is a baseline-only left-boundary hold; normal decode
+  resolution remains strict and never extrapolates below a curve's coverage.
 - **SOL roofline**: `sol_fn(coords)` = Σ over `sol_ops` of the op's
   **SOL-mode** latency, with Python's exact coordinate back-mapping — prefill
   `s = max(total_prefill/batch, 1.0)` (float), `prefix = total_kv/batch`

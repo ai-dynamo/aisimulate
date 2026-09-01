@@ -206,10 +206,12 @@ reach that code:
     composition** (owner-approved 2026-07-19, superseding the plain sum in the original
     plan §1/M3). A mixed step is one shared forward pass: weight reads, kernel launches,
     and fixed per-step overheads are paid once, by the prefill component; a full
-    pure-decode step would pay them twice. Sampling the decode curve at its KV-axis floor
-    (`max(B, domain_min)` — one KV token per request is the physical minimum) isolates the
-    shared-pass part, so the subtraction keeps only the KV-read/attention cost that
-    genuinely adds to the iteration. Residuals: the gen tokens' GEMM marginal is dropped
+    pure-decode step would pay them twice. The decode baseline uses each collected batch
+    curve's measured KV floor. An off-lattice batch holds both padded bracket curves at
+    their own floors, then interpolates along the batch axis. This narrow left-boundary
+    hold applies only to the synthetic mixed-step baseline; ordinary decode queries remain
+    strict. The subtraction therefore keeps only the KV-read/attention cost that genuinely
+    adds to the iteration. Residuals: the gen tokens' GEMM marginal is dropped
     (small when `B_gen ≪ ctx_tokens`, slight underestimate — the plain sum overestimates,
     so truth is bracketed), and the subtraction doubles single-sample noise variance;
   - a generation-only step (`ctx_tokens == 0`) has no pass to ride on and keeps the full

@@ -1912,6 +1912,57 @@ mod tests {
         assert!((got - expected).abs() < 1e-9, "got {got}, want {expected}");
     }
 
+    /// Mixed telemetry may request a synthetic decode baseline below the KV
+    /// floor of its padded bracket rows. Only that baseline holds each row at
+    /// its measured floor; the actual decode query remains in-range and strict.
+    #[test]
+    fn fpm_rank_mixed_baseline_holds_bracket_curve_floors() {
+        use crate::fpm::{ForwardPassMetrics, ScheduledRequestMetrics};
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |kind: &'static str, batch: u32, prefill: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: kind,
+            batch_size: batch,
+            total_prefill_tokens: prefill,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        let rows = vec![
+            mk("prefill", 1, 2048, 0, 20.0),
+            mk("decode", 1, 0, 2, 2.0),
+            mk("decode", 1, 0, 64, 3.0),
+            mk("decode", 2, 0, 4, 2.5),
+            mk("decode", 2, 0, 64, 3.5),
+            mk("decode", 8, 0, 16, 4.0),
+            mk("decode", 8, 0, 64, 5.0),
+            mk("decode", 9, 0, 18, 5.0),
+            mk("decode", 9, 0, 64, 6.0),
+            mk("decode", 16, 0, 32, 9.0),
+            mk("decode", 16, 0, 64, 10.0),
+            mk("decode", 17, 0, 34, 10.0),
+            mk("decode", 17, 0, 64, 11.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_fpm_engine_with_rows(tmp.path(), &rows).unwrap();
+        let mixed = ForwardPassMetrics {
+            scheduled_requests: ScheduledRequestMetrics {
+                num_prefill_requests: 1,
+                sum_prefill_tokens: 2048,
+                num_decode_requests: 15,
+                sum_decode_kv_tokens: 64,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let weight = (15.0 - 9.0) / (16.0 - 9.0);
+        let decode = 6.0 + (10.0 - 6.0) * weight;
+        let baseline = 5.0 + (9.0 - 5.0) * weight;
+        let expected = 20.0 + decode - baseline;
+        let got = engine.forward_pass_time_ms(&[mixed]).unwrap();
+        assert!((got - expected).abs() < 1e-9, "got {got}, want {expected}");
+    }
+
     /// The FPM rank dispatch queries RAW iteration totals — the tables'
     /// native coordinate system — not the op-level per-request averages,
     /// which floor-divide away up to (n - 1) tokens per axis.
