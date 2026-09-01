@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{
     EngineEventBatch, Placement, PlacementDecision, PlacementEffects, PlacementPolicy,
-    RequestIdentity, WorkerTopology,
+    RequestIdentity, SchedulerTopology, WorkerTopology,
 };
 
 #[derive(Debug)]
@@ -23,7 +23,7 @@ pub struct AggregatedRoundRobin {
 #[derive(Debug)]
 pub struct AggregatedRoundRobinPlacement<Events: EngineEventBatch> {
     counter: AggregatedRoundRobin,
-    workers: BTreeMap<usize, Vec<usize>>,
+    workers: BTreeMap<usize, Vec<SchedulerTopology>>,
     events: PhantomData<Events>,
 }
 
@@ -37,7 +37,7 @@ impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
             counter,
             workers: workers
                 .into_iter()
-                .map(|worker| (worker.worker_id, worker.scheduler_ids()))
+                .map(|worker| (worker.worker_id, worker.schedulers))
                 .collect(),
             events: PhantomData,
         }
@@ -70,7 +70,7 @@ where
                 self.workers
                     .get(&worker_id)
                     .and_then(|ranks| ranks.get(rank as usize))
-                    .copied()
+                    .map(|scheduler| scheduler.scheduler_id)
             },
         )?;
         Ok(PlacementEffects {
@@ -111,8 +111,7 @@ where
 
     fn worker_ready(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
         self.counter.worker_ready(worker.worker_id);
-        self.workers
-            .insert(worker.worker_id, worker.scheduler_ids());
+        self.workers.insert(worker.worker_id, worker.schedulers);
         Ok(Vec::new())
     }
 
@@ -136,7 +135,7 @@ where
 #[derive(Debug)]
 pub struct PoolRoundRobinPlacement<Events: EngineEventBatch> {
     next: usize,
-    workers: BTreeMap<usize, Vec<usize>>,
+    workers: BTreeMap<usize, Vec<SchedulerTopology>>,
     events: PhantomData<Events>,
 }
 
@@ -146,7 +145,7 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
             next: 0,
             workers: workers
                 .into_iter()
-                .map(|worker| (worker.worker_id, worker.scheduler_ids()))
+                .map(|worker| (worker.worker_id, worker.schedulers))
                 .collect(),
             events: PhantomData,
         }
@@ -179,7 +178,7 @@ where
         let scheduler_id = self
             .workers
             .values()
-            .flat_map(|ranks| ranks.iter().copied())
+            .flat_map(|ranks| ranks.iter().map(|scheduler| scheduler.scheduler_id))
             .nth(index)
             .expect("active round-robin pool must contain a scheduler");
         self.next = index + 1;
@@ -216,8 +215,7 @@ where
     }
 
     fn worker_ready(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
-        self.workers
-            .insert(worker.worker_id, worker.scheduler_ids());
+        self.workers.insert(worker.worker_id, worker.schedulers);
         Ok(Vec::new())
     }
 

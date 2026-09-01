@@ -286,7 +286,11 @@ impl VllmKvManager {
     ) -> Self {
         assert!(block_size > 0, "block_size must be > 0");
         if events.is_enabled() {
-            tracing::info!(block_size, "VllmKvManager initialized with KV events");
+            tracing::info!(
+                dp_rank = events.dp_rank(),
+                block_size,
+                "VllmKvManager initialized"
+            );
         }
         Self {
             pool: VllmBlockPool::new(max_capacity),
@@ -1088,9 +1092,7 @@ impl VllmKvManager {
                 block_hashes: full_blocks,
             }
         };
-        if self.enable_prefix_caching {
-            self.events.publish(data, KvEventTier::Device, token_ids);
-        }
+        self.events.publish(data, KvEventTier::Device, token_ids);
     }
 
     pub(crate) fn num_active_blocks(&self) -> usize {

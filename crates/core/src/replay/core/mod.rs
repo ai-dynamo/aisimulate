@@ -101,18 +101,11 @@ pub struct WorkerTopology {
 }
 
 impl WorkerTopology {
-    pub fn empty(worker_id: usize) -> Self {
+    pub(crate) fn empty(worker_id: usize) -> Self {
         Self {
             worker_id,
             schedulers: Vec::new(),
         }
-    }
-
-    pub fn scheduler_ids(&self) -> Vec<usize> {
-        self.schedulers
-            .iter()
-            .map(|scheduler| scheduler.scheduler_id)
-            .collect()
     }
 }
 
