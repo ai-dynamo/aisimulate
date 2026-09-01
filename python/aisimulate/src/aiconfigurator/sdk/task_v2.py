@@ -554,8 +554,8 @@ class Task:
     # still never inferred.
     nextn: int | str = 0
     nextn_accepted: float | None = None
-    moe_backend: str | None = None
-    attention_backend: str | None = None  # 'flashinfer' (default) or 'fa3'; only consumed by MLA models
+    moe_backend: common.MoEBackend | None = None
+    attention_backend: common.AttentionBackend | None = None
     wideep_num_slots: int | None = None  # EPLB slot count; defaults to num_experts when None
     gemm_quant_mode: common.GEMMQuantMode | None = None
     moe_quant_mode: common.MoEQuantMode | None = None
@@ -824,6 +824,12 @@ class Task:
     # =====================================================================
 
     def __post_init__(self) -> None:
+        self.moe_backend = config.normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
+        self.attention_backend = config.normalize_kernel_backend(
+            self.attention_backend,
+            common.AttentionBackend,
+            "attention_backend",
+        )
         # Canonicalize at construction so downstream config and routing see
         # exactly one spelling for the only supported engine-step backend.
         self.engine_step_backend = validate_engine_step_backend(self.engine_step_backend)
@@ -883,7 +889,7 @@ class Task:
             else (self.prefill_enable_wideep or self.decode_enable_wideep)
         )
         if wideep:
-            self.moe_backend = "deepep_moe"
+            self.moe_backend = common.MoEBackend.deepep_moe
 
     def _normalize_epd_encoder_dp(self) -> None:
         """enable_epd pins the colocated encoder-DP knob off: EPD encode
@@ -2016,7 +2022,7 @@ class Task:
             # is a real DeepSeek-V4 kernel selection and passes through.
             moe_backend=self.moe_backend if self.moe_backend != "deepep_moe" else None,
             # None means "unspecified" -> fall back to flashinfer (matches v1 and ModelConfig's default).
-            attention_backend=self.attention_backend or "flashinfer",
+            attention_backend=self.attention_backend or common.AttentionBackend.flashinfer,
             wideep_num_slots=self.wideep_num_slots,
             forward_model=self.forward_model or "op_level",
             moe_comm_backend=(self._resolve_moe_comm_backend(role, parallel) if parallel is not None else None),
@@ -2104,8 +2110,12 @@ class Task:
             UnsupportedWideepConfigError specifically for wideep_* ops
             (lets callers distinguish from generic ``ValueError``).
         """
-        if self.attention_backend is not None and self.attention_backend not in ("flashinfer", "fa3"):
-            raise ValueError(f"attention_backend must be 'flashinfer' or 'fa3', got {self.attention_backend!r}.")
+        self.moe_backend = config.normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
+        self.attention_backend = config.normalize_kernel_backend(
+            self.attention_backend,
+            common.AttentionBackend,
+            "attention_backend",
+        )
         if self.wideep_num_slots is not None and self.wideep_num_slots <= 0:
             raise ValueError(f"wideep_num_slots must be a positive integer, got {self.wideep_num_slots!r}.")
         self._check_encoder_knobs_require_epd()

@@ -160,6 +160,10 @@ class EngineReplayRunner:
         output_requirements: ReplayOutputRequirements | None = None,
     ) -> ReplayReport:
         output_requirements = output_requirements or ReplayOutputRequirements()
+        if output_requirements.capture_telemetry:
+            raise InvalidRunnerError(
+                "EngineReplayRunner's JSON runtime does not yet expose replay telemetry"
+            )
         self.capabilities.require_compatible(spec)
         execution_spec = _materialize_engine_execution_spec(
             spec,
@@ -525,7 +529,9 @@ def _materialize_engine_role(
     # execution-level input and retain the native runtime's compatibility
     # fallback after their structure has been validated below.
     capacity_materialized = False
+    num_gpu_blocks_is_explicit = False
     if "rank" not in role_config:
+        num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
         role_config = materialize_aic_num_gpu_blocks(role_config)
         capacity_materialized = role_config.get("num_gpu_blocks") is not None
     for name in ("engine_type", "aic_backend"):
@@ -578,6 +584,7 @@ def _materialize_engine_role(
         if not isinstance(nested_rank, dict):
             raise ValueError(f"engine provider {role} rank config must be a mapping")
         rank: dict[str, JSONValue] = dict(nested_rank)
+        num_gpu_blocks_is_explicit = rank.get("num_gpu_blocks") is not None
     else:
         # Preserve the existing convenient flat aggregated form. Disaggregated
         # role mappings may use the same shorthand.
@@ -800,6 +807,7 @@ def _materialize_engine_role(
     return {
         "dp_size": dp_size,
         "tensor_parallel_size": tensor_parallel_size,
+        "num_gpu_blocks_is_explicit": num_gpu_blocks_is_explicit,
         "rank": rank,
     }
 

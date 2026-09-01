@@ -306,16 +306,30 @@ def test_attention_backend_and_wideep_num_slots_reach_model_config():
         wideep_num_slots=288,
     )
     mc = t.build_model_config(role="agg")
+    assert t.attention_backend is common.AttentionBackend.fa3
+    assert mc.attention_backend is common.AttentionBackend.fa3
     assert mc.attention_backend == "fa3"
     assert mc.wideep_num_slots == 288
 
 
 def test_invalid_attention_backend_rejected():
-    t = Task(
-        serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm", attention_backend="torch"
-    )
     with pytest.raises(ValueError, match="attention_backend"):
-        t.validate()
+        Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="h200_sxm",
+            attention_backend="torch",
+        )
+
+
+def test_invalid_moe_backend_rejected():
+    with pytest.raises(ValueError, match="moe_backend"):
+        Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="h200_sxm",
+            moe_backend="triton",
+        )
 
 
 def test_invalid_wideep_num_slots_rejected():
@@ -818,7 +832,7 @@ def test_moe_backend_flows_into_model_config():
             **kw,
         ).build_model_config(role="agg")
 
-    assert mc("megamoe", model="deepseek-ai/DeepSeek-V4-Pro").moe_backend == "megamoe"
+    assert mc("megamoe", model="deepseek-ai/DeepSeek-V4-Pro").moe_backend is common.MoEBackend.megamoe
     assert mc("deepep_moe").moe_backend is None
 
 
@@ -2054,6 +2068,7 @@ def test_to_dict_emits_resolved_state_with_enum_names():
         system_name="h200_sxm",
         gemm_quant_mode=common.GEMMQuantMode.fp8,
         kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+        attention_backend=common.AttentionBackend.fa3,
     )
     d = t.to_dict()
     assert d["serving_mode"] == "agg"
@@ -2061,6 +2076,7 @@ def test_to_dict_emits_resolved_state_with_enum_names():
     # Enums emitted as .name strings (round-trippable through from_yaml)
     assert d["gemm_quant_mode"] == "fp8"
     assert d["kvcache_quant_mode"] == "fp8"
+    assert d["attention_backend"] == "fa3"
     # Backend version resolved automatically
     assert d["backend_version"] is not None
     # Search candidates populated

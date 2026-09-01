@@ -142,6 +142,7 @@ fn role_config(backend: Backend, timing_model: TimingModelConfig) -> ReplayRoleC
             timing_model,
             ..EngineConfig::for_backend(backend)
         },
+        ..ReplayRoleConfig::default()
     }
 }
 

@@ -69,6 +69,7 @@ areas:
       - scripts/
       - tests/test_aic_sync.py
       - tests/test_pages_site.py
+      - tests/test_e2e_accuracy_overview.py
 
 # More-specific shared entries are emitted after base area rules, preserving
 # GitHub's last-match-wins behavior. As in AIConfigurator, the maintainer team
@@ -95,6 +96,8 @@ shared:
     owners: [infra, maintainers]
   - glob: tests/test_pages_site.py
     owners: [infra, maintainers]
+  - glob: tests/test_e2e_accuracy_overview.py
+    owners: [forward-pass-engine, infra, maintainers]
   - glob: docs/core-api.md
     owners: [forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/__init__.py

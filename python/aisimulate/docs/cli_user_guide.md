@@ -19,6 +19,17 @@ These flags are shared across modes (a few are sweep-only, as noted):
 - `--engine-step-backend`: Engine-step latency backend. The compiled Rust engine is the only step executor; `rust` is the only accepted value (the deprecated `python` no-op was removed after its one-release window); any other value raises an error. Accepted by the five modes below (not `support`) but inert in `generate`, which performs no latency estimation. (`default`, `recommend`, `exp`, `generate`, `estimate`)
 - `--forward-model`: Forward-pass modeling mode — `op_level` (default; granular per-op modeling) or `fpm` (predicts from collected whole-model forward-pass data; requires `fpm_forward_perf` data for the exact model/system/backend/version and never extrapolates outside the collected domain). Evaluates on the compiled engine's native FPM operation. `fpm` predictions are only as accurate as the match between the deployed engine configuration and the collected data — in particular the CUDA-graph capture surface: regime cliffs are encoded in the data, not modeled, so a deployment whose capture config differs from the collection will mispredict. V1 accepts only vLLM identities the standard deployment path can reproduce: automatic MoE/attention backend selection with EPLB disabled. Pinned backend or EPLB identities are rejected until structured generator support lands. Not supported in the `afd` estimate mode. (`default`, `exp`, `generate`, `estimate`)
 
+Built-in FPM coverage currently includes:
+
+| Model | System | Backend | Collected parallelism |
+|---|---|---|---|
+| `nvidia/GLM-5.2-NVFP4` | `b200_sxm` | vLLM 0.25.1 | DEP8, TEP8 |
+| `MiniMaxAI/MiniMax-M2.7` | `h200_sxm` | vLLM 0.25.1 | DEP2/4, TEP2/4, TP2/4 |
+
+FPM data is exact-version and finite-domain only. TP2 prefill is absent for
+MiniMax-M2.7 because the collected two-GPU deployment could not fit the model.
+Queries outside the collected cells or coordinate ranges fail explicitly.
+
 The `support` mode accepts only `--log-level`, `--debug`, and `--no-color` from this list. Generator-artifact flags (`--generator-config`, `--generator-set`, `--generator-help`, `--generator-help-backend`, `--generated-config-version`, `--generator-dynamo-version`) are documented under [Default mode](#default-mode).
 
 ## Defaults and Implicit Behavior

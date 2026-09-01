@@ -2,9 +2,27 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass, field
-from typing import Union
+from enum import StrEnum
+from typing import TypeVar, Union
 
 from aiconfigurator_core.sdk import common
+
+KernelBackendT = TypeVar("KernelBackendT", bound=StrEnum)
+
+
+def normalize_kernel_backend(
+    value: str | KernelBackendT | None,
+    enum_type: type[KernelBackendT],
+    field_name: str,
+) -> KernelBackendT | None:
+    """Normalize a public string or enum value to its kernel-backend enum."""
+    if value is None or isinstance(value, enum_type):
+        return value
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError) as exc:
+        choices = ", ".join(repr(item.value) for item in enum_type)
+        raise ValueError(f"{field_name} must be one of {choices}, got {value!r}.") from exc
 
 
 @dataclass
@@ -47,8 +65,8 @@ class ModelConfig:
     overwrite_num_layers: int = 0
     # model builder falvors
     sms: int = 20
-    moe_backend: str = None  # SGLang MoE backend: deepep_moe, megamoe, or None
-    attention_backend: str = "flashinfer"  # 'flashinfer' or 'fa3', for sglang wideep only
+    moe_backend: common.MoEBackend | None = None
+    attention_backend: common.AttentionBackend | None = common.AttentionBackend.flashinfer
     # DEPRECATED and ignored (large-EP is selected per tuple via
     # moe_comm_backend); kept for a compatibility window because ModelConfig
     # is exported through the supported core SDK facade and removal breaks
@@ -68,6 +86,14 @@ class ModelConfig:
     # No default: a wrong node width silently mis-prices cross-node all-to-all, so
     # large-EP construction raises when it is missing (models.helpers.large_ep_gpus_per_node).
     num_gpus_per_node: int | None = None
+
+    def __post_init__(self) -> None:
+        self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
+        self.attention_backend = normalize_kernel_backend(
+            self.attention_backend,
+            common.AttentionBackend,
+            "attention_backend",
+        )
 
     def resolve_moe_parallelism(self) -> tuple[int, int]:
         """Resolve and validate MoE parallelism dimensions in-place.

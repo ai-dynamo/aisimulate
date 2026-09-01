@@ -4,6 +4,18 @@ The config adapter converts external serving configurations into validated AIC
 estimate requests. Adaptation performs no estimate and executes no source shell
 commands.
 
+## Dashboard server-knob taxonomy
+
+`aisimulate/config_adapter/config/server_knob_groups.yaml` is the presentation
+source of truth for normalized dashboard knobs across vLLM, SGLang, and
+TRT-LLM. The three backends share one group taxonomy. Backend flag support
+remains separate in
+`aiconfigurator/generator/config/backend_config_mapping.yaml`.
+
+The YAML also lists knobs that the current AISimulate replay API cannot carry.
+Dashboard consumers must show those knobs as unavailable instead of inventing
+an `auto` default.
+
 ## Public API
 
 Import the API from `aiconfigurator.sdk.config_adapter`:

@@ -6,7 +6,7 @@ import json
 import math
 from collections import namedtuple
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from functools import cache
 from importlib import resources as pkg_resources
 
@@ -1127,6 +1127,20 @@ class BackendName(Enum):
     trtllm = "trtllm"
     sglang = "sglang"
     vllm = "vllm"
+
+
+class AttentionBackend(StrEnum):
+    """Supported attention performance-model backends."""
+
+    flashinfer = "flashinfer"
+    fa3 = "fa3"
+
+
+class MoEBackend(StrEnum):
+    """Supported MoE performance-model backend overrides."""
+
+    deepep_moe = "deepep_moe"
+    megamoe = "megamoe"
 
 
 class PerfDataFilename(Enum):

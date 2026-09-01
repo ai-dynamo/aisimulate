@@ -224,9 +224,20 @@ pub struct Output {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Metrics {
     pub dp_rank: u32,
+    /// Backend-native legacy occupied-block count. vLLM reports blocks
+    /// referenced by active requests; SGLang reports occupied page-pool blocks,
+    /// including evictable radix-resident pages.
     pub active_blocks: u64,
+    /// Reusable resident blocks not included in `active_blocks`. This is
+    /// currently populated by vLLM; SGLang reports zero because its legacy
+    /// occupied count already includes radix-resident pages.
+    pub inactive_blocks: u64,
     pub total_blocks: u64,
+    /// `active_blocks / total_blocks`, with backend-native semantics above.
     pub cache_usage: f64,
+    /// Physical resident fraction. This includes inactive reusable vLLM blocks
+    /// and equals `cache_usage` for SGLang's legacy occupied-page metric.
+    pub physical_cache_usage: f64,
     pub running_requests: u64,
     pub waiting_requests: u64,
     pub preemptions_total: u64,

@@ -148,14 +148,35 @@ impl FpmForwardOp {
         self.resolve(db, cell, coords)
     }
 
-    /// Decode-pass baseline at the smallest collectable KV for this batch:
-    /// `kv_floor = max(batch, decode-domain KV min)`. See the Python
-    /// docstring — `query(B, KV) - query_pass_baseline(B)` is the decode
-    /// work's marginal cost when it rides an existing (mixed) pass.
+    /// Highest collected decode KV-read total for this op's selected cell.
+    pub fn decode_kv_ceiling(&self, db: &PerfDatabase) -> Result<Option<u32>, AicError> {
+        if self.phase != FpmPhase::Decode {
+            return Err(data_err(format!(
+                "decode_kv_ceiling is decode-only, called on phase {:?}",
+                self.phase.as_str()
+            )));
+        }
+        let cell = db
+            .fpm_forward
+            .select_cell(&self.match_identity, &self.model_path)?;
+        Ok(cell.decode_domain.as_ref().map(|domain| domain[1].1))
+    }
+
+    /// Decode-pass baseline at each collected batch curve's own KV floor.
+    /// Exact batches use their measured floor directly; off-lattice batches
+    /// interpolate the bracket rows' floor latencies along the batch axis —
+    /// over exactly the rows [`Self::decode_bracket`] keeps at `total_kv`, so
+    /// both sides of `query(B, KV) - query_pass_baseline(B, KV)` run on the
+    /// same curve model and the shared-pass cost cancels.
+    /// This is a baseline-only left-boundary hold: ordinary decode queries
+    /// remain strict and never extrapolate below a curve's collected KV range.
+    /// `query(B, KV) - query_pass_baseline(B, KV)` is the decode work's
+    /// marginal cost when it rides an existing (mixed) pass.
     pub fn query_pass_baseline(
         &self,
         db: &PerfDatabase,
         batch_size: u32,
+        total_kv: f64,
     ) -> Result<PerformanceResult, AicError> {
         if self.phase != FpmPhase::Decode {
             return Err(data_err(format!(
@@ -177,8 +198,70 @@ impl FpmForwardOp {
                 cell.cell_ids, cell.model_path
             )));
         };
-        let kv_floor = batch_size.max(domain[1].0);
-        self.resolve(db, cell, &[batch_size as f64, kv_floor as f64])
+        let Some(index) = cell.decode_index.as_ref() else {
+            return Err(self.no_rows_err(cell));
+        };
+
+        // Every curve bound comes from a real row, so resolving
+        // (row, curve_min) is an exact leaf and never invokes SOL. Keeping the
+        // no-SOL closure explicit makes this policy independent of model SOL
+        // support (important for GLM-5.2's currently unported DSA family).
+        let no_sol = |_coords: &[f64]| f64::NAN;
+        let cfg = interp_config(FpmPhase::Decode, &no_sol);
+        let row_floor = |row: u32| -> Result<f64, AicError> {
+            let (kv_floor, _) = cell.decode_curve_bounds.get(&row).ok_or_else(|| {
+                data_err(format!(
+                    "FPM decode baseline row {row} has no collected KV curve."
+                ))
+            })?;
+            index
+                .resolve_value(&cfg, &[row as f64, *kv_floor as f64])
+                .map(|value| value.latency)
+        };
+
+        let batch = batch_size as f64;
+        let latency = if let Some((lo_row, hi_row)) = Self::decode_bracket_rows(cell, batch) {
+            // Drop a bracket row from the baseline exactly when
+            // `decode_bracket` drops it from the paired query. Blending a row
+            // the query could not use leaves part of the shared-pass cost in
+            // the marginal — enough to clamp it to 0 in the band only one
+            // curve covers, and to inflate it in the mirror band. Adjacent
+            // curves' collected KV ranges are ragged on every real table, so
+            // both bands exist, widest just under the decode ceiling.
+            // Neither row covering is unreachable here (the query on those
+            // same rows has already failed), so that arm keeps the blend.
+            match (
+                Self::row_covers(cell, lo_row, total_kv),
+                Self::row_covers(cell, hi_row, total_kv),
+            ) {
+                (true, false) => row_floor(lo_row)?,
+                (false, true) => row_floor(hi_row)?,
+                _ => {
+                    let lo_value = row_floor(lo_row)?;
+                    if hi_row == lo_row {
+                        lo_value
+                    } else {
+                        let hi_value = row_floor(hi_row)?;
+                        let weight = (batch - lo_row as f64) / (hi_row as f64 - lo_row as f64);
+                        lo_value + (hi_value - lo_value) * weight
+                    }
+                }
+            }
+        } else if cell.decode_curve_bounds.contains_key(&batch_size) {
+            row_floor(batch_size)?
+        } else {
+            // Legacy tables without capture-rung pairs retain their previous
+            // resolver path. Modern native FPM tables always take one of the
+            // exact/bracket branches above.
+            let kv_floor = batch_size.max(domain[1].0);
+            return self.resolve(db, cell, &[batch, kv_floor as f64]);
+        };
+        if !latency.is_finite() || latency <= 0.0 {
+            return Err(data_err(format!(
+                "FPM decode baseline interpolation produced an invalid latency ({latency}) at batch_size={batch_size}."
+            )));
+        }
+        Ok(PerformanceResult::new(latency, Source::Silicon))
     }
 
     /// Domain gate + ScatteredSites resolution, mirroring `FPMForwardOp._resolve`.
@@ -337,33 +420,13 @@ impl FpmForwardOp {
         cfg: &OpInterpConfig,
     ) -> Result<Option<f64>, AicError> {
         let (batch, kv) = (coords[0], coords[1]);
-        if cell.decode_rungs.is_empty()
-            || cell.decode_curve_bounds.keys().any(|&b| b as f64 == batch)
-        {
-            return Ok(None);
-        }
-        let Some(&lower_rung) = cell
-            .decode_rungs
-            .iter()
-            .rev()
-            .find(|&&r| (r as f64) < batch)
-        else {
-            // Between the domain floor and the first rung: no pair structure
-            // to bracket with — keep the legacy path.
+        let Some((lo_row, hi_row)) = Self::decode_bracket_rows(cell, batch) else {
             return Ok(None);
         };
-        let lo_row = lower_rung + 1;
-        let hi_row = cell
-            .decode_rungs
-            .iter()
-            .copied()
-            .find(|&r| (r as f64) >= batch)
-            .unwrap_or(*cell.decode_batches.last().expect("non-empty lattice"));
-        let covers = |row: u32| {
-            let (low, high) = cell.decode_curve_bounds[&row];
-            (low as f64) <= kv && kv <= (high as f64)
-        };
-        let (lo_ok, hi_ok) = (covers(lo_row), covers(hi_row));
+        let (lo_ok, hi_ok) = (
+            Self::row_covers(cell, lo_row, kv),
+            Self::row_covers(cell, hi_row, kv),
+        );
         if !lo_ok && !hi_ok {
             return Err(data_err(format!(
                 "FPM decode bracket rows {lo_row}/{hi_row} do not cover total_kv_read_tokens={kv}                  (curves span {:?} and {:?}); FPM never extrapolates.",
@@ -389,6 +452,40 @@ impl FpmForwardOp {
         let hi_value = row_value(hi_row)?;
         let weight = (batch - lo_row as f64) / (hi_row as f64 - lo_row as f64);
         Ok(Some(lo_value + (hi_value - lo_value) * weight))
+    }
+
+    /// Return the padded-graph bracket rows for an off-lattice decode batch.
+    /// Exact rows and legacy tables without rung pairs intentionally return
+    /// `None` so their existing resolver path remains intact.
+    fn decode_bracket_rows(cell: &FpmForwardCell, batch: f64) -> Option<(u32, u32)> {
+        if cell.decode_rungs.is_empty()
+            || cell.decode_curve_bounds.keys().any(|&b| b as f64 == batch)
+        {
+            return None;
+        }
+        let &lower_rung = cell
+            .decode_rungs
+            .iter()
+            .rev()
+            .find(|&&r| (r as f64) < batch)?;
+        let lo_row = lower_rung + 1;
+        let hi_row = cell
+            .decode_rungs
+            .iter()
+            .copied()
+            .find(|&r| (r as f64) >= batch)
+            .unwrap_or(*cell.decode_batches.last().expect("non-empty lattice"));
+        Some((lo_row, hi_row))
+    }
+
+    /// Whether `row`'s own collected KV curve covers `kv`. The ONE coverage
+    /// rule, shared by [`Self::decode_bracket`] and
+    /// [`Self::query_pass_baseline`] so a query and its pass baseline never
+    /// resolve on different rows.
+    fn row_covers(cell: &FpmForwardCell, row: u32, kv: f64) -> bool {
+        cell.decode_curve_bounds
+            .get(&row)
+            .is_some_and(|&(low, high)| (low as f64) <= kv && kv <= (high as f64))
     }
 
     fn no_rows_err(&self, cell: &FpmForwardCell) -> AicError {
@@ -837,19 +934,151 @@ mod tests {
     }
 
     #[test]
-    fn pass_baseline_uses_kv_floor() {
+    fn pass_baseline_uses_curve_floor() {
         let tmp = tempfile::tempdir().unwrap();
         write_pair(tmp.path(), &default_rows());
         let db = db_with_pair(tmp.path());
-        // decode domain kv min is 8; batch=8 -> kv_floor = max(8, 8) = 8,
-        // which is the exact collected point (8, 8) -> 6.0.
-        let r = op(FpmPhase::Decode).query_pass_baseline(&db, 8).unwrap();
+        // Exact batch=8 uses that curve's measured floor (8, 8) -> 6.0.
+        let r = op(FpmPhase::Decode)
+            .query_pass_baseline(&db, 8, 4096.0)
+            .unwrap();
         assert_eq!(r.latency_ms, 6.0);
         // prefill op: decode-only API
         let err = op(FpmPhase::Prefill)
-            .query_pass_baseline(&db, 8)
+            .query_pass_baseline(&db, 8, 4096.0)
             .unwrap_err();
         assert!(err.to_string().contains("decode-only"), "{err}");
+    }
+
+    #[test]
+    fn pass_baseline_holds_each_curve_floor_then_interpolates_batch() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |batch: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: "decode",
+            batch_size: batch,
+            total_prefill_tokens: 0,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        let rows = vec![
+            // Keep the cell-wide KV floor below the baseline query so this
+            // reproduces the real MiniMax table's old bracket-coverage miss.
+            mk(1, 2, 2.0),
+            mk(1, 64, 3.0),
+            mk(2, 4, 2.5),
+            mk(2, 64, 3.5),
+            // Rung pair (8, 9): row 9's floor is above baseline KV=15.
+            mk(8, 16, 4.0),
+            mk(8, 64, 5.0),
+            mk(9, 18, 5.0),
+            mk(9, 64, 6.0),
+            // Rung pair (16, 17): row 16's floor is further above KV=15.
+            mk(16, 32, 9.0),
+            mk(16, 64, 10.0),
+            mk(17, 34, 10.0),
+            mk(17, 64, 11.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        let dec = op(FpmPhase::Decode);
+
+        // Ordinary decode remains strict: neither bracket row 9 nor 16
+        // covers total KV=15.
+        let err = dec.query_totals(&db, &[15.0, 15.0]).unwrap_err();
+        assert!(err.to_string().contains("bracket rows 9/16"), "{err}");
+
+        // Mixed baseline is a narrow exception. At a KV BOTH bracket rows
+        // cover it holds row 9 at (9,18)=5 and row 16 at (16,32)=9, then
+        // interpolates batch 15 between them.
+        let both = 5.0 + (9.0 - 5.0) * (15.0 - 9.0) / (16.0 - 9.0);
+        let got = dec.query_pass_baseline(&db, 15, 40.0).unwrap();
+        assert!((got.latency_ms - both).abs() < 1e-12, "{}", got.latency_ms);
+
+        // Exact batches use their own curve floor without cross-batch transfer.
+        let exact = dec.query_pass_baseline(&db, 16, 40.0).unwrap();
+        assert_eq!(exact.latency_ms, 9.0);
+    }
+
+    /// The baseline must drop a bracket row exactly when `decode_bracket`
+    /// drops it from the paired query. Blending a row the query could not use
+    /// leaves part of the shared-pass cost in `query - baseline`: enough to
+    /// clamp the marginal to 0 in the band only one curve covers, and to
+    /// inflate it in the mirror band.
+    #[test]
+    fn pass_baseline_drops_the_same_uncovered_row_as_the_query() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |batch: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: "decode",
+            batch_size: batch,
+            total_prefill_tokens: 0,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        // Ragged curves in BOTH directions across one bracket: row 9 spans
+        // [18, 64], row 16 spans [32, 96]. Bracket (9, 16) therefore has a
+        // low band [18, 32) only row 9 covers and a high band (64, 96] only
+        // row 16 covers -- the shape every collected table has around its
+        // decode ceiling.
+        let rows = vec![
+            mk(1, 2, 2.0),
+            mk(1, 96, 3.0),
+            mk(2, 4, 2.5),
+            mk(2, 96, 3.5),
+            mk(8, 16, 4.0),
+            mk(8, 96, 5.0),
+            mk(9, 18, 5.0),
+            mk(9, 64, 6.0),
+            mk(16, 32, 9.0),
+            mk(16, 96, 10.0),
+            mk(17, 34, 10.0),
+            mk(17, 96, 11.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        let dec = op(FpmPhase::Decode);
+        let marginal = |batch: u32, kv: f64| {
+            let q = dec
+                .query_totals(&db, &[batch as f64, kv])
+                .unwrap()
+                .latency_ms;
+            let b = dec.query_pass_baseline(&db, batch, kv).unwrap().latency_ms;
+            (q, b, (q - b).max(0.0))
+        };
+
+        // Low band: only row 9 covers kv=20, so both sides use row 9 and the
+        // marginal is that curve's own rise above its floor.
+        let (q, b, m) = marginal(15, 20.0);
+        assert!(
+            (b - 5.0).abs() < 1e-12,
+            "baseline {b} must be row 9's floor"
+        );
+        assert!(
+            (q - (5.0 + (20.0 - 18.0) / (64.0 - 18.0))).abs() < 1e-12,
+            "{q}"
+        );
+        assert!((m - (q - 5.0)).abs() < 1e-12, "{m}");
+        assert!(m > 0.0, "decode riders must not be free: {m}");
+
+        // High band: only row 16 covers kv=80, so both sides use row 16.
+        let (q, b, m) = marginal(15, 80.0);
+        assert!(
+            (b - 9.0).abs() < 1e-12,
+            "baseline {b} must be row 16's floor"
+        );
+        assert!(
+            (q - (9.0 + (80.0 - 32.0) / (96.0 - 32.0))).abs() < 1e-12,
+            "{q}"
+        );
+        assert!((m - (q - 9.0)).abs() < 1e-12, "{m}");
+
+        // Both rows cover kv=40: the blend is unchanged.
+        let (_, b, _) = marginal(15, 40.0);
+        let blend = 5.0 + (9.0 - 5.0) * (15.0 - 9.0) / (16.0 - 9.0);
+        assert!((b - blend).abs() < 1e-12, "{b}");
     }
 
     /// SOL support is lazy (mirrors Python, whose SOL view answers every op

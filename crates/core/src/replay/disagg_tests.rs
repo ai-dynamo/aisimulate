@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::super::scaling::{ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::*;
@@ -11,15 +12,18 @@ use crate::engine::{
     Backend as EngineType, EngineConfig as MockEngineArgs, KvEvent, KvEventData,
     TransferTimingMode as KvTransferTimingMode, WorkerType,
 };
-use crate::replay::ReplayReport;
 use crate::replay::components::{AdmissionQueue, NoReplayMetadata, ReplayEngineObservation};
-use crate::replay::core::EngineEventBatch;
 use crate::replay::core::round_robin::PoolRoundRobinPlacement;
+use crate::replay::core::{EngineEventBatch, NoEngineEvents, PlacementEffects};
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig};
 use crate::replay::loadgen::{
     AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope, AgenticMooncakeHeader,
-    AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace, SessionTrace, Trace, TurnTrace,
+    AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace, ReplayRequestPayload, SessionTrace,
+    Trace, TurnTrace,
+};
+use crate::replay::{
+    ReplayReport, ReplayTelemetryObserver, ReplayTelemetrySampleKind, ReplayTelemetrySnapshot,
 };
 
 struct CaptureOncePolicy {
@@ -38,6 +42,164 @@ impl ReplayScalingPolicy for CaptureOncePolicy {
     ) -> anyhow::Result<ReplayScalingDecision> {
         *self.captured.borrow_mut() = Some(snapshot);
         Ok(ReplayScalingDecision::default())
+    }
+}
+
+struct CaptureAndScaleOncePolicy {
+    captured: Rc<RefCell<Option<ReplayScalingSnapshot>>>,
+}
+
+struct CaptureTelemetryObserver {
+    samples: Arc<Mutex<Vec<ReplayTelemetrySnapshot>>>,
+}
+
+impl ReplayTelemetryObserver for CaptureTelemetryObserver {
+    fn on_sample(&mut self, snapshot: ReplayTelemetrySnapshot) -> anyhow::Result<()> {
+        self.samples.lock().unwrap().push(snapshot);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct QueueUntilWorkerPlacement {
+    scheduler_id: Option<usize>,
+    pending: VecDeque<Uuid>,
+}
+
+impl QueueUntilWorkerPlacement {
+    fn initially_blocked(_topology: Vec<WorkerTopology>) -> Self {
+        Self {
+            scheduler_id: None,
+            pending: VecDeque::new(),
+        }
+    }
+
+    fn release_pending(&mut self) -> Vec<Placement> {
+        let Some(scheduler_id) = self.scheduler_id else {
+            return Vec::new();
+        };
+        self.pending
+            .drain(..)
+            .map(|request_id| Placement {
+                request_id,
+                scheduler_id,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+                placement_replica_id: None,
+            })
+            .collect()
+    }
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
+    type Metadata = ();
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        _metadata: Self::Metadata,
+        _session_id: Option<String>,
+        _now_ms: f64,
+    ) -> anyhow::Result<PlacementEffects> {
+        let request_id = request.metadata().uuid.expect("test request UUID");
+        let decision = match self.scheduler_id {
+            Some(scheduler_id) => PlacementDecision::Immediate(Placement {
+                request_id,
+                scheduler_id,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+                placement_replica_id: None,
+            }),
+            None => {
+                self.pending.push_back(request_id);
+                PlacementDecision::Queued
+            }
+        };
+        Ok(PlacementEffects {
+            decision,
+            released: Vec::new(),
+        })
+    }
+
+    fn observe(&mut self, _observation: (), _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+        let before = self.pending.len();
+        self.pending.retain(|pending| *pending != request_id);
+        self.pending.len() != before
+    }
+
+    fn request_terminal(
+        &mut self,
+        _request_id: Uuid,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn prefill_completed(
+        &mut self,
+        _request_id: Uuid,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn worker_ready(
+        &mut self,
+        worker: WorkerTopology,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        self.scheduler_id = worker.scheduler_ids.first().copied();
+        Ok(self.release_pending())
+    }
+
+    fn worker_draining(
+        &mut self,
+        worker: WorkerTopology,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        if worker.scheduler_ids.first().copied() == self.scheduler_id {
+            self.scheduler_id = None;
+        }
+        Ok(Vec::new())
+    }
+
+    fn worker_removed(
+        &mut self,
+        worker: WorkerTopology,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        self.worker_draining(worker, now_ms)
+    }
+
+    fn topology_settled(&mut self, _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(self.release_pending())
+    }
+}
+
+impl ReplayScalingPolicy for CaptureAndScaleOncePolicy {
+    fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+        Ok(0.1)
+    }
+
+    fn on_tick(
+        &mut self,
+        snapshot: ReplayScalingSnapshot,
+    ) -> anyhow::Result<ReplayScalingDecision> {
+        *self.captured.borrow_mut() = Some(snapshot);
+        Ok(ReplayScalingDecision {
+            target_prefill: Some(2),
+            target_decode: Some(2),
+            next_tick_ms: None,
+        })
     }
 }
 
@@ -85,15 +247,18 @@ impl TestDisaggConfig {
         let engine = ReplayEngineConfig {
             dp_size: 1,
             tensor_parallel_size: 1,
+            num_gpu_blocks_is_explicit: None,
             rank: MockEngineArgs::default(),
             prefill: Some(ReplayRoleConfig {
                 dp_size: 1,
                 tensor_parallel_size: 1,
+                num_gpu_blocks_is_explicit: None,
                 rank: self.prefill_args.clone(),
             }),
             decode: Some(ReplayRoleConfig {
                 dp_size: 1,
                 tensor_parallel_size: 1,
+                num_gpu_blocks_is_explicit: None,
                 rank: self.decode_args.clone(),
             }),
         };
@@ -517,6 +682,106 @@ fn scaling_tick_emits_idle_fpm_for_both_disagg_pools() {
         assert_eq!(snapshots[0].1.num_queued_prefill, 0);
         assert_eq!(snapshots[0].1.num_queued_decode, 0);
     }
+}
+
+#[test]
+fn telemetry_samples_router_queues_before_a_coincident_scale_up() {
+    let mut config = disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    let pending =
+        crate::replay::normalize_trace_requests(vec![request(9_303, 64, 1, 0.0)], 1.0).unwrap();
+    let captured = Rc::new(RefCell::new(None));
+    let policy = CaptureAndScaleOncePolicy {
+        captured: Rc::clone(&captured),
+    };
+    let telemetry_samples = Arc::new(Mutex::new(Vec::new()));
+    let telemetry_observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&telemetry_samples),
+    };
+
+    let runtime_config = config.runtime_config(false).unwrap();
+    DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+        &runtime_config,
+        AdmissionQueue::new_requests(pending, ReplayMode::Trace),
+        false,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+            ))
+        },
+    )
+    .unwrap()
+    .with_telemetry_observer(0.1, Box::new(telemetry_observer))
+    .with_scaling_policy(Box::new(policy))
+    .run()
+    .unwrap();
+
+    let snapshot = captured
+        .borrow_mut()
+        .take()
+        .expect("initial scaling tick must fire");
+    assert_eq!(snapshot.now_ms, 0.1);
+    assert_eq!(snapshot.traffic.num_req, 1);
+    assert_eq!(snapshot.active_prefill_ids, vec![0]);
+    assert_eq!(snapshot.active_decode_ids, vec![0]);
+
+    let samples = telemetry_samples.lock().unwrap();
+    let coincident = samples
+        .iter()
+        .find(|sample| {
+            sample.kind == ReplayTelemetrySampleKind::Periodic && sample.sampled_at_ms == 0.1
+        })
+        .expect("telemetry must sample at the coincident scaling timestamp");
+    assert_eq!(coincident.router_pending_prefill_requests, 1);
+    assert_eq!(coincident.router_pending_decode_requests, 0);
+    assert_eq!(coincident.active_prefill_ids, vec![0]);
+    assert_eq!(coincident.active_decode_ids, vec![0]);
+}
+
+#[test]
+fn telemetry_heartbeat_does_not_keep_a_deadlocked_disagg_replay_alive() {
+    let config = disagg_config();
+    let runtime_config = config.runtime_config(false).unwrap();
+    let build_runtime = || {
+        let pending =
+            crate::replay::normalize_trace_requests(vec![request(9_304, 64, 1, 0.0)], 1.0).unwrap();
+        DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+            &runtime_config,
+            AdmissionQueue::new_requests(pending, ReplayMode::Trace),
+            false,
+            |_, prefill_topology, _, decode_topology| {
+                Ok((
+                    QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                    QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+                ))
+            },
+        )
+        .unwrap()
+    };
+
+    let baseline_error = match build_runtime().run() {
+        Ok(_) => panic!("blocked replay unexpectedly completed"),
+        Err(error) => error.to_string(),
+    };
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let observed_error = match build_runtime()
+        .with_telemetry_observer(0.1, Box::new(observer))
+        .run()
+    {
+        Ok(_) => panic!("telemetry kept a blocked replay alive"),
+        Err(error) => error.to_string(),
+    };
+
+    assert_eq!(observed_error, baseline_error);
+    assert!(observed_error.contains("dead end"));
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
 }
 
 fn run_trace_with_details(
@@ -1781,6 +2046,127 @@ fn test_disagg_max_sim_time_truncates_run() {
         report.throughput.duration_ms,
         cap_ms
     );
+}
+
+#[test]
+fn telemetry_heartbeats_do_not_advance_disagg_through_a_capped_idle_gap() {
+    let config = disagg_config();
+    let cap_ms = 5.0;
+    let pending = VecDeque::from([request(9_401, 64, 2, 10.0)]);
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(cap_ms))
+            .run()
+            .unwrap();
+    let mut baseline = collector.finish();
+
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(cap_ms))
+            .with_telemetry_observer(1.0, Box::new(observer))
+            .run()
+            .unwrap();
+    let mut observed = collector.finish();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    assert_eq!(samples[0].sampled_at_ms, 0.0);
+}
+
+#[test]
+fn telemetry_only_timestamps_do_not_enter_the_disagg_semantic_drain() {
+    let config = disagg_config();
+    let pending = VecDeque::from([request(9_403, 64, 2, 10.0)]);
+    let (_, baseline_stats) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .run()
+            .unwrap();
+
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let (_, observed_stats) =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_telemetry_observer(1.0, Box::new(observer))
+            .run()
+            .unwrap();
+
+    assert!(baseline_stats.semantic_drain_count > 1);
+    assert_eq!(
+        observed_stats.semantic_drain_count, baseline_stats.semantic_drain_count,
+        "telemetry-only heartbeats must not wake disaggregate semantic replay work"
+    );
+    assert!(samples.lock().unwrap().len() > 2);
+}
+
+#[test]
+fn capped_disagg_telemetry_flushes_t0_observations_without_advancing_accounting() {
+    let config = disagg_config();
+    let pending = VecDeque::from([request(9_402, 64, 2, 0.0)]);
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(0.0))
+            .run()
+            .unwrap();
+    let mut baseline = collector.finish();
+
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(0.0))
+            .with_telemetry_observer(0.1, Box::new(observer))
+            .run()
+            .unwrap();
+    let mut observed = collector.finish();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(baseline.throughput.prefill_worker_seconds, 0.0);
+    assert_eq!(observed.throughput.prefill_worker_seconds, 0.0);
+    assert_eq!(baseline.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(observed.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(baseline.throughput.gpu_hours, 0.0);
+    assert_eq!(observed.throughput.gpu_hours, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 2);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    let final_sample = &samples[1];
+    assert_eq!(final_sample.kind, ReplayTelemetrySampleKind::Final);
+    assert_eq!(final_sample.interval_start_ms, 0.0);
+    assert_eq!(final_sample.sampled_at_ms, 0.0);
+    assert_eq!(final_sample.traffic.duration_s, 0.0);
+    assert_eq!(final_sample.traffic.arriving_requests, 1);
 }
 
 /// Sanity: without a cap, the same setup admits all submitted requests

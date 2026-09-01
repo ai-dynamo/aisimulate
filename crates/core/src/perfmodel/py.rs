@@ -7,7 +7,8 @@
 //!
 //! * **Python → Rust (hot path).** [`AicEngine`] is a `#[pyclass]` wrapping the
 //!   [`Engine`]. Its `#[pymethods]` (`from_spec`, `run_static`,
-//!   `predict_prefill_latency`, `predict_decode_latency`, `mixed_step_latency`,
+//!   `predict_prefill_latency`, `predict_decode_latency`,
+//!   `predict_decode_latency_total`, `mixed_step_latency`,
 //!   `decode_step_latency`) are the surface the Python sweep / Mocker bridge
 //!   calls per point. The agg sweep is orchestrated in Python; there is no
 //!   Rust `run_agg`. Each method
@@ -326,6 +327,29 @@ impl AicEngine {
     fn predict_decode_latency(&self, py: Python<'_>, bs: u32, isl: u32, osl: u32) -> PyResult<f64> {
         self.inner.reset_provenance();
         py.allow_threads(|| self.inner.predict_decode_latency(bs, isl, osl))
+            .map_err(aic_to_py)
+    }
+
+    /// One FPM decode-step latency at the collector's exact
+    /// `(batch_size, total_past_kv_tokens)` coordinate.
+    fn predict_decode_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> PyResult<f64> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner
+                .predict_decode_latency_total(batch_size, total_past_kv_tokens)
+        })
+        .map_err(aic_to_py)
+    }
+
+    /// Highest collected decode KV-read total for an FPM engine, or `None`
+    /// for an op-level engine.
+    fn fpm_decode_kv_ceiling(&self, py: Python<'_>) -> PyResult<Option<u32>> {
+        py.allow_threads(|| self.inner.fpm_decode_kv_ceiling())
             .map_err(aic_to_py)
     }
 
