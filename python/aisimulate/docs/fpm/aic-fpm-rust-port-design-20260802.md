@@ -183,6 +183,10 @@ phases prefill/decode. Whole-model ops must never reach the name-filtered
   stays as the python-backend path (unchanged, still the reference).
 - run_agg's `engine_step_backend_key` (`:1249`) becomes truthful for FPM —
   parity/cache tooling that compared across the transition must clear caches.
+- Native replay's external AIC timing config accepts optional
+  `forward_model="fpm"` and passes it to `compile_engine`; omission preserves
+  the op-level default. This keeps standalone engine replay on the same FPM
+  selection path as TaskV2 and the CLI.
 
 ### 7. Tests
 

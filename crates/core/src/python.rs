@@ -120,6 +120,8 @@ struct AicTimingConfig {
     free_gpu_memory_fraction: Option<f64>,
     #[serde(default)]
     systems_path: Option<String>,
+    #[serde(default)]
+    forward_model: Option<String>,
 }
 
 const fn one() -> u32 {
@@ -231,6 +233,7 @@ impl AicTimingModel {
             kwargs.set_item("nextn", config.nextn)?;
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
+            kwargs.set_item("forward_model", config.forward_model.as_deref())?;
             let spec = sdk.getattr("compile_engine")?.call(
                 (
                     config.model.as_str(),
@@ -907,6 +910,7 @@ mod tests {
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
             systems_path: None,
+            forward_model: None,
         }
     }
 
@@ -954,6 +958,19 @@ mod tests {
                 .to_string()
                 .contains("gpu_memory_utilization")
         );
+    }
+
+    #[test]
+    fn aic_timing_config_accepts_fpm_forward_model() {
+        let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+            "model": "test-model",
+            "backend": "vllm",
+            "system": "test-system",
+            "tp": 1,
+            "forward_model": "fpm"
+        }))
+        .unwrap();
+        assert_eq!(config.forward_model.as_deref(), Some("fpm"));
     }
 
     #[test]
