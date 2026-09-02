@@ -93,6 +93,34 @@ def repeat_stability(repeat_counts: list[list[np.ndarray]], moe_layer_ids: list[
     }
 
 
+def normalize_recorder_counts(
+    aggregate: np.ndarray,
+    *,
+    total_tokens: int,
+    top_k: int,
+    recorder_count_divisor: int,
+    moe_layer_ids: list[int],
+) -> np.ndarray:
+    """Validate and normalize routed layers while ignoring dense-layer slots."""
+    layer_totals = aggregate.sum(axis=1, dtype=np.int64)
+    expected = total_tokens * top_k * recorder_count_divisor
+    if all(int(layer_totals[layer_id]) == 0 for layer_id in moe_layer_ids):
+        raise RuntimeError(
+            "expert recorder observed zero assignments for every declared MoE layer; "
+            "the framework-selected routing backend may bypass the recorder hook"
+        )
+    for layer_id in moe_layer_ids:
+        actual = int(layer_totals[layer_id])
+        if actual != expected:
+            raise RuntimeError(f"layer {layer_id} conservation failed before normalization: {actual} != {expected}")
+    moe_counts = aggregate[moe_layer_ids]
+    if np.any(moe_counts % recorder_count_divisor != 0):
+        raise RuntimeError("MoE logical_count is not exactly divisible by the recorder count divisor")
+    normalized = np.zeros(aggregate.shape, dtype=np.int64)
+    normalized[moe_layer_ids] = (moe_counts // recorder_count_divisor).astype(np.int64)
+    return normalized
+
+
 def decode_routed_experts(
     encoded: object,
     *,

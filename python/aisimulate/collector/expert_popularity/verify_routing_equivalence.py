@@ -250,6 +250,7 @@ def build_report(args: argparse.Namespace) -> dict:
         "collection_checkpoint": {
             "id": args.checkpoint_model_id,
             "revision": args.checkpoint_model_revision,
+            "quantization": args.checkpoint_quantization,
         },
         "checks": {
             "routing_config_exact": True,
@@ -294,6 +295,7 @@ def main() -> None:
     parser.add_argument("--canonical-model-revision", required=True)
     parser.add_argument("--checkpoint-model-id", required=True)
     parser.add_argument("--checkpoint-model-revision", required=True)
+    parser.add_argument("--checkpoint-quantization", required=True)
     parser.add_argument("--expected-readme-substring", action="append", default=[])
     parser.add_argument("--allow-missing-checkpoint-key-regex", action="append", default=[])
     parser.add_argument("--required-runtime-environment", action="append", default=[])
@@ -310,6 +312,7 @@ def main() -> None:
             "collection_checkpoint": {
                 "id": args.checkpoint_model_id,
                 "revision": args.checkpoint_model_revision,
+                "quantization": args.checkpoint_quantization,
             },
             "error_type": type(error).__name__,
             "error": str(error),

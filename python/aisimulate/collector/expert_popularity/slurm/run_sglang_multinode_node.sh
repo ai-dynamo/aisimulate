@@ -51,7 +51,7 @@ if [[ "$OBSERVATION_SOURCE" == "response_routed_experts" ]]; then
         --report "$ARTIFACT_DIR/hash-topk-capturer-patch-rank-$SLURM_PROCID.json"
 fi
 
-if [[ "${FLASHINFER_REPLAY_RECORDER:-0}" == "1" ]]; then
+if [[ "$OBSERVATION_SOURCE" == "recorder" ]]; then
     python3 /campaign/patch_sglang_flashinfer_replay_recorder.py \
         --report "$ARTIFACT_DIR/flashinfer-replay-patch-rank-$SLURM_PROCID.json"
 fi
@@ -89,7 +89,6 @@ SERVER_ARGS=(
     --chunked-prefill-size "${CHUNKED_PREFILL_SIZE:-4096}"
     --mem-fraction-static 0.85
     --watchdog-timeout 3600
-    --moe-runner-backend "${MOE_RUNNER_BACKEND:-flashinfer_trtllm_routed}"
     --disable-cuda-graph
     --disable-overlap-schedule
     --disable-shared-experts-fusion
@@ -114,7 +113,6 @@ fi
 if [[ -n "${ATTENTION_BACKEND:-}" ]]; then
     SERVER_ARGS+=(--attention-backend "$ATTENTION_BACKEND")
 fi
-
 if [[ "$SLURM_PROCID" -eq 0 ]]; then
     printf '%s\n' "${SERVER_ARGS[@]}" \
         | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().splitlines()))' \
@@ -135,7 +133,6 @@ names = (
     "SGLANG_DSV4_FP4_EXPERTS",
     "SGLANG_OPT_FP8_WO_A_GEMM",
     "SGLANG_JIT_DEEPGEMM_PRECOMPILE",
-    "FLASHINFER_REPLAY_RECORDER",
     "ENABLE_RETURN_ROUTED_EXPERTS",
     "OBSERVATION_SOURCE",
 )

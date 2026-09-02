@@ -35,6 +35,8 @@ site-local paths through `sbatch` options and exported environment variables:
 - `IMAGE_SQSH`: local immutable container image
 - `IMAGE_REFERENCE`: immutable public image identity
 - `HF_CACHE`: model cache
+- `CHECKPOINT_QUANTIZATION`: actual checkpoint format (for example `bf16`,
+  `fp8_block`, `int4_wo`, `mxfp4`, or `nvfp4`)
 - `GPUS_PER_NODE`: allocated GPUs per node for `multinode.sbatch`
 
 Partition, account, node count, GPU count, constraints, topology preferences, and log
@@ -71,17 +73,15 @@ model.
 | `PUBLISHED` | completed slice | `Qwen/Qwen3-30B-A3B` | `Qwen3MoeForCausalLM` | revision `ad44e777bcd18fa416d9da3bd8f70d33ebb85d39` |
 | `PUBLISHED` | completed slice | `openai/gpt-oss-20b` | `GptOssForCausalLM` | revision `6cee5e81ee83917806bbde320786a8fb61efebee` |
 
-On GB200, SGLang 0.5.14 auto-selects the fused `flashinfer_trtllm` backend for
-Qwen3 and `flashinfer_mxfp4` for GPT-OSS. Both initial smokes returned an all-zero
-recorder matrix because their internal/bypassed routing path does not invoke the
-recorder's `select_experts` hook. The production-compatible remedy uses the
-routed FlashInfer path: SGLang materializes and records explicit expert IDs, and
-the MoE kernel consumes those same IDs. For `flashinfer_trtllm` this is the
-native `flashinfer_trtllm_routed` backend. For `flashinfer_mxfp4`, the collector
-uses a fail-closed, source-hash-pinned bridge only during active recorder windows.
-Neither path publishes data until its conservation and repeatability gates pass.
-Both routed-path production collections passed those gates on GB200 and are
-published above.
+On GB200, SGLang 0.5.14 may auto-select fused `flashinfer_trtllm` or
+`flashinfer_mxfp4` backends whose internal routing does not invoke the recorder's
+ordinary `select_experts` hook. The collector does not switch those models to a
+routed backend. A fail-closed, source-hash-pinned bridge supplies FlashInfer's
+`routing_replay_out` only while recording and forwards the expert IDs emitted by
+that same fused kernel to SGLang's recorder. The original `FromLogits` serving
+routing and MoE backend remain unchanged. DeepSeek-V4 HashTopK layers retain
+their native standard/routed path while learned-router layers use fused replay.
+No result is published until conservation and repeatability gates pass.
 
 Kimi K3 remains a later campaign: its completed TP16 POC required a runtime source overlay.
 Production publication requires a digest-pinned image containing the integration and strict
@@ -133,7 +133,7 @@ ISL to satisfy a backend limitation.
 
 The serving checkpoint may differ from the canonical bundle identity only when a
 fail-closed routing-equivalence report passes. The report verifies the immutable
-IDs and revisions, routing-relevant configuration, weight-index identity,
+IDs, revisions, checkpoint quantization, routing-relevant configuration, weight-index identity,
 explicitly accounted physical tensor deltas, every router tensor byte-for-byte,
 exact canonical-FP8-to-checkpoint-BF16 `wo_a` dequantization, tokenizer
 artifacts, required runtime semantics, and the

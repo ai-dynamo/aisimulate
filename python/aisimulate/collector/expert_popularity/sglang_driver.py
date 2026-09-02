@@ -28,6 +28,7 @@ if __package__:
     from .response_capture import (
         aggregate_routed_experts,
         decode_routed_experts,
+        normalize_recorder_counts,
         pairwise_stability,
         repeat_stability,
     )
@@ -36,6 +37,7 @@ else:
     from response_capture import (
         aggregate_routed_experts,
         decode_routed_experts,
+        normalize_recorder_counts,
         pairwise_stability,
         repeat_stability,
     )
@@ -200,24 +202,13 @@ def _run_recorder_window(
     if raw_count.dtype not in {torch.int32, torch.int64} or not bool(torch.all(raw_count >= 0)):
         raise RuntimeError(f"logical_count must be a non-negative integer tensor, got {raw_count.dtype}")
     aggregate = raw_count.reshape(-1, args.num_layers, args.num_experts).sum(dim=0, dtype=torch.int64)
-    layer_totals = aggregate.sum(dim=1)
-    moe_layer_set = set(moe_layer_ids)
-    expected = total_tokens * args.top_k * args.replication_factor
-    if all(int(layer_totals[layer_id].item()) == 0 for layer_id in moe_layer_ids):
-        raise RuntimeError(
-            "expert recorder observed zero assignments for every declared MoE layer; "
-            "the framework-selected routing backend may bypass the recorder hook"
-        )
-    for layer_id in range(args.num_layers):
-        actual = int(layer_totals[layer_id].item())
-        if layer_id in moe_layer_set:
-            if actual != expected:
-                raise RuntimeError(f"layer {layer_id} conservation failed before normalization: {actual} != {expected}")
-        elif actual != 0:
-            raise RuntimeError(f"dense layer {layer_id} unexpectedly recorded {actual} assignments")
-    if bool(torch.any(aggregate % args.replication_factor != 0)):
-        raise RuntimeError("logical_count is not exactly divisible by the declared replication factor")
-    normalized = (aggregate // args.replication_factor).numpy().astype(np.int64)
+    normalized = normalize_recorder_counts(
+        aggregate.numpy(),
+        total_tokens=total_tokens,
+        top_k=args.top_k,
+        recorder_count_divisor=args.recorder_count_divisor,
+        moe_layer_ids=moe_layer_ids,
+    )
     return normalized, {
         "repeat_index": repeat_index,
         "shard_index": shard_index,
@@ -337,21 +328,17 @@ def _run_response_window(
 
     layer_totals = aggregate.sum(axis=1)
     expected = total_tokens * args.top_k
-    moe_layer_set = set(moe_layer_ids)
-    for layer_id in range(args.num_layers):
+    for layer_id in moe_layer_ids:
         actual = int(layer_totals[layer_id])
-        if layer_id in moe_layer_set:
-            if actual != expected:
-                raise RuntimeError(f"layer {layer_id} response conservation failed: {actual} != {expected}")
-        elif actual != 0:
-            raise RuntimeError(f"dense layer {layer_id} unexpectedly recorded {actual} assignments")
+        if actual != expected:
+            raise RuntimeError(f"layer {layer_id} response conservation failed: {actual} != {expected}")
     return aggregate, {
         "repeat_index": repeat_index,
         "shard_index": shard_index,
         "prompt_tokens": total_tokens,
         "request_count": len(prepared),
         "observation_source": "response_routed_experts",
-        "count_replication_factor": 1,
+        "recorder_count_divisor": 1,
         "raw_file_count": len(raw_files),
         "raw_files": raw_files,
         "normalized_logical_count_sha256": _sha256_bytes(aggregate.tobytes()),
@@ -376,6 +363,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model-revision", required=True)
     parser.add_argument("--checkpoint-model-id")
     parser.add_argument("--checkpoint-model-revision")
+    parser.add_argument("--checkpoint-quantization", required=True)
     parser.add_argument("--tokenizer-path", required=True)
     parser.add_argument("--num-layers", type=int, required=True)
     parser.add_argument("--num-experts", type=int, required=True)
@@ -387,7 +375,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--isl-max", type=int, default=4096)
     parser.add_argument("--repeat-count", type=int, default=2)
     parser.add_argument("--request-timeout", type=int, default=600)
-    parser.add_argument("--replication-factor", type=int, default=1)
+    parser.add_argument("--recorder-count-divisor", type=int, default=1)
     parser.add_argument(
         "--observation-source",
         choices=("recorder", "response_routed_experts"),
@@ -395,7 +383,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--expected-framework-version", default="0.5.14")
     parser.add_argument("--image-reference", required=True)
-    parser.add_argument("--image-sha256", required=True)
+    parser.add_argument("--image-archive-sha256", required=True)
     parser.add_argument(
         "--collector-code-sha256",
         default=os.environ.get("COLLECTOR_CODE_SHA256", "unrecorded_smoke"),
@@ -432,6 +420,7 @@ def main() -> None:
         "collection_checkpoint": {
             "id": checkpoint_model_id,
             "revision": checkpoint_model_revision,
+            "quantization": args.checkpoint_quantization,
         },
     }
     _write_json(result_path, result)
@@ -460,8 +449,12 @@ def main() -> None:
             raise ValueError("min-repeat-pearson must be between -1 and 1")
         if not 0.0 <= args.max_repeat_jsd <= 1.0:
             raise ValueError("max-repeat-jsd must be between 0 and 1")
-        if args.observation_source == "response_routed_experts" and args.replication_factor < 1:
-            raise ValueError("serving replication factor must be positive")
+        if args.recorder_count_divisor < 1:
+            raise ValueError("recorder count divisor must be positive")
+        if args.observation_source == "response_routed_experts" and args.recorder_count_divisor != 1:
+            raise ValueError("response routed-expert capture requires recorder count divisor 1")
+        if not args.checkpoint_quantization.strip():
+            raise ValueError("checkpoint quantization must be non-empty")
 
         model_config = json.loads((Path(args.tokenizer_path) / "config.json").read_text(encoding="utf-8"))
         routing_equivalence_evidence = json.loads(args.routing_equivalence_evidence_json)
@@ -479,6 +472,7 @@ def main() -> None:
             expected_checkpoint = {
                 "id": checkpoint_model_id,
                 "revision": checkpoint_model_revision,
+                "quantization": args.checkpoint_quantization,
             }
             if routing_equivalence_evidence.get("status") != "PASS":
                 raise ValueError("a passing routing-equivalence report is required for a non-canonical checkpoint")
@@ -608,7 +602,7 @@ def main() -> None:
                     "moe_layer_ids": moe_layer_ids,
                     "num_routed_experts": args.num_experts,
                     "top_k": args.top_k,
-                    "replication_factor": args.replication_factor,
+                    "recorder_count_divisor": args.recorder_count_divisor,
                 },
                 "workload": {
                     "phase": "prefill",
@@ -626,6 +620,7 @@ def main() -> None:
                     "temperature": 0,
                     "sequential": True,
                     "tokenizer_vocab_size": int(tokenizer.vocab_size),
+                    "tokenizer_effective_vocab_size": len(tokenizer.get_vocab()),
                     "excluded_special_token_ids": sorted(int(value) for value in tokenizer.all_special_ids),
                 },
                 "stability": stability,
@@ -645,18 +640,17 @@ def main() -> None:
                     "collection_checkpoint": {
                         "id": checkpoint_model_id,
                         "revision": checkpoint_model_revision,
+                        "quantization": args.checkpoint_quantization,
                     },
                     "routing_equivalence_evidence": routing_equivalence_evidence or None,
                     "image_reference": args.image_reference,
-                    "image_sha256": args.image_sha256,
+                    "image_archive_sha256": args.image_archive_sha256,
                     "collector_code_sha256": args.collector_code_sha256,
                     "server_args": json.loads(args.server_args_json),
                     "runtime_environment": runtime_environment,
                     "routing_observation_method": args.routing_observation_method,
                     "observation_source": args.observation_source,
-                    "count_replication_factor": (
-                        args.replication_factor if args.observation_source == "recorder" else 1
-                    ),
+                    "recorder_count_divisor": args.recorder_count_divisor,
                     "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
                     "slurm_node": os.environ.get("SLURMD_NODENAME"),
                     "gpu_info": subprocess.check_output(

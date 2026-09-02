@@ -11,6 +11,7 @@ import pytest
 from collector.expert_popularity.response_capture import (
     aggregate_routed_experts,
     decode_routed_experts,
+    normalize_recorder_counts,
     repeat_stability,
 )
 
@@ -20,9 +21,9 @@ pytestmark = pytest.mark.unit
 def test_decode_and_aggregate_response_routed_experts():
     routed = np.asarray(
         [
-            [[0, 0], [0, 2], [3, 1]],
-            [[0, 0], [2, 2], [1, 0]],
-            [[0, 0], [3, 0], [1, 3]],
+            [[99, -1], [0, 2], [3, 1]],
+            [[99, -1], [2, 2], [1, 0]],
+            [[99, -1], [3, 0], [1, 3]],
         ],
         dtype=np.int32,
     )
@@ -39,6 +40,26 @@ def test_decode_and_aggregate_response_routed_experts():
 
     assert np.array_equal(decoded, routed)
     assert counts.tolist() == [[0, 0, 0, 0], [2, 0, 3, 1], [1, 3, 0, 2]]
+
+
+def test_recorder_normalization_ignores_dense_layer_slots():
+    aggregate = np.asarray(
+        [
+            [7, 3, 1],
+            [4, 2, 2],
+        ],
+        dtype=np.int64,
+    )
+
+    normalized = normalize_recorder_counts(
+        aggregate,
+        total_tokens=2,
+        top_k=2,
+        recorder_count_divisor=2,
+        moe_layer_ids=[1],
+    )
+
+    assert normalized.tolist() == [[0, 0, 0], [2, 1, 1]]
 
 
 def test_decode_rejects_wrong_response_size():

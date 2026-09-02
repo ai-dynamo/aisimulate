@@ -22,6 +22,7 @@ from pathlib import Path
 SGLANG_VERSION = "0.5.14"
 EXPECTED_SOURCE_SHA256 = "067753d34e2b258939508c98e65b5ac5883217245b78563b0a7e759310b6e3b5"
 EXPECTED_RUNNER_SOURCE_SHA256 = "09a54bdf8636ed9f9af3dd946bf61d4b40f06c246ba8baaa077ff3c459ea92ca"
+EXPECTED_MXFP4_SOURCE_SHA256 = "b514d889f7ef55a8dca5f941702ec2871c8980000b6da355e7f52eb414ca9e5f"
 
 _IMPORT_ORIGINAL = "from sglang.srt.utils.custom_op import register_custom_op\n"
 _IMPORT_PATCHED = """from sglang.srt.eplb.expert_distribution import (
@@ -64,6 +65,46 @@ _RUNNER_PATCHED = """    hidden_states = dispatch_output.hidden_states
     if TopKOutputChecker.format_is_bypassed(topk_output):
 """
 
+_MXFP4_IMPORT_ORIGINAL = "from sglang.srt.environ import envs\n"
+_MXFP4_IMPORT_PATCHED = """from sglang.srt.environ import envs
+from sglang.srt.eplb.expert_distribution import (
+    get_global_expert_distribution_recorder,
+)
+"""
+
+_MXFP4_SETUP_ORIGINAL = """            top_k = topk_output.topk_config.top_k
+            router_logits = topk_output.router_logits
+
+            with use_symmetric_memory(
+"""
+_MXFP4_SETUP_PATCHED = """            top_k = topk_output.topk_config.top_k
+            router_logits = topk_output.router_logits
+            recorder = get_global_expert_distribution_recorder()
+            routing_replay_out = None
+            if recorder.recording:
+                routing_replay_out = torch.empty(
+                    (x_quant.shape[0], top_k),
+                    dtype=torch.int16,
+                    device=x_quant.device,
+                )
+
+            with use_symmetric_memory(
+"""
+
+_MXFP4_CALL_TAIL_ORIGINAL = """                tune_max_num_tokens=next_power_of_2(x_quant.shape[0]),
+                output=symm_output,
+            )[0]
+            return StandardCombineInput(hidden_states=trtllm_gen_output)
+"""
+_MXFP4_CALL_TAIL_PATCHED = """                tune_max_num_tokens=next_power_of_2(x_quant.shape[0]),
+                output=symm_output,
+                routing_replay_out=routing_replay_out,
+            )[0]
+            if routing_replay_out is not None:
+                recorder.on_select_experts(topk_ids=routing_replay_out)
+            return StandardCombineInput(hidden_states=trtllm_gen_output)
+"""
+
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
@@ -76,16 +117,22 @@ def apply_bridge(report_path: Path) -> dict:
 
     wrapper_spec = importlib.util.find_spec("sglang.srt.layers.moe.flashinfer_trtllm_moe")
     runner_spec = importlib.util.find_spec("sglang.srt.layers.moe.moe_runner.flashinfer_trtllm")
+    mxfp4_spec = importlib.util.find_spec("sglang.srt.layers.quantization.mxfp4")
     if wrapper_spec is None or wrapper_spec.origin is None:
         raise RuntimeError("could not locate SGLang FlashInfer TRT-LLM MoE wrapper")
     if runner_spec is None or runner_spec.origin is None:
         raise RuntimeError("could not locate SGLang FlashInfer TRT-LLM MoE runner")
+    if mxfp4_spec is None or mxfp4_spec.origin is None:
+        raise RuntimeError("could not locate SGLang MXFP4 quantization source")
     wrapper_path = Path(wrapper_spec.origin)
     runner_path = Path(runner_spec.origin)
+    mxfp4_path = Path(mxfp4_spec.origin)
     wrapper_source = wrapper_path.read_bytes()
     runner_source = runner_path.read_bytes()
+    mxfp4_source = mxfp4_path.read_bytes()
     wrapper_original_sha256 = _sha256(wrapper_source)
     runner_original_sha256 = _sha256(runner_source)
+    mxfp4_original_sha256 = _sha256(mxfp4_source)
     if wrapper_original_sha256 != EXPECTED_SOURCE_SHA256:
         raise RuntimeError(
             f"refusing to patch unexpected {wrapper_path}: {wrapper_original_sha256}; expected {EXPECTED_SOURCE_SHA256}"
@@ -95,20 +142,39 @@ def apply_bridge(report_path: Path) -> dict:
             f"refusing to patch unexpected {runner_path}: {runner_original_sha256}; "
             f"expected {EXPECTED_RUNNER_SOURCE_SHA256}"
         )
+    if mxfp4_original_sha256 != EXPECTED_MXFP4_SOURCE_SHA256:
+        raise RuntimeError(
+            f"refusing to patch unexpected {mxfp4_path}: {mxfp4_original_sha256}; "
+            f"expected {EXPECTED_MXFP4_SOURCE_SHA256}"
+        )
 
     wrapper_decoded = wrapper_source.decode("utf-8")
     runner_decoded = runner_source.decode("utf-8")
+    mxfp4_decoded = mxfp4_source.decode("utf-8")
     if wrapper_decoded.count(_IMPORT_ORIGINAL) != 1:
         raise RuntimeError("expected custom-op import was not uniquely present")
     if wrapper_decoded.count(_RETURN_ORIGINAL) != 1:
         raise RuntimeError("expected fused FP8 MoE return was not uniquely present")
     if runner_decoded.count(_RUNNER_ORIGINAL) != 1:
         raise RuntimeError("expected fused FP8 MoE runner dispatch block was not uniquely present")
+    if mxfp4_decoded.count(_MXFP4_IMPORT_ORIGINAL) != 1:
+        raise RuntimeError("expected MXFP4 env import was not uniquely present")
+    if mxfp4_decoded.count(_MXFP4_SETUP_ORIGINAL) != 1:
+        raise RuntimeError("expected MXFP4 fused routing setup was not uniquely present")
+    if mxfp4_decoded.count(_MXFP4_CALL_TAIL_ORIGINAL) != 1:
+        raise RuntimeError("expected MXFP4 fused routing call tail was not uniquely present")
     wrapper_patched = wrapper_decoded.replace(_IMPORT_ORIGINAL, _IMPORT_PATCHED, 1)
     wrapper_patched = wrapper_patched.replace(_RETURN_ORIGINAL, _RETURN_PATCHED, 1).encode("utf-8")
     runner_patched = runner_decoded.replace(_RUNNER_ORIGINAL, _RUNNER_PATCHED, 1).encode("utf-8")
+    mxfp4_patched = mxfp4_decoded.replace(_MXFP4_IMPORT_ORIGINAL, _MXFP4_IMPORT_PATCHED, 1)
+    mxfp4_patched = mxfp4_patched.replace(_MXFP4_SETUP_ORIGINAL, _MXFP4_SETUP_PATCHED, 1)
+    mxfp4_patched = mxfp4_patched.replace(_MXFP4_CALL_TAIL_ORIGINAL, _MXFP4_CALL_TAIL_PATCHED, 1).encode("utf-8")
 
-    for source_path, patched in ((wrapper_path, wrapper_patched), (runner_path, runner_patched)):
+    for source_path, patched in (
+        (wrapper_path, wrapper_patched),
+        (runner_path, runner_patched),
+        (mxfp4_path, mxfp4_patched),
+    ):
         temporary = source_path.with_suffix(".py.collector-replay-tmp")
         temporary.write_bytes(patched)
         temporary.replace(source_path)
@@ -117,7 +183,7 @@ def apply_bridge(report_path: Path) -> dict:
         "status": "APPLIED",
         "framework": "sglang",
         "framework_version": installed_version,
-        "observation": "flashinfer_fused_moe_routing_replay_out",
+        "observation": "flashinfer_fp8_and_mxfp4_fused_moe_routing_replay_out",
         "source_files": {
             "flashinfer_trtllm_moe.py": {
                 "path": str(wrapper_path),
@@ -128,6 +194,11 @@ def apply_bridge(report_path: Path) -> dict:
                 "path": str(runner_path),
                 "original_sha256": runner_original_sha256,
                 "patched_sha256": _sha256(runner_patched),
+            },
+            "quantization/mxfp4.py": {
+                "path": str(mxfp4_path),
+                "original_sha256": mxfp4_original_sha256,
+                "patched_sha256": _sha256(mxfp4_patched),
             },
         },
     }

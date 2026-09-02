@@ -38,7 +38,7 @@ def test_build_bundle_from_passing_collection(tmp_path: Path):
                 "moe_layer_ids": [1],
                 "num_routed_experts": 3,
                 "top_k": 2,
-                "replication_factor": 1,
+                "recorder_count_divisor": 1,
             },
             "workload": {
                 "phase": "prefill",
@@ -54,6 +54,9 @@ def test_build_bundle_from_passing_collection(tmp_path: Path):
                 "seeds": [2026082501, 2026082502, 2026082503, 2026082504],
                 "tokens_per_shard_minimum": 65536,
                 "total_prompt_tokens": 262144,
+                "tokenizer_vocab_size": 100,
+                "tokenizer_effective_vocab_size": 103,
+                "excluded_special_token_ids": [100, 101, 102],
             },
             "validation_gates": {
                 "repeat_validation_mode": "exact",
@@ -78,7 +81,9 @@ def test_build_bundle_from_passing_collection(tmp_path: Path):
                 "collection_checkpoint": {
                     "id": "repack/Tiny-MoE-FP8",
                     "revision": "b" * 40,
+                    "quantization": "fp8_block",
                 },
+                "recorder_count_divisor": 1,
             },
         },
     )
@@ -107,6 +112,10 @@ def test_build_bundle_from_passing_collection(tmp_path: Path):
     assert metadata.startswith("# SPDX-FileCopyrightText:")
     assert "repack/Tiny-MoE-FP8" in metadata
     assert "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" in metadata
+    assert "quantization: fp8_block" in metadata
+    assert "recorder_count_divisor: 1" in metadata
+    assert "tokenizer_vocab_size: 100" in metadata
+    assert "tokenizer_effective_vocab_size: 103" in metadata
     assert "private-node" not in metadata
     assert "private-uuid" not in metadata
     assert "/home/private" not in metadata

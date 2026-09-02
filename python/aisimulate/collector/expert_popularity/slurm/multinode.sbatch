@@ -21,6 +21,7 @@ set -Eeuo pipefail
 : "${IMAGE_REFERENCE:?submit with immutable IMAGE_REFERENCE}"
 : "${HF_CACHE:?submit with HF_CACHE}"
 : "${GPUS_PER_NODE:?submit with GPUS_PER_NODE}"
+: "${CHECKPOINT_QUANTIZATION:?submit with CHECKPOINT_QUANTIZATION}"
 
 if [[ ! "$IMAGE_REFERENCE" =~ @sha256:[0-9a-f]{64}$ ]]; then
     echo "IMAGE_REFERENCE must contain an immutable manifest digest" >&2
@@ -50,6 +51,7 @@ cp \
     "$SHARED_CODE/sglang_driver.py" \
     "$SHARED_CODE/model_config.py" \
     "$SHARED_CODE/response_capture.py" \
+    "$SHARED_CODE/code_digest.py" \
     "$SHARED_CODE/patch_sglang_hash_topk_capturer.py" \
     "$SHARED_CODE/patch_sglang_flashinfer_replay_recorder.py" \
     "$SHARED_CODE/run_sglang_multinode_node.sh" \
@@ -62,12 +64,12 @@ if [[ -n "$COMPILE_CACHE_HOST_DIR" ]]; then
     CONTAINER_MOUNTS+=",$COMPILE_CACHE_HOST_DIR:/compile-cache"
     export COMPILE_CACHE_ROOT=/compile-cache
 fi
-IMAGE_SHA256="$(sha256sum "$IMAGE_SQSH" | awk '{print $1}')"
-COLLECTOR_CODE_SHA256="$(sha256sum "$CAMPAIGN_CODE"/* | sort -k2 | sha256sum | awk '{print $1}')"
+IMAGE_ARCHIVE_SHA256="$(sha256sum "$IMAGE_SQSH" | awk '{print $1}')"
+COLLECTOR_CODE_SHA256="$(python3 "$CAMPAIGN_CODE/code_digest.py" "$CAMPAIGN_CODE")"
 HEAD_NODE="$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)"
 DIST_INIT_ADDR="$HEAD_NODE:$DIST_PORT"
 BASE_URL="http://$HEAD_NODE:$SERVER_PORT"
-export IMAGE_REFERENCE IMAGE_SHA256 COLLECTOR_CODE_SHA256 HEAD_NODE DIST_INIT_ADDR BASE_URL SERVER_PORT NNODES TP_SIZE
+export IMAGE_REFERENCE IMAGE_ARCHIVE_SHA256 COLLECTOR_CODE_SHA256 HEAD_NODE DIST_INIT_ADDR BASE_URL SERVER_PORT NNODES TP_SIZE
 
 job_status=FAIL
 server_step_pid=
@@ -174,20 +176,21 @@ srun \
         --model-revision "$CANONICAL_MODEL_REVISION" \
         --checkpoint-model-id "$MODEL_ID" \
         --checkpoint-model-revision "$MODEL_REVISION" \
+        --checkpoint-quantization "$CHECKPOINT_QUANTIZATION" \
         --tokenizer-path "$MODEL_PATH" \
         --num-layers "$NUM_LAYERS" \
         --num-experts "$NUM_EXPERTS" \
         --top-k "$TOP_K" \
         --moe-layer-ids "$MOE_LAYER_IDS" \
-        --replication-factor "$TP_SIZE" \
+        --recorder-count-divisor "$TP_SIZE" \
         --observation-source "${OBSERVATION_SOURCE:-recorder}" \
         --expected-framework-version 0.5.14 \
         --image-reference "$IMAGE_REFERENCE" \
-        --image-sha256 "$IMAGE_SHA256" \
+        --image-archive-sha256 "$IMAGE_ARCHIVE_SHA256" \
         --collector-code-sha256 "$COLLECTOR_CODE_SHA256" \
         --server-args-json "$SERVER_ARGS_JSON" \
         --runtime-environment-json "$RUNTIME_ENVIRONMENT_JSON" \
-        --routing-observation-method "${ROUTING_OBSERVATION_METHOD:-sglang_explicit_topk_flashinfer_trtllm_routed}" \
+        --routing-observation-method "${ROUTING_OBSERVATION_METHOD:-sglang_native_routing_recorder_with_fused_replay}" \
         --routing-equivalence-evidence-json "$ROUTING_EQUIVALENCE_EVIDENCE_JSON" \
         --tokens-per-shard "${TOKENS_PER_SHARD:-65536}" \
         --isl-min "${ISL_MIN:-128}" \

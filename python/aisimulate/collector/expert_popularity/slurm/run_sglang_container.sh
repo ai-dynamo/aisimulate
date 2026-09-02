@@ -12,8 +12,9 @@ set -Eeuo pipefail
 : "${TOP_K:?}"
 : "${MOE_LAYER_IDS:?}"
 : "${IMAGE_REFERENCE:?}"
-: "${IMAGE_SHA256:?}"
+: "${IMAGE_ARCHIVE_SHA256:?}"
 : "${COLLECTOR_CODE_SHA256:?}"
+: "${CHECKPOINT_QUANTIZATION:?}"
 : "${SERVER_PORT:?}"
 
 export HF_HOME=/hfcache
@@ -34,9 +35,9 @@ if [[ "$OBSERVATION_SOURCE" == "response_routed_experts" ]]; then
         --report "$ARTIFACT_DIR/hash-topk-capturer-patch.json"
 fi
 
-if [[ "${FLASHINFER_RECORDER_BRIDGE:-0}" == "1" ]]; then
-    python3 /campaign/patch_sglang_flashinfer_recorder.py \
-        --report "$ARTIFACT_DIR/flashinfer_recorder_bridge.json"
+if [[ "$OBSERVATION_SOURCE" == "recorder" ]]; then
+    python3 /campaign/patch_sglang_flashinfer_replay_recorder.py \
+        --report "$ARTIFACT_DIR/flashinfer-replay-patch.json"
 fi
 
 MODEL_PATH="$(python3 - 2>"$ARTIFACT_DIR/model_download.log" <<'PY'
@@ -84,9 +85,6 @@ else
     echo "unsupported OBSERVATION_SOURCE=$OBSERVATION_SOURCE" >&2
     exit 13
 fi
-if [[ -n "${MOE_RUNNER_BACKEND:-}" ]]; then
-    SERVER_ARGS+=(--moe-runner-backend "$MOE_RUNNER_BACKEND")
-fi
 SERVER_ARGS_JSON="$(printf '%s\n' "${SERVER_ARGS[@]}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().splitlines()))')"
 export SERVER_ARGS_JSON
 
@@ -132,19 +130,20 @@ python3 /campaign/sglang_driver.py \
     --base-url "http://127.0.0.1:$SERVER_PORT" \
     --model-id "$MODEL_ID" \
     --model-revision "$MODEL_REVISION" \
+    --checkpoint-quantization "$CHECKPOINT_QUANTIZATION" \
     --tokenizer-path "$MODEL_PATH" \
     --num-layers "$NUM_LAYERS" \
     --num-experts "$NUM_EXPERTS" \
     --top-k "$TOP_K" \
     --moe-layer-ids "$MOE_LAYER_IDS" \
-    --replication-factor 1 \
+    --recorder-count-divisor 1 \
     --observation-source "$OBSERVATION_SOURCE" \
     --expected-framework-version 0.5.14 \
     --image-reference "$IMAGE_REFERENCE" \
-    --image-sha256 "$IMAGE_SHA256" \
+    --image-archive-sha256 "$IMAGE_ARCHIVE_SHA256" \
     --collector-code-sha256 "$COLLECTOR_CODE_SHA256" \
     --server-args-json "$SERVER_ARGS_JSON" \
-    --routing-observation-method "${ROUTING_OBSERVATION_METHOD:-sglang_standard_topk}" \
+    --routing-observation-method "${ROUTING_OBSERVATION_METHOD:-sglang_native_routing_recorder_with_fused_replay}" \
     --tokens-per-shard "${TOKENS_PER_SHARD:-65536}" \
     --isl-min "${ISL_MIN:-128}" \
     --isl-max "${ISL_MAX:-4096}" \

@@ -22,6 +22,7 @@ set -Eeuo pipefail
 : "${IMAGE_SQSH:?submit with IMAGE_SQSH}"
 : "${IMAGE_REFERENCE:?submit with immutable IMAGE_REFERENCE}"
 : "${HF_CACHE:?submit with HF_CACHE}"
+: "${CHECKPOINT_QUANTIZATION:?submit with CHECKPOINT_QUANTIZATION}"
 
 if [[ ! "$IMAGE_REFERENCE" =~ @sha256:[0-9a-f]{64}$ ]]; then
     echo "IMAGE_REFERENCE must contain an immutable manifest digest" >&2
@@ -39,15 +40,16 @@ cp \
     "$SHARED_CODE/sglang_driver.py" \
     "$SHARED_CODE/model_config.py" \
     "$SHARED_CODE/response_capture.py" \
+    "$SHARED_CODE/code_digest.py" \
     "$SHARED_CODE/patch_sglang_hash_topk_capturer.py" \
-    "$SHARED_CODE/patch_sglang_flashinfer_recorder.py" \
+    "$SHARED_CODE/patch_sglang_flashinfer_replay_recorder.py" \
     "$SHARED_CODE/run_sglang_container.sh" \
     "$CAMPAIGN_CODE/"
 test -s "$IMAGE_SQSH"
 test -d "$HF_CACHE"
-IMAGE_SHA256="$(sha256sum "$IMAGE_SQSH" | awk '{print $1}')"
-COLLECTOR_CODE_SHA256="$(sha256sum "$CAMPAIGN_CODE"/* | sort -k2 | sha256sum | awk '{print $1}')"
-export IMAGE_REFERENCE IMAGE_SHA256 COLLECTOR_CODE_SHA256 SERVER_PORT
+IMAGE_ARCHIVE_SHA256="$(sha256sum "$IMAGE_SQSH" | awk '{print $1}')"
+COLLECTOR_CODE_SHA256="$(python3 "$CAMPAIGN_CODE/code_digest.py" "$CAMPAIGN_CODE")"
+export IMAGE_REFERENCE IMAGE_ARCHIVE_SHA256 COLLECTOR_CODE_SHA256 SERVER_PORT
 
 job_status=FAIL
 finalize_job() {

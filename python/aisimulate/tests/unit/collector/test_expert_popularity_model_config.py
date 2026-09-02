@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from collector.expert_popularity.code_digest import compute_tree_sha256
 from collector.expert_popularity.model_config import (
     resolve_routing_dimensions,
     validate_declared_routing_dimensions,
@@ -119,12 +120,12 @@ def test_unknown_layer_placement_fails_closed():
         )
 
 
-def test_multinode_job_normalizes_tp_replicated_recorder_counts():
+def test_multinode_job_normalizes_tp_duplicated_recorder_counts():
     job = (Path(__file__).parents[3] / "collector" / "expert_popularity" / "slurm" / "multinode.sbatch").read_text(
         encoding="utf-8"
     )
 
-    assert '--replication-factor "$TP_SIZE"' in job
+    assert '--recorder-count-divisor "$TP_SIZE"' in job
     assert ': "${CAMPAIGN_ROOT:?submit with CAMPAIGN_ROOT}"' in job
     assert ': "${IMAGE_SQSH:?submit with IMAGE_SQSH}"' in job
     assert ': "${HF_CACHE:?submit with HF_CACHE}"' in job
@@ -132,6 +133,7 @@ def test_multinode_job_normalizes_tp_replicated_recorder_counts():
     assert 'CANONICAL_MODEL_ID="${CANONICAL_MODEL_ID:-$MODEL_ID}"' in job
     assert '--checkpoint-model-id "$MODEL_ID"' in job
     assert '--checkpoint-model-revision "$MODEL_REVISION"' in job
+    assert '--checkpoint-quantization "$CHECKPOINT_QUANTIZATION"' in job
     assert "ROUTING_EQUIVALENCE_EVIDENCE_B64" in job
     assert '--routing-equivalence-evidence-json "$ROUTING_EQUIVALENCE_EVIDENCE_JSON"' in job
 
@@ -140,6 +142,24 @@ def test_multinode_job_normalizes_tp_replicated_recorder_counts():
     ).read_text(encoding="utf-8")
     assert '"SGLANG_DSV4_FP4_EXPERTS"' in node_runner
     assert '"SGLANG_OPT_FP8_WO_A_GEMM"' in node_runner
+    assert "MOE_RUNNER_BACKEND" not in node_runner
+    assert "--moe-runner-backend" not in node_runner
+
+
+def test_collector_code_digest_is_independent_of_root_path(tmp_path: Path):
+    left = tmp_path / "left"
+    right = tmp_path / "different" / "right"
+    left.mkdir()
+    right.mkdir(parents=True)
+    for root in (left, right):
+        (root / "nested").mkdir()
+        (root / "driver.py").write_text("driver\n", encoding="utf-8")
+        (root / "nested" / "runner.sh").write_text("runner\n", encoding="utf-8")
+
+    assert compute_tree_sha256(left) == compute_tree_sha256(right)
+
+    (right / "nested" / "runner.sh").write_text("changed\n", encoding="utf-8")
+    assert compute_tree_sha256(left) != compute_tree_sha256(right)
 
 
 def test_slurm_launchers_do_not_embed_site_identity():
