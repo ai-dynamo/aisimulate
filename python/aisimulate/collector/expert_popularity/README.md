@@ -88,7 +88,8 @@ On GB200/GB300, SGLang 0.5.14 may auto-select fused `flashinfer_trtllm` or
 ordinary `select_experts` hook. The collector does not switch those models to a
 routed backend. A fail-closed, source-hash-pinned bridge supplies FlashInfer's
 `routing_replay_out` only while recording and forwards the expert IDs emitted by
-that same fused BF16, FP8, or MXFP4 kernel to SGLang's recorder. FlashInfer is
+that same fused BF16, FP8, MXFP4, or compressed-tensors MXINT4 kernel to
+SGLang's recorder. FlashInfer is
 pinned to 0.6.13: 0.6.12 accepted the replay pointer but did not write it from
 the custom routing kernels used by Qwen and GPT-OSS; upstream fix
 `b54d28bea0639510d79c5ac58a60a4087585ff00` added those writes. The bridge
@@ -151,6 +152,13 @@ full sampled ISL, and the response capturer reconstructs all request-token
 routes from the request-to-token cache before validation. The exact resolved
 values remain in `server_args.json`; no run may infer or truncate the requested
 ISL to satisfy a backend limitation.
+
+For DeepSeek-V4, do not size `MAX_TOTAL_TOKENS` from the largest request alone:
+SGLang reserves only a fraction of that pool for sliding-window attention. The
+SWA sub-pool reported in the startup log must cover the longest sequential
+request. For example, an 8192-token total pool produced only 768 SWA slots in
+the pinned runtime and left a 3102-token request permanently pending; a 65536-
+token total pool covers the 4096-token campaign range.
 
 ## Repacked checkpoint provenance
 

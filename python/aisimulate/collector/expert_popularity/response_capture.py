@@ -118,6 +118,13 @@ def normalize_recorder_counts(
         raise RuntimeError("MoE logical_count is not exactly divisible by the recorder count divisor")
     normalized = np.zeros(aggregate.shape, dtype=np.int64)
     normalized[moe_layer_ids] = (moe_counts // recorder_count_divisor).astype(np.int64)
+    for layer_id in moe_layer_ids:
+        observed_experts = int(np.count_nonzero(normalized[layer_id]))
+        if observed_experts < top_k:
+            raise RuntimeError(
+                f"layer {layer_id} observed only {observed_experts} distinct experts; "
+                f"top-k routing requires at least {top_k}"
+            )
     return normalized
 
 
@@ -170,5 +177,11 @@ def aggregate_routed_experts(
         if int(counts[layer_id].sum()) != expected:
             raise RuntimeError(
                 f"layer {layer_id} response-capture conservation failed: {int(counts[layer_id].sum())} != {expected}"
+            )
+        observed_experts = int(np.count_nonzero(counts[layer_id]))
+        if observed_experts < top_k:
+            raise RuntimeError(
+                f"layer {layer_id} observed only {observed_experts} distinct experts; "
+                f"top-k routing requires at least {top_k}"
             )
     return counts

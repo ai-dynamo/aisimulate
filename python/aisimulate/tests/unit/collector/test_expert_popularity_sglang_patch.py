@@ -7,6 +7,8 @@ import pytest
 
 from collector.expert_popularity.patch_sglang_flashinfer_replay_recorder import (
     _BF16_CALL_PATCHED,
+    _COMPRESSED_MXINT4_CALL_TAIL_PATCHED,
+    _COMPRESSED_MXINT4_SETUP_PATCHED,
     _MXFP4_CALL_TAIL_PATCHED,
     _MXFP4_SETUP_PATCHED,
     FLASHINFER_DISTRIBUTIONS,
@@ -52,6 +54,15 @@ def test_flashinfer_replay_bridge_observes_mxfp4_internal_routing_without_rerout
     assert "recorder.on_select_experts(topk_ids=routing_replay_out)" in _MXFP4_CALL_TAIL_PATCHED
     assert "trtllm_fp4_block_scale_routed_moe" not in _MXFP4_CALL_TAIL_PATCHED
     assert "to_standard" not in _MXFP4_CALL_TAIL_PATCHED
+
+
+def test_flashinfer_replay_bridge_observes_compressed_mxint4_internal_routing_without_rerouting():
+    assert "routing_replay_out = torch.full" in _COMPRESSED_MXINT4_SETUP_PATCHED
+    assert "-1," in _COMPRESSED_MXINT4_SETUP_PATCHED
+    assert "routing_replay_out=routing_replay_out" in _COMPRESSED_MXINT4_CALL_TAIL_PATCHED
+    assert "recorder.on_select_experts(topk_ids=routing_replay_out)" in _COMPRESSED_MXINT4_CALL_TAIL_PATCHED
+    assert "trtllm_mxint4_block_scale_moe" not in _COMPRESSED_MXINT4_CALL_TAIL_PATCHED
+    assert "to_standard" not in _COMPRESSED_MXINT4_CALL_TAIL_PATCHED
 
 
 def test_flashinfer_replay_bridge_observes_bf16_internal_routing_without_rerouting():

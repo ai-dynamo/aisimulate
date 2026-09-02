@@ -87,6 +87,32 @@ def test_aggregate_rejects_invalid_expert_ids():
         )
 
 
+def test_aggregate_rejects_constant_capture_that_only_passes_conservation():
+    routed = np.zeros((2, 1, 2), dtype=np.int32)
+
+    with pytest.raises(RuntimeError, match="observed only 1 distinct experts"):
+        aggregate_routed_experts(
+            routed,
+            num_layers=1,
+            num_experts=4,
+            top_k=2,
+            moe_layer_ids=[0],
+        )
+
+
+def test_recorder_normalization_rejects_degenerate_expert_coverage():
+    aggregate = np.asarray([[8, 0, 0, 0]], dtype=np.int64)
+
+    with pytest.raises(RuntimeError, match="observed only 1 distinct experts"):
+        normalize_recorder_counts(
+            aggregate,
+            total_tokens=2,
+            top_k=2,
+            recorder_count_divisor=2,
+            moe_layer_ids=[0],
+        )
+
+
 def test_repeat_stability_reports_exact_and_aggregate_differences():
     baseline = np.asarray([[20, 10, 2], [4, 8, 20]], dtype=np.int64)
     candidate = np.asarray([[19, 11, 2], [4, 9, 19]], dtype=np.int64)
