@@ -65,6 +65,65 @@ _RUNNER_PATCHED = """    hidden_states = dispatch_output.hidden_states
     if TopKOutputChecker.format_is_bypassed(topk_output):
 """
 
+_RUNNER_IMPORT_ORIGINAL = "from sglang.srt.environ import envs\n"
+_RUNNER_IMPORT_PATCHED = """from sglang.srt.environ import envs
+from sglang.srt.eplb.expert_distribution import (
+    get_global_expert_distribution_recorder,
+)
+"""
+
+_BF16_CALL_ORIGINAL = """            # Call the fused kernel
+            final_hidden_states = trtllm_bf16_moe(
+                routing_logits=topk_output.router_logits,
+                routing_bias=topk_config.correction_bias,
+                hidden_states=hidden_states,
+                gemm1_weights=quant_info.gemm1_weights,
+                gemm2_weights=quant_info.gemm2_weights,
+                num_experts=quant_info.global_num_experts,
+                top_k=topk_config.top_k,
+                n_group=topk_config.num_expert_group,
+                topk_group=topk_config.topk_group,
+                intermediate_size=runner_config.intermediate_size_per_partition,
+                local_expert_offset=quant_info.local_expert_offset,
+                local_num_experts=runner_config.num_local_experts,
+                routing_method_type=runner_config.routing_method_type,
+                routed_scaling_factor=runner_config.routed_scaling_factor,
+                tune_max_num_tokens=next_power_of_2(hidden_states.shape[0]),
+                activation_type=activation_type,
+            )
+"""
+_BF16_CALL_PATCHED = """            # Call the same fused kernel and request only its selected IDs.
+            recorder = get_global_expert_distribution_recorder()
+            routing_replay_out = None
+            if recorder.recording:
+                routing_replay_out = torch.empty(
+                    (hidden_states.shape[0], topk_config.top_k),
+                    dtype=torch.int16,
+                    device=hidden_states.device,
+                )
+            final_hidden_states = trtllm_bf16_moe(
+                routing_logits=topk_output.router_logits,
+                routing_bias=topk_config.correction_bias,
+                hidden_states=hidden_states,
+                gemm1_weights=quant_info.gemm1_weights,
+                gemm2_weights=quant_info.gemm2_weights,
+                num_experts=quant_info.global_num_experts,
+                top_k=topk_config.top_k,
+                n_group=topk_config.num_expert_group,
+                topk_group=topk_config.topk_group,
+                intermediate_size=runner_config.intermediate_size_per_partition,
+                local_expert_offset=quant_info.local_expert_offset,
+                local_num_experts=runner_config.num_local_experts,
+                routing_method_type=runner_config.routing_method_type,
+                routed_scaling_factor=runner_config.routed_scaling_factor,
+                tune_max_num_tokens=next_power_of_2(hidden_states.shape[0]),
+                activation_type=activation_type,
+                routing_replay_out=routing_replay_out,
+            )
+            if routing_replay_out is not None:
+                recorder.on_select_experts(topk_ids=routing_replay_out)
+"""
+
 _MXFP4_IMPORT_ORIGINAL = "from sglang.srt.environ import envs\n"
 _MXFP4_IMPORT_PATCHED = """from sglang.srt.environ import envs
 from sglang.srt.eplb.expert_distribution import (
@@ -157,6 +216,10 @@ def apply_bridge(report_path: Path) -> dict:
         raise RuntimeError("expected fused FP8 MoE return was not uniquely present")
     if runner_decoded.count(_RUNNER_ORIGINAL) != 1:
         raise RuntimeError("expected fused FP8 MoE runner dispatch block was not uniquely present")
+    if runner_decoded.count(_RUNNER_IMPORT_ORIGINAL) != 1:
+        raise RuntimeError("expected fused MoE runner env import was not uniquely present")
+    if runner_decoded.count(_BF16_CALL_ORIGINAL) != 1:
+        raise RuntimeError("expected fused BF16 MoE call was not uniquely present")
     if mxfp4_decoded.count(_MXFP4_IMPORT_ORIGINAL) != 1:
         raise RuntimeError("expected MXFP4 env import was not uniquely present")
     if mxfp4_decoded.count(_MXFP4_SETUP_ORIGINAL) != 1:
@@ -165,7 +228,9 @@ def apply_bridge(report_path: Path) -> dict:
         raise RuntimeError("expected MXFP4 fused routing call tail was not uniquely present")
     wrapper_patched = wrapper_decoded.replace(_IMPORT_ORIGINAL, _IMPORT_PATCHED, 1)
     wrapper_patched = wrapper_patched.replace(_RETURN_ORIGINAL, _RETURN_PATCHED, 1).encode("utf-8")
-    runner_patched = runner_decoded.replace(_RUNNER_ORIGINAL, _RUNNER_PATCHED, 1).encode("utf-8")
+    runner_patched = runner_decoded.replace(_RUNNER_IMPORT_ORIGINAL, _RUNNER_IMPORT_PATCHED, 1)
+    runner_patched = runner_patched.replace(_RUNNER_ORIGINAL, _RUNNER_PATCHED, 1)
+    runner_patched = runner_patched.replace(_BF16_CALL_ORIGINAL, _BF16_CALL_PATCHED, 1).encode("utf-8")
     mxfp4_patched = mxfp4_decoded.replace(_MXFP4_IMPORT_ORIGINAL, _MXFP4_IMPORT_PATCHED, 1)
     mxfp4_patched = mxfp4_patched.replace(_MXFP4_SETUP_ORIGINAL, _MXFP4_SETUP_PATCHED, 1)
     mxfp4_patched = mxfp4_patched.replace(_MXFP4_CALL_TAIL_ORIGINAL, _MXFP4_CALL_TAIL_PATCHED, 1).encode("utf-8")
@@ -183,7 +248,7 @@ def apply_bridge(report_path: Path) -> dict:
         "status": "APPLIED",
         "framework": "sglang",
         "framework_version": installed_version,
-        "observation": "flashinfer_fp8_and_mxfp4_fused_moe_routing_replay_out",
+        "observation": "flashinfer_bf16_fp8_and_mxfp4_fused_moe_routing_replay_out",
         "source_files": {
             "flashinfer_trtllm_moe.py": {
                 "path": str(wrapper_path),

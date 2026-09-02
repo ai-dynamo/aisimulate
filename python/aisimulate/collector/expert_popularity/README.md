@@ -73,12 +73,12 @@ model.
 | `PUBLISHED` | completed slice | `Qwen/Qwen3-30B-A3B` | `Qwen3MoeForCausalLM` | revision `ad44e777bcd18fa416d9da3bd8f70d33ebb85d39` |
 | `PUBLISHED` | completed slice | `openai/gpt-oss-20b` | `GptOssForCausalLM` | revision `6cee5e81ee83917806bbde320786a8fb61efebee` |
 
-On GB200, SGLang 0.5.14 may auto-select fused `flashinfer_trtllm` or
+On GB200/GB300, SGLang 0.5.14 may auto-select fused `flashinfer_trtllm` or
 `flashinfer_mxfp4` backends whose internal routing does not invoke the recorder's
 ordinary `select_experts` hook. The collector does not switch those models to a
 routed backend. A fail-closed, source-hash-pinned bridge supplies FlashInfer's
 `routing_replay_out` only while recording and forwards the expert IDs emitted by
-that same fused kernel to SGLang's recorder. The original `FromLogits` serving
+that same fused BF16, FP8, or MXFP4 kernel to SGLang's recorder. The original `FromLogits` serving
 routing and MoE backend remain unchanged. DeepSeek-V4 HashTopK layers retain
 their native standard/routed path while learned-router layers use fused replay.
 No result is published until conservation and repeatability gates pass.
