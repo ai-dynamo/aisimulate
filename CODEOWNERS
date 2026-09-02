@@ -71,6 +71,7 @@
 /Cargo.lock                                          @ai-dynamo/aisimulate-infra-codeowners
 /Cargo.toml                                          @ai-dynamo/aisimulate-infra-codeowners
 /pytest.ini                                          @ai-dynamo/aisimulate-infra-codeowners
+/.dockerignore                                       @ai-dynamo/aisimulate-infra-codeowners
 /crates/core/deny.toml                               @ai-dynamo/aisimulate-infra-codeowners
 /crates/core/Cargo.toml                              @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_aic_sync.py                              @ai-dynamo/aisimulate-infra-codeowners

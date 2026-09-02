@@ -59,6 +59,7 @@ areas:
     github_team: "@ai-dynamo/aisimulate-infra-codeowners"
     path_globs:
       - .github/
+      - .dockerignore
       - .gitignore
       - CODEOWNERS
       - Cargo.lock
