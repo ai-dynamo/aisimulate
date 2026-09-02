@@ -647,9 +647,10 @@ jobs:
           # Variable names follow the release-automation root pipeline's
           # contract (PROJECT routes to projects/aisimulate.yml there).
           # The response is discarded: it names internal pipeline URLs.
+          # ref is TEMPORARY: revert to main once the onboarding MR merges.
           curl -q --fail --silent --show-error --retry 3 --output /dev/null \
             -F "token=${GITLAB_TRIGGER_TOKEN}" \
-            -F "ref=main" \
+            -F "ref=pvijayakrish/onboard-aisimulate-nightly" \
             -F "variables[PROJECT]=aisimulate" \
             -F "variables[PIPELINE_TYPE]=security" \
             -F "variables[RELEASE_TYPE]=nightly" \
