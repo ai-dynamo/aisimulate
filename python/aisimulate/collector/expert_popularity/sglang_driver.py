@@ -469,17 +469,24 @@ def main() -> None:
         )
         if checkpoint_differs:
             expected_canonical = {"id": args.model_id, "revision": args.model_revision}
-            expected_checkpoint = {
+            expected_checkpoint_identity = {
                 "id": checkpoint_model_id,
                 "revision": checkpoint_model_revision,
-                "quantization": args.checkpoint_quantization,
             }
             if routing_equivalence_evidence.get("status") != "PASS":
                 raise ValueError("a passing routing-equivalence report is required for a non-canonical checkpoint")
             if routing_equivalence_evidence.get("canonical_model") != expected_canonical:
                 raise ValueError("routing-equivalence report has the wrong canonical model identity")
-            if routing_equivalence_evidence.get("collection_checkpoint") != expected_checkpoint:
+            evidence_checkpoint = routing_equivalence_evidence.get("collection_checkpoint")
+            if (
+                not isinstance(evidence_checkpoint, dict)
+                or {name: evidence_checkpoint.get(name) for name in expected_checkpoint_identity}
+                != expected_checkpoint_identity
+            ):
                 raise ValueError("routing-equivalence report has the wrong collection checkpoint identity")
+            evidence_quantization = evidence_checkpoint.get("quantization")
+            if evidence_quantization is not None and evidence_quantization != args.checkpoint_quantization:
+                raise ValueError("routing-equivalence report has the wrong checkpoint quantization")
             required_environment = routing_equivalence_evidence.get("required_runtime_environment")
             if not isinstance(required_environment, dict):
                 raise ValueError("routing-equivalence report is missing required runtime environment")
