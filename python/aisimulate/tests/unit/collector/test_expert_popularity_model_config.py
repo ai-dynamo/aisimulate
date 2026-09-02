@@ -125,7 +125,10 @@ def test_multinode_job_normalizes_tp_duplicated_recorder_counts():
         encoding="utf-8"
     )
 
-    assert '--recorder-count-divisor "$TP_SIZE"' in job
+    assert 'RECORDER_COUNT_DIVISOR="$TP_SIZE"' in job
+    assert 'if [[ "$OBSERVATION_SOURCE" == "response_routed_experts" ]]' in job
+    assert "RECORDER_COUNT_DIVISOR=1" in job
+    assert '--recorder-count-divisor "$RECORDER_COUNT_DIVISOR"' in job
     assert ': "${CAMPAIGN_ROOT:?submit with CAMPAIGN_ROOT}"' in job
     assert ': "${IMAGE_SQSH:?submit with IMAGE_SQSH}"' in job
     assert ': "${HF_CACHE:?submit with HF_CACHE}"' in job

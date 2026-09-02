@@ -166,6 +166,12 @@ case "${VERIFY_OBSERVER_TRANSPARENCY:-0}" in
     *) echo "VERIFY_OBSERVER_TRANSPARENCY must be 0 or 1" >&2; exit 23 ;;
 esac
 
+OBSERVATION_SOURCE="${OBSERVATION_SOURCE:-recorder}"
+RECORDER_COUNT_DIVISOR="$TP_SIZE"
+if [[ "$OBSERVATION_SOURCE" == "response_routed_experts" ]]; then
+    RECORDER_COUNT_DIVISOR=1
+fi
+
 srun \
     --overlap \
     --nodes=1 \
@@ -189,8 +195,8 @@ srun \
         --num-experts "$NUM_EXPERTS" \
         --top-k "$TOP_K" \
         --moe-layer-ids "$MOE_LAYER_IDS" \
-        --recorder-count-divisor "$TP_SIZE" \
-        --observation-source "${OBSERVATION_SOURCE:-recorder}" \
+        --recorder-count-divisor "$RECORDER_COUNT_DIVISOR" \
+        --observation-source "$OBSERVATION_SOURCE" \
         --expected-framework-version 0.5.14 \
         --image-reference "$IMAGE_REFERENCE" \
         --image-archive-sha256 "$IMAGE_ARCHIVE_SHA256" \
