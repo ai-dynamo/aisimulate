@@ -160,10 +160,6 @@ jobs:
       - run: python -m pip install 'maturin>=1.12,<2'
       - run: python -m maturin build --release --out ../../dist
         working-directory: python/aisimulate
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: aisimulate-wheel-${{ matrix.arch }}
-          path: dist/*.whl
 
   application-tests:
     name: Application Tests (${{ matrix.arch }})
