@@ -41,6 +41,9 @@ on:
   schedule:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
+  # TEMPORARY: remove before merge.
+  push:
+    branches: ["pull-request/59"]
 
 # Read-only default token; only the guard job adds actions:read.
 permissions:
@@ -491,10 +494,15 @@ jobs:
   stage-artifactory:
     name: Stage to Artifactory
     needs: [build-artifacts, smoke-test]
-    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+    # TEMPORARY: drop the push arm before merge.
+    if: >-
+      (github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'push'
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
     environment: automated-release
+    outputs:
+      wheel-version: ${{ steps.assemble.outputs.wheel-version }}
     container:
       # Keep in sync with the amd64 build-matrix image.
       # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
@@ -527,6 +535,7 @@ jobs:
           path: ${{ runner.temp }}/stage/arm64
 
       - name: Verify checksums and assemble upload set
+        id: assemble
         env:
           GH_RUN_ID: ${{ github.run_id }}
         run: |
@@ -544,6 +553,11 @@ jobs:
           [ "${#wheels[@]}" -eq 2 ] || { echo "::error::expected 2 wheels"; exit 1; }
           crates=("${STAGE_DIR}"/upload/*.crate)
           [ "${#crates[@]}" -eq 1 ] || { echo "::error::expected 1 crate"; exit 1; }
+          # Exported for the GitLab security pipeline, which locates the
+          # staged wheels by version + run id.
+          wheel="$(basename "${wheels[0]}")"
+          version="${wheel#aisimulate-}"
+          echo "wheel-version=${version%%-*}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload to Artifactory
         env:
@@ -604,3 +618,62 @@ jobs:
             ls -l
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  # Security scanning runs in the internal GitLab release-automation
+  # pipeline, the same split dynamo uses: GitHub stages the artifacts, then
+  # fires the internal pipeline that scans them. Scan findings stay inside
+  # GitLab and never appear in these logs. The job is variable-gated so
+  # nightlies stay green until the GitLab pipeline and the runner-group
+  # access exist; flip GITLAB_SECURITY_TRIGGER_ENABLED to activate.
+  trigger-gitlab-security:
+    name: Trigger GitLab security pipeline
+    needs: stage-artifactory
+    # TEMPORARY: drop the push arm before merge.
+    if: >-
+      ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'push') &&
+      vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
+    # The gitlab_ci_runners group (dynamo's choice) is not shared with this
+    # repo; the repo runners reach internal endpoints, so trigger from them.
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 10
+    environment: automated-release
+    container:
+      # Keep in sync with the amd64 build-matrix image.
+      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+      env:
+        HOME: /__w/aisimulate/aisimulate
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Trigger internal security scan
+        env:
+          GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
+          GITLAB_PIPELINE_URL: ${{ secrets.GITLAB_PIPELINE_URL }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_SHA: ${{ github.sha }}
+          WHEEL_VERSION: ${{ needs.stage-artifactory.outputs.wheel-version }}
+        run: |
+          set -euo pipefail
+          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL WHEEL_VERSION; do
+            [ -n "${!name}" ] || { echo "::error::${name} is not available"; exit 1; }
+          done
+          # Variable names follow the release-automation root pipeline's
+          # contract (PROJECT routes to projects/aisimulate.yml there).
+          # The response is discarded: it names internal pipeline URLs.
+          # Preflight requires a dated NIGHTLY_TAG for nightly runs.
+          nightly_tag="nightly-${WHEEL_VERSION##*.dev}-${GH_SHA:0:7}"
+          # ref is TEMPORARY: revert to main once the onboarding MR merges.
+          curl -q --fail --silent --show-error --retry 3 --output /dev/null \
+            -F "token=${GITLAB_TRIGGER_TOKEN}" \
+            -F "ref=pvijayakrish/onboard-aisimulate-nightly" \
+            -F "variables[PROJECT]=aisimulate" \
+            -F "variables[PIPELINE_TYPE]=security" \
+            -F "variables[RELEASE_TYPE]=nightly" \
+            -F "variables[NIGHTLY_TAG]=${nightly_tag}" \
+            -F "variables[WHEEL_VERSION]=${WHEEL_VERSION}" \
+            -F "variables[GITHUB_RUN_ID]=${GH_RUN_ID}" \
+            -F "variables[COMMIT_SHA]=${GH_SHA}" \
+            "${GITLAB_PIPELINE_URL}"
+          echo "internal security pipeline triggered"
