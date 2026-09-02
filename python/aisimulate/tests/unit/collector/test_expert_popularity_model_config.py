@@ -139,6 +139,8 @@ def test_multinode_job_normalizes_tp_duplicated_recorder_counts():
     assert '--checkpoint-quantization "$CHECKPOINT_QUANTIZATION"' in job
     assert "ROUTING_EQUIVALENCE_EVIDENCE_B64" in job
     assert '--routing-equivalence-evidence-json "$ROUTING_EQUIVALENCE_EVIDENCE_JSON"' in job
+    assert 'if [[ -e "$RUN_DIR" ]]' in job
+    assert "refusing to reuse existing raw-artifact directory" in job
 
     node_runner = (
         Path(__file__).parents[3] / "collector" / "expert_popularity" / "slurm" / "run_sglang_multinode_node.sh"
@@ -200,3 +202,7 @@ def test_slurm_launchers_do_not_embed_site_identity():
     for path in launchers:
         text = path.read_text(encoding="utf-8")
         assert not [value for value in forbidden if value in text], path
+
+    single_gpu = (slurm_dir / "single_gpu.sbatch").read_text(encoding="utf-8")
+    assert 'if [[ -e "$RUN_DIR" ]]' in single_gpu
+    assert "refusing to reuse existing raw-artifact directory" in single_gpu

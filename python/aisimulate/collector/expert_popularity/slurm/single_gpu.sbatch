@@ -34,6 +34,10 @@ RUN_DIR="$CAMPAIGN_ROOT/$SLURM_JOB_ID-$MODEL_SLUG"
 SERVER_PORT="${SERVER_PORT_OVERRIDE:-$((20000 + SLURM_JOB_ID % 10000))}"
 
 CAMPAIGN_CODE="$RUN_DIR/campaign"
+if [[ -e "$RUN_DIR" ]]; then
+    echo "refusing to reuse existing raw-artifact directory: $RUN_DIR" >&2
+    exit 19
+fi
 mkdir -p "$CAMPAIGN_CODE"
 cp "$0" "$RUN_DIR/job.sbatch"
 cp \

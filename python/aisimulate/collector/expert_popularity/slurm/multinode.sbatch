@@ -45,6 +45,10 @@ fi
 TP_SIZE=$((NNODES * GPUS_PER_NODE))
 
 CAMPAIGN_CODE="$RUN_DIR/campaign"
+if [[ -e "$RUN_DIR" ]]; then
+    echo "refusing to reuse existing raw-artifact directory: $RUN_DIR" >&2
+    exit 19
+fi
 mkdir -p "$CAMPAIGN_CODE"
 cp "$0" "$RUN_DIR/job.sbatch"
 cp \
