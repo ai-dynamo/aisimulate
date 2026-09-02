@@ -20,9 +20,10 @@ HEADER_LINES = 15
 SOURCE_SUFFIXES = {
     ".env",
     ".j2",
-    ".patch",
+    ".js",
     ".ps1",
     ".py",
+    ".pyi",
     ".rs",
     ".rule",
     ".sh",
@@ -37,15 +38,30 @@ COPYRIGHT_MARKER = re.compile(
 def is_source(path: Path) -> bool:
     """Return whether the tracked path is subject to the header policy."""
 
-    return path.suffix in SOURCE_SUFFIXES or path.name.startswith("Dockerfile")
+    if path.suffix == ".patch":
+        # Third-party patch files are byte-addressed provenance inputs. Their
+        # attribution belongs in THIRD_PARTY_NOTICES.md; changing the patch
+        # preamble invalidates recorded collection and overlay hashes.
+        return False
+    if path.suffix in SOURCE_SUFFIXES or path.name.startswith("Dockerfile"):
+        return True
+    try:
+        with path.open("rb") as handle:
+            return handle.read(2) == b"#!"
+    except OSError:
+        return False
 
 
 def main() -> int:
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z"],
-        capture_output=True,
-        check=True,
-    ).stdout.decode(errors="surrogateescape").split("\0")
+    tracked = (
+        subprocess.run(
+            ["git", "ls-files", "-z"],
+            capture_output=True,
+            check=True,
+        )
+        .stdout.decode(errors="surrogateescape")
+        .split("\0")
+    )
     sources = [Path(name) for name in tracked if name and is_source(Path(name))]
 
     missing: list[str] = []

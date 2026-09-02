@@ -10,6 +10,9 @@ These notices apply only to the identified third-party material. Dependencies
 installed separately by package managers are governed by the license material
 distributed with those packages.
 
+Unless otherwise stated, AISimulate file paths in this document are relative
+to `python/aisimulate/` in the repository source tree.
+
 ## vLLM
 
 The following files are derived from vLLM's attention test utilities at tag
