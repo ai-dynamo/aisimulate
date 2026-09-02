@@ -55,7 +55,7 @@ routing:
   - 42
   num_layers: 43
   num_routed_experts: 256
-  recorder_count_divisor: 1
+  recorder_count_divisor: 4
   top_k: 6
 measurement:
   phase: prefill
@@ -102,81 +102,81 @@ validation:
   stability:
     comparisons:
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.00042708543317756083
-      mean_layer_pearson: 0.9850323785921524
+      mean_layer_jensen_shannon_divergence_bits: 0.0004334855434132418
+      mean_layer_pearson: 0.985031692260461
       right_shard: 1
-      top1_expert_match_rate: 0.9069767441860465
-    - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.0003979094753720037
-      mean_layer_pearson: 0.985621400031038
-      right_shard: 2
       top1_expert_match_rate: 0.9302325581395349
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.0006105045635209709
-      mean_layer_pearson: 0.9864934232156825
-      right_shard: 3
+      mean_layer_jensen_shannon_divergence_bits: 0.0003984296072067474
+      mean_layer_pearson: 0.9856284248709333
+      right_shard: 2
       top1_expert_match_rate: 0.9069767441860465
+    - left_shard: 0
+      mean_layer_jensen_shannon_divergence_bits: 0.0006157609452761245
+      mean_layer_pearson: 0.9864831631752867
+      right_shard: 3
+      top1_expert_match_rate: 0.8837209302325582
     - left_shard: 1
-      mean_layer_jensen_shannon_divergence_bits: 0.00045568179236571123
-      mean_layer_pearson: 0.9848033953726589
+      mean_layer_jensen_shannon_divergence_bits: 0.00046368220147649373
+      mean_layer_pearson: 0.9847985438470057
       right_shard: 2
       top1_expert_match_rate: 0.9069767441860465
     - left_shard: 1
-      mean_layer_jensen_shannon_divergence_bits: 0.0005575375175931483
-      mean_layer_pearson: 0.985782303526215
+      mean_layer_jensen_shannon_divergence_bits: 0.0005658779890214631
+      mean_layer_pearson: 0.9857682501193389
       right_shard: 3
       top1_expert_match_rate: 0.8837209302325582
     - left_shard: 2
-      mean_layer_jensen_shannon_divergence_bits: 0.0005434046608362046
-      mean_layer_pearson: 0.985633876847481
+      mean_layer_jensen_shannon_divergence_bits: 0.0005530898643065346
+      mean_layer_pearson: 0.985612494665276
       right_shard: 3
       top1_expert_match_rate: 0.9069767441860465
-    maximum_mean_layer_jensen_shannon_divergence_bits: 0.0006105045635209709
-    minimum_mean_layer_pearson: 0.9848033953726589
+    maximum_mean_layer_jensen_shannon_divergence_bits: 0.0006157609452761245
+    minimum_mean_layer_pearson: 0.9847985438470057
   repeat_stability:
     all_counts_exact: false
     comparisons:
     - baseline_repeat: 0
       candidate_repeat: 1
       counts_exact: false
-      mean_layer_jensen_shannon_divergence_bits: 1.63985117842174e-05
-      mean_layer_pearson: 0.999995600528985
+      mean_layer_jensen_shannon_divergence_bits: 2.4799436299899818e-05
+      mean_layer_pearson: 0.9999932620742362
       shard_index: 0
-      top1_expert_match_rate: 0.9767441860465116
+      top1_expert_match_rate: 1.0
     - baseline_repeat: 0
       candidate_repeat: 1
       counts_exact: false
-      mean_layer_jensen_shannon_divergence_bits: 1.9596900098547864e-05
-      mean_layer_pearson: 0.9999942323528821
+      mean_layer_jensen_shannon_divergence_bits: 1.914962184527703e-05
+      mean_layer_pearson: 0.9999942068229702
       shard_index: 1
       top1_expert_match_rate: 1.0
     - baseline_repeat: 0
       candidate_repeat: 1
       counts_exact: false
-      mean_layer_jensen_shannon_divergence_bits: 1.832527743903751e-05
-      mean_layer_pearson: 0.9999948095567184
+      mean_layer_jensen_shannon_divergence_bits: 2.1787675247309958e-05
+      mean_layer_pearson: 0.9999933075968362
       shard_index: 2
       top1_expert_match_rate: 1.0
     - baseline_repeat: 0
       candidate_repeat: 1
       counts_exact: false
-      mean_layer_jensen_shannon_divergence_bits: 1.7835601287395577e-05
-      mean_layer_pearson: 0.9999946438852475
+      mean_layer_jensen_shannon_divergence_bits: 1.590122555025225e-05
+      mean_layer_pearson: 0.9999950929946257
       shard_index: 3
       top1_expert_match_rate: 1.0
-    maximum_mean_layer_jensen_shannon_divergence_bits: 1.9596900098547864e-05
-    minimum_mean_layer_pearson: 0.9999942323528821
+    maximum_mean_layer_jensen_shannon_divergence_bits: 2.4799436299899818e-05
+    minimum_mean_layer_pearson: 0.9999932620742362
 provenance:
-  collection_checkpoint:
-    id: sgl-project/DeepSeek-V4-Flash-FP8
-    quantization: fp8_block
-    revision: ae01d80c06cdfe30581edfd0e1c5449dc7ed7f17
-  observation_source: response_routed_experts
-  routing_observation_method: sglang_native_dsv4_response_routed_experts_hash_topk_guarded
-  recorder_count_divisor: 1
-  collector_code_sha256: d2587f0fbfff0028a7c49bc498a0691055f3330c44efc6e4b13749a75cf8950b
+  routing_observation_method: sglang_native_dsv4_hash_topk_and_fused_learned_routing_replay
+  collector_code_sha256: dc5f4ea287d2fbfb7756dc483451909022b78c46c836b6448f89e18623896f39
+  image_reference: local-sqsh://sglang-v0.5.14-cu130-flashinfer-v0.6.13-aarch64@sha256:a617177a12f59014b820179cb7c301be9dd056d628623b3e36f02347e8704413
+  recorder_count_divisor: 4
+  framework_components:
+    flashinfer-cubin: 0.6.13
+    flashinfer-jit-cache: 0.6.13+cu130
+    flashinfer-python: 0.6.13
   framework: sglang
-  image_reference: local-sqsh://sglang-v0.5.14-cu130-flashinfer-v0.6.13-aarch64@sha256:d25a52f7fba78f198c7ff70fe3d80510dffb99b34d2758af52c5af02f4e6d1a9
+  image_archive_sha256: a617177a12f59014b820179cb7c301be9dd056d628623b3e36f02347e8704413
   routing_equivalence_evidence:
     canonical_model:
       id: deepseek-ai/DeepSeek-V4-Flash
@@ -285,16 +285,16 @@ provenance:
       provenance claim are verified.'
     status: PASS
   framework_version: 0.5.14
-  image_archive_sha256: d25a52f7fba78f198c7ff70fe3d80510dffb99b34d2758af52c5af02f4e6d1a9
-  framework_components:
-    flashinfer-cubin: 0.6.13
-    flashinfer-jit-cache: 0.6.13+cu130
-    flashinfer-python: 0.6.13
-  collection_result_sha256: a8235a8f6b455151a4f08c8218a58b5b9a82a9fd8d10a7864fd28bf3fbb59353
-  normalized_counts_sha256: 65bd9e6d08abe768c7168c4a8f60614fa272e32a6264db70fc54bb52378fb09f
-  published_at: '2026-09-02T19:34:45.444235+00:00'
+  observation_source: recorder
+  collection_checkpoint:
+    id: sgl-project/DeepSeek-V4-Flash-FP8
+    quantization: fp8_block
+    revision: ae01d80c06cdfe30581edfd0e1c5449dc7ed7f17
+  collection_result_sha256: ddc0ac58c660eab8996335c4f025bb5fb42ccd2288a3e8700179934b45c93940
+  normalized_counts_sha256: 6d308854c51bd35a0de0a7e35fd950ab939e0a87db3b013c185186e1cdf48197
+  published_at: '2026-09-02T21:55:29.075120+00:00'
 files:
   parquet:
     name: model_expert_popularity.parquet
-    sha256: 9569aaa1e0c910e700a62dfdbcc7364250386dda6ccdbd7ba48bc4fa8e030695
+    sha256: b17492ce6213b5dea2f37d18c3d7704e6392d3b97bcac37e2056da8d6165262d
     rows: 11008
