@@ -78,10 +78,16 @@ On GB200/GB300, SGLang 0.5.14 may auto-select fused `flashinfer_trtllm` or
 ordinary `select_experts` hook. The collector does not switch those models to a
 routed backend. A fail-closed, source-hash-pinned bridge supplies FlashInfer's
 `routing_replay_out` only while recording and forwards the expert IDs emitted by
-that same fused BF16, FP8, or MXFP4 kernel to SGLang's recorder. The original `FromLogits` serving
-routing and MoE backend remain unchanged. DeepSeek-V4 HashTopK layers retain
-their native standard/routed path while learned-router layers use fused replay.
-No result is published until conservation and repeatability gates pass.
+that same fused BF16, FP8, or MXFP4 kernel to SGLang's recorder. FlashInfer is
+pinned to 0.6.13: 0.6.12 accepted the replay pointer but did not write it from
+the custom routing kernels used by Qwen and GPT-OSS; upstream fix
+`b54d28bea0639510d79c5ac58a60a4087585ff00` added those writes. The bridge
+rejects any other FlashInfer version instead of silently publishing zero or
+uninitialized counts. The original `FromLogits` serving routing and MoE backend
+remain unchanged. DeepSeek-V4 HashTopK layers retain their native
+standard/routed path while learned-router layers use fused replay. No result is
+published until observer transparency, conservation, and repeatability gates
+pass.
 
 Kimi K3 remains a later campaign: its completed TP16 POC required a runtime source overlay.
 Production publication requires a digest-pinned image containing the integration and strict

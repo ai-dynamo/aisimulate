@@ -20,6 +20,13 @@ import json
 from pathlib import Path
 
 SGLANG_VERSION = "0.5.14"
+FLASHINFER_VERSION = "0.6.13"
+FLASHINFER_DISTRIBUTIONS = {
+    "flashinfer-python": FLASHINFER_VERSION,
+    "flashinfer-cubin": FLASHINFER_VERSION,
+    "flashinfer-jit-cache": f"{FLASHINFER_VERSION}+cu130",
+}
+FLASHINFER_ROUTING_REPLAY_FIX = "b54d28bea0639510d79c5ac58a60a4087585ff00"
 EXPECTED_SOURCE_SHA256 = "067753d34e2b258939508c98e65b5ac5883217245b78563b0a7e759310b6e3b5"
 EXPECTED_RUNNER_SOURCE_SHA256 = "09a54bdf8636ed9f9af3dd946bf61d4b40f06c246ba8baaa077ff3c459ea92ca"
 EXPECTED_MXFP4_SOURCE_SHA256 = "b514d889f7ef55a8dca5f941702ec2871c8980000b6da355e7f52eb414ca9e5f"
@@ -176,6 +183,18 @@ def apply_bridge(report_path: Path) -> dict:
     installed_version = importlib.metadata.version("sglang")
     if installed_version != SGLANG_VERSION:
         raise RuntimeError(f"SGLang {installed_version!r} != pinned {SGLANG_VERSION!r}")
+    installed_flashinfer_distributions = {name: importlib.metadata.version(name) for name in FLASHINFER_DISTRIBUTIONS}
+    mismatched_flashinfer_distributions = {
+        name: {"expected": expected, "actual": installed_flashinfer_distributions[name]}
+        for name, expected in FLASHINFER_DISTRIBUTIONS.items()
+        if installed_flashinfer_distributions[name] != expected
+    }
+    if mismatched_flashinfer_distributions:
+        raise RuntimeError(
+            f"FlashInfer distributions do not match the pinned runtime: "
+            f"{mismatched_flashinfer_distributions}; "
+            f"custom routing replay requires upstream fix {FLASHINFER_ROUTING_REPLAY_FIX}"
+        )
 
     wrapper_spec = importlib.util.find_spec("sglang.srt.layers.moe.flashinfer_trtllm_moe")
     runner_spec = importlib.util.find_spec("sglang.srt.layers.moe.moe_runner.flashinfer_trtllm")
@@ -251,6 +270,8 @@ def apply_bridge(report_path: Path) -> dict:
         "status": "APPLIED",
         "framework": "sglang",
         "framework_version": installed_version,
+        "flashinfer_distributions": installed_flashinfer_distributions,
+        "flashinfer_routing_replay_fix": FLASHINFER_ROUTING_REPLAY_FIX,
         "observation": "flashinfer_bf16_fp8_and_mxfp4_fused_moe_routing_replay_out",
         "source_files": {
             "flashinfer_trtllm_moe.py": {

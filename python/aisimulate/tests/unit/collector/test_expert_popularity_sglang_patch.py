@@ -9,6 +9,9 @@ from collector.expert_popularity.patch_sglang_flashinfer_replay_recorder import 
     _BF16_CALL_PATCHED,
     _MXFP4_CALL_TAIL_PATCHED,
     _MXFP4_SETUP_PATCHED,
+    FLASHINFER_DISTRIBUTIONS,
+    FLASHINFER_ROUTING_REPLAY_FIX,
+    FLASHINFER_VERSION,
 )
 from collector.expert_popularity.patch_sglang_flashinfer_replay_recorder import (
     _RETURN_ORIGINAL as _REPLAY_RETURN_ORIGINAL,
@@ -27,6 +30,13 @@ pytestmark = pytest.mark.unit
 
 
 def test_flashinfer_replay_bridge_records_kernel_selected_ids_without_rerouting():
+    assert FLASHINFER_VERSION == "0.6.13"
+    assert FLASHINFER_DISTRIBUTIONS == {
+        "flashinfer-python": "0.6.13",
+        "flashinfer-cubin": "0.6.13",
+        "flashinfer-jit-cache": "0.6.13+cu130",
+    }
+    assert FLASHINFER_ROUTING_REPLAY_FIX == "b54d28bea0639510d79c5ac58a60a4087585ff00"
     assert "routing_replay_out = torch.full" in _REPLAY_RETURN_PATCHED
     assert "-1," in _REPLAY_RETURN_PATCHED
     assert 'kwargs["routing_replay_out"] = routing_replay_out' in _REPLAY_RETURN_PATCHED

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from aiconfigurator_core.sdk.expert_popularity import load_expert_popularity
 from collector.expert_popularity.publish import build_bundle
@@ -73,6 +74,11 @@ def test_build_bundle_from_passing_collection(tmp_path: Path):
             "collection": {
                 "framework": "sglang",
                 "framework_version": "0.5.14",
+                "framework_components": {
+                    "flashinfer-python": "0.6.13",
+                    "flashinfer-cubin": "0.6.13",
+                    "flashinfer-jit-cache": "0.6.13+cu130",
+                },
                 "gpu_info": ["0, Example GPU, GPU-private-uuid"],
                 "server_args": ["--dist-init-addr", "private-node:1234"],
                 "runtime_environment": {"CACHE": "/home/private/cache"},
@@ -108,18 +114,26 @@ def test_build_bundle_from_passing_collection(tmp_path: Path):
     assert bundle.name == "example--Tiny-MoE"
     assert table["popularity_rank"].tolist() == [1, 2, 3]
     assert table["token_hit_rate"].tolist() == [1.0, 0.75, 0.25]
-    metadata = (bundle / "metadata.yaml").read_text(encoding="utf-8")
-    assert metadata.startswith("# SPDX-FileCopyrightText:")
-    assert "repack/Tiny-MoE-FP8" in metadata
-    assert "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" in metadata
-    assert "quantization: fp8_block" in metadata
-    assert "recorder_count_divisor: 1" in metadata
-    assert "tokenizer_vocab_size: 100" in metadata
-    assert "tokenizer_effective_vocab_size: 103" in metadata
-    assert "private-node" not in metadata
-    assert "private-uuid" not in metadata
-    assert "/home/private" not in metadata
-    assert "slurm_job_id" not in metadata
+    metadata_text = (bundle / "metadata.yaml").read_text(encoding="utf-8")
+    metadata = yaml.safe_load(metadata_text)
+    assert metadata_text.startswith("# SPDX-FileCopyrightText:")
+    assert metadata["provenance"]["collection_checkpoint"] == {
+        "id": "repack/Tiny-MoE-FP8",
+        "revision": "b" * 40,
+        "quantization": "fp8_block",
+    }
+    assert metadata["provenance"]["recorder_count_divisor"] == 1
+    assert metadata["provenance"]["framework_components"] == {
+        "flashinfer-python": "0.6.13",
+        "flashinfer-cubin": "0.6.13",
+        "flashinfer-jit-cache": "0.6.13+cu130",
+    }
+    assert metadata["measurement"]["workload"]["tokenizer_vocab_size"] == 100
+    assert metadata["measurement"]["workload"]["tokenizer_effective_vocab_size"] == 103
+    assert "private-node" not in metadata_text
+    assert "private-uuid" not in metadata_text
+    assert "/home/private" not in metadata_text
+    assert "slurm_job_id" not in metadata_text
 
 
 def test_build_bundle_rejects_failed_collection(tmp_path: Path):

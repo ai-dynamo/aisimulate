@@ -481,6 +481,10 @@ def main() -> None:
             raise RuntimeError(
                 f"installed SGLang version {framework_version!r} != expected {args.expected_framework_version!r}"
             )
+        framework_components = {
+            name: importlib.metadata.version(name)
+            for name in ("flashinfer-python", "flashinfer-cubin", "flashinfer-jit-cache")
+        }
         moe_layer_ids = _parse_layer_ids(args.moe_layer_ids)
         if moe_layer_ids[-1] >= args.num_layers or not 0 < args.top_k <= args.num_experts:
             raise ValueError("declared routing dimensions are inconsistent")
@@ -709,6 +713,7 @@ def main() -> None:
                 "collection": {
                     "framework": "sglang",
                     "framework_version": framework_version,
+                    "framework_components": framework_components,
                     "collection_checkpoint": {
                         "id": checkpoint_model_id,
                         "revision": checkpoint_model_revision,

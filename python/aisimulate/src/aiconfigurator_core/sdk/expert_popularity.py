@@ -28,6 +28,7 @@ PUBLIC_PROVENANCE_FIELDS = frozenset(
         "collector_code_sha256",
         "recorder_count_divisor",
         "framework",
+        "framework_components",
         "framework_version",
         "image_reference",
         "image_archive_sha256",
