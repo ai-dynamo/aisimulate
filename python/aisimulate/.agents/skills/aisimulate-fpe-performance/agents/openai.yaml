@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "AISimulate FPE Performance Awareness"
+  short_description: "Review FPE changes for performance risk"
+  default_prompt: "Use $aisimulate-fpe-performance to review this FPE change for performance risks and needed validation."
+
+policy:
+  allow_implicit_invocation: true
