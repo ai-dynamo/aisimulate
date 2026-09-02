@@ -129,14 +129,15 @@ TP16 for this block-FP8 checkpoint because the shared-expert output partition is
 This is a checkpoint/topology incompatibility, not a transient cluster failure;
 TP16 failures must not be retried as infrastructure errors.
 
-Long-context DeepSeek V4 requests can trigger TorchInductor compilation after
+Long-context requests can trigger Triton or TorchInductor compilation after
 the server health check has already passed. For dependent large/production
 jobs, `COMPILE_CACHE_HOST_DIR` may mount a persistent cache at
 `/compile-cache`, while a model-, revision-, topology-, and GPU-architecture-
 specific `COMPILE_CACHE_KEY` prevents incompatible reuse. The runner gives
-each Slurm node rank a separate cache directory so independent nodes never
-replace the same FlashInfer or DeepGEMM lock file. It also defaults
-`TORCHINDUCTOR_COMPILE_THREADS` to 8. Cache paths, scheduler identity, hardware
+each Slurm node rank separate FlashInfer, DeepGEMM, Triton, and TorchInductor
+cache directories so independent nodes never replace the same launcher or lock
+file. It also defaults `TORCHINDUCTOR_COMPILE_THREADS` to 8. Cache paths,
+scheduler identity, hardware
 UUIDs, node names, and job IDs remain private campaign diagnostics; they are
 never copied into packaged model-popularity metadata.
 
