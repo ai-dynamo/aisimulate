@@ -8,6 +8,8 @@ against the legacy CLI; these tests focus on construction, defaulting,
 prefix discipline, and the build_* helpers.
 """
 
+from dataclasses import fields
+
 import pytest
 
 from aiconfigurator.sdk import common
@@ -65,6 +67,23 @@ def test_run_single_epd_arg_validation():
 def test_from_cli_resolves_quant_strings():
     t = Task.from_cli(gemm_quant_mode="fp8", prefill_kvcache_quant_mode=None)
     assert t.gemm_quant_mode is common.GEMMQuantMode.fp8
+
+
+def test_new_video_field_preserves_legacy_positional_order():
+    init_fields = [field.name for field in fields(Task) if field.init]
+    assert init_fields[-2:] == ["afd_decode_latency_correction", "num_frames_per_visual"]
+    assert init_fields.index("enable_encoder_dp") == init_fields.index("num_images_per_request") + 1
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True, False])
+def test_num_frames_per_visual_requires_positive_non_boolean_integer(value):
+    with pytest.raises(ValueError, match="positive non-boolean integer"):
+        Task(num_frames_per_visual=value)
+
+
+def test_video_frames_require_image_dimensions():
+    with pytest.raises(ValueError, match="requires positive image_height and image_width"):
+        Task(num_frames_per_visual=8)
 
 
 def test_agg_with_model_resolves_identity_and_backend():

@@ -53,6 +53,17 @@ DEFAULT_DECODE_LATENCY_CORRECTION_SCALE = 1.08
 POWER_DATA_COVERAGE_THRESHOLD = 0.9
 
 
+def _validate_visual_workload(image_height: int, image_width: int, num_frames_per_visual: int) -> None:
+    if (
+        isinstance(num_frames_per_visual, bool)
+        or not isinstance(num_frames_per_visual, int)
+        or num_frames_per_visual <= 0
+    ):
+        raise ValueError(f"num_frames_per_visual must be a positive non-boolean integer, got {num_frames_per_visual!r}")
+    if num_frames_per_visual > 1 and not (image_height > 0 and image_width > 0):
+        raise ValueError("num_frames_per_visual > 1 requires positive image_height and image_width")
+
+
 def cli_support(
     model_path: str,
     system: str,
@@ -176,6 +187,7 @@ def cli_default(
     image_height: int = 0,
     image_width: int = 0,
     num_images: int = 1,
+    num_frames_per_visual: int = 1,
     enable_encoder_dp: bool = True,
     enable_epd: bool = False,
     encoder_tp: list[int] | None = None,
@@ -217,6 +229,10 @@ def cli_default(
             ('SILICON', 'HYBRID', 'EMPIRICAL', 'SOL'). Default is 'SILICON'.
         isl: Input sequence length. Default is 4000.
         osl: Output sequence length. Default is 1000.
+        image_height: Height of each visual input. Zero disables encoder modeling.
+        image_width: Width of each visual input. Zero disables encoder modeling.
+        num_images: Number of visual inputs per request.
+        num_frames_per_visual: Frames per visual input; 1 is an image and >1 is video.
         enable_encoder_dp: Model the vision encoder data-parallel (default True;
             vLLM mm_encoder_tp_mode="data" / SGLang --mm-enable-dp-encoder semantics).
             False models the legacy TP-sharded encoder.
@@ -298,6 +314,7 @@ def cli_default(
         >>> print(result.chosen_exp)  # e.g., 'agg_trtllm' or 'disagg_vllm'
         >>> print(result.best_throughputs)  # Shows all 6 backend/mode combinations
     """
+    _validate_visual_workload(image_height, image_width, num_frames_per_visual)
     # Fail fast on inconsistent MTP inputs (same early check as the CLI path).
     # nextn="auto" resolves the draft depth from the checkpoint first.
     if nextn == "auto":
@@ -319,6 +336,7 @@ def cli_default(
         image_height=image_height,
         image_width=image_width,
         num_images=num_images,
+        num_frames_per_visual=num_frames_per_visual,
         enable_encoder_dp=enable_encoder_dp,
         enable_epd=enable_epd,
         encoder_tp=encoder_tp,
@@ -358,6 +376,7 @@ def cli_default(
         mock_args.image_height = image_height
         mock_args.image_width = image_width
         mock_args.num_images = num_images
+        mock_args.num_frames_per_visual = num_frames_per_visual
         mock_args.ttft = ttft
         mock_args.tpot = tpot
         mock_args.request_latency = request_latency
@@ -419,6 +438,7 @@ def cli_recommend(
     image_height: int = 0,
     image_width: int = 0,
     num_images: int = 1,
+    num_frames_per_visual: int = 1,
     ttft: float = 2000.0,
     tpot: float = 30.0,
     request_latency: float | None = None,
@@ -468,6 +488,7 @@ def cli_recommend(
         image_height: Image height for vision-language models.
         image_width: Image width for vision-language models.
         num_images: Number of images per request.
+        num_frames_per_visual: Frames per visual input; 1 is an image and >1 is video.
         ttft: Time to first token SLA target in ms. Default is 2000.
         tpot: Time per output token SLA target in ms. Default is 30.
         request_latency: Optional end-to-end request latency target (ms).
@@ -512,6 +533,7 @@ def cli_recommend(
         ... )
         >>> print(result.best_configs)
     """
+    _validate_visual_workload(image_height, image_width, num_frames_per_visual)
     import math
 
     from aiconfigurator.sdk.perf_database import load_system_spec
@@ -555,6 +577,7 @@ def cli_recommend(
         image_height=image_height,
         image_width=image_width,
         num_images=num_images,
+        num_frames_per_visual=num_frames_per_visual,
         ttft=ttft,
         tpot=tpot,
         request_latency=request_latency,
@@ -623,6 +646,7 @@ def cli_recommend(
         mock_args.image_height = image_height
         mock_args.image_width = image_width
         mock_args.num_images = num_images
+        mock_args.num_frames_per_visual = num_frames_per_visual
         mock_args.ttft = ttft
         mock_args.tpot = tpot
         mock_args.request_latency = request_latency
@@ -1009,6 +1033,7 @@ def cli_estimate(
     image_height: int = 0,
     image_width: int = 0,
     num_images: int = 1,
+    num_frames_per_visual: int = 1,
     enable_encoder_dp: bool = True,
     batch_size: int = 128,
     ctx_tokens: int | None = None,
@@ -1092,6 +1117,7 @@ def cli_estimate(
         image_height: Image height in pixels for VL models. Default 0 disables encoder modeling.
         image_width: Image width in pixels for VL models. Default 0 disables encoder modeling.
         num_images: Number of images per request for VL models. Default 1.
+        num_frames_per_visual: Frames per visual input. Default 1 models images; >1 models video.
         enable_encoder_dp: Model the vision encoder data-parallel (default True;
             vLLM mm_encoder_tp_mode="data" / SGLang --mm-enable-dp-encoder semantics).
             False models the legacy TP-sharded encoder.
@@ -1183,7 +1209,9 @@ def cli_estimate(
             ``'decode'`` (default), or ``'both'``. AFD is orthogonal to P/D
             disaggregation: ``'decode'`` models AFD on decode only, ``'prefill'``
             on the context phase (reports TTFT), and ``'both'`` reports TTFT+TPOT
-            with AFD on both phases.
+            with AFD on both phases. Visual workloads currently require
+            ``'decode'`` with ``afd_combined_with_pd=True`` so encoder work is
+            modeled by the regular prefill complement.
         afd_combined_with_pd: (afd-only) When True (default), combine the
             single-phase AFD estimate with a regular static estimate for the
             other phase (merging TTFT/TPOT, rate-matched throughput, and GPU
@@ -1208,6 +1236,7 @@ def cli_estimate(
         ...     decode_batch_size=64, decode_num_workers=2,
         ... )
     """
+    _validate_visual_workload(image_height, image_width, num_frames_per_visual)
     from aiconfigurator.sdk.backends.factory import get_backend
     from aiconfigurator.sdk.models import get_model
     from aiconfigurator.sdk.perf_database import (
@@ -1293,6 +1322,7 @@ def cli_estimate(
             image_height=image_height,
             image_width=image_width,
             num_images=num_images,
+            num_frames_per_visual=num_frames_per_visual,
             enable_encoder_dp=enable_encoder_dp,
             batch_size=batch_size,
             prefix=prefix,
@@ -1329,6 +1359,7 @@ def cli_estimate(
             image_height=image_height,
             image_width=image_width,
             num_images=num_images,
+            num_frames_per_visual=num_frames_per_visual,
             enable_encoder_dp=enable_encoder_dp,
             batch_size=batch_size,
             ctx_tokens=ctx_tokens if ctx_tokens is not None else isl,
@@ -1390,6 +1421,7 @@ def cli_estimate(
             image_height=image_height,
             image_width=image_width,
             num_images=num_images,
+            num_frames_per_visual=num_frames_per_visual,
             enable_encoder_dp=enable_encoder_dp,
             # Prefill config (fall back to shared args)
             prefill_tp_size=prefill_tp_size if prefill_tp_size is not None else tp_size,
@@ -1453,6 +1485,14 @@ def cli_estimate(
                 "separate static pool to combine with. Pass --no-afd-combined-with-pd, "
                 "or pick afd_phase in {'prefill','decode'}."
             )
+        has_visual_workload = image_height > 0 and image_width > 0 and num_images > 0
+        if has_visual_workload and (afd_phase != "decode" or not afd_combined_with_pd):
+            raise ValueError(
+                "Visual encoder modeling is not supported when AFD covers the prefill phase "
+                "or when afd_combined_with_pd=False. "
+                "Use afd_phase='decode' with afd_combined_with_pd=True so the regular prefill "
+                "path accounts for encoder latency, memory, energy, and visual tokens."
+            )
 
         resolved_version = _resolve_version_for(system_name)
         afd_result = _run_afd_estimate(
@@ -1510,6 +1550,7 @@ def cli_estimate(
             image_height=image_height,
             image_width=image_width,
             num_images=num_images,
+            num_frames_per_visual=num_frames_per_visual,
             enable_encoder_dp=enable_encoder_dp,
             batch_size=batch_size,
             prefix=prefix,
@@ -1560,6 +1601,7 @@ def _run_agg_estimate(
     image_height,
     image_width,
     num_images,
+    num_frames_per_visual,
     enable_encoder_dp,
     batch_size,
     ctx_tokens,
@@ -1624,6 +1666,7 @@ def _run_agg_estimate(
         image_height=image_height,
         image_width=image_width,
         num_images_per_request=num_images,
+        num_frames_per_visual=num_frames_per_visual,
         prefix=prefix,
         engine_step_backend=engine_step_backend,
     )
@@ -1700,6 +1743,7 @@ def _run_static_estimate(
     image_height,
     image_width,
     num_images,
+    num_frames_per_visual,
     enable_encoder_dp,
     batch_size,
     prefix,
@@ -1793,6 +1837,7 @@ def _run_static_estimate(
         image_height=image_height,
         image_width=image_width,
         num_images_per_request=num_images,
+        num_frames_per_visual=num_frames_per_visual,
         prefix=prefix,
         engine_step_backend=engine_step_backend,
     )
@@ -1862,6 +1907,7 @@ def _run_disagg_estimate(
     image_height,
     image_width,
     num_images,
+    num_frames_per_visual,
     enable_encoder_dp,
     prefill_tp_size,
     prefill_pp_size,
@@ -2005,6 +2051,7 @@ def _run_disagg_estimate(
         image_height=image_height,
         image_width=image_width,
         num_images_per_request=num_images,
+        num_frames_per_visual=num_frames_per_visual,
         prefix=prefix,
         engine_step_backend=engine_step_backend,
     )

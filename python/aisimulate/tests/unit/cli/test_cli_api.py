@@ -11,10 +11,22 @@ import pandas as pd
 import pytest
 
 from aiconfigurator.cli import CLIResult, cli_exp, cli_generate
+from aiconfigurator.cli.api import _validate_visual_workload
 from aiconfigurator.sdk import common
 from aiconfigurator.sdk.errors import NoFeasibleConfigError
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True, False])
+def test_public_cli_apis_reject_invalid_frame_counts(value):
+    with pytest.raises(ValueError, match="positive non-boolean integer"):
+        _validate_visual_workload(448, 448, value)
+
+
+def test_public_cli_apis_reject_video_without_dimensions():
+    with pytest.raises(ValueError, match="requires positive image_height and image_width"):
+        _validate_visual_workload(0, 0, 8)
 
 
 class TestCLIEstimateUnit:
@@ -78,6 +90,7 @@ class TestCLIEstimateUnit:
             image_height=0,
             image_width=0,
             num_images=1,
+            num_frames_per_visual=1,
             enable_encoder_dp=True,
             batch_size=10,
             prefix=0,
@@ -340,6 +353,7 @@ class TestCLIEstimateUnit:
                 image_height=0,
                 image_width=0,
                 num_images=1,
+                num_frames_per_visual=1,
                 enable_encoder_dp=True,
                 batch_size=32,
                 ctx_tokens=1024,

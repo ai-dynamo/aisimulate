@@ -258,7 +258,11 @@ class BaseBackend:
         from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
 
         try:
-            enc_cfg = get_model_config_from_model_path(model_path).get("extra_params")
+            model_info = get_model_config_from_model_path(model_path)
+            enc_cfg = model_info.get("encoder_config")
+            if not isinstance(enc_cfg, common.VisionEncoderConfig):
+                extra = model_info.get("extra_params")
+                enc_cfg = getattr(extra, "vision_config", extra)
         except Exception:
             logger.debug("Could not resolve model config for the effective ISL; using text ISL", exc_info=True)
             enc_cfg = None
@@ -275,16 +279,25 @@ class BaseBackend:
         runtime_config: RuntimeConfig,
         enc_cfg,
     ) -> tuple[int, int]:
-        """Resolve the per-image pre-merge / post-merge token counts from
+        """Resolve per-visual pre-merge / post-merge token counts from
         RuntimeConfig + VisionEncoderConfig.
 
         Resolution order:
             1. image_height + image_width (smart-resized, then patch/merge sizes)
-            2. num_image_tokens (explicit per-image override)
+            2. num_image_tokens (explicit per-visual post-merge override)
+
+        ``num_frames_per_visual`` increases the temporal transformer sequence
+        after grouping frames by ``temporal_patch_size``. Architectures such as
+        Kimi K2.5 then pool time in their PatchMerger, so frames increase encoder
+        work but not the number of visual embeddings injected into the LLM.
 
         Returns ``(tokens_post_merge_per_image, pre_merge_per_image)``.
         Returns ``(0, 0)`` when neither is set (text-only path).
         """
+        if runtime_config.num_frames_per_visual <= 0:
+            raise ValueError(f"num_frames_per_visual must be positive, got {runtime_config.num_frames_per_visual}")
+        frames = runtime_config.num_frames_per_visual
+        temporal_tokens = math.ceil(frames / max(1, enc_cfg.temporal_patch_size))
         has_image_dims = runtime_config.image_height > 0 and runtime_config.image_width > 0
         if has_image_dims:
             # Upstream VL processors (Qwen smart_resize) round each raw
@@ -295,13 +308,15 @@ class BaseBackend:
             img_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
             h_bar = max(img_stride, round(runtime_config.image_height / img_stride) * img_stride)
             w_bar = max(img_stride, round(runtime_config.image_width / img_stride) * img_stride)
-            tokens_per_image = (h_bar // img_stride) * (w_bar // img_stride)
-            pre_merge_per_image = (h_bar // enc_cfg.patch_size) * (w_bar // enc_cfg.patch_size)
+            spatial_post_merge = (h_bar // img_stride) * (w_bar // img_stride)
+            spatial_pre_merge = (h_bar // enc_cfg.patch_size) * (w_bar // enc_cfg.patch_size)
         elif runtime_config.num_image_tokens > 0:
-            tokens_per_image = runtime_config.num_image_tokens
-            pre_merge_per_image = tokens_per_image * (enc_cfg.spatial_merge_size**2)
+            spatial_post_merge = runtime_config.num_image_tokens
+            spatial_pre_merge = spatial_post_merge * (enc_cfg.spatial_merge_size**2)
         else:
             return 0, 0
+        pre_merge_per_image = spatial_pre_merge * temporal_tokens
+        tokens_per_image = spatial_post_merge * (1 if enc_cfg.pool_temporal else temporal_tokens)
         if tokens_per_image <= 0 or pre_merge_per_image <= 0:
             return 0, 0
         return tokens_per_image, pre_merge_per_image
@@ -1219,6 +1234,8 @@ class BaseBackend:
             runtime_config.image_height,
             runtime_config.image_width,
             runtime_config.num_images_per_request,
+            runtime_config.num_frames_per_visual,
+            runtime_config.num_image_tokens,
         )
         cache_key = (
             self._make_agg_cache_key(isl, osl, b, ctx_tokens, agg_extra),
