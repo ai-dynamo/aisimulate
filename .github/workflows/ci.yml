@@ -135,6 +135,14 @@ jobs:
 
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
+    needs:
+      - spdx-headers
+      - cargo-deny
+      - rust
+      - public-api-rust
+      - application-tests
+      - lint
+      - release-artifact-contract
     # Only trusted branch-copy and post-merge pushes may stage wheels. In
     # particular, workflow_dispatch must not acquire either staging environment.
     if: >-
@@ -169,6 +177,15 @@ jobs:
       - name: Build application wheel
         run: python -m maturin build --release --out ../../dist
         working-directory: python/aisimulate
+      - name: Verify exact staged wheel
+        run: python python/aisimulate/tools/verify_release_wheels.py dist
+      - name: Smoke-test exact staged wheel
+        run: |
+          python -m venv staged-wheel-smoke
+          staged-wheel-smoke/bin/python -m pip install --no-deps dist/aisimulate-*.whl
+          staged-wheel-smoke/bin/python -c \
+            "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
+            assert aisimulate_core._build_smoke() > 0"
       - name: Stage wheel in Artifactory
         shell: bash
         env:
