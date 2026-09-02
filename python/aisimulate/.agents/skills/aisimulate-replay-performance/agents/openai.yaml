@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "AISimulate Replay Performance Awareness"
+  short_description: "Review replay changes for performance risk"
+  default_prompt: "Use $aisimulate-replay-performance to review this replay change for performance risks and needed validation."
+
+policy:
+  allow_implicit_invocation: true
