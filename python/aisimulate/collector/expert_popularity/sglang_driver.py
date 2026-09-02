@@ -226,6 +226,55 @@ def _run_recorder_window(
     }
 
 
+def _verify_observer_transparency(
+    *,
+    args: argparse.Namespace,
+    request: dict,
+    raw_dir: Path,
+) -> dict:
+    """Verify that enabling the recorder does not change serving output."""
+    if args.observation_source != "recorder":
+        raise ValueError("observer transparency verification requires recorder observation")
+
+    payload = {
+        "input_ids": request["input_ids"],
+        "sampling_params": {"max_new_tokens": 1, "temperature": 0, "ignore_eos": True},
+    }
+    baseline_response = _post(args.base_url, "/generate", payload)
+    baseline_body = baseline_response.json()
+    if int(baseline_body["meta_info"]["prompt_tokens"]) != request["isl"]:
+        raise RuntimeError("observer transparency baseline changed the request ISL")
+
+    before = set(raw_dir.glob("*.pt"))
+    start_response = _post(args.base_url, "/start_expert_distribution_record")
+    observed_response = _post(args.base_url, "/generate", payload)
+    observed_body = observed_response.json()
+    stop_response = _post(args.base_url, "/stop_expert_distribution_record")
+    dump_response = _post(args.base_url, "/dump_expert_distribution_record")
+    dump_path = _wait_for_dump(raw_dir, before)
+
+    if int(observed_body["meta_info"]["prompt_tokens"]) != request["isl"]:
+        raise RuntimeError("observer transparency recorded request changed the request ISL")
+    outputs_match = baseline_body["output_ids"] == observed_body["output_ids"]
+    evidence = {
+        "status": "PASS" if outputs_match else "FAIL",
+        "input_ids_sha256": request["input_ids_sha256"],
+        "prompt_tokens": request["isl"],
+        "baseline_output_ids": baseline_body["output_ids"],
+        "recording_output_ids": observed_body["output_ids"],
+        "outputs_match": outputs_match,
+        "recorder_file": str(dump_path),
+        "endpoint_status": {
+            "baseline_generate": baseline_response.status_code,
+            "start": start_response.status_code,
+            "recording_generate": observed_response.status_code,
+            "stop": stop_response.status_code,
+            "dump": dump_response.status_code,
+        },
+    }
+    return evidence
+
+
 def _run_response_window(
     *,
     args: argparse.Namespace,
@@ -397,6 +446,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--repeat-validation-mode", choices=("exact", "aggregate"), default="exact")
     parser.add_argument("--min-repeat-pearson", type=float, default=0.999)
     parser.add_argument("--max-repeat-jsd", type=float, default=0.001)
+    parser.add_argument("--verify-observer-transparency", action="store_true")
     return parser.parse_args()
 
 
@@ -522,6 +572,20 @@ def main() -> None:
 
         responses_path = args.artifact_dir / "responses.jsonl"
         responses_path.unlink(missing_ok=True)
+        observer_transparency = None
+        if args.verify_observer_transparency:
+            observer_transparency = _verify_observer_transparency(
+                args=args,
+                request=workloads[0]["requests"][0],
+                raw_dir=raw_dir,
+            )
+            _write_json(args.artifact_dir / "observer_transparency.json", observer_transparency)
+            if not observer_transparency["outputs_match"]:
+                raise RuntimeError(
+                    "enabling the routing observer changed serving output: "
+                    f"{observer_transparency['baseline_output_ids']} != "
+                    f"{observer_transparency['recording_output_ids']}"
+                )
         repeat_counts: list[list[np.ndarray]] = []
         windows = []
         for repeat_index in range(args.repeat_count):
@@ -640,6 +704,7 @@ def main() -> None:
                     "minimum_mean_layer_pearson": args.min_shard_pearson,
                     "maximum_mean_layer_jensen_shannon_divergence_bits": args.max_shard_jsd,
                     "layer_assignment_conservation": True,
+                    "observer_transparency": observer_transparency,
                 },
                 "collection": {
                     "framework": "sglang",

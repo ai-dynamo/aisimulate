@@ -159,6 +159,13 @@ elif [[ -n "${ROUTING_EQUIVALENCE_EVIDENCE_PATH:-}" ]]; then
 fi
 export SERVER_ARGS_JSON RUNTIME_ENVIRONMENT_JSON MODEL_PATH ROUTING_EQUIVALENCE_EVIDENCE_JSON
 
+DRIVER_EXTRA_ARGS=()
+case "${VERIFY_OBSERVER_TRANSPARENCY:-0}" in
+    0) ;;
+    1) DRIVER_EXTRA_ARGS+=(--verify-observer-transparency) ;;
+    *) echo "VERIFY_OBSERVER_TRANSPARENCY must be 0 or 1" >&2; exit 23 ;;
+esac
+
 srun \
     --overlap \
     --nodes=1 \
@@ -201,7 +208,8 @@ srun \
         --max-shard-jsd "${MAX_SHARD_JSD:-0.01}" \
         --repeat-validation-mode "${REPEAT_VALIDATION_MODE:-exact}" \
         --min-repeat-pearson "${MIN_REPEAT_PEARSON:-0.999}" \
-        --max-repeat-jsd "${MAX_REPEAT_JSD:-0.001}"
+        --max-repeat-jsd "${MAX_REPEAT_JSD:-0.001}" \
+        "${DRIVER_EXTRA_ARGS[@]}"
 
 python3 - "$RUN_DIR/collection_result.json" <<'PY'
 import json

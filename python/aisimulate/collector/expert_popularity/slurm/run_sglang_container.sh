@@ -125,6 +125,13 @@ nvidia-smi -L >"$ARTIFACT_DIR/nvidia_smi_L.txt"
 nvidia-smi --query-gpu=index,name,uuid,memory.total,driver_version,compute_cap --format=csv,noheader \
     >"$ARTIFACT_DIR/gpu_info.csv"
 
+DRIVER_EXTRA_ARGS=()
+case "${VERIFY_OBSERVER_TRANSPARENCY:-0}" in
+    0) ;;
+    1) DRIVER_EXTRA_ARGS+=(--verify-observer-transparency) ;;
+    *) echo "VERIFY_OBSERVER_TRANSPARENCY must be 0 or 1" >&2; exit 22 ;;
+esac
+
 python3 /campaign/sglang_driver.py \
     --artifact-dir "$ARTIFACT_DIR" \
     --base-url "http://127.0.0.1:$SERVER_PORT" \
@@ -153,7 +160,8 @@ python3 /campaign/sglang_driver.py \
     --max-shard-jsd "${MAX_SHARD_JSD:-0.01}" \
     --repeat-validation-mode "${REPEAT_VALIDATION_MODE:-exact}" \
     --min-repeat-pearson "${MIN_REPEAT_PEARSON:-0.999}" \
-    --max-repeat-jsd "${MAX_REPEAT_JSD:-0.001}"
+    --max-repeat-jsd "${MAX_REPEAT_JSD:-0.001}" \
+    "${DRIVER_EXTRA_ARGS[@]}"
 
 cleanup_server
 trap - EXIT

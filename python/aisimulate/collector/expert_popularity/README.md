@@ -98,6 +98,12 @@ route replay; that mode records the non-exact result and requires mean-layer
 Pearson at least `0.999` and mean-layer Jensen-Shannon divergence at most
 `0.001`. Raw per-request routes remain part of the evidence.
 
+Smoke submissions set `VERIFY_OBSERVER_TRANSPARENCY=1`. The driver then sends
+one identical greedy request with recording disabled and enabled, requires the
+generated token IDs to match exactly, and retains the endpoint and recorder
+evidence in `observer_transparency.json`. Production submissions leave this
+extra request disabled after the serving path has passed its smoke.
+
 Before scheduling, every candidate receives an immutable model revision and an
 estimated minimum topology. Floating model names in this registry are never
 used as collection identities. DeepSeek V4 Flash and Pro stay separate because
