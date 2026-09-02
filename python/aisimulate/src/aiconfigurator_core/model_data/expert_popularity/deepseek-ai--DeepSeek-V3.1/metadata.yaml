@@ -70,7 +70,7 @@ routing:
   - 60
   num_layers: 61
   num_routed_experts: 256
-  replication_factor: 16
+  recorder_count_divisor: 16
   top_k: 8
 measurement:
   phase: prefill
@@ -99,6 +99,7 @@ measurement:
     shard_count: 4
     temperature: 0
     token_distribution: uniform_valid_non_special_token_ids
+    tokenizer_effective_vocab_size: 128815
     tokenizer_vocab_size: 128000
     tokens_per_shard_minimum: 65536
     total_prompt_tokens: 268115
@@ -107,54 +108,102 @@ validation:
   gates:
     layer_assignment_conservation: true
     maximum_mean_layer_jensen_shannon_divergence_bits: 0.01
+    maximum_repeat_mean_layer_jensen_shannon_divergence_bits: 0.001
     minimum_mean_layer_pearson: 0.95
+    minimum_repeat_mean_layer_pearson: 0.999
+    observer_transparency: null
     repeat_counts_exact: true
+    repeat_validation_mode: exact
   stability:
     comparisons:
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.0005308408875312305
-      mean_layer_pearson: 0.9993847613378469
+      mean_layer_jensen_shannon_divergence_bits: 0.0005304599834824169
+      mean_layer_pearson: 0.9993896380703784
       right_shard: 1
       top1_expert_match_rate: 1.0
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.0005132143388615109
-      mean_layer_pearson: 0.9993894789748448
+      mean_layer_jensen_shannon_divergence_bits: 0.0005282627761163122
+      mean_layer_pearson: 0.9993763898486714
       right_shard: 2
-      top1_expert_match_rate: 0.9827586206896551
+      top1_expert_match_rate: 0.9655172413793104
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.0007820089133853258
-      mean_layer_pearson: 0.9989836736209214
+      mean_layer_jensen_shannon_divergence_bits: 0.000763816032844008
+      mean_layer_pearson: 0.9990319472492002
       right_shard: 3
-      top1_expert_match_rate: 0.9827586206896551
+      top1_expert_match_rate: 1.0
     - left_shard: 1
-      mean_layer_jensen_shannon_divergence_bits: 0.00048567385614644795
-      mean_layer_pearson: 0.9994557149461777
+      mean_layer_jensen_shannon_divergence_bits: 0.00045794458206028523
+      mean_layer_pearson: 0.9994885976423037
       right_shard: 2
-      top1_expert_match_rate: 0.9827586206896551
+      top1_expert_match_rate: 0.9655172413793104
     - left_shard: 1
-      mean_layer_jensen_shannon_divergence_bits: 0.0005329836081989029
-      mean_layer_pearson: 0.9993689075180769
+      mean_layer_jensen_shannon_divergence_bits: 0.00050881781792746
+      mean_layer_pearson: 0.9994152930962238
       right_shard: 3
-      top1_expert_match_rate: 0.9827586206896551
+      top1_expert_match_rate: 1.0
     - left_shard: 2
-      mean_layer_jensen_shannon_divergence_bits: 0.0005448502141547615
-      mean_layer_pearson: 0.9993578251078905
+      mean_layer_jensen_shannon_divergence_bits: 0.0005362540224778157
+      mean_layer_pearson: 0.9993539050762652
       right_shard: 3
       top1_expert_match_rate: 0.9655172413793104
-    maximum_mean_layer_jensen_shannon_divergence_bits: 0.0007820089133853258
-    minimum_mean_layer_pearson: 0.9989836736209214
+    maximum_mean_layer_jensen_shannon_divergence_bits: 0.000763816032844008
+    minimum_mean_layer_pearson: 0.9990319472492002
+  repeat_stability:
+    all_counts_exact: true
+    comparisons:
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 0
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 1
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 2
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 3
+      top1_expert_match_rate: 1.0
+    maximum_mean_layer_jensen_shannon_divergence_bits: 0.0
+    minimum_mean_layer_pearson: 1.0
 provenance:
-  collector_code_sha256: 5645ee4313c9e5f9541833b5efe9028c20cfb63105a973829a77a97f67c5fbbd
+  collector_code_sha256: 52e2661ae72ef375d7d77b6073c0641ee0ac10b4ca732bcd658e9e2e518236d7
+  image_archive_sha256: a617177a12f59014b820179cb7c301be9dd056d628623b3e36f02347e8704413
+  recorder_count_divisor: 16
+  routing_observation_method: sglang_native_routing_recorder_with_fused_replay_v0613
   framework: sglang
+  observation_source: recorder
   framework_version: 0.5.14
-  image_reference: lmsysorg/sglang:v0.5.14-cu130
-  image_sha256: 99d6f3e95c8abac6ffd2518f679afc3b203a3abd0da68a73fa1c16a6036fa910
-  routing_observation_method: sglang_explicit_topk_flashinfer_trtllm_routed
-  collection_result_sha256: af35bbf4fa09af4eddefd1be5d069f7de3623698087db2fa9f982efa3ffe54b5
-  normalized_counts_sha256: 58fb706ea30a4682b1035ab5b78ed274221617e2991194e11d99a3878f15da72
-  published_at: '2026-08-26T04:07:44.780962+00:00'
+  routing_equivalence_evidence: null
+  image_reference: local-sqsh://sglang-v0.5.14-cu130-flashinfer-v0.6.13-aarch64@sha256:a617177a12f59014b820179cb7c301be9dd056d628623b3e36f02347e8704413
+  framework_components:
+    flashinfer-cubin: 0.6.13
+    flashinfer-jit-cache: 0.6.13+cu130
+    flashinfer-python: 0.6.13
+  collection_checkpoint:
+    id: deepseek-ai/DeepSeek-V3.1
+    quantization: fp8_block
+    revision: c0781d039fb7a1ba2abc4add0bdc293e92d2b8db
+  collection_result_sha256: 97697d24b39b723d8abd03035281fb05469d73097e9f6995bc0801f9b7581683
+  normalized_counts_sha256: 88be64e690ebce7be7423f9c6f91592d24b7f644cdc3c975a6c12d09ce5e61d4
+  published_at: '2026-09-02T20:20:14.868049+00:00'
 files:
   parquet:
     name: model_expert_popularity.parquet
-    sha256: 836145856e667c5a17d1314340b5b8252fb651318a94644f5b6db2723b419019
+    sha256: b3f30a5669229ea827a3ffd1ee865183855796c316863141adb4499415249e88
     rows: 14848

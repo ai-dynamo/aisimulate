@@ -36,7 +36,7 @@ routing:
   - 23
   num_layers: 24
   num_routed_experts: 60
-  replication_factor: 1
+  recorder_count_divisor: 1
   top_k: 4
 measurement:
   phase: prefill
@@ -66,6 +66,7 @@ measurement:
     shard_count: 4
     temperature: 0
     token_distribution: uniform_valid_non_special_token_ids
+    tokenizer_effective_vocab_size: 151646
     tokenizer_vocab_size: 151643
     tokens_per_shard_minimum: 65536
     total_prompt_tokens: 268774
@@ -74,8 +75,12 @@ validation:
   gates:
     layer_assignment_conservation: true
     maximum_mean_layer_jensen_shannon_divergence_bits: 0.01
+    maximum_repeat_mean_layer_jensen_shannon_divergence_bits: 0.001
     minimum_mean_layer_pearson: 0.95
+    minimum_repeat_mean_layer_pearson: 0.999
+    observer_transparency: null
     repeat_counts_exact: true
+    repeat_validation_mode: exact
   stability:
     comparisons:
     - left_shard: 0
@@ -110,14 +115,60 @@ validation:
       top1_expert_match_rate: 1.0
     maximum_mean_layer_jensen_shannon_divergence_bits: 0.00022011865493529276
     minimum_mean_layer_pearson: 0.9992981133037153
+  repeat_stability:
+    all_counts_exact: true
+    comparisons:
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 0
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 1
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 2
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 3
+      top1_expert_match_rate: 1.0
+    maximum_mean_layer_jensen_shannon_divergence_bits: 0.0
+    minimum_mean_layer_pearson: 1.0
 provenance:
-  framework: sglang
   framework_version: 0.5.14
-  image_reference: lmsysorg/sglang:v0.5.14-cu130
-  image_sha256: 99d6f3e95c8abac6ffd2518f679afc3b203a3abd0da68a73fa1c16a6036fa910
-  collection_result_sha256: bccaedc5a6a7efcd6b407e39ff0325f41993ac6198e72494be17f357820dbc25
+  framework: sglang
+  routing_equivalence_evidence: null
+  recorder_count_divisor: 1
+  image_reference: local-sqsh://sglang-v0.5.14-cu130-flashinfer-v0.6.13-aarch64@sha256:a617177a12f59014b820179cb7c301be9dd056d628623b3e36f02347e8704413
+  image_archive_sha256: a617177a12f59014b820179cb7c301be9dd056d628623b3e36f02347e8704413
+  observation_source: recorder
+  collector_code_sha256: 52e2661ae72ef375d7d77b6073c0641ee0ac10b4ca732bcd658e9e2e518236d7
+  framework_components:
+    flashinfer-cubin: 0.6.13
+    flashinfer-jit-cache: 0.6.13+cu130
+    flashinfer-python: 0.6.13
+  routing_observation_method: sglang_native_routing_recorder_with_fused_replay_v0613
+  collection_checkpoint:
+    id: Qwen/Qwen1.5-MoE-A2.7B
+    quantization: bf16
+    revision: 1a758c50ecb6350748b9ce0a99d2352fd9fc11c9
+  collection_result_sha256: 4b1553e71c0964a25c1317e8be2addefc8c0baa6ce1bbc6e8cf518e2839eb708
   normalized_counts_sha256: b3d90715d47c7d33dc9810a834460608ef7048f0141168a18829295c1a63407a
-  published_at: '2026-08-25T23:52:39.790064+00:00'
+  published_at: '2026-09-02T20:03:52.910765+00:00'
 files:
   parquet:
     name: model_expert_popularity.parquet

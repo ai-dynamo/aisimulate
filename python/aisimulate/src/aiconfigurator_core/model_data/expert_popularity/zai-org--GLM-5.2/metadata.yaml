@@ -87,7 +87,7 @@ routing:
   - 77
   num_layers: 78
   num_routed_experts: 256
-  replication_factor: 8
+  recorder_count_divisor: 8
   top_k: 8
 measurement:
   phase: prefill
@@ -132,6 +132,7 @@ measurement:
     shard_count: 4
     temperature: 0
     token_distribution: uniform_valid_non_special_token_ids
+    tokenizer_effective_vocab_size: 154856
     tokenizer_vocab_size: 154820
     tokens_per_shard_minimum: 65536
     total_prompt_tokens: 271988
@@ -140,58 +141,102 @@ validation:
   gates:
     layer_assignment_conservation: true
     maximum_mean_layer_jensen_shannon_divergence_bits: 0.01
+    maximum_repeat_mean_layer_jensen_shannon_divergence_bits: 0.001
     minimum_mean_layer_pearson: 0.95
-    repeat_counts_exact: true
+    minimum_repeat_mean_layer_pearson: 0.999
+    observer_transparency: null
+    repeat_counts_exact: false
+    repeat_validation_mode: aggregate
   stability:
     comparisons:
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.0006377865179562382
-      mean_layer_pearson: 0.9993258567335761
+      mean_layer_jensen_shannon_divergence_bits: 0.0006210066634132549
+      mean_layer_pearson: 0.9993813940378335
       right_shard: 1
-      top1_expert_match_rate: 0.96
+      top1_expert_match_rate: 1.0
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.0005508718994433671
-      mean_layer_pearson: 0.9994598229286743
+      mean_layer_jensen_shannon_divergence_bits: 0.0005898144057671137
+      mean_layer_pearson: 0.9993948496340163
       right_shard: 2
-      top1_expert_match_rate: 0.9866666666666667
+      top1_expert_match_rate: 1.0
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.0005546586821465077
-      mean_layer_pearson: 0.9994507324579797
+      mean_layer_jensen_shannon_divergence_bits: 0.0005819418284221992
+      mean_layer_pearson: 0.9994159517639822
       right_shard: 3
-      top1_expert_match_rate: 0.9733333333333334
+      top1_expert_match_rate: 1.0
     - left_shard: 1
-      mean_layer_jensen_shannon_divergence_bits: 0.0005533299608914716
-      mean_layer_pearson: 0.9994271865301759
+      mean_layer_jensen_shannon_divergence_bits: 0.0006170769247123823
+      mean_layer_pearson: 0.9993695836103657
       right_shard: 2
-      top1_expert_match_rate: 0.9733333333333334
+      top1_expert_match_rate: 1.0
     - left_shard: 1
-      mean_layer_jensen_shannon_divergence_bits: 0.0006053907822515402
-      mean_layer_pearson: 0.9993575453642326
+      mean_layer_jensen_shannon_divergence_bits: 0.0005935228211566989
+      mean_layer_pearson: 0.9993865587422003
       right_shard: 3
-      top1_expert_match_rate: 0.96
+      top1_expert_match_rate: 1.0
     - left_shard: 2
-      mean_layer_jensen_shannon_divergence_bits: 0.0005070491732291385
-      mean_layer_pearson: 0.9995336202431052
+      mean_layer_jensen_shannon_divergence_bits: 0.0005368545213367987
+      mean_layer_pearson: 0.9994701575280666
       right_shard: 3
-      top1_expert_match_rate: 0.9866666666666667
-    maximum_mean_layer_jensen_shannon_divergence_bits: 0.0006377865179562382
-    minimum_mean_layer_pearson: 0.9993258567335761
+      top1_expert_match_rate: 1.0
+    maximum_mean_layer_jensen_shannon_divergence_bits: 0.0006210066634132549
+    minimum_mean_layer_pearson: 0.9993695836103657
+  repeat_stability:
+    all_counts_exact: false
+    comparisons:
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: false
+      mean_layer_jensen_shannon_divergence_bits: 1.4492519660639364e-05
+      mean_layer_pearson: 0.9999942062061422
+      shard_index: 0
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: false
+      mean_layer_jensen_shannon_divergence_bits: 1.154256913898484e-05
+      mean_layer_pearson: 0.9999957173834146
+      shard_index: 1
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: false
+      mean_layer_jensen_shannon_divergence_bits: 1.3301376111923653e-05
+      mean_layer_pearson: 0.9999949880356631
+      shard_index: 2
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: false
+      mean_layer_jensen_shannon_divergence_bits: 1.3599975890629786e-05
+      mean_layer_pearson: 0.9999949479599987
+      shard_index: 3
+      top1_expert_match_rate: 1.0
+    maximum_mean_layer_jensen_shannon_divergence_bits: 1.4492519660639364e-05
+    minimum_mean_layer_pearson: 0.9999942062061422
 provenance:
+  image_reference: local-sqsh://sglang-v0.5.14-cu130-flashinfer-v0.6.13-aarch64@sha256:d25a52f7fba78f198c7ff70fe3d80510dffb99b34d2758af52c5af02f4e6d1a9
+  routing_equivalence_evidence: null
+  framework_version: 0.5.14
+  framework: sglang
+  routing_observation_method: sglang_native_routing_recorder_with_fused_replay_v0613
+  image_archive_sha256: d25a52f7fba78f198c7ff70fe3d80510dffb99b34d2758af52c5af02f4e6d1a9
+  framework_components:
+    flashinfer-cubin: 0.6.13
+    flashinfer-jit-cache: 0.6.13+cu130
+    flashinfer-python: 0.6.13
+  collector_code_sha256: 52e2661ae72ef375d7d77b6073c0641ee0ac10b4ca732bcd658e9e2e518236d7
+  recorder_count_divisor: 8
   collection_checkpoint:
     id: zai-org/GLM-5.2
+    quantization: bf16
     revision: b4734de4facf877f85769a911abafc5283eab3d9
-  collector_code_sha256: 88443804e7a856c9c2ffd8c365c9de23a7ba87f32fcaafc00666777fe5649b15
-  framework: sglang
-  framework_version: 0.5.14
-  image_reference: lmsysorg/sglang:v0.5.14-cu130
-  image_sha256: 1ae1eb63f74b925e70a1ce8c245f6bab1d8852e727a793fb24b00d0ea0787754
-  routing_equivalence_evidence: null
-  routing_observation_method: sglang_explicit_topk_deterministic_triton_attention
-  collection_result_sha256: 8a28fce84fe94c4c883baf08bd528186914111c72d56b57cdbd53c7ab2b849b8
-  normalized_counts_sha256: a209cf2536bdd232b9329763810ee6633372d161bd8607156bc7b0d8c1da50ca
-  published_at: '2026-08-26T05:54:44.722294+00:00'
+  observation_source: recorder
+  collection_result_sha256: 8d6a9ca43329396cb8e15e936b34d918978ee2c973b983c9034bc4b3b64de2ff
+  normalized_counts_sha256: 1419ad31282d9187f62dd9a84531a63d47a283d44ef6d6dd877304850de6783d
+  published_at: '2026-09-02T18:59:03.249866+00:00'
 files:
   parquet:
     name: model_expert_popularity.parquet
-    sha256: 257fdb4a3deb38c5c382e1be365d8a65b2504681aa6bbd518b3dadab131ddce9
+    sha256: f39809d6d6501eb141c415ee6edd77a93ef728929d35f2af698851a0b06282f7
     rows: 19200

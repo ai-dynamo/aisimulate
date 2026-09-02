@@ -74,7 +74,7 @@ routing:
   - 61
   num_layers: 62
   num_routed_experts: 256
-  replication_factor: 4
+  recorder_count_divisor: 4
   top_k: 8
 measurement:
   phase: prefill
@@ -151,6 +151,7 @@ measurement:
     shard_count: 4
     temperature: 0
     token_distribution: uniform_valid_non_special_token_ids
+    tokenizer_effective_vocab_size: 200054
     tokenizer_vocab_size: 200000
     tokens_per_shard_minimum: 65536
     total_prompt_tokens: 268077
@@ -159,54 +160,102 @@ validation:
   gates:
     layer_assignment_conservation: true
     maximum_mean_layer_jensen_shannon_divergence_bits: 0.01
+    maximum_repeat_mean_layer_jensen_shannon_divergence_bits: 0.001
     minimum_mean_layer_pearson: 0.95
+    minimum_repeat_mean_layer_pearson: 0.999
+    observer_transparency: null
     repeat_counts_exact: true
+    repeat_validation_mode: exact
   stability:
     comparisons:
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.00021868604848827278
-      mean_layer_pearson: 0.9997561367204534
+      mean_layer_jensen_shannon_divergence_bits: 0.0002241309558523058
+      mean_layer_pearson: 0.9997434638754809
       right_shard: 1
       top1_expert_match_rate: 0.967741935483871
     - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.00022592154007082787
-      mean_layer_pearson: 0.9997454303782685
+      mean_layer_jensen_shannon_divergence_bits: 0.00022122575918636137
+      mean_layer_pearson: 0.9997578983667813
       right_shard: 2
-      top1_expert_match_rate: 0.9838709677419355
-    - left_shard: 0
-      mean_layer_jensen_shannon_divergence_bits: 0.00024899084974781344
-      mean_layer_pearson: 0.9997099106200839
-      right_shard: 3
-      top1_expert_match_rate: 1.0
-    - left_shard: 1
-      mean_layer_jensen_shannon_divergence_bits: 0.00022281906016096196
-      mean_layer_pearson: 0.999758139971186
-      right_shard: 2
-      top1_expert_match_rate: 0.9838709677419355
-    - left_shard: 1
-      mean_layer_jensen_shannon_divergence_bits: 0.0002425614732859956
-      mean_layer_pearson: 0.999718449312873
-      right_shard: 3
       top1_expert_match_rate: 0.967741935483871
-    - left_shard: 2
-      mean_layer_jensen_shannon_divergence_bits: 0.00022003632438392676
-      mean_layer_pearson: 0.9997537329313873
+    - left_shard: 0
+      mean_layer_jensen_shannon_divergence_bits: 0.0002514249213294553
+      mean_layer_pearson: 0.9997105455963015
       right_shard: 3
       top1_expert_match_rate: 0.9838709677419355
-    maximum_mean_layer_jensen_shannon_divergence_bits: 0.00024899084974781344
-    minimum_mean_layer_pearson: 0.9997099106200839
+    - left_shard: 1
+      mean_layer_jensen_shannon_divergence_bits: 0.00022340574287780336
+      mean_layer_pearson: 0.9997614255001568
+      right_shard: 2
+      top1_expert_match_rate: 0.9838709677419355
+    - left_shard: 1
+      mean_layer_jensen_shannon_divergence_bits: 0.00024616723368259843
+      mean_layer_pearson: 0.9997113430372815
+      right_shard: 3
+      top1_expert_match_rate: 0.9838709677419355
+    - left_shard: 2
+      mean_layer_jensen_shannon_divergence_bits: 0.00022215537190506358
+      mean_layer_pearson: 0.9997541615515486
+      right_shard: 3
+      top1_expert_match_rate: 0.9838709677419355
+    maximum_mean_layer_jensen_shannon_divergence_bits: 0.0002514249213294553
+    minimum_mean_layer_pearson: 0.9997105455963015
+  repeat_stability:
+    all_counts_exact: true
+    comparisons:
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 0
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 1
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 2
+      top1_expert_match_rate: 1.0
+    - baseline_repeat: 0
+      candidate_repeat: 1
+      counts_exact: true
+      mean_layer_jensen_shannon_divergence_bits: 0.0
+      mean_layer_pearson: 1.0
+      shard_index: 3
+      top1_expert_match_rate: 1.0
+    maximum_mean_layer_jensen_shannon_divergence_bits: 0.0
+    minimum_mean_layer_pearson: 1.0
 provenance:
-  collector_code_sha256: dc1ce4f24005cc39a40e27184b07a5b3f27d9bb68733792f0a95e597d92637f4
-  framework: sglang
+  framework_components:
+    flashinfer-cubin: 0.6.13
+    flashinfer-jit-cache: 0.6.13+cu130
+    flashinfer-python: 0.6.13
+  routing_observation_method: sglang_native_routing_recorder_with_fused_replay_v0613
+  image_reference: local-sqsh://sglang-v0.5.14-cu130-flashinfer-v0.6.13-aarch64@sha256:d25a52f7fba78f198c7ff70fe3d80510dffb99b34d2758af52c5af02f4e6d1a9
   framework_version: 0.5.14
-  image_reference: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3
-  image_sha256: 1ae1eb63f74b925e70a1ce8c245f6bab1d8852e727a793fb24b00d0ea0787754
-  routing_observation_method: sglang_explicit_topk_flashinfer_trtllm_routed
-  collection_result_sha256: d4f53103727bde81273749df02f842297911d64d6698237663304e8edb5c1b38
-  normalized_counts_sha256: 614403ed66f54c8f9b1c88832b281e3e0f5bf077ba0ce20143f2d7f9a2ca7eda
-  published_at: '2026-08-26T04:40:41.960866+00:00'
+  collection_checkpoint:
+    id: MiniMaxAI/MiniMax-M2.7
+    quantization: fp8_block
+    revision: d494266a4affc0d2995ba1fa35c8481cbd84294b
+  observation_source: recorder
+  collector_code_sha256: 44ea4f7f848cdcc1e7044d88c75f39a58d5bea69edc1a73155ba01d9d59040cb
+  routing_equivalence_evidence: null
+  image_archive_sha256: d25a52f7fba78f198c7ff70fe3d80510dffb99b34d2758af52c5af02f4e6d1a9
+  framework: sglang
+  recorder_count_divisor: 4
+  collection_result_sha256: 1bee49859615e7cafdc47d18ea453a681af8b67a476a14e234254cdd2c9bc386
+  normalized_counts_sha256: a63ff79a8f3bddc0da4bbd07141f24ba968dc21694fa3aea013cc1ae975443e2
+  published_at: '2026-09-02T18:11:23.736436+00:00'
 files:
   parquet:
     name: model_expert_popularity.parquet
-    sha256: 0d00926c568466abd77df7f4b37ac7436c9cf71f4efd57730a32bbde5e855572
+    sha256: a4fd5f2634677cd37a06626eae15977b69041745fc600eed14eeb57daba7308e
     rows: 15872
