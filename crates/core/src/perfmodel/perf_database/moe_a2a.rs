@@ -2275,12 +2275,21 @@ mod tests {
         let table = MoeA2aTable::new(tmp.path().to_path_buf());
         let q =
             |dtype: &str| table.query("deepep_ht", "dispatch", dtype, 16, 2, 7168, 8, 256, 64, 20);
+        let has_shape = |dtype: &str| {
+            table
+                .has_shape("deepep_ht", "dispatch", dtype, 16, 2, 7168, 8, 256)
+                .unwrap()
+        };
         approx(q("fp8").unwrap(), 0.1);
+        assert!(has_shape("fp8"));
         approx(q("nvfp4").unwrap(), 0.2);
+        assert!(has_shape("nvfp4"));
         // fp8_block is a behavioral mode reusing the fp8 comm tables.
         approx(q("fp8_block").unwrap(), 0.1);
+        assert!(has_shape("fp8_block"));
         // Two collected dtypes -> no sole-dtype fallback.
         assert!(q("bfloat16").is_err());
+        assert!(!has_shape("bfloat16"));
 
         // The LL legacy `default` key is phase-semantic, not a wildcard:
         // dispatch is FP8 and cannot serve NVFP4.
@@ -2591,6 +2600,54 @@ mod tests {
                 .deepep_ll_calibration("combine", "bfloat16", 16, 2, 7168, 8, 256, 64, 8)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn deepep_ht_round_trip_uses_the_resolved_combine_dtype() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rows = [
+            ("dispatch", "fp8_block", 16, 64, 100.0),
+            ("dispatch", "fp8_block", 32, 64, 1_000.0),
+            ("dispatch", "fp8_block", 32, 128, 1_000.0),
+            ("combine", "fp8", 16, 64, 900.0),
+            ("combine", "fp8", 16, 128, 900.0),
+            ("combine", "fp8", 32, 128, 100.0),
+        ]
+        .map(|(phase, dtype, sms, tokens, latency)| {
+            a2a_row("deepep_ht", phase, dtype, 16, 2, Some(sms), tokens, latency)
+        });
+        write_a2a_parquet(&tmp.path().join("moe_a2a_perf.parquet"), &rows, true);
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+        let shape = MoeA2aShapeKey {
+            ep_size: 16,
+            node_num: 2,
+            hidden_size: 7168,
+            topk: 8,
+            num_experts: 256,
+        };
+        let grids = table.load().unwrap();
+        let dispatch = &grids.by_backend["deepep_ht"]["dispatch"]["fp8_block"][&shape];
+        let combine = &grids.by_backend["deepep_ht"]["combine"]["fp8"][&shape];
+        let raw_dispatch = query_sms_grid(dispatch.prepared(), 24, 96).unwrap();
+        let raw_combine = query_sms_grid(combine.prepared(), 24, 96).unwrap();
+
+        let query = |phase| {
+            table
+                .query("deepep_ht", phase, "fp8_block", 16, 2, 7168, 8, 256, 96, 24)
+                .unwrap()
+        };
+        let apportioned_dispatch = query("dispatch");
+        let apportioned_combine = query("combine");
+        let combined = &dispatch.combined.get().unwrap()["fp8"];
+        let combined_latency = query_sms_grid(combined, 24, 96).unwrap();
+
+        assert!(
+            (raw_dispatch + raw_combine - combined_latency).abs() > 1e-6,
+            "fixture must distinguish the combined path from phase fallback"
+        );
+        assert!((apportioned_dispatch - raw_dispatch).abs() > 1e-6);
+        assert!((apportioned_combine - raw_combine).abs() > 1e-6);
+        approx(apportioned_dispatch + apportioned_combine, combined_latency);
     }
 
     // ------------------------------------------------------------------
