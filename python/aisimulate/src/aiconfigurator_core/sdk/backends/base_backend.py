@@ -258,7 +258,11 @@ class BaseBackend:
         from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
 
         try:
-            enc_cfg = get_model_config_from_model_path(model_path).get("extra_params")
+            model_info = get_model_config_from_model_path(model_path)
+            enc_cfg = model_info.get("encoder_config")
+            if not isinstance(enc_cfg, common.VisionEncoderConfig):
+                extra = model_info.get("extra_params")
+                enc_cfg = getattr(extra, "vision_config", extra)
         except Exception:
             logger.debug("Could not resolve model config for the effective ISL; using text ISL", exc_info=True)
             enc_cfg = None
@@ -268,6 +272,13 @@ class BaseBackend:
     def _visual_context_tokens(model: BaseModel, runtime_config: RuntimeConfig) -> int:
         return BaseBackend._visual_context_tokens_from_encoder_config(
             getattr(model, "encoder_config", None), runtime_config
+        )
+
+    @staticmethod
+    def _has_visual_context_work(model: BaseModel, runtime_config: RuntimeConfig) -> bool:
+        return (
+            bool(getattr(model, "visual_context_ops", ()))
+            and BaseBackend._visual_context_tokens(model, runtime_config) > 0
         )
 
     @staticmethod
@@ -282,10 +293,66 @@ class BaseBackend:
             1. image_height + image_width (smart-resized, then patch/merge sizes)
             2. num_image_tokens (explicit per-image override)
 
+        Gemma 4 instead treats the checkpoint ``soft_tokens_per_image`` as a
+        maximum. Its processor resizes to an aspect-ratio-preserving grid whose
+        sides are divisible by ``patch_size * pooling_kernel_size``; the actual
+        post-pool count can therefore be below that maximum. The processor pads
+        the patch tensor back to the maximum before running the vision tower, so
+        the returned pre-pool count is the padded maximum while the post-pool
+        count remains the number of valid soft tokens. The SDK-only
+        ``num_image_tokens`` field selects a supported alternate maximum.
+
         Returns ``(tokens_post_merge_per_image, pre_merge_per_image)``.
         Returns ``(0, 0)`` when neither is set (text-only path).
         """
         has_image_dims = runtime_config.image_height > 0 and runtime_config.image_width > 0
+        if isinstance(enc_cfg, common.Gemma4VisionEncoderConfig):
+            if not has_image_dims and runtime_config.num_image_tokens <= 0:
+                return 0, 0
+            max_soft_tokens = runtime_config.num_image_tokens or enc_cfg.soft_tokens_per_image
+            if max_soft_tokens not in enc_cfg.supported_soft_token_budgets:
+                raise ValueError(
+                    f"Gemma 4 num_image_tokens must be one of {enc_cfg.supported_soft_token_budgets}, "
+                    f"got {max_soft_tokens}"
+                )
+            if not has_image_dims:
+                tokens_per_image = max_soft_tokens
+                pre_merge_per_image = tokens_per_image * enc_cfg.pooling_kernel_size**2
+                return tokens_per_image, pre_merge_per_image
+
+            # Keep this arithmetic aligned with Gemma4ImageProcessor's
+            # get_aspect_ratio_preserving_size. The target area is the maximum
+            # patch budget, but rounding both sides down to the pooling stride
+            # determines the actual patch and pooled-token counts.
+            patch_size = enc_cfg.patch_size
+            pooling_size = enc_cfg.pooling_kernel_size
+            max_patches = max_soft_tokens * pooling_size**2
+            target_pixels = max_patches * patch_size**2
+            scale = math.sqrt(target_pixels / (runtime_config.image_height * runtime_config.image_width))
+            side_multiple = pooling_size * patch_size
+            target_height = math.floor(scale * runtime_config.image_height / side_multiple) * side_multiple
+            target_width = math.floor(scale * runtime_config.image_width / side_multiple) * side_multiple
+            max_side_length = (max_patches // pooling_size**2) * side_multiple
+            if target_height == 0 and target_width == 0:
+                raise ValueError("Gemma 4 image dimensions resize to 0x0; increase the dimensions or soft-token budget")
+            if target_height == 0:
+                target_height = side_multiple
+                target_width = min(
+                    math.floor(runtime_config.image_width / runtime_config.image_height) * side_multiple,
+                    max_side_length,
+                )
+            elif target_width == 0:
+                target_width = side_multiple
+                target_height = min(
+                    math.floor(runtime_config.image_height / runtime_config.image_width) * side_multiple,
+                    max_side_length,
+                )
+            resized_patches = (target_height // patch_size) * (target_width // patch_size)
+            tokens_per_image = resized_patches // pooling_size**2
+            if tokens_per_image <= 0 or resized_patches <= 0:
+                return 0, 0
+            return tokens_per_image, max_patches
+
         if has_image_dims:
             # Upstream VL processors (Qwen smart_resize) round each raw
             # dimension to the *nearest* multiple of patch_size * merge_size
@@ -346,7 +413,11 @@ class BaseBackend:
         # on post-merge tokens; ViT attention uses cu_seqlens (each image an
         # independent varlen sequence of pre_merge_per_image patches).
         def _encoder_eff_s(op) -> int:
-            use_post = "encoder_projector" in op._name or "all_gather" in op._name
+            use_post = (
+                "encoder_projector" in op._name
+                or "encoder_gemma4_pool_postprocess" in op._name
+                or "all_gather" in op._name
+            )
             use_varlen = "encoder_attention" in op._name
             if use_varlen:
                 return pre_merge_per_image
@@ -412,6 +483,65 @@ class BaseBackend:
                 if include_energy:
                     energy_dict[name] += float(energy_wms)
                 source_dict[name] = source
+        return latency_dict, energy_dict, source_dict
+
+    def _run_visual_context_phase(
+        self,
+        model: BaseModel,
+        database: PerfDatabase,
+        runtime_config: RuntimeConfig,
+        batch_size: int,
+        *,
+        include_energy: bool = True,
+    ) -> tuple[dict[str, float], dict[str, float], dict[str, str]]:
+        """Model Gemma 4's extra upper-triangle attention per visual block.
+
+        The ordinary context-attention graph already prices the causal half of
+        every image block. Gemma 4 makes those blocks bidirectional on sliding
+        layers, so this evaluates the same attention shape through the compiled
+        engine and retains only the additional strict upper triangle.
+        """
+        visual_ops = getattr(model, "visual_context_ops", ())
+        enc_cfg = getattr(model, "encoder_config", None)
+        if not visual_ops or runtime_config.num_images_per_request <= 0 or enc_cfg is None:
+            return {}, {}, {}
+
+        tokens_per_image, _ = self._encoder_pre_merge_per_visual(runtime_config, enc_cfg)
+        if tokens_per_image <= 1:
+            return {}, {}, {}
+
+        from aiconfigurator_core.sdk.engine import build_ops_json
+        from aiconfigurator_core.sdk.rust_engine_step import evaluate_ops_json_with_rust
+
+        image_batch = batch_size * runtime_config.num_images_per_request
+        entries = evaluate_ops_json_with_rust(
+            model,
+            database,
+            ops_json=build_ops_json(visual_ops),
+            is_context=True,
+            batch_size=image_batch,
+            s=tokens_per_image,
+            prefix=0,
+            imbalance_correction_scale=runtime_config.seq_imbalance_correction_scale,
+            x=image_batch * tokens_per_image,
+        )
+        ops_by_name = {op._name: op for op in visual_ops}
+        latency_dict: dict[str, float] = {}
+        energy_dict: dict[str, float] = {}
+        source_dict: dict[str, str] = {}
+        upper_triangle_pairs = tokens_per_image * (tokens_per_image - 1) / 2
+        for name, latency_ms, energy_wms, source in entries:
+            op = ops_by_name[name]
+            window_size = op._window_size
+            modeled_causal_pairs = (
+                tokens_per_image**2 / 2
+                if window_size <= 0 or tokens_per_image <= window_size
+                else tokens_per_image * window_size
+            )
+            overlay_scale = upper_triangle_pairs / modeled_causal_pairs
+            latency_dict[name] = float(latency_ms) * overlay_scale
+            energy_dict[name] = float(energy_wms) * overlay_scale if include_energy else 0.0
+            source_dict[name] = source
         return latency_dict, energy_dict, source_dict
 
     def run_encoder_static(
@@ -496,6 +626,22 @@ class BaseBackend:
             # latency and energy by name).
             context_energy_wms_dict = dict.fromkeys(context_latency_dict, 0.0)
             generation_energy_wms_dict = dict.fromkeys(generation_latency_dict, 0.0)
+        if mode != "static_gen" and self._has_visual_context_work(model, runtime_config):
+            visual_latency, visual_energy, visual_source = self._run_visual_context_phase(
+                model,
+                database,
+                runtime_config,
+                runtime_config.batch_size,
+                include_energy=include_energy,
+            )
+            for name, latency_ms in visual_latency.items():
+                context_latency_dict[name] = context_latency_dict.get(name, 0.0) + (
+                    latency_ms * latency_correction_scale
+                )
+                context_energy_wms_dict[name] = context_energy_wms_dict.get(name, 0.0) + (
+                    visual_energy[name] * latency_correction_scale
+                )
+                context_source_dict[name] = visual_source[name]
         return (
             context_latency_dict,
             context_energy_wms_dict,
@@ -1090,13 +1236,43 @@ class BaseBackend:
             seq_imbalance_correction_scale=runtime_config.seq_imbalance_correction_scale,
             gen_seq_imbalance_correction_scale=runtime_config.gen_seq_imbalance_correction_scale,
         )
+        component_latency_ms = dict(components["component_latency_ms"])
+        component_energy_wms = dict(components["component_energy_wms"])
+        per_op_latency_ms = dict(components["per_op_latency_ms"])
+        per_op_source = dict(components["per_op_source"])
+        latency_ms = float(components["latency_ms"])
+        energy_wms = float(components["energy_wms"])
+        if self._has_visual_context_work(model, runtime_config):
+            visual_batch = int(np.ceil(step.context_tokens / isl))
+            visual_scale = float(np.ceil(isl / step.context_tokens))
+            visual_latency, visual_energy, visual_source = self._run_visual_context_phase(
+                model,
+                database,
+                runtime_config,
+                visual_batch,
+            )
+            visual_latency = {name: value / visual_scale for name, value in visual_latency.items()}
+            visual_energy = {name: value / visual_scale for name, value in visual_energy.items()}
+            visual_latency_total = sum(visual_latency.values())
+            visual_energy_total = sum(visual_energy.values())
+            latency_ms += visual_latency_total
+            energy_wms += visual_energy_total
+            component_latency_ms["context_attention"] = (
+                component_latency_ms.get("context_attention", 0.0) + visual_latency_total
+            )
+            component_energy_wms["context_attention"] = (
+                component_energy_wms.get("context_attention", 0.0) + visual_energy_total
+            )
+            for name, value in visual_latency.items():
+                per_op_latency_ms[name] = per_op_latency_ms.get(name, 0.0) + value
+                per_op_source[name] = visual_source[name]
         return StepEstimate(
-            latency_ms=components["latency_ms"],
-            energy_wms=components["energy_wms"],
-            component_latency_ms=components["component_latency_ms"],
-            component_energy_wms=components["component_energy_wms"],
-            per_op_latency_ms=components["per_op_latency_ms"],
-            per_op_source=components["per_op_source"],
+            latency_ms=latency_ms,
+            energy_wms=energy_wms,
+            component_latency_ms=component_latency_ms,
+            component_energy_wms=component_energy_wms,
+            per_op_latency_ms=per_op_latency_ms,
+            per_op_source=per_op_source,
             moe_comm_fallbacks=components["moe_comm_fallbacks"],
             context_tokens=step.context_tokens,
             num_decode_requests=step.num_decode_requests,
@@ -1143,10 +1319,22 @@ class BaseBackend:
         enc_cfg = getattr(model, "encoder_config", None)
         activations = 0.0
         if isinstance(enc_cfg, common.VisionEncoderConfig) and num_tokens > 0:
-            # ~3x hidden_size per patch covers QKV, attention output, and FFN intermediates (bfloat16)
-            activations = 2 * num_tokens * enc_cfg.hidden_size * 3
-            # Projected embeddings (all projector instances concatenated along hidden)
-            activations += 2 * embed_tokens * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
+            if isinstance(enc_cfg, common.Gemma4VisionEncoderConfig):
+                # Encoder TP shards QKV and gated-MLP intermediates while the
+                # residual stream stays replicated. Encoder DP instead builds
+                # a complete tower on each rank and shards whole images.
+                encoder_tp = 1 if model.config.enable_encoder_dp else model.config.tp_size
+                qkv_width = 3 * enc_cfg.hidden_size // encoder_tp
+                gated_mlp_width = enc_cfg.hidden_size + (2 * enc_cfg.intermediate_size) // encoder_tp
+                activations = 2 * num_tokens * max(qkv_width, gated_mlp_width)
+                # Pooled tower output, normalized projection input, and final
+                # language-space embeddings coexist at the adapter boundary.
+                activations += 2 * embed_tokens * (2 * enc_cfg.hidden_size + enc_cfg.out_hidden_size)
+            else:
+                # ~3x hidden_size per patch covers QKV, attention output, and FFN intermediates (bfloat16)
+                activations = 2 * num_tokens * enc_cfg.hidden_size * 3
+                # Projected embeddings (all projector instances concatenated along hidden)
+                activations += 2 * embed_tokens * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
             activations = max(activations, 32 * 1024 * 1024)  # 32 MiB minimum
         one_gib = 1 << 30
         return {
@@ -1219,6 +1407,7 @@ class BaseBackend:
             runtime_config.image_height,
             runtime_config.image_width,
             runtime_config.num_images_per_request,
+            runtime_config.num_image_tokens,
         )
         cache_key = (
             self._make_agg_cache_key(isl, osl, b, ctx_tokens, agg_extra),
