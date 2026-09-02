@@ -153,6 +153,9 @@ def test_multinode_job_normalizes_tp_duplicated_recorder_counts():
     assert 'case "${WEIGHT_LOADER_DROP_CACHE_AFTER_LOAD:-0}"' in node_runner
     assert "SERVER_ARGS+=(--weight-loader-drop-cache-after-load)" in node_runner
     assert '"WEIGHT_LOADER_DROP_CACHE_AFTER_LOAD"' in node_runner
+    assert 'if [[ -n "${MODEL_LOADER_EXTRA_CONFIG:-}" ]]' in node_runner
+    assert 'SERVER_ARGS+=(--model-loader-extra-config "$MODEL_LOADER_EXTRA_CONFIG")' in node_runner
+    assert '"MODEL_LOADER_EXTRA_CONFIG"' in node_runner
     assert 'export TRITON_CACHE_DIR="$compile_cache_dir/triton"' in node_runner
     assert '"TRITON_CACHE_DIR"' in node_runner
     assert "MOE_RUNNER_BACKEND" not in node_runner

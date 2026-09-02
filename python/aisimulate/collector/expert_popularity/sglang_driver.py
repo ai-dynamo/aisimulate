@@ -172,6 +172,7 @@ def _run_recorder_window(
                 "input_ids": request["input_ids"],
                 "sampling_params": {"max_new_tokens": 1, "temperature": 0, "ignore_eos": True},
             },
+            timeout=args.request_timeout,
         )
         body = response.json()
         prompt_tokens = int(body["meta_info"]["prompt_tokens"])
@@ -240,14 +241,14 @@ def _verify_observer_transparency(
         "input_ids": request["input_ids"],
         "sampling_params": {"max_new_tokens": 1, "temperature": 0, "ignore_eos": True},
     }
-    baseline_response = _post(args.base_url, "/generate", payload)
+    baseline_response = _post(args.base_url, "/generate", payload, timeout=args.request_timeout)
     baseline_body = baseline_response.json()
     if int(baseline_body["meta_info"]["prompt_tokens"]) != request["isl"]:
         raise RuntimeError("observer transparency baseline changed the request ISL")
 
     before = set(raw_dir.glob("*.pt"))
     start_response = _post(args.base_url, "/start_expert_distribution_record")
-    observed_response = _post(args.base_url, "/generate", payload)
+    observed_response = _post(args.base_url, "/generate", payload, timeout=args.request_timeout)
     observed_body = observed_response.json()
     stop_response = _post(args.base_url, "/stop_expert_distribution_record")
     dump_response = _post(args.base_url, "/dump_expert_distribution_record")

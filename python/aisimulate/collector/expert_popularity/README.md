@@ -44,7 +44,10 @@ limit, `WEIGHT_LOADER_DROP_CACHE_AFTER_LOAD=1` releases each safetensors shard
 from the OS cache after SGLang has loaded it. `WEIGHT_LOADER_DISABLE_MMAP=1` is
 also available for filesystems that cannot mmap safely, but it reads each shard
 into process memory and therefore is not a host-memory reduction mechanism.
-Both settings are optional, default off, and are recorded in runtime provenance.
+`MODEL_LOADER_EXTRA_CONFIG='{"enable_multithread_load":false}'` selects
+SGLang's sequential safetensors iterator when concurrent per-rank shard loading
+would exceed the node's host-memory limit. All three settings are optional,
+default off, and are recorded in runtime provenance and server arguments.
 
 Partition, account, node count, GPU count, constraints, topology preferences, and log
 destination belong in the site-local submit command or wrapper, not in this repository.

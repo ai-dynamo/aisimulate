@@ -108,6 +108,18 @@ else
     exit 13
 fi
 
+if [[ -n "${MODEL_LOADER_EXTRA_CONFIG:-}" ]]; then
+    python3 - "$MODEL_LOADER_EXTRA_CONFIG" <<'PY'
+import json
+import sys
+
+value = json.loads(sys.argv[1])
+if not isinstance(value, dict):
+    raise SystemExit("MODEL_LOADER_EXTRA_CONFIG must encode a JSON object")
+PY
+    SERVER_ARGS+=(--model-loader-extra-config "$MODEL_LOADER_EXTRA_CONFIG")
+fi
+
 if [[ "${ENABLE_DETERMINISTIC_INFERENCE:-0}" == "1" ]]; then
     SERVER_ARGS+=(--enable-deterministic-inference)
 fi
@@ -149,6 +161,7 @@ names = (
     "OBSERVATION_SOURCE",
     "WEIGHT_LOADER_DISABLE_MMAP",
     "WEIGHT_LOADER_DROP_CACHE_AFTER_LOAD",
+    "MODEL_LOADER_EXTRA_CONFIG",
 )
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump({name: os.environ[name] for name in names if name in os.environ}, handle, indent=2, sort_keys=True)
