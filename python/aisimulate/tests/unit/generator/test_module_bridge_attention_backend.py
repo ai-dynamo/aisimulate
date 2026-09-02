@@ -8,9 +8,11 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+import yaml
 
 from aiconfigurator.generator.api import generate_backend_artifacts
 from aiconfigurator.generator.module_bridge import task_config_to_generator_config
+from aiconfigurator_core.sdk.config import ModelConfig
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +52,29 @@ def test_aggregate_worker_uses_task_attention_backend():
     result = task_config_to_generator_config(_task(), row, num_gpus_per_node=4)
 
     assert result["params"]["agg"]["attention_backend"] == "fa3"
+
+
+def test_normalized_attention_backend_is_yaml_serializable():
+    row = pd.Series({"workers": 1, "tp": 1, "pp": 1, "dp": 1, "bs": 64})
+    normalized_backend = ModelConfig(attention_backend="flashinfer").attention_backend
+
+    result = task_config_to_generator_config(
+        _task(attention_backend=normalized_backend),
+        row,
+        num_gpus_per_node=4,
+    )
+
+    serialized = yaml.safe_dump(result, sort_keys=False)
+    loaded = yaml.safe_load(serialized)
+    assert loaded["params"]["agg"]["attention_backend"] == "flashinfer"
+
+    artifacts = generate_backend_artifacts(
+        result,
+        "sglang",
+        backend_version="0.5.14",
+        deployment_target="dynamo-j2",
+    )
+    assert _flag_value(artifacts["cli_args_agg"], "--attention-backend") == "flashinfer"
 
 
 def test_disaggregated_workers_use_task_attention_backend():

@@ -1122,8 +1122,9 @@ def save_results(
                         generator_overrides=generator_overrides,
                     )
 
+                    generator_config_yaml = yaml.safe_dump(cfg, sort_keys=False)
                     with open(os.path.join(top_config_dir, "generator_config.yaml"), "w") as f:
-                        yaml.safe_dump(cfg, f, sort_keys=False)
+                        f.write(generator_config_yaml)
 
                     try:
                         deployment_target = getattr(args, "deployment_target", "dynamo-j2")
@@ -1151,3 +1152,4 @@ def save_results(
 
     except Exception:
         logger.exception("Failed to save results")
+        raise
