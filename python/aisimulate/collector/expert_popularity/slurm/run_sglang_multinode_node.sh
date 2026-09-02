@@ -110,6 +110,11 @@ fi
 if [[ "${ENABLE_DETERMINISTIC_INFERENCE:-0}" == "1" ]]; then
     SERVER_ARGS+=(--enable-deterministic-inference)
 fi
+case "${WEIGHT_LOADER_DISABLE_MMAP:-0}" in
+    0) ;;
+    1) SERVER_ARGS+=(--weight-loader-disable-mmap) ;;
+    *) echo "WEIGHT_LOADER_DISABLE_MMAP must be 0 or 1" >&2; exit 14 ;;
+esac
 if [[ -n "${ATTENTION_BACKEND:-}" ]]; then
     SERVER_ARGS+=(--attention-backend "$ATTENTION_BACKEND")
 fi
@@ -135,6 +140,7 @@ names = (
     "SGLANG_JIT_DEEPGEMM_PRECOMPILE",
     "ENABLE_RETURN_ROUTED_EXPERTS",
     "OBSERVATION_SOURCE",
+    "WEIGHT_LOADER_DISABLE_MMAP",
 )
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump({name: os.environ[name] for name in names if name in os.environ}, handle, indent=2, sort_keys=True)
