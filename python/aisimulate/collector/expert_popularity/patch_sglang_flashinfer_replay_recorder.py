@@ -35,8 +35,9 @@ _RETURN_ORIGINAL = "    return trtllm_fp8_block_scale_moe(**kwargs)\n"
 _RETURN_PATCHED = """    recorder = get_global_expert_distribution_recorder()
     routing_replay_out = None
     if recorder.recording:
-        routing_replay_out = torch.empty(
+        routing_replay_out = torch.full(
             (hidden_states.shape[0], top_k),
+            -1,
             dtype=torch.int16,
             device=hidden_states.device,
         )
@@ -96,8 +97,9 @@ _BF16_CALL_PATCHED = """            # Call the same fused kernel and request onl
             recorder = get_global_expert_distribution_recorder()
             routing_replay_out = None
             if recorder.recording:
-                routing_replay_out = torch.empty(
+                routing_replay_out = torch.full(
                     (hidden_states.shape[0], topk_config.top_k),
+                    -1,
                     dtype=torch.int16,
                     device=hidden_states.device,
                 )
@@ -141,8 +143,9 @@ _MXFP4_SETUP_PATCHED = """            top_k = topk_output.topk_config.top_k
             recorder = get_global_expert_distribution_recorder()
             routing_replay_out = None
             if recorder.recording:
-                routing_replay_out = torch.empty(
+                routing_replay_out = torch.full(
                     (x_quant.shape[0], top_k),
+                    -1,
                     dtype=torch.int16,
                     device=x_quant.device,
                 )

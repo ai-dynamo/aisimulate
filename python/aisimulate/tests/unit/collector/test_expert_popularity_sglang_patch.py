@@ -27,7 +27,8 @@ pytestmark = pytest.mark.unit
 
 
 def test_flashinfer_replay_bridge_records_kernel_selected_ids_without_rerouting():
-    assert "routing_replay_out = torch.empty" in _REPLAY_RETURN_PATCHED
+    assert "routing_replay_out = torch.full" in _REPLAY_RETURN_PATCHED
+    assert "-1," in _REPLAY_RETURN_PATCHED
     assert 'kwargs["routing_replay_out"] = routing_replay_out' in _REPLAY_RETURN_PATCHED
     assert "recorder.on_select_experts(topk_ids=routing_replay_out)" in _REPLAY_RETURN_PATCHED
     assert "to_standard" not in _REPLAY_RETURN_PATCHED
@@ -35,7 +36,8 @@ def test_flashinfer_replay_bridge_records_kernel_selected_ids_without_rerouting(
 
 
 def test_flashinfer_replay_bridge_observes_mxfp4_internal_routing_without_rerouting():
-    assert "routing_replay_out = torch.empty" in _MXFP4_SETUP_PATCHED
+    assert "routing_replay_out = torch.full" in _MXFP4_SETUP_PATCHED
+    assert "-1," in _MXFP4_SETUP_PATCHED
     assert "routing_replay_out=routing_replay_out" in _MXFP4_CALL_TAIL_PATCHED
     assert "recorder.on_select_experts(topk_ids=routing_replay_out)" in _MXFP4_CALL_TAIL_PATCHED
     assert "trtllm_fp4_block_scale_routed_moe" not in _MXFP4_CALL_TAIL_PATCHED
@@ -43,7 +45,8 @@ def test_flashinfer_replay_bridge_observes_mxfp4_internal_routing_without_rerout
 
 
 def test_flashinfer_replay_bridge_observes_bf16_internal_routing_without_rerouting():
-    assert "routing_replay_out = torch.empty" in _BF16_CALL_PATCHED
+    assert "routing_replay_out = torch.full" in _BF16_CALL_PATCHED
+    assert "-1," in _BF16_CALL_PATCHED
     assert "routing_replay_out=routing_replay_out" in _BF16_CALL_PATCHED
     assert "recorder.on_select_experts(topk_ids=routing_replay_out)" in _BF16_CALL_PATCHED
     assert "trtllm_bf16_routed_moe" not in _BF16_CALL_PATCHED
