@@ -271,6 +271,7 @@ where
         arrival_time_ms: f64,
         metadata: Metadata,
         session_id: Option<String>,
+        measured: bool,
     ) -> anyhow::Result<Uuid> {
         let uuid = request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
         let input_length = request.input_length();
@@ -280,8 +281,13 @@ where
             request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
         }
 
-        self.collector
-            .on_arrival(uuid, arrival_time_ms, input_length, output_length);
+        self.collector.on_arrival_with_measurement(
+            uuid,
+            arrival_time_ms,
+            input_length,
+            output_length,
+            measured,
+        );
         if let Some(context) = request.metadata().replay_context.as_ref() {
             self.collector.on_request_context(uuid, context);
         }
@@ -564,11 +570,13 @@ where
                 replay_hashes,
                 session_id,
                 turn_index,
+                measured,
             } = ready;
             let input_length = request.input_length();
             let output_length = request.metadata().effective_max_output_tokens();
             let session_metadata = session_id.clone().zip(turn_index);
-            let uuid = self.assign_request(request, arrival_time_ms, metadata, session_id)?;
+            let uuid =
+                self.assign_request(request, arrival_time_ms, metadata, session_id, measured)?;
             if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
                 self.collector
                     .on_agentic_metadata(uuid, request_id, play_id, dispatched_at_ms);

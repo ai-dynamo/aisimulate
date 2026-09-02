@@ -11,8 +11,8 @@ use crate::replay::{
     ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayEngineConfig, ReplayEngineFactory,
     ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
     loadgen::{
-        ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
-        WorkloadDriver, load_agentic_mooncake,
+        AgenticReplayConfig, ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec,
+        SyntheticTraceSpec, Trace, WorkloadDriver, load_agentic_mooncake,
     },
 };
 use anyhow::{Context, Result, anyhow, ensure};
@@ -23,6 +23,7 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)] // Parsed once; boxing adds indirection to the common path.
 enum ExecutionPayload {
     Configured {
         spec: ReplaySpec,
@@ -78,6 +79,10 @@ struct RuntimeTraffic {
     kv_load_ratio: Option<serde_json::Value>,
     #[serde(default)]
     max_sim_time_ms: Option<f64>,
+    #[serde(default)]
+    agentic_lanes: Option<usize>,
+    #[serde(default)]
+    agentic_replay: Option<AgenticReplayConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -568,10 +573,9 @@ fn build_runtime_input(
         let format = traffic.trace_format.as_deref().unwrap_or("mooncake");
         let speedup = traffic.arrival_speedup_ratio.unwrap_or(1.0);
         if format == "agentic_mooncake" {
-            ensure!(allow_agentic, "agentic trace requires aggregated topology");
             ensure!(
-                traffic.max_sim_time_ms.is_none(),
-                "agentic trace does not support max virtual time"
+                allow_agentic,
+                "agentic trace is not supported by this topology"
             );
             ensure!(
                 paths.len() == 1,
@@ -580,9 +584,11 @@ fn build_runtime_input(
             let trace = load_agentic_mooncake(&paths[0], trace_block_size)?
                 .normalize_starts()
                 .speed_up_timing(speedup)?;
-            return Ok(ReplayRuntimeInput::Workload(
-                WorkloadDriver::new_agentic_trace(trace, engine_block_size)?,
-            ));
+            return Ok(ReplayRuntimeInput::Workload(build_agentic_driver(
+                trace,
+                engine_block_size,
+                &traffic,
+            )?));
         }
         if format == "dynamo" {
             let loaded =
@@ -602,20 +608,14 @@ fn build_runtime_input(
                         traffic.replay_concurrency.is_none(),
                         "agentic Dynamo trace does not support concurrency load"
                     );
-                    WorkloadDriver::new_agentic_trace(
-                        {
-                            ensure!(
-                                allow_agentic,
-                                "agentic Dynamo trace requires aggregated topology"
-                            );
-                            ensure!(
-                                traffic.max_sim_time_ms.is_none(),
-                                "agentic Dynamo trace does not support max virtual time"
-                            );
-                            trace.normalize_starts().speed_up_timing(speedup)?
-                        },
-                        engine_block_size,
-                    )?
+                    let trace = {
+                        ensure!(
+                            allow_agentic,
+                            "agentic Dynamo trace is not supported by this topology"
+                        );
+                        trace.normalize_starts().speed_up_timing(speedup)?
+                    };
+                    build_agentic_driver(trace, engine_block_size, &traffic)?
                 }
             };
             return Ok(ReplayRuntimeInput::Workload(driver));
@@ -694,6 +694,31 @@ fn build_runtime_input(
         (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
     };
     Ok(ReplayRuntimeInput::Workload(driver))
+}
+
+fn build_agentic_driver(
+    trace: crate::replay::loadgen::AgenticTrace,
+    engine_block_size: usize,
+    traffic: &RuntimeTraffic,
+) -> Result<WorkloadDriver> {
+    if let Some(config) = traffic.agentic_replay {
+        return WorkloadDriver::new_agentic_replay(trace, engine_block_size, config);
+    }
+    if let Some(lanes) = traffic.agentic_lanes {
+        let config = AgenticReplayConfig {
+            lanes,
+            profile_duration_ms: traffic
+                .max_sim_time_ms
+                .unwrap_or_else(|| AgenticReplayConfig::default().profile_duration_ms),
+            ..AgenticReplayConfig::default()
+        };
+        return WorkloadDriver::new_agentic_replay(trace, engine_block_size, config);
+    }
+    ensure!(
+        traffic.max_sim_time_ms.is_none(),
+        "agentic trace max virtual time requires agentic_lanes or agentic_replay"
+    );
+    WorkloadDriver::new_agentic_trace(trace, engine_block_size)
 }
 
 fn run_with_input(
@@ -810,7 +835,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                             .expect("prefill role was materialized")
                             .rank
                             .block_size,
-                        false,
+                        true,
                     )
                 })
                 .transpose()?;

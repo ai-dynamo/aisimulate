@@ -54,6 +54,7 @@ pub(crate) struct ReplayReadyArrival<Metadata> {
     pub(crate) replay_hashes: Option<ReplayRequestHashes>,
     pub(crate) session_id: Option<String>,
     pub(crate) turn_index: Option<usize>,
+    pub(crate) measured: bool,
 }
 
 impl<Metadata> ReplayReadyArrival<Metadata> {
@@ -67,6 +68,7 @@ impl<Metadata> ReplayReadyArrival<Metadata> {
             dispatched_at_ms: self.dispatched_at_ms,
             session_id: self.session_id,
             turn_index: self.turn_index,
+            measured: self.measured,
         }
     }
 }
@@ -171,6 +173,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                         replay_hashes: None,
                         session_id,
                         turn_index,
+                        measured: true,
                     }));
                 }
                 Ok(ready)
@@ -198,6 +201,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                         replay_hashes,
                         session_id,
                         turn_index,
+                        measured: ready.measured,
                     })
                 })
                 .collect()),
@@ -225,6 +229,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                         replay_hashes: None,
                         session_id,
                         turn_index,
+                        measured: true,
                     }));
                     simulated_in_flight += 1;
                 }
@@ -256,6 +261,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                             replay_hashes,
                             session_id,
                             turn_index,
+                            measured: ready.measured,
                         })
                     })
                     .collect())

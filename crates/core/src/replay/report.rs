@@ -368,6 +368,7 @@ where
 
 #[derive(Debug)]
 struct TraceRequestStats {
+    measured: bool,
     arrival_time_ms: f64,
     first_admit_ms: Option<f64>,
     terminal_time_ms: Option<f64>,
@@ -766,6 +767,13 @@ pub struct TraceCollector {
     /// count varies with startup / drain / scaling.
     prefill_worker_seconds: f64,
     decode_worker_seconds: f64,
+    /// AgentX replay admits unmeasured primer/warmup requests before the
+    /// profiling window. Once the first measured request arrives, use that
+    /// timestamp as the report origin and discard worker time accrued during
+    /// setup.
+    measurement_origin_ms: f64,
+    saw_unmeasured_request: bool,
+    measurement_started: bool,
     /// Static provisioned worker counts `(prefill, decode)` for externally
     /// clocked runtimes with a fixed deployment size. When `Some`, `finish()`
     /// derives worker-seconds as `count × duration_s` instead of using the
@@ -919,9 +927,35 @@ impl TraceCollector {
         input_length: usize,
         requested_output_length: usize,
     ) {
+        self.on_arrival_with_measurement(
+            uuid,
+            arrival_time_ms,
+            input_length,
+            requested_output_length,
+            true,
+        );
+    }
+
+    pub(crate) fn on_arrival_with_measurement(
+        &mut self,
+        uuid: Uuid,
+        arrival_time_ms: f64,
+        input_length: usize,
+        requested_output_length: usize,
+        measured: bool,
+    ) {
+        if measured && self.saw_unmeasured_request && !self.measurement_started {
+            self.measurement_origin_ms = arrival_time_ms;
+            self.prefill_worker_seconds = 0.0;
+            self.decode_worker_seconds = 0.0;
+            self.measurement_started = true;
+        } else if !measured {
+            self.saw_unmeasured_request = true;
+        }
         self.requests.insert(
             uuid,
             TraceRequestStats {
+                measured,
                 arrival_time_ms,
                 first_admit_ms: None,
                 terminal_time_ms: None,
@@ -1301,7 +1335,9 @@ impl TraceCollector {
             stats.terminal_status = Some(status);
             if !*defer_token_timeline_finalization {
                 stats.finalize_token_timeline(
-                    status == ReplayTerminalStatus::Completed && stats.first_admit_ms.is_some(),
+                    stats.measured
+                        && status == ReplayTerminalStatus::Completed
+                        && stats.first_admit_ms.is_some(),
                     itl_distribution,
                     output_token_throughput_per_user,
                 );
@@ -1340,7 +1376,11 @@ impl TraceCollector {
     }
 
     pub fn finish(mut self) -> ReplayReport {
-        let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
+        let mut request_order = self
+            .requests
+            .iter()
+            .filter_map(|(uuid, stats)| stats.measured.then_some(*uuid))
+            .collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {
             let left = self
                 .requests
@@ -1400,7 +1440,7 @@ impl TraceCollector {
         let itl_distribution = self.itl_distribution.finish();
         let output_token_throughput_per_user = self.output_token_throughput_per_user.finish();
         let requests = self.requests;
-        let request_count = requests.len();
+        let request_count = requests.values().filter(|stats| stats.measured).count();
         let mut ttfts = Vec::with_capacity(request_count);
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
@@ -1435,7 +1475,7 @@ impl TraceCollector {
             total_output_tokens += output_length;
             total_reused_tokens += stats.reused_input_tokens;
             total_first_admission_reused_tokens += stats.first_admission_reused_input_tokens;
-            duration_ms = duration_ms.max(terminal_time_ms);
+            duration_ms = duration_ms.max((terminal_time_ms - self.measurement_origin_ms).max(0.0));
 
             let (Some(first_token_ms), Some(last_token_ms)) =
                 (stats.first_token_ms(), stats.last_token_ms())
@@ -1553,6 +1593,9 @@ impl TraceCollector {
     pub fn per_request_records(&self) -> Vec<PerRequestRecord> {
         let mut records = Vec::with_capacity(self.requests.len());
         for (uuid, stats) in &self.requests {
+            if !stats.measured {
+                continue;
+            }
             let Some(detail) = stats.detail.as_deref() else {
                 continue;
             };
@@ -2235,6 +2278,27 @@ mod tests {
         let report = static_runtime.finish();
         assert!(report.throughput.prefill_worker_seconds.abs() < 1e-9);
         assert!((report.throughput.decode_worker_seconds - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unmeasured_setup_is_excluded_from_duration_and_worker_seconds() {
+        let mut collector = TraceCollector::default();
+        collector.on_arrival_with_measurement(Uuid::from_u128(1), 0.0, 1, 1, false);
+        collector.add_worker_seconds(10.0, 20.0);
+
+        let uuid = Uuid::from_u128(2);
+        collector.on_arrival_with_measurement(uuid, 1_000.0, 1, 1, true);
+        collector.add_worker_seconds(3.0, 4.0);
+        collector.on_admit(uuid, 1_010.0, 0);
+        collector.on_decode_assigned(uuid, 0);
+        collector.on_token(uuid, 1_100.0);
+        collector.on_terminal(uuid, 1_200.0, ReplayTerminalStatus::Completed);
+
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, 1);
+        assert_eq!(report.throughput.duration_ms, 200.0);
+        assert_eq!(report.throughput.prefill_worker_seconds, 3.0);
+        assert_eq!(report.throughput.decode_worker_seconds, 4.0);
     }
 
     #[test]

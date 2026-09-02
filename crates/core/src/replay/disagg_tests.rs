@@ -19,7 +19,8 @@ use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory, ReplayRoleC
 use crate::replay::loadgen::{
     AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope, AgenticMooncakeHeader,
-    AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace, SessionTrace, Trace, TurnTrace,
+    AgenticMooncakeRow, AgenticReplayConfig, AgenticSourceProvenance, AgenticTrace, SessionTrace,
+    Trace, TurnTrace,
 };
 
 struct CaptureOncePolicy {
@@ -322,6 +323,76 @@ fn run_agentic_workload_collect(
             .run()
             .unwrap();
     (collector.finish(), stats)
+}
+
+#[test]
+fn agentx_disagg_report_excludes_priming_and_warmup_requests() {
+    let config = disagg_config();
+    let block_size = config.prefill_args.block_size;
+    let mut rows = vec![
+        agentic_row("turn-0", "play", 64, 1, block_size, 1_000, Vec::new()),
+        agentic_row(
+            "turn-1",
+            "play",
+            64,
+            1,
+            block_size,
+            2_000,
+            vec![AgenticDependency {
+                request_id: "turn-0".to_string(),
+                trigger: AgenticDependencyTrigger::Completion,
+                delay_ms: 100.0,
+                relation: AgenticDependencyRelation::Sequence,
+            }],
+        ),
+        agentic_row(
+            "turn-2",
+            "play",
+            64,
+            1,
+            block_size,
+            3_000,
+            vec![AgenticDependency {
+                request_id: "turn-1".to_string(),
+                trigger: AgenticDependencyTrigger::Completion,
+                delay_ms: 100.0,
+                relation: AgenticDependencyRelation::Sequence,
+            }],
+        ),
+    ];
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.session_id = "stream".to_string();
+        row.not_before_ms = index as f64 * 100.0;
+    }
+    let driver = WorkloadDriver::new_agentic_replay(
+        agentic_trace(block_size, rows),
+        block_size,
+        AgenticReplayConfig {
+            lanes: 1,
+            random_seed: 42,
+            start_min_ratio: 0.5,
+            start_max_ratio: 0.5,
+            warmup_requests_per_lane: 1,
+            profile_duration_ms: 0.000_001,
+            trace_idle_gap_cap_ms: 300_000.0,
+            system_idle_gap_cap_ms: 10_000.0,
+        },
+    )
+    .unwrap();
+    let (collector, _) =
+        DisaggRuntime::new_workload(&config, None, None, driver, ReplayMode::Trace)
+            .unwrap()
+            .with_per_request_records(true)
+            .run()
+            .unwrap();
+    let report = collector.finish();
+
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.per_request.len(), 1);
+    assert_eq!(report.per_request[0].request_id.as_deref(), Some("turn-2"));
+    let trajectories = report.trajectories.expect("agentic trajectory summary");
+    assert_eq!(trajectories.total, 1);
+    assert_eq!(trajectories.completed, 1);
 }
 
 struct DisaggRuntime;

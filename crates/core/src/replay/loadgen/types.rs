@@ -298,6 +298,39 @@ pub struct AgenticTrajectorySnapshot {
     pub e2e_latencies_ms: Vec<f64>,
 }
 
+/// InferenceX-style policy for timestamped agentic trace replay.
+///
+/// The policy snapshots one trace tree per lane, primes the sampled state,
+/// advances each lane with short warmup requests, and then continuously
+/// recycles complete trees until the profiling window closes.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgenticReplayConfig {
+    pub lanes: usize,
+    pub random_seed: u64,
+    pub start_min_ratio: f64,
+    pub start_max_ratio: f64,
+    pub warmup_requests_per_lane: usize,
+    pub profile_duration_ms: f64,
+    pub trace_idle_gap_cap_ms: f64,
+    pub system_idle_gap_cap_ms: f64,
+}
+
+impl Default for AgenticReplayConfig {
+    fn default() -> Self {
+        Self {
+            lanes: 128,
+            random_seed: 42,
+            start_min_ratio: 0.25,
+            start_max_ratio: 0.75,
+            warmup_requests_per_lane: 10,
+            profile_duration_ms: 3_600_000.0,
+            trace_idle_gap_cap_ms: 300_000.0,
+            system_idle_gap_cap_ms: 10_000.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgenticGraphIdentity {
     pub source: AgenticSourceProvenance,
@@ -416,6 +449,9 @@ pub struct ReadyTurn {
     pub replay_key: Option<String>,
     pub scheduled_ready_at_ms: f64,
     pub replay_hashes: Option<ReplayRequestHashes>,
+    /// Whether this request contributes to replay measurements. Warmup still
+    /// traverses the complete runtime but is omitted from the report.
+    pub measured: bool,
     pub request: DirectRequest,
 }
 
@@ -544,6 +580,7 @@ pub struct CompactReadyTurn {
     pub scheduled_ready_at_ms: f64,
     pub replay_hashes: Option<ReplayRequestHashes>,
     pub emit_session_metadata: bool,
+    pub measured: bool,
     pub request: ReplayRequestPayload,
 }
 
@@ -561,6 +598,7 @@ impl CompactReadyTurn {
             replay_key: self.replay_key,
             scheduled_ready_at_ms: self.scheduled_ready_at_ms,
             replay_hashes: self.replay_hashes,
+            measured: self.measured,
             request: self.request.into_direct_request(),
         }
     }

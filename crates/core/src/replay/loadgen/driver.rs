@@ -12,14 +12,18 @@ use uuid::Uuid;
 
 use super::trace::validate_synthesizable_prompt;
 use super::types::{
-    AgenticDependencyTrigger, AgenticGraphIdentity, AgenticTrace, AgenticTrajectorySnapshot,
-    CompactReadyTurn, ReadyTurn, ReplayRequestHashes, ReplayRequestPayload, Trace,
+    AgenticDependencyTrigger, AgenticGraphIdentity, AgenticReplayConfig, AgenticTrace,
+    AgenticTrajectorySnapshot, CompactReadyTurn, ReadyTurn, ReplayRequestHashes,
+    ReplayRequestPayload, Trace,
 };
 use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::protocol::DirectRequest;
 
+mod agentx;
+
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // The selected policy is fixed for the hot dispatch loop.
 enum SchedulingPolicy {
     Trace,
     Concurrency(ConcurrencyState),
@@ -36,14 +40,42 @@ struct ConcurrencyState {
 #[derive(Debug)]
 struct AgenticState {
     node_states: Vec<AgenticNodeState>,
+    initial_dependencies: Vec<usize>,
     remaining_dependencies: Vec<usize>,
     authored_not_before_ms: Vec<f64>,
     ready_after_ms: Vec<f64>,
     dispatch_dependents: Vec<Vec<AgenticDependentEdge>>,
     completion_dependents: Vec<Vec<AgenticDependentEdge>>,
     node_to_play: Vec<usize>,
+    cache_bust_hash_ids: Vec<Option<u32>>,
     plays: Vec<AgenticPlayState>,
     lanes: Vec<AgenticLaneState>,
+    replay: Option<AgenticReplayState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgenticReplayPhase {
+    Priming,
+    Warmup,
+    Profiling,
+    Draining,
+}
+
+#[derive(Debug)]
+struct AgenticReplayState {
+    config: AgenticReplayConfig,
+    phase: AgenticReplayPhase,
+    primer_sessions: FxHashMap<usize, usize>,
+    primers_in_flight: usize,
+    warmup_issued_by_lane: Vec<usize>,
+    profile_start_ms: Option<f64>,
+    profile_deadline_ms: Option<f64>,
+    next_request_id: u128,
+    next_cache_bust_hash_id: u32,
+    system_idle_since_ms: f64,
+    total_trajectories: usize,
+    completed_trajectories: usize,
+    e2e_latencies_ms: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,12 +105,14 @@ struct AgenticPlayState {
     quiescent: bool,
     root_dispatch_ms: Option<f64>,
     max_terminal_ms: Option<f64>,
+    measured_occurrence: bool,
 }
 
 #[derive(Debug)]
 struct AgenticLaneState {
     plays: Vec<usize>,
     next_play: usize,
+    active_play: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +146,7 @@ struct SessionRuntime {
     in_flight: Option<Uuid>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum PromptTokens {
     // Full-prompt traces stay in their compact on-disk representation until
     // dispatch. Delta-cumulative traces remain eager because later turns append
@@ -152,6 +186,18 @@ impl PromptTokens {
         }
     }
 
+    fn clone_deferred(&self) -> (usize, Vec<u32>) {
+        match self {
+            Self::Deferred {
+                input_length,
+                hash_ids,
+            } => (*input_length, hash_ids.clone()),
+            Self::Materialized(_) => {
+                unreachable!("full-prompt turns must retain their deferred representation")
+            }
+        }
+    }
+
     fn materialized(&self) -> &[u32] {
         match self {
             Self::Deferred { .. } => {
@@ -162,7 +208,7 @@ impl PromptTokens {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TurnRuntime {
     request_id: Option<String>,
     play_id: Option<String>,
@@ -297,7 +343,28 @@ impl AgenticState {
         sessions: &mut [SessionRuntime],
         ready_sessions: &mut BinaryHeap<ReadySession>,
     ) {
-        let play = &self.plays[play_index];
+        self.refresh_cache_bust_hash_ids(play_index, sessions);
+        ready_sessions.retain(|ready| {
+            self.node_to_play.get(ready.session_index).copied() != Some(play_index)
+        });
+        let measured_occurrence = self
+            .replay
+            .as_ref()
+            .is_none_or(|replay| replay.phase == AgenticReplayPhase::Profiling);
+        if measured_occurrence && let Some(replay) = &mut self.replay {
+            replay.total_trajectories += 1;
+        }
+        let play = &mut self.plays[play_index];
+        play.emitted_in_flight = 0;
+        play.completed_nodes = 0;
+        play.failed = false;
+        play.quiescent = false;
+        play.root_dispatch_ms = None;
+        play.max_terminal_ms = None;
+        play.measured_occurrence = measured_occurrence;
+        if let Some(lane_index) = play.lane_index {
+            self.lanes[lane_index].active_play = Some(play_index);
+        }
         let root_not_before_ms = play
             .root_nodes
             .iter()
@@ -305,8 +372,14 @@ impl AgenticState {
             .min_by(f64::total_cmp)
             .expect("validated agentic play has a root");
         for &node_index in &play.nodes {
+            self.node_states[node_index] = AgenticNodeState::Blocked;
+            self.remaining_dependencies[node_index] = self.initial_dependencies[node_index];
             self.ready_after_ms[node_index] =
                 start_ms + (self.authored_not_before_ms[node_index] - root_not_before_ms).max(0.0);
+            let session = &mut sessions[node_index];
+            session.next_turn_index = 0;
+            session.next_ready_at_ms = None;
+            session.in_flight = None;
         }
         for &root_node in &play.root_nodes {
             Self::schedule_node(
@@ -326,6 +399,10 @@ impl AgenticState {
         source_node: usize,
         now_ms: f64,
     ) {
+        let accelerated = self
+            .replay
+            .as_ref()
+            .is_some_and(|replay| replay.phase == AgenticReplayPhase::Warmup);
         Self::release_edges(
             &self.dispatch_dependents[source_node],
             &mut self.node_states,
@@ -334,6 +411,7 @@ impl AgenticState {
             sessions,
             ready_sessions,
             now_ms,
+            accelerated,
         );
     }
 
@@ -344,6 +422,10 @@ impl AgenticState {
         source_node: usize,
         now_ms: f64,
     ) {
+        let accelerated = self
+            .replay
+            .as_ref()
+            .is_some_and(|replay| replay.phase == AgenticReplayPhase::Warmup);
         Self::release_edges(
             &self.completion_dependents[source_node],
             &mut self.node_states,
@@ -352,6 +434,7 @@ impl AgenticState {
             sessions,
             ready_sessions,
             now_ms,
+            accelerated,
         );
     }
 
@@ -364,6 +447,7 @@ impl AgenticState {
         sessions: &mut [SessionRuntime],
         ready_sessions: &mut BinaryHeap<ReadySession>,
         now_ms: f64,
+        accelerated: bool,
     ) {
         for edge in edges {
             let target = edge.target_node;
@@ -377,9 +461,14 @@ impl AgenticState {
             if remaining_dependencies[target] != 0 {
                 continue;
             }
+            let scheduled_at_ms = if accelerated {
+                now_ms
+            } else {
+                ready_after_ms[target]
+            };
             Self::schedule_node(
                 target,
-                ready_after_ms[target],
+                scheduled_at_ms,
                 node_states,
                 sessions,
                 ready_sessions,
@@ -410,12 +499,12 @@ impl AgenticState {
         });
     }
 
-    fn on_node_emitted(&mut self, node_index: usize, now_ms: f64) {
+    fn on_node_emitted(&mut self, node_index: usize, now_ms: f64, measured: bool) {
         debug_assert_eq!(self.node_states[node_index], AgenticNodeState::Ready);
         self.node_states[node_index] = AgenticNodeState::Emitted;
         let play = &mut self.plays[self.node_to_play[node_index]];
         play.emitted_in_flight += 1;
-        if play.root_nodes.contains(&node_index) {
+        if measured {
             play.root_dispatch_ms = Some(
                 play.root_dispatch_ms
                     .map_or(now_ms, |seen| seen.min(now_ms)),
@@ -431,6 +520,9 @@ impl AgenticState {
         now_ms: f64,
         outcome: TurnOutcome,
     ) {
+        if let Some(replay) = &mut self.replay {
+            replay.system_idle_since_ms = now_ms;
+        }
         let play_index = self.node_to_play[node_index];
         let was_failed = self.plays[play_index].failed;
         {
@@ -488,6 +580,7 @@ impl AgenticState {
         if (all_completed || failed_and_settled) && play.emitted_in_flight == 0 {
             self.release_lane(play_index, now_ms, sessions, ready_sessions);
         }
+        self.maybe_start_profiling(now_ms, sessions, ready_sessions);
         Ok(())
     }
 
@@ -502,11 +595,50 @@ impl AgenticState {
             return;
         }
         self.plays[play_index].quiescent = true;
+        if self.plays[play_index].measured_occurrence
+            && !self.plays[play_index].failed
+            && self.plays[play_index].completed_nodes == self.plays[play_index].nodes.len()
+            && let (Some(start_ms), Some(end_ms)) = (
+                self.plays[play_index].root_dispatch_ms,
+                self.plays[play_index].max_terminal_ms,
+            )
+            && let Some(replay) = &mut self.replay
+        {
+            replay.completed_trajectories += 1;
+            replay.e2e_latencies_ms.push(end_ms - start_ms);
+        }
         let Some(lane_index) = self.plays[play_index].lane_index else {
             return;
         };
         let lane = &mut self.lanes[lane_index];
         lane.next_play += 1;
+        lane.active_play = None;
+
+        if let Some(replay) = &mut self.replay {
+            if replay.phase == AgenticReplayPhase::Profiling
+                && replay
+                    .profile_deadline_ms
+                    .is_some_and(|deadline| now_ms >= deadline)
+            {
+                replay.phase = AgenticReplayPhase::Draining;
+            }
+            let should_recycle = match replay.phase {
+                AgenticReplayPhase::Warmup => {
+                    replay.warmup_issued_by_lane[lane_index]
+                        < replay.config.warmup_requests_per_lane
+                }
+                AgenticReplayPhase::Profiling => true,
+                AgenticReplayPhase::Priming | AgenticReplayPhase::Draining => false,
+            };
+            if !should_recycle {
+                return;
+            }
+            lane.next_play %= lane.plays.len();
+            let next_play_index = lane.plays[lane.next_play];
+            self.activate_play(next_play_index, now_ms, sessions, ready_sessions);
+            return;
+        }
+
         let Some(&next_play_index) = lane.plays.get(lane.next_play) else {
             return;
         };
@@ -514,6 +646,13 @@ impl AgenticState {
     }
 
     fn trajectory_snapshot(&self) -> AgenticTrajectorySnapshot {
+        if let Some(replay) = &self.replay {
+            return AgenticTrajectorySnapshot {
+                total_trajectories: replay.total_trajectories,
+                completed_trajectories: replay.completed_trajectories,
+                e2e_latencies_ms: replay.e2e_latencies_ms.clone(),
+            };
+        }
         let mut e2e_latencies_ms = Vec::new();
         for play in &self.plays {
             if play.failed || play.completed_nodes != play.nodes.len() {
@@ -671,6 +810,37 @@ impl WorkloadDriver {
         include_replay_hashes: bool,
         agentic_lanes: Option<usize>,
     ) -> Result<Self> {
+        Self::new_agentic_trace_internal(
+            trace,
+            engine_block_size,
+            include_replay_hashes,
+            agentic_lanes,
+            None,
+        )
+    }
+
+    pub fn new_agentic_replay(
+        trace: AgenticTrace,
+        engine_block_size: usize,
+        config: AgenticReplayConfig,
+    ) -> Result<Self> {
+        Self::new_agentic_trace_internal(
+            trace,
+            engine_block_size,
+            true,
+            Some(config.lanes),
+            Some(config),
+        )
+    }
+
+    #[allow(clippy::needless_range_loop)] // The index updates both play and lane tables.
+    fn new_agentic_trace_internal(
+        trace: AgenticTrace,
+        engine_block_size: usize,
+        include_replay_hashes: bool,
+        agentic_lanes: Option<usize>,
+        replay_config: Option<AgenticReplayConfig>,
+    ) -> Result<Self> {
         if engine_block_size == 0 {
             bail!("engine_block_size must be greater than 0");
         }
@@ -679,6 +849,9 @@ impl WorkloadDriver {
         }
         let engine_block_size_u32 =
             u32::try_from(engine_block_size).context("engine_block_size does not fit in u32")?;
+        let replay_config = replay_config
+            .map(|config| config.validate(trace.plays.len()))
+            .transpose()?;
         let agentic_graph_identity = trace.identity();
         let trace_block_size = trace.block_size;
         let mut hash_id_interner = FxHashMap::default();
@@ -785,6 +958,7 @@ impl WorkloadDriver {
                     quiescent: false,
                     root_dispatch_ms: None,
                     max_terminal_ms: None,
+                    measured_occurrence: false,
                 }
             })
             .collect::<Vec<_>>();
@@ -796,6 +970,7 @@ impl WorkloadDriver {
                 .map(|_| AgenticLaneState {
                     plays: Vec::new(),
                     next_play: 0,
+                    active_play: None,
                 })
                 .collect();
             for play_index in 0..plays.len() {
@@ -805,19 +980,25 @@ impl WorkloadDriver {
             }
         }
 
+        let replay = replay_config.map(|config| AgenticReplayState::new(config, next_hash_id));
         let mut state = AgenticState {
             node_states: vec![AgenticNodeState::Blocked; sessions.len()],
+            initial_dependencies: remaining_dependencies.clone(),
             remaining_dependencies,
             ready_after_ms: authored_not_before_ms.clone(),
             authored_not_before_ms,
             dispatch_dependents,
             completion_dependents,
             node_to_play,
+            cache_bust_hash_ids: vec![None; sessions.len()],
             plays,
             lanes,
+            replay,
         };
         let mut ready_sessions = BinaryHeap::new();
-        if state.lanes.is_empty() {
+        if state.replay.is_some() {
+            state.initialize_replay(&mut sessions, &mut ready_sessions);
+        } else if state.lanes.is_empty() {
             for play in &state.plays {
                 for &root_node in &play.root_nodes {
                     AgenticState::schedule_node(
@@ -988,7 +1169,17 @@ impl WorkloadDriver {
         }
     }
 
-    fn request_uuid(&self, _session_index: usize, _turn_index: usize) -> Uuid {
+    fn request_uuid(&mut self, _session_index: usize, _turn_index: usize) -> Uuid {
+        if let SchedulingPolicy::Agentic(state) = &mut self.policy
+            && let Some(replay) = &mut state.replay
+        {
+            let request_id = Uuid::from_u128(replay.next_request_id);
+            replay.next_request_id = replay
+                .next_request_id
+                .checked_add(1)
+                .expect("agentic replay request UUID overflow");
+            return request_id;
+        }
         if let Some(request_id) =
             self.sessions[_session_index].turns[_turn_index].deterministic_request_id
         {
@@ -1027,12 +1218,16 @@ impl WorkloadDriver {
 
     #[doc(hidden)]
     pub fn pop_ready_compact(&mut self, now_ms: f64, limit: usize) -> Vec<CompactReadyTurn> {
+        if let SchedulingPolicy::Agentic(state) = &mut self.policy {
+            state.stop_profiling_if_due(now_ms, &mut self.sessions);
+        }
         let effective_limit = self.policy.dispatch_limit(limit, self.in_flight.len());
         if effective_limit == 0 {
             return Vec::new();
         }
 
         let mut emitted = Vec::new();
+        let mut held = Vec::new();
         while emitted.len() < effective_limit {
             let Some(ready_session) = self.ready_sessions.pop() else {
                 break;
@@ -1062,17 +1257,81 @@ impl WorkloadDriver {
             else {
                 continue;
             };
+            if let SchedulingPolicy::Agentic(state) = &self.policy
+                && !state.can_emit(session_index, now_ms)
+            {
+                held.push(ready_session);
+                continue;
+            }
             let request_uuid = self.request_uuid(session_index, turn_index);
+            let (is_agentic_replay, is_primer, measured, cache_bust_hash_id) = match &self.policy {
+                SchedulingPolicy::Agentic(state) => {
+                    let is_primer = state.is_primer_session(session_index);
+                    let measured = state.replay.as_ref().is_none_or(|replay| {
+                        replay.phase == AgenticReplayPhase::Profiling && !is_primer
+                    });
+                    let source_node = state
+                        .replay
+                        .as_ref()
+                        .and_then(|replay| replay.primer_sessions.get(&session_index))
+                        .copied()
+                        .unwrap_or(session_index);
+                    let cache_bust_hash_id = state
+                        .replay
+                        .as_ref()
+                        .and(state.cache_bust_hash_ids[source_node]);
+                    (
+                        state.replay.is_some(),
+                        is_primer,
+                        measured,
+                        cache_bust_hash_id,
+                    )
+                }
+                SchedulingPolicy::Trace | SchedulingPolicy::Concurrency(_) => {
+                    (false, false, true, None)
+                }
+            };
+            let accelerated_warmup = matches!(
+                &self.policy,
+                SchedulingPolicy::Agentic(state)
+                    if state.replay.as_ref().is_some_and(|replay| {
+                        replay.phase == AgenticReplayPhase::Warmup
+                    })
+            );
             let session = &mut self.sessions[session_index];
             let turn = &mut session.turns[turn_index];
             let arrival_timestamp_ms = self.policy.arrival_timestamp_ms(scheduled_ready_at_ms);
             let (request, replay_hashes) = match self.prompt_mode {
                 PromptMode::Full => {
-                    let (input_length, hash_ids) = turn.prompt_tokens.take_deferred();
+                    let (input_length, mut hash_ids) = if is_agentic_replay {
+                        turn.prompt_tokens.clone_deferred()
+                    } else {
+                        turn.prompt_tokens.take_deferred()
+                    };
+                    if let (Some(first_hash), Some(marker)) =
+                        (hash_ids.first_mut(), cache_bust_hash_id)
+                    {
+                        *first_hash = marker;
+                    }
+                    let output_token_ids = if is_agentic_replay {
+                        turn.output_token_ids.clone().map(|tokens| {
+                            if is_primer || accelerated_warmup {
+                                tokens.into_iter().take(1).collect()
+                            } else {
+                                tokens
+                            }
+                        })
+                    } else {
+                        turn.output_token_ids.take()
+                    };
                     let request_metadata = DirectRequest {
                         tokens: Vec::new(),
-                        max_output_tokens: turn.max_output_tokens,
-                        output_token_ids: turn.output_token_ids.take(),
+                        max_output_tokens: if is_primer || accelerated_warmup {
+                            1
+                        } else {
+                            turn.max_output_tokens
+                        },
+                        output_token_ids,
                         uuid: Some(request_uuid),
                         dp_rank: 0,
                         preferred_dp_rank: None,
@@ -1137,29 +1396,37 @@ impl WorkloadDriver {
                     emitted_output_tokens: 0,
                 },
             );
+            let emitted_session_id = cache_bust_hash_id.map_or_else(
+                || session.session_id.clone(),
+                |marker| format!("{}:{marker}", session.session_id),
+            );
             emitted.push(CompactReadyTurn {
                 request_uuid,
                 authored_request_id: turn.request_id.clone(),
                 play_id: turn.play_id.clone(),
                 dispatched_at_ms: now_ms,
-                session_id: session.session_id.clone(),
+                session_id: emitted_session_id,
                 turn_index,
                 replay_key: turn.replay_key.clone(),
                 scheduled_ready_at_ms,
                 replay_hashes,
                 emit_session_metadata: self.emit_session_metadata,
+                measured,
                 request,
             });
             if let SchedulingPolicy::Agentic(state) = &mut self.policy {
-                state.on_node_emitted(session_index, now_ms);
-                state.release_dispatch_dependents(
-                    &mut self.sessions,
-                    &mut self.ready_sessions,
-                    session_index,
-                    now_ms,
-                );
+                state.mark_emitted(session_index, now_ms, measured);
+                if !is_primer {
+                    state.release_dispatch_dependents(
+                        &mut self.sessions,
+                        &mut self.ready_sessions,
+                        session_index,
+                        now_ms,
+                    );
+                }
             }
         }
+        self.ready_sessions.extend(held);
         emitted
     }
 
@@ -1266,6 +1533,10 @@ impl WorkloadDriver {
         let Some(node_index) = self.agentic_settling.remove(&request_uuid) else {
             bail!("agentic request {request_uuid} became quiescent before its causal terminal");
         };
+        if state.is_primer_session(node_index) {
+            state.on_primer_quiescent(now_ms, &mut self.sessions, &mut self.ready_sessions);
+            return Ok(());
+        }
         state.on_node_quiescent(
             &mut self.sessions,
             &mut self.ready_sessions,
@@ -1382,13 +1653,15 @@ impl WorkloadDriver {
                 }
             }
             SchedulingPolicy::Agentic(state) => {
-                state.on_node_terminal(
-                    &mut self.sessions,
-                    &mut self.ready_sessions,
-                    resolution.session_index,
-                    now_ms,
-                    resolution.outcome,
-                );
+                if !state.is_primer_session(resolution.session_index) {
+                    state.on_node_terminal(
+                        &mut self.sessions,
+                        &mut self.ready_sessions,
+                        resolution.session_index,
+                        now_ms,
+                        resolution.outcome,
+                    );
+                }
             }
         }
     }
@@ -1397,21 +1670,56 @@ impl WorkloadDriver {
         if self.policy.at_dispatch_capacity(self.in_flight.len()) {
             return None;
         }
+        if let SchedulingPolicy::Agentic(state) = &mut self.policy {
+            state.enforce_idle_caps(
+                &mut self.sessions,
+                &mut self.ready_sessions,
+                !self.in_flight.is_empty() || !self.agentic_settling.is_empty(),
+            );
+        }
+        let deadline = match &self.policy {
+            SchedulingPolicy::Agentic(state) => state.replay.as_ref().and_then(|replay| {
+                (replay.phase == AgenticReplayPhase::Profiling)
+                    .then_some(replay.profile_deadline_ms)
+                    .flatten()
+            }),
+            SchedulingPolicy::Trace | SchedulingPolicy::Concurrency(_) => None,
+        };
+        let mut held = Vec::new();
         loop {
-            let ready_session = *self.ready_sessions.peek()?;
+            let Some(ready_session) = self.ready_sessions.pop() else {
+                self.ready_sessions.extend(held);
+                return deadline;
+            };
             let session = &self.sessions[ready_session.session_index];
             if session.in_flight.is_some()
                 || session.next_turn_index != ready_session.turn_index
                 || session.next_ready_at_ms != Some(ready_session.ready_at_ms)
             {
-                self.ready_sessions.pop();
                 continue;
             }
-            return Some(ready_session.ready_at_ms);
+            if let SchedulingPolicy::Agentic(state) = &self.policy
+                && !state.can_emit(ready_session.session_index, ready_session.ready_at_ms)
+            {
+                held.push(ready_session);
+                continue;
+            }
+            let ready_at_ms = ready_session.ready_at_ms;
+            self.ready_sessions.push(ready_session);
+            self.ready_sessions.extend(held);
+            return Some(deadline.map_or(ready_at_ms, |deadline| deadline.min(ready_at_ms)));
         }
     }
 
     pub fn is_drained(&self) -> bool {
+        if let SchedulingPolicy::Agentic(state) = &self.policy
+            && state
+                .replay
+                .as_ref()
+                .is_some_and(|replay| replay.phase == AgenticReplayPhase::Draining)
+        {
+            return self.in_flight.is_empty() && self.agentic_settling.is_empty();
+        }
         self.in_flight.is_empty()
             && self.agentic_settling.is_empty()
             && self
@@ -2430,5 +2738,125 @@ mod tests {
         assert!(driver.next_ready_time_ms().is_none());
         driver.on_complete(b.request_uuid, 30.0).unwrap();
         assert_eq!(driver.next_ready_time_ms(), Some(32.0));
+    }
+
+    fn agentx_config() -> AgenticReplayConfig {
+        AgenticReplayConfig {
+            lanes: 1,
+            random_seed: 42,
+            start_min_ratio: 0.5,
+            start_max_ratio: 0.5,
+            warmup_requests_per_lane: 1,
+            profile_duration_ms: 5.0,
+            trace_idle_gap_cap_ms: 300.0,
+            system_idle_gap_cap_ms: 10.0,
+        }
+    }
+
+    fn sequential_agentic_trace(delay_ms: f64) -> AgenticTrace {
+        agentic_trace(vec![
+            agentic_node("turn-0", "play", 0.0, Vec::new()),
+            agentic_node(
+                "turn-1",
+                "play",
+                delay_ms,
+                vec![dependency(
+                    "turn-0",
+                    AgenticDependencyTrigger::Completion,
+                    delay_ms,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+            agentic_node(
+                "turn-2",
+                "play",
+                delay_ms * 2.0,
+                vec![dependency(
+                    "turn-1",
+                    AgenticDependencyTrigger::Completion,
+                    delay_ms,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+        ])
+    }
+
+    #[test]
+    fn agentx_replay_excludes_warmup_and_recycles_with_fresh_identity() {
+        let mut trace = sequential_agentic_trace(100.0);
+        for node in &mut trace.nodes {
+            node.max_output_tokens = 3;
+            node.output_token_ids = Some(vec![7, 8, 9]);
+        }
+        let mut driver = WorkloadDriver::new_agentic_replay(trace, 1, agentx_config()).unwrap();
+
+        let primer = driver.pop_ready(0.0, usize::MAX).pop().unwrap();
+        assert!(!primer.measured);
+        assert_eq!(primer.request.max_output_tokens, 1);
+        assert_eq!(primer.request.output_token_ids, Some(vec![7]));
+        let first_occurrence_session = primer.session_id.clone();
+        let first_occurrence_token = primer.request.tokens[0];
+        driver.on_complete(primer.request_uuid, 1.0).unwrap();
+
+        let warmup = driver.pop_ready(1.0, usize::MAX).pop().unwrap();
+        assert_eq!(warmup.authored_request_id.as_deref(), Some("turn-1"));
+        assert!(!warmup.measured);
+        assert_eq!(warmup.request.max_output_tokens, 1);
+        assert_eq!(warmup.session_id, first_occurrence_session);
+        assert_eq!(warmup.request.tokens[0], first_occurrence_token);
+        driver.on_complete(warmup.request_uuid, 2.0).unwrap();
+
+        let profiled = driver.pop_ready(2.0, usize::MAX).pop().unwrap();
+        assert_eq!(profiled.authored_request_id.as_deref(), Some("turn-2"));
+        assert!(profiled.measured);
+        assert_eq!(profiled.request.max_output_tokens, 3);
+        assert_eq!(profiled.session_id, first_occurrence_session);
+        driver.on_complete(profiled.request_uuid, 3.0).unwrap();
+
+        let recycled = driver.pop_ready(3.0, usize::MAX).pop().unwrap();
+        assert_eq!(recycled.authored_request_id.as_deref(), Some("turn-0"));
+        assert!(recycled.measured);
+        assert_ne!(recycled.request_uuid, profiled.request_uuid);
+        assert_ne!(recycled.session_id, first_occurrence_session);
+        assert_ne!(recycled.request.tokens[0], first_occurrence_token);
+        driver.on_complete(recycled.request_uuid, 4.0).unwrap();
+
+        assert_eq!(driver.next_ready_time_ms(), Some(7.0));
+        assert!(driver.pop_ready(7.0, usize::MAX).is_empty());
+        assert!(driver.is_drained());
+        let snapshot = driver.agentic_trajectory_snapshot().unwrap();
+        assert_eq!(snapshot.total_trajectories, 2);
+        assert_eq!(snapshot.completed_trajectories, 1);
+    }
+
+    #[test]
+    fn agentx_replay_caps_tree_and_system_idle_time() {
+        let trace = sequential_agentic_trace(1_000.0);
+        let base = AgenticReplayConfig {
+            start_min_ratio: 0.0,
+            start_max_ratio: 0.0,
+            warmup_requests_per_lane: 0,
+            profile_duration_ms: 10_000.0,
+            trace_idle_gap_cap_ms: 300.0,
+            system_idle_gap_cap_ms: 2_000.0,
+            ..agentx_config()
+        };
+        let mut tree_capped = WorkloadDriver::new_agentic_replay(trace.clone(), 1, base).unwrap();
+        let root = tree_capped.pop_ready(0.0, 1).pop().unwrap();
+        tree_capped.on_complete(root.request_uuid, 1.0).unwrap();
+        assert_eq!(tree_capped.next_ready_time_ms(), Some(301.0));
+
+        let mut system_capped = WorkloadDriver::new_agentic_replay(
+            trace,
+            1,
+            AgenticReplayConfig {
+                system_idle_gap_cap_ms: 10.0,
+                ..base
+            },
+        )
+        .unwrap();
+        let root = system_capped.pop_ready(0.0, 1).pop().unwrap();
+        system_capped.on_complete(root.request_uuid, 1.0).unwrap();
+        assert_eq!(system_capped.next_ready_time_ms(), Some(11.0));
     }
 }

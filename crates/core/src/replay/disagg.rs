@@ -612,6 +612,7 @@ impl DisaggFlowState {
         arrival_time_ms: f64,
         replay_hashes: Option<ReplayRequestHashes>,
         session_id: Option<String>,
+        measured: bool,
         collector: &mut TraceCollector,
     ) -> Result<Uuid> {
         let uuid = request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
@@ -620,7 +621,13 @@ impl DisaggFlowState {
         request.metadata_mut().uuid = Some(uuid);
         request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
 
-        collector.on_arrival(uuid, arrival_time_ms, input_length, output_length);
+        collector.on_arrival_with_measurement(
+            uuid,
+            arrival_time_ms,
+            input_length,
+            output_length,
+            measured,
+        );
         if let Some(context) = request.metadata().replay_context.as_ref() {
             collector.on_request_context(uuid, context);
         }
@@ -1782,12 +1789,14 @@ where
         arrival_time_ms: f64,
         replay_hashes: Option<ReplayRequestHashes>,
         session_id: Option<String>,
+        measured: bool,
     ) -> Result<Uuid> {
         let uuid = self.flow.on_external_arrival(
             request,
             arrival_time_ms,
             replay_hashes,
             session_id,
+            measured,
             &mut self.collector,
         )?;
         self.traffic.on_arrival();
@@ -2108,6 +2117,7 @@ where
                 dispatched_at_ms,
                 session_id,
                 turn_index,
+                measured,
             } = ready;
             let session_metadata = session_id.clone().zip(turn_index);
             let uuid = self.on_external_arrival(
@@ -2115,6 +2125,7 @@ where
                 arrival_time_ms,
                 metadata.into_hashes(),
                 session_id,
+                measured,
             )?;
             if let Some((session_id, turn_index)) = session_metadata {
                 self.collector

@@ -56,6 +56,8 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "num_request_ratio",
         "kv_load_ratio",
         "max_sim_time_ms",
+        "agentic_lanes",
+        "agentic_replay",
     }
 )
 
@@ -323,6 +325,11 @@ def _materialize_engine_execution_spec(
     max_sim_time_ms = spec.workload.get("max_sim_time_ms")
     if max_sim_time_ms is not None:
         max_sim_time_ms = _nonnegative_time(max_sim_time_ms, "max_sim_time_ms")
+    if (
+        spec.workload.get("agentic_lanes") is not None
+        or spec.workload.get("agentic_replay") is not None
+    ):
+        max_sim_time_ms = None
 
     execution_spec: dict[str, JSONValue] = {
         "version": 1,

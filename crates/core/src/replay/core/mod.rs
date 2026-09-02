@@ -33,6 +33,7 @@ pub struct ReadyArrival<Request, Metadata> {
     pub dispatched_at_ms: f64,
     pub session_id: Option<String>,
     pub turn_index: Option<usize>,
+    pub measured: bool,
 }
 
 pub trait AdmissionSource {
