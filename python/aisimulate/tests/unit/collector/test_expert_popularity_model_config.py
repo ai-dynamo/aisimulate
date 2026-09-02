@@ -145,6 +145,12 @@ def test_multinode_job_normalizes_tp_duplicated_recorder_counts():
     ).read_text(encoding="utf-8")
     assert '"SGLANG_DSV4_FP4_EXPERTS"' in node_runner
     assert '"SGLANG_OPT_FP8_WO_A_GEMM"' in node_runner
+    assert 'case "${WEIGHT_LOADER_DISABLE_MMAP:-0}"' in node_runner
+    assert "SERVER_ARGS+=(--weight-loader-disable-mmap)" in node_runner
+    assert '"WEIGHT_LOADER_DISABLE_MMAP"' in node_runner
+    assert 'case "${WEIGHT_LOADER_DROP_CACHE_AFTER_LOAD:-0}"' in node_runner
+    assert "SERVER_ARGS+=(--weight-loader-drop-cache-after-load)" in node_runner
+    assert '"WEIGHT_LOADER_DROP_CACHE_AFTER_LOAD"' in node_runner
     assert "MOE_RUNNER_BACKEND" not in node_runner
     assert "--moe-runner-backend" not in node_runner
 
