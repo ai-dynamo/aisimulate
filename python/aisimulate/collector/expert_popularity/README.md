@@ -39,6 +39,13 @@ site-local paths through `sbatch` options and exported environment variables:
   `fp8_block`, `int4_wo`, `mxfp4`, or `nvfp4`)
 - `GPUS_PER_NODE`: allocated GPUs per node for `multinode.sbatch`
 
+For checkpoints whose aggregate mmap page cache approaches the job's host-memory
+limit, `WEIGHT_LOADER_DROP_CACHE_AFTER_LOAD=1` releases each safetensors shard
+from the OS cache after SGLang has loaded it. `WEIGHT_LOADER_DISABLE_MMAP=1` is
+also available for filesystems that cannot mmap safely, but it reads each shard
+into process memory and therefore is not a host-memory reduction mechanism.
+Both settings are optional, default off, and are recorded in runtime provenance.
+
 Partition, account, node count, GPU count, constraints, topology preferences, and log
 destination belong in the site-local submit command or wrapper, not in this repository.
 NCCL/UCX interface selection is inherited from the submitting environment. The checked-in
