@@ -10,6 +10,7 @@ areas:
     github_team: "@ai-dynamo/access-aisimulate-maintain"
     path_globs:
       - LICENSE
+      - THIRD_PARTY_NOTICES.md
       - README.md
       - SECURITY.md
       - CONTRIBUTING.md

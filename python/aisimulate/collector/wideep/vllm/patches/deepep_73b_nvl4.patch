@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 diff --git a/csrc/deep_ep.hpp b/csrc/deep_ep.hpp
 index 7213bdd..0012dee 100644
 --- a/csrc/deep_ep.hpp

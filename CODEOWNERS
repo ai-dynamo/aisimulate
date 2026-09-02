@@ -32,6 +32,7 @@
 /CONTRIBUTING.md                                     @ai-dynamo/access-aisimulate-maintain
 /CONTRIBUTORS.md                                     @ai-dynamo/access-aisimulate-maintain
 /tests/conftest.py                                   @ai-dynamo/access-aisimulate-maintain
+/THIRD_PARTY_NOTICES.md                              @ai-dynamo/access-aisimulate-maintain
 
 # === forward-pass-engine  (@ai-dynamo/aisimulate-forward-pass-engine-codeowners) ===
 /tests/test_aic.py                                   @ai-dynamo/aisimulate-forward-pass-engine-codeowners

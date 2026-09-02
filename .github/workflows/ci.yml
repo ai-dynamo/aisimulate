@@ -13,6 +13,25 @@ permissions:
   contents: read
 
 jobs:
+  spdx-headers:
+    name: Source Compliance
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 5
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Check NVIDIA/Apache-2.0 SPDX headers
+        run: python scripts/check_copyright.py
+      - name: Check packaged legal-file copies
+        run: python scripts/check_packaged_legal_files.py
+
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
     strategy:
