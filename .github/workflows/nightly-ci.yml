@@ -41,6 +41,9 @@ on:
   schedule:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
+  # TEMPORARY: remove before merge.
+  push:
+    branches: ["pull-request/59"]
 
 # Read-only default token; only the guard job adds actions:read.
 permissions:
@@ -491,7 +494,10 @@ jobs:
   stage-artifactory:
     name: Stage to Artifactory
     needs: [build-artifacts, smoke-test]
-    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+    # TEMPORARY: drop the push arm before merge.
+    if: >-
+      (github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'push'
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
     environment: automated-release
@@ -622,8 +628,10 @@ jobs:
   trigger-gitlab-security:
     name: Trigger GitLab security pipeline
     needs: stage-artifactory
+    # TEMPORARY: drop the push arm before merge.
     if: >-
-      github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'push') &&
       vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
     # The dedicated runner group dynamo and aiperf use for GitLab
     # reachability; regular runners cannot reach the internal instance.
