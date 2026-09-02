@@ -1,0 +1,36 @@
+# OS and repository metadata
+**/.DS_Store
+.git/
+
+# Python environments, caches, and build output
+**/.venv*/
+dist/
+**/dist/
+build/
+**/build/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.coverage
+**/.coverage
+coverage.xml
+**/coverage.xml
+htmlcov/
+**/htmlcov/
+*.egg-info/
+**/*.egg-info/
+*.pyc
+**/*.pyc
+*.so
+**/*.so
+*.dylib
+**/*.dylib
+
+# Rust build output
+target/
+**/target/

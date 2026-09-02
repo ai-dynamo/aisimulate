@@ -96,6 +96,35 @@ def test_config_adapter_readme_remains_repository_only(verifier):
     assert "aiconfigurator/sdk/config_adapter/schemas/estimate-request-v1.schema.json" in payload
 
 
+def test_release_verifier_checks_packaged_legal_files(verifier, monkeypatch, tmp_path):
+    wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"
+    for name in verifier.LEGAL_FILES:
+        (tmp_path / name).write_text(f"canonical {name}\n")
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name in verifier.LEGAL_FILES:
+            archive.writestr(
+                f"aisimulate-1.2.0.dist-info/licenses/{name}",
+                (tmp_path / name).read_bytes(),
+            )
+
+    monkeypatch.setattr(verifier, "PACKAGE_ROOT", tmp_path)
+    verifier._verify_legal_files(wheel)
+
+
+def test_release_verifier_rejects_missing_legal_file(verifier, monkeypatch, tmp_path):
+    wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"
+    (tmp_path / "LICENSE").write_text("canonical license\n")
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "aisimulate-1.2.0.dist-info/licenses/LICENSE",
+            (tmp_path / "LICENSE").read_bytes(),
+        )
+
+    monkeypatch.setattr(verifier, "PACKAGE_ROOT", tmp_path)
+    with pytest.raises(RuntimeError, match="expected one packaged THIRD_PARTY_NOTICES.md"):
+        verifier._verify_legal_files(wheel)
+
+
 def test_rust_crate_package_rejects_upper_payload(verifier, monkeypatch):
     result = subprocess.CompletedProcess(
         args=["cargo"],
