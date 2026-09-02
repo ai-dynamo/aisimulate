@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,10 +29,16 @@ EXPECTED_PYTHON_PROJECTS = {
     ROOT / "python" / "aisimulate" / "pyproject.toml": "aisimulate",
 }
 EXPECTED_CRATE = ROOT / "crates" / "core" / "Cargo.toml"
+LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
+IGNORED_DISCOVERY_DIRS = {".git", ".venv", "dist", "target"}
 
 
 def _toml(path: Path) -> dict[str, object]:
     return tomllib.loads(path.read_text())
+
+
+def _is_source_manifest(path: Path) -> bool:
+    return not IGNORED_DISCOVERY_DIRS.intersection(path.relative_to(ROOT).parts)
 
 
 def check_manifests() -> tuple[str, str]:
@@ -39,7 +46,7 @@ def check_manifests() -> tuple[str, str]:
     pyprojects = {
         path: str(_toml(path)["project"]["name"])
         for path in ROOT.rglob("pyproject.toml")
-        if ".venv" not in path.parts and "target" not in path.parts
+        if _is_source_manifest(path)
     }
     assert pyprojects == EXPECTED_PYTHON_PROJECTS, (
         "publishable Python manifest set changed:\n"
@@ -48,7 +55,7 @@ def check_manifests() -> tuple[str, str]:
 
     publishable_crates: dict[Path, str] = {}
     for path in ROOT.rglob("Cargo.toml"):
-        if ".venv" in path.parts or "target" in path.parts:
+        if not _is_source_manifest(path):
             continue
         manifest = _toml(path)
         package = manifest.get("package")
@@ -152,6 +159,20 @@ def verify_output(output: Path, py_version: str, crate_version: str) -> None:
     assert len(names) == 2, f"expected exactly two artifacts, got {names}"
     assert len(app_wheels) == 1, f"missing or duplicate aisimulate wheel: {names}"
     assert expected_crate in names, f"missing {expected_crate}: {names}"
+    wheel_path = output / app_wheels[0]
+    with zipfile.ZipFile(wheel_path) as wheel:
+        for legal_file in LEGAL_FILES:
+            matches = [
+                name
+                for name in wheel.namelist()
+                if name.endswith(f".dist-info/licenses/{legal_file}")
+            ]
+            assert len(matches) == 1, (
+                f"expected one packaged {legal_file}, found {matches}"
+            )
+            assert wheel.read(matches[0]) == (ROOT / legal_file).read_bytes(), (
+                f"packaged {legal_file} differs from the root original"
+            )
     print("verified release artifacts:")
     for name in names:
         print(f"- {name}")
