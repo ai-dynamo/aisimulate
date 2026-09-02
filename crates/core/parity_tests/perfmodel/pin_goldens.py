@@ -25,7 +25,7 @@ so python-era frozen values and rust-pinned values stay distinguishable.
 
 Run from the repository root::
 
-    .venv/bin/python aic-core/rust/aiconfigurator-core/parity_tests/pin_goldens.py
+    python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py
 
 Contract carried over from the retired capture script: byte-reproducible
 output (thread caps pinned, sorted keys, full-repr floats, no wall-clock
@@ -87,7 +87,7 @@ def _git(*args: str) -> str:
         return "unknown"
 
 
-_GOLDEN_REL_PREFIX = "aic-core/rust/aiconfigurator-core/parity_tests/goldens/"
+_GOLDEN_REL_PREFIX = "crates/core/parity_tests/perfmodel/goldens/"
 
 
 def _dirty_paths(porcelain: str) -> list[str]:
