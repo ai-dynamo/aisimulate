@@ -170,6 +170,7 @@ jobs:
         run: python -m maturin build --release --out ../../dist
         working-directory: python/aisimulate
       - name: Stage wheel in Artifactory
+        shell: bash
         env:
           ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
           ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
