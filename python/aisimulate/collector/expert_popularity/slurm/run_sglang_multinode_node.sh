@@ -34,10 +34,11 @@ fi
 export FLASHINFER_WORKSPACE_BASE="$compile_cache_dir/flashinfer"
 export DG_JIT_CACHE_DIR="$compile_cache_dir/deep-gemm"
 export TORCHINDUCTOR_CACHE_DIR="$compile_cache_dir/torchinductor"
+export TRITON_CACHE_DIR="$compile_cache_dir/triton"
 # Bound per-rank compilation parallelism so a site can size scheduler CPU
 # allocations without inheriting an unbounded framework default.
 export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-8}"
-mkdir -p "$FLASHINFER_WORKSPACE_BASE" "$DG_JIT_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+mkdir -p "$FLASHINFER_WORKSPACE_BASE" "$DG_JIT_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 export SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR="$ARTIFACT_DIR/raw"
 mkdir -p "$ARTIFACT_DIR/raw"
 
@@ -137,6 +138,7 @@ names = (
     "FLASHINFER_WORKSPACE_BASE",
     "DG_JIT_CACHE_DIR",
     "TORCHINDUCTOR_CACHE_DIR",
+    "TRITON_CACHE_DIR",
     "TORCHINDUCTOR_COMPILE_THREADS",
     "COMPILE_CACHE_ROOT",
     "COMPILE_CACHE_KEY",
