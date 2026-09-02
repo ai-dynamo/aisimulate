@@ -319,6 +319,13 @@ fn disagg_config_with_handoff_delay() -> TestDisaggConfig {
     config
 }
 
+fn trtllm_disagg_config_with_handoff_delay() -> TestDisaggConfig {
+    let mut config = trtllm_disagg_config();
+    config.prefill_args.kv_transfer_bandwidth = Some(1.0);
+    config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
+    config
+}
+
 fn transfer_timing_config(
     engine_type: EngineType,
     mode: KvTransferTimingMode,
@@ -368,7 +375,7 @@ fn cleanup_overtake_config(engine_type: EngineType) -> TestDisaggConfig {
     }
 }
 
-fn trtllm_reject_staged_args(worker_type: WorkerType) -> MockEngineArgs {
+fn trtllm_staged_args(worker_type: WorkerType) -> MockEngineArgs {
     // 4 GPU blocks * block_size 4 = 16-token to-completion budget per request.
     MockEngineArgs {
         backend: EngineType::Trtllm,
@@ -376,7 +383,7 @@ fn trtllm_reject_staged_args(worker_type: WorkerType) -> MockEngineArgs {
         num_gpu_blocks: 4,
         max_num_batched_tokens: 64,
         max_num_seqs: 4,
-        enable_prefix_caching: false,
+        enable_prefix_caching: true,
         enable_chunked_prefill: true,
         speedup_ratio: 1000.0,
         worker_type,
@@ -384,29 +391,31 @@ fn trtllm_reject_staged_args(worker_type: WorkerType) -> MockEngineArgs {
     }
 }
 
-fn trtllm_reject_disagg_config() -> TestDisaggConfig {
+fn trtllm_disagg_config() -> TestDisaggConfig {
     TestDisaggConfig {
-        prefill_args: trtllm_reject_staged_args(WorkerType::Prefill),
-        decode_args: trtllm_reject_staged_args(WorkerType::Decode),
+        prefill_args: trtllm_staged_args(WorkerType::Prefill),
+        decode_args: trtllm_staged_args(WorkerType::Decode),
         num_prefill_workers: 1,
         num_decode_workers: 1,
     }
 }
 
 #[test]
-fn trtllm_disaggregation_is_rejected_before_runtime_state() {
-    let config = trtllm_reject_disagg_config();
-    let result = DisaggRuntime::from_requests(
-        &config,
-        None,
-        None,
-        VecDeque::from([request(1, 4, 4, 0.0)]),
-        ReplayMode::Concurrency { max_in_flight: 1 },
+fn trtllm_disaggregation_runs_source_first_handoff_to_completion() {
+    let config = trtllm_disagg_config();
+    let runtime =
+        new_handoff_conformance(&config, VecDeque::from([request(1, 4, 2, 0.0)])).unwrap();
+
+    let conformance = runtime.run_handoff_conformance(EngineType::Trtllm).unwrap();
+
+    assert_eq!(conformance.order, HandoffOrder::SourceFirst);
+    assert_eq!(
+        conformance.lifecycle,
+        crate::replay::expected_normalized_handoff(HandoffOrder::SourceFirst)
     );
-    assert!(matches!(
-        result,
-        Err(error) if error.to_string().contains("does not support TRT-LLM")
-    ));
+    assert_eq!(conformance.completed_requests, 1);
+    assert!(conformance.source_drained);
+    assert!(conformance.destination_drained);
 }
 
 fn request(
@@ -1534,13 +1543,18 @@ fn rejected_prefill_remains_rejected_during_failed_handoff_cleanup() {
 
 #[test]
 fn test_permanently_unavailable_destination_unwinds_without_stalling() {
-    for mut config in [disagg_config(), sglang_disagg_config()] {
+    for (mut config, input_tokens) in [
+        (disagg_config(), 128),
+        (sglang_disagg_config(), 128),
+        (trtllm_disagg_config(), 4),
+    ] {
         config.num_prefill_workers = 1;
         config.num_decode_workers = 1;
         config.decode_args.num_gpu_blocks = 1;
 
         let pending =
-            crate::replay::normalize_trace_requests(vec![request(1, 128, 2, 0.0)], 1.0).unwrap();
+            crate::replay::normalize_trace_requests(vec![request(1, input_tokens, 2, 0.0)], 1.0)
+                .unwrap();
         let (collector, stats) =
             DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
                 .unwrap()
@@ -1722,63 +1736,68 @@ fn test_cancellation_during_transfer_ignores_retired_completion_event() {
         KvTransferTimingMode::FullPrompt,
         KvTransferTimingMode::DestinationMissing,
     ] {
-        let mut config = disagg_config_with_handoff_delay();
-        config.prefill_args.kv_transfer_timing_mode = mode;
-        config.decode_args.kv_transfer_timing_mode = mode;
-        let uuid = Uuid::from_u128(1);
-        let mut runtime = DisaggRuntime::from_requests(
-            &config,
-            None,
-            None,
-            VecDeque::from([request(1, 128, 2, 0.0)]),
-            ReplayMode::Trace,
-        )
-        .unwrap()
-        .with_per_request_records(true);
+        for mut config in [
+            disagg_config_with_handoff_delay(),
+            trtllm_disagg_config_with_handoff_delay(),
+        ] {
+            config.prefill_args.kv_transfer_timing_mode = mode;
+            config.decode_args.kv_transfer_timing_mode = mode;
+            let uuid = Uuid::from_u128(1);
+            let input_tokens = config.prefill_args.block_size * 2;
+            let mut runtime = DisaggRuntime::from_requests(
+                &config,
+                None,
+                None,
+                VecDeque::from([request(1, input_tokens, 2, 0.0)]),
+                ReplayMode::Trace,
+            )
+            .unwrap()
+            .with_per_request_records(true);
 
-        runtime.drain_current_timestamp().unwrap();
-        for _ in 0..16 {
-            if runtime.state(uuid).unwrap().phase == DisaggPhase::TransferPending {
-                break;
+            runtime.drain_current_timestamp().unwrap();
+            for _ in 0..16 {
+                if runtime.state(uuid).unwrap().phase == DisaggPhase::TransferPending {
+                    break;
+                }
+                let next = runtime.next_timestamp().unwrap();
+                runtime.advance_now_ms(next);
+                runtime.drain_current_timestamp().unwrap();
             }
-            let next = runtime.next_timestamp().unwrap();
-            runtime.advance_now_ms(next);
-            runtime.drain_current_timestamp().unwrap();
-        }
-        assert_eq!(
-            runtime.state(uuid).unwrap().phase,
-            DisaggPhase::TransferPending
-        );
-        let handoff_id = runtime.state(uuid).unwrap().handoff_id;
-        runtime.apply_scaling(0, 0).unwrap();
-        assert_eq!(runtime.total_prefill_count(), 1);
-        assert_eq!(runtime.total_decode_count(), 1);
-        runtime
-            .apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })
-            .unwrap();
+            assert_eq!(
+                runtime.state(uuid).unwrap().phase,
+                DisaggPhase::TransferPending
+            );
+            let handoff_id = runtime.state(uuid).unwrap().handoff_id;
+            runtime.apply_scaling(0, 0).unwrap();
+            assert_eq!(runtime.total_prefill_count(), 1);
+            assert_eq!(runtime.total_decode_count(), 1);
+            runtime
+                .apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })
+                .unwrap();
 
-        runtime.drain_current_timestamp().unwrap();
-        assert!(runtime.events.iter().all(|event| !matches!(
-            &event.kind,
-            crate::replay::events::SimulationEventKind::TransferComplete { .. }
-        )));
-        while !runtime.is_done() {
-            let next = runtime.next_timestamp().unwrap();
-            runtime.advance_now_ms(next);
             runtime.drain_current_timestamp().unwrap();
+            assert!(runtime.events.iter().all(|event| !matches!(
+                &event.kind,
+                crate::replay::events::SimulationEventKind::TransferComplete { .. }
+            )));
+            while !runtime.is_done() {
+                let next = runtime.next_timestamp().unwrap();
+                runtime.advance_now_ms(next);
+                runtime.drain_current_timestamp().unwrap();
+            }
+            assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+            assert_eq!(runtime.total_prefill_count(), 0);
+            assert_eq!(runtime.total_decode_count(), 0);
+            assert!(
+                !runtime
+                    .stats
+                    .transition_log
+                    .contains(&DisaggTransition::DestinationActivated { uuid })
+            );
+            let records = runtime.collector.per_request_records();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Canceled);
         }
-        assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
-        assert_eq!(runtime.total_prefill_count(), 0);
-        assert_eq!(runtime.total_decode_count(), 0);
-        assert!(
-            !runtime
-                .stats
-                .transition_log
-                .contains(&DisaggTransition::DestinationActivated { uuid })
-        );
-        let records = runtime.collector.per_request_records();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Canceled);
     }
 }
 

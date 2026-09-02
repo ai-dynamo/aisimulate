@@ -1006,9 +1006,7 @@ where
         let handoff_order = match (prefill_factory.backend(), decode_factory.backend()) {
             (Backend::Vllm, Backend::Vllm) => HandoffOrder::SourceFirst,
             (Backend::Sglang, Backend::Sglang) => HandoffOrder::DestinationFirst,
-            (Backend::Trtllm, _) | (_, Backend::Trtllm) => {
-                bail!("offline disaggregated replay does not support TRT-LLM")
-            }
+            (Backend::Trtllm, Backend::Trtllm) => HandoffOrder::SourceFirst,
             _ => bail!("offline disaggregated replay requires matching backend engine types"),
         };
         let progress = ReplayProgress::new(

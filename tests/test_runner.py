@@ -57,11 +57,11 @@ class RecordingRuntime:
         )
 
 
-def _engine_args(*, role="aggregated", timing=None):
+def _engine_args(*, role="aggregated", backend="vllm", timing=None):
     return {
         "worker_type": role,
-        "engine_type": "vllm",
-        "aic_backend": "vllm",
+        "engine_type": backend,
+        "aic_backend": backend,
         "aic_model_path": "test-model",
         "aic_system": "test-system",
         "aic_tp_size": 2,
@@ -104,7 +104,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
 
     assert capabilities.supports_backend_topology("vllm", "agg")
     assert capabilities.supports_backend_topology("sglang", "disagg")
-    assert not capabilities.supports_backend_topology("trtllm", "disagg")
+    assert capabilities.supports_backend_topology("trtllm", "disagg")
     assert not capabilities.supports_disaggregated_attention_dp
     assert capabilities.supported_hooks == ()
 
@@ -507,14 +507,15 @@ def test_runner_rejects_random_length_options_for_trace_replay():
         )
 
 
-def test_runner_lowers_disaggregated_grouped_engines():
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_runner_lowers_disaggregated_grouped_engines(backend):
     runtime = RecordingRuntime()
     deployment = BackendDeploymentSpec(
         deployment_mode="disagg",
-        backend="vllm",
+        backend=backend,
         backend_version="test",
-        prefill_engine_args=_engine_args(role="prefill"),
-        decode_engine_args=_engine_args(role="decode"),
+        prefill_engine_args=_engine_args(role="prefill", backend=backend),
+        decode_engine_args=_engine_args(role="decode", backend=backend),
         num_prefill_workers=2,
         num_decode_workers=3,
     )
@@ -527,6 +528,8 @@ def test_runner_lowers_disaggregated_grouped_engines():
     assert runtime.execution_spec["topology"]["prefill"]["initial_workers"] == 2
     assert runtime.execution_spec["topology"]["decode"]["initial_workers"] == 3
     assert set(runtime.execution_spec["engine"]) == {"prefill", "decode"}
+    assert runtime.execution_spec["engine"]["prefill"]["rank"]["backend"] == backend
+    assert runtime.execution_spec["engine"]["decode"]["rank"]["backend"] == backend
 
 
 @pytest.mark.parametrize("role", ["prefill", "decode"])

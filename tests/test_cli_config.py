@@ -65,6 +65,27 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert programmatic.decode.scheduler.max_sequences == 256
 
 
+def test_prediction_accepts_trtllm_disaggregated_dp1() -> None:
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "backend": "trtllm",
+                "workers": {
+                    "prefill": {"parallelism": {"attention_data": 1}},
+                    "decode": {"parallelism": {"attention_data": 1}},
+                },
+            }
+        }
+    )
+
+    assert config.engine.backend == "trtllm"
+    assert config.engine.mode == "disaggregated"
+    assert config.engine.workers.prefill is not None
+    assert config.engine.workers.decode is not None
+
+
 def test_prediction_rejects_recommendation_domain() -> None:
     with pytest.raises(ValidationError):
         CorePredictionConfig.model_validate(

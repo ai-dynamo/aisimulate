@@ -226,6 +226,10 @@ The disaggregated runtime in `src/replay/disagg.rs` models two distinct stages:
 - a prefill router and prefill worker pool
 - a decode router and decode worker pool
 
+vLLM and TensorRT-LLM use source-first handoff; SGLang uses destination-first handoff. The
+TensorRT-LLM path applies `GUARANTEED_NO_EVICT` to reserve decode completion headroom while the
+destination owns transferred prompt KV.
+
 Attention-DP is currently supported only by aggregated offline replay. Disaggregated replay
 requires both prefill and decode `dp_size` to be `1`; ranked prefill/decode routing and handoff
 semantics are not yet modeled, so larger values are rejected explicitly instead of using the old

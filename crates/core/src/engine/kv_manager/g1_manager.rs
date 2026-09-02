@@ -11,13 +11,13 @@ use uuid::Uuid;
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost};
 use crate::engine::common::sequence::RequestSequence;
 
-use super::G1Acquire;
 use super::vllm_backend::{
     BlockRequestLease, DecodeBlockReservation as VllmDecodeBlockReservation,
     DestinationReservation as VllmDestinationReservation,
     StoreSourceSnapshot as VllmStoreSourceSnapshot, VllmAcquire, VllmKvManager,
 };
 pub(crate) use super::vllm_backend::{NativeAllocation, SourceReuseDependency};
+use super::{DestinationReservationMode, G1Acquire};
 
 fn into_g1_acquire<T>(outcome: VllmAcquire<T>) -> G1Acquire<T> {
     match outcome {
@@ -58,7 +58,6 @@ impl DestinationReservation {
         self.inner.transferable_prompt_tokens(block_size)
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.inner.len()
     }
@@ -156,12 +155,14 @@ impl G1Manager {
         owner: Uuid,
         sequence: &RequestSequence,
         lease: &BlockRequestLease,
+        mode: DestinationReservationMode,
         eviction_now_ms: Option<f64>,
     ) -> G1Acquire<DestinationReservation> {
         into_g1_acquire(self.inner.reserve_destination_lease(
             owner,
             sequence,
             lease,
+            mode,
             eviction_now_ms,
         ))
         .map(|inner| DestinationReservation { inner })
