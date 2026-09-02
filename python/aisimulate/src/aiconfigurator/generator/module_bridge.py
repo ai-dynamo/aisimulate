@@ -166,6 +166,12 @@ def task_config_to_generator_config(
 
         worker_payload = _deep_merge(worker_payload, extra_overrides)
         effective_attention_backend = worker_payload.get("attention_backend")
+        if effective_attention_backend is not None:
+            # Task normalization promotes CLI strings to AttentionBackend
+            # StrEnum members. Keep the generator bridge payload limited to
+            # serialization-safe primitives after task/override merging.
+            effective_attention_backend = str(effective_attention_backend)
+            worker_payload["attention_backend"] = effective_attention_backend
         if effective_attention_backend == "default":
             worker_payload.pop("attention_backend")
         elif task_config.primary_backend_name == "sglang" and effective_attention_backend == "fla":
