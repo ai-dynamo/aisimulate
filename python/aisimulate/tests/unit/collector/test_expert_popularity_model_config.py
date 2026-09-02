@@ -161,6 +161,14 @@ def test_multinode_job_normalizes_tp_duplicated_recorder_counts():
     assert "MOE_RUNNER_BACKEND" not in node_runner
     assert "--moe-runner-backend" not in node_runner
 
+    driver = (Path(__file__).parents[3] / "collector" / "expert_popularity" / "sglang_driver.py").read_text(
+        encoding="utf-8"
+    )
+    # Recorder, observer-transparency, and response-capture generate calls all
+    # honor the campaign request timeout. Control endpoints keep their longer
+    # default because a distributed recorder dump can legitimately take time.
+    assert driver.count("timeout=args.request_timeout") == 4
+
 
 def test_collector_code_digest_is_independent_of_root_path(tmp_path: Path):
     left = tmp_path / "left"
