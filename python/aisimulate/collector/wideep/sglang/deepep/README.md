@@ -30,7 +30,11 @@ Notes:
 
 # Build Docker
 
-Note: The test files under `collector/wideep/sglang/deepep/` are sourced from [DeepEP](https://github.com/deepseek-ai/DeepEP/tree/main/tests) with some modifications applied.
+Note: `test_internode.py`, `test_intranode.py`, `test_low_latency.py`, and
+`utils.py` are derived from the corresponding DeepEP test files at commit
+[`73b6ea4a439ba03a695563f9fd242c8e4b02b37c`](https://github.com/deepseek-ai/DeepEP/tree/73b6ea4a439ba03a695563f9fd242c8e4b02b37c/tests),
+with modifications applied. DeepEP is MIT-licensed; the copyright notice and
+license text are reproduced in `../../../../THIRD_PARTY_NOTICES.md`.
 
 ```bash
 docker build -t deepep:latest -f docker/Dockerfile.deepep .

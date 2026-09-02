@@ -50,7 +50,7 @@ areas:
       - docs/
       - README.md
       - CONTRIBUTORS.md
-      - ATTRIBUTIONS.md
+      - THIRD_PARTY_NOTICES.md
       - CODE_OF_CONDUCT.md
       - CONTRIBUTING.md
       - LICENSE
