@@ -30,6 +30,7 @@ _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("sglang", "agg"),
     ("sglang", "disagg"),
     ("trtllm", "agg"),
+    ("trtllm", "disagg"),
 )
 
 _RUNTIME_TRAFFIC_FIELDS = frozenset(
@@ -229,8 +230,6 @@ def _materialize_engine_execution_spec(
             },
         }
     elif deployment_mode == "disagg":
-        if deployment.backend == "trtllm":
-            raise ValueError("engine replay does not support TensorRT-LLM disagg")
         raw_prefill = _required_engine_args(deployment.prefill_engine_args, "prefill")
         raw_decode = _required_engine_args(deployment.decode_engine_args, "decode")
         prefill = _materialize_engine_role(
@@ -273,8 +272,6 @@ def _materialize_engine_execution_spec(
             raise ValueError(
                 f"disaggregated prefill and decode must use the same backend: {prefill_backend!r} != {decode_backend!r}"
             )
-        if prefill_backend == "trtllm":
-            raise ValueError("engine replay does not support TensorRT-LLM disaggregated mode")
         engine = {"prefill": prefill, "decode": decode}
         topology = {
             "kind": "disaggregated",

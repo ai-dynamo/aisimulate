@@ -145,8 +145,6 @@ class EnginePredictionConfig(StrictModel):
             workers=self.workers,
             has_transfer=self.kv_transfer is not None,
         )
-        if self.mode == "disaggregated" and self.backend == "trtllm":
-            raise ValueError("TensorRT-LLM disaggregated mode is unsupported")
         _validate_prediction_host_offload(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         return self

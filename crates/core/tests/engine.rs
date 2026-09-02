@@ -964,17 +964,14 @@ fn role_specific_timing_models_support_external_and_builtin_mixes() {
 }
 
 #[test]
-fn native_trtllm_disaggregated_replay_is_an_explicit_error() {
+fn native_trtllm_disaggregated_replay_completes() {
     let spec = disaggregated_spec(
         Backend::Trtllm,
         TimingModelConfig::Polynomial,
         TimingModelConfig::Polynomial,
     );
-    let error = run_engine_replay(spec).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("offline disaggregated replay does not support TRT-LLM"),
-        "{error}"
-    );
+    let report = run_engine_replay(spec).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.request_counts.total_input_tokens, 4);
+    assert_eq!(report.request_counts.total_output_tokens, 2);
 }
