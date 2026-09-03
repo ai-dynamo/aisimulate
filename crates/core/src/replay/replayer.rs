@@ -21,11 +21,14 @@ use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundR
 use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
 use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
-use crate::replay::error::{placement_boundary, runtime_error, scaling_boundary};
+use crate::replay::error::{
+    placement_boundary, runtime_error, scaling_boundary, telemetry_boundary,
+};
 use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::loadgen::WorkloadDriver;
 use crate::replay::protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
 use crate::replay::scaling::ReplayScalingPolicy;
+use crate::replay::telemetry::{ReplayTelemetryObserver, ReplayTelemetrySnapshot};
 use crate::replay::{
     ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayResult, ReplaySpec,
     ReplayTopology, SlaThresholds, WorkerStage,
@@ -196,6 +199,16 @@ impl ReplayScalingPolicy for ScalingPolicyBoundary {
     }
 }
 
+/// Classifies observer failures without exposing adapter-specific types to the
+/// topology runtimes.
+struct TelemetryObserverBoundary(Box<dyn ReplayTelemetryObserver>);
+
+impl ReplayTelemetryObserver for TelemetryObserverBoundary {
+    fn on_sample(&mut self, snapshot: ReplayTelemetrySnapshot) -> AnyResult<()> {
+        self.0.on_sample(snapshot).map_err(telemetry_boundary)
+    }
+}
+
 /// Replay-owned runtime input used by compatibility runners that already
 /// lowered a trace into the shared workload driver.
 ///
@@ -265,6 +278,7 @@ pub struct Replayer<C = RoundRobinComposition> {
     composition: C,
     runtime_input: Option<ReplayRuntimeInput>,
     capture: ReplayCaptureOptions,
+    telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
 }
 
 impl Replayer<RoundRobinComposition> {
@@ -304,6 +318,7 @@ impl<C: ReplayComposition> Replayer<C> {
             composition,
             runtime_input: None,
             capture: ReplayCaptureOptions::default(),
+            telemetry: None,
         })
     }
 
@@ -319,6 +334,22 @@ impl<C: ReplayComposition> Replayer<C> {
     pub fn with_capture_options(mut self, options: ReplayCaptureOptions) -> Self {
         self.capture = options;
         self
+    }
+
+    /// Attach a policy-neutral observer sampled at a fixed virtual-time
+    /// interval. Telemetry remains disabled unless this method is called.
+    pub fn with_telemetry_observer(
+        mut self,
+        sample_interval_ms: f64,
+        observer: Box<dyn ReplayTelemetryObserver>,
+    ) -> ReplayResult<Self> {
+        if !sample_interval_ms.is_finite() || sample_interval_ms <= 0.0 {
+            return Err(ReplayError::InvalidSpec(format!(
+                "telemetry sample interval must be finite and positive, got {sample_interval_ms}"
+            )));
+        }
+        self.telemetry = Some((sample_interval_ms, observer));
+        Ok(self)
     }
 
     pub fn run(self) -> ReplayResult<ReplayReport> {
@@ -352,6 +383,7 @@ impl<C: ReplayComposition> Replayer<C> {
             .composition
             .take_scaling_policy()
             .map_err(|error| ReplayError::Scaling(format!("{error:#}")))?;
+        let telemetry = self.telemetry.take();
 
         let collector = match &self.spec.topology {
             ReplayTopology::Aggregated { workers } => {
@@ -400,6 +432,12 @@ impl<C: ReplayComposition> Replayer<C> {
                 }
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
+                }
+                if let Some((sample_interval_ms, observer)) = telemetry {
+                    runtime = runtime.with_telemetry_observer(
+                        sample_interval_ms,
+                        Box::new(TelemetryObserverBoundary(observer)),
+                    );
                 }
                 runtime.run().map_err(runtime_error)?.0
             }
@@ -465,6 +503,12 @@ impl<C: ReplayComposition> Replayer<C> {
                 .with_max_sim_time_ms(self.spec.max_sim_time_ms);
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
+                }
+                if let Some((sample_interval_ms, observer)) = telemetry {
+                    runtime = runtime.with_telemetry_observer(
+                        sample_interval_ms,
+                        Box::new(TelemetryObserverBoundary(observer)),
+                    );
                 }
                 runtime.run().map_err(runtime_error)?.0
             }

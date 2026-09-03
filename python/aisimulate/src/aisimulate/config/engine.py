@@ -13,9 +13,11 @@ from .common import Choices, IntegerRange, NumericRange, StrictModel
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
+NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
 Fraction = Annotated[float, Field(strict=True, gt=0, le=1, allow_inf_nan=False)]
 EngineMode = Literal["aggregated", "disaggregated"]
 Backend = Literal["vllm", "sglang", "trtllm"]
+KvBytesPerToken = PositiveInt | Literal["auto"]
 
 
 class ParallelismPredictionConfig(StrictModel):
@@ -49,10 +51,18 @@ class KvCapacityPredictionConfig(StrictModel):
         return self
 
 
+class HostOffloadConfig(StrictModel):
+    num_host_blocks: PositiveInt
+    d2h_bandwidth_gbps: NonNegativeFloat = 32.0
+    h2d_bandwidth_gbps: NonNegativeFloat = 32.0
+
+
 class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
     prefix_caching: bool = True
+    bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
+    host_offload: HostOffloadConfig | None = None
 
 
 class TimingConfig(StrictModel):
@@ -99,7 +109,7 @@ class WorkersPredictionConfig(StrictModel):
 
 
 class KvTransferConfig(StrictModel):
-    bytes_per_token: PositiveInt | Literal["auto"] = "auto"
+    bytes_per_token: KvBytesPerToken = "auto"
     bandwidth_gb_per_second: PositiveFloat | None = None
     timing_mode: Literal["full_prompt", "destination_missing"] = "destination_missing"
 
@@ -135,8 +145,7 @@ class EnginePredictionConfig(StrictModel):
             workers=self.workers,
             has_transfer=self.kv_transfer is not None,
         )
-        if self.mode == "disaggregated" and self.backend == "trtllm":
-            raise ValueError("TensorRT-LLM disaggregated mode is unsupported")
+        _validate_prediction_host_offload(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         return self
 
@@ -235,7 +244,9 @@ class KvCapacityRecommendationConfig(StrictModel):
 class KvCacheRecommendationConfig(StrictModel):
     block_size: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
     prefix_caching: bool = True
+    bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityRecommendationConfig = Field(default_factory=KvCapacityRecommendationConfig)
+    host_offload: HostOffloadConfig | None = None
 
 
 class WorkerRecommendationConfig(StrictModel):
@@ -280,8 +291,48 @@ class EngineRecommendationConfig(StrictModel):
             has_transfer=self.kv_transfer is not None,
         )
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
+        _validate_recommendation_host_offload(self)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
+
+
+def _workers_with_host_offload(workers) -> list[tuple[str, Any]]:
+    return [
+        (role, worker)
+        for role in ("aggregated", "prefill", "decode")
+        if (worker := getattr(workers, role)) is not None and worker.kv_cache.host_offload is not None
+    ]
+
+
+def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
+    configured = _workers_with_host_offload(engine.workers)
+    if not configured:
+        return
+    if engine.mode != "aggregated" or [role for role, _ in configured] != ["aggregated"]:
+        raise ValueError("host_offload is supported only for the aggregated worker")
+    if engine.backend != "vllm":
+        raise ValueError("host_offload is supported only for backend=vllm")
+    worker = configured[0][1]
+    if not worker.kv_cache.prefix_caching:
+        raise ValueError("host_offload requires prefix_caching=true")
+    if worker.parallelism.attention_data != 1:
+        raise ValueError("host_offload requires attention_data=1")
+
+
+def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) -> None:
+    configured = _workers_with_host_offload(engine.workers)
+    if not configured:
+        return
+    if engine.mode != "aggregated" or [role for role, _ in configured] != ["aggregated"]:
+        raise ValueError("host_offload recommendation requires concrete mode=aggregated")
+    if engine.backend != "vllm":
+        raise ValueError("host_offload recommendation requires concrete backend=vllm")
+    worker = configured[0][1]
+    if not worker.kv_cache.prefix_caching:
+        raise ValueError("host_offload requires prefix_caching=true")
+    parallel = worker.parallelism
+    if parallel.preset not in (False, {}) or parallel.attention_data != 1:
+        raise ValueError("host_offload recommendation requires fixed parallelism with attention_data=1")
 
 
 def _validate_worker_roles(*, modes: set[str], workers, has_transfer: bool) -> None:

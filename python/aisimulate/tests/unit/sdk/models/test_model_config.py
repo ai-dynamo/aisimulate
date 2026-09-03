@@ -30,6 +30,25 @@ from aiconfigurator.sdk.utils import get_model_config_from_model_path
 pytestmark = pytest.mark.unit
 
 
+def test_model_config_normalizes_kernel_backend_enums():
+    model_config = config.ModelConfig(
+        attention_backend="fa3",
+        moe_backend="megamoe",
+    )
+
+    assert model_config.attention_backend is common.AttentionBackend.fa3
+    assert model_config.moe_backend is common.MoEBackend.megamoe
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("attention_backend", "torch"), ("moe_backend", "triton")],
+)
+def test_model_config_rejects_unknown_kernel_backend(field, value):
+    with pytest.raises(ValueError, match=field):
+        config.ModelConfig(**{field: value})
+
+
 class TestSupportedModels:
     """Test default models configuration from support_matrix.csv."""
 
@@ -664,7 +683,7 @@ class TestHFModelSupport:
         )
 
         with pytest.raises(ValueError, match="Blackwell"):
-            op._engine_query(get_database("h200_sxm", "sglang", "0.5.6.post2"), x=16)
+            op._engine_query(get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True), x=16)
 
     def test_deepseek_v32_kvcache_bytes_include_indexer_cache(self):
         model_config = config.ModelConfig(

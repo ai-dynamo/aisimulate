@@ -31,13 +31,14 @@
 //!   milliseconds — stored raw, no conversion (see
 //!   `_adapt_legacy_trtllm_alltoall`'s docstring).
 //!
-//! Merge (Python `load_moe_a2a_data`): legacy rows load first, keep-first on
-//! an intra-source collision; the FIRST new-schema occurrence of a key then
-//! overwrites whatever a legacy adapter stored there, and repeats of that key
-//! keep the first new-schema value.
+//! Merge preserves resolver priority ACROSS all four formats: every source at
+//! the requested version loads before any earlier fallback version. Within one
+//! version tier, legacy rows load first and the first new-schema occurrence of
+//! a key overrides legacy; completed lower-priority tiers fill missing
+//! coordinates only.
 //!
 //! Query resolves the comm-dtype chain (exact -> `fp8_block` reusing `fp8`
-//! -> the sole collected dtype -> typed miss, `_resolve_comm_dtype_slice`)
+//! -> a physically compatible legacy `default` row where allowed -> typed miss)
 //! and then the sms axis: an EXACT `sms` key gets a plain 1-D token curve,
 //! anything else a 2-D `(sms, num_tokens)` Grid — the split
 //! `_query_a2a_table` makes. Both ride the shared `perf_interp` engine with
@@ -51,10 +52,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::OnceLock;
+
+use pep440_rs::Version;
 
 use super::axis_curve::AxisCurve;
 use super::perf_interp::{self, Node, OpInterpConfig};
+use super::source_resolution::PrioritizedSource;
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::error::AicError;
 use crate::config::{PerfDbSources, PerfSource};
@@ -81,23 +86,193 @@ pub struct MoeA2aKey {
 /// collected comm-dtypes per `(comm_backend, phase)` the dtype chain needs.
 struct MoeA2aGrids {
     by_keys: BTreeMap<MoeA2aKey, BTreeMap<u32, f64>>,
-    /// `(comm_backend, phase) -> {comm_dtype}`. Mirrors `len(phase_slice)` /
-    /// `next(iter(phase_slice))` in `_resolve_comm_dtype_slice`; the sole-dtype
-    /// fallback only fires at size 1, where iteration order cannot matter.
+    /// `(comm_backend, phase) -> {comm_dtype}` for ordered, shape-aware dtype
+    /// candidate construction.
     dtypes_by_phase: BTreeMap<(String, String), BTreeSet<String>>,
 }
 
 type A2aGrid = BTreeMap<MoeA2aKey, BTreeMap<u32, f64>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct A2aSourcePriority {
+    channel: &'static str,
+    version: String,
+}
+
+/// One global priority tier across all four physical A2A formats. The
+/// resolver orders each basename independently; retaining its channel/version
+/// metadata lets the unified loader group every requested-version format
+/// before any nearest-earlier fallback format.
+pub(crate) struct MoeA2aSourceTier {
+    pub(crate) moe_a2a: Vec<PerfSource>,
+    pub(crate) legacy_normal: Vec<PerfSource>,
+    pub(crate) legacy_ll: Vec<PerfSource>,
+    pub(crate) legacy_trtllm_alltoall: Vec<PerfSource>,
+}
+
+fn source_channel_rank(channel: &str) -> u8 {
+    match channel {
+        "primary" => 0,
+        "declared_reuse" => 1,
+        "fallback" => 2,
+        "cross_backend" => 3,
+        _ => 4,
+    }
+}
+
+fn compare_source_priority(a: &A2aSourcePriority, b: &A2aSourcePriority) -> std::cmp::Ordering {
+    source_channel_rank(a.channel)
+        .cmp(&source_channel_rank(b.channel))
+        .then_with(|| {
+            // Framework communication reuse admits only `primary` and
+            // `fallback`. Fallback versions are PEP-440 and must be consumed
+            // nearest-first across the UNION of all contributing basenames.
+            if a.channel != "fallback" || b.channel != "fallback" {
+                return a.version.cmp(&b.version);
+            }
+            match (Version::from_str(&a.version), Version::from_str(&b.version)) {
+                (Ok(a_version), Ok(b_version)) => b_version.cmp(&a_version),
+                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                (Err(_), Err(_)) => b.version.cmp(&a.version),
+            }
+        })
+}
+
+/// Build the source tiers shared by the query grid and raw table view. Within
+/// a tier, callers load the three legacy adapters first and the new schema
+/// last; across tiers, callers merge lower-priority coordinates fill-only.
+pub(crate) fn source_tiers(
+    moe_a2a: &[PrioritizedSource],
+    legacy_normal: &[PrioritizedSource],
+    legacy_ll: &[PrioritizedSource],
+    legacy_trtllm_alltoall: &[PrioritizedSource],
+) -> Vec<MoeA2aSourceTier> {
+    let mut priorities: Vec<A2aSourcePriority> = Vec::new();
+    for source in moe_a2a
+        .iter()
+        .chain(legacy_normal)
+        .chain(legacy_ll)
+        .chain(legacy_trtllm_alltoall)
+    {
+        let priority = A2aSourcePriority {
+            channel: source.channel,
+            version: source.version.clone(),
+        };
+        if !priorities.contains(&priority) {
+            priorities.push(priority);
+        }
+    }
+    priorities.sort_by(compare_source_priority);
+
+    let select = |sources: &[PrioritizedSource], priority: &A2aSourcePriority| {
+        sources
+            .iter()
+            .filter(|source| {
+                source.channel == priority.channel && source.version == priority.version
+            })
+            .map(|source| source.source.clone())
+            .collect()
+    };
+    priorities
+        .iter()
+        .map(|priority| MoeA2aSourceTier {
+            moe_a2a: select(moe_a2a, priority),
+            legacy_normal: select(legacy_normal, priority),
+            legacy_ll: select(legacy_ll, priority),
+            legacy_trtllm_alltoall: select(legacy_trtllm_alltoall, priority),
+        })
+        .collect()
+}
+
+/// How a DeepEP-LL calibration was obtained. OLS uses a multi-point curve;
+/// one-shot calibration borrows the system/backend/phase median startup from
+/// valid OLS curves and derives the slope from one measured point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeepepLlCalibrationSource {
+    ExactOls,
+    ExactOneShot,
+    SingleDomainDonorOls,
+    SingleDomainDonorOneShot,
+}
+
+impl DeepepLlCalibrationSource {
+    pub(crate) fn is_donor(self) -> bool {
+        matches!(
+            self,
+            Self::SingleDomainDonorOls | Self::SingleDomainDonorOneShot
+        )
+    }
+
+    pub(crate) fn is_fallback(self) -> bool {
+        self != Self::ExactOls
+    }
+}
+
+/// Calibration and token-axis prediction selected for one DeepEP-LL phase.
+/// See `python/aisimulate/docs/DEEPEP_LL_MODELING.md`, sections 5-7. Multi-point OLS uses every
+/// point of the selected curve; one-shot calibration borrows the system
+/// median startup and derives the variable slope from the selected point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DeepepLlCalibration {
+    pub base_latency_ms: f64,
+    pub intercept_ms: f64,
+    pub measurement_ep_size: u32,
+    pub measurement_node_num: u32,
+    pub source: DeepepLlCalibrationSource,
+}
+
+/// The legacy DeepEP-LL collector stored a phase-semantic dtype under
+/// `default`: dispatch is FP8 and combine is BF16. It is not a wildcard for
+/// unrelated payload types.
+fn deepep_ll_default_matches(phase: &str, requested: &str) -> bool {
+    requested == "default"
+        || matches!(
+            (phase, requested),
+            ("dispatch", "fp8" | "fp8_block") | ("combine", "bfloat16")
+        )
+}
+
+/// Ordered dtype candidates at one topology. Shape resolution must try every
+/// candidate instead of choosing a dtype from the phase-level key set first.
+fn dtype_candidates(
+    comm_backend: &str,
+    phase: &str,
+    requested: &str,
+    dtypes: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut push = |dtype: &str| {
+        if dtypes.contains(dtype) && !candidates.iter().any(|value| value == dtype) {
+            candidates.push(dtype.to_string());
+        }
+    };
+    push(requested);
+    if requested == "fp8_block" {
+        push("fp8");
+    }
+    if comm_backend == "deepep_ll" {
+        if deepep_ll_default_matches(phase, requested) {
+            push("default");
+        }
+    } else if dtypes.len() == 1 && dtypes.contains("default") {
+        push("default");
+    }
+    candidates
+}
+
 pub struct MoeA2aTable {
     data_root: PathBuf,
+    /// Physical node width used only to reconstruct the missing EP axis in
+    /// legacy DeepEP-LL rows. HT keeps its historical HGX8 convention.
+    legacy_ll_gpus_per_node: u32,
     /// Ordered, priority-sorted sources per distinct perf-file basename
     /// (shared-layer aware; see [`PerfSource`]). Single-primary, no-filter by
     /// default (`MoeA2aTable::new`).
-    moe_a2a_sources: Vec<PerfSource>,
-    legacy_normal_sources: Vec<PerfSource>,
-    legacy_ll_sources: Vec<PerfSource>,
-    legacy_trtllm_alltoall_sources: Vec<PerfSource>,
+    moe_a2a_sources: Vec<PrioritizedSource>,
+    legacy_normal_sources: Vec<PrioritizedSource>,
+    legacy_ll_sources: Vec<PrioritizedSource>,
+    legacy_trtllm_alltoall_sources: Vec<PrioritizedSource>,
     grids: OnceLock<Result<MoeA2aGrids, AicError>>,
 }
 
@@ -114,21 +289,77 @@ impl MoeA2aTable {
     /// from `perf_db_sources` (Python-supplied). Each perf file falls back to
     /// its primary `data_root/<basename>` when absent from the map. No I/O.
     pub fn with_sources(data_root: PathBuf, resolver: &SourceResolver) -> Result<Self, AicError> {
-        let moe_a2a_sources = resolver.sources_for("moe_a2a_perf.parquet", &data_root)?;
+        Self::with_sources_and_node_width(data_root, resolver, 8)
+    }
+
+    /// Production constructor. Legacy LL parquet has `node_num` but no EP
+    /// axis, so the system's actual physical node width is required (GB200 /
+    /// GB300 are NVL4; HGX systems are NVL8).
+    pub fn with_sources_and_node_width(
+        data_root: PathBuf,
+        resolver: &SourceResolver,
+        legacy_ll_gpus_per_node: u32,
+    ) -> Result<Self, AicError> {
+        let moe_a2a_sources =
+            resolver.prioritized_sources_for("moe_a2a_perf.parquet", &data_root)?;
         let legacy_normal_sources =
-            resolver.sources_for("wideep_deepep_normal_perf.parquet", &data_root)?;
+            resolver.prioritized_sources_for("wideep_deepep_normal_perf.parquet", &data_root)?;
         let legacy_ll_sources =
-            resolver.sources_for("wideep_deepep_ll_perf.parquet", &data_root)?;
+            resolver.prioritized_sources_for("wideep_deepep_ll_perf.parquet", &data_root)?;
         let legacy_trtllm_alltoall_sources =
-            resolver.sources_for("trtllm_alltoall_perf.parquet", &data_root)?;
+            resolver.prioritized_sources_for("trtllm_alltoall_perf.parquet", &data_root)?;
         Ok(Self {
             data_root,
+            legacy_ll_gpus_per_node: legacy_ll_gpus_per_node.max(1),
             moe_a2a_sources,
             legacy_normal_sources,
             legacy_ll_sources,
             legacy_trtllm_alltoall_sources,
             grids: OnceLock::new(),
         })
+    }
+
+    /// Whether an exact A2A shape coordinate has at least one collected SM
+    /// curve. Token-axis coverage is deliberately not checked here: an exact
+    /// scale with an incomplete curve must fail at its own interpolation
+    /// boundary rather than silently falling back to another node scale.
+    #[allow(clippy::too_many_arguments)]
+    pub fn has_shape(
+        &self,
+        comm_backend: &str,
+        phase: &str,
+        comm_dtype: &str,
+        ep_size: u32,
+        node_num: u32,
+        hidden_size: u32,
+        topk: u32,
+        num_experts: u32,
+    ) -> Result<bool, AicError> {
+        let grids = self.load()?;
+        let phase_slice = (comm_backend.to_string(), phase.to_string());
+        let Some(dtypes) = grids.dtypes_by_phase.get(&phase_slice) else {
+            return Ok(false);
+        };
+        Ok(dtype_candidates(comm_backend, phase, comm_dtype, dtypes)
+            .into_iter()
+            .any(|used_dtype| {
+                let key_at = |sms: u32| MoeA2aKey {
+                    comm_backend: comm_backend.to_string(),
+                    phase: phase.to_string(),
+                    comm_dtype: used_dtype.clone(),
+                    ep_size,
+                    node_num,
+                    hidden_size,
+                    topk,
+                    num_experts,
+                    sms,
+                };
+                grids
+                    .by_keys
+                    .range(key_at(0)..=key_at(u32::MAX))
+                    .next()
+                    .is_some()
+            }))
     }
 
     /// Unified MoE all-to-all latency (ms) for one comm phase.
@@ -153,34 +384,6 @@ impl MoeA2aTable {
         sms: u32,
     ) -> Result<f64, AicError> {
         let grids = self.load()?;
-        // `_resolve_comm_dtype_slice`: exact key -> the `fp8_block` -> `fp8`
-        // behavioral alias -> the sole collected dtype (the legacy DeepEP
-        // tables have no dtype axis and live under "default", so a caller
-        // asking for a payload dtype must still reach them) -> typed miss.
-        let resolve_dtype = |phase_name: &str| -> Result<String, AicError> {
-            let phase_slice = (comm_backend.to_string(), phase_name.to_string());
-            let dtypes = grids.dtypes_by_phase.get(&phase_slice).ok_or_else(|| {
-                AicError::PerfDatabase(format!(
-                    "moe_a2a data missing for comm_backend={comm_backend:?} \
-                     phase={phase_name:?} at {}",
-                    self.data_root.display()
-                ))
-            })?;
-            if dtypes.contains(comm_dtype) {
-                Ok(comm_dtype.to_string())
-            } else if comm_dtype == "fp8_block" && dtypes.contains("fp8") {
-                Ok("fp8".to_string())
-            } else if dtypes.len() == 1 && dtypes.contains("default") {
-                Ok("default".to_string())
-            } else {
-                Err(AicError::PerfDatabase(format!(
-                    "moe_a2a comm_dtype {comm_dtype:?} is not available for \
-                     {comm_backend}/{phase_name} at {}; collected dtypes: {dtypes:?}",
-                    self.data_root.display()
-                )))
-            }
-        };
-        let used_dtype = resolve_dtype(phase)?;
         let collect_by_sms = |phase_name: &str, dtype: &str| {
             let key_at = |sms: u32| MoeA2aKey {
                 comm_backend: comm_backend.to_string(),
@@ -199,6 +402,32 @@ impl MoeA2aTable {
                 .map(|(key, curve)| (key.sms, curve))
                 .collect::<BTreeMap<_, _>>()
         };
+        // Resolve at the complete shape. In particular, an FP8 row for some
+        // other H/K/N must not prevent this shape from reaching a compatible
+        // legacy `default` row.
+        let resolve_dtype = |phase_name: &str| -> Result<String, AicError> {
+            let phase_slice = (comm_backend.to_string(), phase_name.to_string());
+            let dtypes = grids.dtypes_by_phase.get(&phase_slice).ok_or_else(|| {
+                AicError::PerfDatabase(format!(
+                    "moe_a2a data missing for comm_backend={comm_backend:?} \
+                     phase={phase_name:?} at {}",
+                    self.data_root.display()
+                ))
+            })?;
+            dtype_candidates(comm_backend, phase_name, comm_dtype, dtypes)
+                .into_iter()
+                .find(|dtype| !collect_by_sms(phase_name, dtype).is_empty())
+                .ok_or_else(|| {
+                    AicError::PerfDatabase(format!(
+                        "moe_a2a comm_dtype {comm_dtype:?} has no compatible data for \
+                         {comm_backend}/{phase_name}, ep={ep_size}, nodes={node_num}, \
+                         hidden={hidden_size}, topk={topk}, experts={num_experts} at {}; \
+                         collected dtypes: {dtypes:?}",
+                        self.data_root.display()
+                    ))
+                })
+        };
+        let used_dtype = resolve_dtype(phase)?;
         // `sms` is the last key field, so every collected SM budget of one
         // shape coordinate is one contiguous range — Python's `by_sms` slice.
         let by_sms = collect_by_sms(phase, &used_dtype);
@@ -264,6 +493,151 @@ impl MoeA2aTable {
         Ok(latency)
     }
 
+    /// Resolve and fit the calibration curve for DeepEP-LL Stage 1.
+    ///
+    /// Resolution is intentionally strict: try all physically compatible
+    /// dtype keys at the exact target topology, then repeat the same dtype
+    /// order for a node-1 curve with the exact same phase, H, K, and N. No
+    /// H/K/N interpolation or nearest-shape substitution is allowed. A
+    /// multi-point curve uses OLS plus the existing token-axis interpolation;
+    /// a single-point curve borrows the system/backend/phase median OLS
+    /// intercept and derives its slope from that one point.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn deepep_ll_calibration(
+        &self,
+        phase: &str,
+        comm_dtype: &str,
+        target_ep_size: u32,
+        target_node_num: u32,
+        hidden_size: u32,
+        topk: u32,
+        num_experts: u32,
+        num_tokens: u32,
+        preferred_donor_ep_size: u32,
+    ) -> Result<DeepepLlCalibration, AicError> {
+        let grids = self.load()?;
+        let backend = "deepep_ll";
+        let dtypes = grids
+            .dtypes_by_phase
+            .get(&(backend.to_string(), phase.to_string()))
+            .ok_or_else(|| {
+                AicError::PerfDatabase(format!(
+                    "DeepEP-LL calibration missing for phase={phase:?} at {}",
+                    self.data_root.display()
+                ))
+            })?;
+        let dtype_candidates = dtype_candidates(backend, phase, comm_dtype, dtypes);
+        if dtype_candidates.is_empty() {
+            return Err(AicError::PerfDatabase(format!(
+                "DeepEP-LL calibration dtype {comm_dtype:?} is unavailable for phase={phase:?}; \
+                 collected dtypes: {dtypes:?}"
+            )));
+        }
+        let borrowed_intercept_ms =
+            deepep_ll_system_median_intercept(grids, phase, comm_dtype, dtypes);
+        let mut misses = Vec::new();
+
+        for used_dtype in &dtype_candidates {
+            let exact_key = MoeA2aKey {
+                comm_backend: backend.to_string(),
+                phase: phase.to_string(),
+                comm_dtype: used_dtype.clone(),
+                ep_size: target_ep_size,
+                node_num: target_node_num,
+                hidden_size,
+                topk,
+                num_experts,
+                sms: 0,
+            };
+            if let Some(curve) = grids.by_keys.get(&exact_key) {
+                match calibrate_deepep_ll_curve(curve, num_tokens, borrowed_intercept_ms) {
+                    Ok((base_latency_ms, intercept_ms, one_shot)) => {
+                        return Ok(DeepepLlCalibration {
+                            base_latency_ms,
+                            intercept_ms,
+                            measurement_ep_size: exact_key.ep_size,
+                            measurement_node_num: exact_key.node_num,
+                            source: if one_shot {
+                                DeepepLlCalibrationSource::ExactOneShot
+                            } else {
+                                DeepepLlCalibrationSource::ExactOls
+                            },
+                        });
+                    }
+                    Err(err) if err.is_missing_perf_data() => {
+                        misses.push(format!("exact dtype={used_dtype}: {err}"));
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+
+        for used_dtype in &dtype_candidates {
+            let mut donors = grids
+                .by_keys
+                .iter()
+                .filter(|(key, _)| {
+                    key.comm_backend == backend
+                        && key.phase == phase
+                        && key.comm_dtype == *used_dtype
+                        && key.node_num == 1
+                        && key.hidden_size == hidden_size
+                        && key.topk == topk
+                        && key.num_experts == num_experts
+                        && key.sms == 0
+                })
+                .collect::<Vec<_>>();
+            // Prefer the physical single-domain width, then try every other
+            // same-shape node-1 curve in stable EP order. Coverage admits a
+            // target when any such donor is viable, so runtime must exhaust
+            // the same set rather than stopping at an invalid preferred row.
+            donors.sort_by_key(|(key, _)| {
+                (
+                    key.ep_size != preferred_donor_ep_size,
+                    key.ep_size,
+                    key.node_num,
+                )
+            });
+            for (selected_key, curve) in donors {
+                match calibrate_deepep_ll_curve(curve, num_tokens, borrowed_intercept_ms) {
+                    Ok((base_latency_ms, intercept_ms, one_shot)) => {
+                        return Ok(DeepepLlCalibration {
+                            base_latency_ms,
+                            intercept_ms,
+                            measurement_ep_size: selected_key.ep_size,
+                            measurement_node_num: selected_key.node_num,
+                            source: if one_shot {
+                                DeepepLlCalibrationSource::SingleDomainDonorOneShot
+                            } else {
+                                DeepepLlCalibrationSource::SingleDomainDonorOls
+                            },
+                        });
+                    }
+                    Err(err) if err.is_missing_perf_data() => {
+                        misses.push(format!(
+                            "node-1 donor dtype={used_dtype}, ep={}: {err}",
+                            selected_key.ep_size
+                        ));
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+
+        Err(AicError::PerfDatabase(format!(
+            "DeepEP-LL calibration has no usable exact or single-domain curve for \
+             phase={phase}, requested_dtype={comm_dtype}, target_ep={target_ep_size}, \
+             target_nodes={target_node_num}, hidden={hidden_size}, topk={topk}, \
+             experts={num_experts}; tried dtypes={dtype_candidates:?} at {}{}",
+            self.data_root.display(),
+            if misses.is_empty() {
+                String::new()
+            } else {
+                format!("; candidate misses: {}", misses.join(" | "))
+            }
+        )))
+    }
+
     fn load(&self) -> Result<&MoeA2aGrids, AicError> {
         let cell = self.grids.get_or_init(|| {
             load_moe_a2a_grids(
@@ -271,10 +645,148 @@ impl MoeA2aTable {
                 &self.legacy_normal_sources,
                 &self.legacy_ll_sources,
                 &self.legacy_trtllm_alltoall_sources,
+                self.legacy_ll_gpus_per_node,
             )
         });
         cell.as_ref().map_err(clone_err)
     }
+}
+
+fn deepep_ll_system_median_intercept(
+    grids: &MoeA2aGrids,
+    phase: &str,
+    requested_dtype: &str,
+    dtypes: &BTreeSet<String>,
+) -> Option<f64> {
+    let mut physical_dtypes = dtype_candidates("deepep_ll", phase, requested_dtype, dtypes);
+    if requested_dtype == "default" {
+        let typed = match phase {
+            "dispatch" => Some("fp8"),
+            "combine" => Some("bfloat16"),
+            _ => None,
+        };
+        if let Some(typed) = typed.filter(|dtype| dtypes.contains(*dtype)) {
+            physical_dtypes.insert(0, typed.to_string());
+        }
+    }
+
+    // Ignore the storage dtype in the identity so a typed row and its legacy
+    // `default` twin do not double-weight the system median. Iterating dtypes
+    // in preference order makes the first *valid* typed curve win; an invalid
+    // typed duplicate must not hide a valid legacy curve.
+    let mut unique_intercepts = BTreeMap::new();
+    for dtype in physical_dtypes {
+        for (key, curve) in &grids.by_keys {
+            if key.comm_backend == "deepep_ll"
+                && key.phase == phase
+                && key.comm_dtype == dtype
+                && key.sms == 0
+            {
+                let identity = (
+                    key.ep_size,
+                    key.node_num,
+                    key.hidden_size,
+                    key.topk,
+                    key.num_experts,
+                    key.sms,
+                );
+                if unique_intercepts.contains_key(&identity) {
+                    continue;
+                }
+                if let Ok((_, intercept)) = ordinary_least_squares(curve) {
+                    unique_intercepts.insert(identity, intercept);
+                }
+            }
+        }
+    }
+    let mut intercepts = unique_intercepts.into_values().collect::<Vec<_>>();
+    median(&mut intercepts)
+}
+
+fn calibrate_deepep_ll_curve(
+    curve: &BTreeMap<u32, f64>,
+    num_tokens: u32,
+    borrowed_intercept_ms: Option<f64>,
+) -> Result<(f64, f64, bool), AicError> {
+    if curve.len() >= 2 {
+        let (_slope_ms_per_token, intercept_ms) = ordinary_least_squares(curve)?;
+        let base_latency_ms = token_axis_curve(curve).query(num_tokens as f64, &|t| t)?;
+        return Ok((base_latency_ms, intercept_ms, false));
+    }
+    let Some((&measured_tokens, &measured_latency_ms)) = curve.first_key_value() else {
+        return Err(AicError::PerfDatabase(
+            "DeepEP-LL calibration curve is empty".to_string(),
+        ));
+    };
+    let intercept_ms = borrowed_intercept_ms.ok_or_else(|| {
+        AicError::PerfDatabase(
+            "DeepEP-LL one-shot calibration has no valid system median t0".to_string(),
+        )
+    })?;
+    if measured_tokens == 0
+        || !measured_latency_ms.is_finite()
+        || measured_latency_ms <= intercept_ms
+    {
+        return Err(AicError::PerfDatabase(format!(
+            "invalid DeepEP-LL one-shot point: tokens={measured_tokens}, \
+             latency={measured_latency_ms}, system_median_t0={intercept_ms}"
+        )));
+    }
+    let slope_ms_per_token = (measured_latency_ms - intercept_ms) / f64::from(measured_tokens);
+    let base_latency_ms = intercept_ms + slope_ms_per_token * f64::from(num_tokens);
+    if !slope_ms_per_token.is_finite() || slope_ms_per_token <= 0.0 || !base_latency_ms.is_finite()
+    {
+        return Err(AicError::PerfDatabase(format!(
+            "invalid DeepEP-LL one-shot fit: slope={slope_ms_per_token}, \
+             predicted_latency={base_latency_ms}"
+        )));
+    }
+    Ok((base_latency_ms, intercept_ms, true))
+}
+
+fn median(values: &mut [f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    let middle = values.len() / 2;
+    Some(if values.len() % 2 == 0 {
+        (values[middle - 1] + values[middle]) / 2.0
+    } else {
+        values[middle]
+    })
+}
+
+fn ordinary_least_squares(curve: &BTreeMap<u32, f64>) -> Result<(f64, f64), AicError> {
+    if curve.len() < 2 {
+        return Err(AicError::PerfDatabase(
+            "DeepEP-LL OLS requires at least two token points".to_string(),
+        ));
+    }
+    let n = curve.len() as f64;
+    let mean_x = curve.keys().map(|&x| f64::from(x)).sum::<f64>() / n;
+    let mean_y = curve.values().copied().sum::<f64>() / n;
+    let mut variance_x = 0.0;
+    let mut covariance = 0.0;
+    for (&x, &y) in curve {
+        let dx = f64::from(x) - mean_x;
+        variance_x += dx * dx;
+        covariance += dx * (y - mean_y);
+    }
+    let slope = covariance / variance_x;
+    let raw_intercept = mean_y - slope * mean_x;
+    if !variance_x.is_finite()
+        || variance_x <= 0.0
+        || !slope.is_finite()
+        || slope <= 0.0
+        || !raw_intercept.is_finite()
+    {
+        return Err(AicError::PerfDatabase(format!(
+            "invalid DeepEP-LL OLS result: points={}, slope={slope}, intercept={raw_intercept}",
+            curve.len()
+        )));
+    }
+    Ok((slope, raw_intercept.max(0.0)))
 }
 
 fn query_sms_grid(
@@ -307,6 +819,12 @@ pub(crate) fn legacy_deepep_ep_size(node_num: u32) -> u32 {
     node_num.saturating_mul(8)
 }
 
+/// Legacy DeepEP-LL EP reconstruction. Unlike HT, LL data is shipped for
+/// both HGX8 and GB NVL4 systems, so hardcoding eight mislabels every GB row.
+pub(crate) fn legacy_deepep_ll_ep_size(node_num: u32, gpus_per_node: u32) -> u32 {
+    node_num.saturating_mul(gpus_per_node.max(1))
+}
+
 /// `kernel_source` Python assumes when the legacy trtllm-alltoall file has no
 /// such COLUMN (`row.get("kernel_source", "NVLinkTwoSided")`). A column that
 /// exists with a NULL cell is a different case — see
@@ -314,20 +832,37 @@ pub(crate) fn legacy_deepep_ep_size(node_num: u32) -> u32 {
 /// `load_trtllm_alltoall_data` twin, which used the same default).
 pub(crate) const LEGACY_TRTLLM_DEFAULT_KERNEL_SOURCE: &str = "NVLinkTwoSided";
 
-/// Load the unified table: legacy adapters first (keep-first), then the new
-/// schema (first occurrence of a key overwrites, repeats keep first) —
-/// Python `load_moe_a2a_data`.
+/// Load the unified table in global resolver tiers. Within one tier, legacy
+/// adapters load first (keep-first), then the new schema overrides legacy on
+/// its first occurrence. Lower-priority tiers fill missing coordinates only.
 fn load_moe_a2a_grids(
-    a2a_sources: &[PerfSource],
-    normal_sources: &[PerfSource],
-    ll_sources: &[PerfSource],
-    trtllm_sources: &[PerfSource],
+    a2a_sources: &[PrioritizedSource],
+    normal_sources: &[PrioritizedSource],
+    ll_sources: &[PrioritizedSource],
+    trtllm_sources: &[PrioritizedSource],
+    legacy_ll_gpus_per_node: u32,
 ) -> Result<MoeA2aGrids, AicError> {
     let mut by_keys: A2aGrid = BTreeMap::new();
-    let mut any_source = adapt_legacy_deepep_normal(normal_sources, &mut by_keys)?;
-    any_source |= adapt_legacy_deepep_ll(ll_sources, &mut by_keys)?;
-    any_source |= adapt_legacy_trtllm_alltoall(trtllm_sources, &mut by_keys)?;
-    any_source |= load_new_schema(a2a_sources, &mut by_keys)?;
+    let mut any_source = false;
+    for tier in source_tiers(a2a_sources, normal_sources, ll_sources, trtllm_sources) {
+        let mut tier_keys: A2aGrid = BTreeMap::new();
+        let mut tier_has_source = adapt_legacy_deepep_normal(&tier.legacy_normal, &mut tier_keys)?;
+        tier_has_source |=
+            adapt_legacy_deepep_ll(&tier.legacy_ll, &mut tier_keys, legacy_ll_gpus_per_node)?;
+        tier_has_source |=
+            adapt_legacy_trtllm_alltoall(&tier.legacy_trtllm_alltoall, &mut tier_keys)?;
+        tier_has_source |= load_new_schema(&tier.moe_a2a, &mut tier_keys)?;
+        any_source |= tier_has_source;
+
+        // The tier is complete, including same-tier new-schema-over-legacy.
+        // Lower-priority versions may now fill missing coordinates only.
+        for (key, token_curve) in tier_keys {
+            let final_curve = by_keys.entry(key).or_default();
+            for (num_tokens, latency_ms) in token_curve {
+                final_curve.entry(num_tokens).or_insert(latency_ms);
+            }
+        }
+    }
     if !any_source || by_keys.is_empty() {
         return Err(AicError::PerfDatabase(format!(
             "no MoE all-to-all rows loaded from {} source(s) (moe_a2a + 3 legacy tables; \
@@ -335,7 +870,7 @@ fn load_moe_a2a_grids(
             a2a_sources.len() + normal_sources.len() + ll_sources.len() + trtllm_sources.len(),
             a2a_sources
                 .first()
-                .map(|s| s.path().display().to_string())
+                .map(|s| s.source.path().display().to_string())
                 .unwrap_or_else(|| "<no moe_a2a sources>".to_string())
         )));
     }
@@ -387,11 +922,34 @@ fn legacy_deepep_key(
     num_experts: u32,
     sms: u32,
 ) -> MoeA2aKey {
+    legacy_deepep_key_at_ep(
+        comm_backend,
+        phase,
+        legacy_deepep_ep_size(node_num),
+        node_num,
+        hidden_size,
+        topk,
+        num_experts,
+        sms,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn legacy_deepep_key_at_ep(
+    comm_backend: &str,
+    phase: &str,
+    ep_size: u32,
+    node_num: u32,
+    hidden_size: u32,
+    topk: u32,
+    num_experts: u32,
+    sms: u32,
+) -> MoeA2aKey {
     MoeA2aKey {
         comm_backend: comm_backend.to_string(),
         phase: phase.to_string(),
         comm_dtype: LEGACY_DEEPEP_DTYPE.to_string(),
-        ep_size: legacy_deepep_ep_size(node_num),
+        ep_size,
         node_num,
         hidden_size,
         topk,
@@ -479,7 +1037,11 @@ fn adapt_legacy_deepep_normal(
 /// the retired `wideep.rs::load_deepep_ll_parquet` — see
 /// [`adapt_legacy_deepep_normal`] and Python
 /// `operations/moe_comm.py::_adapt_legacy_deepep_ll`.
-fn adapt_legacy_deepep_ll(sources: &[PerfSource], by_keys: &mut A2aGrid) -> Result<bool, AicError> {
+fn adapt_legacy_deepep_ll(
+    sources: &[PerfSource],
+    by_keys: &mut A2aGrid,
+    gpus_per_node: u32,
+) -> Result<bool, AicError> {
     let mut any_source = false;
     for source in sources {
         let path = source.path();
@@ -511,9 +1073,10 @@ fn adapt_legacy_deepep_ll(sources: &[PerfSource], by_keys: &mut A2aGrid) -> Resu
             for (phase, latency_us) in [("dispatch", dispatch_us), ("combine", combine_us)] {
                 store_first_wins(
                     by_keys,
-                    legacy_deepep_key(
+                    legacy_deepep_key_at_ep(
                         "deepep_ll",
                         phase,
+                        legacy_deepep_ll_ep_size(node_num, gpus_per_node),
                         node_num,
                         hidden_size,
                         topk,
@@ -686,8 +1249,17 @@ fn load_new_schema(sources: &[PerfSource], by_keys: &mut A2aGrid) -> Result<bool
             if !kernel_source_ok(source.kernel_sources(), ks_col, &row)? {
                 continue;
             }
+            let comm_backend = row.str_owned(comm_backend_col)?;
+            // DeepEP-LL has no SM-budget axis. Normalize malformed or
+            // forward-schema nonzero values at the load boundary so generic
+            // lookup and LL calibration cannot select different slices.
+            let sms = if comm_backend == "deepep_ll" {
+                0
+            } else {
+                normalize_sms(&row, sms_col)?
+            };
             let key = MoeA2aKey {
-                comm_backend: row.str_owned(comm_backend_col)?,
+                comm_backend,
                 // Stored as collected; the phase is validated at query time.
                 phase: row.str_owned(phase_col)?,
                 comm_dtype: row.str_owned(comm_dtype_col)?,
@@ -696,7 +1268,7 @@ fn load_new_schema(sources: &[PerfSource], by_keys: &mut A2aGrid) -> Result<bool
                 hidden_size: row.u32(hidden_size_col)?,
                 topk: row.u32(topk_col)?,
                 num_experts: row.u32(num_experts_col)?,
-                sms: normalize_sms(&row, sms_col)?,
+                sms,
             };
             let num_tokens = row.u32(num_tokens_col)?;
             let latency_ms = row.f64(latency_col)? / 1000.0;
@@ -725,6 +1297,140 @@ mod tests {
     use std::fs::File;
     use std::path::Path;
     use std::sync::Arc;
+
+    #[test]
+    fn deepep_ll_dtype_candidates_match_shared_coverage_fixture() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../python/aisimulate/tests/fixtures/deepep_ll_dtype_candidates.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let available = case["available"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap().to_string())
+                .collect::<BTreeSet<_>>();
+            let actual = dtype_candidates(
+                case["backend"].as_str().unwrap(),
+                case["phase"].as_str().unwrap(),
+                case["requested"].as_str().unwrap(),
+                &available,
+            );
+            let expected = case["expected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap().to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{}", case["name"]);
+        }
+    }
+
+    #[test]
+    fn deepep_ll_runtime_matches_shared_coverage_viability_fixture() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../python/aisimulate/tests/fixtures/deepep_ll_calibration_viability.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = Vec::new();
+            for fixture_row in case["rows"].as_array().unwrap() {
+                let dtype: &'static str = Box::leak(
+                    fixture_row["dispatch_dtype"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                        .into_boxed_str(),
+                );
+                for point in fixture_row["points"].as_array().unwrap() {
+                    rows.push(a2a_row(
+                        "deepep_ll",
+                        "dispatch",
+                        dtype,
+                        fixture_row["ep"].as_i64().unwrap(),
+                        fixture_row["nodes"].as_i64().unwrap(),
+                        None,
+                        point[0].as_i64().unwrap(),
+                        point[1].as_f64().unwrap() * 1_000.0,
+                    ));
+                }
+            }
+            write_a2a_parquet(&tmp.path().join("moe_a2a_perf.parquet"), &rows, true);
+            let table = MoeA2aTable::new(tmp.path().to_path_buf());
+            let result = table.deepep_ll_calibration(
+                "dispatch",
+                case["requested_dispatch_dtype"].as_str().unwrap(),
+                case["target_ep"].as_u64().unwrap() as u32,
+                case["target_nodes"].as_u64().unwrap() as u32,
+                7168,
+                8,
+                256,
+                64,
+                8,
+            );
+            assert_eq!(
+                result.is_ok(),
+                case["expected"].as_bool().unwrap(),
+                "{}: {result:?}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn deepep_ll_ols_recovers_slope_and_intercept() {
+        let curve = BTreeMap::from([(1, 0.0161), (2, 0.0162), (4, 0.0164), (8, 0.0168)]);
+        let (slope, intercept) = ordinary_least_squares(&curve).unwrap();
+        assert!((slope - 0.0001).abs() < 1e-12);
+        assert!((intercept - 0.016).abs() < 1e-12);
+    }
+
+    #[test]
+    fn deepep_ll_ols_clamps_finite_negative_intercept_to_zero() {
+        let curve = BTreeMap::from([(1, 0.0009), (2, 0.0019), (4, 0.0039), (8, 0.0079)]);
+        let (slope, intercept) = ordinary_least_squares(&curve).unwrap();
+        assert!((slope - 0.001).abs() < 1e-12);
+        assert_eq!(intercept, 0.0);
+    }
+
+    #[test]
+    fn deepep_ll_ols_rejects_insufficient_or_nonpositive_curves() {
+        assert!(ordinary_least_squares(&BTreeMap::from([(1, 0.01)])).is_err());
+        assert!(ordinary_least_squares(&BTreeMap::from([(1, 0.02), (2, 0.02)])).is_err());
+        assert!(ordinary_least_squares(&BTreeMap::from([(1, 0.02), (2, 0.01)])).is_err());
+    }
+
+    #[test]
+    fn deepep_ll_one_shot_uses_borrowed_t0_and_reproduces_its_point() {
+        let curve = BTreeMap::from([(64, 0.080)]);
+        let (at_point, intercept, one_shot) =
+            calibrate_deepep_ll_curve(&curve, 64, Some(0.016)).unwrap();
+        approx(at_point, 0.080);
+        approx(intercept, 0.016);
+        assert!(one_shot);
+        let (scaled, _, _) = calibrate_deepep_ll_curve(&curve, 128, Some(0.016)).unwrap();
+        approx(scaled, 0.144);
+        assert!(calibrate_deepep_ll_curve(&curve, 64, None).is_err());
+        assert!(calibrate_deepep_ll_curve(&curve, 64, Some(0.080)).is_err());
+    }
+
+    #[test]
+    fn deepep_ll_system_t0_uses_the_standard_median() {
+        let mut odd = [0.030, 0.010, 0.020];
+        assert_eq!(median(&mut odd), Some(0.020));
+        let mut even = [0.040, 0.010, 0.030, 0.020];
+        assert_eq!(median(&mut even), Some(0.025));
+    }
+
+    #[test]
+    fn legacy_ll_ep_uses_physical_node_width_while_ht_keeps_hgx8() {
+        assert_eq!(legacy_deepep_ll_ep_size(1, 4), 4);
+        assert_eq!(legacy_deepep_ll_ep_size(2, 4), 8);
+        assert_eq!(legacy_deepep_ep_size(1), 8);
+        assert_eq!(legacy_deepep_ep_size(2), 16);
+    }
 
     fn write_column<T: parquet::data_type::DataType>(
         rg: &mut SerializedRowGroupWriter<'_, File>,
@@ -1083,8 +1789,8 @@ mod tests {
     // ------------------------------------------------------------------
 
     /// R6 units: the unified `latency` column is MICROseconds; leaves are ms.
-    /// A NULL `sms` cell and an absent `sms` column both key at sms=0
-    /// (`_normalize_sms`).
+    /// A NULL `sms` cell, an absent `sms` column, and every DeepEP-LL value
+    /// all key at sms=0 (`_normalize_sms` plus the LL load-time contract).
     #[test]
     fn new_schema_converts_us_to_ms_and_normalizes_sms() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1094,6 +1800,7 @@ mod tests {
                 a2a_row("deepep_ht", "dispatch", "fp8", 16, 2, Some(20), 64, 250.0),
                 a2a_row("deepep_ht", "combine", "fp8", 16, 2, Some(20), 64, 250.0),
                 a2a_row("deepep_ll", "dispatch", "fp8", 16, 2, None, 64, 125.0),
+                a2a_row("deepep_ll", "combine", "fp8", 16, 2, Some(20), 64, 175.0),
             ],
             true,
         );
@@ -1110,6 +1817,14 @@ mod tests {
                 .query("deepep_ll", "dispatch", "fp8", 16, 2, 7168, 8, 256, 64, 0)
                 .unwrap(),
             0.125,
+        );
+        // DeepEP-LL has no SM-budget axis, so even a nonzero new-schema cell
+        // is normalized to the calibration slice at sms=0.
+        approx(
+            table
+                .query("deepep_ll", "combine", "fp8", 16, 2, 7168, 8, 256, 64, 0)
+                .unwrap(),
+            0.175,
         );
 
         // Same rows with the `sms` column omitted entirely.
@@ -1431,8 +2146,8 @@ mod tests {
         // Two collected dtypes -> no sole-dtype fallback.
         assert!(q("bfloat16").is_err());
 
-        // Sole collected dtype ("default", the legacy DeepEP convention):
-        // any requested dtype reaches it.
+        // The LL legacy `default` key is phase-semantic, not a wildcard:
+        // dispatch is FP8 and cannot serve NVFP4.
         let tmp2 = tempfile::tempdir().unwrap();
         write_deepep_ll_parquet(
             &tmp2.path().join("wideep_deepep_ll_perf.parquet"),
@@ -1441,9 +2156,14 @@ mod tests {
         let table2 = MoeA2aTable::new(tmp2.path().to_path_buf());
         approx(
             table2
-                .query("deepep_ll", "dispatch", "nvfp4", 16, 2, 7168, 8, 256, 64, 0)
+                .query("deepep_ll", "dispatch", "fp8", 16, 2, 7168, 8, 256, 64, 0)
                 .unwrap(),
             0.1,
+        );
+        assert!(
+            table2
+                .query("deepep_ll", "dispatch", "nvfp4", 16, 2, 7168, 8, 256, 64, 0)
+                .is_err()
         );
         // A phase that was never collected stays a miss (the chain runs BELOW
         // the phase level).
@@ -1515,6 +2235,225 @@ mod tests {
                 )
                 .unwrap(),
             0.7,
+        );
+    }
+
+    #[test]
+    fn deepep_ll_mixed_schema_prefers_typed_rows_then_uses_compatible_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_a2a_parquet(
+            &tmp.path().join("moe_a2a_perf.parquet"),
+            &[
+                a2a_row("deepep_ll", "dispatch", "default", 16, 2, None, 64, 100.0),
+                a2a_row("deepep_ll", "dispatch", "default", 16, 2, None, 128, 180.0),
+                a2a_row("deepep_ll", "dispatch", "fp8", 16, 2, None, 64, 200.0),
+                a2a_row("deepep_ll", "dispatch", "fp8", 16, 2, None, 128, 360.0),
+                a2a_row("deepep_ll", "combine", "default", 16, 2, None, 64, 300.0),
+                a2a_row("deepep_ll", "combine", "default", 16, 2, None, 128, 580.0),
+                a2a_row("deepep_ll", "combine", "fp8", 16, 2, None, 64, 400.0),
+                a2a_row("deepep_ll", "combine", "fp8", 16, 2, None, 128, 760.0),
+            ],
+            true,
+        );
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+
+        // The typed dispatch row wins even though the compatible legacy row
+        // is present.
+        approx(
+            table
+                .query("deepep_ll", "dispatch", "fp8", 16, 2, 7168, 8, 256, 64, 0)
+                .unwrap(),
+            0.2,
+        );
+        // Combine has no bfloat16 row, so the legacy default remains usable
+        // in a mixed-schema phase instead of becoming an ambiguous hard miss.
+        approx(
+            table
+                .query(
+                    "deepep_ll",
+                    "combine",
+                    "bfloat16",
+                    16,
+                    2,
+                    7168,
+                    8,
+                    256,
+                    64,
+                    0,
+                )
+                .unwrap(),
+            0.3,
+        );
+        assert!(
+            table
+                .has_shape("deepep_ll", "combine", "bfloat16", 16, 2, 7168, 8, 256)
+                .unwrap()
+        );
+        let calibration = table
+            .deepep_ll_calibration("combine", "bfloat16", 16, 2, 7168, 8, 256, 64, 8)
+            .unwrap();
+        approx(calibration.base_latency_ms, 0.3);
+        assert_eq!(calibration.source, DeepepLlCalibrationSource::ExactOls);
+    }
+
+    #[test]
+    fn deepep_ll_compatible_default_exact_beats_typed_node1_donor() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_a2a_parquet(
+            &tmp.path().join("moe_a2a_perf.parquet"),
+            &[
+                a2a_row("deepep_ll", "dispatch", "default", 16, 2, None, 64, 100.0),
+                a2a_row("deepep_ll", "dispatch", "default", 16, 2, None, 128, 180.0),
+                a2a_row("deepep_ll", "dispatch", "fp8", 8, 1, None, 64, 900.0),
+                a2a_row("deepep_ll", "dispatch", "fp8", 8, 1, None, 128, 1700.0),
+            ],
+            true,
+        );
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+        let calibration = table
+            .deepep_ll_calibration("dispatch", "fp8", 16, 2, 7168, 8, 256, 64, 8)
+            .unwrap();
+        approx(calibration.base_latency_ms, 0.1);
+        assert_eq!(calibration.measurement_ep_size, 16);
+        assert_eq!(calibration.source, DeepepLlCalibrationSource::ExactOls);
+    }
+
+    #[test]
+    fn deepep_ll_invalid_typed_curve_continues_to_compatible_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_a2a_parquet(
+            &tmp.path().join("moe_a2a_perf.parquet"),
+            &[
+                a2a_row("deepep_ll", "dispatch", "fp8", 16, 2, None, 64, 200.0),
+                a2a_row("deepep_ll", "dispatch", "fp8", 16, 2, None, 128, 200.0),
+                a2a_row("deepep_ll", "dispatch", "default", 16, 2, None, 64, 100.0),
+                a2a_row("deepep_ll", "dispatch", "default", 16, 2, None, 128, 180.0),
+            ],
+            true,
+        );
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+        let calibration = table
+            .deepep_ll_calibration("dispatch", "fp8", 16, 2, 7168, 8, 256, 64, 8)
+            .unwrap();
+        approx(calibration.base_latency_ms, 0.1);
+        assert_eq!(calibration.source, DeepepLlCalibrationSource::ExactOls);
+    }
+
+    #[test]
+    fn deepep_ll_invalid_preferred_donor_continues_to_another_node1_curve() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_a2a_parquet(
+            &tmp.path().join("moe_a2a_perf.parquet"),
+            &[
+                // Preferred HGX-width donor has a zero slope and is unusable.
+                a2a_row("deepep_ll", "dispatch", "fp8", 8, 1, None, 64, 200.0),
+                a2a_row("deepep_ll", "dispatch", "fp8", 8, 1, None, 128, 200.0),
+                // Another same-shape single-domain curve remains viable.
+                a2a_row("deepep_ll", "dispatch", "fp8", 4, 1, None, 64, 100.0),
+                a2a_row("deepep_ll", "dispatch", "fp8", 4, 1, None, 128, 180.0),
+            ],
+            true,
+        );
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+        let calibration = table
+            .deepep_ll_calibration("dispatch", "fp8", 16, 2, 7168, 8, 256, 64, 8)
+            .unwrap();
+        approx(calibration.base_latency_ms, 0.1);
+        assert_eq!(calibration.measurement_ep_size, 4);
+        assert_eq!(
+            calibration.source,
+            DeepepLlCalibrationSource::SingleDomainDonorOls
+        );
+    }
+
+    #[test]
+    fn deepep_ll_single_point_exact_uses_system_median_t0() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_a2a_parquet(
+            &tmp.path().join("moe_a2a_perf.parquet"),
+            &[
+                // Exact typed point: 16us startup + 1us/token * 64.
+                a2a_row("deepep_ll", "dispatch", "fp8", 16, 2, None, 64, 80.0),
+                // Equivalent legacy curve supplies the system-level t0.
+                a2a_row("deepep_ll", "dispatch", "default", 8, 1, None, 1, 17.0),
+                a2a_row("deepep_ll", "dispatch", "default", 8, 1, None, 2, 18.0),
+            ],
+            true,
+        );
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+        let calibration = table
+            .deepep_ll_calibration("dispatch", "fp8", 16, 2, 7168, 8, 256, 64, 8)
+            .unwrap();
+        approx(calibration.base_latency_ms, 0.080);
+        approx(calibration.intercept_ms, 0.016);
+        assert_eq!(calibration.source, DeepepLlCalibrationSource::ExactOneShot);
+    }
+
+    #[test]
+    fn deepep_ll_invalid_typed_t0_duplicate_does_not_hide_valid_legacy_curve() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_a2a_parquet(
+            &tmp.path().join("moe_a2a_perf.parquet"),
+            &[
+                // The preferred typed copy cannot provide an OLS intercept.
+                a2a_row("deepep_ll", "dispatch", "fp8", 8, 1, None, 64, 80.0),
+                // Its physically identical legacy copy is a valid OLS curve
+                // with t0=16us and may supply the one-shot startup pool.
+                a2a_row("deepep_ll", "dispatch", "default", 8, 1, None, 1, 17.0),
+                a2a_row("deepep_ll", "dispatch", "default", 8, 1, None, 2, 18.0),
+            ],
+            true,
+        );
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+        let calibration = table
+            .deepep_ll_calibration("dispatch", "fp8", 8, 1, 7168, 8, 256, 64, 8)
+            .unwrap();
+        approx(calibration.base_latency_ms, 0.080);
+        approx(calibration.intercept_ms, 0.016);
+        assert_eq!(calibration.source, DeepepLlCalibrationSource::ExactOneShot);
+    }
+
+    #[test]
+    fn deepep_ll_single_point_without_system_t0_is_a_typed_miss() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_a2a_parquet(
+            &tmp.path().join("moe_a2a_perf.parquet"),
+            &[a2a_row(
+                "deepep_ll",
+                "dispatch",
+                "fp8",
+                16,
+                2,
+                None,
+                64,
+                80.0,
+            )],
+            true,
+        );
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+        assert!(
+            table
+                .deepep_ll_calibration("dispatch", "fp8", 16, 2, 7168, 8, 256, 64, 8)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn deepep_ll_typed_schema_without_default_still_reports_a_dtype_miss() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_a2a_parquet(
+            &tmp.path().join("moe_a2a_perf.parquet"),
+            &[
+                a2a_row("deepep_ll", "combine", "fp8", 16, 2, None, 64, 100.0),
+                a2a_row("deepep_ll", "combine", "fp8", 16, 2, None, 128, 180.0),
+            ],
+            true,
+        );
+        let table = MoeA2aTable::new(tmp.path().to_path_buf());
+        assert!(
+            table
+                .deepep_ll_calibration("combine", "bfloat16", 16, 2, 7168, 8, 256, 64, 8)
+                .is_err()
         );
     }
 
@@ -1638,6 +2577,111 @@ mod tests {
                 )
                 .unwrap(),
             0.3,
+        );
+    }
+
+    /// Global source priority crosses format boundaries: a requested-version
+    /// legacy TRT-LLM coordinate outranks an older unified-schema coordinate,
+    /// while a requested-version unified coordinate still overrides legacy in
+    /// the same tier. Pin both the engine query and raw table view because they
+    /// share the resolver contract but fold rows independently.
+    #[test]
+    fn requested_legacy_coordinate_beats_older_new_schema() {
+        use crate::perf_database::source_resolution::ResolveCtx;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let data = root.join("data");
+        let requested = data.join("comm/trtllm/2.0.0");
+        let fallback = data.join("comm/trtllm/1.0.0");
+        std::fs::create_dir_all(&requested).unwrap();
+        std::fs::create_dir_all(&fallback).unwrap();
+
+        // Requested legacy row at the fixed point under test: 1.5 ms.
+        write_trtllm_alltoall_parquet(
+            &requested.join("trtllm_alltoall_perf.parquet"),
+            &[("NVLinkTwoSided", "alltoall_dispatch", "fp8", 16, 64, 1.5)],
+            None,
+        );
+        // Requested unified table exists but is partial at this curve.
+        write_a2a_parquet(
+            &requested.join("moe_a2a_perf.parquet"),
+            &[a2a_row(
+                "nvlink_two_sided",
+                "dispatch",
+                "fp8",
+                16,
+                4,
+                None,
+                32,
+                7_000.0,
+            )],
+            true,
+        );
+        // Older unified row collides with the requested legacy coordinate.
+        write_a2a_parquet(
+            &fallback.join("moe_a2a_perf.parquet"),
+            &[a2a_row(
+                "nvlink_two_sided",
+                "dispatch",
+                "fp8",
+                16,
+                4,
+                None,
+                64,
+                9_000.0,
+            )],
+            true,
+        );
+
+        let resolver = SourceResolver::live(ResolveCtx {
+            systems_root: root.to_path_buf(),
+            system_data_root: data.clone(),
+            backend: "trtllm".to_string(),
+            version: "2.0.0".to_string(),
+            enable_shared_layer: true,
+            strict: false,
+        });
+        let table = MoeA2aTable::with_sources(data.join("trtllm/2.0.0"), &resolver).unwrap();
+        approx(
+            table
+                .query(
+                    "nvlink_two_sided",
+                    "dispatch",
+                    "fp8",
+                    16,
+                    4,
+                    7168,
+                    8,
+                    256,
+                    64,
+                    0,
+                )
+                .unwrap(),
+            1.5,
+        );
+
+        let prioritized = |basename| {
+            resolver
+                .prioritized_sources_for(basename, &data.join("trtllm/2.0.0"))
+                .unwrap()
+        };
+        let view = crate::perf_database::table_view::view_moe_a2a(
+            &prioritized("moe_a2a_perf.parquet"),
+            &prioritized("wideep_deepep_normal_perf.parquet"),
+            &prioritized("wideep_deepep_ll_perf.parquet"),
+            &prioritized("trtllm_alltoall_perf.parquet"),
+            8,
+        )
+        .unwrap()
+        .unwrap();
+        let view_json: serde_json::Value = serde_json::from_str(&view.to_json()).unwrap();
+        approx(
+            view_json["nvlink_two_sided"]["dispatch"]["fp8"]["16"]["4"]["7168"]["8"]["256"]["0"]
+                ["64"]["latency"]
+                .as_f64()
+                .unwrap(),
+            1.5,
         );
     }
 

@@ -11,6 +11,19 @@
 > [`example_v1_deprecated.yaml`](../src/aiconfigurator/cli/example_v1_deprecated.yaml)
 > for the old shape.
 
+## Kernel backend values
+
+`attention_backend` and `moe_backend` use the public `AttentionBackend` and
+`MoEBackend` string enums. YAML uses their lowercase values:
+
+- `attention_backend`: `flashinfer` or `fa3`; `null` keeps the effective
+  `flashinfer` default.
+- `moe_backend`: `megamoe` or the deprecated compatibility value
+  `deepep_moe`; `null` leaves backend selection unspecified.
+
+These are performance-model selectors. They are separate from runtime-server
+backend names such as TRT-LLM `CUTLASS` or `WIDEEP`.
+
 In aiconfigurator, the inference framework and serving modeling is relatively complicated compared with the most simplified CLI entrypoint.  
 For example, behind the command,
 ```bash

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 FROM nvcr.io/nvidia/pytorch:24.04-py3
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -54,6 +57,5 @@ WORKDIR /workspace
 
 # Note: When running the container, use runtime flags similar to the guide, e.g.:
 #   --gpus all --privileged --ipc=host --net=host
-
 
 
