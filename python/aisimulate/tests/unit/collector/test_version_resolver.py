@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from packaging.version import Version
+
 from collector.registry_types import OpEntry, PerfFile, VersionRoute
 from collector.version_resolver import (
     _check_compat,
@@ -16,7 +18,6 @@ from collector.version_resolver import (
     build_collections,
     resolve_module,
 )
-from packaging.version import Version
 
 
 # ---------------------------------------------------------------------------

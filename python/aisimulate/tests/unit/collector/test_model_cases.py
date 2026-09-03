@@ -12,6 +12,7 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
+
 from collector.case_generator import (
     get_attention_head_configs,
     get_gemm_case_specs,

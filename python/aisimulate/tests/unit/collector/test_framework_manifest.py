@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+
 from collector.framework_manifest import (
     get_collector_runtime,
     require_collector_runtime,

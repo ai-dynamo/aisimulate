@@ -62,11 +62,12 @@ os.environ.setdefault("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "0")
 import pkg_resources
 import torch
 import torch.nn.functional as F
-from collector.case_generator import get_gemm_case_specs
 from sgl_kernel import (
     fp8_scaled_mm,
     sgl_per_token_quant_fp8,
 )
+
+from collector.case_generator import get_gemm_case_specs
 
 try:
     from flashinfer import fp4_quantize as flashinfer_fp4_quantize
@@ -123,8 +124,9 @@ try:
     from sglang.kernels.ops.quantization.fp8_kernel import sglang_per_token_group_quant_fp8
 except ImportError:
     from sglang.srt.layers.quantization.fp8_kernel import sglang_per_token_group_quant_fp8
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from sglang.srt.layers.quantization.fp8_utils import requant_weight_ue8m0
+
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 
 def get_gemm_test_cases():

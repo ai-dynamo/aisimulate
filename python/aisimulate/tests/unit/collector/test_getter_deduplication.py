@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
 from collector.case_generator import MoeCommonTestCase
 
 pytestmark = pytest.mark.unit
