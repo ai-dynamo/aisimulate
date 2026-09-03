@@ -12,6 +12,7 @@ from aiconfigurator.sdk import common, config
 from aiconfigurator.sdk.models import get_model
 from aiconfigurator.sdk.models.base import _MODEL_REGISTRY
 from aiconfigurator.sdk.models.muse_glimmer import MuseGlimmerModel
+from aiconfigurator.sdk.task_v2 import Task
 from aiconfigurator.sdk.utils import _parse_hf_config_json
 
 pytestmark = pytest.mark.unit
@@ -180,6 +181,19 @@ def test_allreduces_have_exact_count_names_and_scales():
     assert {op._name: op._scale_factor for op in allreduces} == expected_scales
 
 
+def test_embedding_weights_are_sharded_across_tensor_parallel_ranks():
+    model = _build(tp_size=8)
+    expected_bytes_per_rank = (202048 // 8) * 6656 * common.GEMMQuantMode.bfloat16.value.memory
+
+    for phase_ops, name in (
+        (model.context_ops, "context_embedding"),
+        (model.generation_ops, "generation_embedding"),
+    ):
+        embeddings = [op for op in phase_ops if isinstance(op, ops.Embedding) and op._name == name]
+        assert len(embeddings) == 1
+        assert embeddings[0].get_weights() == expected_bytes_per_rank
+
+
 def test_kv_cache_caps_only_sliding_window_layers():
     model = _build()
 
@@ -205,6 +219,22 @@ def test_context_parallelism_emits_one_uniform_gather_and_splits_allreduces():
         {"context_embedding_ar": 1, "context_ar_1": 1, "context_ar_2": 1}
     )
     assert all(op._seq_split == 2 for op in allreduces)
+
+
+def test_sglang_default_sweep_keeps_tensor_and_context_parallelism_separate():
+    task = Task(
+        serving_mode="agg",
+        model_path="meta-models/Muse-Glimmer-30B",
+        system_name="b300_sxm",
+        backend_name="sglang",
+        backend_version="0.5.14",
+        total_gpus=32,
+    )
+
+    parallel = list(task.iter_parallel("agg"))
+    assert [8, 1, 1, 1, 1, 1] in parallel
+    assert [1, 1, 1, 1, 1, 8] in parallel
+    assert all(cp == 1 or (tp == 1 and dp == 1) for tp, _pp, dp, _moe_tp, _moe_ep, cp in parallel)
 
 
 def test_muse_uses_dense_activation_tier_on_every_backend():

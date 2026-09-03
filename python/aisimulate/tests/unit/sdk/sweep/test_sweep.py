@@ -19,7 +19,7 @@ from aiconfigurator.sdk.errors import (
     KVCacheCapacityError,
     NoFeasibleConfigError,
 )
-from aiconfigurator.sdk.perf_database import PerfDataNotAvailableError
+from aiconfigurator.sdk.perf_database import PerfDataNotAvailableError, has_perf_data_not_available_cause
 from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
 from aiconfigurator.sdk.sweep import (
     _DEFAULT_AGG_BATCH_SCHEDULE,
@@ -140,7 +140,7 @@ def test_sweep_agg_classifies_no_result_outcomes(monkeypatch, memory_states, exp
     monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
     monkeypatch.setattr(sweep, "predict_agg_worker", MagicMock(side_effect=summaries))
 
-    with pytest.raises(expected_error):
+    with pytest.raises(expected_error) as exc_info:
         sweep.sweep_agg(
             model_path="test-model",
             runtime_config=config.RuntimeConfig(isl=1024, osl=1, ttft=1.0, tpot=1.0),
@@ -151,6 +151,56 @@ def test_sweep_agg_classifies_no_result_outcomes(monkeypatch, memory_states, exp
             max_batch_size=1,
             ctx_stride=1024,
         )
+    assert not has_perf_data_not_available_cause(exc_info.value)
+
+
+def test_sweep_agg_preserves_perf_miss_cause_when_every_point_is_unanswerable(monkeypatch):
+    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name: MagicMock())
+    monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(
+        sweep,
+        "predict_agg_worker",
+        MagicMock(side_effect=PerfDataNotAvailableError("missing B300 attention data")),
+    )
+
+    with pytest.raises(NoFeasibleConfigError) as exc_info:
+        sweep.sweep_agg(
+            model_path="test-model",
+            runtime_config=config.RuntimeConfig(isl=1024, osl=1, ttft=1.0, tpot=1.0),
+            database=MagicMock(),
+            backend_name="trtllm",
+            model_config=config.ModelConfig(),
+            parallel_config_list=[(1, 1, 1, 1, 1, 1)],
+            max_batch_size=1,
+            ctx_stride=1024,
+        )
+
+    assert has_perf_data_not_available_cause(exc_info.value)
+
+
+def test_sweep_disagg_preserves_perf_miss_cause_when_every_point_is_unanswerable(monkeypatch):
+    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name: MagicMock())
+    monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(
+        sweep,
+        "predict_disagg_worker",
+        MagicMock(side_effect=PerfDataNotAvailableError("missing B300 attention data")),
+    )
+
+    with pytest.raises(NoFeasibleConfigError) as exc_info:
+        sweep._get_disagg_worker_candidates(
+            model_path="test-model",
+            model_config=config.ModelConfig(),
+            parallel_config_list=[(1, 1, 1, 1, 1, 1)],
+            b_list=[1],
+            runtime_config=config.RuntimeConfig(isl=1024, osl=1, ttft=1.0, tpot=1.0),
+            role="prefill",
+            database=MagicMock(),
+            backend_name="trtllm",
+            latency_correction=1.0,
+        )
+
+    assert has_perf_data_not_available_cause(exc_info.value)
 
 
 def test_sweep_agg_point_config_preserves_multimodal_fields(monkeypatch):

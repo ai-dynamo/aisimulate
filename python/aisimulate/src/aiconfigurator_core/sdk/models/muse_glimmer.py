@@ -175,7 +175,7 @@ class MuseGlimmerModel(BaseModel):
         d = self._resolve_dims(tp)
 
         self.context_ops = [
-            ops.Embedding("context_embedding", 1, self._vocab_size, h, 0.3),
+            ops.Embedding("context_embedding", 1, self._vocab_size // tp, h, 0.3),
             ops.CustomAllReduce("context_embedding_ar", 1, h, tp),
         ]
         if counts["swa"] > 0:
@@ -233,7 +233,7 @@ class MuseGlimmerModel(BaseModel):
         d = self._resolve_dims(tp)
 
         self.generation_ops = [
-            ops.Embedding("generation_embedding", 1 * sf, self._vocab_size, h, 0.3),
+            ops.Embedding("generation_embedding", 1 * sf, self._vocab_size // tp, h, 0.3),
             ops.CustomAllReduce("generation_embedding_ar", 1 * sf, h, tp),
         ]
         if counts["swa"] > 0:
