@@ -1,0 +1,8 @@
+{
+  "measurement_count": 9,
+  "model_enabled": false,
+  "model_version": "cuda-graph-component-interpolation-v3",
+  "parquet_sha256": "049e8d438b71604904fbaf6221288d65317f3aaf79b043e26cb0f8110970be8c",
+  "profile_count": 9,
+  "status": "valid"
+}

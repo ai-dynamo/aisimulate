@@ -20,18 +20,29 @@ from typing import TYPE_CHECKING, Any
 
 __all__ = [
     "AttentionBackend",
+    "CudaGraphReservationEstimate",
+    "CudaGraphReservationRequest",
     "EngineHandle",
     "MoEBackend",
     "ModelConfig",
     "RuntimeConfig",
     "RustForwardPassPerfModel",
     "compile_engine",
+    "estimate_cuda_graph_reservation",
     "estimate_kv_cache",
     "estimate_num_gpu_blocks",
 ]
 
 _PUBLIC_EXPORTS = {
     "AttentionBackend": ("aiconfigurator_core.sdk.common", "AttentionBackend"),
+    "CudaGraphReservationEstimate": (
+        "aiconfigurator_core.sdk.cuda_graph",
+        "CudaGraphReservationEstimate",
+    ),
+    "CudaGraphReservationRequest": (
+        "aiconfigurator_core.sdk.cuda_graph",
+        "CudaGraphReservationRequest",
+    ),
     "EngineHandle": ("aiconfigurator_core.sdk.engine", "EngineHandle"),
     "ModelConfig": ("aiconfigurator_core.sdk.config", "ModelConfig"),
     "MoEBackend": ("aiconfigurator_core.sdk.common", "MoEBackend"),
@@ -42,6 +53,10 @@ _PUBLIC_EXPORTS = {
     ),
     "compile_engine": ("aiconfigurator_core.sdk.engine", "compile_engine"),
     "estimate_kv_cache": ("aiconfigurator_core.sdk.memory", "estimate_kv_cache"),
+    "estimate_cuda_graph_reservation": (
+        "aiconfigurator_core.sdk.cuda_graph",
+        "estimate_cuda_graph_reservation",
+    ),
     "estimate_num_gpu_blocks": (
         "aiconfigurator_core.sdk.memory",
         "estimate_num_gpu_blocks",
@@ -67,6 +82,11 @@ def __dir__() -> list[str]:
 if TYPE_CHECKING:
     from aiconfigurator_core.sdk.common import AttentionBackend, MoEBackend
     from aiconfigurator_core.sdk.config import ModelConfig, RuntimeConfig
+    from aiconfigurator_core.sdk.cuda_graph import (
+        CudaGraphReservationEstimate,
+        CudaGraphReservationRequest,
+        estimate_cuda_graph_reservation,
+    )
     from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
     from aiconfigurator_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
     from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel

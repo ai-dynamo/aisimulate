@@ -225,6 +225,17 @@ Support coverage and accuracy are separate evidence. A supported cell means a
 specific path can execute with the required data; it does not establish that
 the resulting end-to-end prediction is accurate.
 
+Memory-capacity accuracy is covered by the
+[profile-backed CUDA graph reservation DEP](python/aisimulate/docs/design/cuda_graph_reservation_estimation_dep.md).
+The first milestone packages a reviewed InfX profile database and a safety-gated
+[Python reservation API](docs/core-api.md#cuda-graph-reservation-api). Its
+[maintenance workflow](python/aisimulate/tools/cuda_graph_profiles/README.md)
+reproduces the Parquet and model artifacts without checking in raw logs. This
+milestone does not change KV-cache capacity. The component model mirrors vLLM's
+first-capture/per-graph reservation structure and uses only local interpolation
+within an observed model/runtime domain. It remains fail-closed until its
+holdout coverage and accuracy gates pass.
+
 ### FPE support matrix — in development
 
 The new strict-native Forward Pass Engine (FPE) matrix measures estimator

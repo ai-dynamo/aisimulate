@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+repository: SemiAnalysisAI/InferenceX
+
+# Each entry is a human-reviewed, successful run attempt. Artifact names are
+# exact: the generated lock resolves them to immutable artifact IDs and hashes.
+sources:
+  - run_id: 33221188566
+    run_attempt: 3
+    artifacts:
+      - role: server_logs
+        profile_key: minimax-m3-h100-tp8
+        name: server_logs_minimaxm3_tp8_conc13_kvdram+nvme-vllm-native_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc13_h100-dgxc-slurm_01_recipe-87e33050111f395b
+      - role: benchmark
+        profile_key: minimax-m3-h100-tp8
+        name: bmk_agentic_minimaxm3_tp8_conc13_kvdram+nvme-vllm-native_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc13_h100-dgxc-slurm_01_recipe-87e33050111f395b
+  - run_id: 31561686847
+    run_attempt: 1
+    artifacts:
+      - role: server_logs
+        profile_key: minimax-m3-h200-tp8
+        name: server_logs_minimaxm3_tp8_conc1_kvnone_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc1_h200-dgxc-slurm_06
+      - role: benchmark
+        profile_key: minimax-m3-h200-tp8
+        name: bmk_agentic_minimaxm3_tp8_conc1_kvnone_spec-mtp_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc1_h200-dgxc-slurm_06
+  - run_id: 31833401868
+    run_attempt: 1
+    artifacts:
+      - role: server_logs
+        profile_key: minimax-m3-b200-tp4
+        name: server_logs_minimaxm3_tp4_conc34_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc34_b200-dgxc_06
+      - role: benchmark
+        profile_key: minimax-m3-b200-tp4
+        name: bmk_agentic_minimaxm3_tp4_conc34_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc34_b200-dgxc_06
+  - run_id: 31833066181
+    run_attempt: 1
+    artifacts:
+      - role: server_logs
+        profile_key: minimax-m3-b300-tp4
+        name: server_logs_minimaxm3_tp4_conc30_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc30_b300-nv_04
+      - role: benchmark
+        profile_key: minimax-m3-b300-tp4
+        name: bmk_agentic_minimaxm3_tp4_conc30_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc30_b300-nv_04
+  - run_id: 32526153588
+    run_attempt: 3
+    artifacts:
+      - role: server_logs
+        profile_key: deepseek-v4-b200-tp8-legacy
+        name: server_logs_dsv4_tp8_conc4_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b200-dgxc_00_recipe-3d6643e1f0bf6e78
+      - role: benchmark
+        profile_key: deepseek-v4-b200-tp8-legacy
+        name: bmk_agentic_dsv4_tp8_conc4_kvdram-vllm-simple_spec-mtp_fp4_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b200-dgxc_00_recipe-3d6643e1f0bf6e78
+  - run_id: 32315429801
+    run_attempt: 1
+    artifacts:
+      - role: server_logs
+        profile_key: deepseek-v4-b300-tp4-legacy
+        name: server_logs_dsv4_tp4_conc4_kvnone_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b300-nv_06_recipe-141adc5778d36e41
+      - role: benchmark
+        profile_key: deepseek-v4-b300-tp4-legacy
+        name: bmk_agentic_dsv4_tp4_conc4_kvnone_spec-mtp_fp4_vllm_tp4-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-mtp_conc4_b300-nv_06_recipe-141adc5778d36e41
+  - run_id: 30781313910
+    run_attempt: 3
+    artifacts:
+      - role: server_logs
+        profile_key: kimi-k3-h200-multinode-disabled
+        name: multinode_server_logs_kimik3_p4x8_d0x8_conc4_fp4_vllm_prefill-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw4_decode-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw0_disagg-false_spec-mtp_conc4_h200-dgxc-slurm_11
+      - role: benchmark
+        profile_key: kimi-k3-h200-multinode-disabled
+        name: bmk_agentic_kimik3_p4x8_d0x8_conc4_fp4_vllm_prefill-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw4_decode-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw0_disagg-false_spec-mtp_conc4_h200-dgxc-slurm_11
+  - run_id: 33463181601
+    run_attempt: 3
+    artifacts:
+      - role: server_logs
+        profile_key: deepseek-v4-h200-tp8
+        name: server_logs_dsv4_8k1k_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-none_conc4_h200-dgxc-slurm_10_recipe-97cb1d3b5e821478
+      - role: benchmark
+        profile_key: deepseek-v4-h200-tp8
+        name: bmk_dsv4_8k1k_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-none_conc4_h200-dgxc-slurm_10_recipe-97cb1d3b5e821478
+      - role: server_logs
+        profile_key: deepseek-v4-h200-dep8
+        name: server_logs_dsv4_8k1k_fp8_vllm_tp8-pp1-dcp1-pcp1-ep8-dpatrue_disagg-false_spec-none_conc4_h200-dgxc-slurm_12_recipe-c767dbc2cbbd6a2c
+      - role: benchmark
+        profile_key: deepseek-v4-h200-dep8
+        name: bmk_dsv4_8k1k_fp8_vllm_tp8-pp1-dcp1-pcp1-ep8-dpatrue_disagg-false_spec-none_conc4_h200-dgxc-slurm_12_recipe-c767dbc2cbbd6a2c

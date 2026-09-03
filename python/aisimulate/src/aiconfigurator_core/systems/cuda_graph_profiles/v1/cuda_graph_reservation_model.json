@@ -1,0 +1,142 @@
+{
+  "artifact_version": "cuda-graph-component-interpolation-v3",
+  "categorical_features": [
+    "model_id",
+    "gpu_family",
+    "vllm_family",
+    "quantization",
+    "compute_dtype",
+    "kv_cache_dtype",
+    "cuda_graph_mode",
+    "parallel_mode",
+    "attention_backend",
+    "compilation_mode",
+    "compilation_backend",
+    "moe_backend",
+    "linear_backend",
+    "flashinfer_autotune",
+    "speculative_method"
+  ],
+  "components": {
+    "full_first_capture": {
+      "observation_count": 0,
+      "observations": [],
+      "target_field": "full_first_capture_bytes"
+    },
+    "full_per_graph": {
+      "observation_count": 0,
+      "observations": [],
+      "target_field": "full_per_graph_bytes"
+    },
+    "piecewise_first_capture": {
+      "observation_count": 0,
+      "observations": [],
+      "target_field": "piecewise_first_capture_bytes"
+    },
+    "piecewise_per_graph": {
+      "observation_count": 0,
+      "observations": [],
+      "target_field": "piecewise_per_graph_bytes"
+    }
+  },
+  "enabled": false,
+  "feature_design": "component-local-log-distance-v3",
+  "gate_failures": [
+    "profiles:0<20",
+    "model_identities:0<2",
+    "gpu_families:0<2",
+    "holdout_coverage:0.000000"
+  ],
+  "gates": {
+    "median_mape_max": 0.2,
+    "minimum_gpu_families": 2,
+    "minimum_holdout_coverage": 0.8,
+    "minimum_model_identities": 2,
+    "minimum_profiles": 20,
+    "p90_ape_max": 0.4,
+    "underprediction_max": 0.2,
+    "upper_bound_coverage_min": 0.95
+  },
+  "holdout_group": "profile_id",
+  "holdout_metrics": null,
+  "holdout_prediction_count": 0,
+  "holdout_prediction_coverage": 0.0,
+  "numeric_features": [
+    "component_graph_count",
+    "component_largest_capture_size",
+    "component_second_largest_capture_size",
+    "component_capture_size_sum",
+    "component_capture_size_squared_sum",
+    "component_capture_size_p50",
+    "component_capture_size_p90",
+    "max_num_seqs",
+    "max_num_batched_tokens",
+    "max_model_len",
+    "speculative_tokens",
+    "tp_size",
+    "pp_size",
+    "attention_dp_size",
+    "dcp_size",
+    "pcp_size",
+    "moe_tp_size",
+    "moe_ep_size",
+    "layers_per_pipeline_rank",
+    "attention_width_per_rank",
+    "kv_width_per_rank",
+    "dense_width_per_rank",
+    "moe_width_per_rank",
+    "active_expert_width_per_rank",
+    "experts_per_rank"
+  ],
+  "parquet_sha256": "049e8d438b71604904fbaf6221288d65317f3aaf79b043e26cb0f8110970be8c",
+  "reconstruction": "max(full_first_capture,piecewise_first_capture)+sum((count-1)*per_graph)",
+  "residual_log_interval": null,
+  "target_transform": "log1p_bytes",
+  "training_domain": {
+    "categorical": {
+      "attention_backend": [],
+      "compilation_backend": [],
+      "compilation_mode": [],
+      "compute_dtype": [],
+      "cuda_graph_mode": [],
+      "flashinfer_autotune": [],
+      "gpu_family": [],
+      "kv_cache_dtype": [],
+      "linear_backend": [],
+      "model_id": [],
+      "moe_backend": [],
+      "parallel_mode": [],
+      "quantization": [],
+      "speculative_method": [],
+      "vllm_family": []
+    },
+    "numeric": {
+      "active_expert_width_per_rank": [],
+      "attention_dp_size": [],
+      "attention_width_per_rank": [],
+      "component_capture_size_p50": [],
+      "component_capture_size_p90": [],
+      "component_capture_size_squared_sum": [],
+      "component_capture_size_sum": [],
+      "component_graph_count": [],
+      "component_largest_capture_size": [],
+      "component_second_largest_capture_size": [],
+      "dcp_size": [],
+      "dense_width_per_rank": [],
+      "experts_per_rank": [],
+      "kv_width_per_rank": [],
+      "layers_per_pipeline_rank": [],
+      "max_model_len": [],
+      "max_num_batched_tokens": [],
+      "max_num_seqs": [],
+      "moe_ep_size": [],
+      "moe_tp_size": [],
+      "moe_width_per_rank": [],
+      "pcp_size": [],
+      "pp_size": [],
+      "speculative_tokens": [],
+      "tp_size": []
+    }
+  },
+  "training_profile_count": 0
+}

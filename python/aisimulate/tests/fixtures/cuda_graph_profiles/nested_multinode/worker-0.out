@@ -1,0 +1,1 @@
+(EngineCore pid=10) Initializing a V1 LLM engine (v0.25.1) with config: model='example/model', tensor_parallel_size=2, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, enforce_eager=True

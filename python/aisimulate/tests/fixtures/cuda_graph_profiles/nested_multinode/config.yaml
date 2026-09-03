@@ -1,0 +1,16 @@
+identity:
+  model:
+    repo: example/model
+    revision: 0123456789012345678901234567890123456789
+  frameworks:
+    vllm: 0.25.1
+resources:
+  gpu_type: h200
+backend:
+  type: vllm
+  vllm_config:
+    aggregated:
+      tensor-parallel-size: 2
+      max-num-seqs: 8
+      max-num-batched-tokens: 4096
+      enforce-eager: true
