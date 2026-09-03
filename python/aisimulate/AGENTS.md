@@ -39,9 +39,14 @@ substantially derived from an external project, MUST:
 - Record the source URL and revision in the file header or an adjacent README.
   For formats that cannot carry comments, use an adjacent attribution or
   license file that is included in distributions.
-- Ensure required third-party notices and license texts are included in the
-  repository and packaged artifacts through the repository's attribution and
-  release process. Do not hand-edit generated attribution artifacts.
+- Add an entry to the root `THIRD_PARTY_NOTICES.md` identifying the derived
+  files, upstream source and immutable revision, copyright owner, applicable
+  license, and whether the files were modified. The root notice is canonical;
+  keep `python/aisimulate/THIRD_PARTY_NOTICES.md` byte-identical so the notice
+  is included in Python distributions. Run
+  `python3 scripts/check_packaged_legal_files.py` after either copy changes.
+- Do not hand-edit generated attribution artifacts. Update their source or
+  generation process instead.
 
 The repository's Apache-2.0 license and NVIDIA copyright header do not replace
 an upstream license or attribution requirement. Do not label third-party code
