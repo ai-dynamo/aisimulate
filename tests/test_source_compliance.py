@@ -24,6 +24,11 @@ ROOT_ONLY_GOVERNANCE_FILES = (
     "SECURITY.md",
 )
 PACKAGED_LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
+PACKAGED_README_ROOT_LINKS = (
+    "DEVELOPMENT.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+)
 
 
 @pytest.fixture
@@ -70,3 +75,10 @@ def test_wheel_local_legal_file_matches_root(name):
     assert canonical.is_file()
     assert packaged.is_file()
     assert packaged.read_bytes() == canonical.read_bytes()
+
+
+@pytest.mark.parametrize("name", PACKAGED_README_ROOT_LINKS)
+def test_packaged_readme_links_root_governance_to_github(name):
+    readme = (PACKAGE_ROOT / "README.md").read_text()
+
+    assert f"https://github.com/ai-dynamo/aisimulate/blob/main/{name}" in readme
