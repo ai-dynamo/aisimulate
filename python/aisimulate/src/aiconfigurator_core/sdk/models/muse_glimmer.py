@@ -139,6 +139,7 @@ class MuseGlimmerModel(BaseModel):
                 window_size=window_size,
                 head_size=self._head_size,
                 use_qk_norm=True,
+                apply_rope=kind != "global",
             )
         else:
             attention = ops.GenerationAttention(

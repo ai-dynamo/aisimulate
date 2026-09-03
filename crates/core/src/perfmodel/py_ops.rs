@@ -988,7 +988,7 @@ impl PyContextAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None, apply_rope=true))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1002,6 +1002,7 @@ impl PyContextAttention {
         use_qk_norm: bool,
         cp_size: u32,
         lane_order: Option<Vec<String>>,
+        apply_rope: bool,
     ) -> PyResult<(Self, PyOperation)> {
         let inner = Op::ContextAttention(ContextAttentionOp {
             name,
@@ -1015,6 +1016,7 @@ impl PyContextAttention {
             use_qk_norm,
             cp_size,
             lane_order: lane_order.unwrap_or_else(default_lane_order),
+            apply_rope,
         });
         Ok((PyContextAttention, PyOperation { inner }))
     }
@@ -1036,6 +1038,7 @@ impl PyContextAttention {
             o.use_qk_norm,
             o.cp_size,
             o.lane_order.clone(),
+            o.apply_rope,
         )
             .into_pyobject(py)?;
         Ok((args, PyDict::new(py)))
@@ -1085,6 +1088,11 @@ impl PyContextAttention {
     #[getter(_use_qk_norm)]
     fn use_qk_norm(slf: PyRef<'_, Self>) -> PyResult<bool> {
         Ok(slf.as_super().context_attention()?.use_qk_norm)
+    }
+
+    #[getter(_apply_rope)]
+    fn apply_rope(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().context_attention()?.apply_rope)
     }
 
     #[getter(_cp_size)]

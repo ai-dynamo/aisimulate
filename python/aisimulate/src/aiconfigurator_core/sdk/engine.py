@@ -120,6 +120,8 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 # - 16 (Muse Glimmer continuation): Generation attention gained
 #   `use_qk_norm`; the Rust op now preserves the Python constructor flag and
 #   adds its decode latency.
+# - 17 (Muse Glimmer review follow-up): Context attention gained
+#   `apply_rope`, allowing global NoPE layers to omit the fused RoPE cost.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aiconfigurator_core.engine_spec_schema_version()

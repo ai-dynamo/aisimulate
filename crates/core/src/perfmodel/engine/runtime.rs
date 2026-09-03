@@ -1667,6 +1667,7 @@ mod tests {
                 use_qk_norm: false,
                 cp_size: 1,
                 lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
+                apply_rope: true,
             }),
         ]
     }

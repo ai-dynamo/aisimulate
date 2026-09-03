@@ -72,7 +72,9 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 16 (Muse Glimmer continuation): `GenerationAttentionOp` gained
 //   `use_qk_norm`, which is preserved across the Python/Rust boundary and
 //   contributes decode latency.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 16;
+// - 17 (Muse Glimmer review follow-up): `ContextAttentionOp` gained
+//   `apply_rope`, allowing global NoPE layers to omit the fused RoPE cost.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 17;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

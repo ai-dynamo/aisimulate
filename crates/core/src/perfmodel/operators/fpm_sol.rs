@@ -215,7 +215,7 @@ fn context_sol_one(op: &ContextAttentionOp, spec: &SystemSpec, b: f64, s: f64, p
 }
 
 /// ContextAttention.query under SOL (attention.py:507-558): CP zigzag chunks
-/// + the fused rope/kv-write/(qk-norm) extras × 1.1, each a SOL mem-op.
+/// + the enabled fused rope/kv-write/(qk-norm) extras × 1.1, each a SOL mem-op.
 fn context_attention_sol(
     op: &ContextAttentionOp,
     spec: &SystemSpec,
@@ -238,7 +238,9 @@ fn context_attention_sol(
             2.0 * mem_op_sol_ms(spec, q_num * 2.0) + 2.0 * mem_op_sol_ms(spec, k_num * 2.0);
         extra += qk_norm * 2.0;
     }
-    extra += 2.0 * mem_op_sol_ms(spec, q_num * 2.0 + k_num * 2.0); // rope
+    if op.apply_rope {
+        extra += 2.0 * mem_op_sol_ms(spec, q_num * 2.0 + k_num * 2.0);
+    }
     let fq_mem = op.fmha_quant_mode.mapping().memory;
     extra += mem_op_sol_ms(spec, k_num * fq_mem) + mem_op_sol_ms(spec, k_num * fq_mem); // kv write (k_num == v_num)
     (fmha + extra * 1.1) * op.scale_factor
@@ -618,6 +620,7 @@ mod tests {
             use_qk_norm: false,
             cp_size: 1,
             lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
+            apply_rope: true,
         };
         let (b, sq, p) = (4.0, 682.6666666666666_f64, 128.5_f64);
         let (n, n_kv, h) = (48.0, 8.0, 128.0);
@@ -634,6 +637,14 @@ mod tests {
         approx(
             context_attention_sol(&op, &s, b, sq, p),
             fmha + extras * 1.1,
+        );
+
+        let mut no_rope = op;
+        no_rope.apply_rope = false;
+        let rope = 2.0 * mem_op_sol_ms(&s, q_num * 2.0 + k_num * 2.0);
+        approx(
+            context_attention_sol(&no_rope, &s, b, sq, p),
+            fmha + (extras - rope) * 1.1,
         );
     }
 

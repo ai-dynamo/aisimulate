@@ -128,16 +128,16 @@ def test_phase_graph_has_exact_operation_multiset(phase, attribute):
     assert Counter(op._name for op in phase_ops) == _expected_phase_names(phase)
 
 
-def test_attention_windows_scales_and_qk_norm_are_exact():
+def test_attention_windows_scales_qk_norm_and_rope_are_exact():
     model = _build()
     context = [op for op in model.context_ops if isinstance(op, ops.ContextAttention)]
     generation = [op for op in model.generation_ops if isinstance(op, ops.GenerationAttention)]
 
     assert len(context) == 2
     assert len(generation) == 2
-    assert sorted((op._window_size, op._scale_factor, op._use_qk_norm) for op in context) == [
-        (0, 13.0, True),
-        (2048, 39.0, True),
+    assert sorted((op._window_size, op._scale_factor, op._use_qk_norm, op._apply_rope) for op in context) == [
+        (0, 13.0, True, False),
+        (2048, 39.0, True, True),
     ]
     assert sorted((op._window_size, op._scale_factor, op._use_qk_norm) for op in generation) == [
         (0, 13.0, True),

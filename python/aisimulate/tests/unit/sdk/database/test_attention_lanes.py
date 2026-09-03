@@ -243,11 +243,11 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_sixteen():
-    """Generation Q/K norm is an always-serialized positional payload change."""
+def test_engine_spec_schema_version_is_seventeen():
+    """Context RoPE policy is an always-serialized positional payload change."""
     from aiconfigurator.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 16
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 17
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():
@@ -732,8 +732,8 @@ def test_vllm_0240_primary_lanes_precede_shared_donors(table_attr, override):
 # _lane_order pickle/deepcopy round-trip (rebase-4 review, minor 4): the two
 # ops encode it asymmetrically in __getnewargs_ex__ (py_ops.rs) --
 # ContextAttention rides it as the 11th POSITIONAL __new__ arg (after
-# cp_size), while GenerationAttention carries the resolved lane list in the
-# KWARGS dict. Both encodings must
+# cp_size), followed by apply_rope, while GenerationAttention carries the
+# resolved lane list in the KWARGS dict. Both encodings must
 # still round-trip the resolved order through pickle and deepcopy, which
 # construct a fresh instance via __new__(*args, **kwargs) rather than
 # copying attributes directly.
@@ -745,7 +745,17 @@ def _context_op_with_lane_order(order):
     from aiconfigurator_core.sdk.operations.attention import ContextAttention
 
     op = ContextAttention(
-        "ctx_attn", 1.0, 32, 8, common.KVCacheQuantMode.fp8, common.FMHAQuantMode.fp8, 0, 128, False, 1
+        "ctx_attn",
+        1.0,
+        32,
+        8,
+        common.KVCacheQuantMode.fp8,
+        common.FMHAQuantMode.fp8,
+        0,
+        128,
+        False,
+        1,
+        apply_rope=False,
     )
     op._lane_order = list(order)
     return op
@@ -785,6 +795,19 @@ def test_lane_order_survives_pickle_and_deepcopy_round_trip(build_op, order):
         assert op._use_qk_norm is True
         assert pickled._use_qk_norm is True
         assert copied._use_qk_norm is True
+    else:
+        assert op._apply_rope is False
+        assert pickled._apply_rope is False
+        assert copied._apply_rope is False
+
+
+def test_context_rope_policy_is_present_in_rust_wire_spec():
+    import json
+
+    op = _context_op_with_lane_order(["triton", "default"])
+    spec = json.loads(op._spec_json())["ContextAttention"]
+
+    assert spec["apply_rope"] is False
 
 
 def test_generation_qk_norm_is_present_in_rust_wire_spec():

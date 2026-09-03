@@ -228,6 +228,7 @@ mod tests {
             // Multi-entry so the round-trip proves the whole Vec<String>
             // survives, not just a single-element degenerate case.
             lane_order: vec!["trtllm_mha".into(), "flashinfer".into(), "default".into()],
+            apply_rope: false,
         }
     }
 
