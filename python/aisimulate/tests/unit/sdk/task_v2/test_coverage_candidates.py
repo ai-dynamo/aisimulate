@@ -70,9 +70,12 @@ def _a2a_rows(backends=(("deepep_ht", _HT_PAIRS), ("deepep_ll", _LL_PAIRS))) -> 
                             "hidden_size": SYNTH_HIDDEN,
                             "topk": SYNTH_TOPK,
                             "num_experts": SYNTH_EXPERTS,
-                            "sms": 20,
+                            "sms": 0 if backend == "deepep_ll" else 20,
                             "num_tokens": num_tokens,
-                            "latency": 50.0,
+                            # Positive slope plus finite intercept: DeepEP-LL
+                            # coverage now validates the same OLS viability
+                            # contract that runtime calibration enforces.
+                            "latency": 10.0 + num_tokens * 0.1,
                             "power": 300.0,
                         }
                     )
@@ -112,8 +115,14 @@ def _write_version_dir(root: str, family: str, filename: str, rows: list[dict]) 
     # Legacy compatibility sidecar: these synthetic rows do not model the
     # runtime and collection-event history required by Collector V3 schema v2.
     stem = filename.split(".")[0]
-    with open(os.path.join(version_dir, "collection_meta.yaml"), "w", encoding="utf-8") as f:
-        yaml.safe_dump({"schema_version": 1, "tables": {stem: {"status": "complete"}}}, f)
+    meta_path = os.path.join(version_dir, "collection_meta.yaml")
+    meta = {"status": "complete", "schema_version": 2, "tables": {}}
+    if os.path.exists(meta_path):
+        with open(meta_path, encoding="utf-8") as f:
+            meta = yaml.safe_load(f) or meta
+    meta.setdefault("tables", {})[stem] = {"status": "complete"}
+    with open(meta_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(meta, f)
 
 
 @pytest.fixture(autouse=True)
@@ -481,6 +490,15 @@ def test_compute_coverage_is_quant_specific(synth_systems):
     t = _synth_task(moe_quant_mode=common.MoEQuantMode.fp8_block)
     assert t._resolve_moe_comm_backend("agg", _tuple(dp=8, moe_ep=8)) is None
     assert t.agg_moe_ep_candidates == [1, 2, 4, 8, 16]  # fused defaults
+
+
+def test_eplb_prunes_deepep_ll_before_model_build(synth_systems):
+    """Stage 1 must not generate a candidate that the LL op will reject."""
+    t = _synth_task(enable_eplb=True)
+    coverage = t._large_ep_coverage("agg")
+
+    assert "deepep_ll" not in coverage.get("generation", {})
+    assert t._resolve_moe_comm_backend("agg", _tuple(dp=8, moe_ep=8)) is None
 
 
 def test_unready_family_never_resolves_a_backend(synth_systems, monkeypatch):

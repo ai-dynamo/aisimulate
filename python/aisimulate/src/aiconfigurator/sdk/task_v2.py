@@ -1355,6 +1355,7 @@ class Task:
         coverage: dict[str, dict[str, set[int]]] = {}
         if gpus_per_node and a2a_probe is not None:
             quant_mode = self._role_attr(role, "moe_quant_mode")
+            enable_eplb = bool(self._role_attr(role, "enable_eplb"))
             if quant_mode is not None and not isinstance(quant_mode, common.MoEQuantMode):
                 # The compute table is keyed by MoEQuantMode members; any
                 # other type (str, int, a sibling enum like
@@ -1379,6 +1380,11 @@ class Task:
                 per_backend: dict[str, set[int]] = {}
                 for name, backend_spec in MOE_A2A_BACKENDS.items():
                     if backend_name not in backend_spec.frameworks or phase not in backend_spec.inference_phases:
+                        continue
+                    if name == "deepep_ll" and enable_eplb:
+                        # Stage 1 has no LL placement model for EPLB. Keep the
+                        # direct op-level error, but do not generate invalid
+                        # sweep candidates in the first place.
                         continue
                     eps = {
                         ep
