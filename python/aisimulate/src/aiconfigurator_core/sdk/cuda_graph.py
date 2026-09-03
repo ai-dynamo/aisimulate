@@ -15,7 +15,14 @@ from typing import Literal
 
 import pyarrow.parquet as pq
 
-from aiconfigurator_core.sdk._cuda_graph_features import derived_feature_row
+from aiconfigurator_core.sdk._cuda_graph_component_model import (
+    COMPONENT_CATEGORICAL_FEATURES,
+    COMPONENT_NUMERIC_FEATURES,
+    COMPONENT_TARGET_FIELDS,
+    interpolate_component,
+    reconstruct_reservation_bytes,
+    required_components,
+)
 
 CudaGraphReservationSource = Literal["disabled", "profile", "modeled", "unavailable"]
 
@@ -147,28 +154,73 @@ def _validate_enabled_model(model: dict[str, object]) -> None:
     try:
         gates = model["gates"]
         metrics = model["holdout_metrics"]
-        domain = model["training_domain"]
-        numeric_domain = model["numeric_training_domain"]
-        numeric_features = model["numeric_features"]
-        coefficients = [float(value) for value in model["coefficients"]]
-        centers = [float(value) for value in model["feature_centers"]]
-        scales = [float(value) for value in model["feature_scales"]]
-        ranges = [[float(bound) for bound in numeric_domain[field]] for field in numeric_features]
+        components = model["components"]
+        training_domain = model["training_domain"]
+        residual_interval = [float(value) for value in model["residual_log_interval"]]
+        observations = [observation for component in components.values() for observation in component["observations"]]
+        profile_ids = {str(observation["profile_id"]) for observation in observations}
+        model_ids = {str(observation["categorical"]["model_id"]) for observation in observations}
+        gpu_families = {str(observation["categorical"]["gpu_family"]) for observation in observations}
+        training_profile_count = int(model["training_profile_count"])
+        holdout_prediction_count = int(model["holdout_prediction_count"])
+        holdout_coverage = float(model["holdout_prediction_coverage"])
+        metric_values = [float(value) for value in metrics.values()]
+        expected_categorical_domain = {
+            field: sorted({str(observation["categorical"][field]) for observation in observations})
+            for field in COMPONENT_CATEGORICAL_FEATURES
+        }
+        expected_numeric_domain = {
+            field: [
+                min(float(observation["numeric"][field]) for observation in observations),
+                max(float(observation["numeric"][field]) for observation in observations),
+            ]
+            for field in COMPONENT_NUMERIC_FEATURES
+        }
         checks = (
-            int(model["training_profile_count"]) >= int(gates["minimum_profiles"]),
-            len(domain["model_id"]) >= int(gates["minimum_model_identities"]),
-            len(domain["gpu_family"]) >= int(gates["minimum_gpu_families"]),
+            model["artifact_version"] == "cuda-graph-component-interpolation-v3",
+            training_profile_count >= int(gates["minimum_profiles"]),
+            training_profile_count == len(profile_ids),
+            len(model_ids) >= int(gates["minimum_model_identities"]),
+            len(gpu_families) >= int(gates["minimum_gpu_families"]),
+            0 <= holdout_prediction_count <= training_profile_count,
+            abs(holdout_coverage - holdout_prediction_count / training_profile_count) <= 1e-12,
+            holdout_coverage >= float(gates["minimum_holdout_coverage"]),
             float(metrics["median_mape"]) <= float(gates["median_mape_max"]),
             float(metrics["p90_ape"]) <= float(gates["p90_ape_max"]),
             float(metrics["upper_bound_coverage"]) >= float(gates["upper_bound_coverage_min"]),
             float(metrics["maximum_underprediction"]) <= float(gates["underprediction_max"]),
-            set(numeric_features) == set(numeric_domain),
-            len(coefficients) == len(centers) == len(scales) == len(model["feature_schema"]),
-            all(math.isfinite(value) for value in coefficients + centers + scales),
-            all(scale > 0 for scale in scales),
-            all(len(bounds) == 2 and bounds[0] <= bounds[1] for bounds in ranges),
+            all(value >= 0 and math.isfinite(value) for value in metric_values),
+            not model["gate_failures"],
+            tuple(model["categorical_features"]) == COMPONENT_CATEGORICAL_FEATURES,
+            tuple(model["numeric_features"]) == COMPONENT_NUMERIC_FEATURES,
+            set(components) == set(COMPONENT_TARGET_FIELDS),
+            training_domain["categorical"] == expected_categorical_domain,
+            training_domain["numeric"] == expected_numeric_domain,
+            len(residual_interval) == 2,
+            all(math.isfinite(value) for value in residual_interval),
+            residual_interval[0] <= residual_interval[1],
+            residual_interval[1] >= 0,
         )
-    except (KeyError, TypeError, ValueError) as exc:
+        for component_name, target_field in COMPONENT_TARGET_FIELDS.items():
+            component = components[component_name]
+            component_observations = component["observations"]
+            checks += (
+                component["target_field"] == target_field,
+                int(component["observation_count"]) == len(component_observations),
+                len({str(observation["profile_id"]) for observation in component_observations})
+                == len(component_observations),
+            )
+            for observation in component_observations:
+                numeric = observation["numeric"]
+                categorical = observation["categorical"]
+                target = float(observation["target_bytes"])
+                checks += (
+                    set(numeric) == set(COMPONENT_NUMERIC_FEATURES),
+                    set(categorical) == set(COMPONENT_CATEGORICAL_FEATURES),
+                    target > 0 and math.isfinite(target),
+                    all(float(value) >= 0 and math.isfinite(float(value)) for value in numeric.values()),
+                )
+    except (AttributeError, KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
         raise CudaGraphProfileDatabaseError("enabled CUDA graph model has incomplete safety-gate evidence") from exc
     if not all(checks):
         raise CudaGraphProfileDatabaseError("enabled CUDA graph model does not pass its declared safety gates")
@@ -277,43 +329,30 @@ def _exact_matches(database: _Database, request: CudaGraphReservationRequest) ->
     ]
 
 
-def _model_features(request: CudaGraphReservationRequest) -> dict[str, object]:
-    return derived_feature_row(_request_identity(request))
-
-
 def _modeled_estimate(
     database: _Database, request: CudaGraphReservationRequest, completeness: Literal["pinned", "unversioned_model"]
 ) -> CudaGraphReservationEstimate | None:
     model = database.model
     if not model.get("enabled"):
         return None
-    row = _model_features(request)
-    for field, allowed in model["training_domain"].items():
-        if row.get(field) is None or str(row[field]) not in allowed:
-            return None
-    if any(row.get(field) is None for field in model["numeric_features"]):
+    row = _request_identity(request)
+    component_names = required_components(row)
+    if not component_names:
         return None
-    for field, bounds in model["numeric_training_domain"].items():
-        value = float(row[field])
-        if len(bounds) != 2 or value < float(bounds[0]) or value > float(bounds[1]):
+    component_predictions: dict[str, float] = {}
+    for component_name in component_names:
+        component = model["components"].get(component_name)
+        if component is None:
             return None
-
-    values = [math.log1p(float(row[field])) for field in model["numeric_features"]]
-    for field in model["categorical_features"]:
-        values.extend(float(str(row[field]) == level) for level in model["categorical_levels"][field])
-    coefficients = model["coefficients"]
-    if len(coefficients) != len(values):
-        raise CudaGraphProfileDatabaseError("CUDA graph model feature schema does not match its coefficients")
-    centers = model.get("feature_centers") or [0.0] * len(values)
-    scales = model.get("feature_scales") or [1.0] * len(values)
-    if len(centers) != len(values) or len(scales) != len(values):
-        raise CudaGraphProfileDatabaseError("CUDA graph model feature normalization is incompatible")
-    standardized = [
-        (value - float(center)) / float(scale) for value, center, scale in zip(values, centers, scales, strict=True)
-    ]
-    weighted_features = zip(coefficients, standardized, strict=True)
-    log_point = float(model["intercept"]) + sum(float(coefficient) * value for coefficient, value in weighted_features)
-    point = max(0, round(math.expm1(log_point)))
+        prediction = interpolate_component(component["observations"], row, component_name)
+        if prediction is None:
+            return None
+        component_predictions[component_name] = prediction
+    central = reconstruct_reservation_bytes(row, component_predictions)
+    if central is None:
+        return None
+    point = max(0, round(central))
+    log_point = math.log1p(point)
     residual_interval = model.get("residual_log_interval")
     if not isinstance(residual_interval, list) or len(residual_interval) != 2:
         raise CudaGraphProfileDatabaseError("CUDA graph model is missing its calibrated interval")

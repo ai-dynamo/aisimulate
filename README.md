@@ -231,9 +231,10 @@ The first milestone packages a reviewed InfX profile database and a safety-gated
 [Python reservation API](docs/core-api.md#cuda-graph-reservation-api). Its
 [maintenance workflow](python/aisimulate/tools/cuda_graph_profiles/README.md)
 reproduces the Parquet and model artifacts without checking in raw logs. This
-milestone does not change KV-cache capacity. The factorized model includes full
-graph-shape, architecture, topology, and runtime features, but remains
-fail-closed until its grouped holdout and coverage gates pass.
+milestone does not change KV-cache capacity. The component model mirrors vLLM's
+first-capture/per-graph reservation structure and uses only local interpolation
+within an observed model/runtime domain. It remains fail-closed until its
+holdout coverage and accuracy gates pass.
 
 ### FPE support matrix — in development
 

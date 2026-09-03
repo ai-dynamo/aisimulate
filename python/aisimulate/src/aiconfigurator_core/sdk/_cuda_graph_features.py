@@ -230,7 +230,7 @@ def _backend_family(version: object) -> str:
 
 
 def derived_feature_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the full additive and interaction feature row used by V2."""
+    """Return the runtime-independent graph, architecture, and topology features."""
     result = dict(row)
     result.update(graph_shape_features(row))
     architecture = model_architecture_features(str(row.get("model_id") or ""))

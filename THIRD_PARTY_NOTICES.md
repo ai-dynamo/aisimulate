@@ -24,6 +24,22 @@ The following files are derived from vLLM's attention test utilities at tag
 Upstream source:
 https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
 
+The following files are adapted from vLLM's CUDA graph profiler log contract
+and reservation composition at tag `v0.25.1` (commit
+`752a3a504485790a2e8491cacbb35c137339ad34`):
+
+- `tools/cuda_graph_profiles/parser.py`
+- `tools/cuda_graph_profiles/publish.py`
+- `src/aiconfigurator_core/sdk/_cuda_graph_component_model.py`
+- `tests/unit/tools/test_cuda_graph_profiles.py`
+- `tests/unit/sdk/test_cuda_graph_features.py`
+
+Upstream source:
+https://github.com/vllm-project/vllm/blob/752a3a504485790a2e8491cacbb35c137339ad34/vllm/v1/worker/gpu_model_runner.py
+
+The files were modified to parse, validate, interpolate, and test offline
+profile records without importing or executing vLLM.
+
 Copyright contributors to the vLLM project.
 
 The vLLM `LICENSE` file at commit

@@ -20,6 +20,9 @@ the repository.
   records its config ID and SHA256 next to the measured profile.
 - Logged FULL and PIECEWISE graph counts are reconciled against counts derived
   from graph mode, capture sizes, scheduler limits, and speculative width.
+- DEBUG-level FULL and PIECEWISE first-capture/per-graph measurements are
+  validated by reconstructing the INFO-level total. Encoder profiles are stored
+  for diagnostics but are not eligible for the V3 decoder model.
 
 The generated database and reports contain no raw logs, credentials, request
 records, or internal filesystem paths.
@@ -37,29 +40,30 @@ python -m tools.cuda_graph_profiles --cache-dir "$cache_dir" reproduce
 
 The command resolves approved sources, downloads them into the temporary cache,
 verifies locked checksums, parses single-node and nested multinode logs,
-publishes the database and reports, trains the deterministic ridge artifact,
+publishes the database and reports, trains the deterministic component artifact,
 and validates all checksums.
 
 ## Predictor
 
-The V2 model uses one deterministic factorized expression:
+The V3 model mirrors vLLM's decoder reservation structure:
 
 ```text
-log1p(reservation_bytes) = intercept
-                        + ridge(log1p(numeric_features))
-                        + ridge(runtime_categories)
+decoder bytes = max(FULL first capture, PIECEWISE first capture)
+              + (FULL count - 1) * FULL per graph
+              + (PIECEWISE count - 1) * PIECEWISE per graph
 ```
 
-Numeric features cover the complete capture-size distribution, scheduling
-limits, rank-local model architecture, TP/PP/attention-DP/MoE topology, and
-graph-by-architecture interactions. Runtime categories cover GPU and vLLM
-families, dtypes, graph and compilation modes, attention/MoE/linear backends,
-FlashInfer autotuning, and speculative decoding.
+Each component uses deterministic log-space local interpolation. Candidates
+must match the model identity and runtime categories exactly. Numeric inputs
+cover the mode-specific capture-size distribution, scheduling limits,
+rank-local architecture, and TP/PP/attention-DP/MoE topology. Prediction never
+extrapolates beyond the observed numeric range.
 
-Validation leaves out complete model identities. Production prediction remains
-limited to observed model identities, categorical values, and numeric ranges.
-The checked-in model stays disabled until every sample-count and accuracy gate
-passes; exact profile lookup remains available while it is disabled.
+Validation leaves out one semantic profile at a time and reports prediction
+coverage separately from MAPE. The checked-in model stays disabled until every
+sample-count, coverage, and accuracy gate passes. Exact profile lookup remains
+available while it is disabled. The current reviewed InfX logs do not include
+the DEBUG component lines, so the checked-in V3 model is intentionally disabled.
 
 Individual stages are also available:
 
@@ -79,7 +83,7 @@ Delete the temporary cache after review.
 - Confirm every new run attempt completed successfully.
 - Review source mapping and identity reconciliation.
 - Review training exclusions, especially actual-only legacy logs.
-- Review model-identity holdout metrics and numeric training ranges.
+- Review component reconstruction, holdout coverage, and accuracy metrics.
 - Confirm the validation report and model gates.
 - Inspect the Parquet diff; never add raw artifact files.
 - Add parser fixtures when vLLM changes a log format.

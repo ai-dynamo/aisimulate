@@ -1,16 +1,49 @@
 {
   "measurements": [
     {
+      "component_exclusion_reason": "graph_disabled",
       "exclusion_reason": "graph_disabled",
       "measurement_id": "cgrm-034d5ad9a978790398ac"
     },
     {
+      "component_exclusion_reason": "missing_component_breakdown",
+      "exclusion_reason": null,
+      "measurement_id": "cgrm-19e6e547c2ccd11fc7db"
+    },
+    {
+      "component_exclusion_reason": "missing_component_breakdown",
+      "exclusion_reason": null,
+      "measurement_id": "cgrm-25ac59547b155a86cfc5"
+    },
+    {
+      "component_exclusion_reason": "actual_only_legacy_log",
       "exclusion_reason": "actual_only_legacy_log",
       "measurement_id": "cgrm-363b4b53e7b5f8bc2e89"
     },
     {
+      "component_exclusion_reason": "actual_only_legacy_log",
       "exclusion_reason": "actual_only_legacy_log",
       "measurement_id": "cgrm-3da536c178792747944d"
+    },
+    {
+      "component_exclusion_reason": "missing_component_breakdown",
+      "exclusion_reason": null,
+      "measurement_id": "cgrm-6d7754abf31f7f17221b"
+    },
+    {
+      "component_exclusion_reason": "missing_component_breakdown",
+      "exclusion_reason": null,
+      "measurement_id": "cgrm-8c4a4d8f61b25f73045d"
+    },
+    {
+      "component_exclusion_reason": "missing_component_breakdown",
+      "exclusion_reason": null,
+      "measurement_id": "cgrm-c8a6763e0a62330bf5df"
+    },
+    {
+      "component_exclusion_reason": "missing_component_breakdown",
+      "exclusion_reason": null,
+      "measurement_id": "cgrm-e0d57af15633155c3b40"
     }
   ]
 }

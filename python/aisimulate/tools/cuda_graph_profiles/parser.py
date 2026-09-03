@@ -20,9 +20,19 @@ from tools.cuda_graph_profiles.common import (
     normalize_system,
 )
 
+# vLLM estimator log contract (Apache-2.0), adapted for offline parsing:
+# https://github.com/vllm-project/vllm/blob/752a3a504485790a2e8491cacbb35c137339ad34/vllm/v1/worker/gpu_model_runner.py
+
 
 class ProfileParseError(ValueError):
     """Raised when an artifact cannot produce a trustworthy profile."""
+
+
+@dataclass(frozen=True)
+class ParsedGraphComponent:
+    graph_count: int
+    first_capture_bytes: int
+    per_graph_bytes: int
 
 
 @dataclass(frozen=True)
@@ -36,6 +46,10 @@ class ParsedMeasurement:
     profiled_full_largest_capture_size: int | None
     profiled_piecewise_count: int | None
     profiled_piecewise_largest_capture_size: int | None
+    profiled_encoder_count: int | None
+    profiled_encoder_largest_capture_size: int | None
+    graph_components_by_rank: dict[int, dict[str, ParsedGraphComponent]]
+    encoder_graph_bytes_by_rank: dict[int, int]
     graph_disabled: bool
     identity_sources: dict[str, str]
 
@@ -51,10 +65,25 @@ _AVAILABLE_KV_RE = re.compile(r"Available KV cache memory:\s*([0-9.]+)\s*GiB", r
 _KV_TOKENS_RE = re.compile(r"GPU KV cache size:\s*([0-9,]+)\s*tokens", re.IGNORECASE)
 _FULL_PROFILE_RE = re.compile(r"\bFULL=(\d+)\s*\(largest=(\d+)\)")
 _PIECEWISE_PROFILE_RE = re.compile(r"\bPIECEWISE=(\d+)\s*\(largest=(\d+)\)")
+_ENCODER_PROFILE_RE = re.compile(r"\bENCODER=(\d+)\s*\(largest=(\d+)\)")
+_COMPONENT_RE = re.compile(
+    r"Estimated\s+(FULL|PIECEWISE)\s+CUDA graph memory:\s*"
+    r"([0-9.]+)\s*MiB\s+first-capture\s*\+\s*"
+    r"\((\d+)\s*-\s*1\)\s*[xX\u00d7*]\s*([0-9.]+)\s*MiB\s+per-graph",
+    re.IGNORECASE,
+)
+_ENCODER_COMPONENT_RE = re.compile(
+    r"Estimated encoder CUDA graph memory:\s*([0-9.]+)\s*MiB\s+for\s+(\d+)\s+graphs?",
+    re.IGNORECASE,
+)
 
 
 def _bytes_from_gib(value: str) -> int:
     return round(float(value) * GIB)
+
+
+def _bytes_from_mib(value: str) -> int:
+    return round(float(value) * (1 << 20))
 
 
 def _rank(line: str) -> int:
@@ -84,6 +113,20 @@ def _consistent_profile_value(values: set[int], label: str) -> int | None:
     if len(values) > 1:
         raise ProfileParseError(f"incompatible rank-local CUDA graph {label}: {sorted(values)}")
     return next(iter(values), None)
+
+
+def _record_component(
+    values: dict[int, dict[str, ParsedGraphComponent]],
+    *,
+    rank: int,
+    mode: str,
+    component: ParsedGraphComponent,
+) -> None:
+    rank_values = values.setdefault(rank, {})
+    previous = rank_values.get(mode)
+    if previous is not None and previous != component:
+        raise ProfileParseError(f"incompatible rank-local {mode} CUDA graph components on rank {rank}")
+    rank_values[mode] = component
 
 
 def _engine_identity(text: str) -> tuple[dict[str, Any], dict[str, str]]:
@@ -297,8 +340,33 @@ def parse_log_text(
     full_largest: set[int] = set()
     piecewise_counts: set[int] = set()
     piecewise_largest: set[int] = set()
+    encoder_counts: set[int] = set()
+    encoder_largest: set[int] = set()
+    graph_components: dict[int, dict[str, ParsedGraphComponent]] = {}
+    encoder_graph_bytes: dict[int, int] = {}
     for line in text.splitlines():
         rank = _rank(line)
+        component_match = _COMPONENT_RE.search(line)
+        if component_match:
+            mode = component_match.group(1).lower()
+            component = ParsedGraphComponent(
+                graph_count=int(component_match.group(3)),
+                first_capture_bytes=_bytes_from_mib(component_match.group(2)),
+                per_graph_bytes=_bytes_from_mib(component_match.group(4)),
+            )
+            _record_component(graph_components, rank=rank, mode=mode, component=component)
+            if mode == "full":
+                full_counts.add(component.graph_count)
+            else:
+                piecewise_counts.add(component.graph_count)
+        encoder_match = _ENCODER_COMPONENT_RE.search(line)
+        if encoder_match:
+            value = _bytes_from_mib(encoder_match.group(1))
+            encoder_counts.add(int(encoder_match.group(2)))
+            previous = encoder_graph_bytes.get(rank)
+            if previous is not None and previous != value:
+                raise ProfileParseError(f"incompatible rank-local encoder CUDA graph component on rank {rank}")
+            encoder_graph_bytes[rank] = value
         pool = _POOL_RE.search(line)
         if pool:
             actual[rank] = _bytes_from_gib(pool.group(1))
@@ -324,6 +392,10 @@ def parse_log_text(
         if piecewise_match:
             piecewise_counts.add(int(piecewise_match.group(1)))
             piecewise_largest.add(int(piecewise_match.group(2)))
+        encoder_profile_match = _ENCODER_PROFILE_RE.search(line)
+        if encoder_profile_match:
+            encoder_counts.add(int(encoder_profile_match.group(1)))
+            encoder_largest.add(int(encoder_profile_match.group(2)))
 
     flat_config = _flatten_config(config or {})
     disabled = bool(
@@ -335,6 +407,8 @@ def parse_log_text(
     if disabled:
         estimated = {0: 0}
         actual = {0: 0}
+        graph_components = {}
+        encoder_graph_bytes = {}
     elif not estimated and not actual:
         raise ProfileParseError("log has no CUDA graph reservation, pool measurement, or explicit disabled marker")
 
@@ -374,6 +448,10 @@ def parse_log_text(
         profiled_piecewise_largest_capture_size=_consistent_profile_value(
             piecewise_largest, "PIECEWISE largest capture"
         ),
+        profiled_encoder_count=_consistent_profile_value(encoder_counts, "ENCODER count"),
+        profiled_encoder_largest_capture_size=_consistent_profile_value(encoder_largest, "ENCODER largest capture"),
+        graph_components_by_rank=graph_components,
+        encoder_graph_bytes_by_rank=encoder_graph_bytes,
         graph_disabled=disabled,
         identity_sources=sources,
     )

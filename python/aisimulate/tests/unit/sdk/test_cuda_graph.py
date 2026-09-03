@@ -6,11 +6,19 @@ from __future__ import annotations
 import json
 import math
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
 
+from aiconfigurator_core.sdk._cuda_graph_component_model import (
+    COMPONENT_CATEGORICAL_FEATURES,
+    COMPONENT_NUMERIC_FEATURES,
+    COMPONENT_TARGET_FIELDS,
+    component_observation,
+    required_components,
+)
 from aiconfigurator_core.sdk.cuda_graph import (
     CudaGraphProfileDatabaseError,
     CudaGraphReservationRequest,
@@ -61,6 +69,16 @@ def _request_from_row(row: dict[str, object]) -> CudaGraphReservationRequest:
     )
 
 
+def _full_only_row() -> dict[str, object]:
+    return next(
+        row
+        for row in _rows()
+        if row["model_id"] == "deepseek-ai/DeepSeek-V4-Pro"
+        and row["cuda_graph_mode"] == "FULL_DECODE_ONLY"
+        and row["estimated_cuda_graph_bytes"] is not None
+    )
+
+
 def _external_database(tmp_path: Path) -> Path:
     destination = tmp_path / "cuda-graph-db"
     destination.mkdir()
@@ -73,36 +91,51 @@ def _external_database(tmp_path: Path) -> Path:
     return destination
 
 
-def _enable_synthetic_model(database: Path) -> None:
+def _enable_synthetic_model(database: Path, reference_row: dict[str, object]) -> None:
     model_path = database / "cuda_graph_reservation_model.json"
     model = json.loads(model_path.read_text(encoding="utf-8"))
+    components = {
+        component_name: {
+            "observation_count": 0,
+            "observations": [],
+            "target_field": target_field,
+        }
+        for component_name, target_field in COMPONENT_TARGET_FIELDS.items()
+    }
+    targets = {"full_first_capture": 1000, "full_per_graph": 10}
+    for index in range(20):
+        row = {**reference_row, "profile_id": f"synthetic-{index:02d}"}
+        for component_name in required_components(row):
+            observation = component_observation(row, component_name, target_bytes=targets[component_name])
+            if index >= 10:
+                observation["categorical"]["model_id"] = "second/model"
+                observation["categorical"]["gpu_family"] = "b200"
+            components[component_name]["observations"].append(observation)
+            components[component_name]["observation_count"] += 1
+    observations = [observation for component in components.values() for observation in component["observations"]]
+    training_domain = {
+        "categorical": {
+            field: sorted({str(observation["categorical"][field]) for observation in observations})
+            for field in COMPONENT_CATEGORICAL_FEATURES
+        },
+        "numeric": {
+            field: [
+                min(float(observation["numeric"][field]) for observation in observations),
+                max(float(observation["numeric"][field]) for observation in observations),
+            ]
+            for field in COMPONENT_NUMERIC_FEATURES
+        },
+    }
     model.update(
         {
+            "artifact_version": "cuda-graph-component-interpolation-v3",
             "enabled": True,
-            "numeric_features": ["max_num_seqs"],
-            "categorical_features": ["model_id", "gpu_family"],
-            "categorical_levels": {
-                "model_id": ["second/model", "synthetic/model"],
-                "gpu_family": ["b200", "h200"],
-            },
-            "feature_schema": [
-                "log1p:max_num_seqs",
-                "model_id=second/model",
-                "model_id=synthetic/model",
-                "gpu_family=b200",
-                "gpu_family=h200",
-            ],
-            "training_domain": {
-                "model_id": ["second/model", "synthetic/model"],
-                "gpu_family": ["b200", "h200"],
-            },
-            "coefficients": [0.0] * 5,
-            "feature_centers": [0.0] * 5,
-            "feature_scales": [1.0] * 5,
-            "numeric_training_domain": {"max_num_seqs": [1.0, 1024.0]},
-            "intercept": math.log1p(1000),
+            "components": components,
+            "training_domain": training_domain,
             "residual_log_interval": [0.0, math.log(1.2)],
             "training_profile_count": 20,
+            "holdout_prediction_count": 20,
+            "holdout_prediction_coverage": 1.0,
             "holdout_metrics": {
                 "median_mape": 0.1,
                 "p90_ape": 0.2,
@@ -173,28 +206,28 @@ def test_external_database_override(tmp_path: Path) -> None:
 
 def test_modeled_lookup_returns_calibrated_upper_bound(tmp_path: Path) -> None:
     database = _external_database(tmp_path)
-    _enable_synthetic_model(database)
-    request = CudaGraphReservationRequest(
-        model_id="synthetic/model",
-        model_revision="a" * 40,
-        system="h200_sxm",
-        backend_version="0.25.1",
-        max_num_seqs=8,
-    )
+    row = _full_only_row()
+    _enable_synthetic_model(database, row)
+    request = replace(_request_from_row(row), backend_build="synthetic-build")
     estimate = estimate_cuda_graph_reservation(request, database_path=database)
+    expected = 1000 + (int(row["cuda_graph_full_count"]) - 1) * 10
     assert estimate.source == "modeled"
-    assert estimate.central_estimate_bytes == 1000
-    assert estimate.reservation_bytes == estimate.interval_upper_bytes == 1200
+    assert estimate.central_estimate_bytes == expected
+    assert (
+        estimate.reservation_bytes
+        == estimate.interval_upper_bytes
+        == round(math.expm1(math.log1p(expected) + math.log(1.2)))
+    )
 
 
 def test_out_of_domain_model_miss_is_unavailable(tmp_path: Path) -> None:
     database = _external_database(tmp_path)
-    _enable_synthetic_model(database)
-    request = CudaGraphReservationRequest(
+    row = _full_only_row()
+    _enable_synthetic_model(database, row)
+    request = replace(
+        _request_from_row(row),
+        backend_build="synthetic-build",
         model_id="unobserved/model",
-        system="h200_sxm",
-        backend_version="0.25.1",
-        max_num_seqs=8,
     )
     estimate = estimate_cuda_graph_reservation(request, database_path=database)
     assert estimate.source == "unavailable"
@@ -203,12 +236,12 @@ def test_out_of_domain_model_miss_is_unavailable(tmp_path: Path) -> None:
 
 def test_out_of_numeric_domain_model_miss_is_unavailable(tmp_path: Path) -> None:
     database = _external_database(tmp_path)
-    _enable_synthetic_model(database)
-    request = CudaGraphReservationRequest(
-        model_id="synthetic/model",
-        system="h200_sxm",
-        backend_version="0.25.1",
-        max_num_seqs=2048,
+    row = _full_only_row()
+    _enable_synthetic_model(database, row)
+    request = replace(
+        _request_from_row(row),
+        backend_build="synthetic-build",
+        max_model_len=int(row["max_model_len"]) + 1,
     )
     estimate = estimate_cuda_graph_reservation(request, database_path=database)
     assert estimate.source == "unavailable"
@@ -217,25 +250,27 @@ def test_out_of_numeric_domain_model_miss_is_unavailable(tmp_path: Path) -> None
 
 def test_enabled_model_that_fails_declared_gates_is_rejected(tmp_path: Path) -> None:
     database = _external_database(tmp_path)
-    _enable_synthetic_model(database)
+    row = _full_only_row()
+    _enable_synthetic_model(database, row)
     model_path = database / "cuda_graph_reservation_model.json"
     model = json.loads(model_path.read_text(encoding="utf-8"))
     model["training_profile_count"] = 19
     model_path.write_text(json.dumps(model), encoding="utf-8")
-    request = CudaGraphReservationRequest(model_id="synthetic/model", system="h200_sxm", max_num_seqs=8)
+    request = replace(_request_from_row(row), backend_build="synthetic-build")
     with pytest.raises(CudaGraphProfileDatabaseError, match="does not pass"):
         estimate_cuda_graph_reservation(request, database_path=database)
 
 
-def test_enabled_model_with_invalid_normalization_is_rejected(tmp_path: Path) -> None:
+def test_enabled_model_with_invalid_component_schema_is_rejected(tmp_path: Path) -> None:
     database = _external_database(tmp_path)
-    _enable_synthetic_model(database)
+    row = _full_only_row()
+    _enable_synthetic_model(database, row)
     model_path = database / "cuda_graph_reservation_model.json"
     model = json.loads(model_path.read_text(encoding="utf-8"))
-    model["feature_scales"][0] = 0.0
+    model["components"]["full_first_capture"]["observations"][0]["numeric"].pop("max_num_seqs")
     model_path.write_text(json.dumps(model), encoding="utf-8")
-    request = CudaGraphReservationRequest(model_id="synthetic/model", system="h200_sxm", max_num_seqs=8)
-    with pytest.raises(CudaGraphProfileDatabaseError, match="does not pass"):
+    request = replace(_request_from_row(row), backend_build="synthetic-build")
+    with pytest.raises(CudaGraphProfileDatabaseError, match="safety-gate evidence"):
         estimate_cuda_graph_reservation(request, database_path=database)
 
 

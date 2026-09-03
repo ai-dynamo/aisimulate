@@ -141,9 +141,10 @@ The wheel includes a reviewed InfX CUDA graph profile database and the typed
 `aisimulate_core.sdk.cuda_graph` API. It returns an exact vLLM pre-KV
 reservation when the full semantic identity matches, otherwise a validated
 in-domain upper bound or an explicit `unavailable` result. CUDA-graph-disabled
-requests return zero. The modeled path uses graph shape, scheduling limits,
-model architecture, rank-local topology, runtime backends, and their derived
-interactions. See the [core API contract](../../docs/core-api.md#cuda-graph-reservation-api)
+requests return zero. The modeled path predicts vLLM's FULL and PIECEWISE
+first-capture/per-graph components using local interpolation over graph shape,
+scheduling limits, rank-local architecture, topology, and runtime backends. See
+the [core API contract](../../docs/core-api.md#cuda-graph-reservation-api)
 and [profile maintenance guide](tools/cuda_graph_profiles/README.md).
 
 This predictor is not yet connected to KV-cache capacity estimation.

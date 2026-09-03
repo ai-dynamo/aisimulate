@@ -57,14 +57,28 @@ DATABASE_COLUMNS = (
     "actual_cuda_graph_pool_bytes",
     "actual_cuda_graph_pool_bytes_min_rank",
     "rank_count",
+    "component_training_eligible",
     *_GRAPH_SHAPE_COLUMNS,
     "profiled_full_count",
     "profiled_full_largest_capture_size",
     "profiled_piecewise_count",
     "profiled_piecewise_largest_capture_size",
+    "profiled_encoder_count",
+    "profiled_encoder_largest_capture_size",
+    "full_first_capture_bytes",
+    "full_first_capture_bytes_min_rank",
+    "full_per_graph_bytes",
+    "full_per_graph_bytes_min_rank",
+    "piecewise_first_capture_bytes",
+    "piecewise_first_capture_bytes_min_rank",
+    "piecewise_per_graph_bytes",
+    "piecewise_per_graph_bytes_min_rank",
+    "encoder_cuda_graph_bytes",
+    "encoder_cuda_graph_bytes_min_rank",
     "available_kv_cache_bytes",
     "gpu_kv_cache_tokens",
     "exclusion_reason",
+    "component_exclusion_reason",
     "source_url",
     "source_log_sha256",
     "recipe_fingerprint",
@@ -212,6 +226,57 @@ def _rank_range(values: dict[int, int], label: str, *, enforce_compatibility: bo
     return minimum, maximum
 
 
+def _component_rank_values(
+    measurement: ParsedMeasurement,
+    mode: str,
+    attribute: str,
+) -> dict[int, int]:
+    return {
+        rank: int(getattr(component, attribute))
+        for rank, components in measurement.graph_components_by_rank.items()
+        if (component := components.get(mode)) is not None
+    }
+
+
+def _complete_component_ranks(measurement: ParsedMeasurement) -> set[int]:
+    required_modes = {
+        mode
+        for mode, count in (
+            ("full", measurement.profiled_full_count),
+            ("piecewise", measurement.profiled_piecewise_count),
+        )
+        if count
+    }
+    complete = {
+        rank for rank, components in measurement.graph_components_by_rank.items() if required_modes.issubset(components)
+    }
+    if measurement.profiled_encoder_count:
+        complete &= measurement.encoder_graph_bytes_by_rank.keys()
+    return complete
+
+
+def _validate_component_reconstruction(measurement: ParsedMeasurement) -> bool:
+    if not measurement.estimated_bytes_by_rank:
+        return False
+    complete = _complete_component_ranks(measurement)
+    if complete != measurement.estimated_bytes_by_rank.keys():
+        return False
+    for rank, estimated in measurement.estimated_bytes_by_rank.items():
+        components = measurement.graph_components_by_rank[rank]
+        first_capture = max((component.first_capture_bytes for component in components.values()), default=0)
+        incremental = sum(
+            max(component.graph_count - 1, 0) * component.per_graph_bytes for component in components.values()
+        )
+        reconstructed = first_capture + incremental + measurement.encoder_graph_bytes_by_rank.get(rank, 0)
+        tolerance = max(16 << 20, round(estimated * 0.05))
+        if abs(reconstructed - estimated) > tolerance:
+            raise ProfileValidationError(
+                "CUDA graph components do not reconstruct the logged reservation "
+                f"on rank {rank}: reconstructed={reconstructed}, estimated={estimated}"
+            )
+    return True
+
+
 def _row_from_measurement(
     measurement: ParsedMeasurement,
     *,
@@ -227,6 +292,20 @@ def _row_from_measurement(
     actual_min, actual_max = _rank_range(
         measurement.actual_bytes_by_rank, "pool measurement", enforce_compatibility=False
     )
+    component_ranges = {}
+    for mode in ("full", "piecewise"):
+        for attribute in ("first_capture_bytes", "per_graph_bytes"):
+            component_ranges[f"{mode}_{attribute}"] = _rank_range(
+                _component_rank_values(measurement, mode, attribute),
+                f"{mode} {attribute}",
+                enforce_compatibility=True,
+            )
+    encoder_range = _rank_range(
+        measurement.encoder_graph_bytes_by_rank,
+        "encoder graph memory",
+        enforce_compatibility=True,
+    )
+    component_reconstructs = _validate_component_reconstruction(measurement)
     identity = dict(measurement.identity)
     identity.setdefault("backend", "vllm")
     identity.setdefault("pp_size", 1)
@@ -245,6 +324,9 @@ def _row_from_measurement(
     missing_training = [field for field in _IDENTITY_REQUIRED_FOR_TRAINING if identity.get(field) is None]
     missing_training.extend(field for field in _MODEL_ARCHITECTURE_COLUMNS if architecture.get(field) is None)
     training_eligible = bool(estimated_max is not None and not measurement.graph_disabled and not missing_training)
+    component_training_eligible = bool(
+        training_eligible and component_reconstructs and not measurement.profiled_encoder_count
+    )
     exclusion_reason = None
     if measurement.graph_disabled:
         exclusion_reason = "graph_disabled"
@@ -252,6 +334,14 @@ def _row_from_measurement(
         exclusion_reason = "actual_only_legacy_log"
     elif missing_training:
         exclusion_reason = "incomplete_training_identity:" + ",".join(missing_training)
+    component_exclusion_reason = None
+    if not component_training_eligible:
+        if exclusion_reason:
+            component_exclusion_reason = exclusion_reason
+        elif measurement.profiled_encoder_count:
+            component_exclusion_reason = "encoder_component_model_unsupported"
+        else:
+            component_exclusion_reason = "missing_component_breakdown"
 
     row: dict[str, Any] = {
         **{field: identity.get(field) for field in PROFILE_IDENTITY_FIELDS},
@@ -276,14 +366,22 @@ def _row_from_measurement(
             len(measurement.actual_bytes_by_rank),
             int(identity.get("tp_size") or 1),
         ),
+        "component_training_eligible": component_training_eligible,
         **graph_shape,
         "profiled_full_count": measurement.profiled_full_count,
         "profiled_full_largest_capture_size": measurement.profiled_full_largest_capture_size,
         "profiled_piecewise_count": measurement.profiled_piecewise_count,
         "profiled_piecewise_largest_capture_size": measurement.profiled_piecewise_largest_capture_size,
+        "profiled_encoder_count": measurement.profiled_encoder_count,
+        "profiled_encoder_largest_capture_size": measurement.profiled_encoder_largest_capture_size,
+        **{field: bounds[1] for field, bounds in component_ranges.items()},
+        **{f"{field}_min_rank": bounds[0] for field, bounds in component_ranges.items()},
+        "encoder_cuda_graph_bytes": encoder_range[1],
+        "encoder_cuda_graph_bytes_min_rank": encoder_range[0],
         "available_kv_cache_bytes": measurement.available_kv_cache_bytes,
         "gpu_kv_cache_tokens": measurement.gpu_kv_cache_tokens,
         "exclusion_reason": exclusion_reason,
+        "component_exclusion_reason": component_exclusion_reason,
         "source_url": source["html_url"],
         "source_log_sha256": stable_hash([sha256_file(path) for path in log_files]),
         "recipe_fingerprint": (benchmark or {}).get("recipe_fingerprint"),
@@ -351,21 +449,73 @@ def parse_locked_sources(lock_path: Path, cache_dir: Path) -> tuple[list[dict[st
 
 
 def _validate_duplicate_profiles(rows: list[dict[str, Any]]) -> None:
-    grouped: dict[str, list[int]] = defaultdict(list)
-    for row in rows:
-        value = row["estimated_cuda_graph_bytes"]
-        if value is not None:
-            grouped[row["profile_id"]].append(int(value))
-    for key, values in grouped.items():
-        if len(values) > 1 and min(values) > 0 and max(values) / min(values) > 1.05:
-            raise ProfileValidationError(
-                f"semantic profile {key} differs by more than 5%: {min(values)}..{max(values)}"
-            )
+    fields = (
+        "estimated_cuda_graph_bytes",
+        "full_first_capture_bytes",
+        "full_per_graph_bytes",
+        "piecewise_first_capture_bytes",
+        "piecewise_per_graph_bytes",
+        "encoder_cuda_graph_bytes",
+    )
+    for field in fields:
+        grouped: dict[str, list[int]] = defaultdict(list)
+        for row in rows:
+            value = row.get(field)
+            if value is not None:
+                grouped[row["profile_id"]].append(int(value))
+        for key, values in grouped.items():
+            if len(values) > 1 and min(values) > 0 and max(values) / min(values) > 1.05:
+                raise ProfileValidationError(
+                    f"semantic profile {key} {field} differs by more than 5%: {min(values)}..{max(values)}"
+                )
+
+
+def _validate_component_row(row: dict[str, Any]) -> None:
+    component_fields = (
+        "full_first_capture_bytes",
+        "full_per_graph_bytes",
+        "piecewise_first_capture_bytes",
+        "piecewise_per_graph_bytes",
+        "encoder_cuda_graph_bytes",
+    )
+    if any(row.get(field) is not None and int(row[field]) < 0 for field in component_fields):
+        raise ProfileValidationError("CUDA graph component bytes must be non-negative")
+    if not row["component_training_eligible"]:
+        if not row.get("component_exclusion_reason"):
+            raise ProfileValidationError("component-ineligible profile must include an exclusion reason")
+        return
+    if row.get("component_exclusion_reason"):
+        raise ProfileValidationError("component-eligible profile must not include an exclusion reason")
+    if row.get("encoder_cuda_graph_bytes") is not None:
+        raise ProfileValidationError("encoder graph profile cannot train the V3 decoder model")
+
+    first_captures = []
+    incremental = 0
+    for mode in ("full", "piecewise"):
+        count = int(row[f"cuda_graph_{mode}_count"])
+        if count <= 0:
+            continue
+        first_field = f"{mode}_first_capture_bytes"
+        if row.get(first_field) is None:
+            raise ProfileValidationError(f"component-eligible profile is missing {first_field}")
+        first_captures.append(int(row[first_field]))
+        if count > 1:
+            per_graph_field = f"{mode}_per_graph_bytes"
+            if row.get(per_graph_field) is None:
+                raise ProfileValidationError(f"component-eligible profile is missing {per_graph_field}")
+            incremental += (count - 1) * int(row[per_graph_field])
+    if not first_captures:
+        raise ProfileValidationError("component-eligible profile contains no decoder graphs")
+    reconstructed = max(first_captures) + incremental
+    estimated = int(row["estimated_cuda_graph_bytes"])
+    tolerance = max(16 << 20, round(estimated * 0.05))
+    if abs(reconstructed - estimated) > tolerance:
+        raise ProfileValidationError("published CUDA graph components do not reconstruct the reservation")
 
 
 def _validate_rows(rows: list[dict[str, Any]]) -> None:
     for row in rows:
-        missing = [field for field in REQUIRED_PROFILE_FIELDS if field not in row]
+        missing = [field for field in DATABASE_COLUMNS if field not in row]
         if missing:
             raise ProfileValidationError(f"profile is missing required columns: {missing}")
         missing_provenance = [field for field in _REQUIRED_PUBLICATION_PROVENANCE if row.get(field) is None]
@@ -379,6 +529,7 @@ def _validate_rows(rows: list[dict[str, Any]]) -> None:
             raise ProfileValidationError(f"unsupported backend in profile: {row['backend']}")
         if row["graph_disabled"] and row["estimated_cuda_graph_bytes"] != 0:
             raise ProfileValidationError("disabled graph profile must record a zero reservation")
+        _validate_component_row(row)
         rendered = json.dumps(row, sort_keys=True)
         if any(marker in rendered for marker in _BANNED_PATH_MARKERS):
             raise ProfileValidationError(f"profile {row['measurement_id']} contains an internal filesystem path")
@@ -394,13 +545,15 @@ def validate_database(database_dir: Path, *, validate_model: bool = True) -> dic
     if metadata.get("parquet_sha256") != sha256_file(parquet_path):
         raise ProfileValidationError("Parquet checksum does not match metadata")
     table = pq.read_table(parquet_path)
-    missing = sorted(set(REQUIRED_PROFILE_FIELDS) - set(table.column_names))
+    missing = sorted(set(DATABASE_COLUMNS) - set(table.column_names))
     if missing:
         raise ProfileValidationError(f"Parquet is missing required columns: {missing}")
     rows = table.to_pylist()
     _validate_rows(rows)
     if len(rows) != metadata.get("measurement_count"):
         raise ProfileValidationError("metadata measurement count does not match Parquet")
+    if sum(bool(row["component_training_eligible"]) for row in rows) != metadata.get("component_training_count"):
+        raise ProfileValidationError("metadata component training count does not match Parquet")
     model_path = database_dir / "cuda_graph_reservation_model.json"
     model = None
     if model_path.is_file():
@@ -436,6 +589,7 @@ def publish_database(lock_path: Path, cache_dir: Path, database_dir: Path, repor
         "parquet_sha256": sha256_file(parquet_path),
         "profile_count": len({row["profile_id"] for row in rows}),
         "reservation_training_count": sum(row["training_eligible"] for row in rows),
+        "component_training_count": sum(row["component_training_eligible"] for row in rows),
         "schema_version": SCHEMA_VERSION,
         "source_run_ids": sorted({row["run_id"] for row in rows}),
     }
@@ -462,11 +616,12 @@ def publish_database(lock_path: Path, cache_dir: Path, database_dir: Path, repor
         {
             "measurements": [
                 {
+                    "component_exclusion_reason": row["component_exclusion_reason"],
                     "exclusion_reason": row["exclusion_reason"],
                     "measurement_id": row["measurement_id"],
                 }
                 for row in rows
-                if row["exclusion_reason"]
+                if row["exclusion_reason"] or row["component_exclusion_reason"]
             ]
         },
     )

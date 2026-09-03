@@ -1,4 +1,5 @@
 {
+  "component_training_count": 0,
   "database_version": "v1",
   "disabled_profile_count": 1,
   "identity_fields": [
@@ -36,7 +37,7 @@
   "lock_sha256": "bfe807034b3e33b7ab8439d75ff524f729a9c9a2b3a9e15e4a547d99aeef4c7b",
   "manifest_sha256": "2a73fdae3b025695c7331e498ab5dea83c403b43fc403caf64e824de461593da",
   "measurement_count": 9,
-  "parquet_sha256": "8944103b17be38d42bb57b5b93b55fcd10a746116f4328ac5a87383631584df0",
+  "parquet_sha256": "049e8d438b71604904fbaf6221288d65317f3aaf79b043e26cb0f8110970be8c",
   "profile_count": 9,
   "reservation_training_count": 6,
   "schema_version": 1,

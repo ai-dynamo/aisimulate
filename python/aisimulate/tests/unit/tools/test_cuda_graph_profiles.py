@@ -8,6 +8,7 @@ import json
 import tarfile
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -17,10 +18,12 @@ from tools.cuda_graph_profiles.parser import ProfileParseError, load_yaml, parse
 from tools.cuda_graph_profiles.publish import (
     ProfileValidationError,
     _rank_range,
+    _validate_component_reconstruction,
     _validate_duplicate_profiles,
     _validate_rows,
     validate_database,
 )
+from tools.cuda_graph_profiles.train import train_model
 
 pytestmark = pytest.mark.unit
 
@@ -84,6 +87,68 @@ def test_profiled_graph_sets_are_parsed() -> None:
     assert parsed.profiled_full_largest_capture_size == 512
     assert parsed.profiled_piecewise_count == 49
     assert parsed.profiled_piecewise_largest_capture_size == 512
+
+
+def test_graph_memory_components_are_parsed_and_reconstruct_total() -> None:
+    parsed = parse_log_text(
+        "\n".join(
+            (
+                "(Worker_TP0 pid=10) Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)",
+                "(Worker_TP0 pid=10) Estimated PIECEWISE CUDA graph memory: "
+                "128 MiB first-capture + (3 - 1) x 16 MiB per-graph",
+                "(Worker_TP0 pid=10) Estimated FULL CUDA graph memory: "
+                "224 MiB first-capture + (2 - 1) x 16 MiB per-graph",
+                "(Worker_TP0 pid=10) Estimated CUDA graph memory: 0.27 GiB total",
+            )
+        )
+    )
+    assert parsed.graph_components_by_rank[0]["piecewise"].first_capture_bytes == 128 << 20
+    assert parsed.graph_components_by_rank[0]["full"].per_graph_bytes == 16 << 20
+    assert _validate_component_reconstruction(parsed)
+
+
+def test_incompatible_repeated_graph_component_fails() -> None:
+    with pytest.raises(ProfileParseError, match="incompatible rank-local full"):
+        parse_log_text(
+            "\n".join(
+                (
+                    "Estimated FULL CUDA graph memory: 128 MiB first-capture + (2 - 1) x 16 MiB per-graph",
+                    "Estimated FULL CUDA graph memory: 256 MiB first-capture + (2 - 1) x 16 MiB per-graph",
+                    "Estimated CUDA graph memory: 0.16 GiB total",
+                )
+            )
+        )
+
+
+def test_component_total_mismatch_fails_validation() -> None:
+    parsed = parse_log_text(
+        "\n".join(
+            (
+                "Profiling CUDA graph memory: FULL=2 (largest=2)",
+                "Estimated FULL CUDA graph memory: 128 MiB first-capture + (2-1) x 16 MiB per-graph",
+                "Estimated CUDA graph memory: 1.00 GiB total",
+            )
+        )
+    )
+    with pytest.raises(ProfileValidationError, match="do not reconstruct"):
+        _validate_component_reconstruction(parsed)
+
+
+def test_encoder_graph_component_is_preserved() -> None:
+    parsed = parse_log_text(
+        "\n".join(
+            (
+                "Profiling CUDA graph memory: FULL=1 (largest=1), ENCODER=2 (largest=512)",
+                "Estimated FULL CUDA graph memory: 128 MiB first-capture + (1-1) x 16 MiB per-graph",
+                "Estimated encoder CUDA graph memory: 64 MiB for 2 graphs",
+                "Estimated CUDA graph memory: 0.19 GiB total",
+            )
+        )
+    )
+    assert parsed.profiled_encoder_count == 2
+    assert parsed.profiled_encoder_largest_capture_size == 512
+    assert parsed.encoder_graph_bytes_by_rank == {0: 64 << 20}
+    assert _validate_component_reconstruction(parsed)
 
 
 def test_benchmark_expert_parallelism_uses_engine_rank_topology() -> None:
@@ -166,12 +231,22 @@ def test_missing_provenance_fails_publication() -> None:
         _validate_rows([row])
 
 
+def test_component_training_row_requires_reconstructable_measurements() -> None:
+    row = next(
+        row for row in pq.read_table(DATABASE / "cuda_graph_profiles.parquet").to_pylist() if row["training_eligible"]
+    )
+    row["component_training_eligible"] = True
+    row["component_exclusion_reason"] = None
+    with pytest.raises(ProfileValidationError, match="missing full_first_capture_bytes"):
+        _validate_rows([row])
+
+
 def test_packaged_database_and_reports_validate() -> None:
     result = validate_database(DATABASE)
     assert result["status"] == "valid"
     assert result["measurement_count"] == 9
     assert result["model_enabled"] is False
-    assert result["model_version"] == "cuda-graph-factorized-ridge-v2"
+    assert result["model_version"] == "cuda-graph-component-interpolation-v3"
     for report in (
         "source_mapping.report.json",
         "reconciliation.report.json",
@@ -184,6 +259,7 @@ def test_packaged_database_and_reports_validate() -> None:
 def test_database_has_required_measurement_classes_and_no_internal_paths() -> None:
     rows = pq.read_table(DATABASE / "cuda_graph_profiles.parquet").to_pylist()
     assert any(row["training_eligible"] for row in rows)
+    assert not any(row["component_training_eligible"] for row in rows)
     assert any(row["exclusion_reason"] == "actual_only_legacy_log" for row in rows)
     assert any(row["graph_disabled"] and row["estimated_cuda_graph_bytes"] == 0 for row in rows)
     assert all(row["model_architecture_config_sha256"] for row in rows if row["training_eligible"])
@@ -200,3 +276,58 @@ def test_source_lock_pins_run_attempt_artifact_and_extracted_files() -> None:
         for artifact in source["artifacts"]:
             assert artifact["artifact_id"] and artifact["artifact_name"] and artifact["files"]
             assert all(len(file["sha256"]) == 64 for file in artifact["files"])
+
+
+def test_component_model_training_passes_with_dense_in_domain_sweeps(tmp_path: Path) -> None:
+    rows = []
+    for model_id, system in (
+        ("MiniMaxAI/MiniMax-M2.7", "h200_sxm"),
+        ("deepseek-ai/DeepSeek-V4-Pro", "b200_sxm"),
+    ):
+        for index in range(10):
+            rows.append(
+                {
+                    "attention_backend": "FLASH_ATTN",
+                    "attention_dp_size": 1,
+                    "backend_version": "0.25.1",
+                    "compilation_backend": "inductor",
+                    "compilation_mode": "NONE",
+                    "component_training_eligible": True,
+                    "compute_dtype": "bfloat16",
+                    "cuda_graph_capture_sizes": "[1,2,4]",
+                    "cuda_graph_mode": "FULL_DECODE_ONLY",
+                    "dcp_size": 1,
+                    "estimated_cuda_graph_bytes": 1020,
+                    "flashinfer_autotune": False,
+                    "full_first_capture_bytes": 1000,
+                    "full_per_graph_bytes": 10,
+                    "graph_disabled": False,
+                    "kv_cache_dtype": "fp8",
+                    "linear_backend": "auto",
+                    "max_model_len": 4096 + index,
+                    "max_num_batched_tokens": 4096,
+                    "max_num_seqs": 8,
+                    "measurement_id": f"{model_id}-{index}",
+                    "model_id": model_id,
+                    "moe_backend": "auto",
+                    "moe_ep_size": 1,
+                    "moe_tp_size": 4,
+                    "pcp_size": 1,
+                    "piecewise_first_capture_bytes": None,
+                    "piecewise_per_graph_bytes": None,
+                    "pp_size": 1,
+                    "profile_id": f"{model_id}-{index}",
+                    "quantization": "fp8",
+                    "speculative_method": "none",
+                    "speculative_tokens": 0,
+                    "system": system,
+                    "tp_size": 4,
+                }
+            )
+    parquet_path = tmp_path / "profiles.parquet"
+    model_path = tmp_path / "model.json"
+    pq.write_table(pa.Table.from_pylist(rows), parquet_path)
+    model = train_model(parquet_path, model_path)
+    assert model["enabled"] is True, model["gate_failures"]
+    assert model["holdout_prediction_coverage"] == 0.8
+    assert model["holdout_metrics"]["median_mape"] == 0

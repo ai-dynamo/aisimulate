@@ -5,6 +5,11 @@ from __future__ import annotations
 
 import pytest
 
+from aiconfigurator_core.sdk._cuda_graph_component_model import (
+    component_observation,
+    interpolate_component,
+    reconstruct_reservation_bytes,
+)
 from aiconfigurator_core.sdk._cuda_graph_features import (
     derived_feature_row,
     graph_shape_features,
@@ -12,6 +17,38 @@ from aiconfigurator_core.sdk._cuda_graph_features import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _component_row(max_num_seqs: int = 8) -> dict[str, object]:
+    return {
+        "attention_backend": "FLASH_ATTN",
+        "attention_dp_size": 1,
+        "compilation_backend": "inductor",
+        "compilation_mode": "NONE",
+        "compute_dtype": "bfloat16",
+        "cuda_graph_capture_sizes": [1, 2, 4],
+        "cuda_graph_mode": "FULL_AND_PIECEWISE",
+        "dcp_size": 1,
+        "flashinfer_autotune": False,
+        "kv_cache_dtype": "fp8",
+        "linear_backend": "auto",
+        "max_model_len": 4096,
+        "max_num_batched_tokens": 4096,
+        "max_num_seqs": max_num_seqs,
+        "model_id": "MiniMaxAI/MiniMax-M2.7",
+        "moe_backend": "auto",
+        "moe_ep_size": 1,
+        "moe_tp_size": 4,
+        "pcp_size": 1,
+        "pp_size": 1,
+        "profile_id": f"profile-{max_num_seqs}",
+        "quantization": "fp8",
+        "speculative_method": "none",
+        "speculative_tokens": 0,
+        "system": "h200_sxm",
+        "tp_size": 4,
+        "backend_version": "0.25.1",
+    }
 
 
 def test_minimax_m27_architecture_is_resolved_from_packaged_config() -> None:
@@ -72,3 +109,35 @@ def test_parallel_modes_have_distinct_interaction_features(topology: dict[str, i
     assert features["parallel_mode"] == mode
     assert features["capture_attention_elements"] > 0
     assert features["capture_moe_active_elements"] > 0
+
+
+def test_component_interpolation_stays_inside_exact_categorical_cell_and_numeric_range() -> None:
+    observations = [
+        component_observation(_component_row(8), "full_first_capture", target_bytes=800),
+        component_observation(_component_row(16), "full_first_capture", target_bytes=1600),
+    ]
+    prediction = interpolate_component(observations, _component_row(12), "full_first_capture")
+    assert prediction is not None
+    assert 800 < prediction < 1600
+    assert interpolate_component(observations, _component_row(32), "full_first_capture") is None
+    assert (
+        interpolate_component(
+            observations,
+            {**_component_row(12), "system": "b200_sxm"},
+            "full_first_capture",
+        )
+        is None
+    )
+
+
+def test_component_reconstruction_uses_shared_first_capture_pool() -> None:
+    reservation = reconstruct_reservation_bytes(
+        _component_row(),
+        {
+            "full_first_capture": 224,
+            "full_per_graph": 16,
+            "piecewise_first_capture": 128,
+            "piecewise_per_graph": 8,
+        },
+    )
+    assert reservation == 272

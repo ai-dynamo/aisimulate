@@ -62,8 +62,8 @@ aiconfigurator_core/systems/cuda_graph_profiles/v1/
 ```
 
 The Parquet dataset is the measurement source of truth. The model artifact records its
-Parquet checksum, feature schema, coefficients, training domain, validation metrics,
-and applicability gates. The public Python API is
+Parquet checksum, feature schema, component observations, validation metrics, and
+applicability gates. The public Python API is
 `aiconfigurator_core.sdk.cuda_graph.estimate_cuda_graph_reservation`. An explicit
 `aisimulate_core.sdk.cuda_graph` alias is packaged for compatibility.
 
@@ -161,7 +161,7 @@ pool measurement remain useful diagnostics but are ineligible for reservation tr
 
 ### Modeled fallback
 
-The long-term fallback can mirror vLLM's estimator structure:
+The V3 fallback mirrors vLLM's estimator structure:
 
 ```text
 graph bytes = max(shared FULL, shared PIECEWISE)
@@ -170,37 +170,33 @@ graph bytes = max(shared FULL, shared PIECEWISE)
             + encoder graph bytes
 ```
 
-The V2 seed model first evaluates a directly testable factorized approximation:
+The profiler supplies four decoder measurements: FULL and PIECEWISE first-capture
+bytes, plus FULL and PIECEWISE per-graph bytes. Publication reconstructs the logged
+total from those measurements and rejects a mismatch above 5% or 16 MiB. Encoder graph
+memory is preserved separately and is not modeled in V3.
 
-```text
-log1p(reservation_bytes) = beta_0
-                        + beta * log1p(numeric_features)
-                        + gamma * runtime_categories
-```
+Each decoder component uses deterministic inverse-distance interpolation in log space.
+Candidates must match model identity, GPU and vLLM family, dtypes, graph and compilation
+modes, attention/MoE/linear backends, FlashInfer autotuning, speculative method, and
+parallel mode exactly. Numeric coordinates include the mode-specific capture-size
+distribution, scheduler limits, speculative token count, rank-local architecture, and
+TP/PP/attention-DP/MoE topology. V3 does not extrapolate outside any observed numeric
+range and does not claim cross-model generalization.
 
-Numeric features include the full capture-size distribution, scheduler limits,
-model architecture, rank-local topology, and graph-by-architecture interactions.
-Categorical features include GPU and vLLM families, dtypes, graph and compilation
-modes, attention/MoE/linear backends, FlashInfer autotuning, and speculative decoding.
-Numeric features are standardized before ridge fitting. Model size alone is not
-sufficient because weights are not duplicated into every graph.
+Leave-one-profile-out validation reports prediction coverage separately from error.
+The component model is enabled only with at least 20 independent profiles spanning two
+model identities and two GPU families, and metrics satisfying all of these gates:
 
-The fitted artifact must declare its categorical and numeric training domains, version, holdout metrics, and a
-conservative prediction bound. Out-of-domain inputs return `unavailable`; they must not
-use nearest-neighbor transfer silently. V1 is restricted to observed model identities
-and categorical domains; it does not claim cross-model generalization.
-
-The deterministic log-space ridge model is enabled only with at least 20 independent
-profiles spanning two model identities and two GPU families, and whole-model grouped holdout
-metrics satisfying all of these gates:
-
+- holdout prediction coverage at least 80%;
 - median MAPE at most 20%;
 - p90 APE at most 40%;
 - conservative upper-bound coverage at least 95%;
 - no underprediction greater than 20%.
 
 If any gate fails, exact lookup stays available and modeled misses return
-`unavailable`.
+`unavailable`. The initial reviewed InfX logs contain only INFO-level totals, not the
+DEBUG component measurements, so the checked-in V3 model remains disabled until new
+profiles are collected.
 
 ### Budget, API, and observability
 
@@ -325,6 +321,8 @@ dataset remains wheel-bundled after it grows past the existing data-size budget.
 - vLLM v0.25.1 KV-memory calculation:
   [gpu_worker.py](https://github.com/vllm-project/vllm/blob/v0.25.1/vllm/v1/worker/gpu_worker.py#L394-L537)
 - vLLM v0.25.1 CUDA graph estimator:
-  [gpu_model_runner.py](https://github.com/vllm-project/vllm/blob/v0.25.1/vllm/v1/worker/gpu_model_runner.py#L5986-L6119)
+  [gpu_model_runner.py](https://github.com/vllm-project/vllm/blob/v0.25.1/vllm/v1/worker/gpu_model_runner.py#L6500-L6644)
+- vLLM component-log and reconstruction example:
+  [issue #50780](https://github.com/vllm-project/vllm/issues/50780)
 - vLLM CUDA graph profiling default:
   [envs.py](https://github.com/vllm-project/vllm/blob/v0.25.1/vllm/envs.py#L1902-L1907)

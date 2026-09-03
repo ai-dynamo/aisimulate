@@ -116,11 +116,13 @@ remain available for diagnostics. `identity_completeness` is
 digest is supplied. Use the `database_path` keyword only for reviewed external
 database testing; checksum and model-gate validation still apply.
 
-The modeled path evaluates a factorized log-space ridge expression over the
-full capture-size distribution, scheduler limits, packaged model architecture,
-rank-local parallel topology, runtime categories, and graph-by-architecture
-interactions. It accepts only model identities, categorical values, and numeric
-ranges observed during training. Validation holds out complete model identities.
+The modeled path predicts FULL and PIECEWISE first-capture/per-graph memory, then
+combines the components with vLLM's shared-pool formula. Each component uses
+log-space local interpolation over its capture-size distribution, scheduler
+limits, packaged model architecture, and rank-local topology. Model identity and
+runtime categories must match exactly, and numeric extrapolation is rejected.
+Validation leaves out one semantic profile at a time and gates both coverage and
+error. The packaged model is disabled while reviewed data lacks component lines.
 
 This API does not yet alter `estimate_kv_cache`. KV-capacity integration is a
 separate milestone so existing KV behavior remains unchanged.
