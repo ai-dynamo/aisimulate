@@ -136,6 +136,27 @@ def test_canonical_json_is_stable_and_strict():
         canonical_json(object())
 
 
+def test_replay_output_requirements_validate_enabled_telemetry_interval():
+    assert ReplayOutputRequirements().capture_telemetry is False
+    assert (
+        ReplayOutputRequirements(
+            capture_telemetry=True,
+            telemetry_sample_interval_ms=250.0,
+        ).telemetry_sample_interval_ms
+        == 250.0
+    )
+
+    for invalid in (0.0, -1.0, math.inf, math.nan, True, "one second"):
+        with pytest.raises(
+            ValueError,
+            match="telemetry_sample_interval_ms must be finite and positive",
+        ):
+            ReplayOutputRequirements(
+                capture_telemetry=True,
+                telemetry_sample_interval_ms=invalid,  # type: ignore[arg-type]
+            )
+
+
 def test_adapter_payload_json_validation_does_not_normalize_python_objects():
     @dataclass
     class PythonObject:

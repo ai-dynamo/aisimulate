@@ -80,6 +80,10 @@ impl RankEngine for FakeRank {
             self.ready = true;
             self.drained = false;
         }
+        if command == "cancel" {
+            self.ready = false;
+            self.drained = true;
+        }
         Ok(context.allow_immediate_admission())
     }
 
@@ -643,7 +647,7 @@ fn attention_dp_cancellation_mutates_only_the_target_ranks_retained_pass() -> Re
 }
 
 #[test]
-fn internal_work_uses_earliest_deadline_and_group_busy_context() -> Result<()> {
+fn internal_work_waits_for_the_group_pass_boundary() -> Result<()> {
     let (rank, log) = config(
         vec![true, false],
         vec![10.0, 0.0],
@@ -656,16 +660,46 @@ fn internal_work_uses_earliest_deadline_and_group_busy_context() -> Result<()> {
     assert_eq!(engine.next_internal_deadline_ms(), Some(5.0));
 
     let started = engine.execute_pass(0.0)?.expect("rank 0 is ready");
+    assert_eq!(
+        engine.next_internal_deadline_ms(),
+        None,
+        "physical deadlines are hidden while the group pass is in flight"
+    );
     let effects = engine.process_internal_work(5.0)?;
-    assert_eq!(effects.by_rank.len(), 1);
-    assert_eq!(effects.by_rank[0].dp_rank, 1);
-    assert_eq!(engine.next_internal_deadline_ms(), Some(8.0));
-    assert!(log.borrow().contains(&"internal:1:true".to_string()));
+    assert!(effects.is_empty());
+    assert!(
+        !log.borrow()
+            .iter()
+            .any(|entry| entry.starts_with("internal:")),
+        "direct internal-work calls must not mutate a rank mid-pass"
+    );
+
+    // An arrival/submit between the physical deadline and the model-step
+    // boundary may update its command-owned state, but must not make the
+    // overdue transfer visible.
+    engine.apply_command_effects(SchedulerCommand::new(1, "wake"), 7.0)?;
+    assert!(log.borrow().contains(&"command:1:wake:true".to_string()));
+    assert!(engine.process_internal_work(7.0)?.is_empty());
+    assert!(
+        !log.borrow()
+            .iter()
+            .any(|entry| entry.starts_with("internal:")),
+        "the command must not smuggle internal settlement into the pass"
+    );
 
     engine.complete_pass(started.pass_id, 10.0)?;
+    assert_eq!(engine.next_internal_deadline_ms(), Some(5.0));
     let effects = engine.process_internal_work(10.0)?;
-    assert_eq!(effects.by_rank[0].dp_rank, 0);
+    assert_eq!(
+        effects
+            .by_rank
+            .iter()
+            .map(|effect| effect.dp_rank)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
     assert!(log.borrow().contains(&"internal:0:false".to_string()));
+    assert!(log.borrow().contains(&"internal:1:false".to_string()));
     Ok(())
 }
 
@@ -803,6 +837,33 @@ fn targeted_command_rejection_does_not_poison_the_group() -> Result<()> {
         .execute_pass(0.0)?
         .expect("valid work remains executable after a command rejection");
     engine.complete_pass(started.pass_id, started.end_ms)?;
+    assert!(engine.is_drained());
+    Ok(())
+}
+
+#[test]
+fn idle_overdue_cancel_requires_internal_work_before_mutation() -> Result<()> {
+    let (rank, log) = config(vec![true], vec![0.0], vec![Some(5.0)]);
+    let mut engine = GeneralizedMockerEngine::<FakeRank>::new(
+        EngineIdentity::new(44),
+        GeneralizedEngineConfig::single_rank(rank),
+    )?;
+
+    let error = engine
+        .apply_command_effects(SchedulerCommand::new(0, "cancel"), 10.0)
+        .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("process internal work and retry"),
+        "{message}"
+    );
+    assert!(log.borrow().is_empty(), "preflight must not enter the rank");
+    assert!(engine.is_ready(), "the valid cancel must remain unapplied");
+
+    let internal = engine.process_internal_work(10.0)?;
+    assert_eq!(internal.by_rank.len(), 1);
+    let cancelled = engine.apply_command_effects(SchedulerCommand::new(0, "cancel"), 10.0)?;
+    assert!(cancelled.by_rank[0].effects);
     assert!(engine.is_drained());
     Ok(())
 }

@@ -79,6 +79,7 @@ where
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                placement_replica_id: None,
             }),
             released: Vec::new(),
         })
@@ -187,6 +188,7 @@ where
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                placement_replica_id: None,
             }),
             released: Vec::new(),
         })

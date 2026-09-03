@@ -290,7 +290,10 @@ class TestSglangLargeEPStructure:
         _assert_ops_identical(built[:3], _sglang_expected_shared_triplet("generation"))
         dispatch, moe, combine = built[3:]
         assert dispatch._comm_backend == combine._comm_backend == "deepep_ll"
+        assert dispatch._comm_dtype == "fp8"
+        assert combine._comm_dtype == "bfloat16"
         assert dispatch._sms == combine._sms == 0  # LL has no SM budget
+        assert isinstance(moe, ops.MoEExpertCompute)
         assert moe._workload_distribution == "power_law_1.01"
 
     def test_eplb_flips_context_distribution_and_eplb_flag(self):
@@ -306,7 +309,7 @@ class TestSglangLargeEPValues:
 
     @pytest.fixture(scope="class")
     def db(self):
-        db = get_database("h200_sxm", "sglang", "0.5.6.post2")
+        db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
         assert db is not None
         return db
 
@@ -321,6 +324,16 @@ class TestSglangLargeEPValues:
         comm_grid = _sglang_comm_grid(db, phase)
         for x in _grid_token_spread(comm_grid):
             context = f"sglang {phase} eplb={enable_eplb} x={x}"
+            if phase == "generation":
+                if enable_eplb:
+                    with pytest.raises(ValueError, match="DeepEP-LL \\+ EPLB is unsupported"):
+                        _lat(dispatch, db, x)
+                else:
+                    # Exact LL table points now calibrate the Stage-1 Monte
+                    # Carlo estimator instead of being returned raw.
+                    assert _lat(dispatch, db, x) > 0.0, context
+                    assert _lat(combine, db, x) > 0.0, context
+                continue
             # A6: legacy pre_dispatch rode a summed dispatch+combine table row.
             _assert_close(
                 _lat(dispatch, db, x) + _lat(combine, db, x), _legacy_sglang_comm_latency(comm_grid, x), context
@@ -569,7 +582,7 @@ class TestTrtllmLargeEPStructure:
 class TestTrtllmLargeEPValues:
     @pytest.fixture(scope="class")
     def db(self):
-        db = get_database("gb200", "trtllm", "1.3.0rc10")
+        db = get_database("gb200", "trtllm", "1.3.0rc10", allow_unlisted_version=True)
         assert db is not None
         return db
 
@@ -668,16 +681,18 @@ class TestA3RouterVariants:
 
 
 def _write_parquet(path, rows):
-    """Write one synthetic table and keep the version dir's Collector V3
+    """Write one synthetic table and keep the version dir's compatibility
     sidecar covering every table written into it so far. Without the sidecar
     a family-layout dir fails ``get_database()``'s strict-provenance check
     (design §5/§7.4), which CI runs with ``AIC_STRICT_PROVENANCE=1``; the
-    synthetic data is complete, not partial."""
+    synthetic data is complete, not partial. This fixture does not model real
+    Collector V3 event provenance, so it uses the legacy schema instead of
+    fabricating the runtime and collection history required by schema v2."""
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_parquet(path, index=False)
 
     meta_path = path.parent / "collection_meta.yaml"
-    meta = yaml.safe_load(meta_path.read_text()) if meta_path.exists() else {"schema_version": 2, "tables": {}}
+    meta = yaml.safe_load(meta_path.read_text()) if meta_path.exists() else {"schema_version": 1, "tables": {}}
     meta["tables"][path.stem] = {"status": "complete"}
     meta_path.write_text(yaml.safe_dump(meta))
 
@@ -732,7 +747,6 @@ def vllm_toy_db(tmp_path):
         for tokens in (128, 4096)
     ]
     _write_parquet(version_dir / "moe_expert_compute_perf.parquet", ep_rows)
-
     db = get_database("toy_sys", "vllm", "1.0", systems_paths=str(systems_root), allow_missing_data=True)
     assert db is not None
     return db
@@ -775,14 +789,17 @@ class TestVllmG2Seed:
             dispatch, moe, combine = built[1:]
             expected_backend = cfg.moe_comm_backend[phase]
             assert dispatch._comm_backend == combine._comm_backend == expected_backend
-            # Exact arithmetic against the hand-built rows at x=64 (an exact
-            # collected point): a2a leaves are base_us*factor us -> ms, x10
-            # scale; MoEExpertCompute globalizes tokens by dp (64*8=512), and the toy
-            # token curve is linear so the lerp between 128 and 4096 is exact:
-            # 0.5 ms * 512/128 = 2.0 ms, x10 scale.
+            # Context HT returns the exact table leaf. Generation LL uses the
+            # same points as OLS/Monte-Carlo calibration. MoEExpertCompute
+            # globalizes by dp (64*8=512).
             base_us = 100.0 if phase == "context" else 50.0
-            assert _lat(dispatch, vllm_toy_db, 64) == pytest.approx(base_us / 1000.0 * 10, rel=1e-9)
-            assert _lat(combine, vllm_toy_db, 64) == pytest.approx(2 * base_us / 1000.0 * 10, rel=1e-9)
+            if phase == "context":
+                assert _lat(dispatch, vllm_toy_db, 64) == pytest.approx(base_us / 1000.0 * 10, rel=1e-9)
+                assert _lat(combine, vllm_toy_db, 64) == pytest.approx(2 * base_us / 1000.0 * 10, rel=1e-9)
+            else:
+                assert _lat(dispatch, vllm_toy_db, 64) > 0.0
+                assert _lat(combine, vllm_toy_db, 64) > 0.0
+            assert isinstance(moe, ops.MoEExpertCompute)
             assert _lat(moe, vllm_toy_db, 64) == pytest.approx(2.0 * 10, rel=1e-9)
 
 

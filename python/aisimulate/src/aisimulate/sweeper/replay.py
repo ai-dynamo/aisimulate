@@ -10,6 +10,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
+from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
@@ -51,11 +52,7 @@ class ReplaySpec:
     def runtime_hooks(self) -> tuple[RuntimeHookSpec, ...]:
         """All requested hooks in deterministic adapter insertion order."""
 
-        return tuple(
-            hook
-            for adapter_spec in self.adapters.values()
-            for hook in adapter_spec.runtime_hooks
-        )
+        return tuple(hook for adapter_spec in self.adapters.values() for hook in adapter_spec.runtime_hooks)
 
 
 @dataclass(frozen=True)
@@ -72,6 +69,20 @@ class ReplayOutputRequirements:
 
     include_raw_report: bool = False
     capture_per_request: bool = False
+    capture_telemetry: bool = False
+    telemetry_sample_interval_ms: float = 1000.0
+
+    def __post_init__(self) -> None:
+        interval = self.telemetry_sample_interval_ms
+        if self.capture_telemetry and (
+            isinstance(interval, bool)
+            or not isinstance(interval, Real)
+            or not math.isfinite(interval)
+            or interval <= 0.0
+        ):
+            raise ValueError(
+                "telemetry_sample_interval_ms must be finite and positive when capture_telemetry is enabled"
+            )
 
 
 @dataclass(frozen=True, order=True)
@@ -109,8 +120,7 @@ class RunnerCapabilities:
         """
 
         return any(
-            (supported_backend in (backend, "*"))
-            and (supported_topology in (topology, "*"))
+            (supported_backend in (backend, "*")) and (supported_topology in (topology, "*"))
             for supported_backend, supported_topology in self.supported_backend_topologies
         )
 
@@ -126,14 +136,10 @@ class RunnerCapabilities:
             or all(dp_size == 1 for dp_size in dp_sizes)
         )
 
-    def require_replay_spec_version(
-        self, api_version: int = REPLAY_SPEC_API_VERSION
-    ) -> None:
+    def require_replay_spec_version(self, api_version: int = REPLAY_SPEC_API_VERSION) -> None:
         """Raise when the runner and Sweeper do not share the replay-spec ABI."""
 
-        versions_are_integers = (
-            type(api_version) is int and type(self.replay_spec_api_version) is int
-        )
+        versions_are_integers = type(api_version) is int and type(self.replay_spec_api_version) is int
         if not versions_are_integers or api_version != self.replay_spec_api_version:
             raise ValueError(
                 f"ReplaySpec API version {api_version} is incompatible with "
@@ -145,21 +151,13 @@ class RunnerCapabilities:
 
         self.require_replay_spec_version(spec.api_version)
         deployment = spec.backend_deployment
-        if not self.supports_backend_topology(
-            deployment.backend, deployment.deployment_mode
-        ):
+        if not self.supports_backend_topology(deployment.backend, deployment.deployment_mode):
             raise ValueError(
-                f"runner does not support backend/topology "
-                f"{deployment.backend!r}/{deployment.deployment_mode!r}"
+                f"runner does not support backend/topology {deployment.backend!r}/{deployment.deployment_mode!r}"
             )
-        unsupported = [
-            hook for hook in spec.runtime_hooks if not self.supports_hook(hook)
-        ]
+        unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]
         if unsupported:
-            labels = ", ".join(
-                f"{hook.provider}:{hook.kind}@{hook.api_version}"
-                for hook in unsupported
-            )
+            labels = ", ".join(f"{hook.provider}:{hook.kind}@{hook.api_version}" for hook in unsupported)
             raise ValueError(f"runner does not support runtime hook(s): {labels}")
 
 
@@ -199,18 +197,14 @@ def _jsonable(value: Any) -> JSONValue:
         converted: dict[str, JSONValue] = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise TypeError(
-                    f"canonical replay JSON requires string mapping keys, got {key!r}"
-                )
+                raise TypeError(f"canonical replay JSON requires string mapping keys, got {key!r}")
             converted[key] = _jsonable(item)
         return converted
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    raise TypeError(
-        f"value of type {type(value).__name__} is not supported by replay JSON contracts"
-    )
+    raise TypeError(f"value of type {type(value).__name__} is not supported by replay JSON contracts")
 
 
 def validate_json_value(value: Any, *, path: str = "value") -> None:

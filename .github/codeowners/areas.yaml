@@ -10,6 +10,7 @@ areas:
     github_team: "@ai-dynamo/access-aisimulate-maintain"
     path_globs:
       - LICENSE
+      - THIRD_PARTY_NOTICES.md
       - README.md
       - SECURITY.md
       - CONTRIBUTING.md
@@ -46,6 +47,7 @@ areas:
       - tests/test_stack_discovery.py
       - tests/test_unified_cli.py
       - tests/test_unified_traffic_runtime.py
+      - tests/test_host_offload_cli.py
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -57,6 +59,7 @@ areas:
     github_team: "@ai-dynamo/aisimulate-infra-codeowners"
     path_globs:
       - .github/
+      - .dockerignore
       - .gitignore
       - CODEOWNERS
       - Cargo.lock
@@ -67,6 +70,9 @@ areas:
       - pytest.ini
       - scripts/
       - tests/test_aic_sync.py
+      - tests/test_pages_site.py
+      - tests/test_e2e_accuracy_overview.py
+      - tests/test_source_compliance.py
 
 # More-specific shared entries are emitted after base area rules, preserving
 # GitHub's last-match-wins behavior. As in AIConfigurator, the maintainer team
@@ -91,6 +97,10 @@ shared:
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_aic_sync.py
     owners: [infra, maintainers]
+  - glob: tests/test_pages_site.py
+    owners: [infra, maintainers]
+  - glob: tests/test_e2e_accuracy_overview.py
+    owners: [forward-pass-engine, infra, maintainers]
   - glob: docs/core-api.md
     owners: [forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/__init__.py
@@ -122,6 +132,8 @@ shared:
   - glob: tests/test_unified_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
+    owners: [replay, maintainers]
+  - glob: tests/test_host_offload_cli.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]

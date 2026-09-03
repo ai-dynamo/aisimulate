@@ -91,6 +91,34 @@ fn engine_adapter_constructs_native_request_state() {
 }
 
 #[test]
+fn ordinary_vllm_requests_keep_host_state_lazy_and_skip_connector_queue() {
+    let mut core = VllmCore::new(prefix_cache_args());
+    for (uuid, start) in [(80_101_u128, 0_u32), (80_102, 100)] {
+        core.receive(DirectRequest {
+            tokens: (start..start + 8).collect(),
+            max_output_tokens: 2,
+            uuid: Some(Uuid::from_u128(uuid)),
+            ..Default::default()
+        });
+    }
+
+    assert_eq!(core.host_offload_request_state_count(), 0);
+    assert_eq!(
+        VllmCore::host_offload_state_slot_size(),
+        std::mem::size_of::<usize>(),
+        "disabled requests should retain only a pointer-sized optional slot"
+    );
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    core.execute_pass(&mut collector, 0.0);
+    assert_eq!(
+        core.connector_waiting_selections(),
+        0,
+        "ordinary FCFS must not consult the host connector queue"
+    );
+}
+
+#[test]
 fn flat_tokens_cover_every_native_g1_configuration() {
     let mut next_uuid = 80_110_u128;
     for engine_type in [EngineType::Vllm, EngineType::Trtllm] {
@@ -490,6 +518,63 @@ mod destination_lifecycle {
         core.execute_pass(&mut collector, now_ms)
     }
 
+    fn destination_args(engine_type: EngineType, num_gpu_blocks: usize) -> MockEngineArgs {
+        let mut args = args(WorkerType::Decode);
+        args.engine_type = engine_type;
+        args.num_gpu_blocks = num_gpu_blocks;
+        args.max_num_batched_tokens = Some(32);
+        args.max_num_seqs = Some(2);
+        args
+    }
+
+    fn reserve_destination(
+        core: &mut VllmCore,
+        handoff_id: HandoffId,
+        request_id: Uuid,
+        prompt: &[u32],
+        max_output_tokens: usize,
+    ) -> Option<usize> {
+        core.apply_command_effects(
+            SchedulerCommand::ReserveDestination {
+                handoff_id,
+                request: request(request_id, prompt.to_vec(), max_output_tokens),
+            },
+            true,
+        )
+        .unwrap()
+        .lifecycle_events
+        .into_iter()
+        .find_map(|event| match event {
+            SchedulerLifecycleEvent::DestinationReserved {
+                transferable_prompt_tokens,
+                ..
+            } => Some(transferable_prompt_tokens),
+            _ => None,
+        })
+    }
+
+    fn drive_until_destination_reserved(core: &mut VllmCore) -> usize {
+        let mut now_ms = 0.0;
+        for _ in 0..32 {
+            let pass = execute(core, now_ms);
+            now_ms = pass.end_ms;
+            if let Some(tokens) = core
+                .retry_pending_destinations()
+                .into_iter()
+                .find_map(|event| match event {
+                    SchedulerLifecycleEvent::DestinationReserved {
+                        transferable_prompt_tokens,
+                        ..
+                    } => Some(transferable_prompt_tokens),
+                    _ => None,
+                })
+            {
+                return tokens;
+            }
+        }
+        panic!("pending destination was not reserved");
+    }
+
     #[test]
     fn materialized_prompt_above_max_model_len_is_rejected() {
         let args = MockEngineArgs::builder()
@@ -534,6 +619,34 @@ mod destination_lifecycle {
             }] if *signal_uuid == uuid
         ));
         assert!(!core.state().requests.contains_key(&uuid));
+    }
+
+    #[test]
+    fn sequential_destination_activation_keeps_materialized_queue_bounded() {
+        let mut core = VllmCore::new(args(WorkerType::Decode));
+        let mut now_ms = 0.0;
+        for index in 0..16_u128 {
+            let handoff_id = HandoffId::from(Uuid::from_u128(30_100 + index * 2));
+            let request_id = Uuid::from_u128(30_101 + index * 2);
+            assert!(matches!(
+                core.apply_command(SchedulerCommand::ReserveDestination {
+                    handoff_id,
+                    request: request(request_id, vec![index as u32; 4], 0),
+                })
+                .unwrap(),
+                SchedulerCommandResult::DestinationAccepted { .. }
+            ));
+            assert_eq!(
+                core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                    .unwrap(),
+                SchedulerCommandResult::Applied
+            );
+            assert_eq!(core.materialized_waiting_physical_len(), 1);
+            let pass = execute(&mut core, now_ms);
+            now_ms = pass.end_ms;
+            assert!(core.is_empty());
+            assert_eq!(core.materialized_waiting_physical_len(), 0);
+        }
     }
 
     fn drive_source_to_hold(core: &mut VllmCore, handoff_id: HandoffId, req: DirectRequest) {
@@ -843,13 +956,95 @@ mod destination_lifecycle {
     }
 
     #[test]
-    fn trtllm_destination_reservation_fails_without_acquiring_kv() {
+    fn vllm_generation_destinations_keep_resident_prefix_reuse() {
+        let mut destination = VllmCore::new(destination_args(EngineType::Vllm, 1));
+        let first_handoff = HandoffId::from(Uuid::from_u128(10_301));
+        let second_handoff = HandoffId::from(Uuid::from_u128(10_302));
+        let first_request = Uuid::from_u128(10_303);
+        let second_request = Uuid::from_u128(10_304);
+        let shared_prompt = [7; 4];
+
+        assert_eq!(
+            reserve_destination(
+                &mut destination,
+                first_handoff,
+                first_request,
+                &shared_prompt,
+                1,
+            ),
+            Some(4)
+        );
+        destination
+            .apply_command(SchedulerCommand::ActivateDestination {
+                handoff_id: first_handoff,
+            })
+            .unwrap();
+        assert_eq!(
+            reserve_destination(
+                &mut destination,
+                second_handoff,
+                second_request,
+                &shared_prompt,
+                1,
+            ),
+            Some(0)
+        );
+        assert_eq!(destination.request_block_count(first_request), 1);
+        assert_eq!(destination.destination_block_count(second_handoff), 1);
+        assert_eq!(destination.kv_manager.num_active_blocks(), 1);
+    }
+
+    #[test]
+    fn trtllm_same_prefix_generation_destinations_need_fresh_full_footprints() {
+        let mut destination = VllmCore::new(destination_args(EngineType::Trtllm, 7));
+        let first_handoff = HandoffId::from(Uuid::from_u128(10_401));
+        let second_handoff = HandoffId::from(Uuid::from_u128(10_402));
+        let first_request = Uuid::from_u128(10_403);
+        let second_request = Uuid::from_u128(10_404);
+        let shared_prompt = [9; 4];
+
+        assert_eq!(
+            reserve_destination(
+                &mut destination,
+                first_handoff,
+                first_request,
+                &shared_prompt,
+                12,
+            ),
+            Some(4)
+        );
+        destination
+            .apply_command(SchedulerCommand::ActivateDestination {
+                handoff_id: first_handoff,
+            })
+            .unwrap();
+        assert_eq!(
+            reserve_destination(
+                &mut destination,
+                second_handoff,
+                second_request,
+                &shared_prompt,
+                12,
+            ),
+            None
+        );
+        assert_eq!(destination.destination_block_count(second_handoff), 0);
+        assert_eq!(destination.kv_manager.num_active_blocks(), 1);
+
+        assert_eq!(drive_until_destination_reserved(&mut destination), 4);
+        assert!(!destination.state.requests.contains_key(&first_request));
+        assert_eq!(destination.destination_block_count(second_handoff), 1);
+        assert_eq!(destination.kv_manager.num_active_blocks(), 1);
+    }
+
+    #[test]
+    fn trtllm_destination_reservation_protects_completion_headroom() {
         let args = MockEngineArgs::builder()
             .engine_type(EngineType::Trtllm)
             .block_size(4)
-            .num_gpu_blocks(12)
+            .num_gpu_blocks(4)
             .max_num_batched_tokens(Some(16))
-            .max_num_seqs(Some(1))
+            .max_num_seqs(Some(2))
             .enable_chunked_prefill(true)
             .enable_prefix_caching(true)
             .worker_type(WorkerType::Decode)
@@ -858,20 +1053,56 @@ mod destination_lifecycle {
             .unwrap();
         let mut destination = VllmCore::new(args);
         let handoff_id = HandoffId::from(Uuid::from_u128(10_005));
+        let destination_request = Uuid::from_u128(10_006);
+        let unrelated_request = Uuid::from_u128(10_007);
 
-        let error = destination
+        assert!(matches!(
+            destination
             .apply_command(SchedulerCommand::ReserveDestination {
                 handoff_id,
-                request: request(Uuid::from_u128(10_006), (0..8).collect(), 2),
+                    request: request(destination_request, (0..4).collect(), 8),
             })
-            .unwrap_err();
+                .unwrap(),
+            SchedulerCommandResult::DestinationAccepted { request_id }
+                if request_id == destination_request
+        ));
+        assert!(destination.destination_is_held(handoff_id));
+        assert_eq!(destination.destination_block_count(handoff_id), 1);
+        assert_eq!(destination.kv_manager.num_active_blocks(), 1);
 
         assert_eq!(
-            error.to_string(),
-            "destination reservation is not supported for TRT-LLM"
+            destination.receive(request(unrelated_request, (100..104).collect(), 4)),
+            unrelated_request
         );
-        assert!(!destination.destination_is_held(handoff_id));
-        assert_eq!(destination.kv_manager.num_active_blocks(), 0);
+        let before_activation = execute(&mut destination, 0.0);
+        assert!(before_activation.output_signals.is_empty());
+        assert_eq!(destination.mocker_metrics().running_requests, 0);
+        assert_eq!(destination.mocker_metrics().waiting_requests, 2);
+
+        assert_eq!(
+            destination
+                .apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                .unwrap(),
+            SchedulerCommandResult::Applied
+        );
+        let first_decode = execute(&mut destination, before_activation.end_ms);
+        assert!(
+            first_decode
+                .output_signals
+                .iter()
+                .any(|signal| signal.uuid == destination_request)
+        );
+        assert_eq!(destination.mocker_metrics().running_requests, 1);
+        assert!(destination.state.requests.contains_key(&unrelated_request));
+
+        let mut now_ms = first_decode.end_ms;
+        for _ in 0..16 {
+            if destination.is_drained() {
+                break;
+            }
+            let pass = execute(&mut destination, now_ms);
+            now_ms = pass.end_ms;
+        }
         assert!(destination.is_drained());
     }
 }
@@ -1092,7 +1323,7 @@ mod core_behavior {
             .enable_chunked_prefill(true)
             .worker_type(crate::engine::common::protocols::WorkerType::Prefill)
             .kv_transfer_bandwidth(Some(1.0))
-            .kv_bytes_per_token(Some(1_000_000))
+            .kv_transfer_bytes_per_token(Some(1_000_000))
             .speedup_ratio(0.0)
             .build()
             .unwrap();

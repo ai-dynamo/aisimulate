@@ -11,7 +11,9 @@
 //! Every grid uses the same two-neighbour inverse-distance weighting
 //! (`k=2`, `p=1`) without requiring a Cartesian product; queries outside the
 //! measured range are clamped per axis before neighbour selection, so
-//! extrapolation freezes boundary utilization.
+//! extrapolation freezes boundary utilization. Well-formed grids use an
+//! immutable k-d tree and a bounded query cache; tiny or non-indexable grids
+//! retain the linear lookup for compatibility.
 //!
 //! When *no* samples exist for the requested slice (no own-shape, no
 //! cross-shape/sibling transfer reference), [`estimate`] returns
@@ -24,13 +26,17 @@
 //! - No provenance contextvar: provenance capture feeds the Python-side
 //!   support matrix; the compiled engine only returns latencies. Reference
 //!   grids still carry their provenance tag for cache keying.
-//! - Caching is the caller's concern: Python keys grids by `id(node)` because
-//!   database views share mutable table objects; Rust perf tables are
-//!   immutable after load, so per-op wiring caches grids in a
-//!   [`UtilGridCache`] keyed by the op's slice identity.
+//! - Python keys grids by `id(node)` because database views share mutable table
+//!   objects. Rust perf tables are immutable after load, so per-op wiring
+//!   caches grids in a [`UtilGridCache`] keyed by the op's slice identity.
+//!   Each indexed grid also owns a bounded cache of exact normalized queries.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use quick_cache::sync::{Cache, DefaultLifecycle};
+use quick_cache::{DefaultHashBuilder, Equivalent, OptionsBuilder, UnitWeighter};
 
 use crate::common::error::AicError;
 
@@ -145,7 +151,9 @@ where
 /// samples are combined with inverse-distance weights (`k=2`, `p=1`). Exact
 /// hits return the collected utilization unchanged. Works for ragged grids
 /// without operation-specific Cartesian bracketing; callers remain
-/// responsible for slicing categorical/kernel-regime axes.
+/// responsible for slicing categorical/kernel-regime axes. Grids with at
+/// least three finite, equal-dimensional samples use an immutable k-d tree and
+/// bounded query cache; other grids retain the linear lookup.
 #[derive(Debug, Clone)]
 pub struct UtilGrid {
     /// Normalised log-space coordinates, one row per sample.
@@ -153,9 +161,245 @@ pub struct UtilGrid {
     utils: Vec<f64>,
     mins: Vec<f64>,
     spans: Vec<f64>,
+    index: Option<UtilKdTree>,
+    query_cache: Arc<OnceLock<UtilQueryCache>>,
     /// Transfer tag of the reference slice this grid was built from
     /// (`xshape` / `xquant` / ...), when borrowed from a sibling.
     pub reference_provenance: Option<&'static str>,
+}
+
+const UTIL_QUERY_CACHE_CAPACITY: usize = 32_768;
+const UTIL_QUERY_CACHE_SHARDS: usize = 16;
+
+type UtilQueryCache = Cache<UtilQueryKey, f64>;
+
+#[derive(Debug, PartialEq, Eq)]
+struct UtilQueryKey(Box<[u64]>);
+
+impl UtilQueryKey {
+    fn new(query: &[f64]) -> Self {
+        Self(
+            query
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
+    }
+}
+
+impl Hash for UtilQueryKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_util_query(self.0.len(), self.0.iter().copied(), state);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct UtilQueryRef<'a>(&'a [f64]);
+
+impl Hash for UtilQueryRef<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_util_query(
+            self.0.len(),
+            self.0.iter().map(|value| value.to_bits()),
+            state,
+        );
+    }
+}
+
+impl Equivalent<UtilQueryKey> for UtilQueryRef<'_> {
+    fn equivalent(&self, key: &UtilQueryKey) -> bool {
+        self.0.len() == key.0.len()
+            && self
+                .0
+                .iter()
+                .zip(key.0.iter())
+                .all(|(value, bits)| value.to_bits() == *bits)
+    }
+}
+
+fn hash_util_query<H: Hasher>(len: usize, bits: impl Iterator<Item = u64>, state: &mut H) {
+    len.hash(state);
+    for bits in bits {
+        bits.hash(state);
+    }
+}
+
+fn util_query_cache() -> UtilQueryCache {
+    let options = OptionsBuilder::new()
+        .estimated_items_capacity(UTIL_QUERY_CACHE_CAPACITY)
+        .weight_capacity(UTIL_QUERY_CACHE_CAPACITY as u64)
+        .shards(UTIL_QUERY_CACHE_SHARDS)
+        .build()
+        .expect("valid static util query cache options");
+    Cache::with_options(
+        options,
+        UnitWeighter,
+        DefaultHashBuilder::default(),
+        DefaultLifecycle::default(),
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Neighbor {
+    sample: usize,
+    distance: f64,
+    distance_squared: f64,
+}
+
+impl Neighbor {
+    fn cmp(self, other: Self) -> std::cmp::Ordering {
+        self.distance
+            .total_cmp(&other.distance)
+            .then_with(|| self.sample.cmp(&other.sample))
+    }
+}
+
+#[derive(Debug, Default)]
+struct NearestTwo {
+    nearest: Option<Neighbor>,
+    second: Option<Neighbor>,
+}
+
+impl NearestTwo {
+    fn consider(&mut self, candidate: Neighbor) {
+        if self
+            .nearest
+            .is_none_or(|nearest| candidate.cmp(nearest).is_lt())
+        {
+            self.second = self.nearest;
+            self.nearest = Some(candidate);
+        } else if self
+            .second
+            .is_none_or(|second| candidate.cmp(second).is_lt())
+        {
+            self.second = Some(candidate);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct KdNode {
+    sample: usize,
+    axis: usize,
+    left: Option<usize>,
+    right: Option<usize>,
+}
+
+/// Immutable exact nearest-two index over a `UtilGrid`'s normalised samples.
+#[derive(Debug, Clone)]
+struct UtilKdTree {
+    nodes: Vec<KdNode>,
+    root: usize,
+    dims: usize,
+}
+
+impl UtilKdTree {
+    fn build(norm: &[Vec<f64>]) -> Option<Self> {
+        if norm.len() < 3 {
+            return None;
+        }
+        let dims = norm.first()?.len();
+        if dims == 0
+            || norm
+                .iter()
+                .any(|row| row.len() != dims || row.iter().any(|v| !v.is_finite()))
+        {
+            return None;
+        }
+
+        fn build_nodes(
+            norm: &[Vec<f64>],
+            samples: &mut [usize],
+            depth: usize,
+            dims: usize,
+            nodes: &mut Vec<KdNode>,
+        ) -> Option<usize> {
+            if samples.is_empty() {
+                return None;
+            }
+            let axis = depth % dims;
+            let mid = samples.len() / 2;
+            samples.select_nth_unstable_by(mid, |&a, &b| {
+                norm[a][axis]
+                    .total_cmp(&norm[b][axis])
+                    .then_with(|| a.cmp(&b))
+            });
+            let (left_samples, middle_and_right) = samples.split_at_mut(mid);
+            let (sample, right_samples) = middle_and_right
+                .split_first_mut()
+                .expect("non-empty kd-tree partition");
+
+            let node = nodes.len();
+            nodes.push(KdNode {
+                sample: *sample,
+                axis,
+                left: None,
+                right: None,
+            });
+            let left = build_nodes(norm, left_samples, depth + 1, dims, nodes);
+            let right = build_nodes(norm, right_samples, depth + 1, dims, nodes);
+            nodes[node].left = left;
+            nodes[node].right = right;
+            Some(node)
+        }
+
+        let mut samples: Vec<usize> = (0..norm.len()).collect();
+        let mut nodes = Vec::with_capacity(norm.len());
+        let root = build_nodes(norm, &mut samples, 0, dims, &mut nodes)
+            .expect("non-empty util grid has a kd-tree root");
+        Some(Self { nodes, root, dims })
+    }
+
+    fn nearest_two(&self, norm: &[Vec<f64>], query: &[f64]) -> NearestTwo {
+        fn visit(
+            tree: &UtilKdTree,
+            norm: &[Vec<f64>],
+            query: &[f64],
+            node_index: usize,
+            nearest: &mut NearestTwo,
+        ) {
+            let node = &tree.nodes[node_index];
+            let row = &norm[node.sample];
+            let distance_squared = row
+                .iter()
+                .zip(query)
+                .map(|(&x, &y)| (x - y) * (x - y))
+                .sum::<f64>();
+            nearest.consider(Neighbor {
+                sample: node.sample,
+                distance: distance_squared.sqrt(),
+                distance_squared,
+            });
+
+            let axis = node.axis;
+            let delta = query[axis] - row[axis];
+            let (near, far) = if delta.is_sign_negative() {
+                (node.left, node.right)
+            } else {
+                (node.right, node.left)
+            };
+            if let Some(near) = near {
+                visit(tree, norm, query, near, nearest);
+            }
+            // Equality must visit the far branch: it can contain an equally
+            // distant sample with an earlier original index. Compare squared
+            // values so sqrt rounding cannot incorrectly prune that branch.
+            if nearest
+                .second
+                .is_none_or(|second| delta * delta <= second.distance_squared)
+            {
+                if let Some(far) = far {
+                    visit(tree, norm, query, far, nearest);
+                }
+            }
+        }
+
+        debug_assert_eq!(query.len(), self.dims);
+        let mut nearest = NearestTwo::default();
+        visit(self, norm, query, self.root, &mut nearest);
+        nearest
+    }
 }
 
 fn log_floor(value: f64) -> f64 {
@@ -170,6 +414,8 @@ impl UtilGrid {
                 utils: Vec::new(),
                 mins: Vec::new(),
                 spans: Vec::new(),
+                index: None,
+                query_cache: Arc::new(OnceLock::new()),
                 reference_provenance: None,
             };
         }
@@ -201,11 +447,14 @@ impl UtilGrid {
             })
             .collect();
         let utils = samples.iter().map(|s| s.util).collect();
+        let index = UtilKdTree::build(&norm);
         Self {
             norm,
             utils,
             mins,
             spans,
+            index,
+            query_cache: Arc::new(OnceLock::new()),
             reference_provenance: None,
         }
     }
@@ -226,40 +475,52 @@ impl UtilGrid {
             .enumerate()
             .map(|(a, &v)| ((log_floor(v) - self.mins[a]) / self.spans[a]).clamp(0.0, 1.0))
             .collect();
-        let distances: Vec<f64> = self
-            .norm
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .zip(&q)
-                    .map(|(&x, &y)| (x - y) * (x - y))
-                    .sum::<f64>()
-                    .sqrt()
-            })
-            .collect();
-        // Stable argsort: ties keep sample order, so duplicate /
-        // log-floor-collapsed coordinates deterministically prefer the first
-        // sample (mirrors `np.argsort(kind="stable")`).
-        let mut order: Vec<usize> = (0..distances.len()).collect();
-        order.sort_by(|&i, &j| {
-            distances[i]
-                .partial_cmp(&distances[j])
-                .expect("finite distances")
-        });
+        let (nearest, cache) =
+            if let Some(index) = self.index.as_ref().filter(|index| index.dims == q.len()) {
+                let cache = self.query_cache.get_or_init(util_query_cache);
+                if let Some(value) = cache.get(&UtilQueryRef(&q)) {
+                    return Some(value);
+                }
+                (index.nearest_two(&self.norm, &q), Some(cache))
+            } else {
+                // Preserve the former behavior for tiny, non-finite, ragged,
+                // or dimension-mismatched grids that cannot use the index.
+                let mut nearest = NearestTwo::default();
+                for (sample, row) in self.norm.iter().enumerate() {
+                    let distance_squared = row
+                        .iter()
+                        .zip(&q)
+                        .map(|(&x, &y)| (x - y) * (x - y))
+                        .sum::<f64>();
+                    nearest.consider(Neighbor {
+                        sample,
+                        distance: distance_squared.sqrt(),
+                        distance_squared,
+                    });
+                }
+                (nearest, None)
+            };
 
-        if distances[order[0]] == 0.0 {
-            return Some(self.utils[order[0]]);
+        let second = nearest.second;
+        let nearest = nearest.nearest.expect("non-empty util grid");
+        let util = if nearest.distance == 0.0 {
+            self.utils[nearest.sample]
+        } else {
+            let mut weighted = 0.0;
+            let mut weight_sum = 0.0;
+            for neighbor in [Some(nearest), second].into_iter().flatten() {
+                let w = 1.0 / neighbor.distance;
+                weighted += self.utils[neighbor.sample] * w;
+                weight_sum += w;
+            }
+            weighted / weight_sum
+        };
+        if util.is_finite() {
+            if let Some(cache) = cache {
+                cache.insert(UtilQueryKey::new(&q), util);
+            }
         }
-
-        let nearest = &order[..order.len().min(2)];
-        let mut weighted = 0.0;
-        let mut weight_sum = 0.0;
-        for &i in nearest {
-            let w = 1.0 / distances[i];
-            weighted += self.utils[i] * w;
-            weight_sum += w;
-        }
-        Some(weighted / weight_sum)
+        Some(util)
     }
 }
 
@@ -381,6 +642,133 @@ impl UtilGridCache {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct DeltaNeighbor {
+    sample: usize,
+    distance_squared: f64,
+}
+
+impl DeltaNeighbor {
+    fn is_better_than(self, other: Self) -> bool {
+        self.distance_squared
+            .total_cmp(&other.distance_squared)
+            .then_with(|| self.sample.cmp(&other.sample))
+            .is_lt()
+    }
+}
+
+#[derive(Debug)]
+struct DeltaKdNode {
+    sample: usize,
+    point: [f64; 2],
+    axis: usize,
+    left: Option<usize>,
+    right: Option<usize>,
+}
+
+/// Immutable exact nearest-one index for a finite two-dimensional delta grid.
+#[derive(Debug)]
+struct DeltaKdTree {
+    nodes: Vec<DeltaKdNode>,
+}
+
+impl DeltaKdTree {
+    fn build(norm: &[Vec<f64>]) -> Option<Self> {
+        if norm.len() < 3
+            || norm
+                .iter()
+                .any(|row| row.len() != 2 || row.iter().any(|value| !value.is_finite()))
+        {
+            return None;
+        }
+
+        fn build_nodes(
+            norm: &[Vec<f64>],
+            samples: &mut [usize],
+            depth: usize,
+            nodes: &mut Vec<DeltaKdNode>,
+        ) -> Option<usize> {
+            if samples.is_empty() {
+                return None;
+            }
+            let axis = depth % 2;
+            let middle = samples.len() / 2;
+            samples.select_nth_unstable_by(middle, |&left, &right| {
+                norm[left][axis]
+                    .total_cmp(&norm[right][axis])
+                    .then_with(|| left.cmp(&right))
+            });
+            let (left_samples, middle_and_right) = samples.split_at_mut(middle);
+            let (sample, right_samples) = middle_and_right
+                .split_first_mut()
+                .expect("non-empty delta k-d tree partition");
+            let sample = *sample;
+            let node = nodes.len();
+            nodes.push(DeltaKdNode {
+                sample,
+                point: [norm[sample][0], norm[sample][1]],
+                axis,
+                left: None,
+                right: None,
+            });
+            let left = build_nodes(norm, left_samples, depth + 1, nodes);
+            let right = build_nodes(norm, right_samples, depth + 1, nodes);
+            nodes[node].left = left;
+            nodes[node].right = right;
+            Some(node)
+        }
+
+        let mut samples = (0..norm.len()).collect::<Vec<_>>();
+        let mut nodes = Vec::with_capacity(norm.len());
+        build_nodes(norm, &mut samples, 0, &mut nodes)?;
+        Some(Self { nodes })
+    }
+
+    fn nearest(&self, query: &[f64; 2]) -> DeltaNeighbor {
+        fn visit(
+            tree: &DeltaKdTree,
+            query: &[f64; 2],
+            node_index: usize,
+            nearest: &mut DeltaNeighbor,
+        ) {
+            let node = &tree.nodes[node_index];
+            let delta_0 = node.point[0] - query[0];
+            let delta_1 = node.point[1] - query[1];
+            let candidate = DeltaNeighbor {
+                sample: node.sample,
+                distance_squared: delta_0 * delta_0 + delta_1 * delta_1,
+            };
+            if candidate.is_better_than(*nearest) {
+                *nearest = candidate;
+            }
+
+            let delta = query[node.axis] - node.point[node.axis];
+            let (near, far) = if delta.is_sign_negative() {
+                (node.left, node.right)
+            } else {
+                (node.right, node.left)
+            };
+            if let Some(near) = near {
+                visit(tree, query, near, nearest);
+            }
+            // Equality can hide an equally near sample with an earlier input
+            // index. Squared comparison also preserves underflowed ties.
+            if delta * delta <= nearest.distance_squared {
+                if let Some(far) = far {
+                    visit(tree, query, far, nearest);
+                }
+            }
+        }
+
+        let mut nearest = DeltaNeighbor {
+            sample: self.nodes[0].sample,
+            distance_squared: f64::INFINITY,
+        };
+        visit(self, query, 0, &mut nearest);
+        nearest
+    }
+}
+
 /// Nearest-point lookup over a non-negative latency *delta* table (the
 /// `compute_scale` mechanism; Python `gemm._ZeroAwareDeltaLookup`).
 ///
@@ -398,6 +786,7 @@ pub struct ZeroAwareDeltaLookup {
     mins: Vec<f64>,
     spans: Vec<f64>,
     norm: Vec<Vec<f64>>,
+    index: Option<DeltaKdTree>,
 }
 
 impl ZeroAwareDeltaLookup {
@@ -413,6 +802,7 @@ impl ZeroAwareDeltaLookup {
                 mins: Vec::new(),
                 spans: Vec::new(),
                 norm: Vec::new(),
+                index: None,
             };
         }
         let dims = kept[0].0.len();
@@ -442,13 +832,35 @@ impl ZeroAwareDeltaLookup {
                     .collect()
             })
             .collect();
+        let index = DeltaKdTree::build(&norm);
         Self {
             latencies: kept.iter().map(|(_, lat)| *lat).collect(),
             coords: kept.into_iter().map(|(c, _)| c).collect(),
             mins,
             spans,
             norm,
+            index,
         }
+    }
+
+    fn nearest_linear(&self, query: &[f64]) -> usize {
+        let mut best = 0;
+        let mut best_dist2 = f64::INFINITY;
+        for (sample, row) in self.norm.iter().enumerate() {
+            let distance_squared = row
+                .iter()
+                .zip(query)
+                .map(|(&value, &query_value)| {
+                    let delta = value - query_value;
+                    delta * delta
+                })
+                .sum();
+            if distance_squared < best_dist2 {
+                best_dist2 = distance_squared;
+                best = sample;
+            }
+        }
+        best
     }
 
     /// Nearest-point delta estimate (query is NOT clamped; the frozen-util
@@ -462,20 +874,27 @@ impl ZeroAwareDeltaLookup {
                 "No empirical compute_scale delta data is available at query={query:?}."
             )));
         }
-        let q: Vec<f64> = query
-            .iter()
-            .enumerate()
-            .map(|(a, &v)| (log_floor(v) - self.mins[a]) / self.spans[a])
-            .collect();
-        let mut best = 0;
-        let mut best_dist2 = f64::INFINITY;
-        for (i, row) in self.norm.iter().enumerate() {
-            let dist2: f64 = row.iter().zip(&q).map(|(&x, &y)| (x - y) * (x - y)).sum();
-            if dist2 < best_dist2 {
-                best_dist2 = dist2;
-                best = i;
+        let best = if query.len() == 2 && self.mins.len() == 2 {
+            let normalized = [
+                (log_floor(query[0]) - self.mins[0]) / self.spans[0],
+                (log_floor(query[1]) - self.mins[1]) / self.spans[1],
+            ];
+            if normalized.iter().all(|value| value.is_finite()) {
+                self.index.as_ref().map_or_else(
+                    || self.nearest_linear(&normalized),
+                    |index| index.nearest(&normalized).sample,
+                )
+            } else {
+                self.nearest_linear(&normalized)
             }
-        }
+        } else {
+            let normalized = query
+                .iter()
+                .enumerate()
+                .map(|(axis, &value)| (log_floor(value) - self.mins[axis]) / self.spans[axis])
+                .collect::<Vec<_>>();
+            self.nearest_linear(&normalized)
+        };
         let reference_latency = self.latencies[best];
         if reference_latency == 0.0 {
             return Ok(0.0);
@@ -540,9 +959,14 @@ mod tests {
             UtilSample::new(vec![8.0], 0.2),
             UtilSample::new(vec![9.0], 0.4),
         ]);
-        let duplicate = UtilGrid::new(vec![
+        let linear_duplicate = UtilGrid::new(vec![
             UtilSample::new(vec![4.0], 0.6),
             UtilSample::new(vec![4.0], 0.7),
+        ]);
+        let indexed_duplicate = UtilGrid::new(vec![
+            UtilSample::new(vec![4.0], 0.6),
+            UtilSample::new(vec![4.0], 0.7),
+            UtilSample::new(vec![16.0], 0.9),
         ]);
 
         approx(exact.util(&[9.0]).unwrap(), 0.4);
@@ -553,7 +977,8 @@ mod tests {
             0.3,
         );
         // Duplicate coordinates: first sample wins (stable ordering).
-        approx(duplicate.util(&[4.0]).unwrap(), 0.6);
+        approx(linear_duplicate.util(&[4.0]).unwrap(), 0.6);
+        approx(indexed_duplicate.util(&[4.0]).unwrap(), 0.6);
         assert!(UtilGrid::new(vec![]).util(&[1.0, 2.0]).is_none());
     }
 
@@ -585,6 +1010,101 @@ mod tests {
     }
 
     #[test]
+    fn indexed_queries_cache_exact_normalized_coordinates() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![1.0], 0.2),
+            UtilSample::new(vec![2.0], 0.4),
+            UtilSample::new(vec![4.0], 0.8),
+        ]);
+
+        let first = grid.util(&[2.0]).unwrap();
+        let second = grid.util(&[2.0]).unwrap();
+        assert_eq!(first.to_bits(), second.to_bits());
+        assert_eq!(grid.query_cache.get().unwrap().len(), 1);
+
+        let low = grid.util(&[0.5]).unwrap();
+        let lower = grid.util(&[0.25]).unwrap();
+        assert_eq!(low.to_bits(), lower.to_bits());
+        assert_eq!(grid.query_cache.get().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn indexed_query_cache_supports_arbitrary_dimensions() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![1.0; 5], 0.2),
+            UtilSample::new(vec![4.0; 5], 0.4),
+            UtilSample::new(vec![16.0; 5], 0.8),
+        ]);
+        let query = vec![2.0; 5];
+
+        let first = grid.util(&query).unwrap();
+        let second = grid.util(&query).unwrap();
+        assert_eq!(first.to_bits(), second.to_bits());
+        assert_eq!(grid.query_cache.get().unwrap().len(), 1);
+
+        let mut distinct = query;
+        distinct[4] = 3.0;
+        grid.util(&distinct).unwrap();
+        assert_eq!(grid.query_cache.get().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn indexed_query_cache_does_not_store_non_finite_results() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![1.0], f64::NAN),
+            UtilSample::new(vec![2.0], 0.4),
+            UtilSample::new(vec![4.0], 0.8),
+        ]);
+
+        assert!(grid.util(&[1.0]).unwrap().is_nan());
+        assert_eq!(grid.query_cache.get().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn second_neighbor_tie_keeps_sample_order() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![2.0, 2.0], 0.2),
+            UtilSample::new(vec![1.0, 3.0], 0.2),
+            UtilSample::new(vec![3.0, 1.0], 0.9),
+        ]);
+
+        // The last two samples tie for second place. Stable order selects
+        // the first one, whose utilization matches the nearest sample.
+        approx(grid.util(&[2.5, 2.5]).unwrap(), 0.2);
+    }
+
+    #[test]
+    fn second_neighbor_can_cross_kd_tree_split() {
+        let grid = UtilGrid::new(vec![
+            UtilSample::new(vec![1.0, 1.0], 0.1),
+            UtilSample::new(vec![2.0, 1.0], 0.2),
+            UtilSample::new(vec![4.0, 100.0], 0.4),
+            UtilSample::new(vec![8.0, 100.0], 0.6),
+            UtilSample::new(vec![16.0, 1.0], 0.8),
+        ]);
+        let query_x = 6.0_f64.ln() / 16.0_f64.ln();
+        let distance_16 = 1.0 - query_x;
+        let distance_2 = query_x - 0.25;
+        let expected =
+            (0.8 / distance_16 + 0.2 / distance_2) / (1.0 / distance_16 + 1.0 / distance_2);
+
+        approx(grid.util(&[6.0, 1.0]).unwrap(), expected);
+    }
+
+    #[test]
+    fn far_branch_pruning_preserves_underflowed_distance_ties() {
+        let tiny = f64::MIN_POSITIVE;
+        let norm = vec![vec![0.0], vec![tiny], vec![3.0 * tiny]];
+        let tree = UtilKdTree::build(&norm).unwrap();
+
+        // All three squared distances underflow to zero. The far branch still
+        // contains the first sample, which stable ordering must select.
+        let nearest = tree.nearest_two(&norm, &[2.0 * tiny]);
+        assert_eq!(nearest.nearest.unwrap().sample, 0);
+        assert_eq!(nearest.second.unwrap().sample, 1);
+    }
+
+    #[test]
     fn one_dim_extrapolation_clamps_to_measured_bounds() {
         let grid = UtilGrid::new(vec![
             UtilSample::new(vec![8.0], 0.2),
@@ -593,6 +1113,7 @@ mod tests {
 
         approx(grid.util(&[1.0]).unwrap(), 0.2);
         approx(grid.util(&[128.0]).unwrap(), 0.8);
+        assert!(grid.query_cache.get().is_none());
     }
 
     #[test]
@@ -725,5 +1246,97 @@ mod tests {
             empty.estimate(&[1.0, 1.0], sol),
             Err(AicError::EmpiricalNotImplemented(_))
         ));
+    }
+
+    #[test]
+    fn zero_aware_delta_index_matches_linear_grid_lookup() {
+        let mut points = Vec::new();
+        for m in 0..37 {
+            for k in 0..44 {
+                points.push((
+                    vec![1.25_f64.powi(m), 1.2_f64.powi(k)],
+                    (m * 44 + k + 1) as f64,
+                ));
+            }
+        }
+        let lookup = ZeroAwareDeltaLookup::new(points);
+        let index = lookup.index.as_ref().expect("37 by 44 grid is indexed");
+
+        for m in 0..37 {
+            for k in 0..44 {
+                let query = [1.25_f64.powi(m), 1.2_f64.powi(k)];
+                let normalized = [
+                    (log_floor(query[0]) - lookup.mins[0]) / lookup.spans[0],
+                    (log_floor(query[1]) - lookup.mins[1]) / lookup.spans[1],
+                ];
+                let expected = lookup.nearest_linear(&normalized);
+                let expected_estimate = 1.0 / (1.0 / lookup.latencies[expected]);
+                assert_eq!(index.nearest(&normalized).sample, expected, "m={m}, k={k}");
+                assert_eq!(
+                    lookup.estimate(&query, |_| 1.0).unwrap().to_bits(),
+                    expected_estimate.to_bits(),
+                    "estimate m={m}, k={k}"
+                );
+            }
+        }
+        for m in 0..36 {
+            for k in 0..43 {
+                let query = [
+                    (1.25_f64.powi(m) * 1.25_f64.powi(m + 1)).sqrt(),
+                    (1.2_f64.powi(k) * 1.2_f64.powi(k + 1)).sqrt(),
+                ];
+                let normalized = [
+                    (log_floor(query[0]) - lookup.mins[0]) / lookup.spans[0],
+                    (log_floor(query[1]) - lookup.mins[1]) / lookup.spans[1],
+                ];
+                let expected = lookup.nearest_linear(&normalized);
+                let expected_estimate = 1.0 / (1.0 / lookup.latencies[expected]);
+                assert_eq!(
+                    index.nearest(&normalized).sample,
+                    expected,
+                    "midpoint m={m}, k={k}"
+                );
+                assert_eq!(
+                    lookup.estimate(&query, |_| 1.0).unwrap().to_bits(),
+                    expected_estimate.to_bits(),
+                    "midpoint estimate m={m}, k={k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_aware_delta_index_preserves_ties_and_fallbacks() {
+        let tied = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.5, 1.0]];
+        let tied_tree = DeltaKdTree::build(&tied).unwrap();
+        assert_eq!(tied_tree.nearest(&[0.5, 0.0]).sample, 0);
+        assert!(tied_tree.nearest(&[f64::NAN, 0.0]).sample < tied.len());
+
+        let tiny = f64::MIN_POSITIVE;
+        let underflowed = vec![vec![0.0, 0.0], vec![tiny, 0.0], vec![3.0 * tiny, 0.0]];
+        let underflowed_tree = DeltaKdTree::build(&underflowed).unwrap();
+        assert_eq!(underflowed_tree.nearest(&[2.0 * tiny, 0.0]).sample, 0);
+
+        assert!(DeltaKdTree::build(&[vec![0.0, 0.0], vec![1.0, 1.0]]).is_none());
+        assert!(DeltaKdTree::build(&[vec![0.0, 0.0], vec![1.0], vec![2.0, 2.0]]).is_none());
+        assert!(
+            DeltaKdTree::build(&[vec![0.0, 0.0], vec![f64::NAN, 1.0], vec![2.0, 2.0]]).is_none()
+        );
+
+        let lookup = ZeroAwareDeltaLookup::new(vec![
+            (vec![1.0, 1.0], 1.0),
+            (vec![2.0, 2.0], 2.0),
+            (vec![4.0, 4.0], 3.0),
+        ]);
+        let normalized = vec![(log_floor(2.0) - lookup.mins[0]) / lookup.spans[0]];
+        let expected = lookup.latencies[lookup.nearest_linear(&normalized)];
+        assert_eq!(lookup.estimate(&[2.0], |_| 1.0).unwrap(), expected);
+
+        let ragged_lookup = ZeroAwareDeltaLookup::new(vec![
+            (vec![1.0, 1.0], 1.0),
+            (vec![2.0], 2.0),
+            (vec![4.0, 4.0], 3.0),
+        ]);
+        assert!(ragged_lookup.index.is_none());
     }
 }
