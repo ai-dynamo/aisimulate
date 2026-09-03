@@ -429,6 +429,18 @@ SMOKE_CASES = [
         ),
         id="deepseek-r1-gb200-vllm-scan-coverage",
     ),
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.5-397B-A17B",
+            system_name="gb200",
+            backend_name="sglang",
+            backend_version="0.5.14",
+            tp_size=16,
+        ),
+        # Beyond-node TP on a 4-GPU-node system: pins the recorded
+        # multi-node custom-AR fan-out pricing (AIC-1808).
+        id="qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage",
+    ),
     # Kimi-K3 (review Blocker 1 anchor): hybrid KDA + MLA LatentMoE. The
     # case defaults (tp8/ep8) put KDA on the fused 12-head shard — the exact
     # config the per-key kda_fused_decode routing and the exact-first mla_bmm
