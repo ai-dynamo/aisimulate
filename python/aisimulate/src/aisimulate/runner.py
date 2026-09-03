@@ -477,8 +477,26 @@ def _materialize_engine_role(
     role_config.pop("startup_time", None)
     model = role_config.pop("aic_model_path", None)
     system = role_config.pop("aic_system", None)
-    raw_dp_size = _pop_matching_aliases(role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1)
-    raw_tp_size = _pop_matching_aliases(role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1)
+    # Capacity-only input. It has already been consumed by the Python AIC
+    # materializer and is not a native scheduler rank field. Preserve it in
+    # the AIC timing config because the native runtime rematerializes inferred
+    # capacity before execution.
+    cuda_graph_reserved_bytes = role_config.pop("cuda_graph_reserved_bytes", None)
+    if cuda_graph_reserved_bytes is not None and (
+        not isinstance(cuda_graph_reserved_bytes, int)
+        or isinstance(cuda_graph_reserved_bytes, bool)
+        or cuda_graph_reserved_bytes < 0
+    ):
+        raise ValueError(
+            f"engine provider {role} cuda_graph_reserved_bytes must be a "
+            "non-negative integer"
+        )
+    raw_dp_size = _pop_matching_aliases(
+        role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1
+    )
+    raw_tp_size = _pop_matching_aliases(
+        role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1
+    )
     dp_size = _positive_int(
         raw_dp_size,
         f"engine provider {role} dp_size",
@@ -577,6 +595,10 @@ def _materialize_engine_role(
         and timing_model.get("type") == "external"
         and timing_model.get("provider") == "aic"
     )
+    if cuda_graph_reserved_bytes is not None and uses_aic_timing:
+        aic_timing_overrides["cuda_graph_reserved_bytes"] = (
+            cuda_graph_reserved_bytes
+        )
     if deployment_backend_version:
         configured_version = aic_timing_overrides.get("backend_version")
         if configured_version is not None and configured_version != deployment_backend_version:

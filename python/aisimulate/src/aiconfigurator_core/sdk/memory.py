@@ -127,6 +127,19 @@ def _validate_tolerance(tolerance_fraction: float | None) -> None:
         raise ValueError(f"tolerance_fraction must be finite and in [0, 1), got {tolerance_fraction}")
 
 
+def _validate_cuda_graph_reservation(cuda_graph_reserved_bytes: int) -> None:
+    """Validate the fixed, rank-local CUDA graph reservation."""
+    if (
+        isinstance(cuda_graph_reserved_bytes, bool)
+        or not isinstance(cuda_graph_reserved_bytes, int)
+        or cuda_graph_reserved_bytes < 0
+    ):
+        raise ValueError(
+            "cuda_graph_reserved_bytes must be a non-negative integer, got "
+            f"{cuda_graph_reserved_bytes!r}"
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Shared budget math.
 #
@@ -366,6 +379,7 @@ class KVCacheEstimator:
         is_of_free: bool,
         fraction: float,
         gpu_memory_capacity_bytes_override: int | None,
+        cuda_graph_reserved_bytes: int = 0,
     ) -> dict[str, Any]:
         """Size the rank-local KV budget from the breakdown (raw estimate dict)."""
         return self._estimate_from_breakdown(
@@ -373,6 +387,7 @@ class KVCacheEstimator:
             is_of_free=is_of_free,
             fraction=fraction,
             gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,
+            cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
         )
 
     @staticmethod
@@ -382,6 +397,7 @@ class KVCacheEstimator:
         is_of_free: bool,
         fraction: float,
         gpu_memory_capacity_bytes_override: int | None,
+        cuda_graph_reserved_bytes: int = 0,
     ) -> dict[str, Any]:
         """Native budget math over a breakdown dict (pure; no model build).
 
@@ -407,7 +423,8 @@ class KVCacheEstimator:
         if not (math.isfinite(capacity) and capacity > 0.0):
             raise ValueError(f"GPU capacity must be finite and positive, got {capacity}")
 
-        non_kv = float(breakdown["non_kv_bytes"])
+        cuda_graph = float(cuda_graph_reserved_bytes)
+        non_kv = float(breakdown["non_kv_bytes"]) + cuda_graph
         total_kv_size_bytes_f = kv_cache_budget_bytes(
             capacity=capacity, non_kv=non_kv, fraction=fraction, of_free=is_of_free
         )
@@ -437,6 +454,7 @@ class KVCacheEstimator:
                 "activations_bytes": int(max(float(breakdown["activations_bytes"]), 0.0)),
                 "runtime_overhead_bytes": int(max(float(breakdown["runtime_overhead_bytes"]), 0.0)),
                 "comm_overhead_bytes": int(max(float(breakdown["comm_overhead_bytes"]), 0.0)),
+                "cuda_graph_reserved_bytes": int(cuda_graph),
             },
             "tolerance_adjusted": None,
         }
@@ -825,7 +843,13 @@ class NaiveKVCacheEstimator:
             return hybrid(kv_budget_bytes)
         return _linear_tokens_from_bytes(float(self.kv_bytes_per_token() or 0.0))(kv_budget_bytes)
 
-    def estimate(self, *, capacity: int | None, naive_kv_reservation: float) -> dict[str, Any]:
+    def estimate(
+        self,
+        *,
+        capacity: int | None,
+        naive_kv_reservation: float,
+        cuda_graph_reserved_bytes: int = 0,
+    ) -> dict[str, Any]:
         """Conservative naive estimate: reserve ``naive_kv_reservation`` of post-weight memory.
 
         The naive counterpart to :meth:`KVCacheEstimator.estimate`. ``capacity`` is
@@ -861,7 +885,9 @@ class NaiveKVCacheEstimator:
         kv_per_token = float(kv_per_token)
         weight_bytes = float(weight_bytes)
 
-        post_weight = max(capacity_bytes - weight_bytes, 0.0)
+        post_weight = max(
+            capacity_bytes - weight_bytes - float(cuda_graph_reserved_bytes), 0.0
+        )
         total_kv_size_bytes_f = post_weight * float(naive_kv_reservation)
         if total_kv_size_bytes_f <= 0.0:
             raise ValueError(
@@ -952,6 +978,7 @@ def estimate_kv_cache(
     nextn: int = 0,
     systems_path: str | None = None,
     gpu_memory_capacity_bytes_override: int | None = None,
+    cuda_graph_reserved_bytes: int = 0,
     tolerance_fraction: float | None = None,
     naive_kv_reservation: float = _DEFAULT_NAIVE_KV_RESERVATION,
     allow_naive_fallback: bool = False,
@@ -979,6 +1006,8 @@ def estimate_kv_cache(
         memory_fraction_value: the fraction in ``[0, 1]``.
         gpu_memory_capacity_bytes_override: when set, wins over the SystemSpec
             capacity on the native path; REQUIRED on the naive fallback.
+        cuda_graph_reserved_bytes: fixed rank-local bytes reserved by CUDA graphs
+            before KV-cache allocation. Defaults to zero for backward compatibility.
         tolerance_fraction: optional safety margin in ``[0, 1)``; when set,
             ``tolerance_adjusted`` is populated with ``floor(raw * (1 - t))``
             bytes and the recomputed token count. ``None`` -> raw estimate only.
@@ -1004,6 +1033,7 @@ def estimate_kv_cache(
     _validate_memory_fraction(backend, memory_fraction_kind, memory_fraction_value)
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
+    _validate_cuda_graph_reservation(cuda_graph_reserved_bytes)
     fraction = float(memory_fraction_value)
     is_of_free = memory_fraction_kind == "of_free"
 
@@ -1047,6 +1077,7 @@ def estimate_kv_cache(
         ).estimate(
             capacity=gpu_memory_capacity_bytes_override,
             naive_kv_reservation=float(naive_kv_reservation),
+            cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
         )
     else:
         # Native model built: budget-math failures (no KV budget, zero per-token)
@@ -1055,6 +1086,7 @@ def estimate_kv_cache(
             is_of_free=is_of_free,
             fraction=fraction,
             gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,
+            cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
         )
 
     # Apply the tolerance margin (no-op when `tolerance_fraction` is None),
@@ -1090,6 +1122,7 @@ def estimate_num_gpu_blocks(
     nextn: int = 0,
     systems_path: str | None = None,
     gpu_memory_capacity_bytes_override: int | None = None,
+    cuda_graph_reserved_bytes: int = 0,
     tolerance_fraction: float | None = None,
     naive_kv_reservation: float = _DEFAULT_NAIVE_KV_RESERVATION,
     allow_naive_fallback: bool = False,
@@ -1144,6 +1177,7 @@ def estimate_num_gpu_blocks(
         nextn=int(nextn),
         systems_path=systems_path,
         gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,
+        cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
         tolerance_fraction=tolerance_fraction,
         naive_kv_reservation=float(naive_kv_reservation),
         allow_naive_fallback=allow_naive_fallback,

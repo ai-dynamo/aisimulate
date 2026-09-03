@@ -54,6 +54,20 @@ extension contract:
 The wheel includes `py.typed` and a stub for that native extension. The SDK
 Python modules carry their own annotations.
 
+## KV-cache capacity reservation
+
+`estimate_kv_cache` and `estimate_num_gpu_blocks` accept
+`cuda_graph_reserved_bytes=<rank-local bytes>`. The value must be a
+non-negative integer and defaults to zero. It is treated as fixed non-KV memory
+before the backend-specific KV fraction is applied and is returned as
+`memory_breakdown.cuda_graph_reserved_bytes`.
+
+The Rust `KvCacheEstimateRequest` exposes the same field. Engine replay accepts
+the value in its engine arguments and carries it through native AIC capacity
+rematerialization, so the Python estimator and native scheduler use the same
+rank-local KV capacity. This API does not estimate the reservation; callers
+must supply a value from a source they trust.
+
 ## Choosing a forward-pass API
 
 For adaptive forward-pass modeling, use

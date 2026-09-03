@@ -225,6 +225,14 @@ Support coverage and accuracy are separate evidence. A supported cell means a
 specific path can execute with the required data; it does not establish that
 the resulting end-to-end prediction is accurate.
 
+### Explicit CUDA graph reservation
+
+KV-cache estimation and engine replay accept an optional rank-local
+`cuda_graph_reserved_bytes` value. AISimulate subtracts this fixed runtime
+reservation before allocating KV cache and preserves it when the native replay
+runtime rematerializes capacity. The default is zero, so existing callers do
+not change. See the [core API contract](docs/core-api.md#kv-cache-capacity-reservation).
+
 ### FPE support matrix — in development
 
 The new strict-native Forward Pass Engine (FPE) matrix measures estimator

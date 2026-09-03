@@ -937,6 +937,72 @@ def test_estimate_kv_cache_native_uses_synthetic_breakdown(monkeypatch):
     assert "tokens_from_kv_bytes" not in out
 
 
+@pytest.mark.parametrize(
+    ("memory_fraction_kind", "expected_reduction"),
+    [
+        ("of_total", 8 * _GIB),
+        ("of_free", int(8 * _GIB * 0.9)),
+    ],
+)
+def test_cuda_graph_reservation_reduces_native_kv_budget(
+    monkeypatch, memory_fraction_kind, expected_reduction
+):
+    bd = _breakdown(60.0 * _GIB, 327_680.0, 141.0 * _GIB)
+    monkeypatch.setattr(
+        memory.KVCacheEstimator,
+        "from_request",
+        classmethod(lambda cls, *a, **k: cls(bd)),
+    )
+    backend = "vllm" if memory_fraction_kind == "of_total" else "trtllm"
+    baseline = memory.estimate_kv_cache(
+        "Qwen/Qwen3-32B",
+        "h200_sxm",
+        backend,
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind=memory_fraction_kind,
+        memory_fraction_value=0.9,
+    )
+    reserved = memory.estimate_kv_cache(
+        "Qwen/Qwen3-32B",
+        "h200_sxm",
+        backend,
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind=memory_fraction_kind,
+        memory_fraction_value=0.9,
+        cuda_graph_reserved_bytes=8 * _GIB,
+    )
+
+    assert baseline["total_kv_size_bytes"] - reserved["total_kv_size_bytes"] == pytest.approx(
+        expected_reduction, abs=1
+    )
+    assert reserved["memory_breakdown"]["cuda_graph_reserved_bytes"] == 8 * _GIB
+
+
+def test_cuda_graph_reservation_rejected_before_breakdown(monkeypatch):
+    called = {"n": 0}
+
+    def _spy(*args, **kwargs):
+        called["n"] += 1
+        raise RuntimeError("should not be reached")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_spy))
+    for bad in (-1, 1.5, True):
+        with pytest.raises(ValueError, match="cuda_graph_reserved_bytes"):
+            memory.estimate_kv_cache(
+                "Qwen/Qwen3-32B",
+                "h200_sxm",
+                "vllm",
+                max_num_tokens=8192,
+                max_batch_size=256,
+                memory_fraction_kind="of_total",
+                memory_fraction_value=0.9,
+                cuda_graph_reserved_bytes=bad,
+            )
+    assert called["n"] == 0
+
+
 # --------------------------------------------------------------------------- #
 # tolerance_fraction: validation (up front) + application (native & naive).
 #

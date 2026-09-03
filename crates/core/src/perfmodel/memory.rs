@@ -46,6 +46,9 @@ pub struct KvCacheEstimateRequest {
     /// Override for unknown SKUs; when `Some`, it wins over the SystemSpec
     /// capacity reported by the native path.
     pub gpu_memory_capacity_bytes_override: Option<u64>,
+    /// Fixed rank-local bytes reserved by CUDA graphs before KV allocation.
+    #[serde(default)]
+    pub cuda_graph_reserved_bytes: u64,
     /// `None` = raw estimate only; `Some(0.05)` = 5% safety margin.
     pub tolerance_fraction: Option<f64>,
     pub options: KvCacheEstimateOptions,
@@ -126,6 +129,7 @@ pub struct MemoryBreakdown {
     pub activations_bytes: u64,
     pub runtime_overhead_bytes: u64,
     pub comm_overhead_bytes: u64,
+    pub cuda_graph_reserved_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -293,6 +297,7 @@ fn fetch_python_estimate(
             "gpu_memory_capacity_bytes_override",
             req.gpu_memory_capacity_bytes_override,
         )?;
+        kwargs.set_item("cuda_graph_reserved_bytes", req.cuda_graph_reserved_bytes)?;
         kwargs.set_item("tolerance_fraction", req.tolerance_fraction)?;
         kwargs.set_item("naive_kv_reservation", req.options.naive_kv_reservation)?;
         kwargs.set_item("allow_naive_fallback", req.options.allow_naive_fallback)?;
@@ -359,6 +364,7 @@ fn estimate_from_dict(
             activations_bytes: get("activations_bytes")?,
             runtime_overhead_bytes: get("runtime_overhead_bytes")?,
             comm_overhead_bytes: get("comm_overhead_bytes")?,
+            cuda_graph_reserved_bytes: get("cuda_graph_reserved_bytes")?,
         })
     };
 
