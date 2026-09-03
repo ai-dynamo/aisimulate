@@ -729,6 +729,130 @@ def test_vllm_0240_primary_lanes_precede_shared_donors(table_attr, override):
 
 
 # ---------------------------------------------------------------------------
+# Qwen3.8-Max per-architecture defaults through the production lane-resolution
+# choke point.
+# ---------------------------------------------------------------------------
+
+_ARCH_LANE_DEFAULTS_YAML = """\
+sglang:
+  "0.5.14":
+    90: fa3
+    100: triton
+    103: triton
+    120: flashinfer
+architectures:
+  Qwen3_5MoeForCausalLM:
+    sglang:
+      "0.5.17":
+        90: fa3
+        100: trtllm_mha
+        103: trtllm_mha
+        120: flashinfer
+"""
+
+_MAX_ARCHITECTURE = "Qwen3_5MoeForCausalLM"
+_CONDGEN_ARCHITECTURE = "Qwen3_5MoeForConditionalGeneration"
+
+
+@pytest.fixture
+def arch_lane_systems_root(tmp_path):
+    root = tmp_path / "systems"
+    root.mkdir()
+    (root / "attention_lane_defaults.yaml").write_text(_ARCH_LANE_DEFAULTS_YAML, encoding="utf-8")
+    return str(root)
+
+
+def _max_db(systems_root, **kwargs):
+    db = _StubDatabase(systems_root, sm_version=103, **kwargs)
+    db.version = "0.5.17"
+    return db
+
+
+def test_resolved_lane_order_for_op_selects_architecture_default_without_override(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+
+    db = _max_db(
+        arch_lane_systems_root,
+        context_lanes={"triton": _ctx_lane(_SLOW_LATENCY), "trtllm_mha": _ctx_lane(_FAST_LATENCY)},
+    )
+
+    no_architecture = resolved_lane_order_for_op(db, "_context_attention_data", None, None)
+    max_architecture = resolved_lane_order_for_op(db, "_context_attention_data", None, _MAX_ARCHITECTURE)
+
+    assert no_architecture[0] == "triton"
+    assert max_architecture[0] == "trtllm_mha"
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_lane"),
+    [(None, "trtllm_mha"), ("default", "trtllm_mha"), ("triton", "triton")],
+    ids=["unset", "default", "named-override"],
+)
+def test_resolver_honors_architecture_default_and_named_override_on_sm100(
+    arch_lane_systems_root, override, expected_lane
+):
+    from aiconfigurator_core.sdk.attention_lanes import resolve_attention_lane_order
+
+    order = resolve_attention_lane_order(
+        backend="sglang",
+        version="0.5.17",
+        sm_version=100,
+        override=override,
+        systems_root=arch_lane_systems_root,
+        architecture=_MAX_ARCHITECTURE,
+    )
+
+    assert order[0] == expected_lane
+
+
+def test_resolved_lane_order_for_op_architecture_default_generation_twin(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+
+    db = _max_db(
+        arch_lane_systems_root,
+        generation_lanes={"triton": _gen_lane(_SLOW_LATENCY), "trtllm_mha": _gen_lane(_FAST_LATENCY)},
+    )
+
+    assert resolved_lane_order_for_op(db, "_generation_attention_data", None, None)[0] == "triton"
+    assert resolved_lane_order_for_op(db, "_generation_attention_data", None, _MAX_ARCHITECTURE)[0] == "trtllm_mha"
+
+
+def test_resolved_lane_order_for_op_override_wins_over_architecture_default(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+
+    db = _max_db(
+        arch_lane_systems_root,
+        context_lanes={"triton": _ctx_lane(_SLOW_LATENCY), "trtllm_mha": _ctx_lane(_FAST_LATENCY)},
+    )
+    order = resolved_lane_order_for_op(db, "_context_attention_data", "triton", _MAX_ARCHITECTURE)
+
+    assert order[0] == "triton"
+    assert order.count("triton") == 1
+
+
+def test_resolved_lane_order_for_op_unlisted_architecture_is_unaffected(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+
+    db = _max_db(
+        arch_lane_systems_root,
+        context_lanes={"triton": _ctx_lane(_SLOW_LATENCY), "trtllm_mha": _ctx_lane(_FAST_LATENCY)},
+    )
+    no_architecture = resolved_lane_order_for_op(db, "_context_attention_data", None, None)
+    condgen = resolved_lane_order_for_op(db, "_context_attention_data", None, _CONDGEN_ARCHITECTURE)
+
+    assert no_architecture == condgen
+    assert no_architecture[0] == "triton"
+
+
+def test_lane_order_cache_distinguishes_architectures(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolve_lane_order
+
+    db = _max_db(arch_lane_systems_root)
+    assert resolve_lane_order(db, None, _MAX_ARCHITECTURE)[0] == "trtllm_mha"
+    assert resolve_lane_order(db, None, _CONDGEN_ARCHITECTURE)[0] == "triton"
+
+
+# ---------------------------------------------------------------------------
 # _lane_order pickle/deepcopy round-trip (rebase-4 review, minor 4): the two
 # ops encode it asymmetrically in __getnewargs_ex__ (py_ops.rs) --
 # ContextAttention rides it as the 11th POSITIONAL __new__ arg (after

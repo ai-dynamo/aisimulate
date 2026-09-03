@@ -40,26 +40,35 @@ logger = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=256)
-def _lane_order_cached(backend, version, sm_version, override, systems_root) -> tuple[str, ...]:
+def _lane_order_cached(backend, version, sm_version, override, architecture, systems_root) -> tuple[str, ...]:
     """Memoized :func:`resolve_attention_lane_order`.
 
     The resolution reads a YAML map and builds a list; the engine-spec build
     needs it per attention op, so memoize on the full input tuple. One entry
-    per (database identity x override) — a sweep resolves each order exactly
-    once.
+    per (database identity x override x architecture) — a sweep resolves each
+    order exactly once. Architecture is part of the key because two models on
+    the same database can have different framework-default lanes.
     """
-    return resolve_attention_lane_order(backend, version, sm_version, override, systems_root)
+    return resolve_attention_lane_order(backend, version, sm_version, override, systems_root, architecture)
 
 
-def resolve_lane_order(database, override: str | None = None) -> tuple[str, ...]:
+def resolve_lane_order(database, override: str | None = None, architecture: str | None = None) -> tuple[str, ...]:
     """Attention lane precedence for *database* under an optional *override*.
 
     The override is the user-facing ``attention_backend`` knob carried by the
     op; everything else comes off the database handle (backend, version,
-    ``sm_version``, systems root). ``"default"`` is always the last element.
+    ``sm_version``, systems root). *architecture* selects an optional
+    per-architecture framework default. ``"default"`` is always last.
     """
     sm_version = database.system_spec["gpu"].get("sm_version") or -1
-    return _lane_order_cached(database.backend, database.version, sm_version, override, database.systems_root)
+    return _lane_order_cached(
+        database.backend,
+        database.version,
+        sm_version,
+        override,
+        architecture,
+        database.systems_root,
+    )
 
 
 def lane_walk_order(density: dict[str, tuple[int, int]], lane_order: tuple[str, ...]) -> tuple[str, ...]:
@@ -140,7 +149,12 @@ def _source_tiered_lane_walk_order(
     return pinned + primary_order + shared_only_order
 
 
-def resolved_lane_order_for_op(database, table_attr: str, override: str | None = None) -> list[str]:
+def resolved_lane_order_for_op(
+    database,
+    table_attr: str,
+    override: str | None = None,
+    architecture: str | None = None,
+) -> list[str]:
     """Kernel-lane precedence for an attention op, RESOLVED python-side.
 
     Since the pyo3 op unification, ``ContextAttention``/``GenerationAttention``
@@ -185,7 +199,7 @@ def resolved_lane_order_for_op(database, table_attr: str, override: str | None =
             )
         return ["default"]
     try:
-        order = resolve_lane_order(database, override)
+        order = resolve_lane_order(database, override, architecture)
         if getattr(order, "pinned_count", 0) == 0 and not getattr(order, "framework_default_matched", False):
             # No override, no framework-default map entry: fail closed (see
             # docstring) instead of density-ranking the whole vocabulary.

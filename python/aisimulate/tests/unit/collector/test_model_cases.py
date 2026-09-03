@@ -12,7 +12,6 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
-
 from collector.case_generator import (
     get_attention_head_configs,
     get_gemm_case_specs,
@@ -210,6 +209,7 @@ def test_added_model_attention_profiles_resolve_targeted_topology(monkeypatch):
         (("Qwen/Qwen3.5-122B-A10B",), 32, 2, 256, (1, 2, 4, 8, 16, 32)),
         (("MiniMaxAI/MiniMax-M2", "MiniMaxAI/MiniMax-M2.5", "MiniMaxAI/MiniMax-M2.7"), 48, 8, 128, (1, 2, 4, 8, 16)),
         (("Qwen/Qwen3-30B-A3B",), 32, 4, 128, (1, 2, 4, 8)),
+        (("Qwen/Qwen3.8-2.4T-A95B", "Qwen/Qwen3.8-2.4T-A95B-FP8"), 64, 4, 256, (1, 2, 4, 8, 16, 32)),
     )
 
     for model_paths, num_heads, num_kv_heads, head_dim, tp_sizes in profiles:
@@ -866,13 +866,14 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     cases = get_gemm_case_specs()
     xpu_cases = get_gemm_case_specs("vllm_xpu")
 
-    # Base gemm sweep expansion, then model_case_values.gemm rows.
-    assert len(cases) == 37296
+    # Base gemm sweep expansion, then model_case_values.gemm rows. Qwen3.8-Max
+    # adds two output widths across the base token-count grid.
+    assert len(cases) == 37444
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert not any(case.n == 65536 and case.k == 65536 for case in cases)
 
-    assert len(xpu_cases) == 9618
+    assert len(xpu_cases) == 9660
     assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=12288)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]
@@ -929,8 +930,9 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
     # inverting the trtllm/vllm QUANTIZATION gate elsewhere -- see
     # test_qwen35_397b_nvfp4_moe_row_is_nvfp4_only_on_every_backend, the
     # actual regression); the row's own count (117, pinned separately below)
-    # is unaffected either way, so the total stays 6720.
-    assert len(moe_cases) == 6720
+    # is unaffected either way. Qwen3.8-Max contributes one 117-case base
+    # row and one 117-case RadixArk NVFP4 row.
+    assert len(moe_cases) == 6954
 
     assert any(
         case.model_name == "nvidia/DeepSeek-V4-Flash-NVFP4"
@@ -1014,7 +1016,8 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
     mamba_cases = get_common_mamba2_test_cases()
     assert len(mamba_cases) == 12
     assert {case.model_name for case in mamba_cases} >= {"MAMBA2_GENERIC_4K", "MAMBA2_GENERIC_1K"}
-    assert len(get_common_gdn_test_cases()) == 74
+    # Qwen3.8-Max adds context/generation at TP 1/2/4/8/16.
+    assert len(get_common_gdn_test_cases()) == 84
     mhc_cases = get_common_mhc_test_cases()
     assert len(mhc_cases) == 8
     assert {(case.model_name, case.phase, case.hidden_size, case.hc_mult) for case in mhc_cases} == {
@@ -1930,6 +1933,53 @@ def test_qwen35_397b_nvfp4_moe_cases_are_declared_with_correct_shape_and_runner(
     assert moe_model_allows_quantization("sglang", "nvidia/Qwen3.5-397B-A17B-NVFP4", "nvfp4")
     assert not moe_model_allows_quantization("sglang", "nvidia/Qwen3.5-397B-A17B-NVFP4", "bfloat16")
     assert not moe_model_allows_quantization("sglang", "nvidia/Qwen3.5-397B-A17B-NVFP4", "fp8_block")
+
+
+def test_qwen38_max_nvfp4_moe_cases_are_declared_with_correct_shape_and_runner(monkeypatch):
+    from collector.case_generator import (
+        get_common_moe_test_cases,
+        get_sglang_moe_backend,
+        moe_model_allows_quantization,
+    )
+
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    cases = get_common_moe_test_cases()
+    nvfp4_cases = [case for case in cases if case.model_name == "RadixArk/Qwen3.8-2.4T-A95B-NVFP4"]
+    base_cases = [case for case in cases if case.model_name == "Qwen/Qwen3.8-2.4T-A95B"]
+
+    assert nvfp4_cases, "RadixArk/Qwen3.8-2.4T-A95B-NVFP4 moe cases not found"
+    assert len(nvfp4_cases) == len(base_cases) == 117
+    assert all(
+        case.hidden_size == 8192 and case.inter_size == 2048 and case.topk == 10 and case.num_experts == 512
+        for case in nvfp4_cases
+    )
+
+    sample = nvfp4_cases[0]
+    assert get_sglang_moe_backend(sample, "nvfp4", 100) == "flashinfer_trtllm"
+    assert get_sglang_moe_backend(sample, "nvfp4", 103) == "flashinfer_trtllm"
+
+    base_sample = base_cases[0]
+    assert get_sglang_moe_backend(base_sample, "bfloat16", 100) == "triton"
+    assert get_sglang_moe_backend(base_sample, "fp8_block", 100) == "triton"
+
+    assert moe_model_allows_quantization("sglang", "RadixArk/Qwen3.8-2.4T-A95B-NVFP4", "nvfp4")
+    assert not moe_model_allows_quantization("sglang", "RadixArk/Qwen3.8-2.4T-A95B-NVFP4", "bfloat16")
+    assert not moe_model_allows_quantization("sglang", "RadixArk/Qwen3.8-2.4T-A95B-NVFP4", "fp8_block")
+    assert moe_model_allows_quantization("sglang", "Qwen/Qwen3.8-2.4T-A95B", "bfloat16")
+    assert moe_model_allows_quantization("sglang", "Qwen/Qwen3.8-2.4T-A95B", "fp8_block")
+    assert not moe_model_allows_quantization("sglang", "Qwen/Qwen3.8-2.4T-A95B", "nvfp4")
+
+
+def test_radixark_qwen38_max_nvfp4_row_is_sglang_only():
+    model_path = "RadixArk/Qwen3.8-2.4T-A95B-NVFP4"
+    for backend in ("trtllm", "vllm"):
+        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
+        allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
+        assert allowed == set(), (backend, model_path, allowed)
+
+    sglang_modes = {spec.name for spec in get_moe_quantization_specs("sglang")}
+    sglang_allowed = {mode for mode in sglang_modes if moe_model_allows_quantization("sglang", model_path, mode)}
+    assert sglang_allowed == {"nvfp4"}, (model_path, sglang_allowed)
 
 
 def test_nemotron_ultra_quant_artifact_keeps_moe_path_but_reuses_mamba_profile(monkeypatch):
