@@ -139,6 +139,7 @@ pub(super) fn get_new_batch_prefill(
         admissions.push(AdmissionEvent {
             uuid: req.uuid,
             reused_input_tokens: prefix_len,
+            cache_tier_attribution: None,
         });
         prefill_fpm.push(PrefillFpmItem {
             prompt_len: req.prompt_len(),

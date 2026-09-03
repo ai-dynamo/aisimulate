@@ -47,6 +47,18 @@ class UnsupportedWideepConfigError(ValueError):
     """
 
 
+class UnsupportedAttentionBackendError(ValueError):
+    """Raised when an explicit ``attention_backend`` override names a kernel
+    lane the target backend's collected attention tables do not carry.
+
+    An explicit override is a statement of intent; silently serving it from a
+    donor lane would misattribute another kernel's performance (AIC-1715/1716).
+
+    Subclasses ``ValueError`` so it is reported as an expected CLI error
+    (concise ``Error: <message>`` line, no traceback).
+    """
+
+
 class MissingSystemFlopsError(ValueError):
     """Raised when a quant mode's compute dtype has no ``*_tc_flops`` entry in the system YAML.
 
@@ -95,6 +107,16 @@ class EmpiricalNotImplementedError(RuntimeError):
     """
 
 
+class SolNotImplementedError(RuntimeError):
+    """Raised when the analytic SOL path cannot model a required operator.
+
+    This is a modeling-coverage gap, distinct from invalid user input and from
+    missing silicon data. Callers may omit an optional SOL comparison while
+    preserving the primary estimate, but an explicitly requested SOL estimate
+    still fails with this typed error.
+    """
+
+
 def _chain_has(error: BaseException, types: tuple[type[BaseException], ...]) -> bool:
     """Return True when ``error`` or its effective chain contains one of ``types``.
 
@@ -129,10 +151,11 @@ def is_expected_cli_error(error: BaseException) -> bool:
 
     Expected = the user's inputs/environment can't be served and the message
     already says why: SLA-infeasible / OOM / KV-cache (``NoResultsError``), a
-    perf-data coverage gap (``PerfDataNotAvailableError`` /
-    ``EmpiricalNotImplementedError``), or a configuration / compatibility
-    rejection (``ValueError`` — the whole SDK raises this by convention for
-    unsupported quant modes, invalid parallelism, hardware requirements, etc.).
+    perf-data or modeling coverage gap (``PerfDataNotAvailableError`` /
+    ``EmpiricalNotImplementedError`` / ``SolNotImplementedError``), or a
+    configuration / compatibility rejection (``ValueError`` — the whole SDK
+    raises this by convention for unsupported quant modes, invalid parallelism,
+    hardware requirements, etc.).
 
     Such errors should be reported as a concise ``Error: <message>`` line, not a
     Python traceback. Genuine programming defects (``KeyError``,
@@ -146,7 +169,13 @@ def is_expected_cli_error(error: BaseException) -> bool:
     """
     return _chain_has(
         error,
-        (NoResultsError, PerfDataNotAvailableError, EmpiricalNotImplementedError, ValueError),
+        (
+            NoResultsError,
+            PerfDataNotAvailableError,
+            EmpiricalNotImplementedError,
+            SolNotImplementedError,
+            ValueError,
+        ),
     )
 
 

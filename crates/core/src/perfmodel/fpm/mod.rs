@@ -36,6 +36,6 @@ pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 pub use model::{
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfReadiness,
-    ForwardPassPerfSource,
+    ForwardPassPerfSource, ForwardPassWorkerType,
 };
 pub use options::ForwardPassPerfOptions;

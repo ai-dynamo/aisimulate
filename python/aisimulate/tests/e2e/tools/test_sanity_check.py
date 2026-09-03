@@ -169,8 +169,7 @@ def test_selector_ignores_unrelated_and_unknown_paths():
             "python/aisimulate/src/aiconfigurator/cli/main.py",
             "README.md",
             "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/foo.yaml",
-            "python/aisimulate/src/aiconfigurator_core/systems/data/"
-            "unknown_system/gemm/trtllm/1.0/gemm_perf.parquet",
+            "python/aisimulate/src/aiconfigurator_core/systems/data/unknown_system/gemm/trtllm/1.0/gemm_perf.parquet",
         ],
         _FAKE_SUPPORTED,
     )

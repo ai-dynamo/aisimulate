@@ -32,25 +32,16 @@ class StackLoadError(StackResolutionError):
 
 
 def _validate_runner_factory(value: Any, *, stack: str) -> RunnerFactory:
-    missing = [
-        method
-        for method in ("capabilities", "create")
-        if not callable(getattr(value, method, None))
-    ]
+    missing = [method for method in ("capabilities", "create") if not callable(getattr(value, method, None))]
     if missing:
         raise StackLoadError(
-            f"stack {stack!r} returned an invalid RunnerFactory; missing callable(s): "
-            + ", ".join(missing)
+            f"stack {stack!r} returned an invalid RunnerFactory; missing callable(s): " + ", ".join(missing)
         )
     return value
 
 
 def _installed_entry_points() -> list[importlib.metadata.EntryPoint]:
-    return list(
-        importlib.metadata.entry_points().select(
-            group=RUNNER_FACTORY_ENTRY_POINT_GROUP
-        )
-    )
+    return list(importlib.metadata.entry_points().select(group=RUNNER_FACTORY_ENTRY_POINT_GROUP))
 
 
 def resolve_runner_factory(
@@ -68,9 +59,7 @@ def resolve_runner_factory(
     if stack in builtin_factories:
         return _validate_runner_factory(builtin_factories[stack], stack=stack)
 
-    installed = (
-        list(entry_points) if entry_points is not None else _installed_entry_points()
-    )
+    installed = list(entry_points) if entry_points is not None else _installed_entry_points()
     matches = [entry_point for entry_point in installed if entry_point.name == stack]
     if not matches:
         available = sorted(set(builtin_factories) | {entry.name for entry in installed})
@@ -81,10 +70,7 @@ def resolve_runner_factory(
         )
     if len(matches) > 1:
         providers = ", ".join(
-            sorted(
-                f"{entry.value} ({getattr(entry, 'dist', None) or 'unknown distribution'})"
-                for entry in matches
-            )
+            sorted(f"{entry.value} ({getattr(entry, 'dist', None) or 'unknown distribution'})" for entry in matches)
         )
         raise DuplicateStackError(
             f"stack {stack!r} has multiple providers in entry-point group "
@@ -94,14 +80,9 @@ def resolve_runner_factory(
     entry = matches[0]
     try:
         factory_or_constructor = entry.load()
-        factory = (
-            factory_or_constructor()
-            if callable(factory_or_constructor)
-            else factory_or_constructor
-        )
+        factory = factory_or_constructor() if callable(factory_or_constructor) else factory_or_constructor
     except Exception as exc:
         raise StackLoadError(
-            f"failed to load stack {stack!r} from {entry.value!r}: "
-            f"{type(exc).__name__}: {exc}"
+            f"failed to load stack {stack!r} from {entry.value!r}: {type(exc).__name__}: {exc}"
         ) from exc
     return _validate_runner_factory(factory, stack=stack)

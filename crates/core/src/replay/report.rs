@@ -9,6 +9,8 @@ use serde_json::Value;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use uuid::Uuid;
 
+use crate::engine::CacheTierAttribution;
+use crate::replay::PlacementCacheSample;
 use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
 
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
@@ -498,6 +500,7 @@ impl StreamingDistribution {
 
 #[derive(Debug, Default)]
 struct PerRequestDetail {
+    first_admission_cache_tier_attribution: Option<CacheTierAttribution>,
     prefill_reused_input_tokens: Option<usize>,
     prefill_admit_ms: Option<f64>,
     source_held_ms: Option<f64>,
@@ -550,6 +553,10 @@ pub struct PerRequestRoutingRecord {
     pub scheduler_id: Option<usize>,
     pub dp_rank: Option<u32>,
     pub reported_overlap_tokens: Option<usize>,
+    pub selected_overlap_blocks: Option<u32>,
+    pub best_available_overlap_blocks: Option<u32>,
+    pub overlap_regret_blocks: Option<u32>,
+    pub placement_replica_id: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -559,6 +566,10 @@ pub struct PerRequestAdmissionRecord {
     pub pool: ReplayRequestPool,
     pub at_ms: f64,
     pub reused_input_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub g1_reused_input_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_reused_input_tokens: Option<usize>,
     pub is_readmission: bool,
 }
 
@@ -613,6 +624,10 @@ pub struct PerRequestRecord {
     /// Number of output tokens actually emitted by the mock engine.
     pub output_length: usize,
     pub reused_input_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_admission_g1_reused_input_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_admission_host_reused_input_tokens: Option<usize>,
     pub prefill_worker_idx: Option<usize>,
     pub decode_worker_idx: Option<usize>,
     pub prefill_admit_ms: Option<f64>,
@@ -1014,9 +1029,31 @@ impl TraceCollector {
     }
 
     pub fn on_admit(&mut self, uuid: Uuid, admit_time_ms: f64, reused_input_tokens: usize) {
+        self.on_admit_with_tier_attribution(uuid, admit_time_ms, reused_input_tokens, None);
+    }
+
+    pub(crate) fn on_admit_with_tier_attribution(
+        &mut self,
+        uuid: Uuid,
+        admit_time_ms: f64,
+        reused_input_tokens: usize,
+        attribution: Option<CacheTierAttribution>,
+    ) {
+        if let Some(attribution) = attribution {
+            assert_eq!(
+                attribution
+                    .g1_reused_input_tokens
+                    .checked_add(attribution.host_reused_input_tokens),
+                Some(reused_input_tokens),
+                "G1 and host attribution must sum to total reuse"
+            );
+        }
         if let Some(stats) = self.requests.get_mut(&uuid) {
             if stats.first_admit_ms.is_none() {
                 stats.first_admission_reused_input_tokens = reused_input_tokens;
+                if let Some(detail) = stats.detail.as_deref_mut() {
+                    detail.first_admission_cache_tier_attribution = attribution;
+                }
                 stats.first_admit_ms = Some(admit_time_ms);
             }
             stats.reused_input_tokens = stats.reused_input_tokens.max(reused_input_tokens);
@@ -1116,6 +1153,8 @@ impl TraceCollector {
         scheduler_id: usize,
         dp_rank: u32,
         reported_overlap_tokens: usize,
+        cache_sample: Option<PlacementCacheSample>,
+        placement_replica_id: Option<usize>,
     ) {
         let Some(detail) = self.detail_mut(uuid) else {
             return;
@@ -1130,6 +1169,15 @@ impl TraceCollector {
             scheduler_id: Some(scheduler_id),
             dp_rank: Some(dp_rank),
             reported_overlap_tokens: Some(reported_overlap_tokens),
+            selected_overlap_blocks: cache_sample.map(|sample| sample.overlap_blocks),
+            best_available_overlap_blocks: cache_sample
+                .map(|sample| sample.best_available_overlap_blocks),
+            overlap_regret_blocks: cache_sample.map(|sample| {
+                sample
+                    .best_available_overlap_blocks
+                    .saturating_sub(sample.overlap_blocks)
+            }),
+            placement_replica_id,
         });
     }
 
@@ -1147,6 +1195,10 @@ impl TraceCollector {
             scheduler_id: None,
             dp_rank: None,
             reported_overlap_tokens: None,
+            selected_overlap_blocks: None,
+            best_available_overlap_blocks: None,
+            overlap_regret_blocks: None,
+            placement_replica_id: None,
         });
     }
 
@@ -1160,6 +1212,8 @@ impl TraceCollector {
         scheduler_id: usize,
         dp_rank: u32,
         reported_overlap_tokens: usize,
+        cache_sample: Option<PlacementCacheSample>,
+        placement_replica_id: Option<usize>,
     ) {
         let Some(detail) = self.detail_mut(uuid) else {
             return;
@@ -1178,6 +1232,15 @@ impl TraceCollector {
         route.scheduler_id = Some(scheduler_id);
         route.dp_rank = Some(dp_rank);
         route.reported_overlap_tokens = Some(reported_overlap_tokens);
+        route.selected_overlap_blocks = cache_sample.map(|sample| sample.overlap_blocks);
+        route.best_available_overlap_blocks =
+            cache_sample.map(|sample| sample.best_available_overlap_blocks);
+        route.overlap_regret_blocks = cache_sample.map(|sample| {
+            sample
+                .best_available_overlap_blocks
+                .saturating_sub(sample.overlap_blocks)
+        });
+        route.placement_replica_id = placement_replica_id;
     }
 
     pub(crate) fn on_pool_admission(
@@ -1186,6 +1249,17 @@ impl TraceCollector {
         pool: ReplayRequestPool,
         at_ms: f64,
         reused_input_tokens: usize,
+    ) {
+        self.on_pool_admission_with_tier_attribution(uuid, pool, at_ms, reused_input_tokens, None);
+    }
+
+    pub(crate) fn on_pool_admission_with_tier_attribution(
+        &mut self,
+        uuid: Uuid,
+        pool: ReplayRequestPool,
+        at_ms: f64,
+        reused_input_tokens: usize,
+        attribution: Option<CacheTierAttribution>,
     ) {
         let Some(detail) = self.detail_mut(uuid) else {
             return;
@@ -1200,6 +1274,8 @@ impl TraceCollector {
             pool,
             at_ms,
             reused_input_tokens,
+            g1_reused_input_tokens: attribution.map(|value| value.g1_reused_input_tokens),
+            host_reused_input_tokens: attribution.map(|value| value.host_reused_input_tokens),
             is_readmission: pool_admission_ordinal > 0,
         });
     }
@@ -1511,6 +1587,12 @@ impl TraceCollector {
                 reused_input_tokens: detail
                     .prefill_reused_input_tokens
                     .unwrap_or(stats.reused_input_tokens),
+                first_admission_g1_reused_input_tokens: detail
+                    .first_admission_cache_tier_attribution
+                    .map(|value| value.g1_reused_input_tokens),
+                first_admission_host_reused_input_tokens: detail
+                    .first_admission_cache_tier_attribution
+                    .map(|value| value.host_reused_input_tokens),
                 prefill_worker_idx: stats.prefill_worker_idx,
                 decode_worker_idx: stats.decode_worker_idx,
                 prefill_admit_ms: detail.prefill_admit_ms,
@@ -1925,6 +2007,36 @@ mod tests {
         assert_eq!(rec.terminal_status, ReplayTerminalStatus::Completed);
     }
 
+    #[test]
+    fn per_request_route_records_overlap_regret_and_policy_replica() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let uuid = Uuid::from_u128(2);
+        collector.on_arrival(uuid, 0.0, 2_048, 1);
+        collector.on_route_immediate(
+            uuid,
+            ReplayRequestPool::Agg,
+            3,
+            3,
+            0,
+            1_024,
+            Some(PlacementCacheSample {
+                overlap_blocks: 4,
+                best_available_overlap_blocks: 7,
+                isl_blocks: 8,
+            }),
+            Some(1),
+        );
+        collector.on_terminal(uuid, 1.0, ReplayTerminalStatus::Completed);
+
+        let report = collector.finish();
+        let route = &report.per_request[0].routing_history[0];
+        assert_eq!(route.selected_overlap_blocks, Some(4));
+        assert_eq!(route.best_available_overlap_blocks, Some(7));
+        assert_eq!(route.overlap_regret_blocks, Some(3));
+        assert_eq!(route.placement_replica_id, Some(1));
+    }
+
     /// A conditional-prefill bypass is reflected by `prefill_worker_idx ==
     /// None` while `decode_worker_idx` is set. This is how downstream tooling
     /// distinguishes bypassed requests from standard disagg flow.
@@ -1959,7 +2071,15 @@ mod tests {
         // Note: NOT calling set_capture_per_request — capture stays false.
         let uuid = Uuid::from_u128(1);
         collector.on_arrival(uuid, 0.0, 100, 2);
-        collector.on_admit(uuid, 5.0, 0);
+        collector.on_admit_with_tier_attribution(
+            uuid,
+            5.0,
+            20,
+            Some(CacheTierAttribution {
+                g1_reused_input_tokens: 12,
+                host_reused_input_tokens: 8,
+            }),
+        );
         collector.on_decode_assigned(uuid, 0);
         collector.on_token(uuid, 50.0);
         collector.on_token(uuid, 60.0);
@@ -1971,6 +2091,8 @@ mod tests {
         assert!(report.per_request.is_empty());
         // Summary stats still work.
         assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.prefix_cache_reused_ratio, 0.2);
+        assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.2);
     }
 
     /// Register a completed request: arrival, output length (osl), and the

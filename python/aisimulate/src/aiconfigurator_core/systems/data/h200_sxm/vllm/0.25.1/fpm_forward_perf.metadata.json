@@ -1,0 +1,60 @@
+{
+  "aic_revision": "f2a2b61bb2443e399c93b95e9894f0f19be82b92",
+  "backend": "vllm",
+  "backend_version": "0.25.1",
+  "collector_attempt_ids": [
+    "40d7da9480064d0ba52205d90f56b050",
+    "4c6a66920e474dc3ab1ba525c335226f",
+    "61b83cdc90b340929043ef60a33fdf0c",
+    "63366e1d6fca41a6ad971e6f3ee734e8",
+    "70c7accb84664fef9d52f1ef47b47bd9",
+    "74cd34451fda45fead36f6947d66f4cd",
+    "8bcd7adee84d462d9266ee7c2fba36a5",
+    "c4ccdf751e84409e938af03ad76dda00",
+    "c512695f6d0846cfb3a00ac3778d9178",
+    "dcc9f2ff015d4ac88a50fffccc827445",
+    "e20279df4fca4b2eb9f398e56b05d9d7"
+  ],
+  "coordinate_system": "iteration_totals_balanced_v1",
+  "measurement_policy": "dynamo_native_single_sample_v1",
+  "measurement_repeats": 1,
+  "model_paths": [
+    "MiniMaxAI/MiniMax-M2.7"
+  ],
+  "parquet_sha256": "de18df7a6ac34592d8e751d820c6e464eff6195924b5d9ed49ecb4fd43dac260",
+  "row_count": 53483,
+  "runtime_grid_digests": [
+    "3d27e1b8f2b26a5bf6ec3cfcd51ff18fdf7fb7929a06036b49d6fd419a3d0a45",
+    "513534075a1adaefd9bf0a47f861ece7f8949dce5981be236d544786c91972e3",
+    "5395e3bbb17e80c03899c8fff1e621710a5b1f119133316eb096ca7c0c268c2d",
+    "8980222757800008eab28c481e3326cfc8ba7db031b67a30545ded84c4dbf8f3",
+    "9b4fab15d049608901af11fc0ec68f1c78942ac6662da6acb61fa21ec30c8e8e",
+    "9b7bcdd5b7bbf54c303eb5c931ade34fc10f7ada233c6352fc284215aa27f14e",
+    "bcc8e03c0904c5767ad2f401d391e32148b3972f8a7f5061ce21d7466ec3999c",
+    "c8d342ce1997ac9e48be0d296c78ed7fcafb3732079c54a21824f12047c47dae",
+    "d2bab835d659403bc4617d17017d5685dd59601973132923bbf4bab5a884ea9b",
+    "f125f4ffdcc2ca54e4dc459e3f587d85a4a18f85b2724bd6b61749bfe8c13148"
+  ],
+  "runtime_run_ids": [
+    "03ca233d61024e1c88491098db9e93ca",
+    "2c3bd76512134fc0bd2961f1a2eda2a8",
+    "4891dc1781db480e8cab0b3285a251a8",
+    "68d19460ceb04ec48c8c31a1306fe7e8",
+    "77239d115145444ea0795c6a60f2fb3a",
+    "7db7fbadac4548a1b7984c2be60315cf",
+    "9f59c174e30547f2a2d58fcd35dba6c1",
+    "e0a13363408045a38fee5410bf6775d5",
+    "e2eddc08799f4b949c5c02f7a7be8516",
+    "f413005d05084b7e92d98e2e2effb216",
+    "f41b41359e824c948b4245de5dfae745"
+  ],
+  "schema_name": "aic_fpm_forward_perf",
+  "schema_version": 6,
+  "source_plan_sha256": [
+    "5b25ce9eda287823b75c7479b3a956194d32af2ab99f1e5ec377cbce961a212c",
+    "a4ac3d0541ebb931c885ad964ccc9c5db5f7e6b42ebde1d3367d492901d4ba22",
+    "ef0d68381038ae92eb718e8f1dc56a3dc758131325716604a6734b43661af8d3"
+  ],
+  "system": "h200_sxm",
+  "warmup_repeats": 0
+}

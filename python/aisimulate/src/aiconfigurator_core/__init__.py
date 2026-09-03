@@ -10,7 +10,8 @@ while only the ``aisimulate`` distribution is published. This package re-exports
 the established public surface so callers can ``import aiconfigurator_core`` directly. It
 exports the compiled-engine pyclass ``AicEngine``
 (``from_spec`` / ``run_static`` / ``predict_prefill_latency`` /
-``predict_decode_latency`` / ``mixed_step_latency`` / ``decode_step_latency``),
+``predict_decode_latency`` / ``predict_decode_latency_total`` /
+``fpm_decode_kv_ceiling`` / ``mixed_step_latency`` / ``decode_step_latency``),
 the op-transfer ``#[pyfunction]`` ``engine_spec_bincode_from_json`` (JSON
 ``EngineSpec`` -> bincode bytes, the Python -> Rust op-transfer wire), and the
 build smoke check ``_build_smoke``.

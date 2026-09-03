@@ -58,6 +58,10 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
         (0..self.dp_size.get()).map(|dp_rank| self.identity.rank(dp_rank, self.dp_size))
     }
 
+    pub(crate) fn ranks_mut(&mut self) -> impl ExactSizeIterator<Item = &mut C> + '_ {
+        self.ranks.iter_mut()
+    }
+
     /// Construct every rank in a logical engine.
     pub fn new(
         identity: EngineIdentity,
@@ -96,6 +100,10 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
     }
 
     /// Apply a command to one rank.
+    ///
+    /// When the engine is idle and internal work is due at or before
+    /// `now_ms`, this returns a retryable error without mutation. The caller
+    /// must call [`Self::process_internal_work`] and then retry the command.
     pub fn apply_command_effects(
         &mut self,
         command: SchedulerCommand<C::Command>,
@@ -110,6 +118,14 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             "attention-DP rank {dp_rank} is out of range for dp_size {}",
             self.dp_size
         );
+        if !pass_in_flight
+            && let Some(deadline_ms) = self.next_internal_deadline_ms()
+            && deadline_ms <= now_ms
+        {
+            bail!(
+                "engine internal work is due at {deadline_ms}ms by command time {now_ms}ms; process internal work and retry the command"
+            );
+        }
         let effects = {
             let rank = &mut self.ranks[dp_rank as usize];
             let pending_pass = self.pending_pass.as_mut().and_then(|group| {
@@ -347,7 +363,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
 
     /// Earliest valid internal-work deadline across all ranks.
     pub fn next_internal_deadline_ms(&self) -> Option<f64> {
-        if self.poisoned.is_some() {
+        if self.poisoned.is_some() || self.pending_pass.is_some() {
             return None;
         }
         self.ranks
@@ -364,7 +380,14 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
     ) -> Result<EngineEffects<C::InternalEffects>> {
         self.ensure_healthy()?;
         validate_time(now_ms, "internal-work time")?;
-        let pass_in_flight = self.pending_pass.is_some();
+        // A rank may model a physical deadline inside an eagerly committed
+        // model step, but the framework cannot consume that completion until
+        // the shared pass boundary. Besides preserving visibility ordering,
+        // returning before consulting any rank makes this a true no-op: no
+        // residency activation, observer event, or rank-local clock advance.
+        if self.pending_pass.is_some() {
+            return Ok(EngineEffects::default());
+        }
         let mut effects = Vec::new();
         for dp_rank in 0..self.ranks.len() {
             let is_due = self.ranks[dp_rank]
@@ -374,7 +397,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
                 continue;
             }
             let rank_effects = self.ranks[dp_rank]
-                .process_internal_work(now_ms, pass_in_flight)
+                .process_internal_work(now_ms, false)
                 .with_context(|| {
                     format!("processing internal work for attention-DP rank {dp_rank}")
                 });

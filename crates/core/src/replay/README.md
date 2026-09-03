@@ -50,6 +50,9 @@ the same contract. The dependency points only toward this crate.
 - `src/replay/runtime_utils.rs`
   Shared helpers used by `agg.rs` and `disagg.rs`: event scheduling,
   `ReadyWorkerCompletions`, and `next_timestamp`.
+- `src/replay/telemetry.rs`
+  Serializable, policy-neutral telemetry snapshots and the optional observer
+  contract.
 - `src/replay/progress.rs`
   `ReplayProgress`, the indicatif-based progress bar used by the harnesses.
 - `src/replay/report.rs`
@@ -92,6 +95,7 @@ It only advances `now_ms` to the next meaningful timestamp:
 
 - next request arrival
 - next worker completion event
+- next telemetry or scaling tick while work remains
 
 ### Worker Model
 
@@ -126,6 +130,7 @@ pub(crate) enum SimulationEventKind<Events> {
     EnginePassCompletion(EnginePassCompletion<Events>),
     TransferComplete { handoff_id },
     WorkerReady { stage, worker_id },
+    TelemetryTick,
     ScalingTick,
 }
 ```
@@ -135,7 +140,13 @@ pub(crate) enum SimulationEventKind<Events> {
 - `TransferComplete` advances a disaggregated request after modeled handoff
   timing.
 - `WorkerReady` marks the point at which a worker returns to the admission pool after a pass completes.
+- `TelemetryTick` samples settled replay state without invoking or changing a
+  scaling policy.
 - `ScalingTick` gives the injected scaling policy a settled cluster snapshot.
+
+At a shared timestamp, Replay settles workload events first, publishes the
+telemetry sample second, and invokes scaling last. A scaling decision therefore
+cannot rewrite the state represented by a coincident telemetry sample.
 
 ## Placement and Scaling Integration
 
@@ -165,8 +176,37 @@ flowchart LR
     C -->|Queued| E["policy owns pending admission"]
     F["engine observations and lifecycle"] --> G["PlacementPolicy::observe / request_terminal"]
     G --> H["released placements"]
-    H --> D
+H --> D
 ```
+
+### Optional telemetry sampling
+
+`Replayer::with_telemetry_observer` attaches a separate observer at a positive,
+finite virtual-time interval. This cadence is independent of Planner's scaling
+ticks and does not need to be a multiple of any engine tick duration. Periodic
+timestamps are derived from the original sampling time and ordinal, rather
+than repeated floating-point addition.
+
+The observer receives:
+
+- a gauge-only baseline after the initial timestamp settles
+- periodic samples with traffic and additive scheduler counters for each
+  completed interval
+- a final sample when a positive elapsed tail remains after the last periodic
+  boundary, or when the final timestamp has pending zero-duration interval
+  observations
+
+Gauge rows describe only live worker ranks. Cache-hit token and preemption
+counters from a rank that retires during an interval are folded into one
+role-level aggregate before its live state is dropped, so telemetry storage is
+O(live ranks) plus O(1) retired history. Arriving-request traffic has its own
+accumulator, so neither the baseline nor telemetry sampling drains Planner's
+traffic window. When no observer is attached, Replay allocates no telemetry
+rank state and performs no telemetry callbacks.
+
+Telemetry heartbeats are observational: they do not keep a deadlocked replay
+alive or advance a replay past its configured time cap. A heartbeat is only
+interleaved when canonical replay work exists at or before the cap.
 
 ### Why KV events are captured only where needed
 
@@ -185,6 +225,10 @@ The disaggregated runtime in `src/replay/disagg.rs` models two distinct stages:
 
 - a prefill router and prefill worker pool
 - a decode router and decode worker pool
+
+vLLM and TensorRT-LLM use source-first handoff; SGLang uses destination-first handoff. The
+TensorRT-LLM path applies `GUARANTEED_NO_EVICT` to reserve decode completion headroom while the
+destination owns transferred prompt KV.
 
 Attention-DP is currently supported only by aggregated offline replay. Disaggregated replay
 requires both prefill and decode `dp_size` to be `1`; ranked prefill/decode routing and handoff

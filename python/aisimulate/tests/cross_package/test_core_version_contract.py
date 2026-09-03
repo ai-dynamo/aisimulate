@@ -43,9 +43,7 @@ def test_aisimulate_wheel_and_core_crate_versions_match() -> None:
 def test_python_and_numpy_support_contracts_match() -> None:
     project = tomllib.loads((APPLICATION_ROOT / "pyproject.toml").read_text())["project"]
     assert project["requires-python"] == SUPPORTED_PYTHON
-    assert [dependency for dependency in project["dependencies"] if dependency.startswith("numpy")] == [
-        SUPPORTED_NUMPY
-    ]
+    assert [dependency for dependency in project["dependencies"] if dependency.startswith("numpy")] == [SUPPORTED_NUMPY]
 
 
 def test_plotext_support_contract_excludes_incompatible_v6() -> None:

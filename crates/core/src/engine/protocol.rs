@@ -137,13 +137,25 @@ pub struct KvEvent {
     pub data: KvEventData,
 }
 
+/// First-admission provenance for prompt tokens reused across cache tiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CacheTierAttribution {
+    /// Reused prompt tokens already resident in device KV before any H2D.
+    pub g1_reused_input_tokens: usize,
+    /// Additional reused prompt tokens restored from the native host tier.
+    pub host_reused_input_tokens: usize,
+}
+
 /// Request admission exposed at pass start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Admission {
     /// Admitted request.
     pub request_id: Uuid,
-    /// Prompt tokens reused from native G1.
+    /// Prompt tokens reused from all KV-cache tiers.
     pub reused_input_tokens: usize,
+    /// Tier provenance captured before a host-loaded prefix becomes G1.
+    pub cache_tier_attribution: Option<CacheTierAttribution>,
 }
 
 /// Scheduler action taken to relieve KV pressure.
@@ -212,9 +224,20 @@ pub struct Output {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Metrics {
     pub dp_rank: u32,
+    /// Backend-native legacy occupied-block count. vLLM reports blocks
+    /// referenced by active requests; SGLang reports occupied page-pool blocks,
+    /// including evictable radix-resident pages.
     pub active_blocks: u64,
+    /// Reusable resident blocks not included in `active_blocks`. This is
+    /// currently populated by vLLM; SGLang reports zero because its legacy
+    /// occupied count already includes radix-resident pages.
+    pub inactive_blocks: u64,
     pub total_blocks: u64,
+    /// `active_blocks / total_blocks`, with backend-native semantics above.
     pub cache_usage: f64,
+    /// Physical resident fraction. This includes inactive reusable vLLM blocks
+    /// and equals `cache_usage` for SGLang's legacy occupied-page metric.
+    pub physical_cache_usage: f64,
     pub running_requests: u64,
     pub waiting_requests: u64,
     pub preemptions_total: u64,

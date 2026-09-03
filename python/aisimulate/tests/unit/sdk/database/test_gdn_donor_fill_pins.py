@@ -48,19 +48,17 @@ def test_b200_sglang_gdn_conv_donor_fill_is_pinned():
     assert "cross_backend" in channels  # the donor sources are admitted
 
 
-def test_h200_vllm_gdn_chunk_own_physical_lane_rows_are_pinned():
+def test_h200_vllm_gdn_chunk_own_physical_lane_rows_are_pinned_and_logical_lane_stays_absent():
     db = get_database("h200_sxm", "vllm", "0.24.0")
     key = (5120, 16, 128, 48, 128, 4)  # Qwen3.5-27B / Nemotron-H-family GDN shard
     # vLLM 0.24's own chunk_gated_delta_rule_flashinfer physical rows: the
-    # engine's own-physical-lane precedence serves THESE at query time, not
-    # the logical `chunk_gated_delta_rule` lane, which after the shared-layer
-    # merge holds sglang/trtllm donor rows and older-version vllm rows.
+    # engine's own-physical-lane precedence serves THESE at query time. The
+    # old logical `chunk_gated_delta_rule` label existed only in pruned vLLM
+    # tables, so the regenerated reuse manifest no longer admits donor rows
+    # into that lane for vLLM.
     phys = _gdn_context_lane(db, "chunk_gated_delta_rule_flashinfer", key)
     assert phys[16][4096]["latency"] == pytest.approx(1.3013623046875, rel=1e-9)
     assert phys[8][4096]["latency"] == pytest.approx(0.640457305908203, rel=1e-9)
-    # The logical lane really does cover the same coordinate with a DIFFERENT
-    # (donor) value — the precedence question the engine answers is live.
-    logical = _gdn_context_lane(db, "chunk_gated_delta_rule", key)
-    assert logical[16][4096]["latency"] != pytest.approx(1.3013623046875, rel=1e-9)
+    assert "chunk_gated_delta_rule" not in db._gdn_data
     channels = {record["channel"] for record in db.data_provenance.get("gdn_perf.parquet", []) if record["exists"]}
     assert "cross_backend" in channels
