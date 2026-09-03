@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-schema_version: 1
+schema_version: 2
 runtime:
   framework: sglang
   version: 0.5.17
@@ -36,17 +36,21 @@ tables:
     # Concatenated 9153 rows total; keys disjoint by construction (moe_dtype
     # partitions bfloat16/fp8_block/nvfp4, verified zero duplicate keys
     # across all non-latency columns before landing) and disjoint from
-    # every other version. collector_hash is identical for both pipelines
-    # above (a pure content hash of collect_moe.py + the shared core --
-    # both ran the identical collector code at cdbfd10, only the model
-    # filter differed; re-verified via
-    # collector.provenance.collector_hash("collector.sglang.collect_moe",
-    # ...) against this checkout). case_plan_hash genuinely differs between
-    # the two pipelines (different model filter -> different resolved
-    # case-id set: base id vs RadixArk id) and is therefore the only field
-    # omitted.
-    collector_ref: cdbfd10329a1cf73bf07677ab25614dccfce2379
-    collector_hash: sha256:7c92ba48f717cb849096921e8da59f11e5fca3468ec6907e9348fcbfbc5bb24e
-    collected_at: '2026-08-18'
+    # every other version. The archived result/collection_meta.yaml from
+    # each pipeline attests its distinct attempted case set; schema v2 keeps
+    # both events instead of collapsing their provenance.
     rows: 9153
     status: complete
+    collections:
+      - collector_ref: cdbfd10329a1cf73bf07677ab25614dccfce2379
+        collector_hash: sha256:7c92ba48f717cb849096921e8da59f11e5fca3468ec6907e9348fcbfbc5bb24e
+        case_plan_hash: sha256:8ea8cfa9ea5f389dbf09f848a9ded111e5bcc6067d0c9d0b9607852ade54eca1
+        collected_at: '2026-08-18'
+        rows: 5994
+        status: partial
+      - collector_ref: cdbfd10329a1cf73bf07677ab25614dccfce2379
+        collector_hash: sha256:7c92ba48f717cb849096921e8da59f11e5fca3468ec6907e9348fcbfbc5bb24e
+        case_plan_hash: sha256:141ee9344439aa9b5595de0d952c993ba1df20389aa7685470b3877eebd9495d
+        collected_at: '2026-08-18'
+        rows: 3159
+        status: complete

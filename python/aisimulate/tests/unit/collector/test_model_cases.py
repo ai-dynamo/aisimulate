@@ -1971,6 +1971,32 @@ def test_qwen38_max_nvfp4_moe_cases_are_declared_with_correct_shape_and_runner(m
     assert not moe_model_allows_quantization("sglang", "Qwen/Qwen3.8-2.4T-A95B", "nvfp4")
 
 
+def test_qwen38_max_plan_only_schedules_attention_on_compatible_collector():
+    model_path = "Qwen/Qwen3.8-2.4T-A95B"
+    attention_ops = {"attention_context", "attention_generation"}
+
+    for backend in ("sglang", "vllm"):
+        plan = build_collection_case_plan(backend=backend, model_path=model_path)
+        assert attention_ops.isdisjoint(plan.selected_ops), (backend, plan.selected_ops)
+
+    trtllm_plan = build_collection_case_plan(backend="trtllm", model_path=model_path)
+    assert attention_ops <= trtllm_plan.selected_ops
+
+
+def test_qwen38_max_base_moe_quantization_is_fail_closed_by_framework():
+    model_path = "Qwen/Qwen3.8-2.4T-A95B"
+    expected_by_backend = {
+        "sglang": {"bfloat16", "fp8_block"},
+        "trtllm": set(),
+        "vllm": set(),
+    }
+
+    for backend, expected in expected_by_backend.items():
+        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
+        allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
+        assert allowed == expected, (backend, model_path, allowed)
+
+
 def test_radixark_qwen38_max_nvfp4_row_is_sglang_only():
     model_path = "RadixArk/Qwen3.8-2.4T-A95B-NVFP4"
     for backend in ("trtllm", "vllm"):

@@ -16,12 +16,14 @@ tables:
     # fallback. Manual JET job 63106699 on aws-pdx (base id: one script,
     # `collect.py --ops moe gdn gemm`), mirrored
     # lmsysorg/sglang:v0.5.17-cu130 amd64 image (shares the v0.5.17
-    # multi-arch digest above), collector branch cdbfd10. Same 5
+    # multi-arch digest above), collector commit f5b4914. Same 5
     # kernel_source lanes and row profile as the gb300/gb200/b200_sxm
     # siblings (1209 rows; flashinfer_gated_delta_rule_decode ~0.5x the fla
-    # fp32-state lane at matched keys). collector_hash / case_plan_hash were
-    # not captured in the JET artifact handoff for this manual run.
-    collector_ref: cdbfd10329a1cf73bf07677ab25614dccfce2379
+    # fp32-state lane at matched keys). The JET artifact's embedded generated
+    # sidecar supplies the original collector and attempted-case hashes.
+    collector_ref: f5b49140a581809b3031775883fc1c2e55132c96
+    collector_hash: sha256:572bd2304dbf6cea5df47150a25ce111d70b6b27407294c9fbe809b121272b41
+    case_plan_hash: sha256:e4b0f34d0e44fc75373def8e06455f44dde784b41624ea3518a9ddb752243ff8
     collected_at: '2026-08-18'
     rows: 1209
-    status: complete
+    status: partial

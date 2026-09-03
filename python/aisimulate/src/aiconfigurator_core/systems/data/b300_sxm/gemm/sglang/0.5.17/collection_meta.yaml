@@ -16,12 +16,14 @@ tables:
     # Qwen/Qwen3.8-2.4T-A95B scope only; every other shape at this version
     # inherits from 0.5.14 via shared-layer query-time fallback. Manual JET
     # job 63106699 on aws-pdx (same script/invocation as gdn_perf above),
-    # mirrored lmsysorg/sglang:v0.5.17-cu130 amd64 image, collector branch
-    # cdbfd10. Same 130758-row profile and fp8 n=1 alignment raises (74x
+    # mirrored lmsysorg/sglang:v0.5.17-cu130 amd64 image, collector commit
+    # f5b4914. Same 130758-row profile and fp8 n=1 alignment raises (74x
     # "out must be multiple of 16 bytes for memory alignment") as the
-    # gb300/gb200/b200_sxm siblings. collector_hash / case_plan_hash were
-    # not captured in the JET artifact handoff for this manual run.
-    collector_ref: cdbfd10329a1cf73bf07677ab25614dccfce2379
+    # gb300/gb200/b200_sxm siblings. The JET artifact's embedded generated
+    # sidecar supplies the original collector and attempted-case hashes.
+    collector_ref: f5b49140a581809b3031775883fc1c2e55132c96
+    collector_hash: sha256:22c87d11517990d8c86de6f93dd4ded7b0ee3caef7a74a93a01886108b16526f
+    case_plan_hash: sha256:61ab368c79d4ef5bd49b90e7e0905c24ad216ef54970c62bab1bbfe44e8dc82c
     collected_at: '2026-08-18'
     rows: 130758
-    status: complete
+    status: partial

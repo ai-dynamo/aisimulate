@@ -18,9 +18,15 @@ model_paths:
   - RadixArk/Qwen3.8-2.4T-A95B-NVFP4
 include_base: true
 base_ops:
-  - attention_context
-  - attention_generation
   - gemm
+framework_specific_base_ops:
+  # SGLang 0.5.17 and vLLM 0.27.1 reuse the query-time attention data from
+  # their traced-equivalent 0.5.14 and 0.24.0 lanes. Their attention
+  # collectors are pinned to those older runtimes, so do not schedule them
+  # in the newer model-runtime plans. TRT-LLM retains native collection.
+  trtllm:
+    - attention_context
+    - attention_generation
 description: >
   Qwen3.8-Max MoE/GDN model-centric collection plan.
 
@@ -117,6 +123,16 @@ model_case_values:
       # bfloat16 and fp8_block already), so redeclaring it here would just
       # duplicate the base value -- omitted instead.
       sglang_moe_routing_method_type: RenormalizeNaive
+      framework_quantization:
+        # These are the two SGLang modes collected for the base checkpoint.
+        # The other framework lanes have not been verified for this artifact,
+        # so keep them closed instead of inheriting the global MoE grid.
+        sglang:
+          allowed_modes: [bfloat16, fp8_block]
+        trtllm:
+          allowed_modes: []
+        vllm:
+          allowed_modes: []
     # NVFP4 collection fixture (ModelOpt experts-only recipe: routed-expert
     # linears only, other components at source precision; collector-only id, no
     # separate model_path row needed for the bf16/fp8_block artifacts above
