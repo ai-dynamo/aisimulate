@@ -16,6 +16,7 @@ from collector.framework_manifest import (
 )
 from collector.sglang.registry import REGISTRY as SGLANG_REGISTRY
 from collector.trtllm.registry import REGISTRY as TRTLLM_REGISTRY
+from collector.version_resolver import _check_compat
 from collector.vllm.registry import REGISTRY as VLLM_REGISTRY
 from collector.vllm.registry import REGISTRY_XPU as VLLM_XPU_REGISTRY
 from collector.wideep.sglang import dataset_version_label
@@ -59,17 +60,32 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
 
     # Each module pins the runtime that actually collects it: the manifest
     # default, or its family override (e.g. kda runs only on the vllm kimi-k3
-    # preview image, frameworks.vllm.families.kda).
+    # preview image, frameworks.vllm.families.kda). The Qwen3.8 target-lane
+    # collectors accept both the default 0.24.0 runtime and model-pinned
+    # 0.27.1, so compare the declaration semantically just as collect.py does.
     module_versions: dict[str, set[str]] = {}
     for entry in VLLM_REGISTRY:
         module_versions.setdefault(entry.module, set()).add(resolve_op_runtime("vllm", entry.op).version)
 
     for module, versions in sorted(module_versions.items()):
         assert len(versions) == 1, (module, versions)
-        expected = f'__compat__ = "vllm=={next(iter(versions))}"'
+        resolved_version = next(iter(versions))
         source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
         declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
-        assert declarations == [expected], module
+        assert len(declarations) == 1, module
+        declared = declarations[0].split("=", 1)[1].strip().strip('"')
+        assert _check_compat(declared, resolved_version), (module, declared, resolved_version)
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["collector.vllm.collect_moe", "collector.vllm.collect_gdn", "collector.vllm.collect_gemm"],
+)
+def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
+    expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"'
+    source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
+    declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
+    assert declarations == [expected], module
 
 
 def test_active_vllm_xpu_collectors_are_exactly_pinned_to_manifest_version():
@@ -402,6 +418,50 @@ def test_model_pin_mismatch_error_names_the_model_scoped_image():
     # model-scoped runtime/image instead of the framework default.
     assert "sglang stock collector requires exactly 0.5.17, found 0.5.14" in message
     assert "use lmsysorg/sglang:v0.5.17@sha256:" in message
+
+
+@pytest.mark.parametrize(
+    "model_path",
+    [
+        "Qwen/Qwen3.8-2.4T-A95B",
+        "Qwen/Qwen3.8-2.4T-A95B-FP8",
+        "RadixArk/Qwen3.8-2.4T-A95B-NVFP4",
+    ],
+)
+def test_model_pin_match_resolves_qwen38_max_to_vllm_0_27_1(model_path):
+    runtime = require_collector_runtime(
+        "vllm", "0.27.1", requested_ops={"gemm"}, wideep_ops=set(), model_path=model_path
+    )
+    assert runtime.version == "0.27.1"
+    assert runtime.image().startswith("vllm/vllm-openai:v0.27.1@sha256:")
+    assert runtime.image("cu129").startswith("vllm/vllm-openai:v0.27.1-cu129@sha256:")
+    assert runtime.family is None
+
+
+def test_vllm_model_pin_mismatch_error_names_the_model_scoped_image():
+    with pytest.raises(RuntimeError) as excinfo:
+        require_collector_runtime(
+            "vllm",
+            "0.24.0",
+            requested_ops={"gemm"},
+            wideep_ops=set(),
+            model_path="Qwen/Qwen3.8-2.4T-A95B",
+        )
+    message = str(excinfo.value)
+    assert "vllm stock collector requires exactly 0.27.1, found 0.24.0" in message
+    assert "use vllm/vllm-openai:v0.27.1@sha256:" in message
+
+
+def test_vllm_unknown_model_id_falls_back_to_default_resolution():
+    baseline = require_collector_runtime("vllm", "0.24.0", requested_ops={"gemm"}, wideep_ops=set())
+    unmatched = require_collector_runtime(
+        "vllm",
+        "0.24.0",
+        requested_ops={"gemm"},
+        wideep_ops=set(),
+        model_path="some-org/not-a-pinned-model",
+    )
+    assert unmatched == baseline
 
 
 def test_real_manifest_models_section_does_not_break_validate_resolution():

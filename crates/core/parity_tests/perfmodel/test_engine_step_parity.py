@@ -535,6 +535,46 @@ SMOKE_CASES = [
         ),
         id="qwen38-max-gb300-sglang-0517-nvfp4-disagg",
     ),
+    # vLLM 0.27.1 sparse-data twin: model-specific GEMM/GDN/MoE silicon with
+    # attention, communication, and quantization supplied by the approved
+    # shared-layer chain. The native FP8 checkpoint needs TP16. The vLLM
+    # collector does not combine logical MoE TP and EP, so use its measured
+    # all-TP lane; the larger aggregate batch exercises the IFB surface.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+            system_name="gb300",
+            backend_name="vllm",
+            backend_version="0.27.1",
+            tp_size=16,
+            moe_tp_size=16,
+            moe_ep_size=1,
+            agg_batch_size=32,
+            nextn=0,
+        ),
+        id="qwen38-max-gb300-vllm-0271-fp8-agg",
+    ),
+    # The bf16 checkpoint needs two TP16 pipeline stages to satisfy the
+    # weight-memory bound. This is the second measured vLLM MoE lane and uses
+    # the same all-TP MoE topology with non-trivial disaggregated worker
+    # and decode-batch settings.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.8-2.4T-A95B",
+            system_name="gb300",
+            backend_name="vllm",
+            backend_version="0.27.1",
+            tp_size=16,
+            pp_size=2,
+            moe_tp_size=16,
+            moe_ep_size=1,
+            disagg_prefill_num_workers=2,
+            disagg_decode_batch_size=8,
+            disagg_decode_num_workers=2,
+            nextn=0,
+        ),
+        id="qwen38-max-gb300-vllm-0271-bf16-disagg",
+    ),
 ]
 
 PARITY_RTOL = 0.01
