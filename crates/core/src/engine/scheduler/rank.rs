@@ -201,6 +201,10 @@ impl RankEngine for SchedulerRank {
         self.core.waiting_for_external_command()
     }
 
+    fn prepare_group_pass(&mut self, wave_step: u64, dp_size: std::num::NonZeroU32) {
+        self.core.prepare_group_pass(wave_step, dp_size.get());
+    }
+
     fn execute_pass(
         &mut self,
         now_ms: f64,
@@ -366,6 +370,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         max_model_len: config.max_model_len,
         max_num_seqs: Some(config.max_num_seqs),
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
+        prefill_schedule_interval: config.prefill_schedule_interval,
         enable_prefix_caching: config.enable_prefix_caching,
         enable_chunked_prefill: config.enable_chunked_prefill,
         speedup_ratio: config.speedup_ratio,
