@@ -633,16 +633,17 @@ def test_disagg_replica_budget_follows_coverage(synth_systems):
 
 
 # ---------------------------------------------------------------------------
-# (b) generation-only LL coverage -> fused defaults and one asymmetry warning
+# (b) no coverage -> fused defaults everywhere, one INFO log
 # ---------------------------------------------------------------------------
 
 
 def test_uncovered_model_keeps_fused_defaults_and_logs_once(caplog):
-    """A node-local LL donor without HT context coverage cannot enable the tuple."""
+    """Shipped h200_sxm/sglang carries no moe_a2a rows for the Qwen3 shape, so
+    the task keeps the fused ladders and states which collector to run."""
     import aiconfigurator.sdk.task_v2 as task_v2
 
     task_v2._LARGE_EP_EMPTY_COVERAGE_LOGGED.clear()  # restored by the autouse fixture
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator.sdk.task_v2"):
+    with caplog.at_level(logging.INFO, logger="aiconfigurator.sdk.task_v2"):
         t = Task(
             serving_mode="agg",
             model_path=SYNTH_MODEL,
@@ -654,7 +655,7 @@ def test_uncovered_model_keeps_fused_defaults_and_logs_once(caplog):
     assert t.agg_moe_ep_candidates == [1, 2, 4, 8, 16]
     assert t.agg_num_gpu_candidates == [1, 2, 4, 8]  # capped to total_gpus=8
     assert all(t._resolve_moe_comm_backend("agg", tup) is None for tup in t.iter_parallel("agg"))
-    hits = [r for r in caplog.records if "large-EP" in r.message and "asymmetric" in r.message]
+    hits = [r for r in caplog.records if "large-EP" in r.message and "collector" in r.message]
     assert len(hits) == 1, [r.message for r in caplog.records]
 
 

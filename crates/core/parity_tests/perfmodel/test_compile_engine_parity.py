@@ -566,9 +566,7 @@ def _build_wideep_sglang():
         # Current-slot primary data plus approved cross-version donors for
         # the large-EP tables form the production H200 query shape.
     )
-    assert database is not None, (
-        f"missing shipped {_WIDEEP_SGLANG_SYSTEM}/sglang/{_WIDEEP_SGLANG_VERSION} database"
-    )
+    assert database is not None, f"missing shipped {_WIDEEP_SGLANG_SYSTEM}/sglang/{_WIDEEP_SGLANG_VERSION} database"
     compute_eps = database.moe_expert_compute_coverage(
         hidden_size=7168,
         inter_size=2048,
@@ -664,9 +662,7 @@ def _build_gb200_wideep_sglang():
 def _handle_from_spec_json(spec_json: str) -> engine.EngineHandle:
     import aiconfigurator_core
 
-    return engine.EngineHandle(
-        bytes(aiconfigurator_core.engine_spec_bincode_from_json(spec_json))
-    )
+    return engine.EngineHandle(bytes(aiconfigurator_core.engine_spec_bincode_from_json(spec_json)))
 
 
 class TestWideEpDeepEpParity:
@@ -681,9 +677,7 @@ class TestWideEpDeepEpParity:
     def test_wideep_static_parity(self) -> None:
         _model, _backend, _database, spec_json = _build_wideep_sglang()
         handle = _handle_from_spec_json(spec_json)
-        new_ctx, new_gen, _ = handle.run_static(
-            batch_size=1, isl=1024, osl=4, prefix=0, stride=1
-        )
+        new_ctx, new_gen, _ = handle.run_static(batch_size=1, isl=1024, osl=4, prefix=0, stride=1)
         _assert_within(
             "wideep_static_ctx",
             _golden_reference("wideep_sglang::static_ctx"),
@@ -722,21 +716,13 @@ class TestWideEpDeepEpParity:
         context_ops = spec["context_ops"]
         generation_ops = spec["generation_ops"]
 
-        context_mla = [
-            op["WideEpContextMla"] for op in context_ops if "WideEpContextMla" in op
-        ]
-        generation_mla = [
-            op["WideEpGenerationMla"]
-            for op in generation_ops
-            if "WideEpGenerationMla" in op
-        ]
+        context_mla = [op["WideEpContextMla"] for op in context_ops if "WideEpContextMla" in op]
+        generation_mla = [op["WideEpGenerationMla"] for op in generation_ops if "WideEpGenerationMla" in op]
         assert len(context_mla) == len(generation_mla) == 1
         assert context_mla[0]["num_heads"] == generation_mla[0]["num_heads"] == 16
 
         context_a2a = [op["MoeAllToAll"] for op in context_ops if "MoeAllToAll" in op]
-        generation_a2a = [
-            op["MoeAllToAll"] for op in generation_ops if "MoeAllToAll" in op
-        ]
+        generation_a2a = [op["MoeAllToAll"] for op in generation_ops if "MoeAllToAll" in op]
         assert {op["phase"] for op in context_a2a} == {"dispatch", "combine"}
         assert {op["comm_backend"] for op in context_a2a} == {"deepep_ht"}
         assert {op["phase"] for op in generation_a2a} == {"dispatch", "combine"}
@@ -762,9 +748,7 @@ class TestGb200WideEpDeepEpParity:
     def test_gb200_wideep_static_parity(self) -> None:
         _model, _backend, _database, spec_json = _build_gb200_wideep_sglang()
         handle = _handle_from_spec_json(spec_json)
-        new_ctx, new_gen, _ = handle.run_static(
-            batch_size=1, isl=1024, osl=4, prefix=0, stride=1
-        )
+        new_ctx, new_gen, _ = handle.run_static(batch_size=1, isl=1024, osl=4, prefix=0, stride=1)
         _assert_within(
             "wideep_gb200_static_ctx",
             _golden_reference("wideep_sglang_gb200::static_ctx"),
