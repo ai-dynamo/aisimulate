@@ -1686,16 +1686,30 @@
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage": {
       "agg": {
-        "error": "ValueError"
+        "values": {
+          "agg_request": 110.29198601941764,
+          "agg_tpot": 37.387113904887336,
+          "agg_ttft": 72.9048721145303
+        }
       },
       "disagg": {
-        "error": "ValueError"
+        "values": {
+          "disagg_request": 84.367,
+          "disagg_tpot": 11.328,
+          "disagg_ttft": 73.039
+        }
       },
       "mixed": {
-        "error": "ValueError"
+        "values": {
+          "mixed_step": 37.38911219807906
+        }
       },
       "static": {
-        "error": "ValueError"
+        "values": {
+          "static_ctx": 36.888,
+          "static_gen": 9.749,
+          "static_total": 46.637
+        }
       }
     }
   },
@@ -2705,19 +2719,19 @@
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage::agg": {
       "engine": "rust",
-      "git_head": "2c51f91b4bcbdcaca133de657fc51ea28ba3c153"
+      "git_head": "e644784b08c5920bd805fd3231ffdb9bf497cde8"
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage::disagg": {
       "engine": "rust",
-      "git_head": "2c51f91b4bcbdcaca133de657fc51ea28ba3c153"
+      "git_head": "e644784b08c5920bd805fd3231ffdb9bf497cde8"
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage::mixed": {
       "engine": "rust",
-      "git_head": "2c51f91b4bcbdcaca133de657fc51ea28ba3c153"
+      "git_head": "e644784b08c5920bd805fd3231ffdb9bf497cde8"
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage::static": {
       "engine": "rust",
-      "git_head": "2c51f91b4bcbdcaca133de657fc51ea28ba3c153"
+      "git_head": "e644784b08c5920bd805fd3231ffdb9bf497cde8"
     }
   }
 }

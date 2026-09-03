@@ -436,6 +436,8 @@ SMOKE_CASES = [
             backend_name="sglang",
             backend_version="0.5.14",
             tp_size=16,
+            moe_tp_size=16,
+            moe_ep_size=1,
         ),
         # Beyond-node TP on a 4-GPU-node system: pins the recorded
         # multi-node custom-AR fan-out pricing (AIC-1808).
