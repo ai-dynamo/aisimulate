@@ -54,10 +54,10 @@
 /docs/                            @ai-dynamo/maintainers-aiconfigurator
 /LICENSE                          @ai-dynamo/maintainers-aiconfigurator
 /README.md                        @ai-dynamo/maintainers-aiconfigurator
-/ATTRIBUTIONS.md                  @ai-dynamo/maintainers-aiconfigurator
 /CONTRIBUTING.md                  @ai-dynamo/maintainers-aiconfigurator
 /CONTRIBUTORS.md                  @ai-dynamo/maintainers-aiconfigurator
 /CODE_OF_CONDUCT.md               @ai-dynamo/maintainers-aiconfigurator
+/THIRD_PARTY_NOTICES.md           @ai-dynamo/maintainers-aiconfigurator
 
 # === Path overrides: a subsystem nested inside another area's tree.
 # More specific, so they win via last-match over the area globs above. ===

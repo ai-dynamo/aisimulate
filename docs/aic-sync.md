@@ -23,6 +23,9 @@ recorded in
 [`aic-sync-ff2be1-to-095f58a-manual.md`](aic-sync-ff2be1-to-095f58a-manual.md)
 and
 [`aic-sync-095f58a-to-ce2824e-manual.md`](aic-sync-095f58a-to-ce2824e-manual.md).
+The final feature transfer from the frozen AIConfigurator repository is
+recorded in
+[`aic-sync-ce2824e-to-c8aee02-manual.md`](aic-sync-ce2824e-to-c8aee02-manual.md).
 To generate a binary-safe patch from the recorded AIC boundary to a newer AIC
 commit:
 
