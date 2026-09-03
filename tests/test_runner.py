@@ -267,6 +267,44 @@ def test_public_host_offload_config_reaches_native_execution_rank():
     }
 
 
+def test_public_prefill_schedule_interval_reaches_native_execution_rank(tmp_path):
+    path = tmp_path / "prediction.yaml"
+    path.write_text(
+        """\
+engine:
+  mode: aggregated
+  model: example/model
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  workers:
+    aggregated:
+      parallelism:
+        attention_data: 2
+      scheduler:
+        prefill_schedule_interval: 4
+      kv_cache:
+        block_size: 16
+        capacity: {type: fixed, blocks: 128}
+      timing: {type: fixed, prefill_ms: 1.0, decode_ms: 1.0}
+""",
+        encoding="utf-8",
+    )
+    runtime = RecordingRuntime()
+    public = CorePredictionConfig.from_yaml(path)
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        prediction_to_replay_spec(public)
+    )
+
+    assert public.engine.workers.aggregated is not None
+    assert public.engine.workers.aggregated.scheduler.prefill_schedule_interval == 4
+    assert (
+        runtime.execution_spec["spec"]["engine"]["rank"]["prefill_schedule_interval"]
+        == 4
+    )
+
+
 def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     runtime = RecordingRuntime()
     engine_args = _engine_args()

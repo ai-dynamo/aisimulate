@@ -1,8 +1,29 @@
 # vLLM Prefill Scheduling Cadence
 
 vLLM can throttle prefill scheduling in data-parallel deployments so decode
-steps remain balanced across ranks. AISimulate models this with the rank-level
-`prefill_schedule_interval` engine setting.
+steps remain balanced across ranks. Set the interval in an `aisimulate predict`
+configuration under the scheduler for each affected worker role:
+
+```yaml
+engine:
+  mode: aggregated
+  model: nvidia/Kimi-K2.5-NVFP4
+  hardware: b200_sxm
+  backend: vllm
+  workers:
+    aggregated:
+      parallelism:
+        attention_data: 8
+      scheduler:
+        prefill_schedule_interval: 4
+```
+
+```bash
+aisimulate predict --config prediction.yaml
+```
+
+The Python compiler lowers this field to the rank-level engine setting used by
+the replay runtime. Lower-level Runner callers can set the same field directly:
 
 ```json
 {

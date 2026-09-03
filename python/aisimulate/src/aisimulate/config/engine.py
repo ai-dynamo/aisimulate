@@ -32,6 +32,7 @@ class ParallelismPredictionConfig(StrictModel):
 class SchedulerPredictionConfig(StrictModel):
     max_batched_tokens: PositiveInt = 8192
     max_sequences: PositiveInt = 256
+    prefill_schedule_interval: PositiveInt = 1
 
 
 class KvCapacityPredictionConfig(StrictModel):
