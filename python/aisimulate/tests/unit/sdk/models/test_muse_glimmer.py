@@ -176,7 +176,7 @@ def test_allreduces_have_exact_count_names_and_scales():
     }
 
     assert len(allreduces) == 6
-    assert Counter(op._name for op in allreduces) == Counter(expected_scales)
+    assert Counter(op._name for op in allreduces) == Counter(expected_scales.keys())
     assert {op._name: op._scale_factor for op in allreduces} == expected_scales
 
 
