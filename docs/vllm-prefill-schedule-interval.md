@@ -18,10 +18,17 @@ steps remain balanced across ranks. AISimulate models this with the rank-level
 
 The default is `1`, which preserves the previous scheduling behavior. Values
 above one take effect only for vLLM attention-DP groups. On a non-aligned group
-step, new and partial prefills wait while decodes continue. Throttling is
-temporarily released when the previous aligned step left queued requests due
-to scheduler capacity. The shared counter resets when the full DP group
-drains, so a new request wave can prefill immediately.
+step, local prefill work with more than one token remaining waits while decodes
+continue. Connector loads, materialized requests, and requests with at most one
+prefill token remaining can still advance. Throttling is temporarily released
+when a non-preempting aligned step left queued requests due to scheduler
+capacity.
+
+The shared counter resets as soon as AISimulate observes that the full DP group
+has drained, including after cancellation and internal-work transitions. vLLM
+checks global unfinished state every 32 steps and may run a dummy tail before
+resetting. AISimulate does not model that collective tail, so a request arriving
+during the upstream tail can observe a different cadence phase.
 
 This follows vLLM's `prefill_schedule_interval` scheduler behavior at commit
 `e2fa28594f7baad142a426b0b6a2cfe2c79201c7`.

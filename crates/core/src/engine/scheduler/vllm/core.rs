@@ -1561,10 +1561,10 @@ impl VllmCore {
         let requests_before = self.state.requests.len();
         self.state.compact_running();
         let mut token_budget = self.args.max_num_batched_tokens.unwrap_or(usize::MAX);
-        let cadence_step = self.wave_step
-            % u64::try_from(self.args.prefill_schedule_interval)
-                .expect("prefill schedule interval fits in u64")
-            == 0;
+        let cadence_step = self.wave_step.is_multiple_of(
+            u64::try_from(self.args.prefill_schedule_interval)
+                .expect("prefill schedule interval fits in u64"),
+        );
         let has_running_decode = self.state.running.iter().any(|uuid| {
             self.state
                 .requests
@@ -1654,7 +1654,6 @@ impl VllmCore {
         };
         while !preempted_any
             && self.state.running.len() < max_num_running
-            && !defer_prefills
             // vLLM does not call connector lookup after the current batch has
             // consumed its scheduling budget; lookup itself mutates G2 LRU.
             && (self.native_host_offload.is_none() || token_budget > 0)
@@ -1872,6 +1871,14 @@ impl VllmCore {
                 }
             }
 
+            // Match vLLM's cadence check at the local-compute admission site.
+            // Connector loads above and materialized/near-total prefix hits
+            // continue on throttled steps; only requests needing more than the
+            // final token of local prefill work remain queued.
+            if defer_prefills && prefill_cost.new_tokens > 1 {
+                break;
+            }
+
             let outcome = self.schedule_request(
                 uuid,
                 true,
@@ -1919,7 +1926,7 @@ impl VllmCore {
             }
         }
 
-        if !defer_prefills {
+        if !defer_prefills && !preempted_any {
             self.prefill_capacity_bound = !self.state.waiting_members.is_empty();
         }
 

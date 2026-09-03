@@ -155,6 +155,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
         // atomic; fail-stop poisoning is reserved for the grouped operations
         // below, where an earlier sibling may already have committed.
         let effects = effects?;
+        self.reset_wave_if_drained();
         Ok(EngineEffects::one(dp_rank, effects))
     }
 
@@ -365,9 +366,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             }
         }
         debug_assert!(pending_by_rank.next().is_none());
-        if self.ranks.iter().all(RankEngine::is_drained) {
-            self.next_wave_step = 0;
-        }
+        self.reset_wave_if_drained();
         Ok(EnginePassCompleted {
             pass_id,
             effects: EngineEffects { by_rank: effects },
@@ -420,6 +419,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
                 effects: rank_effects,
             });
         }
+        self.reset_wave_if_drained();
         Ok(EngineEffects { by_rank: effects })
     }
 
@@ -438,6 +438,12 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
             );
         }
         Ok(())
+    }
+
+    fn reset_wave_if_drained(&mut self) {
+        if self.pending_pass.is_none() && self.ranks.iter().all(RankEngine::is_drained) {
+            self.next_wave_step = 0;
+        }
     }
 
     fn poison(&mut self, error: anyhow::Error) -> anyhow::Error {

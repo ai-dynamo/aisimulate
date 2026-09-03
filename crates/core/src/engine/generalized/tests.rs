@@ -432,6 +432,33 @@ fn attention_dp_wave_step_is_shared_and_resets_after_drain() -> Result<()> {
 }
 
 #[test]
+fn attention_dp_wave_step_resets_after_cancel_to_idle() -> Result<()> {
+    let (rank, _) = config(vec![true, false], vec![1.0, 1.0], vec![None, None]);
+    let prepared_steps = Rc::clone(&rank.prepared_steps);
+    let mut engine = GeneralizedMockerEngine::<FakeRank>::new(
+        EngineIdentity::new(35),
+        GeneralizedEngineConfig::attention_dp(NonZeroU32::new(2).unwrap(), rank),
+    )?;
+
+    let first = engine.execute_pass(0.0)?.expect("rank 0 is ready");
+    engine.apply_command_effects(SchedulerCommand::new(1, "wake"), 0.5)?;
+    engine.complete_pass(first.pass_id, first.end_ms)?;
+    assert!(!engine.is_drained(), "rank 1 keeps the current wave alive");
+
+    engine.apply_command_effects(SchedulerCommand::new(1, "cancel"), 2.0)?;
+    assert!(engine.is_drained());
+    engine.apply_command_effects(SchedulerCommand::new(0, "wake"), 3.0)?;
+    let restarted = engine.execute_pass(3.0)?.expect("new wave is ready");
+    engine.complete_pass(restarted.pass_id, restarted.end_ms)?;
+
+    assert_eq!(
+        prepared_steps.borrow().as_slice(),
+        &[(0, 0, 2), (1, 0, 2), (0, 0, 2), (1, 0, 2)]
+    );
+    Ok(())
+}
+
+#[test]
 fn attention_dp_external_wait_requires_every_ready_rank() -> Result<()> {
     let (mut all_waiting, _) = config(
         vec![true, true, false],

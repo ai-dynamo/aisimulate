@@ -1193,6 +1193,96 @@ mod core_behavior {
     }
 
     #[test]
+    fn attention_dp_cadence_does_not_release_after_kv_preemption() {
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Vllm)
+            .block_size(4)
+            .num_gpu_blocks(6)
+            .max_num_batched_tokens(Some(16))
+            .max_num_seqs(Some(2))
+            .prefill_schedule_interval(4)
+            .enable_chunked_prefill(true)
+            .enable_prefix_caching(false)
+            .preemption_mode(PreemptionMode::Lifo)
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new(args);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        for (uuid, start) in [(31, 0), (32, 100)] {
+            core.receive(cadence_request(uuid, start, 8, 8));
+        }
+
+        let mut aligned_step = 0;
+        let victim = loop {
+            core.prepare_group_pass(aligned_step, 2);
+            let pass = core.execute_pass(&mut collector, aligned_step as f64);
+            if pass.mocker_metrics.vllm_preemptions_total > 0 {
+                break core
+                    .state
+                    .requests
+                    .iter()
+                    .find_map(|(uuid, request)| {
+                        (request.status == RequestStatus::Preempted).then_some(*uuid)
+                    })
+                    .expect("preemption must requeue one victim");
+            }
+            aligned_step += 4;
+            assert!(aligned_step < 64, "fixture did not trigger KV preemption");
+        };
+
+        core.prepare_group_pass(aligned_step + 1, 2);
+        let throttled = core.execute_pass(&mut collector, aligned_step as f64 + 1.0);
+        let request = core
+            .state
+            .requests
+            .get(&victim)
+            .expect("victim must remain queued on the non-aligned step");
+        assert_eq!(request.status, RequestStatus::Preempted);
+        assert_eq!(request.num_computed_tokens, 0);
+        assert_eq!(throttled.fpm.unwrap().num_queued_decode, 1);
+    }
+
+    #[test]
+    fn attention_dp_cadence_admits_one_token_prefix_remainder() {
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Vllm)
+            .block_size(4)
+            .num_gpu_blocks(64)
+            .max_num_batched_tokens(Some(8))
+            .max_num_seqs(Some(4))
+            .prefill_schedule_interval(4)
+            .enable_chunked_prefill(true)
+            .enable_prefix_caching(true)
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new(args);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+
+        core.receive(cadence_request(40, 0, 4, 0));
+        core.prepare_group_pass(0, 2);
+        core.execute_pass(&mut collector, 0.0);
+
+        core.receive(cadence_request(41, 100, 4, 8));
+        core.prepare_group_pass(0, 2);
+        core.execute_pass(&mut collector, 1.0);
+
+        let near_hit = core.receive(cadence_request(42, 0, 5, 1));
+        core.prepare_group_pass(1, 2);
+        let throttled = core.execute_pass(&mut collector, 2.0);
+
+        assert!(
+            throttled
+                .admissions
+                .iter()
+                .any(|admission| admission.uuid == near_hit),
+            "a request with one local prefill token remaining must be admitted"
+        );
+        assert_eq!(throttled.fpm.unwrap().num_prefill_requests, 1);
+    }
+
+    #[test]
     fn prefill_cadence_is_inactive_without_attention_dp() {
         let mut core = cadence_core(4);
         let mut collector = crate::engine::trace::TraceCollector::default();
