@@ -25,6 +25,31 @@ case-identity, deduplication, and validation gates). Skills are procedural
 runbooks; if a skill and a `.claude/rules/` file ever disagree, the rule
 file wins.
 
+## Required Third-Party Attribution
+
+Before adding code or other content copied, adapted, translated, or
+substantially derived from an external project, MUST:
+
+- Identify the upstream repository, immutable commit or tag, original path,
+  and applicable license. This applies to source code, tests, configuration
+  files, patches, fixtures, documentation, and generated derivatives.
+- Preserve all applicable upstream copyright, license, attribution, and NOTICE
+  material, and mark modified files as modified when the upstream license
+  requires it.
+- Record the source URL and revision in the file header or an adjacent README.
+  For formats that cannot carry comments, use an adjacent attribution or
+  license file that is included in distributions.
+- Ensure required third-party notices and license texts are included in the
+  repository and packaged artifacts through the repository's attribution and
+  release process. Do not hand-edit generated attribution artifacts.
+
+The repository's Apache-2.0 license and NVIDIA copyright header do not replace
+an upstream license or attribution requirement. Do not label third-party code
+as exclusively NVIDIA-authored. If the source, revision, license, compatibility,
+or required notice is unclear, stop and request maintainer or Open Source Review
+Board guidance before committing the derived content. This is a required gate,
+not optional documentation.
+
 ## Cursor Cloud specific instructions
 
 ### Project overview
