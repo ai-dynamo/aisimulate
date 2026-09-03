@@ -188,19 +188,35 @@
     },
     "wideep_sglang::decode_step": {
       "engine": "rust",
-      "git_head": "74d16b763320938105273da0983555928935c49c"
+      "git_head": "fcff3c9981fbf087f08896a3e8ffffdbfd325e45"
     },
     "wideep_sglang::mixed_step": {
       "engine": "rust",
-      "git_head": "74d16b763320938105273da0983555928935c49c"
+      "git_head": "fcff3c9981fbf087f08896a3e8ffffdbfd325e45"
     },
     "wideep_sglang::static_ctx": {
       "engine": "rust",
-      "git_head": "74d16b763320938105273da0983555928935c49c"
+      "git_head": "fcff3c9981fbf087f08896a3e8ffffdbfd325e45"
     },
     "wideep_sglang::static_gen": {
       "engine": "rust",
-      "git_head": "74d16b763320938105273da0983555928935c49c"
+      "git_head": "fcff3c9981fbf087f08896a3e8ffffdbfd325e45"
+    },
+    "wideep_sglang_gb200::decode_step": {
+      "engine": "rust",
+      "git_head": "fcff3c9981fbf087f08896a3e8ffffdbfd325e45"
+    },
+    "wideep_sglang_gb200::mixed_step": {
+      "engine": "rust",
+      "git_head": "fcff3c9981fbf087f08896a3e8ffffdbfd325e45"
+    },
+    "wideep_sglang_gb200::static_ctx": {
+      "engine": "rust",
+      "git_head": "fcff3c9981fbf087f08896a3e8ffffdbfd325e45"
+    },
+    "wideep_sglang_gb200::static_gen": {
+      "engine": "rust",
+      "git_head": "fcff3c9981fbf087f08896a3e8ffffdbfd325e45"
     },
     "wideep_trtllm::static_ctx": {
       "engine": "rust",
@@ -255,10 +271,14 @@
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::mixed_step": 11.641467399954287,
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::static_ctx": 11.095808703250695,
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::static_gen": 2.935499428684405,
-    "wideep_sglang::decode_step": 18.280983653308724,
-    "wideep_sglang::mixed_step": 166.08675117503486,
-    "wideep_sglang::static_ctx": 159.23352020631503,
-    "wideep_sglang::static_gen": 51.560485655836516,
+    "wideep_sglang::decode_step": 13.804399647917533,
+    "wideep_sglang::mixed_step": 104.03654358645551,
+    "wideep_sglang::static_ctx": 100.62218918767189,
+    "wideep_sglang::static_gen": 42.81386279874189,
+    "wideep_sglang_gb200::decode_step": 18.280983653308724,
+    "wideep_sglang_gb200::mixed_step": 166.08675117503486,
+    "wideep_sglang_gb200::static_ctx": 159.23352020631503,
+    "wideep_sglang_gb200::static_gen": 51.560485655836516,
     "wideep_trtllm::static_ctx": 81.1084122560448,
     "wideep_trtllm::static_gen": 50.115260968358655
   }
