@@ -1,0 +1,164 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Public snapshot of AISimulate end-to-end TTFT and TPOT accuracy against measured silicon operating points."
+    />
+    <title>AISimulate — E2E Accuracy Overview</title>
+    <script>
+      try {
+        const savedTheme = localStorage.getItem("aisimulate-accuracy-theme");
+        const prefersLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+        document.documentElement.dataset.theme =
+          savedTheme === "light" || savedTheme === "dark"
+            ? savedTheme
+            : prefersLight
+              ? "light"
+              : "dark";
+      } catch (_) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="top-header">
+      <div class="shell top-header-inner">
+        <a class="brand" href="../" aria-label="AISimulate documentation home">
+          <span class="brand-mark" aria-hidden="true"><span></span></span>
+          <span>AISimulate Dashboard</span>
+        </a>
+        <nav class="source-nav" aria-label="Source links">
+          <a id="measurement-source-link" href="https://github.com/SemiAnalysisAI/InferenceX-app/releases">
+            Silicon source
+          </a>
+          <a href="https://github.com/ai-dynamo/aisimulate">AISimulate</a>
+          <button
+            class="theme-toggle"
+            id="theme-toggle"
+            type="button"
+            aria-label="Switch to light theme"
+            title="Switch theme"
+          >
+            <span id="theme-icon" aria-hidden="true">☀</span>
+          </button>
+        </nav>
+      </div>
+    </header>
+
+    <nav class="tab-nav" aria-label="Primary">
+      <div class="shell tab-nav-inner">
+        <a class="active" href="./" aria-current="page">E2E Accuracy Overview</a>
+        <a href="https://github.com/ai-dynamo/aisimulate">Repository</a>
+        <a href="./summary.json" download>Download JSON</a>
+      </div>
+    </nav>
+
+    <main class="shell dashboard">
+      <section class="overview-heading" aria-labelledby="page-title">
+        <h1 id="page-title">E2E Accuracy Overview</h1>
+        <div class="heading-controls">
+          <span
+            class="scope-control"
+            title="The checked-in public snapshot contains single-node configurations only."
+          >
+            <span class="scope-check" aria-hidden="true">✓</span>
+            <span id="multinode-label">Exclude multi-node predictions</span>
+          </span>
+          <span id="release-label">release: loading…</span>
+        </div>
+      </section>
+
+      <p class="identity-line" id="identity-line">Loading snapshot dimensions…</p>
+
+      <section class="summary-grid" id="summary-grid" aria-label="Snapshot summary">
+        <div class="loading-card">Loading summary…</div>
+      </section>
+
+      <section class="matrix-panel" aria-labelledby="matrix-heading">
+        <h2 id="matrix-heading">
+          MAPE per model vs silicon — AISimulate over successful replay points; AIC over all points
+        </h2>
+        <div class="table-scroll" role="region" aria-label="Accuracy matrix" tabindex="0">
+          <table>
+            <caption class="sr-only">
+              End-to-end accuracy metrics grouped by model and workload. Activate a column heading
+              to sort model groups.
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col" aria-sort="ascending">
+                  <button class="sort-button" data-sort="model">Model <span aria-hidden="true">↕</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button numeric" data-sort="aicPoints">AIC points <span aria-hidden="true">↕</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button numeric" data-sort="aisimulatePoints">AISimulate points <span aria-hidden="true">↕</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button numeric" data-sort="gpuSkus">GPU SKUs <span aria-hidden="true">↕</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button" data-sort="hardware">Hardware <span aria-hidden="true">↕</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button" data-sort="precisions">Precisions <span aria-hidden="true">↕</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button numeric" data-sort="aisimulateTpot">AISimulate TPOT MAPE <span aria-hidden="true">↕</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button numeric" data-sort="aisimulateTtft">AISimulate TTFT MAPE <span aria-hidden="true">↕</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button numeric" data-sort="aicTpot">AIC TPOT MAPE <span aria-hidden="true">↕</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button numeric" data-sort="aicTtft">AIC TTFT MAPE <span aria-hidden="true">↕</span></button>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="matrix-body">
+              <tr><td colspan="10" class="loading-cell">Loading accuracy matrix…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="public-notes" aria-label="Scope and provenance">
+        <details open>
+          <summary>Public evidence scope</summary>
+          <div class="notes-grid">
+            <article>
+              <h2>Read the scope first</h2>
+              <p id="scope-claim">
+                These numbers apply only to exact measured configurations in this snapshot.
+              </p>
+              <ul>
+                <li>Client-observed TTFT and TPOT are reported separately.</li>
+                <li>Multi-node configurations are excluded.</li>
+                <li>No universal pass/fail threshold is applied.</li>
+              </ul>
+            </article>
+            <article>
+              <h2>Reproducible snapshot identity</h2>
+              <div id="provenance-content">Loading provenance…</div>
+            </article>
+          </div>
+        </details>
+      </section>
+
+      <div class="error-banner" id="error-banner" role="alert" hidden></div>
+    </main>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

@@ -11,11 +11,13 @@ use uuid::Uuid;
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost};
 use crate::engine::common::sequence::RequestSequence;
 
-use super::G1Acquire;
 use super::vllm_backend::{
     BlockRequestLease, DecodeBlockReservation as VllmDecodeBlockReservation,
-    DestinationReservation as VllmDestinationReservation, VllmAcquire, VllmKvManager,
+    DestinationReservation as VllmDestinationReservation,
+    StoreSourceSnapshot as VllmStoreSourceSnapshot, VllmAcquire, VllmKvManager,
 };
+pub(crate) use super::vllm_backend::{NativeAllocation, SourceReuseDependency};
+use super::{DestinationReservationMode, G1Acquire};
 
 fn into_g1_acquire<T>(outcome: VllmAcquire<T>) -> G1Acquire<T> {
     match outcome {
@@ -32,12 +34,30 @@ pub(crate) struct DestinationReservation {
     inner: VllmDestinationReservation,
 }
 
+/// Opaque, short-lived G1 source view. Callers can read logical hashes but
+/// physical copy identity remains private to the native manager.
+#[must_use = "a store source snapshot must be attached or discarded synchronously"]
+pub(crate) struct StoreSourceSnapshot<'a> {
+    inner: VllmStoreSourceSnapshot<'a>,
+}
+
+impl StoreSourceSnapshot<'_> {
+    pub(crate) fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub(crate) fn sequence_hashes(
+        &self,
+    ) -> impl ExactSizeIterator<Item = crate::engine::common::hashing::SequenceHash> + '_ {
+        self.inner.sequence_hashes()
+    }
+}
+
 impl DestinationReservation {
     pub(crate) fn transferable_prompt_tokens(&self, block_size: usize) -> usize {
         self.inner.transferable_prompt_tokens(block_size)
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.inner.len()
     }
@@ -82,13 +102,19 @@ impl G1Manager {
         lease: &mut BlockRequestLease,
         cumulative_tokens: usize,
         reusable_prefix_blocks: usize,
-    ) -> G1Acquire<usize> {
-        into_g1_acquire(self.inner.allocate_lease(
-            owner,
-            lease,
-            cumulative_tokens,
-            reusable_prefix_blocks,
-        ))
+    ) -> NativeAllocation<usize> {
+        self.inner
+            .allocate_lease(owner, lease, cumulative_tokens, reusable_prefix_blocks)
+    }
+
+    pub(crate) fn authorize_native_compute_after_dependencies(
+        &mut self,
+        owner: Uuid,
+        lease: &mut BlockRequestLease,
+        dependencies: &[SourceReuseDependency],
+    ) {
+        self.inner
+            .authorize_lease_writes_after_dependencies(owner, lease, dependencies);
     }
 
     pub(crate) fn finalize_native_computed_prefix(
@@ -129,15 +155,82 @@ impl G1Manager {
         owner: Uuid,
         sequence: &RequestSequence,
         lease: &BlockRequestLease,
+        mode: DestinationReservationMode,
         eviction_now_ms: Option<f64>,
     ) -> G1Acquire<DestinationReservation> {
         into_g1_acquire(self.inner.reserve_destination_lease(
             owner,
             sequence,
             lease,
+            mode,
             eviction_now_ms,
         ))
         .map(|inner| DestinationReservation { inner })
+    }
+
+    /// Reserve an exact G1 prefix plus only the suffix selected by the native
+    /// host-cache lookup.
+    pub(crate) fn reserve_native_host_destination(
+        &mut self,
+        owner: Uuid,
+        lease: &BlockRequestLease,
+        g1_prefix_blocks: usize,
+        transferred_suffix: &[crate::engine::common::hashing::SequenceHash],
+    ) -> G1Acquire<DestinationReservation> {
+        into_g1_acquire(self.inner.reserve_external_prefix_lease(
+            owner,
+            lease,
+            g1_prefix_blocks,
+            transferred_suffix,
+        ))
+        .map(|inner| DestinationReservation { inner })
+    }
+
+    pub(crate) fn native_destination_pending_dependencies(
+        &self,
+        reservation: &DestinationReservation,
+    ) -> Vec<SourceReuseDependency> {
+        self.inner
+            .destination_pending_dependencies(&reservation.inner)
+    }
+
+    pub(crate) fn snapshot_native_store_sources<'a>(
+        &self,
+        owner: Uuid,
+        lease: &'a BlockRequestLease,
+        block_indices: &'a [usize],
+    ) -> Option<StoreSourceSnapshot<'a>> {
+        self.inner
+            .snapshot_store_sources(owner, lease, block_indices)
+            .map(|inner| StoreSourceSnapshot { inner })
+    }
+
+    /// Attach the transfer identity after host capacity admission. Snapshot and
+    /// attachment must remain in one non-yielding scheduler transition.
+    pub(crate) fn attach_native_store_source_dependency(
+        &mut self,
+        owner: Uuid,
+        lease: &BlockRequestLease,
+        snapshot: StoreSourceSnapshot<'_>,
+        dependency: SourceReuseDependency,
+    ) {
+        debug_assert_eq!(lease.owner(), owner, "native lease owner mismatch");
+        self.inner
+            .attach_store_source_dependency(owner, snapshot.inner, dependency);
+    }
+
+    pub(crate) fn satisfy_native_source_dependency(
+        &mut self,
+        dependency: SourceReuseDependency,
+    ) -> bool {
+        self.inner.satisfy_source_reuse_dependency(dependency)
+    }
+
+    pub(crate) fn is_native_source_dependency_pending(
+        &self,
+        dependency: SourceReuseDependency,
+    ) -> bool {
+        self.inner.is_source_reuse_dependency_pending(dependency)
     }
 
     pub(crate) fn activate_native_destination(
@@ -169,13 +262,13 @@ impl G1Manager {
         lease: &mut BlockRequestLease,
         cumulative_tokens: usize,
         reservation: &mut DecodeBlockReservation,
-    ) {
+    ) -> NativeAllocation<usize> {
         self.inner.allocate_lease_from_decode_reservation(
             owner,
             lease,
             cumulative_tokens,
             &mut reservation.inner,
-        );
+        )
     }
 
     pub(crate) fn release_decode_reservation(&mut self, reservation: DecodeBlockReservation) {
@@ -186,7 +279,6 @@ impl G1Manager {
         self.inner.num_active_blocks()
     }
 
-    #[cfg(test)]
     pub(crate) fn num_inactive_blocks(&self) -> usize {
         self.inner.num_inactive_blocks()
     }
@@ -218,7 +310,10 @@ mod tests {
         let mut lease = BlockRequestLease::new(owner, identities);
         assert!(matches!(
             manager.allocate_native(owner, &mut lease, 8, 0),
-            G1Acquire::Ready(_)
+            NativeAllocation::Ready {
+                value: _,
+                dependencies
+            } if dependencies.is_empty()
         ));
         manager.finalize_native_computed_prefix(owner, 0, 8, &mut sequence, &mut lease);
 
@@ -230,7 +325,10 @@ mod tests {
         }
         assert!(matches!(
             manager.allocate_native(owner, &mut lease, 12, 0),
-            G1Acquire::Ready(_)
+            NativeAllocation::Ready {
+                value: _,
+                dependencies
+            } if dependencies.is_empty()
         ));
         manager.finalize_native_computed_prefix(owner, 8, 12, &mut sequence, &mut lease);
 

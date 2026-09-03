@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import shlex
+
 import pytest
 
 from aiconfigurator.generator.api import generate_from_request
@@ -251,3 +253,24 @@ def test_candidate_renders_deployable_artifacts_with_evaluated_limits():
     assert '--max-model-len "8192"' in artifacts["cli_args_agg"]
     assert '--max-num-seqs "256"' in artifacts["cli_args_agg"]
     assert "--max-num-batched-tokens 8192" in artifacts["cli_args_agg"]
+    assert _cli_flag_value(artifacts["cli_args_agg"], "--gpu-memory-utilization") == "0.9"
+
+
+def test_disagg_candidate_renders_role_specific_vllm_gpu_memory_utilization():
+    request = from_sweeper_candidate(
+        _disagg_candidate(backend="vllm", backend_version="0.20.1"),
+        workload={"isl": 8192, "osl": 1024},
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": "example/vllm:0.20.1"}},
+    )
+
+    artifacts = generate_from_request(request)
+
+    assert _cli_flag_value(artifacts["cli_args_prefill"], "--gpu-memory-utilization") == "0.9"
+    assert _cli_flag_value(artifacts["cli_args_decode"], "--gpu-memory-utilization") == "0.85"
+    assert artifacts["k8s_deploy.yaml"].count("--gpu-memory-utilization") == 2
+
+
+def _cli_flag_value(cli_args: str, flag: str) -> str:
+    tokens = shlex.split(cli_args)
+    return tokens[tokens.index(flag) + 1]

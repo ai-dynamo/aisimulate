@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::engine::KvEvent;
 use crate::engine::common::protocols::KvEventPublishers;
 use crate::engine::common::sequence::RequestSequence;
-use crate::engine::kv_manager::{BlockRequestLease, G1Acquire, G1Manager};
+use crate::engine::kv_manager::{BlockRequestLease, G1Manager, NativeAllocation};
 use crate::engine::scheduler::capture_kv_event_sink;
 
 /// Build the neutral native-G1 event chain used to verify that a promoted
@@ -48,7 +48,10 @@ pub fn g1_parent_chain_events(block_size: usize) -> Vec<KvEvent> {
         G1Manager::new_with_event_sink(3, block_size, KvEventPublishers::new(Some(sink)), 0);
     assert!(matches!(
         manager.allocate_native(owner, &mut lease, prompt_len, 0),
-        G1Acquire::Ready(3)
+        NativeAllocation::Ready {
+            value: 3,
+            dependencies
+        } if dependencies.is_empty()
     ));
     let prompt_complete = prompt_len / block_size * block_size;
     manager.finalize_native_computed_prefix(owner, 0, prompt_complete, &mut sequence, &mut lease);

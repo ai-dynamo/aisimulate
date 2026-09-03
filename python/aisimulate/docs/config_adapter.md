@@ -4,6 +4,18 @@ The config adapter converts external serving configurations into validated AIC
 estimate requests. Adaptation performs no estimate and executes no source shell
 commands.
 
+## Dashboard server-knob taxonomy
+
+`aisimulate/config_adapter/config/server_knob_groups.yaml` is the presentation
+source of truth for normalized dashboard knobs across vLLM, SGLang, and
+TRT-LLM. The three backends share one group taxonomy. Backend flag support
+remains separate in
+`aiconfigurator/generator/config/backend_config_mapping.yaml`.
+
+The YAML also lists knobs that the current AISimulate replay API cannot carry.
+Dashboard consumers must show those knobs as unavailable instead of inventing
+an `auto` default.
+
 ## Public API
 
 Import the API from `aiconfigurator.sdk.config_adapter`:
@@ -22,7 +34,7 @@ from aiconfigurator.sdk.config_adapter import (
 
 report = adapt_config(
     DynamoRecipeSource(Path("deploy.yaml"), Path("perf.yaml")),
-    AdapterOverrides(system_name="h200_sxm", backend_version="0.19.0"),
+    AdapterOverrides(system_name="h200_sxm", backend_version="current"),
 )
 
 for outcome in report.outcomes:
@@ -100,7 +112,7 @@ uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
   --perf /path/to/recipe/perf.yaml \
   --overrides '{
     "system_name": "h200_sxm",
-    "backend_version": "0.19.0",
+    "backend_version": "current",
     "nextn_accepted": 1.5,
     "decode_batch_size": 16
   }' \
@@ -123,7 +135,7 @@ uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format dynamo \
   --deploy /path/to/recipe/deploy.yaml \
   --perf /path/to/recipe/perf.yaml \
-  --overrides '{"system_name":"h200_sxm","backend_version":"0.19.0"}' \
+  --overrides '{"system_name":"h200_sxm","backend_version":"current"}' \
   --run-estimate \
   --output /tmp/estimate-report.json
 ```
@@ -163,8 +175,9 @@ Values resolve in this order:
 Programmatic adaptation fails closed. Missing model, system, workload,
 concurrency, or speculative-token acceptance creates a rejected outcome.
 Conflicting command and ConfigMap values are rejected. An unpinned backend
-version is accepted with a warning because AIC will choose its latest compatible
-database version.
+version is accepted with a warning: AIC resolves it to the current queryable
+slot (see `systems/query_versions.yaml`; the aliases `current` / `previous` /
+`next` are also accepted as pinned values).
 
 When global concurrency is not evenly divisible by source replicas and
 attention-DP ranks, callers must provide an explicit aggregated or decode batch

@@ -1,11 +1,14 @@
-   NOTICE: The test data files under ./lib/llm/tests/data/deepseek-v3.2 are
-   derived from the DeepSeek-V3.2 model repository (originally developed by
-   DeepSeek). The original files were obtained from:
-   https://huggingface.co/deepseek-ai/DeepSeek-V3.2 (commit c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3)
-   These files are licensed under the MIT License. The full text of the MIT
-   License can be found in ./lib/llm/tests/data/deepseek-v3.2/LICENSE.
-   The rest of this codebase is licensed under the Apache License 2.0 as
-   described below.
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+NOTICE: The file
+python/aisimulate/src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json
+is a verbatim copy of config.json from the DeepSeek-V3.2 model repository at
+commit c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3 and is licensed under the MIT
+License. Its license text, and attribution for other third-party material, is
+provided in THIRD_PARTY_NOTICES.md.
+
+Except for the third-party material identified in that notice file, this
+codebase is licensed under the Apache License 2.0 as described below.
 
                                 Apache License
                            Version 2.0, January 2004

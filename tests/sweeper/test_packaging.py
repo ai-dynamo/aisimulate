@@ -68,6 +68,7 @@ def test_aisimulate_native_runtime_imports_from_installed_distribution():
     assert runtime_spec is not None
     runtime = importlib.import_module("aisimulate._runtime")
     assert callable(runtime.run_replay_json)
+    assert callable(runtime.run_replay_with_artifacts_json)
 
 
 def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():

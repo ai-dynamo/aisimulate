@@ -1,8 +1,21 @@
-.venv/
-target/
+# OS metadata
+.DS_Store
+
+# Python environments, caches, and build output
+.venv*/
 dist/
+build/
 __pycache__/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
 *.pyc
 *.so
 *.dylib
+
+# Rust build output
+target/

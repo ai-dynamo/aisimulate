@@ -25,6 +25,36 @@ case-identity, deduplication, and validation gates). Skills are procedural
 runbooks; if a skill and a `.claude/rules/` file ever disagree, the rule
 file wins.
 
+## Required Third-Party Attribution
+
+Before adding code or other content copied, adapted, translated, or
+substantially derived from an external project, MUST:
+
+- Identify the upstream repository, immutable commit or tag, original path,
+  and applicable license. This applies to source code, tests, configuration
+  files, patches, fixtures, documentation, and generated derivatives.
+- Preserve all applicable upstream copyright, license, attribution, and NOTICE
+  material, and mark modified files as modified when the upstream license
+  requires it.
+- Record the source URL and revision in the file header or an adjacent README.
+  For formats that cannot carry comments, use an adjacent attribution or
+  license file that is included in distributions.
+- Add an entry to the root `THIRD_PARTY_NOTICES.md` identifying the derived
+  files, upstream source and immutable revision, copyright owner, applicable
+  license, and whether the files were modified. The root notice is canonical;
+  keep `python/aisimulate/THIRD_PARTY_NOTICES.md` byte-identical so the notice
+  is included in Python distributions. Run
+  `python3 scripts/check_packaged_legal_files.py` after either copy changes.
+- Do not hand-edit generated attribution artifacts. Update their source or
+  generation process instead.
+
+The repository's Apache-2.0 license and NVIDIA copyright header do not replace
+an upstream license or attribution requirement. Do not label third-party code
+as exclusively NVIDIA-authored. If the source, revision, license, compatibility,
+or required notice is unclear, stop and request maintainer or Open Source Review
+Board guidance before committing the derived content. This is a required gate,
+not optional documentation.
+
 ## Cursor Cloud specific instructions
 
 ### Project overview

@@ -17,7 +17,9 @@ sources feeding ``load_moe_a2a_data`` resolve under the ``comm/`` family dir
 and the comm hard-exclusion keeps them primary-only (design §6.5 rule 5).
 """
 
+import json
 import os
+import pickle
 from pathlib import Path
 
 import pytest
@@ -158,6 +160,29 @@ def test_get_weights_is_zero():
     assert _make_op().get_weights() == 0.0
 
 
+def test_stage1_fields_survive_json_and_pickle_round_trips():
+    import aiconfigurator_core
+
+    op = _make_op(
+        comm_backend="deepep_ll",
+        comm_dtype="fp8",
+        sms=0,
+        workload_distribution="power_law_1.01",
+        enable_eplb=True,
+    )
+    wire = json.loads(op._spec_json())
+    fields = wire["MoeAllToAll"]
+    assert fields["workload_distribution"] == "power_law_1.01"
+    assert fields["enable_eplb"] is True
+
+    from_json = aiconfigurator_core.op_from_spec_json(json.dumps(wire))
+    from_pickle = pickle.loads(pickle.dumps(op))
+    for restored in (from_json, from_pickle):
+        assert restored._spec_json() == op._spec_json()
+        assert restored._workload_distribution == "power_law_1.01"
+        assert restored._enable_eplb is True
+
+
 # ---------------------------------------------------------------------------
 # Shipped data: comm-family placement of the moe_a2a legacy sources
 # ---------------------------------------------------------------------------
@@ -177,7 +202,7 @@ def test_shipped_legacy_comm_sources_resolve_in_comm_family_dir():
     assert comm_dir_fragment in DEEPEP_NORMAL_PATH
     assert comm_dir_fragment in DEEPEP_LL_PATH
 
-    db = get_database("h200_sxm", "sglang", "0.5.6.post2")
+    db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     assert db is not None
     MoEAllToAll.load_data(db)
 
@@ -206,7 +231,7 @@ def test_attention_tp_default_noop_on_shipped_l1_case():
     from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
     from aiconfigurator_core.sdk.perf_database import get_database
 
-    db = get_database("h200_sxm", "sglang", "0.5.6.post2")
+    db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     assert db is not None
 
     # First slice of the legacy table (via the engine view), deterministically.

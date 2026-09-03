@@ -18,9 +18,14 @@ facades belong in `python/aisimulate/src/aisimulate_core/`; Rust composition,
 Replay, and PyO3 integration belong outside `crates/core/src/perfmodel/`.
 
 The machine-readable mapping and synchronization ledger live in
-`scripts/aic_sync.toml`. The manual-path review used to advance the initial
-boundary through `095f58a` is recorded in
-[`aic-sync-ff2be1-to-095f58a-manual.md`](aic-sync-ff2be1-to-095f58a-manual.md).
+`scripts/aic_sync.toml`. Manual-path reviews for each synchronization range are
+recorded in
+[`aic-sync-ff2be1-to-095f58a-manual.md`](aic-sync-ff2be1-to-095f58a-manual.md)
+and
+[`aic-sync-095f58a-to-ce2824e-manual.md`](aic-sync-095f58a-to-ce2824e-manual.md).
+The final feature transfer from the frozen AIConfigurator repository is
+recorded in
+[`aic-sync-ce2824e-to-c8aee02-manual.md`](aic-sync-ce2824e-to-c8aee02-manual.md).
 To generate a binary-safe patch from the recorded AIC boundary to a newer AIC
 commit:
 

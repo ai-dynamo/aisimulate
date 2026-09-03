@@ -35,6 +35,26 @@ def _require_source_path(source: Path, ref: str, path: str) -> None:
         raise ValueError(f"AIC sync source path does not exist at {ref}: {path}")
 
 
+def _prefix_extended_header_paths(patch: bytes, target: str) -> bytes:
+    """Map rename/copy metadata paths alongside the regular diff headers."""
+
+    prefix = target.encode() + b"/"
+    markers = (b"rename from ", b"rename to ", b"copy from ", b"copy to ")
+    rewritten: list[bytes] = []
+    for line in patch.splitlines(keepends=True):
+        marker = next((candidate for candidate in markers if line.startswith(candidate)), None)
+        if marker is None:
+            rewritten.append(line)
+            continue
+        path = line[len(marker) :]
+        if path.startswith(b'"'):
+            path = b'"' + prefix + path[1:]
+        else:
+            path = prefix + path
+        rewritten.append(marker + path)
+    return b"".join(rewritten)
+
+
 def _manual_changes(
     config: dict[str, object], source: Path, from_ref: str, to_ref: str
 ) -> list[dict[str, object]]:
@@ -130,6 +150,7 @@ def render(
             upstream,
         )
         if patch:
+            patch = _prefix_extended_header_paths(patch, target)
             chunks.append(patch.rstrip(b"\n") + b"\n")
     return b"".join(chunks)
 

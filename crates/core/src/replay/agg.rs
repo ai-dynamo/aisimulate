@@ -4,8 +4,8 @@
 use super::artifact::{ReplayArtifactRequest, ReplayArtifactSink};
 pub(super) use super::components::ReplayMode;
 use super::core::{
-    AdmissionSource as CoreAdmissionSource, Placement, PlacementDecision, PlacementPolicy,
-    WorkerTopology,
+    AdmissionSource as CoreAdmissionSource, EngineEventBatch, Placement, PlacementDecision,
+    PlacementPolicy, WorkerTopology,
 };
 use super::events::{SimulationEvent, SimulationWorkerStage, WorkerCompletionPayload};
 use super::evidence::{
@@ -14,14 +14,19 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_worker_completions,
-    pop_ready_worker_ready, push_scaling_tick, push_worker_completions, push_worker_ready,
+    next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp, pop_ready_scaling_tick,
+    pop_ready_telemetry_tick, pop_ready_worker_completions, pop_ready_worker_ready,
+    push_scaling_tick, push_telemetry_tick, push_worker_completions, push_worker_ready,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
+use super::telemetry::{
+    ReplaySchedulerIntervalMetrics, ReplayTelemetryObserver, ReplayTelemetryRuntime,
+    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
+};
 use super::{
     components::{
         AdmissionQueue, EngineComponent, EngineEffects, EnginePassMode, ReplayAdmissionMetadata,
-        ReplayEngineObservation, ReplayReadyArrival, TrafficAccumulator,
+        ReplayEngineObservation, ReplayReadyArrival, TrafficAccumulators,
     },
     state::AggRequestState,
 };
@@ -35,8 +40,13 @@ use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
 use uuid::Uuid;
 
+const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct AggRuntimeStats;
+pub(crate) struct AggRuntimeStats {
+    #[cfg(test)]
+    semantic_drain_count: usize,
+}
 
 pub(crate) struct AggRuntimeImpl<PlacementPolicyImpl, Observation, Metadata>
 where
@@ -61,13 +71,15 @@ where
     /// Latest forward pass metric per worker/rank since the previous scaling tick.
     fpm_buffer: LatestFpmBuffer,
     /// Traffic statistics accumulated between scaling ticks.
-    traffic: TrafficAccumulator,
+    traffic: TrafficAccumulators,
     /// Optional cap on simulated wall-clock time. When set, `run()` exits
     /// gracefully once the next scheduled timestamp exceeds this cap, leaving
     /// any in-flight requests as incomplete in the report.
     max_sim_time_ms: Option<f64>,
     /// Optional scaling component. When set, `run()` seeds recurring `ScalingTick` events.
     scaling_policy: Option<Box<dyn ReplayScalingPolicy>>,
+    /// Optional policy-neutral virtual-time telemetry sampler.
+    telemetry: Option<ReplayTelemetryRuntime>,
     /// Whether to retain the latest FPM snapshot per worker/rank. Only the planner
     /// consumes them, so the plain `run()` path leaves this `false`.
     collect_fpm: bool,
@@ -121,11 +133,12 @@ where
             events: BinaryHeap::new(),
             placement,
             progress,
-            stats: AggRuntimeStats,
+            stats: AggRuntimeStats::default(),
             fpm_buffer: LatestFpmBuffer::default(),
-            traffic: TrafficAccumulator::new(),
+            traffic: TrafficAccumulators::new(),
             max_sim_time_ms: None,
             scaling_policy: None,
+            telemetry: None,
             collect_fpm: false,
         })
     }
@@ -145,6 +158,8 @@ where
 
     pub(crate) fn with_artifact_sink(mut self, sink: ReplayArtifactSink) -> Self {
         self.engine.set_artifact_kv_capture(true);
+        self.engine
+            .set_host_offload_observer(sink.host_offload_observer());
         self.artifact_sink = Some(sink);
         self
     }
@@ -176,6 +191,18 @@ where
                 .activate_worker(worker_id, self.dp_size, self.now_ms);
         }
         self.scaling_policy = Some(policy);
+        self
+    }
+
+    pub(crate) fn with_telemetry_observer(
+        mut self,
+        sample_interval_ms: f64,
+        observer: Box<dyn ReplayTelemetryObserver>,
+    ) -> Self {
+        debug_assert!(sample_interval_ms.is_finite() && sample_interval_ms > 0.0);
+        self.engine.enable_telemetry();
+        self.traffic.enable_telemetry();
+        self.telemetry = Some(ReplayTelemetryRuntime::new(sample_interval_ms, observer));
         self
     }
 
@@ -245,6 +272,8 @@ where
                 placement.scheduler_id,
                 dp_rank,
                 placement.reported_overlap_tokens,
+                placement.cache_sample,
+                placement.placement_replica_id,
             );
             let request = self
                 .requests
@@ -309,6 +338,8 @@ where
                     placement.scheduler_id,
                     dp_rank,
                     placement.reported_overlap_tokens,
+                    placement.cache_sample,
+                    placement.placement_replica_id,
                 );
                 self.requests.insert(
                     uuid,
@@ -331,7 +362,7 @@ where
         Ok(uuid)
     }
 
-    /// Return true once no request work remains. Lingering `WorkerReady`/`ScalingTick`
+    /// Return true once no request work remains. Lingering worker/control tick
     /// events carry no work and do not
     /// keep the run alive — otherwise a recurring tick would never let `run()` exit.
     fn is_done(&self) -> bool {
@@ -342,7 +373,7 @@ where
     }
 
     /// Return true once the request workload is complete, even if `WorkerReady`
-    /// or `ScalingTick` events remain in the queue. Lingering startup events for
+    /// or control-tick events remain in the queue. Lingering startup events for
     /// workers that will never receive requests should not block completion.
     fn is_workload_done(&self) -> bool {
         self.cluster_in_flight() == 0
@@ -352,24 +383,40 @@ where
     }
 
     /// True if the event heap is empty or contains only "idle" events that carry no
-    /// pending request work: `WorkerReady` (a worker still starting up) or
-    /// `ScalingTick` (a re-armed scaling heartbeat).
+    /// pending request work: `WorkerReady` or a re-armed control heartbeat.
     fn only_idle_events_remain(&self) -> bool {
         use super::events::SimulationEventKind;
         self.events.iter().all(|e| {
             matches!(
                 e.kind,
-                SimulationEventKind::WorkerReady { .. } | SimulationEventKind::ScalingTick
+                SimulationEventKind::WorkerReady { .. }
+                    | SimulationEventKind::ScalingTick
+                    | SimulationEventKind::TelemetryTick
             )
         })
     }
 
-    /// Pick the next logical timestamp from either arrivals or scheduled worker completions.
-    fn next_timestamp(&mut self) -> Option<f64> {
+    /// Return both the next event including telemetry and the canonical next
+    /// timestamp that can advance replay semantics. Independently modeled
+    /// engine work, such as host transfers, is semantic for both views.
+    fn next_timestamps(&mut self) -> (Option<f64>, Option<f64>) {
+        let next_arrival_ms = CoreAdmissionSource::next_ready_time_ms(&mut self.admission);
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
-        choose_next_timestamp(
-            CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
-            next_event_ms,
+        let next_canonical_event_ms = if self.telemetry.is_some() {
+            next_non_telemetry_event_ms(&mut self.events)
+        } else {
+            next_event_ms
+        };
+        let next_internal_deadline_ms = self.engine.next_internal_deadline_ms();
+        (
+            choose_next_timestamp(
+                choose_next_timestamp(next_arrival_ms, next_event_ms),
+                next_internal_deadline_ms,
+            ),
+            choose_next_timestamp(
+                choose_next_timestamp(next_arrival_ms, next_canonical_event_ms),
+                next_internal_deadline_ms,
+            ),
         )
     }
 
@@ -597,6 +644,39 @@ where
         }
     }
 
+    /// Settle transfer and other deadline-driven engine work due at the
+    /// current timestamp before releasing new arrivals to scheduler admission.
+    fn apply_internal_work(&mut self) -> anyhow::Result<bool> {
+        let effects = self.engine.process_internal_work(self.now_ms)?;
+        if let (Some(sink), Some(events)) = (&self.artifact_sink, effects.artifact_kv_events) {
+            sink.record_internal_kv_events(self.now_ms, &events)?;
+        }
+        if !effects.engine_events.is_empty() {
+            self.apply_engine_observations(effects.engine_events, KvIngestBoundary::OffloadTick)?;
+        }
+        Ok(effects.made_progress)
+    }
+
+    fn settle_internal_work(
+        &mut self,
+        consecutive_internal_steps: &mut usize,
+    ) -> anyhow::Result<bool> {
+        let mut changed = false;
+        while self.apply_internal_work()? {
+            *consecutive_internal_steps = consecutive_internal_steps
+                .checked_add(1)
+                .context("internal-work convergence counter overflow")?;
+            if *consecutive_internal_steps >= MAX_CONSECUTIVE_INTERNAL_STEPS {
+                bail!(
+                    "offline replay detected non-converging engine internal work at {} ms",
+                    self.now_ms
+                );
+            }
+            changed = true;
+        }
+        Ok(changed)
+    }
+
     fn handle_engine_effects(
         &mut self,
         effects: EngineEffects<Observation::Batch>,
@@ -606,13 +686,19 @@ where
         // scheduler contract by making them visible to Replay's collector at
         // the same virtual timestamp before any completion is processed.
         for admission in effects.admissions {
-            self.collector
-                .on_admit(admission.uuid, self.now_ms, admission.reused_input_tokens);
-            self.collector.on_pool_admission(
+            let attribution = admission.cache_tier_attribution;
+            self.collector.on_admit_with_tier_attribution(
+                admission.uuid,
+                self.now_ms,
+                admission.reused_input_tokens,
+                attribution,
+            );
+            self.collector.on_pool_admission_with_tier_attribution(
                 admission.uuid,
                 ReplayRequestPool::Agg,
                 self.now_ms,
                 admission.reused_input_tokens,
+                attribution,
             );
             self.evidence
                 .record_pressure_readmission(admission.uuid, WorkerPool::Agg, self.now_ms);
@@ -690,9 +776,22 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> anyhow::Result<()> {
+        #[cfg(test)]
+        {
+            self.stats.semantic_drain_count += 1;
+        }
+        let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = false;
-            changed |= self.apply_worker_completions()?;
+            // Settle idle deadlines first: a completion below may release a
+            // queued placement and submit it to that same idle worker.
+            changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            let completed = self.apply_worker_completions()?;
+            changed |= completed;
+            if completed {
+                // Pass completion can expose another deadline at this timestamp.
+                changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.drive_ready_workers()?;
@@ -742,7 +841,11 @@ where
                 );
             }
             changed |= !removed.is_empty();
-            // Scaling ticks fire last so the policy observes a settled timestamp.
+            // Telemetry observes settled pre-decision state; scaling then fires
+            // last and retains its existing controller semantics.
+            if self.telemetry.is_some() {
+                changed |= self.apply_telemetry_ticks()?;
+            }
             if self.scaling_policy.is_some() {
                 changed |= self.apply_scaling_ticks()?;
             }
@@ -752,6 +855,101 @@ where
             }
         }
 
+        Ok(())
+    }
+
+    fn publish_telemetry_sample(&mut self, kind: ReplayTelemetrySampleKind) -> anyhow::Result<()> {
+        let Some(telemetry) = self.telemetry.as_ref() else {
+            return Ok(());
+        };
+        let sample_ordinal = telemetry.next_sample_ordinal();
+        let interval_start_ms = telemetry.interval_start_ms();
+        let (decode_scheduler_metrics, decode_interval_metrics, traffic) = match kind {
+            ReplayTelemetrySampleKind::Baseline => (
+                self.engine.telemetry_gauges_snapshot(),
+                ReplaySchedulerIntervalMetrics::default(),
+                ReplayTrafficMetricsSnapshot::default(),
+            ),
+            ReplayTelemetrySampleKind::Periodic | ReplayTelemetrySampleKind::Final => {
+                let (gauges, interval) = self.engine.take_telemetry_snapshot()?;
+                (gauges, interval, self.traffic.drain_telemetry(self.now_ms))
+            }
+        };
+        let snapshot = ReplayTelemetrySnapshot {
+            sample_ordinal,
+            kind,
+            interval_start_ms,
+            sampled_at_ms: self.now_ms,
+            traffic,
+            prefill_scheduler_metrics: Vec::new(),
+            decode_scheduler_metrics,
+            prefill_interval_metrics: ReplaySchedulerIntervalMetrics::default(),
+            decode_interval_metrics,
+            router_pending_prefill_requests: 0,
+            router_pending_decode_requests: self.placement.pending_count(),
+            active_prefill_ids: Vec::new(),
+            active_decode_ids: self.engine.active_group_ids(),
+            starting_prefill_ids: Vec::new(),
+            starting_decode_ids: self.engine.starting_group_ids(),
+            draining_prefill_ids: Vec::new(),
+            draining_decode_ids: self.engine.draining_group_ids(),
+        };
+
+        let mut telemetry = self
+            .telemetry
+            .take()
+            .expect("telemetry must remain attached while publishing");
+        let result = telemetry.publish(snapshot);
+        if result.is_ok() && kind != ReplayTelemetrySampleKind::Baseline {
+            telemetry.close_interval(self.now_ms);
+        }
+        self.telemetry = Some(telemetry);
+        result
+    }
+
+    /// Emit a gauge-only baseline and schedule the first periodic sample.
+    fn seed_first_telemetry_tick(&mut self) -> anyhow::Result<()> {
+        let Some(telemetry) = self.telemetry.as_mut() else {
+            return Ok(());
+        };
+        telemetry.start_at(self.now_ms);
+        self.publish_telemetry_sample(ReplayTelemetrySampleKind::Baseline)?;
+        let at_ms = self
+            .telemetry
+            .as_ref()
+            .expect("telemetry must remain attached")
+            .next_periodic_at_ms()?;
+        push_telemetry_tick(&mut self.events, &mut self.next_event_seq, at_ms);
+        Ok(())
+    }
+
+    fn apply_telemetry_ticks(&mut self) -> anyhow::Result<bool> {
+        let mut changed = false;
+        while pop_ready_telemetry_tick(&mut self.events, self.now_ms) {
+            self.publish_telemetry_sample(ReplayTelemetrySampleKind::Periodic)?;
+            changed = true;
+            if !self.is_workload_done() {
+                let next_ms = self
+                    .telemetry
+                    .as_ref()
+                    .expect("telemetry must remain attached")
+                    .next_periodic_at_ms()?;
+                push_telemetry_tick(&mut self.events, &mut self.next_event_seq, next_ms);
+            }
+        }
+        Ok(changed)
+    }
+
+    fn publish_final_telemetry_sample(&mut self) -> anyhow::Result<()> {
+        let Some(telemetry) = self.telemetry.as_ref() else {
+            return Ok(());
+        };
+        if self.now_ms > telemetry.interval_start_ms()
+            || self.traffic.telemetry_has_observations()
+            || self.engine.telemetry_has_interval_observations()
+        {
+            self.publish_telemetry_sample(ReplayTelemetrySampleKind::Final)?;
+        }
         Ok(())
     }
 
@@ -784,6 +982,8 @@ where
                 continue;
             }
             let active_decode_ids = self.engine.active_group_ids();
+            let starting_decode_ids = self.engine.starting_group_ids();
+            let draining_decode_ids = self.engine.draining_group_ids();
             self.fpm_buffer
                 .emit_idle_due(&active_decode_ids, self.dp_size, self.now_ms);
             let tick_ordinal = self.next_scaling_tick_ordinal;
@@ -792,13 +992,13 @@ where
                 now_ms: self.now_ms,
                 prefill_fpm: Vec::new(),
                 decode_fpm: self.fpm_buffer.take(),
-                traffic: self.traffic.drain(self.now_ms),
+                traffic: self.traffic.drain_planner(self.now_ms),
                 active_prefill_ids: Vec::new(),
                 active_decode_ids,
                 starting_prefill_ids: Vec::new(),
-                starting_decode_ids: self.engine.starting_group_ids(),
+                starting_decode_ids,
                 draining_prefill_ids: Vec::new(),
-                draining_decode_ids: self.engine.draining_group_ids(),
+                draining_decode_ids,
             };
             self.next_scaling_tick_ordinal = self
                 .next_scaling_tick_ordinal
@@ -850,6 +1050,18 @@ where
                 .add_worker_seconds(0.0, decode_worker_seconds);
         }
         self.now_ms = new_now_ms;
+    }
+
+    /// Advance to an observational heartbeat without waking semantic replay
+    /// work. Entering `drain_current_timestamp` here would retry deferred
+    /// workers and make native scheduler progress depend on sample cadence.
+    fn sample_telemetry_only_timestamp(&mut self, at_ms: f64) -> anyhow::Result<()> {
+        self.advance_now_ms(at_ms);
+        let sampled = self.apply_telemetry_ticks()?;
+        if !sampled {
+            bail!("telemetry-only timestamp did not publish its scheduled sample");
+        }
+        Ok(())
     }
 
     fn apply_scaling_with_tick(
@@ -1034,12 +1246,14 @@ where
             bail!("max_sim_time_ms must be a finite, non-negative value; got {cap_ms}");
         }
         self.drain_current_timestamp()?;
+        self.seed_first_telemetry_tick()?;
         // With a planner attached, seed the recurring heartbeat; ticks then fire as
         // events inside drain_current_timestamp.
         self.seed_first_scaling_tick()?;
 
         while !self.is_done() {
-            let Some(next_timestamp_ms) = self.next_timestamp() else {
+            let (next_timestamp_ms, canonical_timestamp_ms) = self.next_timestamps();
+            let Some(canonical_timestamp_ms) = canonical_timestamp_ms else {
                 // Aggregated workers have no external handoff dependency. If
                 // the event queue is empty while an engine still owns a
                 // request, the preceding zero-duration pass lost its terminal
@@ -1057,13 +1271,21 @@ where
                 );
             };
             if let Some(cap_ms) = self.max_sim_time_ms
-                && next_timestamp_ms > cap_ms
+                && canonical_timestamp_ms > cap_ms
             {
                 break;
+            }
+            let next_timestamp_ms = next_timestamp_ms
+                .expect("canonical replay activity must have a next scheduled timestamp");
+            if next_timestamp_ms < canonical_timestamp_ms {
+                self.sample_telemetry_only_timestamp(next_timestamp_ms)?;
+                continue;
             }
             self.advance_now_ms(next_timestamp_ms);
             self.drain_current_timestamp()?;
         }
+
+        self.publish_final_telemetry_sample()?;
 
         self.progress.finish();
         if let Some(snapshot) = self.admission.agentic_trajectory_snapshot() {
@@ -1074,5 +1296,231 @@ where
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
         Ok((self.collector, self.stats))
+    }
+}
+
+#[cfg(test)]
+#[path = "agg_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+mod host_offload_tests {
+    use super::*;
+    use crate::engine::{EngineConfig, NativeHostOffloadConfig, TimingModelConfig};
+    use crate::replay::components::NoReplayMetadata;
+    use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
+    use crate::replay::loadgen::ReplayRequestPayload;
+    use crate::replay::{NoEngineEvents, PlacementEffects, WorkerStage};
+    use std::collections::VecDeque;
+
+    const SEED: Uuid = Uuid::from_u128(1);
+    const EVICT: Uuid = Uuid::from_u128(2);
+    const RESTORE: Uuid = Uuid::from_u128(3);
+    const COMPLETING_A: Uuid = Uuid::from_u128(4);
+    const QUEUED_FOR_B: Uuid = Uuid::from_u128(5);
+
+    struct ReleaseToIdleWorker {
+        pending: Option<Uuid>,
+    }
+
+    impl PlacementPolicy<ReplayRequestPayload> for ReleaseToIdleWorker {
+        type Metadata = NoReplayMetadata;
+        type Observation = ();
+
+        fn place(
+            &mut self,
+            request: &ReplayRequestPayload,
+            _metadata: Self::Metadata,
+            _session_id: Option<String>,
+            _now_ms: f64,
+        ) -> anyhow::Result<PlacementEffects> {
+            let request_id = request
+                .metadata()
+                .uuid
+                .expect("test requests have stable IDs");
+            if request_id == QUEUED_FOR_B {
+                assert!(self.pending.replace(request_id).is_none());
+                return Ok(PlacementEffects {
+                    decision: PlacementDecision::Queued,
+                    released: Vec::new(),
+                });
+            }
+            let scheduler_id =
+                usize::from(request_id == SEED || request_id == EVICT || request_id == RESTORE);
+            Ok(PlacementEffects {
+                decision: PlacementDecision::Immediate(Placement {
+                    request_id,
+                    scheduler_id,
+                    reported_overlap_tokens: 0,
+                    cache_sample: None,
+                    placement_replica_id: None,
+                }),
+                released: Vec::new(),
+            })
+        }
+
+        fn observe(
+            &mut self,
+            _observation: Self::Observation,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+            if self.pending == Some(request_id) {
+                self.pending = None;
+                true
+            } else {
+                false
+            }
+        }
+
+        fn request_terminal(
+            &mut self,
+            request_id: Uuid,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            if request_id != COMPLETING_A {
+                return Ok(Vec::new());
+            }
+            Ok(self
+                .pending
+                .take()
+                .into_iter()
+                .map(|request_id| Placement {
+                    request_id,
+                    scheduler_id: 1,
+                    reported_overlap_tokens: 0,
+                    cache_sample: None,
+                    placement_replica_id: None,
+                })
+                .collect())
+        }
+
+        fn prefill_completed(
+            &mut self,
+            _request_id: Uuid,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn pending_count(&self) -> usize {
+            usize::from(self.pending.is_some())
+        }
+
+        fn worker_ready(
+            &mut self,
+            _worker: WorkerTopology,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn worker_draining(
+            &mut self,
+            _worker: WorkerTopology,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn worker_removed(
+            &mut self,
+            _worker: WorkerTopology,
+            _now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+
+        fn topology_settled(&mut self, _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn request(uuid: Uuid, at_ms: f64, tokens: Vec<u32>) -> DirectRequest {
+        DirectRequest {
+            tokens,
+            max_output_tokens: 0,
+            uuid: Some(uuid),
+            arrival_timestamp_ms: Some(at_ms),
+            ..DirectRequest::default()
+        }
+    }
+
+    #[test]
+    fn idle_internal_deadline_settles_before_completion_releases_placement() {
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                num_gpu_blocks: 1,
+                block_size: 4,
+                max_num_seqs: 2,
+                max_num_batched_tokens: 8,
+                enable_prefix_caching: true,
+                kv_cache_bytes_per_token: Some(250_000),
+                native_host_offload: Some(
+                    NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0),
+                ),
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 0.0,
+                },
+                ..EngineConfig::default()
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let admission = AdmissionQueue::new_requests(
+            VecDeque::from([
+                request(SEED, 0.0, vec![1, 2, 3, 4]),
+                request(EVICT, 2.0, vec![5, 6, 7, 8]),
+                request(RESTORE, 4.0, vec![1, 2, 3, 4]),
+                request(COMPLETING_A, 4.0, vec![11, 12, 13, 14]),
+                request(QUEUED_FOR_B, 4.0, vec![21, 22, 23, 24]),
+            ]),
+            ReplayMode::Trace,
+        );
+        let runtime = AggRuntimeImpl::<ReleaseToIdleWorker, NoEngineEvents, ()>::new_composed(
+            factory,
+            admission,
+            2,
+            None,
+            move |_dp_size, topology| {
+                assert_eq!(
+                    topology
+                        .iter()
+                        .map(|worker| worker.scheduler_ids.as_slice())
+                        .collect::<Vec<_>>(),
+                    vec![&[0][..], &[1][..]]
+                );
+                Ok(ReleaseToIdleWorker { pending: None })
+            },
+        )
+        .unwrap()
+        .with_per_request_records(true);
+
+        let (collector, _) = runtime.run().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.completed_requests, 5);
+        let restore = report
+            .per_request
+            .iter()
+            .find(|request| request.uuid == RESTORE.to_string())
+            .expect("restore request record");
+        assert_eq!(restore.decode_worker_idx, Some(1));
+        assert_eq!(restore.first_admit_ms, Some(5.0));
+        assert_eq!(restore.first_admission_host_reused_input_tokens, Some(4));
+        assert_eq!(restore.terminal_status, ReplayTerminalStatus::Completed);
+        let released = report
+            .per_request
+            .iter()
+            .find(|request| request.uuid == QUEUED_FOR_B.to_string())
+            .expect("released request record");
+        assert_eq!(released.decode_worker_idx, Some(1));
+        assert_eq!(released.first_admit_ms, Some(5.0));
+        assert_eq!(released.terminal_status, ReplayTerminalStatus::Completed);
     }
 }
