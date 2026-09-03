@@ -59,7 +59,10 @@ impl SchedulerRank {
             config.native_host_offload.is_none() || identity.dp_size.get() == 1,
             "native_host_offload supports only dp_size=1 in the initial implementation"
         );
-        let args = core_args(config, timing);
+        let mut args = core_args(config, timing);
+        if config.backend == Backend::Sglang {
+            normalize_sglang_attention_dp(&mut args, identity.dp_size.get())?;
+        }
         let capture_kv_events = config.emit_kv_events;
         let core = match config.backend {
             Backend::Vllm | Backend::Trtllm => EngineCore::Vllm(VllmCore::new_with_worker_rank(
@@ -407,6 +410,37 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
     }
 }
 
+/// Mirror SGLang's `handle_data_parallelism` launch-time DP-attention normalization before
+/// cloning the rank-local scheduler configuration. Replay's `dp_size` is specifically attention
+/// DP, so every SGLang rank receives the same normalized per-rank controls exactly once during
+/// construction.
+fn normalize_sglang_attention_dp(args: &mut MockEngineArgs, dp_size: u32) -> Result<()> {
+    if dp_size == 1 {
+        return Ok(());
+    }
+    let sglang = args
+        .sglang
+        .as_mut()
+        .expect("materialized SGLang engine arguments must include scheduler controls");
+    let dp_size = usize::try_from(dp_size).expect("u32 always fits usize on supported platforms");
+    let chunked_prefill_size = sglang
+        .chunked_prefill_size
+        .expect("materialized SGLang chunked-prefill size");
+    let per_rank_chunked_prefill_size = chunked_prefill_size / dp_size;
+    ensure!(
+        per_rank_chunked_prefill_size > 0,
+        "SGLang attention DP size {dp_size} reduces chunked_prefill_size={chunked_prefill_size} to zero"
+    );
+    sglang.chunked_prefill_size = Some(per_rank_chunked_prefill_size);
+    sglang.schedule_conservativeness = Some(
+        sglang
+            .schedule_conservativeness
+            .expect("materialized SGLang schedule conservativeness")
+            * 0.3,
+    );
+    Ok(())
+}
+
 fn core_request(request: Request) -> DirectRequest {
     DirectRequest {
         tokens: request.tokens,
@@ -584,6 +618,107 @@ mod tests {
         HostOffloadObservation, HostOffloadObservationData, NativeHostOffloadConfig, PressureKind,
         TimingModelConfig,
     };
+
+    #[test]
+    fn sglang_attention_dp_normalizes_per_rank_scheduler_controls_once() {
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .sglang(Some(SglangArgs {
+                chunked_prefill_size: Some(16),
+                schedule_conservativeness: Some(2.0),
+                ..Default::default()
+            }))
+            .build()
+            .unwrap();
+
+        let mut dp1 = args.clone();
+        normalize_sglang_attention_dp(&mut dp1, 1).unwrap();
+        let dp1 = dp1.sglang.unwrap();
+        assert_eq!(dp1.chunked_prefill_size, Some(16));
+        assert_eq!(dp1.schedule_conservativeness, Some(2.0));
+
+        let mut dp4 = args;
+        normalize_sglang_attention_dp(&mut dp4, 4).unwrap();
+        let dp4 = dp4.sglang.unwrap();
+        assert_eq!(dp4.chunked_prefill_size, Some(4));
+        assert_eq!(dp4.schedule_conservativeness, Some(0.6));
+    }
+
+    #[test]
+    fn sglang_attention_dp_normalizes_memory_pressure_admission() {
+        let second_request_admitted = |dp_size| {
+            let config = EngineConfig {
+                backend: Backend::Sglang,
+                num_gpu_blocks: 8,
+                block_size: 4,
+                max_num_seqs: 4,
+                max_num_batched_tokens: 64,
+                sglang: crate::engine::SglangConfig {
+                    chunked_prefill_size: 64,
+                    schedule_conservativeness: 1.0,
+                    ..Default::default()
+                },
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+                ..EngineConfig::default()
+            };
+            let mut rank = SchedulerRank::new(
+                RankIdentity {
+                    worker_id: 1,
+                    dp_rank: 0,
+                    dp_size: NonZeroU32::new(dp_size).unwrap(),
+                },
+                &config,
+            )
+            .unwrap();
+            let first = Uuid::from_u128(94_001);
+            rank.apply_command_effects(
+                Command::Submit(Request {
+                    request_id: first,
+                    tokens: vec![1, 2, 3, 4],
+                    max_output_tokens: 20,
+                    output_token_ids: None,
+                }),
+                CommandContext {
+                    now_ms: 0.0,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+            let first_pass = rank.execute_pass(0.0).unwrap();
+            let first_end_ms = first_pass.end_ms;
+            rank.complete_pass(first_pass.pending, first_end_ms)
+                .unwrap();
+
+            let second = Uuid::from_u128(94_002);
+            rank.apply_command_effects(
+                Command::Submit(Request {
+                    request_id: second,
+                    tokens: (10..22).collect(),
+                    max_output_tokens: 1,
+                    output_token_ids: None,
+                }),
+                CommandContext {
+                    now_ms: first_end_ms,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+            rank.execute_pass(first_end_ms)
+                .unwrap()
+                .start_effects
+                .admissions
+                .iter()
+                .any(|admission| admission.request_id == second)
+        };
+
+        assert!(!second_request_admitted(1));
+        assert!(second_request_admitted(4));
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq)]
     struct CapturedHostEvent {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -238,6 +238,8 @@ fn sglang_staged_args(worker_type: WorkerType, speedup_ratio: f64) -> MockEngine
 struct TestDisaggConfig {
     prefill_args: MockEngineArgs,
     decode_args: MockEngineArgs,
+    prefill_dp_size: u32,
+    decode_dp_size: u32,
     num_prefill_workers: usize,
     num_decode_workers: usize,
 }
@@ -250,13 +252,13 @@ impl TestDisaggConfig {
             num_gpu_blocks_is_explicit: None,
             rank: MockEngineArgs::default(),
             prefill: Some(ReplayRoleConfig {
-                dp_size: 1,
+                dp_size: self.prefill_dp_size,
                 tensor_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.prefill_args.clone(),
             }),
             decode: Some(ReplayRoleConfig {
-                dp_size: 1,
+                dp_size: self.decode_dp_size,
                 tensor_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.decode_args.clone(),
@@ -283,6 +285,8 @@ fn disagg_config() -> TestDisaggConfig {
     TestDisaggConfig {
         prefill_args: staged_args(WorkerType::Prefill, 1000.0),
         decode_args: staged_args(WorkerType::Decode, 1000.0),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
         num_prefill_workers: 2,
         num_decode_workers: 2,
     }
@@ -292,6 +296,8 @@ fn sglang_disagg_config() -> TestDisaggConfig {
     TestDisaggConfig {
         prefill_args: sglang_staged_args(WorkerType::Prefill, 1000.0),
         decode_args: sglang_staged_args(WorkerType::Decode, 1000.0),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
         num_prefill_workers: 2,
         num_decode_workers: 2,
     }
@@ -370,6 +376,8 @@ fn cleanup_overtake_config(engine_type: EngineType) -> TestDisaggConfig {
     TestDisaggConfig {
         prefill_args: cleanup_overtake_args(engine_type, WorkerType::Prefill),
         decode_args: cleanup_overtake_args(engine_type, WorkerType::Decode),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
         num_prefill_workers: 2,
         num_decode_workers: 2,
     }
@@ -395,6 +403,8 @@ fn trtllm_disagg_config() -> TestDisaggConfig {
     TestDisaggConfig {
         prefill_args: trtllm_staged_args(WorkerType::Prefill),
         decode_args: trtllm_staged_args(WorkerType::Decode),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
         num_prefill_workers: 1,
         num_decode_workers: 1,
     }
@@ -518,6 +528,27 @@ impl DisaggRuntime {
     ) -> anyhow::Result<RoundRobinDisaggRuntime> {
         let config = config.runtime_config(false)?;
         RoundRobinDisaggRuntime::new_round_robin_workload(&config, driver, mode)
+    }
+
+    fn from_requests_with_rank_offsets(
+        config: &TestDisaggConfig,
+        pending: VecDeque<DirectRequest>,
+        mode: ReplayMode,
+        prefill_offset: usize,
+        decode_offset: usize,
+    ) -> anyhow::Result<RoundRobinDisaggRuntime> {
+        let config = config.runtime_config(false)?;
+        RoundRobinDisaggRuntime::new_composed(
+            &config,
+            AdmissionQueue::new_requests(pending, mode),
+            false,
+            |_, prefill_topology, _, decode_topology| {
+                Ok((
+                    PoolRoundRobinPlacement::new_starting_at(prefill_topology, prefill_offset),
+                    PoolRoundRobinPlacement::new_starting_at(decode_topology, decode_offset),
+                ))
+            },
+        )
     }
 }
 
@@ -1231,6 +1262,37 @@ fn test_prefill_and_decode_use_separate_worker_pools() {
 }
 
 #[test]
+fn attention_dp_routes_requests_across_asymmetric_rank_pools() {
+    let mut config = disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    config.prefill_dp_size = 2;
+    config.decode_dp_size = 4;
+    let requests = (1..=8).map(|id| request(id, 4, 2, 0.0)).collect::<Vec<_>>();
+
+    let (_, stats) = run_trace_collect(&config, requests, None, 1.0);
+    let prefill_schedulers = stats
+        .prefill_assignments
+        .values()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let decode_schedulers = stats
+        .decode_assignments
+        .values()
+        .copied()
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(prefill_schedulers, BTreeSet::from([0, 1]));
+    assert_eq!(decode_schedulers, BTreeSet::from([0, 1, 2, 3]));
+    assert!(
+        stats
+            .request_snapshots
+            .values()
+            .all(|snapshot| snapshot.phase == DisaggPhase::Done)
+    );
+}
+
+#[test]
 fn source_cleanup_preserves_prefill_prefix_reuse() {
     let requests = vec![request(1, 128, 2, 0.0), request(2, 128, 2, 100.0)];
 
@@ -1550,20 +1612,32 @@ fn test_permanently_unavailable_destination_unwinds_without_stalling() {
     ] {
         config.num_prefill_workers = 1;
         config.num_decode_workers = 1;
+        config.prefill_dp_size = 2;
+        config.decode_dp_size = 4;
         config.decode_args.num_gpu_blocks = 1;
 
         let pending =
             crate::replay::normalize_trace_requests(vec![request(1, input_tokens, 2, 0.0)], 1.0)
                 .unwrap();
-        let (collector, stats) =
-            DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
-                .unwrap()
-                .with_per_request_records(true)
-                .run()
-                .unwrap();
+        let (collector, stats) = DisaggRuntime::from_requests_with_rank_offsets(
+            &config,
+            pending,
+            ReplayMode::Trace,
+            1,
+            3,
+        )
+        .unwrap()
+        .with_per_request_records(true)
+        .run()
+        .unwrap();
         let report = collector.finish();
         let uuid = Uuid::from_u128(1);
 
+        if config.prefill_args.backend == EngineType::Sglang {
+            assert!(!stats.prefill_assignments.contains_key(&uuid));
+        } else {
+            assert_eq!(stats.prefill_assignments[&uuid], 1);
+        }
         assert_eq!(stats.request_snapshots[&uuid].phase, DisaggPhase::Done);
         assert_eq!(report.request_counts.completed_requests, 0);
         assert_eq!(report.per_request.len(), 1);
@@ -1572,6 +1646,12 @@ fn test_permanently_unavailable_destination_unwinds_without_stalling() {
             ReplayTerminalStatus::Failed
         );
         assert!(report.per_request[0].first_token_ms.is_none());
+        let decode_route = report.per_request[0]
+            .routing_history
+            .iter()
+            .find(|route| route.pool == ReplayRequestPool::Decode)
+            .unwrap();
+        assert_eq!(decode_route.dp_rank, Some(3));
         assert!(
             stats
                 .transition_log
@@ -1740,16 +1820,18 @@ fn test_cancellation_during_transfer_ignores_retired_completion_event() {
             disagg_config_with_handoff_delay(),
             trtllm_disagg_config_with_handoff_delay(),
         ] {
+            config.prefill_dp_size = 2;
+            config.decode_dp_size = 4;
             config.prefill_args.kv_transfer_timing_mode = mode;
             config.decode_args.kv_transfer_timing_mode = mode;
             let uuid = Uuid::from_u128(1);
             let input_tokens = config.prefill_args.block_size * 2;
-            let mut runtime = DisaggRuntime::from_requests(
+            let mut runtime = DisaggRuntime::from_requests_with_rank_offsets(
                 &config,
-                None,
-                None,
                 VecDeque::from([request(1, input_tokens, 2, 0.0)]),
                 ReplayMode::Trace,
+                1,
+                3,
             )
             .unwrap()
             .with_per_request_records(true);
@@ -1767,6 +1849,8 @@ fn test_cancellation_during_transfer_ignores_retired_completion_event() {
                 runtime.state(uuid).unwrap().phase,
                 DisaggPhase::TransferPending
             );
+            assert_eq!(runtime.stats.prefill_assignments[&uuid], 1);
+            assert_eq!(runtime.stats.decode_assignments[&uuid], 3);
             let handoff_id = runtime.state(uuid).unwrap().handoff_id;
             runtime.apply_scaling(0, 0).unwrap();
             assert_eq!(runtime.total_prefill_count(), 1);
