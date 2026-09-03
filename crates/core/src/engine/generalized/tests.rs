@@ -20,6 +20,7 @@ struct FakeConfig {
     fail_execute_rank: Option<u32>,
     fail_complete_rank: Option<u32>,
     fail_internal_rank: Option<u32>,
+    prepared_steps: Rc<RefCell<Vec<(u32, u64, u32)>>>,
     log: Rc<RefCell<Vec<String>>>,
 }
 
@@ -34,6 +35,7 @@ struct FakeRank {
     fail_execute: bool,
     fail_complete: bool,
     fail_internal: bool,
+    prepared_steps: Rc<RefCell<Vec<(u32, u64, u32)>>>,
     log: Rc<RefCell<Vec<String>>>,
 }
 
@@ -59,6 +61,7 @@ impl RankEngine for FakeRank {
             fail_execute: config.fail_execute_rank == Some(identity.dp_rank),
             fail_complete: config.fail_complete_rank == Some(identity.dp_rank),
             fail_internal: config.fail_internal_rank == Some(identity.dp_rank),
+            prepared_steps: Rc::clone(&config.prepared_steps),
             log: Rc::clone(&config.log),
         })
     }
@@ -93,6 +96,12 @@ impl RankEngine for FakeRank {
 
     fn waiting_for_external_command(&self) -> bool {
         self.external_wait
+    }
+
+    fn prepare_group_pass(&mut self, wave_step: u64, dp_size: NonZeroU32) {
+        self.prepared_steps
+            .borrow_mut()
+            .push((self.identity.dp_rank, wave_step, dp_size.get()));
     }
 
     fn execute_pass(
@@ -380,10 +389,46 @@ fn config(
             fail_execute_rank: None,
             fail_complete_rank: None,
             fail_internal_rank: None,
+            prepared_steps: Rc::new(RefCell::new(Vec::new())),
             log: Rc::clone(&log),
         },
         log,
     )
+}
+
+#[test]
+fn attention_dp_wave_step_is_shared_and_resets_after_drain() -> Result<()> {
+    let (rank, _) = config(vec![true, false], vec![1.0, 1.0], vec![None, None]);
+    let prepared_steps = Rc::clone(&rank.prepared_steps);
+    let mut engine = GeneralizedMockerEngine::<FakeRank>::new(
+        EngineIdentity::new(34),
+        GeneralizedEngineConfig::attention_dp(NonZeroU32::new(2).unwrap(), rank),
+    )?;
+
+    let first = engine.execute_pass(0.0)?.expect("rank 0 is ready");
+    engine.apply_command_effects(SchedulerCommand::new(1, "wake"), 0.5)?;
+    engine.complete_pass(first.pass_id, first.end_ms)?;
+
+    let second = engine.execute_pass(1.0)?.expect("rank 1 is ready");
+    engine.complete_pass(second.pass_id, second.end_ms)?;
+    assert!(engine.is_drained());
+
+    engine.apply_command_effects(SchedulerCommand::new(0, "wake"), 3.0)?;
+    let third = engine.execute_pass(3.0)?.expect("new wave is ready");
+    engine.complete_pass(third.pass_id, third.end_ms)?;
+
+    assert_eq!(
+        prepared_steps.borrow().as_slice(),
+        &[
+            (0, 0, 2),
+            (1, 0, 2),
+            (0, 1, 2),
+            (1, 1, 2),
+            (0, 0, 2),
+            (1, 0, 2),
+        ]
+    );
+    Ok(())
 }
 
 #[test]

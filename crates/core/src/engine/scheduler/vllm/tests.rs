@@ -1110,6 +1110,104 @@ mod destination_lifecycle {
 mod core_behavior {
     use super::*;
 
+    fn cadence_core(max_num_seqs: usize) -> VllmCore {
+        VllmCore::new(
+            MockEngineArgs::builder()
+                .engine_type(EngineType::Vllm)
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(8))
+                .max_num_seqs(Some(max_num_seqs))
+                .prefill_schedule_interval(4)
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(0.0)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn cadence_request(
+        uuid: u128,
+        prompt_start: u32,
+        prompt_len: u32,
+        output: usize,
+    ) -> DirectRequest {
+        DirectRequest {
+            tokens: (prompt_start..prompt_start + prompt_len).collect(),
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(uuid)),
+            ..DirectRequest::default()
+        }
+    }
+
+    #[test]
+    fn attention_dp_cadence_defers_waiting_and_chunked_prefills() {
+        let mut core = cadence_core(4);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+
+        core.receive(cadence_request(1, 0, 4, 8));
+        core.prepare_group_pass(0, 2);
+        let seed = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(seed.fpm.unwrap().num_prefill_requests, 1);
+
+        core.receive(cadence_request(2, 100, 12, 2));
+        core.prepare_group_pass(1, 2);
+        let throttled = core.execute_pass(&mut collector, 1.0).fpm.unwrap();
+        assert_eq!(throttled.num_prefill_requests, 0);
+        assert_eq!(throttled.num_decode_requests, 1);
+        assert_eq!(throttled.num_queued_prefill, 1);
+
+        core.prepare_group_pass(4, 2);
+        let aligned = core.execute_pass(&mut collector, 2.0).fpm.unwrap();
+        assert_eq!(aligned.num_prefill_requests, 1);
+        assert_eq!(aligned.num_decode_requests, 1);
+
+        core.prepare_group_pass(5, 2);
+        let chunk_throttled = core.execute_pass(&mut collector, 3.0).fpm.unwrap();
+        assert_eq!(chunk_throttled.num_prefill_requests, 0);
+        assert_eq!(chunk_throttled.num_decode_requests, 1);
+    }
+
+    #[test]
+    fn attention_dp_cadence_releases_prefills_when_capacity_bound() {
+        let mut core = cadence_core(2);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+
+        core.receive(cadence_request(10, 0, 4, 8));
+        core.prepare_group_pass(0, 2);
+        core.execute_pass(&mut collector, 0.0);
+
+        core.receive(cadence_request(11, 100, 4, 0));
+        core.receive(cadence_request(12, 200, 4, 0));
+        core.prepare_group_pass(4, 2);
+        let saturated = core.execute_pass(&mut collector, 1.0).fpm.unwrap();
+        assert_eq!(saturated.num_prefill_requests, 1);
+        assert_eq!(saturated.num_queued_prefill, 1);
+
+        core.prepare_group_pass(5, 2);
+        let released = core.execute_pass(&mut collector, 2.0).fpm.unwrap();
+        assert_eq!(released.num_prefill_requests, 1);
+        assert_eq!(released.num_decode_requests, 1);
+        assert_eq!(released.num_queued_prefill, 0);
+    }
+
+    #[test]
+    fn prefill_cadence_is_inactive_without_attention_dp() {
+        let mut core = cadence_core(4);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+
+        core.receive(cadence_request(20, 0, 4, 8));
+        core.prepare_group_pass(0, 1);
+        core.execute_pass(&mut collector, 0.0);
+        core.receive(cadence_request(21, 100, 4, 1));
+
+        core.prepare_group_pass(1, 1);
+        let pass = core.execute_pass(&mut collector, 1.0).fpm.unwrap();
+        assert_eq!(pass.num_prefill_requests, 1);
+        assert_eq!(pass.num_decode_requests, 1);
+    }
+
     #[test]
     fn test_planned_output_tokens_are_emitted_exactly() {
         let mut core = VllmCore::new(make_args());
