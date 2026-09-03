@@ -1143,9 +1143,6 @@ impl PyGenerationAttention {
         use_qk_norm: bool,
         lane_order: Option<Vec<String>>,
     ) -> PyResult<(Self, PyOperation)> {
-        // use_qk_norm is accepted for calling-shape compatibility; the decode
-        // table never keyed on it (the retired serializer dropped it too).
-        let _ = use_qk_norm;
         let inner = Op::GenerationAttention(GenerationAttentionOp {
             name,
             scale_factor,
@@ -1155,6 +1152,7 @@ impl PyGenerationAttention {
             window_size,
             kv_cache_dtype: kv_quant(kv_cache_dtype)?,
             lane_order: lane_order.unwrap_or_else(default_lane_order),
+            use_qk_norm,
         });
         Ok((PyGenerationAttention, PyOperation { inner }))
     }
@@ -1172,11 +1170,11 @@ impl PyGenerationAttention {
             enum_token(&o.kv_cache_dtype),
             o.window_size,
             o.head_size,
+            o.use_qk_norm,
         )
             .into_pyobject(py)?;
-        // lane_order rides the kwargs dict, not the positional tuple: position
-        // 8 is use_qk_norm, which this op discards (never round-tripped), so a
-        // positional 8th slot would bind to the wrong parameter.
+        // Keep lane_order in kwargs so the constructor's established
+        // positional fields stay independent of the resolved lane list.
         let kwargs = PyDict::new(py);
         kwargs.set_item("lane_order", o.lane_order.clone())?;
         Ok((args, kwargs))
@@ -1209,6 +1207,11 @@ impl PyGenerationAttention {
             "KVCacheQuantMode",
             &enum_token(&slf.as_super().generation_attention()?.kv_cache_dtype),
         )
+    }
+
+    #[getter(_use_qk_norm)]
+    fn use_qk_norm(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().generation_attention()?.use_qk_norm)
     }
 
     #[getter(_lane_order)]

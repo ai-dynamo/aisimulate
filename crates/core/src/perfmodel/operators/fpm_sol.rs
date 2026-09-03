@@ -244,8 +244,8 @@ fn context_attention_sol(
     (fmha + extra * 1.1) * op.scale_factor
 }
 
-/// attention.py:710-733: generation SOL. No extras, no 5-sample smoothing
-/// (both are silicon-only), no prefix.
+/// Generation-attention SOL plus the optional Q/K RMSNorm fused extra. There
+/// is no 5-sample smoothing and no prefix in SOL mode.
 fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f64, s: f64) -> f64 {
     let (n, n_kv, h, w) = (
         op.n as f64,
@@ -270,7 +270,15 @@ fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f6
     let flops = spec.gpu.bfloat16_tc_flops.unwrap_or(0.0);
     let sol_math = ops / flops * 1000.0 / compute;
     let sol_mem = mem / spec.gpu.mem_bw * 1000.0;
-    sol_math.max(sol_mem) * op.scale_factor
+    let mut latency = sol_math.max(sol_mem);
+    if op.use_qk_norm {
+        let q_num = n * h;
+        let k_num = n_kv * h;
+        let qk_norm =
+            2.0 * mem_op_sol_ms(spec, q_num * 2.0) + 2.0 * mem_op_sol_ms(spec, k_num * 2.0);
+        latency += qk_norm * 2.0 * 1.1;
+    }
+    latency * op.scale_factor
 }
 
 /// moe.py:297-325: MoE SOL with the activated-expert clamp. The `//` sites
@@ -641,6 +649,7 @@ mod tests {
             window_size: 0,
             kv_cache_dtype: KvCacheQuantMode::Fp8,
             lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
+            use_qk_norm: false,
         };
         let (b, sq) = (256.0, 8441.75_f64);
         let kv_len = sq - 1.0;
@@ -649,6 +658,19 @@ mod tests {
         let expected = (ops / s.gpu.bfloat16_tc_flops.unwrap() * 1000.0 / 2.0)
             .max(mem / s.gpu.mem_bw * 1000.0);
         approx(generation_attention_sol(&op, &s, b, sq), expected);
+
+        let mut normalized = op;
+        normalized.use_qk_norm = true;
+        let q_num = 48.0 * 128.0;
+        let k_num = 8.0 * 128.0;
+        let expected_extra = (2.0 * mem_op_sol_ms(&s, q_num * 2.0)
+            + 2.0 * mem_op_sol_ms(&s, k_num * 2.0))
+            * 2.0
+            * 1.1;
+        approx(
+            generation_attention_sol(&normalized, &s, b, sq),
+            expected + expected_extra,
+        );
     }
 
     /// Mirrors moe.py:297-325 with the float-floor association order.

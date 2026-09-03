@@ -9,8 +9,8 @@
 //! wraps the raw `AttentionTable` query with:
 //!
 //! - prefix correction `(full_s² − prefix²) / full_s²` for context paths
-//! - fused-op extras for context: qk_norm (optional), apply_rope, kv_write
-//!   via the analytic `mem_op` formula
+//! - fused-op extras: context qk_norm (optional), apply_rope, kv_write; and
+//!   generation qk_norm (optional), via the analytic `mem_op` formula
 //! - 1.1× correction factor on the extras (matches Python)
 //! - `seq_imbalance_correction_scale` / `gen_seq_imbalance_correction_scale`
 //!   multiplier for unbalanced sequence distributions
@@ -182,14 +182,14 @@ pub struct ContextAttentionOp {
     /// lanes, density-ranked donor tiers, `"default"`, and the table's own
     /// leftover lanes — and it is REPLAYED VERBATIM here: no re-deriving, no
     /// extending, no sorting. Appended at the struct TAIL because bincode
-    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 15).
+    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 16).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
 }
 
 /// Lane precedence for ops built without an explicit order (Rust-side
 /// constructors and hand-written JSON fixtures predating the `lane_order`
-/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 15).
+/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 16).
 /// Mirrors the Python fallback in `_attention_lane_order` for an
 /// unresolvable database: the always-valid `("default",)`.
 pub(crate) fn default_lane_order() -> Vec<String> {
@@ -315,9 +315,13 @@ pub struct GenerationAttentionOp {
     pub kv_cache_dtype: KvCacheQuantMode,
     /// Kernel-source lane precedence; see
     /// [`ContextAttentionOp::lane_order`] (appended at the struct TAIL —
-    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 15).
+    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 16).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
+    /// Per-head RMSNorm on Q and K before decode attention. Appended at the
+    /// struct tail because bincode payloads are positional (schema v16).
+    #[serde(default)]
+    pub use_qk_norm: bool,
 }
 
 impl GenerationAttentionOp {
@@ -337,6 +341,7 @@ impl GenerationAttentionOp {
             window_size: 0,
             kv_cache_dtype,
             lane_order: default_lane_order(),
+            use_qk_norm: false,
         }
     }
 
@@ -358,6 +363,18 @@ impl GenerationAttentionOp {
             self.window_size,
             self.kv_cache_dtype,
         )?;
+        if self.use_qk_norm {
+            // Match ContextAttention's Q/K RMSNorm accounting: two memory
+            // passes before the norm, two for the norm, then the established
+            // fused-extra correction factor.
+            let q_num = (self.n * self.head_size) as f64;
+            let k_num = (self.n_kv * self.head_size) as f64;
+            let qk_norm = query_mem_op(db, q_num * 2.0)
+                .scaled(2.0)
+                .plus(query_mem_op(db, k_num * 2.0).scaled(2.0))
+                .scaled(2.0 * 1.1);
+            result = result.plus(qk_norm);
+        }
         if gen_seq_imbalance_correction_scale != 1.0 {
             // Python `result * scale` scales latency AND energy.
             result = result.scaled(gen_seq_imbalance_correction_scale);
@@ -1305,6 +1322,37 @@ mod tests {
             "expected positive 5-sample-averaged gen latency, got {}",
             result.latency_ms
         );
+    }
+
+    #[test]
+    fn generation_qk_norm_adds_fused_latency_and_preserves_energy() {
+        let db = b200_vllm_db();
+        let base = with_vllm_lanes_gen(GenerationAttentionOp::new(
+            "gen",
+            64,
+            4,
+            128,
+            KvCacheQuantMode::Fp8,
+        ));
+        let plain = base.query(&db, 32, 2048, 1.0).expect("plain decode");
+
+        let mut normalized = base;
+        normalized.use_qk_norm = true;
+        let with_norm = normalized
+            .query(&db, 32, 2048, 1.0)
+            .expect("Q/K-normalized decode");
+
+        let q_num = (64 * 128) as f64;
+        let k_num = (4 * 128) as f64;
+        let expected_extra = query_mem_op(&db, q_num * 2.0)
+            .scaled(2.0)
+            .plus(query_mem_op(&db, k_num * 2.0).scaled(2.0))
+            .scaled(2.0 * 1.1);
+        assert!(
+            (with_norm.latency_ms - plain.latency_ms - expected_extra.latency_ms).abs() < 1e-12
+        );
+        assert_eq!(with_norm.energy_wms, plain.energy_wms);
+        assert_eq!(with_norm.source, Source::Mixed);
     }
 
     #[test]

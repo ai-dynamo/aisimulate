@@ -1689,6 +1689,7 @@ mod tests {
                 window_size: 0,
                 kv_cache_dtype: KvCacheQuantMode::Fp8,
                 lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
+                use_qk_norm: false,
             }),
         ]
     }

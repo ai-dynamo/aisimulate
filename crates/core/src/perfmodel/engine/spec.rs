@@ -241,6 +241,7 @@ mod tests {
             window_size: 4096,
             kv_cache_dtype: KvCacheQuantMode::Int8,
             lane_order: vec!["triton".into(), "trtllm_mha".into(), "default".into()],
+            use_qk_norm: true,
         }
     }
 

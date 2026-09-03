@@ -117,6 +117,9 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 #   `attn_projection_quant_modes` v12, and v14 alongside #1533's
 #   `GdnOp::mamba_ssm_dtype` v14); each landed first, so this renumbers to 15
 #   at merge (same v3/v4, v5/v6 precedent).
+# - 16 (Muse Glimmer continuation): Generation attention gained
+#   `use_qk_norm`; the Rust op now preserves the Python constructor flag and
+#   adds its decode latency.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aiconfigurator_core.engine_spec_schema_version()
