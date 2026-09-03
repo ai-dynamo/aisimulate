@@ -11,9 +11,9 @@ use aisimulate_core::engine::{
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
     ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition, ReplayDeterminism,
-    ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest, ReplayRoleConfig,
-    ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot, ReplaySpec, ReplayTopology,
-    Replayer, WorkerPoolSpec, WorkerStage, WorkerTopology, run_engine_replay,
+    ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest, ReplayRequestPool,
+    ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot,
+    ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec, WorkerTopology, run_engine_replay,
     run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
 };
 use anyhow::Result;
@@ -58,6 +58,7 @@ fn request(
         output_tokens,
         output_token_ids: None,
         dp_rank: None,
+        prefill_dp_rank: None,
         session_id: None,
         turn_index: None,
         metadata: serde_json::Value::Null,
@@ -165,9 +166,152 @@ fn disaggregated_spec(
 }
 
 #[test]
-fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
-    for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
-        let mut spec = disaggregated_spec(
+fn disaggregated_replay_supports_attention_dp_for_each_backend() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for (prefill_dp, decode_dp) in [(2, 1), (1, 2), (2, 4), (2, 2)] {
+            let mut spec = disaggregated_spec(
+                backend,
+                TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+                TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+            );
+            let mut config: ReplayEngineConfig =
+                serde_json::from_value(spec.engine.clone()).unwrap();
+            config.prefill.as_mut().unwrap().dp_size = prefill_dp;
+            config.decode.as_mut().unwrap().dp_size = decode_dp;
+            spec.engine = serde_json::to_value(config).unwrap();
+            spec.requests = (0..8)
+                .map(|index| request(&format!("request-{index}"), 0.0, 4, 2))
+                .collect();
+
+            let report = run_engine_replay(spec).unwrap();
+            assert_eq!(report.request_counts.completed_requests, 8);
+            assert_eq!(report.per_request.len(), 8);
+            for record in &report.per_request {
+                let prefill = record
+                    .routing_history
+                    .iter()
+                    .find(|route| route.pool == ReplayRequestPool::Prefill)
+                    .unwrap();
+                let decode = record
+                    .routing_history
+                    .iter()
+                    .find(|route| route.pool == ReplayRequestPool::Decode)
+                    .unwrap();
+                assert!(prefill.dp_rank.unwrap() < prefill_dp);
+                assert!(decode.dp_rank.unwrap() < decode_dp);
+                assert_eq!(prefill.logical_worker_id, Some(0));
+                assert_eq!(decode.logical_worker_id, Some(0));
+            }
+        }
+    }
+}
+
+#[test]
+fn disaggregated_replay_honors_authored_prefill_and_decode_dp_ranks() {
+    let mut replay = disaggregated_spec(
+        Backend::Vllm,
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+    );
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+    config.prefill.as_mut().unwrap().dp_size = 2;
+    config.decode.as_mut().unwrap().dp_size = 4;
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![ReplayRequest {
+        dp_rank: Some(3),
+        prefill_dp_rank: Some(1),
+        ..request("p1-to-d3", 0.0, 4, 2)
+    }];
+
+    let report = run_engine_replay(replay).unwrap();
+    let record = &report.per_request[0];
+    let prefill = record
+        .routing_history
+        .iter()
+        .find(|route| route.pool == ReplayRequestPool::Prefill)
+        .unwrap();
+    let decode = record
+        .routing_history
+        .iter()
+        .find(|route| route.pool == ReplayRequestPool::Decode)
+        .unwrap();
+    assert_eq!(prefill.dp_rank, Some(1));
+    assert_eq!(decode.dp_rank, Some(3));
+}
+
+#[test]
+fn disaggregated_replay_uses_decode_dp_rank_as_prefill_fallback() {
+    let mut replay = disaggregated_spec(
+        Backend::Vllm,
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+    );
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+    config.prefill.as_mut().unwrap().dp_size = 2;
+    config.decode.as_mut().unwrap().dp_size = 2;
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![ReplayRequest {
+        dp_rank: Some(1),
+        ..request("legacy-rank-fallback", 0.0, 4, 2)
+    }];
+
+    let report = run_engine_replay(replay).unwrap();
+    let routes = &report.per_request[0].routing_history;
+    assert_eq!(
+        routes
+            .iter()
+            .find(|route| route.pool == ReplayRequestPool::Prefill)
+            .unwrap()
+            .dp_rank,
+        Some(1)
+    );
+    assert_eq!(
+        routes
+            .iter()
+            .find(|route| route.pool == ReplayRequestPool::Decode)
+            .unwrap()
+            .dp_rank,
+        Some(1)
+    );
+}
+
+#[test]
+fn aggregated_replay_rejects_prefill_dp_rank() {
+    let mut replay = spec(engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+    }));
+    replay.requests[0].prefill_dp_rank = Some(0);
+
+    let error = run_engine_replay(replay).unwrap_err();
+    assert!(error.to_string().contains("cannot specify prefill_dp_rank"));
+}
+
+#[test]
+fn disaggregated_replay_validates_authored_rank_per_role() {
+    for (prefill_dp_rank, decode_dp_rank, expected) in [
+        (Some(2), Some(0), "prefill placement"),
+        (Some(0), Some(4), "decode placement"),
+    ] {
+        let mut replay = disaggregated_spec(
             Backend::Vllm,
             TimingModelConfig::Fixed {
                 prefill_ms: 1.0,
@@ -178,30 +322,52 @@ fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
                 decode_ms: 1.0,
             },
         );
-        let mut config: ReplayEngineConfig = serde_json::from_value(spec.engine.clone()).unwrap();
-        match stage {
-            WorkerStage::Prefill => config.prefill.as_mut().unwrap().dp_size = 2,
-            WorkerStage::Decode => config.decode.as_mut().unwrap().dp_size = 2,
-            WorkerStage::Aggregated => unreachable!(),
-        }
-        spec.engine = serde_json::to_value(config).unwrap();
+        let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+        config.prefill.as_mut().unwrap().dp_size = 2;
+        config.decode.as_mut().unwrap().dp_size = 4;
+        replay.engine = serde_json::to_value(config).unwrap();
+        replay.requests = vec![ReplayRequest {
+            dp_rank: decode_dp_rank,
+            prefill_dp_rank,
+            ..request("out-of-range", 0.0, 4, 2)
+        }];
 
-        let error = run_engine_replay(spec).unwrap_err();
-        assert!(matches!(
-            error,
-            aisimulate_core::replay::ReplayError::InvalidSpec(_)
-        ));
-        let role_name = match stage {
-            WorkerStage::Prefill => "prefill",
-            WorkerStage::Decode => "decode",
-            WorkerStage::Aggregated => unreachable!(),
-        };
-        assert!(
-            error
-                .to_string()
-                .contains(&format!("{role_name} dp_size=1"))
-        );
+        let error = run_engine_replay(replay).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:#}");
     }
+}
+
+#[test]
+fn sglang_disaggregated_attention_dp_uses_per_rank_prefill_chunks() {
+    let run = |prefill_dp| {
+        let mut replay = disaggregated_spec(
+            Backend::Sglang,
+            TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+        );
+        let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+        let prefill = config.prefill.as_mut().unwrap();
+        prefill.dp_size = prefill_dp;
+        prefill.rank.sglang.chunked_prefill_size = 16;
+        replay.engine = serde_json::to_value(config).unwrap();
+        replay.requests = vec![request("long-prompt", 0.0, 16, 1)];
+        run_engine_replay(replay).unwrap()
+    };
+
+    let dp1 = run(1);
+    let dp4 = run(4);
+    let dp1_source_held_ms = dp1.per_request[0].source_held_ms.unwrap();
+    let dp4_source_held_ms = dp4.per_request[0].source_held_ms.unwrap();
+    assert!(
+        dp4_source_held_ms >= dp1_source_held_ms + 3.0,
+        "DP4 should execute four 4-token prefill chunks: dp1={dp1_source_held_ms}, dp4={dp4_source_held_ms}"
+    );
 }
 
 #[test]

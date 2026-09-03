@@ -19,6 +19,8 @@ _INLINE_REQUEST_FIELDS = {
     "input_tokens",
     "input_token_ids",
     "output_tokens",
+    "dp_rank",
+    "prefill_dp_rank",
     "session_id",
     "metadata",
 }
@@ -132,6 +134,13 @@ def _materialize_inline_requests(
             request["input_token_ids"] = token_ids
         else:
             request["input_tokens"] = _positive_int(raw["input_tokens"], f"{label}.input_tokens")
+
+        for rank_field in ("dp_rank", "prefill_dp_rank"):
+            rank = raw.get(rank_field)
+            if rank is not None:
+                if not _is_uint(rank, 32):
+                    raise ValueError(f"{label}.{rank_field} must be an unsigned 32-bit integer")
+                request[rank_field] = rank
 
         session_id = raw.get("session_id")
         if session_id is not None:

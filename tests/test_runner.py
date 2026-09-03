@@ -105,7 +105,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_backend_topology("vllm", "agg")
     assert capabilities.supports_backend_topology("sglang", "disagg")
     assert capabilities.supports_backend_topology("trtllm", "disagg")
-    assert not capabilities.supports_disaggregated_attention_dp
+    assert capabilities.supports_disaggregated_attention_dp
     assert capabilities.supported_hooks == ()
 
 
@@ -507,7 +507,7 @@ def test_runner_rejects_random_length_options_for_trace_replay():
         )
 
 
-@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
 def test_runner_lowers_disaggregated_grouped_engines(backend):
     runtime = RecordingRuntime()
     deployment = BackendDeploymentSpec(
@@ -532,28 +532,41 @@ def test_runner_lowers_disaggregated_grouped_engines(backend):
     assert runtime.execution_spec["engine"]["decode"]["rank"]["backend"] == backend
 
 
-@pytest.mark.parametrize("role", ["prefill", "decode"])
-def test_runner_rejects_disaggregated_attention_dp_before_runtime(role):
+@pytest.mark.parametrize(
+    ("prefill_dp", "decode_dp"),
+    [(2, 1), (1, 2), (2, 4), (2, 2)],
+)
+def test_runner_lowers_disaggregated_attention_dp(prefill_dp, decode_dp):
     runtime = RecordingRuntime()
     prefill_args = _engine_args(role="prefill")
     decode_args = _engine_args(role="decode")
-    selected = prefill_args if role == "prefill" else decode_args
-    selected["aic_attention_dp_size"] = 2
+    prefill_args["aic_attention_dp_size"] = prefill_dp
+    decode_args["aic_attention_dp_size"] = decode_dp
     deployment = BackendDeploymentSpec(
         deployment_mode="disagg",
         backend="vllm",
         backend_version="test",
+        parallel_config={
+            "prefill_tp": 2,
+            "prefill_attention_dp": prefill_dp,
+            "prefill_replicas": 1,
+            "decode_tp": 2,
+            "decode_attention_dp": decode_dp,
+            "decode_replicas": 1,
+        },
         prefill_engine_args=prefill_args,
         decode_engine_args=decode_args,
         num_prefill_workers=1,
         num_decode_workers=1,
     )
 
-    with pytest.raises(ValueError, match=rf"{role} dp_size=1"):
-        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-            _spec(deployment=deployment)
-        )
-    assert runtime.execution_spec is None
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    engine = runtime.execution_spec["engine"]
+    assert engine["prefill"]["dp_size"] == prefill_dp
+    assert engine["decode"]["dp_size"] == decode_dp
 
 
 def test_runner_threads_canonical_backend_version_into_aic_timing():
