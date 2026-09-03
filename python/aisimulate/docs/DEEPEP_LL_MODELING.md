@@ -23,6 +23,14 @@ ordinary `MoE` performance table at the model's workload distribution, such as
 `power_law_1.01` for DeepSeek or `power_law_1.2` for the default model. Compute
 is not multiplied by a second Monte Carlo imbalance factor.
 
+This split is an intentional modeling boundary. Stage 1 does not attempt to
+replay a framework-specific `DeepEPMoE.run_moe_core` kernel or require its
+dedicated WideEP expert-compute collector. The ordinary `MoE` curve owns local
+compute workload efficiency; Monte Carlo owns only dispatch/combine endpoint
+imbalance. The remaining users of the legacy `MoeExpertCompute` operator are
+planned for migration and deprecation rather than expansion with new
+collector coverage.
+
 ## 2. Token convention
 
 Let:
@@ -335,6 +343,12 @@ example, emits `power_law_1.01`; the generic default emits
 `power_law_1.2`. No `MoeExpertCompute` wide-EP table and no additional
 Monte Carlo rank multiplier are used for LL. The large-EP graph also does not
 insert ordinary EP pre/post-dispatch operators around this compute op.
+
+Consequently, a direct numerical comparison against historical
+`wideep_generation_moe_perf` / `deepepmoe` rows compares two different model
+contracts: a framework-kernel measurement and the reusable standard-MoE
+predictor selected here. Their difference is expected to appear in end-to-end
+parity goldens; it is not hidden by substituting a shape-only regression.
 
 ## 12. Calibration evidence
 

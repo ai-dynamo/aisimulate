@@ -635,6 +635,16 @@ def _large_ep_block_ops(
         # existing power-law curve. The surrounding MoEAllToAll ops already
         # represent dispatch/combine, so no ordinary EP pre/post-dispatch ops
         # are emitted and compute is not skew-amplified a second time.
+        #
+        # This is an intentional modeling boundary, not an attempt to replay
+        # SGLang's DeepEPMoE.run_moe_core kernel. The ordinary curve owns the
+        # local-compute workload-efficiency model; Monte Carlo owns only LL
+        # communication endpoint imbalance.
+        #
+        # FIXME(deprecation): migrate the remaining large-EP HT/V2 users to
+        # this standard MoE compute contract, then remove MoeExpertCompute and
+        # its dedicated collector/table dependencies. Do not add new
+        # MoeExpertCompute collection coverage.
         routed_ops.append(
             ops.MoE(
                 f"{prefix}_moe",
