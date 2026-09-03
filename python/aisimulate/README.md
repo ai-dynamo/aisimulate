@@ -548,8 +548,9 @@ aiconfigurator cli support --model-path Qwen/Qwen3-32B-FP8 --system h100_sxm --b
 
 We welcome contributions from the community! Check out the below resources to get started:
 
-- [DEVELOPMENT.md](DEVELOPMENT.md) - Set up your development environment, run tests, and follow our coding standards
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guidelines and requirements
+- [DEVELOPMENT.md](../../DEVELOPMENT.md) - Set up your development environment, run tests, and follow our coding standards
+- [CONTRIBUTING.md](../../CONTRIBUTING.md) - Contribution guidelines and requirements
+- [CODE_OF_CONDUCT.md](../../CODE_OF_CONDUCT.md) - Community standards
 - [Discord](https://discord.gg/mRJ2KNzwYE) - Chat with team and community
 
 ### How To Add A New Model

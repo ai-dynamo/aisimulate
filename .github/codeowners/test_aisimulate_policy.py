@@ -140,7 +140,6 @@ def test_representative_routing_contract() -> None:
         INFRA,
         MAINTAINERS,
     }
-    assert _owners("python/aisimulate/CODEOWNERS") == {INFRA, MAINTAINERS}
     assert _owners("crates/core/deny.toml") == {
         FPE,
         MOCKER,
@@ -150,6 +149,9 @@ def test_representative_routing_contract() -> None:
     }
     assert _owners("deny.toml") == {INFRA, MAINTAINERS}
     assert _owners("CODEOWNERS") == {INFRA, MAINTAINERS}
+    assert _owners("AGENTS.md") == {INFRA, MAINTAINERS}
+    assert _owners("DEVELOPMENT.md") == {INFRA, MAINTAINERS}
+    assert _owners("CODE_OF_CONDUCT.md") == {MAINTAINERS}
     assert _owners("README.md") == {MAINTAINERS}
     assert _owners("SECURITY.md") == {INFRA, MAINTAINERS}
     assert _owners("CONTRIBUTING.md") == {MAINTAINERS}
