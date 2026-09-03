@@ -10,7 +10,25 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-CHECK_COPYRIGHT = Path(__file__).resolve().parents[1] / "scripts" / "check_copyright.py"
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_ROOT = ROOT / "python" / "aisimulate"
+CHECK_COPYRIGHT = ROOT / "scripts" / "check_copyright.py"
+
+ROOT_ONLY_GOVERNANCE_FILES = (
+    "AGENTS.md",
+    "CODEOWNERS",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "CONTRIBUTORS.md",
+    "DEVELOPMENT.md",
+    "SECURITY.md",
+)
+PACKAGED_LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
+PACKAGED_README_ROOT_LINKS = (
+    "DEVELOPMENT.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+)
 
 
 @pytest.fixture
@@ -41,3 +59,26 @@ def test_hash_stamped_patch_is_not_rewritten_as_owned_source(checker, tmp_path):
     path.write_text("diff --git a/a b/a\n")
 
     assert not checker.is_source(path)
+
+
+@pytest.mark.parametrize("name", ROOT_ONLY_GOVERNANCE_FILES)
+def test_repository_governance_file_lives_only_at_root(name):
+    assert (ROOT / name).is_file()
+    assert not (PACKAGE_ROOT / name).exists()
+
+
+@pytest.mark.parametrize("name", PACKAGED_LEGAL_FILES)
+def test_wheel_local_legal_file_matches_root(name):
+    canonical = ROOT / name
+    packaged = PACKAGE_ROOT / name
+
+    assert canonical.is_file()
+    assert packaged.is_file()
+    assert packaged.read_bytes() == canonical.read_bytes()
+
+
+@pytest.mark.parametrize("name", PACKAGED_README_ROOT_LINKS)
+def test_packaged_readme_links_root_governance_to_github(name):
+    readme = (PACKAGE_ROOT / "README.md").read_text()
+
+    assert f"https://github.com/ai-dynamo/aisimulate/blob/main/{name}" in readme
