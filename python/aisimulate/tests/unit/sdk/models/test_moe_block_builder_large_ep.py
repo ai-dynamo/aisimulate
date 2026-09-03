@@ -293,7 +293,7 @@ class TestSglangLargeEPStructure:
         assert dispatch._comm_dtype == "fp8"
         assert combine._comm_dtype == "bfloat16"
         assert dispatch._sms == combine._sms == 0  # LL has no SM budget
-        assert isinstance(moe, ops.MoE)
+        assert isinstance(moe, ops.MoEExpertCompute)
         assert moe._workload_distribution == "power_law_1.01"
 
     def test_eplb_flips_context_distribution_and_eplb_flag(self):
@@ -747,23 +747,6 @@ def vllm_toy_db(tmp_path):
         for tokens in (128, 4096)
     ]
     _write_parquet(version_dir / "moe_expert_compute_perf.parquet", ep_rows)
-    standard_rows = [
-        {
-            "kernel_source": "moe_torch_flow",
-            "moe_dtype": "bfloat16",
-            "distribution": "uniform",
-            "inter_size": 1408,
-            "moe_tp_size": 1,
-            "moe_ep_size": 8,
-            "num_tokens": tokens,
-            "latency": 0.5 * tokens / 128.0,
-            "power": 400.0,
-            **shape,
-        }
-        for tokens in (128, 4096)
-    ]
-    _write_parquet(version_dir / "moe_perf.parquet", standard_rows)
-
     db = get_database("toy_sys", "vllm", "1.0", systems_paths=str(systems_root), allow_missing_data=True)
     assert db is not None
     return db
@@ -807,17 +790,16 @@ class TestVllmG2Seed:
             expected_backend = cfg.moe_comm_backend[phase]
             assert dispatch._comm_backend == combine._comm_backend == expected_backend
             # Context HT returns the exact table leaf. Generation LL uses the
-            # same points as OLS/Monte-Carlo calibration. Expert compute uses
-            # the ordinary fused-MoE table and globalizes by dp (64*8=512).
+            # same points as OLS/Monte-Carlo calibration. MoEExpertCompute
+            # globalizes by dp (64*8=512).
             base_us = 100.0 if phase == "context" else 50.0
             if phase == "context":
                 assert _lat(dispatch, vllm_toy_db, 64) == pytest.approx(base_us / 1000.0 * 10, rel=1e-9)
                 assert _lat(combine, vllm_toy_db, 64) == pytest.approx(2 * base_us / 1000.0 * 10, rel=1e-9)
-                assert isinstance(moe, ops.MoEExpertCompute)
             else:
                 assert _lat(dispatch, vllm_toy_db, 64) > 0.0
                 assert _lat(combine, vllm_toy_db, 64) > 0.0
-                assert isinstance(moe, ops.MoE)
+            assert isinstance(moe, ops.MoEExpertCompute)
             assert _lat(moe, vllm_toy_db, 64) == pytest.approx(2.0 * 10, rel=1e-9)
 
 

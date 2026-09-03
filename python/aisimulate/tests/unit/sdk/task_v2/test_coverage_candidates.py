@@ -108,29 +108,6 @@ def _ep_rows(phases=(("context", _HT_PAIRS), ("generation", _LL_PAIRS))) -> list
     return rows
 
 
-def _standard_moe_rows(ep_rows: list[dict]) -> list[dict]:
-    """Ordinary fused-MoE rows for LL at generation-covered EP sizes."""
-    eps = sorted({row["moe_ep_size"] for row in ep_rows if row["inference_phase"] == "generation"})
-    return [
-        {
-            "kernel_source": "moe_torch_flow",
-            "moe_dtype": _EP_QUANT,
-            "distribution": "power_law_1.2",
-            "topk": SYNTH_TOPK,
-            "num_experts": SYNTH_EXPERTS,
-            "hidden_size": SYNTH_HIDDEN,
-            "inter_size": SYNTH_INTER,
-            "moe_tp_size": 1,
-            "moe_ep_size": ep_size,
-            "num_tokens": num_tokens,
-            "latency": 1.5,
-            "power": 400.0,
-        }
-        for ep_size in eps
-        for num_tokens in (128, 1024)
-    ]
-
-
 def _write_version_dir(root: str, family: str, filename: str, rows: list[dict]) -> None:
     version_dir = os.path.join(root, "data", family, SYNTH_BACKEND, SYNTH_VERSION)
     os.makedirs(version_dir, exist_ok=True)
@@ -195,9 +172,6 @@ def _build_synth_root(tmp_path, a2a_rows, ep_rows) -> str:
         )
     _write_version_dir(root, "comm", "moe_a2a_perf.parquet", a2a_rows)
     _write_version_dir(root, "moe", "moe_expert_compute_perf.parquet", ep_rows)
-    standard_rows = _standard_moe_rows(ep_rows)
-    if standard_rows:
-        _write_version_dir(root, "moe", "moe_perf.parquet", standard_rows)
     return root
 
 
@@ -344,7 +318,6 @@ def test_exact_resolver_accepts_sglang_node1_deepep_substitution():
         system_spec={"node": {"num_gpus_per_node": 8}, "gpu": {"sm_version": 100}},
         moe_a2a_coverage=lambda *_args: {"deepep_ht": {(8, 1)}, "deepep_ll": {(8, 1)}},
         moe_expert_compute_coverage=lambda *_args: {128},
-        moe_compute_coverage=lambda *_args: {128},
     )
     model_config = ModelConfig(attention_dp_size=128, moe_tp_size=1, moe_ep_size=128)
 
@@ -357,40 +330,6 @@ def test_exact_resolver_accepts_sglang_node1_deepep_substitution():
     )
 
     assert resolved == {"context": "deepep_ht", "generation": "deepep_ll"}
-
-
-def test_exact_resolver_uses_emitted_ll_workload_distribution():
-    observed_distributions = []
-
-    def ll_compute_coverage(*args):
-        observed_distributions.append(args[-1])
-        return {128}
-
-    database = SimpleNamespace(
-        system="synthetic",
-        version="1.0",
-        system_spec={"node": {"num_gpus_per_node": 4}, "gpu": {"sm_version": 100}},
-        moe_a2a_coverage=lambda *_args: {"deepep_ll": {(8, 1)}},
-        moe_expert_compute_coverage=lambda *_args: set(),
-        moe_compute_coverage=ll_compute_coverage,
-    )
-    model_config = ModelConfig(
-        attention_dp_size=128,
-        moe_tp_size=1,
-        moe_ep_size=128,
-        workload_distribution="uniform",
-    )
-
-    resolved = resolve_model_config_moe_comm(
-        model_config,
-        model_path=SYNTH_MODEL,
-        backend_name="sglang",
-        database=database,
-        required_phases=("generation",),
-    )
-
-    assert resolved == {"generation": "deepep_ll"}
-    assert observed_distributions == ["uniform"]
 
 
 @pytest.mark.parametrize(
@@ -415,7 +354,6 @@ def test_exact_resolver_accepts_node1_deepep_substitution_for_other_frameworks(f
             "trtllm_deepep_ll": {(4, 1)},
         },
         moe_expert_compute_coverage=lambda *_args: set(),
-        moe_compute_coverage=lambda *_args: {64},
         legacy_moe_compute_coverage=lambda *_args: {64},
     )
     model_config = ModelConfig(attention_dp_size=64, moe_tp_size=1, moe_ep_size=64)
@@ -592,7 +530,6 @@ def test_build_model_config_reuses_task_coverage_snapshot(synth_systems, monkeyp
 
     monkeypatch.setattr(database, "moe_a2a_coverage", unexpected_probe)
     monkeypatch.setattr(database, "moe_expert_compute_coverage", unexpected_probe)
-    monkeypatch.setattr(database, "moe_compute_coverage", unexpected_probe)
 
     point = _tuple(dp=16, moe_ep=16)
     model_config = t.build_model_config(role="agg", parallel=point)

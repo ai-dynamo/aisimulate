@@ -42,14 +42,6 @@ from aiconfigurator_core.sdk.operations.moe_comm import MOE_A2A_BACKENDS, commun
 LARGE_EP_READY_FAMILIES = frozenset({"MOE", "DEEPSEEK", "DEEPSEEKV32", "KIMIK25"})
 
 
-def deepep_ll_workload_distribution(model_family: str, base: str = "power_law") -> str:
-    """Distribution key emitted by the Stage-1 LL fused-MoE predictor."""
-    if base != "power_law":
-        return base
-    alpha = 1.2 if model_family == "MOE" else 1.01
-    return f"power_law_{alpha}"
-
-
 @dataclass(frozen=True)
 class MoEBlockShape:
     """Checkpoint-level shape of a model's MoE block(s).
@@ -630,57 +622,24 @@ def _large_ep_block_ops(
                 **a2a_kwargs,
             )
         )
-    if comm_backend == "deepep_ll":
-        # LL decode uses the ordinary fused-MoE predictor at the model's
-        # existing power-law curve. The surrounding MoEAllToAll ops already
-        # represent dispatch/combine, so no ordinary EP pre/post-dispatch ops
-        # are emitted and compute is not skew-amplified a second time.
-        #
-        # This is an intentional modeling boundary, not an attempt to replay
-        # SGLang's DeepEPMoE.run_moe_core kernel. The ordinary curve owns the
-        # local-compute workload-efficiency model; Monte Carlo owns only LL
-        # communication endpoint imbalance.
-        #
-        # FIXME(deprecation): migrate the remaining large-EP HT/V2 users to
-        # this standard MoE compute contract, then remove MoeExpertCompute and
-        # its dedicated collector/table dependencies. Do not add new
-        # MoeExpertCompute collection coverage.
-        routed_ops.append(
-            ops.MoE(
-                f"{prefix}_moe",
-                scale_factor,
-                shape.hidden_size,
-                shape.moe_inter_size,
-                shape.topk,
-                shape.num_experts,
-                cfg.moe_tp_size,
-                cfg.moe_ep_size,
-                quant_mode,
-                workload_distribution,
-                cfg.attention_dp_size,
-                is_context=is_context,
-                is_gated=shape.is_gated,
-            )
+    routed_ops.append(
+        ops.MoEExpertCompute(
+            f"{prefix}_moe",
+            scale_factor,
+            hidden_size=shape.hidden_size,
+            inter_size=shape.moe_inter_size,
+            topk=shape.topk,
+            num_experts=shape.num_experts,
+            moe_ep_size=cfg.moe_ep_size,
+            quant_mode=quant_mode,
+            workload_distribution=workload_distribution,
+            attention_dp_size=cfg.attention_dp_size,
+            inference_phase=inference_phase,
+            num_slots=cfg.wideep_num_slots or None,
+            is_gated=shape.is_gated,
+            enable_eplb=cfg.enable_eplb and is_deepep,
         )
-    else:
-        routed_ops.append(
-            ops.MoEExpertCompute(
-                f"{prefix}_moe",
-                scale_factor,
-                hidden_size=shape.hidden_size,
-                inter_size=shape.moe_inter_size,
-                topk=shape.topk,
-                num_experts=shape.num_experts,
-                moe_ep_size=cfg.moe_ep_size,
-                quant_mode=quant_mode,
-                workload_distribution=workload_distribution,
-                attention_dp_size=cfg.attention_dp_size,
-                inference_phase=inference_phase,
-                num_slots=cfg.wideep_num_slots or None,
-                is_gated=shape.is_gated,
-                enable_eplb=cfg.enable_eplb and is_deepep,
-            )
-        )
+    )
     routed_ops.append(
         ops.MoEAllToAll(
             f"{prefix}_moe_combine",

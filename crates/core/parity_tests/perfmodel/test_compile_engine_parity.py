@@ -552,10 +552,9 @@ _GB200_WIDEEP_SGLANG_VERSION = "0.5.14"
 def _build_wideep_sglang():
     """Runnable H200 Stage-1 DeepEP config for parity and golden capture.
 
-    This remains numerical rather than graph-only: H200's ordinary fused-MoE
-    EP8 curve makes the intentional LL compute-model migration visible in the
-    historical ``wideep_sglang`` goldens alongside the new communication
-    model.
+    This remains numerical rather than graph-only: the historical H200
+    ``wideep_sglang`` goldens exercise measured DeepEP expert compute alongside
+    the new LL communication model.
     """
     from aiconfigurator.sdk import common
 
@@ -570,17 +569,15 @@ def _build_wideep_sglang():
     assert database is not None, (
         f"missing shipped {_WIDEEP_SGLANG_SYSTEM}/sglang/{_WIDEEP_SGLANG_VERSION} database"
     )
-    fused_moe_eps = database.moe_compute_coverage(
+    compute_eps = database.moe_expert_compute_coverage(
         hidden_size=7168,
         inter_size=2048,
         topk=8,
         num_experts=256,
         quant_mode=common.MoEQuantMode.fp8_block,
-        workload_distribution="power_law_1.01",
+        inference_phase="generation",
     )
-    assert 8 in fused_moe_eps, (
-        "H200 Stage-1 parity requires the shipped ordinary fused-MoE EP8 curve"
-    )
+    assert 8 in compute_eps, "H200 parity requires the shipped DeepEP expert-compute EP8 curve"
     model_config = config.ModelConfig(
         tp_size=8,
         moe_tp_size=1,
@@ -625,17 +622,15 @@ def _build_gb200_wideep_sglang():
     assert database is not None, (
         f"missing shipped {_GB200_WIDEEP_SGLANG_SYSTEM}/sglang/{_GB200_WIDEEP_SGLANG_VERSION} database"
     )
-    fused_moe_eps = database.moe_compute_coverage(
+    compute_eps = database.moe_expert_compute_coverage(
         hidden_size=7168,
         inter_size=2048,
         topk=8,
         num_experts=256,
         quant_mode=common.MoEQuantMode.fp8_block,
-        workload_distribution="power_law_1.01",
+        inference_phase="generation",
     )
-    assert 32 in fused_moe_eps, (
-        "GB200 Stage-1 parity requires the shipped ordinary fused-MoE EP32 curve"
-    )
+    assert 32 in compute_eps, "GB200 parity requires the shipped DeepEP expert-compute EP32 curve"
     model_config = config.ModelConfig(
         tp_size=1,
         pp_size=1,
@@ -677,10 +672,9 @@ def _handle_from_spec_json(spec_json: str) -> engine.EngineHandle:
 class TestWideEpDeepEpParity:
     """H200 SGLang DeepEP HT/LL end-to-end numerical parity.
 
-    The original H200 scenario remains numerical so the deliberate LL move
-    from kernel-specific ``MoeExpertCompute`` to the standard power-law MoE
-    predictor is visible in parity, together with the communication-model
-    change. Approved cross-version donors supply the large-EP tables where
+    The original H200 scenario remains numerical and now covers the LL
+    communication model without changing the measured DeepEP expert-compute
+    boundary. Approved cross-version donors supply the large-EP tables where
     required.
     """
 
@@ -721,8 +715,8 @@ class TestWideEpDeepEpParity:
             backend="sglang",
         )
 
-    def test_h200_ll_graph_uses_standard_moe_compute(self) -> None:
-        """Attribute the intentional H200 golden drift to the emitted graph."""
+    def test_h200_ll_graph_uses_measured_deepep_compute(self) -> None:
+        """Pin the LL communication and measured expert-compute boundary."""
         _model, _backend, _database, spec_json = _build_wideep_sglang()
         spec = json.loads(spec_json)
         context_ops = spec["context_ops"]
@@ -753,8 +747,8 @@ class TestWideEpDeepEpParity:
         }
         assert any("MoeExpertCompute" in op for op in context_ops)
         assert not any("Moe" in op for op in context_ops)
-        assert any("Moe" in op for op in generation_ops)
-        assert not any("MoeExpertCompute" in op for op in generation_ops)
+        assert any("MoeExpertCompute" in op for op in generation_ops)
+        assert not any("Moe" in op for op in generation_ops)
         assert not any("CustomAllReduce" in op for op in context_ops + generation_ops)
 
         # The numerical H200 spec traverses the full JSON -> bincode -> handle

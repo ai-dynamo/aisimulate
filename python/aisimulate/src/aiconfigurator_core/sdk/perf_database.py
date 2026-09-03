@@ -2947,38 +2947,6 @@ class PerfDatabase:
                     covered.update(ep_size for ep_size, tokens in by_ep.items() if tokens)
         return covered
 
-    def moe_compute_coverage(
-        self,
-        hidden_size: int,
-        inter_size: int,
-        topk: int,
-        num_experts: int,
-        quant_mode: common.MoEQuantMode,
-        workload_distribution: str = "power_law_1.2",
-    ) -> set[int]:
-        """Return ordinary fused-MoE EP coverage for a DeepEP-LL shape.
-
-        Stage 1 uses the standard :class:`MoE` predictor for LL expert
-        compute, not the wide-EP ``MoeExpertCompute`` table. Coverage follows
-        the ordinary predictor's distribution resolution:
-        use the requested model curve (for example ``power_law_1.01`` or
-        ``power_law_1.2``), then its existing ``uniform`` fallback. An
-        unrelated power-law curve must not enable a candidate that would miss
-        when queried.
-        """
-        from aiconfigurator_core.sdk.operations.moe import MoE
-
-        MoE.load_data(self)
-        table = self._moe_data
-        if not table:
-            return set()
-        by_distribution = table.get(quant_mode) or {}
-        by_topk = by_distribution.get(workload_distribution) or by_distribution.get("uniform") or {}
-        by_hidden = ((by_topk.get(topk) or {}).get(num_experts) or {}).get(hidden_size) or {}
-        by_tp = by_hidden.get(inter_size) or {}
-        by_ep = by_tp.get(1) or {}  # large-EP resolution requires pure EP
-        return {ep_size for ep_size, tokens in by_ep.items() if tokens}
-
     def legacy_moe_compute_coverage(
         self,
         hidden_size: int,

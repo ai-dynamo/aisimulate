@@ -43,12 +43,11 @@ DeepEP-HT, DeepEP V2, and TensorRT-LLM communication paths are unchanged. See th
 payload dtypes, formulas, topology rules, fixed assumptions, and Stage 2/3/4
 TODOs.
 
-The standard-MoE compute leg is an intentional reusable modeling abstraction,
-not a replay of SGLang's kernel-specific `DeepEPMoE.run_moe_core` measurements.
-Its existing power-law curves model compute workload efficiency; Monte Carlo
-is applied only to LL communication. Dedicated `MoeExpertCompute` collection
-coverage is not extended and the remaining legacy users are slated for a
-separate deprecation follow-up.
+Expert compute remains on the measured `MoeExpertCompute` path, including the
+existing SGLang `DeepEPMoE.run_moe_core`-derived WideEP data. The Monte Carlo
+routing/load adjustment is applied only to LL dispatch and combine, so this
+stage changes communication modeling without replacing the measured compute
+kernel with the ordinary fused-MoE predictor.
 
 Across the 192 checked-in LL curves, every OLS slope and raw intercept is
 positive; the smallest raw intercept is approximately 6.02 us, median

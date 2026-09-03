@@ -49,11 +49,7 @@ from aiconfigurator.sdk.models import (
     resolve_kimi_k3_moe_arch_mode,
     resolve_vllm_moe_execution_mode,
 )
-from aiconfigurator.sdk.models.blocks.moe import (
-    LARGE_EP_READY_FAMILIES,
-    MoEBlockShape,
-    deepep_ll_workload_distribution,
-)
+from aiconfigurator.sdk.models.blocks.moe import LARGE_EP_READY_FAMILIES, MoEBlockShape
 from aiconfigurator.sdk.moe_comm_resolver import (
     a2a_covers_parallel,
     moe_compute_coverage,
@@ -1356,18 +1352,10 @@ class Task:
         # (a lightweight double injected by a caller) carries no coverage
         # information, which is the same answer as an absent table.
         a2a_probe = getattr(database, "moe_a2a_coverage", None)
-        ll_compute_probe = getattr(database, "moe_compute_coverage", None)
         coverage: dict[str, dict[str, set[int]]] = {}
         if gpus_per_node and a2a_probe is not None:
             quant_mode = self._role_attr(role, "moe_quant_mode")
             enable_eplb = bool(self._role_attr(role, "enable_eplb"))
-            # Task v2 does not expose workload_distribution; the ModelConfig
-            # it builds uses the default power-law family curve. Keep this
-            # coverage key identical to the op emitted by that config.
-            ll_workload_distribution = deepep_ll_workload_distribution(
-                self._model_family,
-                "power_law",
-            )
             if quant_mode is not None and not isinstance(quant_mode, common.MoEQuantMode):
                 # The compute table is keyed by MoEQuantMode members; any
                 # other type (str, int, a sibling enum like
@@ -1389,18 +1377,6 @@ class Task:
                     quant_mode=quant_mode,
                     phase=phase,
                 )
-                ll_compute = (
-                    ll_compute_probe(
-                        shape.hidden_size,
-                        shape.moe_inter_size,
-                        shape.topk,
-                        shape.num_experts,
-                        quant_mode,
-                        ll_workload_distribution,
-                    )
-                    if ll_compute_probe is not None
-                    else set()
-                )
                 per_backend: dict[str, set[int]] = {}
                 for name, backend_spec in MOE_A2A_BACKENDS.items():
                     if backend_name not in backend_spec.frameworks or phase not in backend_spec.inference_phases:
@@ -1412,7 +1388,7 @@ class Task:
                         continue
                     eps = {
                         ep
-                        for ep in (ll_compute if name == "deepep_ll" else compute)
+                        for ep in compute
                         if a2a_covers_parallel(
                             a2a.get(name, set()),
                             framework=backend_name,

@@ -14,22 +14,20 @@ DeepEP V2, or TensorRT-LLM communication models.
 The modeled decode block is:
 
 ```text
-FP8 DeepEP-LL dispatch -> standard fused MoE compute -> BF16 DeepEP-LL combine
+FP8 DeepEP-LL dispatch -> measured DeepEP expert compute -> BF16 DeepEP-LL combine
 ```
 
 Dispatch and combine use measured DeepEP-LL curves as calibration and then
-apply a cached Monte Carlo routing/load model. Expert compute uses the existing
-ordinary `MoE` performance table at the model's workload distribution, such as
-`power_law_1.01` for DeepSeek or `power_law_1.2` for the default model. Compute
-is not multiplied by a second Monte Carlo imbalance factor.
+apply a cached Monte Carlo routing/load model. Expert compute continues to use
+the existing `MoeExpertCompute` performance table at the model's workload
+distribution and inference phase. Compute is not multiplied by a second Monte
+Carlo imbalance factor.
 
-This split is an intentional modeling boundary. Stage 1 does not attempt to
-replay a framework-specific `DeepEPMoE.run_moe_core` kernel or require its
-dedicated WideEP expert-compute collector. The ordinary `MoE` curve owns local
-compute workload efficiency; Monte Carlo owns only dispatch/combine endpoint
-imbalance. The remaining users of the legacy `MoeExpertCompute` operator are
-planned for migration and deprecation rather than expansion with new
-collector coverage.
+This split is an intentional modeling boundary. The measured WideEP expert
+kernel, including SGLang data collected from `DeepEPMoE.run_moe_core`, owns
+local compute efficiency. Monte Carlo owns only dispatch/combine endpoint
+imbalance. Stage 1 therefore adds LL communication modeling without changing
+the established large-EP compute predictor.
 
 ## 2. Token convention
 
@@ -332,23 +330,26 @@ errors.
 
 ## 11. Expert compute
 
-DeepEP-LL expert compute uses the existing standard fused `MoE` predictor:
+DeepEP-LL expert compute uses the existing measured `MoeExpertCompute`
+predictor:
 
 \[
-T_{compute}=f_{MoE}(B, H, I, K, N, EP, \text{quant}, \text{distribution}).
+T_{compute}=f_{MoeExpertCompute}(B, H, I, K, N, EP,
+\text{quant}, \text{distribution}, \text{phase}).
 \]
 
-The query uses the model's already-resolved distribution curve. DeepSeek, for
-example, emits `power_law_1.01`; the generic default emits
-`power_law_1.2`. No `MoeExpertCompute` wide-EP table and no additional
-Monte Carlo rank multiplier are used for LL. The large-EP graph also does not
-insert ordinary EP pre/post-dispatch operators around this compute op.
+The query globalizes per-rank tokens by attention-DP, uses pure expert
+parallelism (`moe_tp_size=1`), and selects the model's already-resolved
+distribution and generation-phase curve. DeepSeek, for example, emits
+`power_law_1.01`; the generic default emits `power_law_1.2`. No additional
+Monte Carlo rank multiplier is applied to compute. The large-EP graph also
+does not insert ordinary EP pre/post-dispatch operators around this compute op.
 
-Consequently, a direct numerical comparison against historical
-`wideep_generation_moe_perf` / `deepepmoe` rows compares two different model
-contracts: a framework-kernel measurement and the reusable standard-MoE
-predictor selected here. Their difference is expected to appear in end-to-end
-parity goldens; it is not hidden by substituting a shape-only regression.
+The unified expert-compute view is populated from
+`moe_expert_compute_perf.parquet` and its approved legacy WideEP adapters,
+including `wideep_generation_moe_perf` / `deepepmoe` data. End-to-end parity
+therefore preserves the historical measured compute contract while exercising
+the new LL communication estimator.
 
 ## 12. Calibration evidence
 

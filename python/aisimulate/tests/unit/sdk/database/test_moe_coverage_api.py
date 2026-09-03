@@ -11,8 +11,6 @@ phase is neither required nor sufficient.
 ``moe_expert_compute_coverage``: ``{moe_ep_size}`` with a non-empty token curve
 for the shape, unioned across kernel_source/distribution/num_slots at
 ``moe_tp_size == 1`` (the large-EP constraint).
-``moe_compute_coverage``: ordinary fused-MoE coverage for LL compute, using
-the requested model distribution and the predictor's ``uniform`` fallback.
 
 Both probes are read-only key walks: no query execution, no table mutation
 (non-vivifying even on defaultdict-backed stores), and an absent or unloaded
@@ -440,29 +438,6 @@ def test_ep_probe_does_not_vivify_defaultdict_store(stub_perf_db):
     assert stub_perf_db.moe_expert_compute_coverage(7168, 4096, 8, 256, fp8_block, "context") == set()  # absent inter
 
     assert _key_paths(data) == before
-
-
-# ---------------------------------------------------------------------------
-# ordinary fused-MoE coverage for DeepEP-LL Stage 1
-# ---------------------------------------------------------------------------
-
-
-def test_ll_compute_coverage_uses_requested_distribution_then_uniform(stub_perf_db):
-    quant = common.MoEQuantMode.fp8_block
-    stub_perf_db._moe_data = _store(
-        [
-            ((quant, "power_law_1.01", 8, 256, 7168, 2048, 1, 16), {32: _leaf(0.1)}),
-            ((quant, "power_law_1.2", 8, 256, 7168, 2048, 1, 32), {32: _leaf(0.2)}),
-            ((quant, "uniform", 8, 256, 7168, 2048, 1, 64), {32: _leaf(0.3)}),
-            # Pure EP only: this must not admit EP128.
-            ((quant, "power_law_1.01", 8, 256, 7168, 2048, 2, 128), {32: _leaf(0.4)}),
-        ]
-    )
-
-    args = (7168, 2048, 8, 256, quant)
-    assert stub_perf_db.moe_compute_coverage(*args, "power_law_1.01") == {16}
-    assert stub_perf_db.moe_compute_coverage(*args, "power_law_1.2") == {32}
-    assert stub_perf_db.moe_compute_coverage(*args, "missing") == {64}
 
 
 # ---------------------------------------------------------------------------

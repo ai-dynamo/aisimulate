@@ -1263,11 +1263,10 @@ def test_large_ep_opspec_key_sets_match_the_rust_structs():
 
 
 def test_large_ep_op_graph_compiles_natively(caplog):
-    """Large-EP communication and both compute predictors compile natively.
+    """Large-EP communication and measured expert compute compile natively.
 
-    Context/HT retains ``MoEExpertCompute``; generation/LL uses ordinary
-    fused ``MoE`` in Stage 1. Both have Rust constructors and wire mirrors, so
-    the model compiles
+    Both context/HT and generation/LL retain ``MoEExpertCompute``. The large-EP
+    operations have Rust constructors and wire mirrors, so the model compiles
     into the Rust engine natively — the documented Python-step fallback this
     test used to pin is retired. A rust-routed static run must answer with
     the scalar engine-step keys and match the Python step on the same
@@ -1330,11 +1329,8 @@ def test_large_ep_op_graph_compiles_natively(caplog):
         assert all(fields["enable_eplb"] is False for fields in a2a_fields)
         # Production graphs never pin a kernel: it crosses as null and the
         # Rust op auto-resolves per backend at query time.
-        if comm_backend == "deepep_ht":
-            assert ep_fields and not moe_fields
-            assert all(fields["kernel_source"] is None for fields in ep_fields)
-        else:
-            assert moe_fields and not ep_fields
+        assert ep_fields and not moe_fields
+        assert all(fields["kernel_source"] is None for fields in ep_fields)
 
     rust_engine_step._engine_handle_cache_clear()
     try:
