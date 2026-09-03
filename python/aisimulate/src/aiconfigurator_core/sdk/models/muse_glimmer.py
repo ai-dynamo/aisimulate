@@ -25,13 +25,13 @@ class MuseGlimmerModel(BaseModel):
     SwiGLU dense MLP at ``inter_size``.
 
     Modeled: QK RMS-norm (``qk_norm``) applied to q and k on every layer;
-    attention output gate (``gate_proj``, sigmoid-multiply before o_proj) on
-    every layer; TP all-reduces mirroring the llama.py dense pattern.
-    Deliberately unmodeled (shape-neutral for op-level perf): NoPE on global
-    layers (layer_rope_theta = 0), final logit softcapping, ``qk_scale_factor``
-    (scalar fold, timing-neutral), output_multiplier. The vision tower
-    (muse_glimmer_vision) is not priced — text-serving convention shared with
-    Kimi-K2.5/K3, Llama-4, and Qwen3.5.
+    NoPE on global layers (``layer_rope_theta = 0``); attention output gate
+    (``gate_proj``, sigmoid-multiply before o_proj) on every layer; TP
+    all-reduces mirroring the llama.py dense pattern. Deliberately unmodeled
+    (shape-neutral for op-level perf): final logit softcapping,
+    ``qk_scale_factor`` (scalar fold, timing-neutral), output_multiplier. The
+    vision tower (muse_glimmer_vision) is not priced — text-serving convention
+    shared with Kimi-K2.5/K3, Llama-4, and Qwen3.5.
     """
 
     @classmethod
