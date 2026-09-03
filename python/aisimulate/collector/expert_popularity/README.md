@@ -7,16 +7,25 @@ validated two-file bundle is packaged.
 
 ## Canonical workload
 
-- SGLang 0.5.14 using either native `stat` recorder mode or a fail-closed
-  serving-selected routed-expert capture documented in bundle provenance.
+- SGLang 0.5.14 using native `stat` recorder mode for production collection.
+  Each repeat/shard window retains its raw aggregate `logical_count` dump,
+  workload input IDs, response/output IDs, recorder endpoint status, and
+  content digests in the private campaign artifacts.
 - Prefill only; sequential requests; one ignored generated token; temperature zero.
 - Four fixed seed shards, each with at least 65,536 prompt tokens.
 - ISL sampled from the discrete uniform distribution over `[128, 4096]`.
 - Input IDs sampled uniformly from tokenizer vocabulary IDs after excluding special IDs.
 - The entire workload is run twice. Counts must be exactly repeatable by default;
   models whose serving kernel cannot replay routes exactly may use the explicit
-  aggregate gate documented below, while retaining every raw per-request route.
+  aggregate gate documented below, while retaining every raw aggregate recorder
+  window used to compute the published counts.
 - Each routed layer must conserve `routed_token_count * top_k` assignments.
+
+The optional `response_routed_experts` path is for focused diagnostics. When a
+serving implementation exposes token-level routes, that path can retain them per
+request to investigate an anomaly. Token-level routes are not a production
+publication requirement and are not needed to compute or validate this database;
+the production data product intentionally uses recorder aggregates.
 
 The packaged Parquet file has one row per logical `(layer_id, expert_id)` and the columns
 `layer_id`, `expert_id`, `activation_count`, `routed_token_count`, `token_hit_rate`,
@@ -113,7 +122,11 @@ stability gates. Repeat validation is exact by default. A model may use the
 explicit `aggregate` mode only when the serving framework cannot provide exact
 route replay; that mode records the non-exact result and requires mean-layer
 Pearson at least `0.999` and mean-layer Jensen-Shannon divergence at most
-`0.001`. Raw per-request routes remain part of the evidence.
+`0.001`. For recorder-mode collections, the private evidence consists of the raw
+aggregate dump for every repeat/shard window together with the exact workload,
+responses, endpoint results, and hashes. Per-request token-level routes, when
+available through the diagnostic response path, are diagnostic-only evidence and
+are not required for publication.
 
 Smoke submissions set `VERIFY_OBSERVER_TRANSPARENCY=1`. The driver then sends
 one identical greedy request with recording disabled and enabled, requires the
@@ -161,6 +174,16 @@ the pinned runtime and left a 3102-token request permanently pending; a 65536-
 token total pool covers the 4096-token campaign range.
 
 ## Repacked checkpoint provenance
+
+`model.id` is the canonical lookup identity for the model, while
+`provenance.collection_checkpoint` is the immutable identity of the artifact
+that actually served the workload. Quantization variants are deliberately not
+separate database keys: doing so would fragment one model across checkpoint
+names and make normal model-level lookup ambiguous. The exact checkpoint ID,
+revision, and quantization remain visible in provenance, so this canonicalization
+does not erase how the data was collected. A model distributed natively in FP4,
+for example, is still queried by its canonical model ID rather than by an
+invented precision-suffixed identity.
 
 The serving checkpoint may differ from the canonical bundle identity only when a
 fail-closed routing-equivalence report passes. The report verifies the immutable

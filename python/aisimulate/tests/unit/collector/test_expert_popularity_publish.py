@@ -4,15 +4,25 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 import yaml
 
-from aiconfigurator_core.sdk.expert_popularity import load_expert_popularity
+from aiconfigurator_core.sdk.expert_popularity import (
+    list_expert_popularity_models,
+    load_expert_popularity,
+    load_expert_popularity_metadata,
+)
 from collector.expert_popularity.publish import build_bundle
 
 pytestmark = pytest.mark.unit
+
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_IMMUTABLE_IMAGE_RE = re.compile(r".+@sha256:[0-9a-f]{64}")
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -169,3 +179,57 @@ def test_build_bundle_rejects_passing_smoke_collection(tmp_path: Path):
 
     with pytest.raises(ValueError, match="production workload or stability evidence"):
         build_bundle(collection, tmp_path / "output")
+
+
+def test_packaged_database_has_complete_production_metadata():
+    """Keep the repository-owned database complete without widening SDK policy."""
+    model_ids = list_expert_popularity_models()
+    assert len(model_ids) == 15
+
+    for model_id in model_ids:
+        metadata = load_expert_popularity_metadata(model_id)
+        model = metadata["model"]
+        measurement = metadata["measurement"]
+        validation = metadata["validation"]
+        provenance = metadata["provenance"]
+        checkpoint = provenance["collection_checkpoint"]
+
+        assert model["id"] == model_id
+        assert _COMMIT_RE.fullmatch(model["revision"])
+        assert _COMMIT_RE.fullmatch(model["tokenizer_revision"])
+        assert measurement["phase"] == "prefill"
+        assert measurement["workload"]["shard_count"] == 4
+        assert measurement["workload"]["repeat_count"] == 2
+        assert validation["status"] == "PASS"
+        assert validation["gates"]["layer_assignment_conservation"] is True
+        assert validation["stability"]["comparisons"]
+        assert validation["repeat_stability"]["comparisons"]
+
+        assert provenance["framework"] == "sglang"
+        assert provenance["framework_version"] == "0.5.14"
+        assert provenance["observation_source"] == "recorder"
+        assert provenance["routing_observation_method"]
+        assert checkpoint["id"]
+        assert _COMMIT_RE.fullmatch(checkpoint["revision"])
+        assert checkpoint["quantization"]
+        assert _IMMUTABLE_IMAGE_RE.fullmatch(provenance["image_reference"])
+        for field in (
+            "image_archive_sha256",
+            "collector_code_sha256",
+            "collection_result_sha256",
+            "normalized_counts_sha256",
+        ):
+            assert _SHA256_RE.fullmatch(provenance[field])
+        assert datetime.fromisoformat(provenance["published_at"]).tzinfo is not None
+
+        if (checkpoint["id"], checkpoint["revision"]) != (model["id"], model["revision"]):
+            evidence = provenance["routing_equivalence_evidence"]
+            assert evidence["status"] == "PASS"
+            assert evidence["canonical_model"] == {
+                "id": model["id"],
+                "revision": model["revision"],
+            }
+            assert {name: evidence["collection_checkpoint"][name] for name in ("id", "revision")} == {
+                "id": checkpoint["id"],
+                "revision": checkpoint["revision"],
+            }
