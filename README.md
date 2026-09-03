@@ -230,8 +230,10 @@ the resulting end-to-end prediction is accurate.
 KV-cache estimation and engine replay accept an optional rank-local
 `cuda_graph_reserved_bytes` value. AISimulate subtracts this fixed runtime
 reservation before allocating KV cache and preserves it when the native replay
-runtime rematerializes capacity. The default is zero, so existing callers do
-not change. See the [core API contract](docs/core-api.md#kv-cache-capacity-reservation).
+runtime rematerializes capacity. For SGLang, the value is additional to the
+graph/runtime headroom already encoded by `mem_fraction_static`. The default is
+zero, so existing serialized callers do not change. See the
+[core API contract](docs/core-api.md#kv-cache-capacity-reservation).
 
 ### FPE support matrix — in development
 

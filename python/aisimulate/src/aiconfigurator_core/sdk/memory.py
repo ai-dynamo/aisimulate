@@ -52,6 +52,7 @@ from aiconfigurator_core.sdk.utils import (
 )
 
 _ONE_GIB = 1 << 30
+_MAX_EXACT_BYTE_COUNT = 1 << 53
 
 # A KV byte-budget -> token-count inverse. Every estimation path produces one of
 # these (native: the model's ``get_kvcache_max_tokens``; naive:
@@ -133,9 +134,11 @@ def _validate_cuda_graph_reservation(cuda_graph_reserved_bytes: int) -> None:
         isinstance(cuda_graph_reserved_bytes, bool)
         or not isinstance(cuda_graph_reserved_bytes, int)
         or cuda_graph_reserved_bytes < 0
+        or cuda_graph_reserved_bytes > _MAX_EXACT_BYTE_COUNT
     ):
         raise ValueError(
-            "cuda_graph_reserved_bytes must be a non-negative integer, got "
+            "cuda_graph_reserved_bytes must be a non-negative integer no greater than "
+            f"{_MAX_EXACT_BYTE_COUNT}, got "
             f"{cuda_graph_reserved_bytes!r}"
         )
 
@@ -454,7 +457,7 @@ class KVCacheEstimator:
                 "activations_bytes": int(max(float(breakdown["activations_bytes"]), 0.0)),
                 "runtime_overhead_bytes": int(max(float(breakdown["runtime_overhead_bytes"]), 0.0)),
                 "comm_overhead_bytes": int(max(float(breakdown["comm_overhead_bytes"]), 0.0)),
-                "cuda_graph_reserved_bytes": int(cuda_graph),
+                "cuda_graph_reserved_bytes": cuda_graph_reserved_bytes,
             },
             "tolerance_adjusted": None,
         }
@@ -885,13 +888,13 @@ class NaiveKVCacheEstimator:
         kv_per_token = float(kv_per_token)
         weight_bytes = float(weight_bytes)
 
-        post_weight = max(
-            capacity_bytes - weight_bytes - float(cuda_graph_reserved_bytes), 0.0
-        )
+        cuda_graph = float(cuda_graph_reserved_bytes)
+        post_weight = max(capacity_bytes - weight_bytes - cuda_graph, 0.0)
         total_kv_size_bytes_f = post_weight * float(naive_kv_reservation)
         if total_kv_size_bytes_f <= 0.0:
+            non_kv_bytes = weight_bytes + cuda_graph
             raise ValueError(
-                f"no KV budget: non-KV memory ({int(max(weight_bytes, 0.0))} bytes) meets/exceeds the "
+                f"no KV budget: non-KV memory ({int(max(non_kv_bytes, 0.0))} bytes) meets/exceeds the "
                 f"KV-cache memory limit (capacity={int(max(capacity_bytes, 0.0))} bytes)"
             )
 
@@ -1007,7 +1010,11 @@ def estimate_kv_cache(
         gpu_memory_capacity_bytes_override: when set, wins over the SystemSpec
             capacity on the native path; REQUIRED on the naive fallback.
         cuda_graph_reserved_bytes: fixed rank-local bytes reserved by CUDA graphs
-            before KV-cache allocation. Defaults to zero for backward compatibility.
+            before KV-cache allocation. For SGLang this is an additional
+            reservation beyond the graph/runtime headroom already encoded in
+            ``mem_fraction_static``. Must be no greater than ``2**53`` so the
+            floating-point budget math preserves the integer exactly. Defaults
+            to zero for wire compatibility.
         tolerance_fraction: optional safety margin in ``[0, 1)``; when set,
             ``tolerance_adjusted`` is populated with ``floor(raw * (1 - t))``
             bytes and the recomputed token count. ``None`` -> raw estimate only.

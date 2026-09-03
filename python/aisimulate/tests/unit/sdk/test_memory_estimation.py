@@ -938,14 +938,17 @@ def test_estimate_kv_cache_native_uses_synthetic_breakdown(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("memory_fraction_kind", "expected_reduction"),
+    ("backend", "memory_fraction_kind", "expected_reduction"),
     [
-        ("of_total", 8 * _GIB),
-        ("of_free", int(8 * _GIB * 0.9)),
+        ("vllm", "of_total", 8 * _GIB),
+        # SGLang's explicit value is additional to graph/runtime headroom
+        # already encoded in mem_fraction_static.
+        ("sglang", "of_total", 8 * _GIB),
+        ("trtllm", "of_free", int(8 * _GIB * 0.9)),
     ],
 )
 def test_cuda_graph_reservation_reduces_native_kv_budget(
-    monkeypatch, memory_fraction_kind, expected_reduction
+    monkeypatch, backend, memory_fraction_kind, expected_reduction
 ):
     bd = _breakdown(60.0 * _GIB, 327_680.0, 141.0 * _GIB)
     monkeypatch.setattr(
@@ -953,7 +956,6 @@ def test_cuda_graph_reservation_reduces_native_kv_budget(
         "from_request",
         classmethod(lambda cls, *a, **k: cls(bd)),
     )
-    backend = "vllm" if memory_fraction_kind == "of_total" else "trtllm"
     baseline = memory.estimate_kv_cache(
         "Qwen/Qwen3-32B",
         "h200_sxm",
@@ -974,9 +976,7 @@ def test_cuda_graph_reservation_reduces_native_kv_budget(
         cuda_graph_reserved_bytes=8 * _GIB,
     )
 
-    assert baseline["total_kv_size_bytes"] - reserved["total_kv_size_bytes"] == pytest.approx(
-        expected_reduction, abs=1
-    )
+    assert baseline["total_kv_size_bytes"] - reserved["total_kv_size_bytes"] == pytest.approx(expected_reduction, abs=1)
     assert reserved["memory_breakdown"]["cuda_graph_reserved_bytes"] == 8 * _GIB
 
 
@@ -988,7 +988,7 @@ def test_cuda_graph_reservation_rejected_before_breakdown(monkeypatch):
         raise RuntimeError("should not be reached")
 
     monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_spy))
-    for bad in (-1, 1.5, True):
+    for bad in (-1, 1.5, True, (1 << 53) + 1, 1 << 64):
         with pytest.raises(ValueError, match="cuda_graph_reserved_bytes"):
             memory.estimate_kv_cache(
                 "Qwen/Qwen3-32B",
@@ -1001,6 +1001,59 @@ def test_cuda_graph_reservation_rejected_before_breakdown(monkeypatch):
                 cuda_graph_reserved_bytes=bad,
             )
     assert called["n"] == 0
+
+
+def test_cuda_graph_reservation_preserves_exact_integer_in_native_breakdown(monkeypatch):
+    max_exact = 1 << 53
+    bd = _breakdown(1.0, 1.0, float(1 << 54))
+    monkeypatch.setattr(
+        memory.KVCacheEstimator,
+        "from_request",
+        classmethod(lambda cls, *a, **k: cls(bd)),
+    )
+
+    out = memory.estimate_kv_cache(
+        "Qwen/Qwen3-32B",
+        "h200_sxm",
+        "vllm",
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=1.0,
+        cuda_graph_reserved_bytes=max_exact,
+    )
+
+    assert out["memory_breakdown"]["cuda_graph_reserved_bytes"] == max_exact
+
+
+def test_cuda_graph_reservation_reduces_naive_fallback_without_breakdown(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise RuntimeError("perf DB not available")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_boom))
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "_load_config", lambda *a, **k: dict(_RAW_UNSUPPORTED))
+    common = {
+        "max_num_tokens": 8192,
+        "max_batch_size": 256,
+        "memory_fraction_kind": "of_free",
+        "memory_fraction_value": 0.9,
+        "gpu_memory_capacity_bytes_override": 200 * _GIB,
+        "allow_naive_fallback": True,
+    }
+
+    baseline = memory.estimate_kv_cache("foo/bar-unknown-arch", "h200_sxm", "trtllm", **common)
+    reserved = memory.estimate_kv_cache(
+        "foo/bar-unknown-arch",
+        "h200_sxm",
+        "trtllm",
+        cuda_graph_reserved_bytes=8 * _GIB,
+        **common,
+    )
+
+    assert baseline["total_kv_size_bytes"] - reserved["total_kv_size_bytes"] == pytest.approx(
+        int(8 * _GIB * 0.8), abs=1
+    )
+    assert reserved["memory_breakdown"] is None
 
 
 # --------------------------------------------------------------------------- #

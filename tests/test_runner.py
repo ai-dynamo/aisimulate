@@ -275,6 +275,7 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     engine_args["aic_backend_version"] = "test"
     engine_args["aic_nextn"] = 3
     engine_args["aic_pp_size"] = 2
+    engine_args["gpu_memory_utilization"] = 0.8
     engine_args["cuda_graph_reserved_bytes"] = 14559947612
     engine_args["systems_path"] = "/tmp/custom-systems.yaml"
     calls = []
@@ -301,12 +302,45 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
     assert timing_config["pp"] == 2
     assert timing_config["systems_path"] == "/tmp/custom-systems.yaml"
+    assert timing_config["gpu_memory_utilization"] == 0.8
     assert timing_config["cuda_graph_reserved_bytes"] == 14559947612
     assert calls[0]["pp_size"] == 2
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
+    assert calls[0]["gpu_memory_utilization"] == 0.8
     assert calls[0]["cuda_graph_reserved_bytes"] == 14559947612
     assert "cuda_graph_reserved_bytes" not in runtime.execution_spec["engine"]["rank"]
     assert "nextn" not in calls[0]
+
+
+def test_runner_rejects_nested_inferred_capacity_when_fixed_timing_discards_reservation():
+    engine_args = {
+        "engine_type": "vllm",
+        "aic_backend": "vllm",
+        "aic_model_path": "test-model",
+        "aic_system": "test-system",
+        "rank": {
+            "backend": "vllm",
+            "block_size": 4,
+            "cuda_graph_reserved_bytes": 1 << 30,
+            "timing_model": {
+                "type": "fixed",
+                "prefill_ms": 2.0,
+                "decode_ms": 1.0,
+            },
+        },
+    }
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    with pytest.raises(ValueError, match="requires an AIC timing model"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(deployment=deployment)
+        )
 
 
 def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch):

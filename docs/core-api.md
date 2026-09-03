@@ -58,15 +58,25 @@ Python modules carry their own annotations.
 
 `estimate_kv_cache` and `estimate_num_gpu_blocks` accept
 `cuda_graph_reserved_bytes=<rank-local bytes>`. The value must be a
-non-negative integer and defaults to zero. It is treated as fixed non-KV memory
-before the backend-specific KV fraction is applied and is returned as
-`memory_breakdown.cuda_graph_reserved_bytes`.
+non-negative integer no greater than `2**53` and defaults to zero. It is treated
+as fixed non-KV memory before the backend-specific KV fraction is applied. For
+SGLang, it is an additional reservation beyond graph/runtime headroom already
+encoded by `mem_fraction_static`. Native estimates return it as
+`memory_breakdown.cuda_graph_reserved_bytes`; naive fallback estimates apply it
+but keep `memory_breakdown=None` because the other components are unavailable.
 
 The Rust `KvCacheEstimateRequest` exposes the same field. Engine replay accepts
 the value in its engine arguments and carries it through native AIC capacity
 rematerialization, so the Python estimator and native scheduler use the same
 rank-local KV capacity. This API does not estimate the reservation; callers
 must supply a value from a source they trust.
+
+Serialized Rust requests and estimates that omit the field remain compatible
+because deserialization defaults it to zero. Rust source that constructs
+`KvCacheEstimateRequest` with a struct literal must add
+`cuda_graph_reserved_bytes: 0`; exhaustive `MemoryBreakdown` literals and
+patterns must include the new field. This source migration is part of the next
+minor API update.
 
 ## Choosing a forward-pass API
 

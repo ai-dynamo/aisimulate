@@ -136,7 +136,8 @@ For a full end-to-end walkthrough (support check, sweep, deploy, benchmark), see
 Refer to [CLI User Guide](docs/cli_user_guide.md)
 
 KV-cache estimation and AISimulate engine replay accept an optional
-`cuda_graph_reserved_bytes` rank-local reservation. The default is zero. See
+`cuda_graph_reserved_bytes` rank-local reservation. For SGLang, the value is
+additional to headroom already encoded by `mem_fraction_static`. The default is zero. See
 the [core API contract](../../docs/core-api.md#kv-cache-capacity-reservation)
 for the Python and Rust fields and budget semantics.
 
