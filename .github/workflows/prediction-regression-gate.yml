@@ -1,0 +1,151 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Adapted from ai-dynamo/AIConfigurator at commit
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISimulate paths and copied-PR refs.
+
+name: Prediction Regression Gate
+
+on:
+  push:
+    # Velonix admits canonical copied-PR pushes, not untrusted pull_request events.
+    branches:
+      - "pull-request/*"
+  workflow_dispatch:
+    inputs:
+      old-ref:
+        description: "Old revision to compare against (default: main)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: prediction-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  refs:
+    name: Resolve comparison revisions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      old: ${{ steps.resolve.outputs.old }}
+    steps:
+      - name: Resolve copied PR base or manual old ref
+        id: resolve
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          OLD_REF_INPUT: ${{ inputs.old-ref }}
+        with:
+          script: |
+            if (context.eventName === "workflow_dispatch") {
+              core.setOutput("old", process.env.OLD_REF_INPUT || "main");
+              return;
+            }
+
+            const match = context.ref.match(/^refs\/heads\/pull-request\/(\d+)$/);
+            if (!match) {
+              core.setFailed(`expected copied-PR ref, got ${context.ref}`);
+              return;
+            }
+
+            const {data: pull} = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(match[1]),
+            });
+            core.setOutput("old", pull.base.sha);
+
+  collect:
+    name: Collect prediction snapshot (${{ matrix.side }})
+    needs: refs
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [old, new]
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - name: Checkout comparison revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.side == 'old' && needs.refs.outputs.old || github.sha }}
+          fetch-depth: 0
+          lfs: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Configure Python linker path
+        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+      - name: Install native build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install AISimulate and development dependencies
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Collect static, scheduling, and silicon snapshots
+        working-directory: python/aisimulate
+        run: |
+          mkdir -p /tmp/gate-snapshot
+          python tools/prediction_regression_gate/collect_static.py \
+            --output-dir /tmp/gate-snapshot \
+            --jobs "$(nproc)"
+          python tools/prediction_regression_gate/run_tier2.py \
+            --output-dir /tmp/gate-snapshot
+          python tools/accuracy_tracking/run_silicon.py \
+            --output-dir /tmp/gate-snapshot
+      - name: Upload prediction snapshot
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prediction-gate-${{ matrix.side }}
+          path: /tmp/gate-snapshot
+          retention-days: 30
+
+  report:
+    name: Prediction Regression Gate
+    needs: collect
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fail closed if snapshot collection failed
+        if: needs.collect.result != 'success'
+        run: |
+          echo "::error::prediction snapshot collection result: ${{ needs.collect.result }}"
+          exit 1
+      - uses: actions/checkout@v7
+      - name: Download prediction snapshots
+        uses: actions/download-artifact@v8
+        with:
+          pattern: prediction-gate-*
+          path: /tmp/prediction-snapshots
+      - name: Compare predictions and enforce the gate
+        working-directory: python/aisimulate
+        run: |
+          python tools/prediction_regression_gate/report.py \
+            --old /tmp/prediction-snapshots/prediction-gate-old \
+            --new /tmp/prediction-snapshots/prediction-gate-new \
+            --report-dir /tmp/prediction-gate-report
+      - name: Add report to job summary
+        if: always()
+        run: |
+          if [ -f /tmp/prediction-gate-report/summary.md ]; then
+            cat /tmp/prediction-gate-report/summary.md >> "${GITHUB_STEP_SUMMARY}"
+          fi
+      - name: Upload prediction report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prediction-regression-gate-report
+          path: /tmp/prediction-gate-report
+          if-no-files-found: ignore
+          retention-days: 30

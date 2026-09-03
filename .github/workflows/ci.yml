@@ -1,3 +1,6 @@
+# The Rust feature-mode, Python compatibility, prediction-parity, and
+# aggregate jobs were adapted from NVIDIA AIConfigurator at commit
+# 77fd0773407b3683d8a671fe24a30a7110651b64.
 name: CI
 
 on:
@@ -106,6 +109,38 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace
+
+  rust-feature-modes:
+    name: Rust feature modes
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 30
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Configure Python linker path
+        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+      - name: Install native build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Test without Python embedding
+        run: cargo test --workspace --no-default-features
+      - name: Install the unified Python package
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Test with every Rust feature enabled
+        run: |
+          export AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1
+          export PYO3_PYTHON="${pythonLocation}/bin/python"
+          export PYTHONPATH="${GITHUB_WORKSPACE}/python/aisimulate/src"
+          cargo test --workspace --all-features
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})
@@ -341,7 +376,12 @@ jobs:
       - run: >-
           python -m pytest -q
           python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py
+          python/aisimulate/tests/cross_package/test_core_public_api.py
           python/aisimulate/tests/cross_package/test_core_version_contract.py
+          python/aisimulate/tests/cross_package/test_import_contract.py
+          python/aisimulate/tests/cross_package/test_single_distribution.py
+          python/aisimulate/tests/cross_package/test_single_oracle_contract.py
+          python/aisimulate/tests/cross_package/test_table_view_registry.py
       - run: aiconfigurator version
       - run: python -m pytest -q -c pytest.ini tests
       - run: >-
@@ -352,6 +392,82 @@ jobs:
           -n auto
           --timeout=180
         working-directory: python/aisimulate
+
+  python-compatibility:
+    name: Python ${{ matrix.python-version }} compatibility
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Configure Python linker path
+        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+      - name: Install native build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install AISimulate and development dependencies
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Verify interpreter and dependency compatibility
+        run: |
+          python -m pip check
+          python -c 'import sys, numpy; from packaging.version import Version; assert f"{sys.version_info.major}.{sys.version_info.minor}" == "${{ matrix.python-version }}"; assert Version("2.1") <= Version(numpy.__version__) < Version("3")'
+      - name: Test unified-package contracts
+        run: >-
+          python -m pytest -q
+          python/aisimulate/tests/cross_package/test_core_public_api.py
+          python/aisimulate/tests/cross_package/test_core_version_contract.py
+          python/aisimulate/tests/cross_package/test_import_contract.py
+          python/aisimulate/tests/cross_package/test_single_distribution.py
+          python/aisimulate/tests/cross_package/test_single_oracle_contract.py
+          python/aisimulate/tests/cross_package/test_table_view_registry.py
+
+  rust-python-parity:
+    name: Rust/Python prediction parity
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 45
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          lfs: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Configure Python linker path
+        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+      - name: Install native build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install AISimulate and development dependencies
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Run engine-step parity suite
+        run: >-
+          python -m pytest -q -rx -n 4
+          crates/core/parity_tests/perfmodel/test_engine_step_parity.py
+      - name: Run compiled-engine parity suite
+        run: >-
+          python -m pytest -q -rx -n 4
+          crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
 
   lint:
     name: Lint (${{ matrix.arch }})
@@ -376,7 +492,15 @@ jobs:
           --config python/aisimulate/pyproject.toml
           python/aisimulate/src/aisimulate
           python/aisimulate/tests/e2e/cli/test_cli_experiments.py
+          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
           tests
+      - run: >-
+          ruff format --check
+          --config python/aisimulate/pyproject.toml
+          python/aisimulate/src/aisimulate
+          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
+          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
+          tests/test_ci_workflow_contracts.py
 
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
@@ -421,3 +545,51 @@ jobs:
           assert installed.isdisjoint(forbidden), installed & forbidden"
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
+
+  ci-success:
+    name: CI Success
+    if: always()
+    needs:
+      - spdx-headers
+      - cargo-deny
+      - rust
+      - rust-feature-modes
+      - public-api-rust
+      - application-wheel
+      - application-tests
+      - python-compatibility
+      - rust-python-parity
+      - lint
+      - release-artifact-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job to pass
+        env:
+          SPDX_HEADERS_RESULT: ${{ needs.spdx-headers.result }}
+          CARGO_DENY_RESULT: ${{ needs.cargo-deny.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          RUST_FEATURE_MODES_RESULT: ${{ needs.rust-feature-modes.result }}
+          PUBLIC_API_RUST_RESULT: ${{ needs.public-api-rust.result }}
+          APPLICATION_WHEEL_RESULT: ${{ needs.application-wheel.result }}
+          APPLICATION_TESTS_RESULT: ${{ needs.application-tests.result }}
+          PYTHON_COMPATIBILITY_RESULT: ${{ needs.python-compatibility.result }}
+          RUST_PYTHON_PARITY_RESULT: ${{ needs.rust-python-parity.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          RELEASE_ARTIFACT_CONTRACT_RESULT: ${{ needs.release-artifact-contract.result }}
+        run: |
+          for result in \
+            "${SPDX_HEADERS_RESULT}" \
+            "${CARGO_DENY_RESULT}" \
+            "${RUST_RESULT}" \
+            "${RUST_FEATURE_MODES_RESULT}" \
+            "${PUBLIC_API_RUST_RESULT}" \
+            "${APPLICATION_WHEEL_RESULT}" \
+            "${APPLICATION_TESTS_RESULT}" \
+            "${PYTHON_COMPATIBILITY_RESULT}" \
+            "${RUST_PYTHON_PARITY_RESULT}" \
+            "${LINT_RESULT}" \
+            "${RELEASE_ARTIFACT_CONTRACT_RESULT}"
+          do
+            test "${result}" = "success"
+          done

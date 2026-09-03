@@ -124,7 +124,9 @@ def _verify_imports() -> None:
 
     sdk = importlib.import_module("aiconfigurator_core.sdk")
     expected_facade = {
+        "AttentionBackend",
         "EngineHandle",
+        "MoEBackend",
         "ModelConfig",
         "RuntimeConfig",
         "RustForwardPassPerfModel",

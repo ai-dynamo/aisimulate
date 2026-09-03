@@ -70,6 +70,7 @@ areas:
       - pytest.ini
       - scripts/
       - tests/test_aic_sync.py
+      - tests/test_ci_workflow_contracts.py
       - tests/test_pages_site.py
       - tests/test_e2e_accuracy_overview.py
       - tests/test_source_compliance.py
@@ -96,6 +97,8 @@ shared:
   - glob: docs/aic-sync.md
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_aic_sync.py
+    owners: [infra, maintainers]
+  - glob: tests/test_ci_workflow_contracts.py
     owners: [infra, maintainers]
   - glob: tests/test_pages_site.py
     owners: [infra, maintainers]

@@ -1,0 +1,163 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Adapted from ai-dynamo/AIConfigurator at commit
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISimulate paths and copied-PR refs.
+
+name: Collector Data Check
+
+on:
+  push:
+    # Velonix admits canonical copied-PR pushes, not untrusted pull_request events.
+    branches:
+      - "pull-request/*"
+    paths:
+      - "python/aisimulate/src/aiconfigurator_core/systems/data/**"
+      - "python/aisimulate/src/aiconfigurator_core/sdk/perf_database.py"
+      - "python/aisimulate/collector/**"
+      - "python/aisimulate/tools/perf_database/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: collector-data-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check collector data
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 20
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Resolve comparison base
+        id: base
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            if (context.eventName === "workflow_dispatch") {
+              const {data: branch} = await github.rest.repos.getBranch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: context.payload.repository.default_branch,
+              });
+              core.setOutput("sha", branch.commit.sha);
+              return;
+            }
+
+            const match = context.ref.match(/^refs\/heads\/pull-request\/(\d+)$/);
+            if (!match) {
+              core.setFailed(`expected copied-PR ref, got ${context.ref}`);
+              return;
+            }
+
+            const {data: pull} = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(match[1]),
+            });
+            core.setOutput("sha", pull.base.sha);
+      - name: Fetch comparison base
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Configure Python linker path
+        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+      - name: Install native build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install AISimulate and development dependencies
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Check Collector V3 data invariants
+        working-directory: python/aisimulate
+        run: python tools/perf_database/check_collector_data.py
+      - name: Check op-backend facts registry
+        working-directory: python/aisimulate
+        run: python tools/perf_database/backend_facts.py --check
+      - name: Compute changed-operation manifest
+        id: changed_ops
+        working-directory: python/aisimulate
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          set +e
+          python tools/perf_database/changed_ops.py \
+            --base "${BASE_SHA}" \
+            --out changed-ops.yaml
+          rc=$?
+          set -e
+          if [ "${rc}" -eq 3 ]; then
+            echo "::notice::comparison base predates Collector V3 provenance; manifest skipped"
+            echo "produced=false" >> "${GITHUB_OUTPUT}"
+          elif [ "${rc}" -ne 0 ]; then
+            exit "${rc}"
+          else
+            echo "produced=true" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Upload changed-operation manifest
+        if: steps.changed_ops.outputs.produced == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: changed-ops
+          path: python/aisimulate/changed-ops.yaml
+          retention-days: 30
+
+  cross-backend-consistency:
+    name: Perf data sanity (informational)
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 25
+    continue-on-error: true
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - name: Checkout code with LFS data
+        uses: actions/checkout@v7
+        with:
+          lfs: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install check dependencies
+        run: python -m pip install pandas pyarrow numpy pyyaml 'tqdm>=4.0.0'
+      - name: Run cross-backend consistency checks
+        working-directory: python/aisimulate
+        run: |
+          python tools/perf_database/check_cross_backend.py \
+            --out-md cross-backend-consistency.md \
+            --out-json cross-backend-consistency.json
+      - name: Add triage summary
+        if: always()
+        working-directory: python/aisimulate
+        run: |
+          if [ -f cross-backend-consistency.md ]; then
+            sed -n '/^# Perf data sanity/,/^## Layer 1/p' cross-backend-consistency.md \
+              | sed '$d' >> "${GITHUB_STEP_SUMMARY}"
+          fi
+      - name: Upload consistency report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cross-backend-consistency
+          path: |
+            python/aisimulate/cross-backend-consistency.md
+            python/aisimulate/cross-backend-consistency.json
+          if-no-files-found: ignore
+          retention-days: 30
