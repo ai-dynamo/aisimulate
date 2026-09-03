@@ -1,6 +1,6 @@
 # Worker-type-bound FPM regression design
 
-> Status: implementation contract for the next minor `aiconfigurator-core`
+> Status: implementation contract for the next minor `aisimulate-core`
 > release. This document describes the online regression over
 > `ForwardPassMetrics` telemetry. It is distinct from the separately collected
 > whole-model `fpm_forward_perf` database.
@@ -21,69 +21,96 @@ not use the logarithm, standardization, or regression weights described here.
 
 ## Symbols and features
 
-For attention-DP rank \(d\), define:
+For attention-DP rank $d$, define:
 
 | Symbol | `ForwardPassMetrics` quantity | Meaning |
 |---|---|---|
-| \(P_d\) | `sum_prefill_tokens` | newly computed Prefill tokens |
-| \(H_d\) | `sum_prefill_kv_tokens` | previously cached Prefill KV tokens |
-| \(N_d\) | `num_prefill_requests` | scheduled Prefill requests |
-| \(B_d\) | `num_decode_requests` | scheduled Decode requests |
-| \(K_d\) | `sum_decode_kv_tokens` | Decode KV tokens read |
+| $P_d$ | `sum_prefill_tokens` | newly computed Prefill tokens |
+| $H_d$ | `sum_prefill_kv_tokens` | previously cached Prefill KV tokens |
+| $N_d$ | `num_prefill_requests` | scheduled Prefill requests |
+| $B_d$ | `num_decode_requests` | scheduled Decode requests |
+| $K_d$ | `sum_decode_kv_tokens` | Decode KV tokens read |
 
-The telemetry schema permits fully cached metadata with \(P_d=0\) and
-\(H_d>0\). Cached Prefill KV creates attention work only when fresh Prefill
+$H_d$ and $P_d$ are sums over the Prefill requests scheduled on rank $d$;
+$K_d$ is a sum over that rank's Decode requests. They are not per-request
+lengths. $N_d$ and $B_d$ are the corresponding per-rank request counts.
+
+The telemetry schema permits fully cached metadata with $P_d=0$ and
+$H_d>0$. Cached Prefill KV creates attention work only when fresh Prefill
 work exists:
 
-\[
-\widetilde H_d=H_d\,\mathbf 1[P_d>0].
-\]
+$$
+\widetilde H_d=H_d\,\mathbf{1}[P_d>0].
+$$
 
 Per-request token lengths are not available, so Prefill attention pairs use a
-balanced-request approximation:
+balanced-request approximation. Under that approximation, each of the $N_d$
+requests has cached length $H_d/N_d$ and newly computed length $P_d/N_d$.
+For $P_d>0$, metric validation guarantees $N_d>0$, and the total
+attention-pair estimate for rank $d$ is
 
-\[
-Q_d=
-\begin{cases}
-\dfrac{H_dP_d}{N_d}+\dfrac{P_d^2}{2N_d}+\dfrac{P_d}{2},
-  &P_d>0,\ N_d>0,\\[6pt]
-0, &P_d=0.
-\end{cases}
-\]
+$$
+\begin{aligned}
+Q_d
+&=N_d\left[
+\left(\dfrac{H_d}{N_d}\right)\left(\dfrac{P_d}{N_d}\right)
++\dfrac{(P_d/N_d)(P_d/N_d+1)}{2}
+\right]\\
+&=\dfrac{H_dP_d}{N_d}+\dfrac{P_d^2}{2N_d}+\dfrac{P_d}{2}.
+\end{aligned}
+$$
+
+When $P_d=0$, define $Q_d=0$. Thus $Q_d$ already includes the factor $N_d$:
+it estimates total Prefill attention-pair work on the rank, not work for one
+request. Callers must not multiply it by $N_d$ again. $N_d$ is the number of
+Prefill requests on rank $d$, not the attention-DP size; multiple ranks are
+reduced only by the role-specific maximum and sum below.
 
 All roles share the axis order
 
-\[
+$$
 x=[\text{critical attention},\ \text{global FFN/MoE}].
-\]
+$$
 
-With \(\alpha\) the KV-attention weight, \(\beta\) the Prefill
-attention-pair weight, and \(\gamma\) the tokenwise FFN/MoE weight, the exact
+With $\alpha$ the KV-attention weight, $\beta$ the Prefill
+attention-pair weight, and $\gamma$ the tokenwise FFN/MoE weight, the exact
 features are:
 
-\[
+$$
 x_P=
 \left[
 \max_d\left(\alpha\widetilde H_d+\beta Q_d\right),
 \ \gamma\sum_d P_d
 \right],
-\]
+$$
 
-\[
+$$
 x_D=
 \left[
 \alpha\max_d K_d,
 \ \gamma\sum_d B_d
 \right],
-\]
+$$
 
-\[
+$$
 x_A=
 \left[
 \max_d\left(\alpha(\widetilde H_d+K_d)+\beta Q_d\right),
 \ \gamma\sum_d(P_d+B_d)
 \right].
-\]
+$$
+
+The reductions for one and multiple attention-DP ranks are shown below.
+Unsubscripted symbols in the `attention_dp = 1` column refer to the sole rank.
+
+| Worker | `attention_dp = 1` | `attention_dp > 1` |
+|---|---|---|
+| Prefill | $x[0]=\alpha\widetilde H+\beta Q$<br>$x[1]=\gamma P$ | $x[0]=\max_d(\alpha\widetilde H_d+\beta Q_d)$<br>$x[1]=\gamma\sum_d P_d$ |
+| Decode | $x[0]=\alpha K$<br>$x[1]=\gamma B$ | $x[0]=\alpha\max_d K_d$<br>$x[1]=\gamma\sum_d B_d$ |
+| Aggregated | $x[0]=\alpha(\widetilde H+K)+\beta Q$<br>$x[1]=\gamma(P+B)$ | $x[0]=\max_d[\alpha(\widetilde H_d+K_d)+\beta Q_d]$<br>$x[1]=\gamma\sum_d(P_d+B_d)$ |
+
+The regression remains two-dimensional at every attention-DP size. Critical
+attention uses a maximum across ranks, while global FFN/MoE work uses a sum.
 
 The Aggregated maximum is taken after composing the entire rank-local
 attention score; the implementation must not combine independent maxima from
@@ -94,9 +121,17 @@ The options are construction-time knobs and all default to `1.0`:
 
 | Formula | `ForwardPassPerfOptions` field |
 |---|---|
-| \(\alpha\) | `regression_attention_kv_weight` |
-| \(\beta\) | `regression_prefill_attention_pair_weight` |
-| \(\gamma\) | `regression_ffn_token_weight` |
+| $\alpha$ | `regression_attention_kv_weight` |
+| $\beta$ | `regression_prefill_attention_pair_weight` |
+| $\gamma$ | `regression_ffn_token_weight` |
+
+- $\alpha$ scales KV-token-related attention work for every role:
+  $\widetilde H$ for Prefill, $K$ for Decode, and $\widetilde H+K$ for
+  Aggregated. It is not a Prefill-only weight.
+- $\beta$ scales only the Prefill attention-pair estimate $Q$. It does not
+  represent Decode attention.
+- $\gamma$ scales global tokenwise FFN/MoE work: $P$ for Prefill, $B$ for
+  Decode, and $P+B$ for Aggregated.
 
 They must be finite and strictly positive when regression is constructed. They
 are ignored by a successful native-only model. Changing a weight changes the
@@ -123,10 +158,10 @@ uses exactly `"prefill"`, `"decode"`, and `"aggregated"`; aliases such as
 - A Prefill model rejects an iteration containing any scheduled Decode
   request.
 - A Decode model rejects an iteration containing any fresh Prefill token.
-  \(P_d=0,H_d>0\) is cached metadata, not a role mismatch.
+  $P_d=0,H_d>0$ is cached metadata, not a role mismatch.
 - An Aggregated model accepts Prefill-only, Decode-only, mixed-rank, and
   phase-separated-rank iterations.
-- An iteration is idle when \(P_d=B_d=0\) for every rank, even if \(H_d>0\).
+- An iteration is idle when $P_d=B_d=0$ for every rank, even if $H_d>0$.
   Estimation returns zero and tuning does not retain it.
 
 The latency target remains the maximum finite, positive rank `wall_time`,
@@ -150,7 +185,7 @@ Python: from_regression(worker_type, options=None)
 documented next-minor API break. Adding the three public regression-weight
 fields is also a Rust source break for exhaustive `ForwardPassPerfOptions`
 struct literals; downstream callers should use
-`ForwardPassPerfOptions { bucket_count: 8, ..Default::default() }`. The raw
+`ForwardPassPerfOptions { bucket_count: 16, ..Default::default() }`. The raw
 PyO3 constructors use the same required string argument as the ergonomic
 Python facade. This feature change does not itself bump package versions or
 any FPM, `EngineConfig`, or `EngineSpec` schema version.
@@ -160,14 +195,14 @@ any FPM, `EngineConfig`, or `EngineSpec` schema version.
 Each accepted observation keeps the raw two-dimensional feature vector and
 observed milliseconds. Retention uses separate bucket coordinates:
 
-\[
+$$
 b_j=\log(1+x_j).
-\]
+$$
 
 The existing dynamic two-dimensional grid consumes these continuous `f64`
 coordinates unchanged. Its bounds expand and trigger rebucketing, never
 shrink, and its fattest-cell eviction policy still enforces the global sample
-cap. With the default `bucket_count=16`, the grid is \(4\times4\). Buckets
+cap. With the default `bucket_count=16`, the grid is $4\times4$. Buckets
 choose which observations survive; they are not local predictors and are not
 queried during estimation.
 
@@ -175,17 +210,17 @@ After insertion and eviction, the fit is rebuilt from the retained **raw**
 features. For each axis, population mean and standard deviation are computed
 with stable Welford accumulation:
 
-\[
+$$
 \mu_j=\frac1n\sum_i x_{ij},\qquad
 \sigma_j=\sqrt{\frac1n\sum_i(x_{ij}-\mu_j)^2},\qquad
 z_{ij}=\frac{x_{ij}-\mu_j}{\sigma_j}.
-\]
+$$
 
 An axis is inactive when
 
-\[
+$$
 \sigma_j\le 10^{-12}\max(1,|\mu_j|).
-\]
+$$
 
 Its standardized value and coefficient are zero. If both axes are inactive,
 the regression remains unready. Otherwise, the existing nonnegative
@@ -211,18 +246,18 @@ defaults, and include them in the engine-model reconstruction key. Weight
 changes require reconstruction followed by replay of Dynamo's retained raw FPM
 iterations. The role remains a constructor argument rather than an options-map
 entry, and Dynamo must update its exact core dependency pins together. This
-worktree changes only AIC: forwarding the worker role from Dynamo remains
-pending downstream integration.
+change updates only AISimulate's imported AIC forward-pass model; forwarding
+the worker role from Dynamo remains pending downstream integration.
 
 The following are intentionally documented for later work rather than added to
 this implementation:
 
-- calibrating or reference-scaling \(\alpha,\beta,\gamma\);
+- calibrating or reference-scaling $\alpha,\beta,\gamma$;
 - retaining the original per-rank raw FPM observations in the core alongside
   the derived two-dimensional samples, for replay and a future
   Gaussian-process feature space;
 - estimating prefix reuse for synthetic or queued Prefill requests, which
-  currently behave as cold-prefix inputs with \(H=0\);
+  currently behave as cold-prefix inputs with $H=0$;
 - topology-aware FFN/MoE work and explicit speculative-token accounting;
 - freshness or decay, robust shrinking bucket bounds, and deterministic
   eviction ties;

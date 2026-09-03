@@ -192,7 +192,7 @@ energy is 0.0 wherever the perf tables carry no power columns.
   public regression-weight fields to `ForwardPassPerfOptions` is also a Rust
   source break for downstream exhaustive struct literals. Rust callers should
   prefer update syntax such as
-  `ForwardPassPerfOptions { bucket_count: 8, ..Default::default() }` so future
+  `ForwardPassPerfOptions { bucket_count: 16, ..Default::default() }` so future
   option fields do not require source changes. This feature does not itself
   change package versions; release coordination must keep the crate and wheel
   versions aligned.
