@@ -116,6 +116,8 @@ tables. An exact key must include all inputs that can change graph selection or 
 - TP, PP, attention-DP, MoE-TP, and MoE-EP mapping;
 - weight, activation, KV-cache, and MoE dtypes;
 - CUDA graph mode and capture-size digest;
+- compilation mode/backend and selected attention, MoE, and linear backends;
+- FlashInfer autotuning state;
 - `max_num_seqs`, `max_num_batched_tokens`, and `max_model_len`;
 - attention backend and enabled features such as speculative decoding, LoRA, and
   multimodal execution.
@@ -159,7 +161,7 @@ pool measurement remain useful diagnostics but are ineligible for reservation tr
 
 ### Modeled fallback
 
-The fallback will mirror vLLM's estimator structure:
+The long-term fallback can mirror vLLM's estimator structure:
 
 ```text
 graph bytes = max(shared FULL, shared PIECEWISE)
@@ -168,17 +170,28 @@ graph bytes = max(shared FULL, shared PIECEWISE)
             + encoder graph bytes
 ```
 
-The shared and incremental terms will be fitted from profiles using model architecture,
-graph shapes, parallelism, dtype, backend, and platform features. Model size alone is
-not sufficient because weights are not duplicated into every graph.
+The V2 seed model first evaluates a directly testable factorized approximation:
 
-The fitted artifact must declare its training domain, version, holdout metrics, and a
+```text
+log1p(reservation_bytes) = beta_0
+                        + beta * log1p(numeric_features)
+                        + gamma * runtime_categories
+```
+
+Numeric features include the full capture-size distribution, scheduler limits,
+model architecture, rank-local topology, and graph-by-architecture interactions.
+Categorical features include GPU and vLLM families, dtypes, graph and compilation
+modes, attention/MoE/linear backends, FlashInfer autotuning, and speculative decoding.
+Numeric features are standardized before ridge fitting. Model size alone is not
+sufficient because weights are not duplicated into every graph.
+
+The fitted artifact must declare its categorical and numeric training domains, version, holdout metrics, and a
 conservative prediction bound. Out-of-domain inputs return `unavailable`; they must not
 use nearest-neighbor transfer silently. V1 is restricted to observed model identities
 and categorical domains; it does not claim cross-model generalization.
 
 The deterministic log-space ridge model is enabled only with at least 20 independent
-profiles spanning two model identities and two GPU families, and grouped holdout
+profiles spanning two model identities and two GPU families, and whole-model grouped holdout
 metrics satisfying all of these gates:
 
 - median MAPE at most 20%;

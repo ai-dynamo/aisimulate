@@ -21,6 +21,11 @@
     "kv_cache_dtype",
     "cuda_graph_mode",
     "cuda_graph_capture_sizes",
+    "compilation_mode",
+    "compilation_backend",
+    "moe_backend",
+    "linear_backend",
+    "flashinfer_autotune",
     "max_num_seqs",
     "max_num_batched_tokens",
     "max_model_len",
@@ -28,12 +33,12 @@
     "speculative_method",
     "speculative_tokens"
   ],
-  "lock_sha256": "37761f86ac0fa2600536d7a370c7a545ef103b71b24fc267b4807271e7e5d2b9",
-  "manifest_sha256": "ffded864d3738457570d4716de8894e768b112212b3d98e196f5a67119f909fd",
-  "measurement_count": 7,
-  "parquet_sha256": "ce590633d0f0e7cad365b41601e9a36aad8804f646d8404636ca59b958778e49",
-  "profile_count": 7,
-  "reservation_training_count": 4,
+  "lock_sha256": "bfe807034b3e33b7ab8439d75ff524f729a9c9a2b3a9e15e4a547d99aeef4c7b",
+  "manifest_sha256": "2a73fdae3b025695c7331e498ab5dea83c403b43fc403caf64e824de461593da",
+  "measurement_count": 9,
+  "parquet_sha256": "8944103b17be38d42bb57b5b93b55fcd10a746116f4328ac5a87383631584df0",
+  "profile_count": 9,
+  "reservation_training_count": 6,
   "schema_version": 1,
   "source_run_ids": [
     30781313910,
@@ -42,6 +47,7 @@
     31833401868,
     32315429801,
     32526153588,
-    33221188566
+    33221188566,
+    33463181601
   ]
 }

@@ -16,6 +16,10 @@ the repository.
   graph-pool size is diagnostic only.
 - Concurrency is provenance. It is not profile identity or a model feature.
 - A semantic duplicate with more than 5% reservation spread fails publication.
+- Model architecture values come from the packaged model config. The Parquet
+  records its config ID and SHA256 next to the measured profile.
+- Logged FULL and PIECEWISE graph counts are reconciled against counts derived
+  from graph mode, capture sizes, scheduler limits, and speculative width.
 
 The generated database and reports contain no raw logs, credentials, request
 records, or internal filesystem paths.
@@ -36,6 +40,27 @@ verifies locked checksums, parses single-node and nested multinode logs,
 publishes the database and reports, trains the deterministic ridge artifact,
 and validates all checksums.
 
+## Predictor
+
+The V2 model uses one deterministic factorized expression:
+
+```text
+log1p(reservation_bytes) = intercept
+                        + ridge(log1p(numeric_features))
+                        + ridge(runtime_categories)
+```
+
+Numeric features cover the complete capture-size distribution, scheduling
+limits, rank-local model architecture, TP/PP/attention-DP/MoE topology, and
+graph-by-architecture interactions. Runtime categories cover GPU and vLLM
+families, dtypes, graph and compilation modes, attention/MoE/linear backends,
+FlashInfer autotuning, and speculative decoding.
+
+Validation leaves out complete model identities. Production prediction remains
+limited to observed model identities, categorical values, and numeric ranges.
+The checked-in model stays disabled until every sample-count and accuracy gate
+passes; exact profile lookup remains available while it is disabled.
+
 Individual stages are also available:
 
 ```bash
@@ -54,6 +79,7 @@ Delete the temporary cache after review.
 - Confirm every new run attempt completed successfully.
 - Review source mapping and identity reconciliation.
 - Review training exclusions, especially actual-only legacy logs.
+- Review model-identity holdout metrics and numeric training ranges.
 - Confirm the validation report and model gates.
 - Inspect the Parquet diff; never add raw artifact files.
 - Add parser fixtures when vLLM changes a log format.

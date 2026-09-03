@@ -1,26 +1,43 @@
 {
-  "artifact_version": "cuda-graph-ridge-v1",
+  "artifact_version": "cuda-graph-factorized-ridge-v2",
   "categorical_features": [
-    "model_id",
     "gpu_family",
     "vllm_family",
     "quantization",
     "compute_dtype",
     "kv_cache_dtype",
     "cuda_graph_mode",
+    "parallel_mode",
     "attention_backend",
+    "compilation_mode",
+    "compilation_backend",
+    "moe_backend",
+    "linear_backend",
+    "flashinfer_autotune",
     "speculative_method"
   ],
   "categorical_levels": {
     "attention_backend": [
+      "FLASHINFER_SPARSE_MLA",
       "FLASH_ATTN",
       "TRITON_ATTN"
+    ],
+    "compilation_backend": [
+      "inductor"
+    ],
+    "compilation_mode": [
+      "NONE"
     ],
     "compute_dtype": [
       "bfloat16"
     ],
     "cuda_graph_mode": [
-      "FULL_AND_PIECEWISE"
+      "FULL_AND_PIECEWISE",
+      "FULL_DECODE_ONLY"
+    ],
+    "flashinfer_autotune": [
+      "False",
+      "True"
     ],
     "gpu_family": [
       "b200",
@@ -31,89 +48,345 @@
     "kv_cache_dtype": [
       "fp8"
     ],
-    "model_id": [
-      "MiniMaxAI/MiniMax-M3-MXFP8",
-      "nvidia/MiniMax-M3-NVFP4"
+    "linear_backend": [
+      "auto"
+    ],
+    "moe_backend": [
+      "auto"
+    ],
+    "parallel_mode": [
+      "dep",
+      "tp"
     ],
     "quantization": [
       "fp4",
       "fp8"
     ],
     "speculative_method": [
-      "mtp"
+      "mtp",
+      "none"
     ],
     "vllm_family": [
       "0.1",
+      "0.25",
       "0.27"
     ]
   },
   "coefficients": [
-    0.06251859850745069,
-    0.0928397343594098,
-    0.09024117730767829,
-    0.03440141907046029,
-    -1.1876441051375228e-13,
-    -0.02917486571387398,
-    -5.1625370645069755e-15,
-    -5.162824129949261e-15,
-    -5.1612045995664676e-15,
-    -5.15091145180379e-15,
-    -0.02917486571387398,
-    -5.16485913342675e-15,
-    -1.0325635948610209e-14,
-    -0.049635126919277295,
-    0.04963512691928311,
-    -0.03121945444628041,
-    0.08085458136556352,
-    -0.043894679132261305,
-    -0.005740447787021919,
-    -0.04389467913226132,
-    0.04389467913225488,
-    0.04963512691928372,
-    -0.049635126919277274,
-    6.540371947714658e-15,
-    6.5400275348350574e-15,
-    -3.693829429060491e-18,
-    0.04963512691928432,
-    -0.049635126919277225,
-    0.0
+    0.023158333610708164,
+    0.019099568228497496,
+    0.017737640044513912,
+    0.016739119515986764,
+    0.016273370662647727,
+    0.014261224590161782,
+    0.015790597394940795,
+    0.016300073708677518,
+    0.019099568228497746,
+    0.016300073708677514,
+    0.010000455485781677,
+    0.007070818421013105,
+    0.015007180386381682,
+    0.009667643443490099,
+    -0.001970710590722101,
+    -0.001970710590719682,
+    -0.03707489086365188,
+    0.0,
+    0.01000324548130309,
+    0.0,
+    0.0,
+    -0.03707489086365209,
+    0.010003245481303031,
+    0.0019707105907214775,
+    0.001970710590719351,
+    0.0019707105907198676,
+    -0.00197071059072283,
+    0.001970710590720025,
+    -0.0019707105907215846,
+    0.0,
+    0.001970710590721512,
+    0.001970710590721889,
+    0.0,
+    -0.0019707105907218886,
+    0.0019707105907195406,
+    0.03218788057838266,
+    0.0019707105907203204,
+    0.0038488840872914704,
+    0.033503262598908096,
+    -0.011193335512919402,
+    0.029898085015418317,
+    -0.05215933273626056,
+    0.02212279807778472,
+    0.014806307859745807,
+    0.00473405012913643,
+    0.021751333256669798,
+    0.0203972518228879,
+    0.023907779684590843,
+    0.023285155207225385,
+    -0.04374294527926398,
+    0.06833109053257996,
+    -0.032011482396661434,
+    0.007423337143356134,
+    -0.03201148239666145,
+    0.0009290018816463537,
+    0.03108248051501866,
+    0.024588145253315992,
+    -0.024588145253294662,
+    0.0,
+    0.0,
+    -0.0009290018816392212,
+    0.0009290018816463532,
+    0.003727989481973302,
+    -0.0037279894819573587,
+    0.0009290018816389852,
+    0.024588145253316512,
+    -0.025517147134948272,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.02551714713496106,
+    -0.025517147134961022,
+    -0.0009290018816173223,
+    0.0009290018816386061
   ],
   "enabled": false,
+  "feature_centers": [
+    3.3746043551360043,
+    3.2555326562982447,
+    7.735310750816531,
+    7.69992823845424,
+    12.555420387307455,
+    4.397113585143004,
+    5.17581441130826,
+    5.302048051362803,
+    3.2555326562982447,
+    5.302048051362803,
+    1.938451416771102,
+    3.221956102972547,
+    4.43243760895622,
+    8.318477605481833,
+    12.294030018540356,
+    0.9241962407465937,
+    1.750616122906134,
+    0.6931471805599453,
+    0.9438267466893243,
+    0.6931471805599453,
+    0.6931471805599453,
+    1.750616122906134,
+    0.9438267466893243,
+    8.774769832617714,
+    4.116294037797238,
+    4.402862314717648,
+    1.3040076684760487,
+    5.319966884631371,
+    5.353606374753657,
+    8.030409562130485,
+    5.22428938100371,
+    1.7215953246411713,
+    0.6931471805599453,
+    12.060846264777249,
+    4.116294037797238,
+    7.273655790333358,
+    5.319966884631371,
+    4.199444767931143,
+    6.5300535840008544,
+    4.880718874974183,
+    8.050121397044181,
+    2.0012956890355134,
+    19.058947355997017,
+    17.100281332948832,
+    11.527532456119724,
+    19.835865859104313,
+    23.1860770831325,
+    12.552347810813115,
+    13.32925140072898,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "feature_design": "factorized-architecture-topology-v2",
+  "feature_scales": [
+    0.8887227369674846,
+    1.0631736634884712,
+    2.4223782901578494,
+    2.4937105682227254,
+    3.924994586459421,
+    1.3377448750657401,
+    1.4397264616946857,
+    1.5044950451682617,
+    1.0631736634884712,
+    1.5044950451682617,
+    1.6634687388811507,
+    2.6483712370322987,
+    1.7938835489521645,
+    1.4965034849260945,
+    2.2187802296277273,
+    0.6535054289790314,
+    0.5410607595203191,
+    1.0,
+    0.5605365504354455,
+    1.0,
+    1.0,
+    0.5410607595203191,
+    0.5605365504354455,
+    0.07265636815329127,
+    0.007665283049374168,
+    0.3231125070510898,
+    0.43194359336439975,
+    0.6507567067841513,
+    3.78557137139184,
+    1.0,
+    0.5154482835399113,
+    0.15861453346390952,
+    1.0,
+    0.2058406620109404,
+    0.007665283049374168,
+    0.7741653802408472,
+    0.6507567067841513,
+    2.9828583111692635,
+    0.7388803978271268,
+    0.5958156081096718,
+    0.8416057615492636,
+    0.27708529109554225,
+    2.9931963871974125,
+    2.874940734289577,
+    8.528292640052799,
+    3.0550470017475826,
+    2.9093693387967177,
+    2.0476275653165965,
+    2.1123913182652707,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
   "feature_schema": [
-    "log1p:cuda_graph_capture_count",
-    "log1p:cuda_graph_largest_capture_size",
-    "log1p:max_num_seqs",
-    "log1p:max_num_batched_tokens",
-    "log1p:max_model_len",
-    "log1p:tp_size",
-    "log1p:pp_size",
-    "log1p:attention_dp_size",
-    "log1p:dcp_size",
-    "log1p:pcp_size",
-    "log1p:moe_tp_size",
-    "log1p:moe_ep_size",
-    "log1p:speculative_tokens",
-    "model_id=MiniMaxAI/MiniMax-M3-MXFP8",
-    "model_id=nvidia/MiniMax-M3-NVFP4",
+    "standardized_log1p:cuda_graph_capture_count",
+    "standardized_log1p:cuda_graph_active_capture_count",
+    "standardized_log1p:cuda_graph_capture_size_sum",
+    "standardized_log1p:cuda_graph_active_capture_size_sum",
+    "standardized_log1p:cuda_graph_capture_size_squared_sum",
+    "standardized_log1p:cuda_graph_capture_size_p50",
+    "standardized_log1p:cuda_graph_capture_size_p90",
+    "standardized_log1p:cuda_graph_largest_capture_size",
+    "standardized_log1p:cuda_graph_full_count",
+    "standardized_log1p:cuda_graph_full_largest_capture_size",
+    "standardized_log1p:cuda_graph_piecewise_count",
+    "standardized_log1p:cuda_graph_piecewise_largest_capture_size",
+    "standardized_log1p:max_num_seqs",
+    "standardized_log1p:max_num_batched_tokens",
+    "standardized_log1p:max_model_len",
+    "standardized_log1p:speculative_tokens",
+    "standardized_log1p:tp_size",
+    "standardized_log1p:pp_size",
+    "standardized_log1p:attention_dp_size",
+    "standardized_log1p:dcp_size",
+    "standardized_log1p:pcp_size",
+    "standardized_log1p:moe_tp_size",
+    "standardized_log1p:moe_ep_size",
+    "standardized_log1p:model_hidden_size",
+    "standardized_log1p:model_num_hidden_layers",
+    "standardized_log1p:model_num_attention_heads",
+    "standardized_log1p:model_num_key_value_heads",
+    "standardized_log1p:model_head_dim",
+    "standardized_log1p:model_dense_intermediate_size",
+    "standardized_log1p:model_moe_intermediate_size",
+    "standardized_log1p:model_num_experts",
+    "standardized_log1p:model_experts_per_token",
+    "standardized_log1p:model_num_shared_experts",
+    "standardized_log1p:model_vocab_size",
+    "standardized_log1p:layers_per_pipeline_rank",
+    "standardized_log1p:attention_width_per_rank",
+    "standardized_log1p:kv_width_per_rank",
+    "standardized_log1p:dense_width_per_rank",
+    "standardized_log1p:moe_width_per_rank",
+    "standardized_log1p:experts_per_rank",
+    "standardized_log1p:active_expert_width_per_rank",
+    "standardized_log1p:parallel_world_size",
+    "standardized_log1p:capture_attention_elements",
+    "standardized_log1p:capture_kv_elements",
+    "standardized_log1p:capture_dense_elements",
+    "standardized_log1p:capture_moe_active_elements",
+    "standardized_log1p:capture_moe_capacity_elements",
+    "standardized_log1p:peak_attention_elements",
+    "standardized_log1p:peak_moe_active_elements",
     "gpu_family=b200",
     "gpu_family=b300",
     "gpu_family=h100",
     "gpu_family=h200",
     "vllm_family=0.1",
+    "vllm_family=0.25",
     "vllm_family=0.27",
     "quantization=fp4",
     "quantization=fp8",
     "compute_dtype=bfloat16",
     "kv_cache_dtype=fp8",
     "cuda_graph_mode=FULL_AND_PIECEWISE",
+    "cuda_graph_mode=FULL_DECODE_ONLY",
+    "parallel_mode=dep",
+    "parallel_mode=tp",
+    "attention_backend=FLASHINFER_SPARSE_MLA",
     "attention_backend=FLASH_ATTN",
     "attention_backend=TRITON_ATTN",
-    "speculative_method=mtp"
+    "compilation_mode=NONE",
+    "compilation_backend=inductor",
+    "moe_backend=auto",
+    "linear_backend=auto",
+    "flashinfer_autotune=False",
+    "flashinfer_autotune=True",
+    "speculative_method=mtp",
+    "speculative_method=none"
   ],
   "gate_failures": [
-    "profiles:4<20",
-    "median_mape:0.207132",
-    "maximum_underprediction:0.266200"
+    "profiles:6<20",
+    "median_mape:0.590232",
+    "p90_ape:540522480059538073310031068741283644419668937840651214619556107465015746876244774128451584.000000",
+    "maximum_underprediction:0.641299"
   ],
   "gates": {
     "median_mape_max": 0.2,
@@ -124,19 +397,31 @@
     "underprediction_max": 0.2,
     "upper_bound_coverage_min": 0.95
   },
+  "holdout_group": "model_id",
   "holdout_metrics": {
-    "maximum_underprediction": 0.2661995490047028,
-    "median_mape": 0.20713231967620416,
-    "p90_ape": 0.32479209503693685,
+    "maximum_underprediction": 0.6412987669581561,
+    "median_mape": 0.5902316857679981,
+    "p90_ape": 5.405224800595381e+89,
     "upper_bound_coverage": 1.0
   },
-  "intercept": 19.847336658217916,
+  "intercept": 21.183887188139767,
   "numeric_features": [
     "cuda_graph_capture_count",
+    "cuda_graph_active_capture_count",
+    "cuda_graph_capture_size_sum",
+    "cuda_graph_active_capture_size_sum",
+    "cuda_graph_capture_size_squared_sum",
+    "cuda_graph_capture_size_p50",
+    "cuda_graph_capture_size_p90",
     "cuda_graph_largest_capture_size",
+    "cuda_graph_full_count",
+    "cuda_graph_full_largest_capture_size",
+    "cuda_graph_piecewise_count",
+    "cuda_graph_piecewise_largest_capture_size",
     "max_num_seqs",
     "max_num_batched_tokens",
     "max_model_len",
+    "speculative_tokens",
     "tp_size",
     "pp_size",
     "attention_dp_size",
@@ -144,25 +429,260 @@
     "pcp_size",
     "moe_tp_size",
     "moe_ep_size",
-    "speculative_tokens"
+    "model_hidden_size",
+    "model_num_hidden_layers",
+    "model_num_attention_heads",
+    "model_num_key_value_heads",
+    "model_head_dim",
+    "model_dense_intermediate_size",
+    "model_moe_intermediate_size",
+    "model_num_experts",
+    "model_experts_per_token",
+    "model_num_shared_experts",
+    "model_vocab_size",
+    "layers_per_pipeline_rank",
+    "attention_width_per_rank",
+    "kv_width_per_rank",
+    "dense_width_per_rank",
+    "moe_width_per_rank",
+    "experts_per_rank",
+    "active_expert_width_per_rank",
+    "parallel_world_size",
+    "capture_attention_elements",
+    "capture_kv_elements",
+    "capture_dense_elements",
+    "capture_moe_active_elements",
+    "capture_moe_capacity_elements",
+    "peak_attention_elements",
+    "peak_moe_active_elements"
   ],
-  "parquet_sha256": "ce590633d0f0e7cad365b41601e9a36aad8804f646d8404636ca59b958778e49",
+  "numeric_training_domain": {
+    "active_expert_width_per_rank": [
+      1536.0,
+      18432.0
+    ],
+    "attention_dp_size": [
+      1.0,
+      8.0
+    ],
+    "attention_width_per_rank": [
+      768.0,
+      7168.0
+    ],
+    "capture_attention_elements": [
+      552960.0,
+      4592415744.0
+    ],
+    "capture_dense_elements": [
+      0.0,
+      483840000.0
+    ],
+    "capture_kv_elements": [
+      92160.0,
+      328029696.0
+    ],
+    "capture_moe_active_elements": [
+      1105920.0,
+      11809069056.0
+    ],
+    "capture_moe_capacity_elements": [
+      35389440.0,
+      94472552448.0
+    ],
+    "cuda_graph_active_capture_count": [
+      2.0,
+      51.0
+    ],
+    "cuda_graph_active_capture_size_sum": [
+      12.0,
+      10503.0
+    ],
+    "cuda_graph_capture_count": [
+      4.0,
+      51.0
+    ],
+    "cuda_graph_capture_size_p50": [
+      4.0,
+      184.0
+    ],
+    "cuda_graph_capture_size_p90": [
+      8.0,
+      432.0
+    ],
+    "cuda_graph_capture_size_squared_sum": [
+      85.0,
+      3277845.0
+    ],
+    "cuda_graph_capture_size_sum": [
+      15.0,
+      10503.0
+    ],
+    "cuda_graph_full_count": [
+      2.0,
+      51.0
+    ],
+    "cuda_graph_full_largest_capture_size": [
+      8.0,
+      512.0
+    ],
+    "cuda_graph_largest_capture_size": [
+      8.0,
+      512.0
+    ],
+    "cuda_graph_piecewise_count": [
+      0.0,
+      49.0
+    ],
+    "cuda_graph_piecewise_largest_capture_size": [
+      0.0,
+      512.0
+    ],
+    "dcp_size": [
+      1.0,
+      1.0
+    ],
+    "dense_width_per_rank": [
+      0.0,
+      768.0
+    ],
+    "experts_per_rank": [
+      48.0,
+      384.0
+    ],
+    "kv_width_per_rank": [
+      128.0,
+      512.0
+    ],
+    "layers_per_pipeline_rank": [
+      60.0,
+      61.0
+    ],
+    "max_model_len": [
+      9472.0,
+      1048576.0
+    ],
+    "max_num_batched_tokens": [
+      512.0,
+      16384.0
+    ],
+    "max_num_seqs": [
+      2.0,
+      512.0
+    ],
+    "model_dense_intermediate_size": [
+      0.0,
+      3072.0
+    ],
+    "model_experts_per_token": [
+      4.0,
+      6.0
+    ],
+    "model_head_dim": [
+      128.0,
+      512.0
+    ],
+    "model_hidden_size": [
+      6144.0,
+      7168.0
+    ],
+    "model_moe_intermediate_size": [
+      3072.0,
+      3072.0
+    ],
+    "model_num_attention_heads": [
+      64.0,
+      128.0
+    ],
+    "model_num_experts": [
+      128.0,
+      384.0
+    ],
+    "model_num_hidden_layers": [
+      60.0,
+      61.0
+    ],
+    "model_num_key_value_heads": [
+      1.0,
+      4.0
+    ],
+    "model_num_shared_experts": [
+      1.0,
+      1.0
+    ],
+    "model_vocab_size": [
+      129280.0,
+      200064.0
+    ],
+    "moe_ep_size": [
+      1.0,
+      8.0
+    ],
+    "moe_tp_size": [
+      1.0,
+      8.0
+    ],
+    "moe_width_per_rank": [
+      384.0,
+      3072.0
+    ],
+    "parallel_world_size": [
+      4.0,
+      8.0
+    ],
+    "pcp_size": [
+      1.0,
+      1.0
+    ],
+    "peak_attention_elements": [
+      6144.0,
+      3670016.0
+    ],
+    "peak_moe_active_elements": [
+      12288.0,
+      9437184.0
+    ],
+    "pp_size": [
+      1.0,
+      1.0
+    ],
+    "speculative_tokens": [
+      0.0,
+      3.0
+    ],
+    "tp_size": [
+      1.0,
+      8.0
+    ]
+  },
+  "parquet_sha256": "8944103b17be38d42bb57b5b93b55fcd10a746116f4328ac5a87383631584df0",
   "residual_log_interval": [
-    -0.2757396435708605,
-    0.3095181523229833
+    -176.18502327977595,
+    1.0252654557875864
   ],
   "ridge_alpha": 1.0,
   "target_transform": "log1p_bytes",
   "training_domain": {
     "attention_backend": [
+      "FLASHINFER_SPARSE_MLA",
       "FLASH_ATTN",
       "TRITON_ATTN"
+    ],
+    "compilation_backend": [
+      "inductor"
+    ],
+    "compilation_mode": [
+      "NONE"
     ],
     "compute_dtype": [
       "bfloat16"
     ],
     "cuda_graph_mode": [
-      "FULL_AND_PIECEWISE"
+      "FULL_AND_PIECEWISE",
+      "FULL_DECODE_ONLY"
+    ],
+    "flashinfer_autotune": [
+      "False",
+      "True"
     ],
     "gpu_family": [
       "b200",
@@ -173,21 +693,34 @@
     "kv_cache_dtype": [
       "fp8"
     ],
+    "linear_backend": [
+      "auto"
+    ],
     "model_id": [
       "MiniMaxAI/MiniMax-M3-MXFP8",
+      "deepseek-ai/DeepSeek-V4-Pro",
       "nvidia/MiniMax-M3-NVFP4"
+    ],
+    "moe_backend": [
+      "auto"
+    ],
+    "parallel_mode": [
+      "dep",
+      "tp"
     ],
     "quantization": [
       "fp4",
       "fp8"
     ],
     "speculative_method": [
-      "mtp"
+      "mtp",
+      "none"
     ],
     "vllm_family": [
       "0.1",
+      "0.25",
       "0.27"
     ]
   },
-  "training_profile_count": 4
+  "training_profile_count": 6
 }

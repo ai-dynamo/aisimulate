@@ -11,6 +11,11 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from aiconfigurator_core.sdk._cuda_graph_features import (
+    MODEL_ARCHITECTURE_FEATURES,
+    graph_shape_features,
+    model_architecture_features,
+)
 from tools.cuda_graph_profiles.common import (
     PROFILE_IDENTITY_FIELDS,
     REQUIRED_PROFILE_FIELDS,
@@ -24,15 +29,39 @@ from tools.cuda_graph_profiles.common import (
 from tools.cuda_graph_profiles.infx import verify_cache
 from tools.cuda_graph_profiles.parser import ParsedMeasurement, ProfileParseError, load_json, load_yaml, parse_log_text
 
+_MODEL_ARCHITECTURE_COLUMNS = (
+    "model_architecture",
+    "model_architecture_config_id",
+    "model_architecture_config_sha256",
+    *MODEL_ARCHITECTURE_FEATURES,
+)
+_GRAPH_SHAPE_COLUMNS = (
+    "cuda_graph_capture_count",
+    "cuda_graph_active_capture_count",
+    "cuda_graph_capture_size_sum",
+    "cuda_graph_active_capture_size_sum",
+    "cuda_graph_capture_size_squared_sum",
+    "cuda_graph_capture_size_p50",
+    "cuda_graph_capture_size_p90",
+    "cuda_graph_largest_capture_size",
+    "cuda_graph_full_count",
+    "cuda_graph_full_largest_capture_size",
+    "cuda_graph_piecewise_count",
+    "cuda_graph_piecewise_largest_capture_size",
+)
 DATABASE_COLUMNS = (
     *REQUIRED_PROFILE_FIELDS,
+    *_MODEL_ARCHITECTURE_COLUMNS,
     "estimated_cuda_graph_bytes",
     "estimated_cuda_graph_bytes_min_rank",
     "actual_cuda_graph_pool_bytes",
     "actual_cuda_graph_pool_bytes_min_rank",
     "rank_count",
-    "cuda_graph_capture_count",
-    "cuda_graph_largest_capture_size",
+    *_GRAPH_SHAPE_COLUMNS,
+    "profiled_full_count",
+    "profiled_full_largest_capture_size",
+    "profiled_piecewise_count",
+    "profiled_piecewise_largest_capture_size",
     "available_kv_cache_bytes",
     "gpu_kv_cache_tokens",
     "exclusion_reason",
@@ -55,6 +84,11 @@ _IDENTITY_REQUIRED_FOR_TRAINING = (
     "compute_dtype",
     "kv_cache_dtype",
     "cuda_graph_mode",
+    "compilation_mode",
+    "compilation_backend",
+    "moe_backend",
+    "linear_backend",
+    "flashinfer_autotune",
     "max_num_seqs",
     "max_num_batched_tokens",
     "max_model_len",
@@ -79,6 +113,11 @@ _REQUIRED_PUBLICATION_PROVENANCE = (
     "kv_cache_dtype",
     "cuda_graph_mode",
     "cuda_graph_capture_sizes",
+    "compilation_mode",
+    "compilation_backend",
+    "moe_backend",
+    "linear_backend",
+    "flashinfer_autotune",
     "max_num_seqs",
     "max_num_batched_tokens",
     "max_model_len",
@@ -198,11 +237,13 @@ def _row_from_measurement(
     identity["moe_tp_size"] = identity.get("moe_tp_size") or identity.get("tp_size")
     identity["backend_build"] = identity.get("backend_build") or (benchmark or {}).get("image")
     identity["cuda_graph_capture_sizes"] = normalize_capture_sizes(identity.get("cuda_graph_capture_sizes"))
-    capture_sizes = json.loads(identity["cuda_graph_capture_sizes"])
+    architecture = model_architecture_features(identity.get("model_id"))
+    graph_shape = graph_shape_features(identity)
     identity_completeness = (
         "pinned" if identity.get("model_revision") or identity.get("model_config_sha256") else "unversioned_model"
     )
     missing_training = [field for field in _IDENTITY_REQUIRED_FOR_TRAINING if identity.get(field) is None]
+    missing_training.extend(field for field in _MODEL_ARCHITECTURE_COLUMNS if architecture.get(field) is None)
     training_eligible = bool(estimated_max is not None and not measurement.graph_disabled and not missing_training)
     exclusion_reason = None
     if measurement.graph_disabled:
@@ -225,6 +266,7 @@ def _row_from_measurement(
         "artifact_id": int(artifact["artifact_id"]),
         "artifact_name": artifact["artifact_name"],
         "artifact_sha256": artifact["extracted_content_sha256"],
+        **architecture,
         "estimated_cuda_graph_bytes": estimated_max,
         "estimated_cuda_graph_bytes_min_rank": estimated_min,
         "actual_cuda_graph_pool_bytes": actual_max,
@@ -234,8 +276,11 @@ def _row_from_measurement(
             len(measurement.actual_bytes_by_rank),
             int(identity.get("tp_size") or 1),
         ),
-        "cuda_graph_capture_count": len(capture_sizes),
-        "cuda_graph_largest_capture_size": max(capture_sizes, default=0),
+        **graph_shape,
+        "profiled_full_count": measurement.profiled_full_count,
+        "profiled_full_largest_capture_size": measurement.profiled_full_largest_capture_size,
+        "profiled_piecewise_count": measurement.profiled_piecewise_count,
+        "profiled_piecewise_largest_capture_size": measurement.profiled_piecewise_largest_capture_size,
         "available_kv_cache_bytes": measurement.available_kv_cache_bytes,
         "gpu_kv_cache_tokens": measurement.gpu_kv_cache_tokens,
         "exclusion_reason": exclusion_reason,
@@ -246,9 +291,21 @@ def _row_from_measurement(
     }
     row["profile_id"] = profile_id(row)
     row["measurement_id"] = measurement_id(row)
+    for field in (
+        "full_count",
+        "full_largest_capture_size",
+        "piecewise_count",
+        "piecewise_largest_capture_size",
+    ):
+        observed = row[f"profiled_{field}"]
+        derived = row[f"cuda_graph_{field}"]
+        if observed is not None and observed != derived:
+            raise ProfileValidationError(f"logged CUDA graph {field}={observed} disagrees with derived value {derived}")
     reconciliation = {
         "artifact_id": row["artifact_id"],
         "identity_sources": measurement.identity_sources,
+        "model_architecture_config_id": row["model_architecture_config_id"],
+        "model_architecture_config_sha256": row["model_architecture_config_sha256"],
         "measurement_id": row["measurement_id"],
         "profile_id": row["profile_id"],
     }

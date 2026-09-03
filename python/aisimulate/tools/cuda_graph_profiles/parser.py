@@ -32,11 +32,15 @@ class ParsedMeasurement:
     actual_bytes_by_rank: dict[int, int]
     available_kv_cache_bytes: int | None
     gpu_kv_cache_tokens: int | None
+    profiled_full_count: int | None
+    profiled_full_largest_capture_size: int | None
+    profiled_piecewise_count: int | None
+    profiled_piecewise_largest_capture_size: int | None
     graph_disabled: bool
     identity_sources: dict[str, str]
 
 
-_RANK_RE = re.compile(r"(?:Worker(?:_TP)?|rank[ =])(\d+)", re.IGNORECASE)
+_RANK_RE = re.compile(r"(?:Worker(?:_(?:TP|DP))?|rank[ =])(\d+)", re.IGNORECASE)
 _ESTIMATE_RE = re.compile(r"Estimated CUDA graph memory:\s*([0-9.]+)\s*GiB", re.IGNORECASE)
 _POOL_RE = re.compile(
     r"CUDA graph pool memory:\s*([0-9.]+)\s*GiB\s*\(actual\),\s*([0-9.]+)\s*GiB\s*\(estimated\)",
@@ -45,6 +49,8 @@ _POOL_RE = re.compile(
 _ACTUAL_RE = re.compile(r"Graph capturing finished.*?took\s*([0-9.]+)\s*GiB", re.IGNORECASE)
 _AVAILABLE_KV_RE = re.compile(r"Available KV cache memory:\s*([0-9.]+)\s*GiB", re.IGNORECASE)
 _KV_TOKENS_RE = re.compile(r"GPU KV cache size:\s*([0-9,]+)\s*tokens", re.IGNORECASE)
+_FULL_PROFILE_RE = re.compile(r"\bFULL=(\d+)\s*\(largest=(\d+)\)")
+_PIECEWISE_PROFILE_RE = re.compile(r"\bPIECEWISE=(\d+)\s*\(largest=(\d+)\)")
 
 
 def _bytes_from_gib(value: str) -> int:
@@ -64,6 +70,20 @@ def _first(pattern: str, text: str, flags: int = 0) -> str | None:
 def _integer(pattern: str, text: str) -> int | None:
     value = _first(pattern, text)
     return int(value) if value is not None else None
+
+
+def _boolean(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    return None
+
+
+def _consistent_profile_value(values: set[int], label: str) -> int | None:
+    if len(values) > 1:
+        raise ProfileParseError(f"incompatible rank-local CUDA graph {label}: {sorted(values)}")
+    return next(iter(values), None)
 
 
 def _engine_identity(text: str) -> tuple[dict[str, Any], dict[str, str]]:
@@ -94,6 +114,10 @@ def _engine_identity(text: str) -> tuple[dict[str, Any], dict[str, str]]:
     attention_backend = _first(r"'attention_backend':\s*'([^']+)'", args_line)
     if not attention_backend:
         attention_backend = _first(r"AttentionConfig\(backend=<AttentionBackendEnum\.([^:>]+)", combined)
+    if not attention_backend:
+        attention_backend = _first(r"Using\s+([A-Z0-9_]+)\s+attention backend", text)
+    if not attention_backend and "flashinfer_sparse_mla" in text.lower():
+        attention_backend = "FLASHINFER_SPARSE_MLA"
 
     graph_mode = _first(r"CUDAGraphMode\.([^:>]+)", combined)
     identity = {
@@ -115,6 +139,14 @@ def _engine_identity(text: str) -> tuple[dict[str, Any], dict[str, str]]:
         "kv_cache_dtype": _first(r"kv_cache_dtype=([^,]+)", engine_line),
         "cuda_graph_mode": graph_mode,
         "cuda_graph_capture_sizes": normalize_capture_sizes(capture_sizes),
+        "compilation_mode": _first(r"CompilationMode\.([^:>]+)", combined),
+        "compilation_backend": _first(r"compilation_config=.*?'backend':\s*'([^']+)'", engine_line),
+        "moe_backend": _first(r"\bmoe_backend='([^']+)'", engine_line),
+        "linear_backend": _first(r"\blinear_backend='([^']+)'", engine_line),
+        "flashinfer_autotune": _boolean(
+            _first(r"\benable_flashinfer_autotune=(True|False)", engine_line)
+            or _first(r"'enable_flashinfer_autotune':\s*(True|False)", args_line)
+        ),
         "max_num_seqs": max_num_seqs,
         "max_num_batched_tokens": _integer(r"max_num_batched_tokens=(\d+)", text),
         "max_model_len": _integer(r"max_seq_len=(\d+)", engine_line)
@@ -178,6 +210,14 @@ def _config_identity(config: dict[str, Any]) -> dict[str, Any]:
     elif isinstance(speculative_config, dict):
         speculative = speculative_config
     precision = model_section.get("precision") if isinstance(model_section, dict) else flat.get("precision")
+    compilation_config = vllm_config.get("compilation-config")
+    if isinstance(compilation_config, str):
+        try:
+            compilation_config = json.loads(compilation_config)
+        except json.JSONDecodeError:
+            compilation_config = {}
+    if not isinstance(compilation_config, dict):
+        compilation_config = {}
     return {
         "model_id": normalize_model_id(str(raw_model) if raw_model else None, precision=str(precision or "")),
         "model_revision": None if revision in {None, "main"} else str(revision),
@@ -190,17 +230,21 @@ def _config_identity(config: dict[str, Any]) -> dict[str, Any]:
         "pp_size": flat.get("pp") or flat.get("pipeline_parallel_size"),
         "attention_dp_size": vllm_config.get("data-parallel-size")
         or flat.get("attention_dp_size")
-        or flat.get("data_parallel_size")
-        or 1,
-        "dcp_size": flat.get("dcp_size") or flat.get("decode_context_parallel_size") or 1,
-        "pcp_size": flat.get("pcp_size") or flat.get("prefill_context_parallel_size") or 1,
+        or flat.get("data_parallel_size"),
+        "dcp_size": flat.get("dcp_size") or flat.get("decode_context_parallel_size"),
+        "pcp_size": flat.get("pcp_size") or flat.get("prefill_context_parallel_size"),
         "moe_tp_size": flat.get("moe_tp_size"),
-        "moe_ep_size": flat.get("ep") or flat.get("moe_ep_size") or 1,
+        "moe_ep_size": flat.get("ep") or flat.get("moe_ep_size"),
         "quantization": flat.get("quantization") or precision,
         "compute_dtype": flat.get("dtype") or flat.get("compute_dtype"),
         "kv_cache_dtype": vllm_config.get("kv-cache-dtype") or flat.get("kv_cache_dtype"),
         "cuda_graph_mode": flat.get("cudagraph_mode") or flat.get("cuda_graph_mode"),
         "cuda_graph_capture_sizes": normalize_capture_sizes(capture_sizes) if capture_sizes is not None else None,
+        "compilation_mode": compilation_config.get("mode") or flat.get("compilation_mode"),
+        "compilation_backend": compilation_config.get("backend") or flat.get("compilation_backend"),
+        "moe_backend": flat.get("moe_backend"),
+        "linear_backend": flat.get("linear_backend"),
+        "flashinfer_autotune": _boolean(flat.get("enable_flashinfer_autotune")),
         "max_num_seqs": vllm_config.get("max-num-seqs") or flat.get("max_num_seqs"),
         "max_num_batched_tokens": vllm_config.get("max-num-batched-tokens") or flat.get("max_num_batched_tokens"),
         "max_model_len": flat.get("max_model_len") or flat.get("max_seq_len"),
@@ -210,17 +254,27 @@ def _config_identity(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _benchmark_identity(benchmark: dict[str, Any]) -> dict[str, Any]:
+def _benchmark_identity(benchmark: dict[str, Any], engine_identity: dict[str, Any]) -> dict[str, Any]:
+    engine_tp = int(engine_identity.get("tp_size") or 0)
+    engine_attention_dp = int(engine_identity.get("attention_dp_size") or 0)
+    benchmark_tp = int(benchmark.get("tp") or 1)
+    moe_ep = int(benchmark.get("ep") or 1)
+    dp_attention = _boolean(benchmark.get("dp_attention")) or False
+    world_size = (engine_tp or benchmark_tp) * (engine_attention_dp or 1)
+    if world_size % moe_ep:
+        raise ProfileParseError(f"engine world size {world_size} is not divisible by benchmark ep={moe_ep}")
     return {
         "model_id": normalize_model_id(benchmark.get("model"), precision=benchmark.get("precision")),
         "system": normalize_system(benchmark.get("hw")),
         "backend": str(benchmark.get("framework", "vllm")).lower(),
         "backend_build": benchmark.get("image"),
-        "tp_size": benchmark.get("tp"),
+        "tp_size": None if engine_tp else benchmark_tp,
         "pp_size": benchmark.get("pp"),
+        "attention_dp_size": None if engine_attention_dp else (moe_ep if dp_attention else 1),
         "dcp_size": benchmark.get("dcp_size"),
         "pcp_size": benchmark.get("pcp_size"),
-        "moe_ep_size": benchmark.get("ep"),
+        "moe_tp_size": world_size // moe_ep,
+        "moe_ep_size": moe_ep,
         "quantization": benchmark.get("precision"),
         "speculative_method": benchmark.get("spec_decoding"),
         "concurrency": benchmark.get("conc"),
@@ -239,6 +293,10 @@ def parse_log_text(
     actual: dict[int, int] = {}
     available_kv: int | None = None
     kv_tokens: int | None = None
+    full_counts: set[int] = set()
+    full_largest: set[int] = set()
+    piecewise_counts: set[int] = set()
+    piecewise_largest: set[int] = set()
     for line in text.splitlines():
         rank = _rank(line)
         pool = _POOL_RE.search(line)
@@ -258,6 +316,14 @@ def parse_log_text(
         tokens_match = _KV_TOKENS_RE.search(line)
         if tokens_match:
             kv_tokens = int(tokens_match.group(1).replace(",", ""))
+        full_match = _FULL_PROFILE_RE.search(line)
+        if full_match:
+            full_counts.add(int(full_match.group(1)))
+            full_largest.add(int(full_match.group(2)))
+        piecewise_match = _PIECEWISE_PROFILE_RE.search(line)
+        if piecewise_match:
+            piecewise_counts.add(int(piecewise_match.group(1)))
+            piecewise_largest.add(int(piecewise_match.group(2)))
 
     flat_config = _flatten_config(config or {})
     disabled = bool(
@@ -279,7 +345,7 @@ def parse_log_text(
         sources["system"] = "artifact_name"
 
     if benchmark:
-        for field, value in _benchmark_identity(benchmark).items():
+        for field, value in _benchmark_identity(benchmark, identity).items():
             if value is not None:
                 identity[field] = value
                 sources[field] = "benchmark_json"
@@ -302,6 +368,12 @@ def parse_log_text(
         actual_bytes_by_rank=actual,
         available_kv_cache_bytes=available_kv,
         gpu_kv_cache_tokens=kv_tokens,
+        profiled_full_count=_consistent_profile_value(full_counts, "FULL count"),
+        profiled_full_largest_capture_size=_consistent_profile_value(full_largest, "FULL largest capture"),
+        profiled_piecewise_count=_consistent_profile_value(piecewise_counts, "PIECEWISE count"),
+        profiled_piecewise_largest_capture_size=_consistent_profile_value(
+            piecewise_largest, "PIECEWISE largest capture"
+        ),
         graph_disabled=disabled,
         identity_sources=sources,
     )

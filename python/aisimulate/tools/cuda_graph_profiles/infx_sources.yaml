@@ -70,10 +70,18 @@ sources:
       - role: benchmark
         profile_key: kimi-k3-h200-multinode-disabled
         name: bmk_agentic_kimik3_p4x8_d0x8_conc4_fp4_vllm_prefill-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw4_decode-tp8-pp1-dcp1-pcp1-ep32-dptrue-nw0_disagg-false_spec-mtp_conc4_h200-dgxc-slurm_11
-
-# Do not move this run into sources until its selected attempt completes with
-# conclusion=success. It is documented here so the admission gate is explicit.
-pending_sources:
   - run_id: 33463181601
     run_attempt: 3
-    reason: awaiting successful completion
+    artifacts:
+      - role: server_logs
+        profile_key: deepseek-v4-h200-tp8
+        name: server_logs_dsv4_8k1k_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-none_conc4_h200-dgxc-slurm_10_recipe-97cb1d3b5e821478
+      - role: benchmark
+        profile_key: deepseek-v4-h200-tp8
+        name: bmk_dsv4_8k1k_fp8_vllm_tp8-pp1-dcp1-pcp1-ep1-dpafalse_disagg-false_spec-none_conc4_h200-dgxc-slurm_10_recipe-97cb1d3b5e821478
+      - role: server_logs
+        profile_key: deepseek-v4-h200-dep8
+        name: server_logs_dsv4_8k1k_fp8_vllm_tp8-pp1-dcp1-pcp1-ep8-dpatrue_disagg-false_spec-none_conc4_h200-dgxc-slurm_12_recipe-c767dbc2cbbd6a2c
+      - role: benchmark
+        profile_key: deepseek-v4-h200-dep8
+        name: bmk_dsv4_8k1k_fp8_vllm_tp8-pp1-dcp1-pcp1-ep8-dpatrue_disagg-false_spec-none_conc4_h200-dgxc-slurm_12_recipe-c767dbc2cbbd6a2c

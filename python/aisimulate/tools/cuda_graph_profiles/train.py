@@ -11,34 +11,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from tools.cuda_graph_profiles.common import backend_family, sha256_file
+from aiconfigurator_core.sdk._cuda_graph_features import (
+    CATEGORICAL_FEATURES,
+    NUMERIC_FEATURES,
+    derived_feature_row,
+)
+from tools.cuda_graph_profiles.common import sha256_file
 
-NUMERIC_FEATURES = (
-    "cuda_graph_capture_count",
-    "cuda_graph_largest_capture_size",
-    "max_num_seqs",
-    "max_num_batched_tokens",
-    "max_model_len",
-    "tp_size",
-    "pp_size",
-    "attention_dp_size",
-    "dcp_size",
-    "pcp_size",
-    "moe_tp_size",
-    "moe_ep_size",
-    "speculative_tokens",
-)
-CATEGORICAL_FEATURES = (
-    "model_id",
-    "gpu_family",
-    "vllm_family",
-    "quantization",
-    "compute_dtype",
-    "kv_cache_dtype",
-    "cuda_graph_mode",
-    "attention_backend",
-    "speculative_method",
-)
 RIDGE_ALPHA = 1.0
 GATES = {
     "minimum_gpu_families": 2,
@@ -52,10 +31,8 @@ GATES = {
 
 
 def _row_features(frame: pd.DataFrame) -> pd.DataFrame:
-    frame = frame.copy()
-    frame["gpu_family"] = frame["system"].str.replace("_sxm", "", regex=False)
-    frame["vllm_family"] = frame["backend_version"].map(backend_family)
-    return frame
+    records = [derived_feature_row(row) for row in frame.to_dict(orient="records")]
+    return pd.DataFrame.from_records(records, index=frame.index)
 
 
 def _levels(frame: pd.DataFrame) -> dict[str, list[str]]:
@@ -63,7 +40,7 @@ def _levels(frame: pd.DataFrame) -> dict[str, list[str]]:
 
 
 def _feature_schema(levels: dict[str, list[str]]) -> list[str]:
-    names = [f"log1p:{field}" for field in NUMERIC_FEATURES]
+    names = [f"standardized_log1p:{field}" for field in NUMERIC_FEATURES]
     for field in CATEGORICAL_FEATURES:
         names.extend(f"{field}={level}" for level in levels[field])
     return names
@@ -79,6 +56,21 @@ def _matrix(frame: pd.DataFrame, levels: dict[str, list[str]]) -> np.ndarray:
     return np.column_stack(columns)
 
 
+def _normalization(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    centers = np.zeros(x.shape[1])
+    scales = np.ones(x.shape[1])
+    numeric_count = len(NUMERIC_FEATURES)
+    if len(x):
+        centers[:numeric_count] = x[:, :numeric_count].mean(axis=0)
+        numeric_scales = x[:, :numeric_count].std(axis=0)
+        scales[:numeric_count] = np.where(numeric_scales > 1e-12, numeric_scales, 1.0)
+    return centers, scales
+
+
+def _standardize(x: np.ndarray, centers: np.ndarray, scales: np.ndarray) -> np.ndarray:
+    return (x - centers) / scales
+
+
 def _fit(x: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
     design = np.column_stack([np.ones(len(x)), x])
     penalty = np.eye(design.shape[1]) * RIDGE_ALPHA
@@ -91,15 +83,16 @@ def _cross_validate(frame: pd.DataFrame, levels: dict[str, list[str]]) -> tuple[
     x = _matrix(frame, levels)
     y = np.log1p(frame["estimated_cuda_graph_bytes"].astype(float).to_numpy())
     predictions = np.zeros(len(frame))
-    fold_ids = np.array([int(value[-2:], 16) % 5 for value in frame["profile_id"]])
-    for fold in sorted(set(fold_ids)):
-        test = fold_ids == fold
+    model_ids = frame["model_id"].astype(str).to_numpy()
+    for model_id in sorted(set(model_ids)):
+        test = model_ids == model_id
         train = ~test
         if train.sum() < 2:
             predictions[test] = y[train].mean() if train.any() else y.mean()
             continue
-        intercept, coefficients = _fit(x[train], y[train])
-        predictions[test] = intercept + x[test] @ coefficients
+        centers, scales = _normalization(x[train])
+        intercept, coefficients = _fit(_standardize(x[train], centers, scales), y[train])
+        predictions[test] = intercept + _standardize(x[test], centers, scales) @ coefficients
     return np.expm1(y), np.maximum(0, np.expm1(predictions))
 
 
@@ -113,22 +106,33 @@ def train_model(parquet_path: Path, model_path: Path) -> dict[str, Any]:
     levels = _levels(eligible)
     feature_schema = _feature_schema(levels)
 
+    training_domain = {
+        "model_id": sorted({str(value) for value in eligible["model_id"].dropna().tolist()}),
+        **{
+            field: sorted({str(value) for value in eligible[field].dropna().tolist()}) for field in CATEGORICAL_FEATURES
+        },
+    }
     model: dict[str, Any] = {
-        "artifact_version": "cuda-graph-ridge-v1",
+        "artifact_version": "cuda-graph-factorized-ridge-v2",
         "categorical_features": list(CATEGORICAL_FEATURES),
         "categorical_levels": levels,
         "coefficients": [],
         "enabled": False,
+        "feature_centers": [],
+        "feature_design": "factorized-architecture-topology-v2",
+        "feature_scales": [],
         "feature_schema": feature_schema,
         "gates": GATES,
+        "holdout_group": "model_id",
         "intercept": None,
         "numeric_features": list(NUMERIC_FEATURES),
+        "numeric_training_domain": {
+            field: [float(eligible[field].min()), float(eligible[field].max())] for field in NUMERIC_FEATURES
+        },
         "parquet_sha256": sha256_file(parquet_path),
         "ridge_alpha": RIDGE_ALPHA,
         "target_transform": "log1p_bytes",
-        "training_domain": {
-            field: sorted({str(value) for value in eligible[field].dropna().tolist()}) for field in CATEGORICAL_FEATURES
-        },
+        "training_domain": training_domain,
         "training_profile_count": len(eligible),
     }
 
@@ -160,10 +164,13 @@ def train_model(parquet_path: Path, model_path: Path) -> dict[str, Any]:
             and metrics["maximum_underprediction"] <= GATES["underprediction_max"]
         )
         x = _matrix(eligible, levels)
+        centers, scales = _normalization(x)
         y = np.log1p(eligible["estimated_cuda_graph_bytes"].astype(float).to_numpy())
-        intercept, coefficients = _fit(x, y)
+        intercept, coefficients = _fit(_standardize(x, centers, scales), y)
         model["intercept"] = intercept
         model["coefficients"] = [float(value) for value in coefficients]
+        model["feature_centers"] = [float(value) for value in centers]
+        model["feature_scales"] = [float(value) for value in scales]
         model["enabled"] = bool(gates_passed)
     else:
         model["holdout_metrics"] = None
@@ -193,12 +200,19 @@ def train_model(parquet_path: Path, model_path: Path) -> dict[str, Any]:
 
 
 def predict_from_model(model: dict[str, Any], row: dict[str, Any]) -> float:
-    """Reference implementation used by tooling tests."""
+    """Reference implementation used by tooling tests and offline evaluation."""
     if not model["enabled"]:
         raise ValueError("model is disabled")
-    numeric = [math.log1p(float(row.get(field) or 0)) for field in model["numeric_features"]]
+    features = derived_feature_row(row)
+    numeric = [math.log1p(float(features.get(field) or 0)) for field in model["numeric_features"]]
     categorical = []
     for field in model["categorical_features"]:
-        categorical.extend(float(str(row.get(field)) == level) for level in model["categorical_levels"][field])
-    log_prediction = float(model["intercept"]) + float(np.dot(model["coefficients"], numeric + categorical))
+        categorical.extend(float(str(features.get(field)) == level) for level in model["categorical_levels"][field])
+    values = np.asarray(numeric + categorical, dtype=float)
+    centers = np.asarray(model.get("feature_centers") or [0.0] * len(values), dtype=float)
+    scales = np.asarray(model.get("feature_scales") or [1.0] * len(values), dtype=float)
+    if len(values) != len(centers) or len(values) != len(scales):
+        raise ValueError("model feature normalization does not match its feature schema")
+    standardized = _standardize(values, centers, scales)
+    log_prediction = float(model["intercept"]) + float(np.dot(model["coefficients"], standardized))
     return max(0.0, math.expm1(log_prediction))

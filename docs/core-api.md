@@ -93,6 +93,11 @@ request = CudaGraphReservationRequest(
                               208, 216, 224, 232, 240, 248, 256, 272,
                               288, 304, 320, 336, 352, 368, 384, 400,
                               416, 432, 448, 464, 480, 496, 512),
+    compilation_mode="NONE",
+    compilation_backend="inductor",
+    moe_backend="auto",
+    linear_backend="auto",
+    flashinfer_autotune=False,
     max_num_seqs=128,
     max_num_batched_tokens=16384,
     max_model_len=1048576,
@@ -110,6 +115,12 @@ remain available for diagnostics. `identity_completeness` is
 `unversioned_model` when neither an immutable model revision nor a model-config
 digest is supplied. Use the `database_path` keyword only for reviewed external
 database testing; checksum and model-gate validation still apply.
+
+The modeled path evaluates a factorized log-space ridge expression over the
+full capture-size distribution, scheduler limits, packaged model architecture,
+rank-local parallel topology, runtime categories, and graph-by-architecture
+interactions. It accepts only model identities, categorical values, and numeric
+ranges observed during training. Validation holds out complete model identities.
 
 This API does not yet alter `estimate_kv_cache`. KV-capacity integration is a
 separate milestone so existing KV behavior remains unchanged.

@@ -15,6 +15,8 @@ from typing import Literal
 
 import pyarrow.parquet as pq
 
+from aiconfigurator_core.sdk._cuda_graph_features import derived_feature_row
+
 CudaGraphReservationSource = Literal["disabled", "profile", "modeled", "unavailable"]
 
 _PROFILE_IDENTITY_FIELDS = (
@@ -37,6 +39,11 @@ _PROFILE_IDENTITY_FIELDS = (
     "kv_cache_dtype",
     "cuda_graph_mode",
     "cuda_graph_capture_sizes",
+    "compilation_mode",
+    "compilation_backend",
+    "moe_backend",
+    "linear_backend",
+    "flashinfer_autotune",
     "max_num_seqs",
     "max_num_batched_tokens",
     "max_model_len",
@@ -74,6 +81,11 @@ class CudaGraphReservationRequest:
     cuda_graph_enabled: bool = True
     cuda_graph_mode: str | None = None
     cuda_graph_capture_sizes: tuple[int, ...] = ()
+    compilation_mode: str | None = None
+    compilation_backend: str | None = None
+    moe_backend: str | None = None
+    linear_backend: str | None = None
+    flashinfer_autotune: bool | None = None
     max_num_seqs: int | None = None
     max_num_batched_tokens: int | None = None
     max_model_len: int | None = None
@@ -136,6 +148,12 @@ def _validate_enabled_model(model: dict[str, object]) -> None:
         gates = model["gates"]
         metrics = model["holdout_metrics"]
         domain = model["training_domain"]
+        numeric_domain = model["numeric_training_domain"]
+        numeric_features = model["numeric_features"]
+        coefficients = [float(value) for value in model["coefficients"]]
+        centers = [float(value) for value in model["feature_centers"]]
+        scales = [float(value) for value in model["feature_scales"]]
+        ranges = [[float(bound) for bound in numeric_domain[field]] for field in numeric_features]
         checks = (
             int(model["training_profile_count"]) >= int(gates["minimum_profiles"]),
             len(domain["model_id"]) >= int(gates["minimum_model_identities"]),
@@ -144,6 +162,11 @@ def _validate_enabled_model(model: dict[str, object]) -> None:
             float(metrics["p90_ape"]) <= float(gates["p90_ape_max"]),
             float(metrics["upper_bound_coverage"]) >= float(gates["upper_bound_coverage_min"]),
             float(metrics["maximum_underprediction"]) <= float(gates["underprediction_max"]),
+            set(numeric_features) == set(numeric_domain),
+            len(coefficients) == len(centers) == len(scales) == len(model["feature_schema"]),
+            all(math.isfinite(value) for value in coefficients + centers + scales),
+            all(scale > 0 for scale in scales),
+            all(len(bounds) == 2 and bounds[0] <= bounds[1] for bounds in ranges),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise CudaGraphProfileDatabaseError("enabled CUDA graph model has incomplete safety-gate evidence") from exc
@@ -229,6 +252,11 @@ def _request_identity(request: CudaGraphReservationRequest) -> dict[str, object]
         "kv_cache_dtype": request.kv_cache_dtype,
         "cuda_graph_mode": request.cuda_graph_mode,
         "cuda_graph_capture_sizes": _capture_sizes(request),
+        "compilation_mode": request.compilation_mode,
+        "compilation_backend": request.compilation_backend,
+        "moe_backend": request.moe_backend,
+        "linear_backend": request.linear_backend,
+        "flashinfer_autotune": request.flashinfer_autotune,
         "max_num_seqs": request.max_num_seqs,
         "max_num_batched_tokens": request.max_num_batched_tokens,
         "max_model_len": request.max_model_len,
@@ -249,24 +277,8 @@ def _exact_matches(database: _Database, request: CudaGraphReservationRequest) ->
     ]
 
 
-def _backend_family(version: str | None) -> str | None:
-    if not version:
-        return None
-    pieces = version.split(".")
-    if len(pieces) >= 2 and all(piece.isdigit() for piece in pieces[:2]):
-        return ".".join(pieces[:2])
-    return version.split("+")[0]
-
-
 def _model_features(request: CudaGraphReservationRequest) -> dict[str, object]:
-    sizes = request.cuda_graph_capture_sizes
-    return {
-        **_request_identity(request),
-        "cuda_graph_capture_count": len(sizes),
-        "cuda_graph_largest_capture_size": max(sizes, default=0),
-        "gpu_family": request.system.removesuffix("_sxm"),
-        "vllm_family": _backend_family(request.backend_version),
-    }
+    return derived_feature_row(_request_identity(request))
 
 
 def _modeled_estimate(
@@ -281,6 +293,10 @@ def _modeled_estimate(
             return None
     if any(row.get(field) is None for field in model["numeric_features"]):
         return None
+    for field, bounds in model["numeric_training_domain"].items():
+        value = float(row[field])
+        if len(bounds) != 2 or value < float(bounds[0]) or value > float(bounds[1]):
+            return None
 
     values = [math.log1p(float(row[field])) for field in model["numeric_features"]]
     for field in model["categorical_features"]:
@@ -288,7 +304,14 @@ def _modeled_estimate(
     coefficients = model["coefficients"]
     if len(coefficients) != len(values):
         raise CudaGraphProfileDatabaseError("CUDA graph model feature schema does not match its coefficients")
-    weighted_features = zip(coefficients, values, strict=True)
+    centers = model.get("feature_centers") or [0.0] * len(values)
+    scales = model.get("feature_scales") or [1.0] * len(values)
+    if len(centers) != len(values) or len(scales) != len(values):
+        raise CudaGraphProfileDatabaseError("CUDA graph model feature normalization is incompatible")
+    standardized = [
+        (value - float(center)) / float(scale) for value, center, scale in zip(values, centers, scales, strict=True)
+    ]
+    weighted_features = zip(coefficients, standardized, strict=True)
     log_point = float(model["intercept"]) + sum(float(coefficient) * value for coefficient, value in weighted_features)
     point = max(0, round(math.expm1(log_point)))
     residual_interval = model.get("residual_log_interval")

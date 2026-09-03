@@ -71,6 +71,44 @@ def test_multiple_rank_estimate_is_rank_local() -> None:
     assert max(parsed.estimated_bytes_by_rank.values()) == round(1.99 * GIB)
 
 
+def test_profiled_graph_sets_are_parsed() -> None:
+    parsed = parse_log_text(
+        "\n".join(
+            (
+                "(Worker_TP0 pid=10) Profiling CUDA graph memory: PIECEWISE=49 (largest=512), FULL=49 (largest=512)",
+                "(Worker_TP0 pid=10) Estimated CUDA graph memory: 1.99 GiB total",
+            )
+        )
+    )
+    assert parsed.profiled_full_count == 49
+    assert parsed.profiled_full_largest_capture_size == 512
+    assert parsed.profiled_piecewise_count == 49
+    assert parsed.profiled_piecewise_largest_capture_size == 512
+
+
+def test_benchmark_expert_parallelism_uses_engine_rank_topology() -> None:
+    parsed = parse_log_text(
+        "\n".join(
+            (
+                "Initializing a V1 LLM engine (v0.25.1) with config: model='example/model', "
+                "tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=8, "
+                "decode_context_parallel_size=1, quantization=fp8, dtype=torch.bfloat16, "
+                "kv_cache_dtype=fp8, compilation_config={'mode': <CompilationMode.NONE: 0>, "
+                "'backend': 'inductor', 'cudagraph_mode': <CUDAGraphMode.FULL_DECODE_ONLY: (2, 0)>, "
+                "'cudagraph_capture_sizes': [1]}, kernel_config=KernelConfig("
+                "enable_flashinfer_autotune=False, moe_backend='auto', linear_backend='auto')",
+                "Using FLASH_ATTN attention backend",
+                "(Worker_DP0_EP0 pid=10) Estimated CUDA graph memory: 1.00 GiB total",
+            )
+        ),
+        benchmark={"tp": 8, "ep": 8, "dp_attention": "true"},
+    )
+    assert parsed.identity["tp_size"] == 1
+    assert parsed.identity["attention_dp_size"] == 8
+    assert parsed.identity["moe_tp_size"] == 1
+    assert parsed.identity["moe_ep_size"] == 8
+
+
 def test_malformed_log_fails() -> None:
     with pytest.raises(ProfileParseError, match="no CUDA graph reservation"):
         _parse("malformed.log")
@@ -131,7 +169,9 @@ def test_missing_provenance_fails_publication() -> None:
 def test_packaged_database_and_reports_validate() -> None:
     result = validate_database(DATABASE)
     assert result["status"] == "valid"
-    assert result["measurement_count"] == 7
+    assert result["measurement_count"] == 9
+    assert result["model_enabled"] is False
+    assert result["model_version"] == "cuda-graph-factorized-ridge-v2"
     for report in (
         "source_mapping.report.json",
         "reconciliation.report.json",
@@ -146,6 +186,7 @@ def test_database_has_required_measurement_classes_and_no_internal_paths() -> No
     assert any(row["training_eligible"] for row in rows)
     assert any(row["exclusion_reason"] == "actual_only_legacy_log" for row in rows)
     assert any(row["graph_disabled"] and row["estimated_cuda_graph_bytes"] == 0 for row in rows)
+    assert all(row["model_architecture_config_sha256"] for row in rows if row["training_eligible"])
     rendered = json.dumps(rows, sort_keys=True)
     for marker in ("/Users/", "/home/", "/tmp/", "/mnt/", "/scratch/", "/lustre/"):
         assert marker not in rendered
