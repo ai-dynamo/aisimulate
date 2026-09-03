@@ -174,8 +174,11 @@ jobs:
       - spdx-headers
       - cargo-deny
       - rust
+      - rust-feature-modes
       - public-api-rust
       - application-tests
+      - python-compatibility
+      - rust-python-parity
       - lint
       - release-artifact-contract
     # Only trusted branch-copy and post-merge pushes may stage wheels. In
@@ -577,14 +580,15 @@ jobs:
           RUST_PYTHON_PARITY_RESULT: ${{ needs.rust-python-parity.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           RELEASE_ARTIFACT_CONTRACT_RESULT: ${{ needs.release-artifact-contract.result }}
+          EXPECTED_APPLICATION_WHEEL_RESULT: ${{ github.event_name == 'workflow_dispatch' && 'skipped' || 'success' }}
         run: |
+          test "${APPLICATION_WHEEL_RESULT}" = "${EXPECTED_APPLICATION_WHEEL_RESULT}"
           for result in \
             "${SPDX_HEADERS_RESULT}" \
             "${CARGO_DENY_RESULT}" \
             "${RUST_RESULT}" \
             "${RUST_FEATURE_MODES_RESULT}" \
             "${PUBLIC_API_RUST_RESULT}" \
-            "${APPLICATION_WHEEL_RESULT}" \
             "${APPLICATION_TESTS_RESULT}" \
             "${PYTHON_COMPATIBILITY_RESULT}" \
             "${RUST_PYTHON_PARITY_RESULT}" \

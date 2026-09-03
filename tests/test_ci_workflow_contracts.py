@@ -58,6 +58,22 @@ def test_core_ci_selects_migrated_contract_and_parity_suites() -> None:
         "rust-python-parity",
     }.issubset(required_by_aggregate)
 
+    required_before_wheel_staging = set(jobs["application-wheel"]["needs"])
+    assert {
+        "rust-feature-modes",
+        "python-compatibility",
+        "rust-python-parity",
+    }.issubset(required_before_wheel_staging)
+
+
+def test_manual_ci_allows_trusted_wheel_staging_to_be_skipped() -> None:
+    aggregate = _workflow("ci.yml")["jobs"]["ci-success"]
+
+    assert aggregate["steps"][0]["env"]["EXPECTED_APPLICATION_WHEEL_RESULT"] == (
+        "${{ github.event_name == 'workflow_dispatch' && 'skipped' || 'success' }}"
+    )
+    assert 'test "${APPLICATION_WHEEL_RESULT}" = "${EXPECTED_APPLICATION_WHEEL_RESULT}"' in _run_commands(aggregate)
+
 
 def test_privileged_pr_workflows_use_copied_pr_pushes() -> None:
     for filename in (
