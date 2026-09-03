@@ -267,6 +267,58 @@ def test_public_host_offload_config_reaches_native_execution_rank():
     }
 
 
+def test_public_cuda_graph_reservation_reaches_native_capacity(tmp_path, monkeypatch):
+    reserved_bytes = 14_559_947_612
+    path = tmp_path / "prediction.yaml"
+    path.write_text(
+        f"""\
+engine:
+  mode: aggregated
+  model: example/model
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  workers:
+    aggregated:
+      kv_cache:
+        block_size: 16
+        capacity:
+          type: default
+          memory_fraction: 0.8
+          cuda_graph_reserved_bytes: {reserved_bytes}
+""",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append(kwargs)
+        return 321
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    public = CorePredictionConfig.from_yaml(path)
+    spec = prediction_to_replay_spec(public)
+    runtime = RecordingRuntime()
+
+    assert public.engine.workers.aggregated is not None
+    capacity = public.engine.workers.aggregated.kv_cache.capacity
+    assert capacity.cuda_graph_reserved_bytes == reserved_bytes
+    assert (
+        spec.backend_deployment.agg_engine_args["cuda_graph_reserved_bytes"]
+        == reserved_bytes
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+
+    engine = runtime.execution_spec["spec"]["engine"]
+    assert engine["rank"]["num_gpu_blocks"] == 321
+    assert (
+        engine["rank"]["timing_model"]["config"]["cuda_graph_reserved_bytes"]
+        == reserved_bytes
+    )
+    assert calls[0]["cuda_graph_reserved_bytes"] == reserved_bytes
+
+
 def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     runtime = RecordingRuntime()
     engine_args = _engine_args()

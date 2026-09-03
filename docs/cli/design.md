@@ -578,6 +578,7 @@ engine:
         capacity:
           type: default
           memory_fraction: 0.9
+          cuda_graph_reserved_bytes: 0
       timing:
         type: default
       startup_seconds: 0
@@ -611,6 +612,7 @@ engine:
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive and required for `fixed` capacity. |
+| `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
 | `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
 | `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
@@ -674,8 +676,9 @@ Backend-version-specific defaults are deferred beyond version 1; adding them cha
 the YAML shape.
 
 `kv_cache.capacity.type: fixed` requires `blocks`, so users can directly provide cache size. It rejects
-`memory_fraction`. Conversely, `type: default` rejects `blocks` and derives block count from model,
-hardware, parallelism, block size, backend, and memory fraction.
+`memory_fraction` and nonzero `cuda_graph_reserved_bytes`. Conversely, `type: default` rejects `blocks`
+and derives block count from model, hardware, parallelism, block size, backend, memory fraction, and
+the caller-provided CUDA graph reservation.
 
 The physical GPU count of a worker role is:
 

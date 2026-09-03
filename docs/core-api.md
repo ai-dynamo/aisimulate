@@ -68,8 +68,10 @@ but keep `memory_breakdown=None` because the other components are unavailable.
 The Rust `KvCacheEstimateRequest` exposes the same field. Engine replay accepts
 the value in its engine arguments and carries it through native AIC capacity
 rematerialization, so the Python estimator and native scheduler use the same
-rank-local KV capacity. This API does not estimate the reservation; callers
-must supply a value from a source they trust.
+rank-local KV capacity. The `aisimulate predict` YAML exposes it at
+`engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes`. This API
+does not estimate the reservation; callers must supply a value from a source
+they trust.
 
 Serialized Rust requests and estimates that omit the field remain compatible
 because deserialization defaults it to zero. Rust source that constructs

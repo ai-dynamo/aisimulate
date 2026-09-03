@@ -173,6 +173,7 @@ def _worker_engine_args(
         payload["num_gpu_blocks"] = capacity.blocks
     else:
         assert memory_fraction is not None
+        payload["cuda_graph_reserved_bytes"] = capacity.cuda_graph_reserved_bytes
         payload[
             {
                 "vllm": "gpu_memory_utilization",

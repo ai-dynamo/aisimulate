@@ -141,6 +141,10 @@ additional to headroom already encoded by `mem_fraction_static`. The default is 
 the [core API contract](../../docs/core-api.md#kv-cache-capacity-reservation)
 for the Python and Rust fields and budget semantics.
 
+The standard prediction CLI accepts the same value at
+`engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` when
+`capacity.type` is `default`.
+
 ### Python API
 
 You can also use `aiconfigurator` programmatically in Python:
