@@ -14,13 +14,19 @@ on:
     # Velonix admits canonical pushes, not untrusted pull_request events.
     branches:
       - "pull-request/*"
+    paths:
+      - ".github/workflows/performance.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "python/aisimulate/**"
 
 permissions:
   contents: read
   pull-requests: read
 
 concurrency:
-  group: forward-prediction-performance-${{ github.ref }}
+  group: forward-prediction-performance-${{ inputs.pr_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -58,18 +64,26 @@ jobs:
               repo: context.repo.repo,
               pull_number: number,
             });
+            let headSha = context.sha;
+            if (context.eventName === 'workflow_dispatch') {
+              const {data: canonical} = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/pull-request/${number}`,
+              });
+              headSha = canonical.object.sha;
+            }
             core.setOutput('number', String(number));
-            core.setOutput('head_ref', `refs/pull/${number}/head`);
-            core.setOutput('head_sha', pull.head.sha);
-            core.setOutput('base_head_sha', pull.base.sha);
+            core.setOutput('head_sha', headSha);
+            core.setOutput('base_ref', pull.base.ref);
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.pr.outputs.head_ref }}
+          ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
 
@@ -87,9 +101,10 @@ jobs:
         run: python -m pip install 'maturin>=1.12,<2'
 
       - name: Prepare exact revisions
+        id: revisions
         env:
           PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-          BASE_HEAD_SHA: ${{ steps.pr.outputs.base_head_sha }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: |
           set -euo pipefail
           actual_head="$(git rev-parse HEAD)"
@@ -97,26 +112,48 @@ jobs:
             echo "checked out ${actual_head}, expected PR head ${PR_HEAD_SHA}" >&2
             exit 1
           fi
-          git fetch --no-tags origin "${BASE_HEAD_SHA}"
-          base_sha="$(git merge-base "${PR_HEAD_SHA}" "${BASE_HEAD_SHA}")"
+          base_tip="$(git rev-parse "refs/remotes/origin/${BASE_REF}")"
+          base_sha="$(git merge-base "${PR_HEAD_SHA}" "${base_tip}")"
 
-          base_src="${RUNNER_TEMP}/forward-perf-base-src"
-          head_src="${RUNNER_TEMP}/forward-perf-head-src"
-          git worktree add --detach "${base_src}" "${base_sha}"
-          git worktree add --detach "${head_src}" "${PR_HEAD_SHA}"
+          gate_path="python/aisimulate/tools/forward_perf_gate"
+          if ! git cat-file -e "${base_sha}:${gate_path}/run.py" || \
+             ! git cat-file -e "${base_sha}:${gate_path}/worker.py"; then
+            echo "run_comparison=false" >> "${GITHUB_OUTPUT}"
+            {
+              echo "## Forward Prediction Performance (advisory)"
+              echo
+              echo "**SKIPPED** — base revision \`${base_sha}\` predates the forward-performance protocol."
+              echo
+              echo "Head \`${PR_HEAD_SHA}\` was not benchmarked."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          git worktree prune
+
+          run_root="${RUNNER_TEMP}/forward-perf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          base_src="${run_root}/base-src"
+          head_src="${run_root}/head-src"
+          mkdir -p "${run_root}"
 
           {
             echo "BASE_SHA=${base_sha}"
             echo "HEAD_SHA=${PR_HEAD_SHA}"
             echo "BASE_SRC=${base_src}"
             echo "HEAD_SRC=${head_src}"
-            echo "BASE_DIST=${RUNNER_TEMP}/forward-perf-base-dist"
-            echo "HEAD_DIST=${RUNNER_TEMP}/forward-perf-head-dist"
-            echo "BASE_VENV=${RUNNER_TEMP}/forward-perf-base-venv"
-            echo "HEAD_VENV=${RUNNER_TEMP}/forward-perf-head-venv"
+            echo "BASE_DIST=${run_root}/base-dist"
+            echo "HEAD_DIST=${run_root}/head-dist"
+            echo "BASE_VENV=${run_root}/base-venv"
+            echo "HEAD_VENV=${run_root}/head-venv"
+            echo "RESULTS_DIR=${run_root}/results"
           } >> "${GITHUB_ENV}"
 
+          git worktree add --detach "${base_src}" "${base_sha}"
+          git worktree add --detach "${head_src}" "${PR_HEAD_SHA}"
+          echo "run_comparison=true" >> "${GITHUB_OUTPUT}"
+
       - name: Build and install both revisions
+        if: steps.revisions.outputs.run_comparison == 'true'
         run: |
           set -euo pipefail
           mkdir -p "${BASE_DIST}" "${HEAD_DIST}"
@@ -136,51 +173,46 @@ jobs:
           "${HEAD_VENV}/bin/python" -m pip install "${HEAD_DIST}"/aisimulate-*.whl
 
       - name: Run paired benchmark
-        id: benchmark
+        if: steps.revisions.outputs.run_comparison == 'true'
         run: |
-          set +e
-          PYTHONPATH="${HEAD_SRC}/python/aisimulate" \
-            "${HEAD_VENV}/bin/python" \
-            "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" \
+          set -euo pipefail
+          "${BASE_VENV}/bin/python" \
+            "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" \
             --base-python "${BASE_VENV}/bin/python" \
             --base-worker "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
             --base-revision "${BASE_SHA}" \
             --head-python "${HEAD_VENV}/bin/python" \
             --head-worker "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
             --head-revision "${HEAD_SHA}" \
-            --output-dir "${RUNNER_TEMP}/forward-perf-results"
-          status=$?
-          echo "status=${status}" >> "${GITHUB_OUTPUT}"
-          exit 0
+            --output-dir "${RESULTS_DIR}"
 
       - name: Publish summary and annotations
-        if: always()
+        if: always() && steps.revisions.outputs.run_comparison == 'true'
         run: |
-          results="${RUNNER_TEMP}/forward-perf-results"
-          if [[ -f "${results}/summary.md" ]]; then
-            cat "${results}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
+          if [[ -f "${RESULTS_DIR}/summary.md" ]]; then
+            cat "${RESULTS_DIR}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
           fi
-          if [[ -f "${results}/annotations.txt" ]]; then
-            while IFS= read -r annotation; do
-              [[ -n "${annotation}" ]] && echo "::error::${annotation}"
-            done < "${results}/annotations.txt"
+          if [[ -s "${RESULTS_DIR}/annotations.txt" ]]; then
+            blocker_count="$(grep -c . "${RESULTS_DIR}/annotations.txt")"
+            echo "::error::Forward-prediction performance found ${blocker_count} blocker(s); see the job summary and artifact for details."
           fi
 
       - name: Upload benchmark artifacts
-        if: always()
+        if: always() && steps.revisions.outputs.run_comparison == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: forward-prediction-performance-pr-${{ steps.pr.outputs.number }}
-          path: ${{ runner.temp }}/forward-perf-results
+          path: ${{ env.RESULTS_DIR }}
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Set advisory result
+      - name: Remove benchmark worktrees
         if: always()
-        env:
-          BENCHMARK_STATUS: ${{ steps.benchmark.outputs.status }}
         run: |
-          if [[ "${BENCHMARK_STATUS}" != "0" ]]; then
-            echo "Forward-prediction performance comparison failed with status ${BENCHMARK_STATUS}." >&2
-            exit 1
+          if [[ -n "${BASE_SRC:-}" ]]; then
+            git worktree remove --force "${BASE_SRC}" || true
           fi
+          if [[ -n "${HEAD_SRC:-}" ]]; then
+            git worktree remove --force "${HEAD_SRC}" || true
+          fi
+          git worktree prune
