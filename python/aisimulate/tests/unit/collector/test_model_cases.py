@@ -1988,7 +1988,7 @@ def test_qwen38_max_base_moe_quantization_is_fail_closed_by_framework():
     expected_by_backend = {
         "sglang": {"bfloat16", "fp8_block"},
         "trtllm": set(),
-        "vllm": set(),
+        "vllm": {"bfloat16", "fp8_block"},
     }
 
     for backend, expected in expected_by_backend.items():

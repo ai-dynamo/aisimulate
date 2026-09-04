@@ -182,6 +182,38 @@ frameworks:
       # sha256:d61e062d" observation was the manifest list's arm64 entry,
       # not a new build. On aarch64 hosts (gb200/gb300) resolve the arm64
       # entry of the same tag and re-verify the version string before use.)
+    # Model-scoped collector runtime pins use the same precedence as
+    # frameworks.sglang.models above: an exact run model_path overrides both
+    # family pins and the framework default for every op in that run.
+    #
+    # Qwen3.8-Max needs vLLM v0.27.1. The vLLM model registry first maps the
+    # bare Qwen3_5MoeForCausalLM architecture string at v0.27.1
+    # (model_executor/models/registry.py:202 at tag v0.27.1, commit
+    # 6e448d0ea9bf3d88d898b65449ca6dc2aec170ac); v0.24.0 has the model class
+    # but no standard registry route for that architecture. Docker Hub's
+    # registry API reported the immutable index digests below on 2026-08-21.
+    # v0.27.1 has default and cu129 variants, but no cu128/cu130 tags.
+    #
+    # Scope: the override is selected only when collect.py resolves one exact
+    # model_path. A full/unfiltered plan has no single model identity and uses
+    # the normal framework/family runtime; run these campaigns separately at
+    # their declared runtime.
+    models:
+      "Qwen/Qwen3.8-2.4T-A95B":
+        version: "0.27.1"
+        images:
+          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
+      "Qwen/Qwen3.8-2.4T-A95B-FP8":
+        version: "0.27.1"
+        images:
+          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
+      "RadixArk/Qwen3.8-2.4T-A95B-NVFP4":
+        version: "0.27.1"
+        images:
+          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
   vllm_xpu:
     base_framework: vllm
     data_backend: vllm

@@ -1767,6 +1767,62 @@
           "static_total": 77.171
         }
       }
+    },
+    "qwen38-max-gb300-vllm-0271-bf16-disagg": {
+      "agg": {
+        "values": {
+          "agg_request": 278.0287458028032,
+          "agg_tpot": 91.87235096602501,
+          "agg_ttft": 186.15639483677816
+        }
+      },
+      "disagg": {
+        "values": {
+          "disagg_request": 203.624,
+          "disagg_tpot": 24.699,
+          "disagg_ttft": 178.925
+        }
+      },
+      "mixed": {
+        "values": {
+          "mixed_step": 91.872350966025
+        }
+      },
+      "static": {
+        "values": {
+          "static_ctx": 90.366,
+          "static_gen": 16.235,
+          "static_total": 106.601
+        }
+      }
+    },
+    "qwen38-max-gb300-vllm-0271-fp8-agg": {
+      "agg": {
+        "values": {
+          "agg_request": 339.16178073166265,
+          "agg_tpot": 83.64258313587148,
+          "agg_ttft": 255.51919759579116
+        }
+      },
+      "disagg": {
+        "values": {
+          "disagg_request": 179.624,
+          "disagg_tpot": 19.386,
+          "disagg_ttft": 160.238
+        }
+      },
+      "mixed": {
+        "values": {
+          "mixed_step": 82.40403709077053
+        }
+      },
+      "static": {
+        "values": {
+          "static_ctx": 80.928,
+          "static_gen": 16.451,
+          "static_total": 97.37899999999999
+        }
+      }
     }
   },
   "header": {
@@ -2820,6 +2876,38 @@
     "qwen38-max-gb300-sglang-0517-nvfp4-disagg::static": {
       "engine": "rust",
       "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+    },
+    "qwen38-max-gb300-vllm-0271-bf16-disagg::agg": {
+      "engine": "rust",
+      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+    },
+    "qwen38-max-gb300-vllm-0271-bf16-disagg::disagg": {
+      "engine": "rust",
+      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+    },
+    "qwen38-max-gb300-vllm-0271-bf16-disagg::mixed": {
+      "engine": "rust",
+      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+    },
+    "qwen38-max-gb300-vllm-0271-bf16-disagg::static": {
+      "engine": "rust",
+      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+    },
+    "qwen38-max-gb300-vllm-0271-fp8-agg::agg": {
+      "engine": "rust",
+      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+    },
+    "qwen38-max-gb300-vllm-0271-fp8-agg::disagg": {
+      "engine": "rust",
+      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+    },
+    "qwen38-max-gb300-vllm-0271-fp8-agg::mixed": {
+      "engine": "rust",
+      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+    },
+    "qwen38-max-gb300-vllm-0271-fp8-agg::static": {
+      "engine": "rust",
+      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
     }
   }
 }
