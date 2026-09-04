@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).parent))
 from codeowners_match import parse_codeowners, resolve_owners
 
@@ -204,3 +206,12 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert 'expected_sha: ${{ github.sha }}' in full
     assert "needs: verify-target" in full
     assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
+
+
+def test_coderabbit_is_opted_in_by_review_ready_label() -> None:
+    policy = yaml.safe_load((ROOT / ".coderabbit.yaml").read_text())
+    auto_review = policy["reviews"]["auto_review"]
+
+    assert auto_review["enabled"] is False
+    assert auto_review["labels"] == ["review-ready", "!wip", "!do-not-review"]
+    assert auto_review["drafts"] is False
