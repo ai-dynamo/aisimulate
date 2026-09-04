@@ -35,6 +35,8 @@ _EXPECTED_PREDICT_CASES = (
     "08-trace-dynamo-standard.yaml",
     "09-trace-dynamo-agentic.yaml",
     "10-trace-dynamo-standard-disagg.yaml",
+    "11-trace-weka-agentic-lane.yaml",
+    "12-trace-weka-jsonl-agentic-lane.yaml",
 )
 _EXPECTED_RECOMMEND_CASES = (
     "01-default-preset-throughput.yaml",
@@ -44,8 +46,12 @@ _EXPECTED_RECOMMEND_CASES = (
     "05-kv-fraction-goodput.yaml",
     "06-override-parallel-mappings-agg-disagg.yaml",
 )
-_PREDICT_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glob("*.yaml")))
-_RECOMMEND_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml")))
+_PREDICT_CASES = tuple(
+    sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glob("*.yaml"))
+)
+_RECOMMEND_CASES = tuple(
+    sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml"))
+)
 
 
 def _run_cli(*args: str, timeout: float = 120.0) -> subprocess.CompletedProcess[str]:
@@ -104,7 +110,9 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("config_path", _RECOMMEND_CASES, ids=lambda path: path.stem)
-def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path) -> None:
+def test_engine_recommend_cli_cases_round_trip(
+    config_path: Path, tmp_path: Path
+) -> None:
     output = tmp_path / config_path.stem
     result = _run_cli(
         "recommend",
@@ -122,7 +130,9 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
     recommendation_paths = sorted((output / "recommendations").glob("*.yaml"))
     assert rows
     assert len(recommendation_paths) == len(rows)
-    assert len({path.read_bytes() for path in recommendation_paths}) == len(recommendation_paths)
+    assert len({path.read_bytes() for path in recommendation_paths}) == len(
+        recommendation_paths
+    )
 
     generated_modes = set()
     for index, recommendation_path in enumerate(recommendation_paths):
@@ -147,4 +157,6 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
 
     if config_path.name == "06-override-parallel-mappings-agg-disagg.yaml":
         assert generated_modes == {"aggregated", "disaggregated"}
-        assert [row["score"] for row in rows] == sorted((row["score"] for row in rows), reverse=True)
+        assert [row["score"] for row in rows] == sorted(
+            (row["score"] for row in rows), reverse=True
+        )

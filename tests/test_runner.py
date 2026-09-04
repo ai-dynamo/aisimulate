@@ -107,6 +107,106 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_backend_topology("trtllm", "disagg")
     assert not capabilities.supports_disaggregated_attention_dp
     assert capabilities.supported_hooks == ()
+    assert capabilities.supports_trace_format("weka")
+    assert capabilities.supports_trace_format("agentic_mooncake")
+    assert capabilities.supports_agentic_lanes
+    assert capabilities.supported_agentic_topologies == ("agg",)
+    assert capabilities.agentic_qualification == "functional_only"
+
+
+def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size():
+    runtime = RecordingRuntime()
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=0)
+    runner.run(
+        _spec(
+            workload={
+                "source_type": "trace",
+                "load_type": "trace_timestamps",
+                "trace_path": "weka-corpus",
+                "trace_paths": ["weka-corpus"],
+                "trace_format": "weka",
+                "arrival_speedup_ratio": 1.0,
+                "agentic_lanes": 2,
+            }
+        )
+    )
+
+    traffic = runtime.execution_spec["traffic"]
+    assert traffic["trace_format"] == "weka"
+    assert traffic["agentic_lanes"] == 2
+    assert "trace_block_size" not in traffic
+
+
+def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
+    config = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {"type": "trace", "paths": ["weka-corpus"], "format": "weka"},
+                "load": {
+                    "type": "trace_timestamps",
+                    "speedup": 2.0,
+                    "agentic_lanes": 3,
+                },
+            },
+            "engine": {
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "context_length": 1024,
+                "workers": {"aggregated": {}},
+            },
+        }
+    )
+    workload = prediction_to_replay_spec(config).workload
+
+    assert workload["trace_format"] == "weka"
+    assert workload["trace_block_size"] is None
+    assert workload["arrival_speedup_ratio"] == 2.0
+    assert workload["agentic_lanes"] == 3
+
+
+def test_engine_capability_rejects_disaggregated_weka_before_runtime() -> None:
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="disagg",
+            backend="vllm",
+            backend_version="test",
+            num_prefill_workers=1,
+            num_decode_workers=1,
+        ),
+        workload={"source_type": "trace", "trace_format": "weka"},
+    )
+
+    with pytest.raises(
+        ValueError, match="agentic trace format 'weka'.*topology 'disagg'"
+    ):
+        capabilities.require_compatible(spec)
+
+
+@pytest.mark.parametrize(
+    ("workload", "message"),
+    [
+        (
+            {"source_type": "trace", "trace_format": "mooncake", "agentic_lanes": 1},
+            "requires weka",
+        ),
+        (
+            {"source_type": "trace", "trace_format": "weka", "agentic_lanes": 0},
+            "positive integer",
+        ),
+        (
+            {"source_type": "trace", "trace_format": "weka", "agentic_lanes": True},
+            "positive integer",
+        ),
+    ],
+)
+def test_engine_capability_rejects_invalid_agentic_lane_controls(
+    workload: dict, message: str
+) -> None:
+    capabilities = EngineReplayRunnerFactory().capabilities()
+
+    with pytest.raises(ValueError, match=message):
+        capabilities.require_compatible(_spec(workload=workload))
 
 
 def test_runner_lowers_canonical_spec_and_returns_replay_report():
