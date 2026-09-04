@@ -178,6 +178,7 @@ def test_dependency_policy_covers_every_rust_manifest_root() -> None:
 def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     fast = (ROOT / ".github/workflows/fast-ci.yml").read_text()
     full = (ROOT / ".github/workflows/ci.yml").read_text()
+    full_config = yaml.load(full, Loader=yaml.BaseLoader)
 
     for inexpensive_gate in (
         "Check source and packaged legal files",
@@ -206,6 +207,8 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert 'expected_sha: ${{ github.sha }}' in full
     assert "needs: verify-target" in full
     assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
+    assert "workflow_dispatch" in full_config["on"]
+    assert full_config["on"]["push"]["branches"] == ["main", "release/*"]
 
 
 def test_coderabbit_is_opted_in_by_review_ready_label() -> None:

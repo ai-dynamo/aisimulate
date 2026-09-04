@@ -9,10 +9,10 @@ on:
         type: string
         default: ""
   push:
-    # Velonix admits canonical pushes, not untrusted pull_request events.
+    # PR validation is admitted through workflow_dispatch after review. Keep
+    # automatic runs only for post-merge and release lifecycle validation.
     branches:
       - main
-      - "pull-request/*"
       - "release/*"
 
 permissions:
