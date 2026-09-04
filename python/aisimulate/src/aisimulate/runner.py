@@ -57,6 +57,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "num_request_ratio",
         "kv_load_ratio",
         "max_sim_time_ms",
+        "agentic_lanes",
     }
 )
 
@@ -107,6 +108,17 @@ class EngineReplayRunnerFactory:
             replay_spec_api_version=1,
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=False,
+            supported_trace_formats=(
+                "mooncake",
+                "mooncake-delta",
+                "agentic_mooncake",
+                "applied_compute_agentic",
+                "dynamo",
+                "weka",
+            ),
+            supports_agentic_lanes=True,
+            supported_agentic_topologies=("agg",),
+            agentic_qualification="functional_only",
         )
 
     def create(self, worker_id: int) -> EngineReplayRunner:
@@ -323,7 +335,7 @@ def _materialize_engine_execution_spec(
         traffic = {
             key: value for key, value in spec.workload.items() if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
         }
-        if traffic.get("trace_format") != "dynamo":
+        if traffic.get("trace_format") not in {"dynamo", "weka"}:
             traffic.setdefault("trace_block_size", trace_block_size)
         return {"spec": execution_spec, "traffic": traffic}
     return execution_spec
