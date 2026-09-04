@@ -19,11 +19,27 @@ permissions:
   contents: read
 
 jobs:
+  verify-target:
+    name: Verify Exact Target
+    runs-on: ubuntu-latest
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      RUN_SHA: ${{ github.sha }}
+    steps:
+      - name: Reject a mismatched requested commit
+        shell: bash
+        run: |
+          if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
+            echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
+            exit 1
+          fi
+
   fast-ci:
     name: Fast CI
+    needs: verify-target
     uses: ./.github/workflows/fast-ci.yml
     with:
-      expected_sha: ${{ inputs.expected_sha || github.sha }}
+      expected_sha: ${{ github.sha }}
 
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
