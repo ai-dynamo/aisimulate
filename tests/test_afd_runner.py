@@ -139,6 +139,8 @@ def test_pure_both_phase_afd_runs_without_native_aggregate_fallback():
     assert report.metadata["afd_replay"]["executor"] == "afd_foreground"
     assert report.metadata["afd_replay"]["afd_passes"] == 6
     assert len(report.metadata["per_request"]) == 4
+    assert report.metadata["native_report"]["summary"] == report.metrics
+    assert report.metadata["native_report"]["per_request"] == report.metadata["per_request"]
     assert "afd_report" in report.metadata
 
 

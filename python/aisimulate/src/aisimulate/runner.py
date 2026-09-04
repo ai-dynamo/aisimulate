@@ -665,8 +665,17 @@ def _run_afd_replay(
         "companion": companion.provenance if companion is not None else None,
     }
     metadata: dict[str, JSONValue] = {"afd_replay": summary}
+    native_report: dict[str, JSONValue] = {
+        "summary": dict(metrics),
+        "afd_replay": summary,
+    }
     if capture_per_request:
+        # Preserve the runner-level compatibility projection while also exposing
+        # the public CLI's canonical native-report shape.
         metadata["per_request"] = request_records
+        native_report["per_request"] = request_records
+    if include_report or capture_per_request:
+        metadata["native_report"] = native_report
     if include_report:
         metadata["afd_report"] = {"metrics": metrics, **summary}
     return ReplayReport(metrics=metrics, metadata=metadata)
