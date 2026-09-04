@@ -1,5 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+//
+// Portions adapted from ai-dynamo/dynamo, commit
+// 4ebcb9662fa5a8c840c6fa863b85c6c6c7e8c8b8, lib/data-gen/src/weka.rs:
+// https://github.com/ai-dynamo/dynamo/blob/4ebcb9662fa5a8c840c6fa863b85c6c6c7e8c8b8/lib/data-gen/src/weka.rs
+// Modified for AISimulate's public ingestion API, streaming JSONL preflight,
+// provenance contract, and validated graph boundary.
 
 //! Local Weka/AgentX trace ingestion for typed agentic replay.
 

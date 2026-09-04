@@ -350,3 +350,82 @@ def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(monkeypatc
 
     engine["workers"]["aggregated"]["timing"] = {"type": "default"}
     assert _run({"engine": engine, "traffic": _SMALL_TRAFFIC}).metrics["completed_requests"] == 8
+
+
+def test_engine_stack_runs_weka_directory_with_one_agentic_lane(tmp_path) -> None:
+    corpus = tmp_path / "weka"
+    corpus.mkdir()
+
+    def write_play(name: str, play_id: str, hash_seed: int, *, subagent: bool) -> None:
+        requests = [
+            {
+                "t": 0.0,
+                "type": "s",
+                "model": "model",
+                "in": 4,
+                "out": 2,
+                "hash_ids": [hash_seed],
+                "api_time": 0.01,
+            }
+        ]
+        if subagent:
+            requests.append(
+                {
+                    "t": 0.005,
+                    "type": "subagent",
+                    "agent_id": "worker",
+                    "subagent_type": "Explore",
+                    "duration_ms": 10,
+                    "status": "completed",
+                    "requests": [
+                        {
+                            "t": 0.006,
+                            "type": "s",
+                            "model": "model",
+                            "in": 4,
+                            "out": 1,
+                            "hash_ids": [hash_seed + 1],
+                            "api_time": 0.002,
+                        }
+                    ],
+                    "models": ["model"],
+                }
+            )
+        (corpus / name).write_text(
+            json.dumps(
+                {
+                    "id": play_id,
+                    "models": ["model"],
+                    "block_size": 4,
+                    "hash_id_scope": "local",
+                    "requests": requests,
+                }
+            )
+        )
+
+    write_play("a.json", "a", 10, subagent=True)
+    write_play("b.json", "b", 20, subagent=False)
+    report = _run(
+        {
+            "traffic": {
+                "source": {"type": "trace", "paths": [str(corpus)], "format": "weka"},
+                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+            },
+            "engine": _engine(),
+        }
+    )
+
+    assert report.metrics["completed_requests"] == 3
+    native = report.metadata["native_report"]
+    assert native["agentic_input_format"] == "weka"
+    assert native["agentic_lanes"] == 1
+    assert native["agentic_qualification"] == "functional_only"
+    records = native["per_request"]
+    by_play: dict[str, list[dict]] = {}
+    for record in records:
+        by_play.setdefault(record["play_id"], []).append(record)
+    ordered = sorted(by_play)
+    assert len(ordered) == 2
+    assert min(record["dispatched_at_ms"] for record in by_play[ordered[1]]) >= max(
+        record["terminal_time_ms"] for record in by_play[ordered[0]]
+    )

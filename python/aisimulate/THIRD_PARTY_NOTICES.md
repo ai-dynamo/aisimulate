@@ -35,6 +35,26 @@ This material is licensed under the Apache License 2.0. The upstream license
 at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
 
+## Dynamo Weka AgentX replay adapter
+
+The following repository-relative file contains code and tests adapted from
+the Dynamo Weka AgentX replay adapter and includes AISimulate modifications:
+
+- `crates/core/src/replay/loadgen/weka.rs`
+
+Upstream repository and immutable revision:
+https://github.com/ai-dynamo/dynamo/tree/4ebcb9662fa5a8c840c6fa863b85c6c6c7e8c8b8
+
+Original source:
+https://github.com/ai-dynamo/dynamo/blob/4ebcb9662fa5a8c840c6fa863b85c6c6c7e8c8b8/lib/data-gen/src/weka.rs
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+The upstream source is licensed under the Apache License 2.0. The license text
+is provided in the repository root `LICENSE` file. The adapted file was
+modified for AISimulate's public ingestion API, streaming JSONL preflight,
+corpus provenance contract, and validated graph boundary.
+
 ## vLLM
 
 The following files are derived from vLLM's attention test utilities at tag
