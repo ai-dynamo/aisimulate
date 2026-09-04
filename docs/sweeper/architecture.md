@@ -52,6 +52,26 @@ The config-adapter ABI has three operations: compile a concrete prediction secti
 recommendation section into a search plan, and materialize one candidate. The legacy Sweeper
 provider ABI remains a separate SDK compatibility surface.
 
+Post-recommendation artifacts are discovered independently through
+`aisimulate.output_adapters`. An output adapter name is an accepted `--output` value and identifies
+the same-named top-level configuration section. AISimulate removes explicitly selected output
+sections before validating simulation configuration, then passes each resolved section, the final
+`SweepResult`, and the prepared `--output-dir` to its adapter after writing canonical recommendation
+files. The adapter returns the relative paths it wrote. Output adapters do not affect simulation,
+ranking, or recommended prediction configurations.
+
+The output-adapter ABI has one operation:
+
+```python
+adapter.write(config, result=result, output_dir=output_dir)
+```
+
+Adapters are loaded only when selected. Names must be unique, implementations must declare the
+supported output-adapter API version, and reported paths must be relative to the supplied output
+directory and exist after the call. A plugin failure leaves canonical recommendation output intact
+and makes the command fail. Version 1 invokes adapters only after final candidate selection; it does
+not expose per-round incumbent callbacks.
+
 See [Sweep Configuration Providers](sweep-config-provider.md) for the SDK provider contract.
 
 ## Sweep Flow

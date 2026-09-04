@@ -39,6 +39,12 @@ from .output import (
     write_recommendations,
     write_requests,
 )
+from .output_adapter import (
+    OutputAdapterExecutionError,
+    OutputAdapterResolutionError,
+    resolve_output_adapters,
+    write_output_adapters,
+)
 from .power import normalize_power_summary
 from .resources import (
     GuardedRunnerFactory,
@@ -88,6 +94,25 @@ def _compile_prediction_adapters(
         adapter = adapters[name]
         compiled[name] = adapter.compile_prediction(raw, context)
     return compiled
+
+
+def _extract_output_configs(
+    raw: dict[str, Any], outputs: Sequence[str]
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Remove explicitly selected output sections from recommendation input."""
+
+    remaining = dict(raw)
+    configs: dict[str, dict[str, Any]] = {}
+    for name in dict.fromkeys(outputs):
+        if not name or "." in name:
+            raise _CliConfigError(f"invalid --output name {name!r}")
+        value = remaining.pop(name, None)
+        if value is None:
+            raise _CliConfigError(f"--output {name!r} requires a top-level {name!r} configuration section")
+        if not isinstance(value, dict):
+            raise _CliConfigError(f"output section {name!r} must be a mapping")
+        configs[name] = value
+    return remaining, configs
 
 
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
@@ -210,6 +235,8 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     from .recommend import run_recommendation
 
+    raw, output_configs = _extract_output_configs(raw, getattr(args, "outputs", []))
+    output_adapters = resolve_output_adapters(output_configs)
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
@@ -260,6 +287,15 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         sys.stderr.write(f"no feasible candidate found; saved full result to: {result_path}\n")
         return 3 if getattr(result.counts, "resource_limited", 0) else 1
     paths = write_recommendations(root, [config for _, _, config in selected])
+    try:
+        write_output_adapters(
+            output_adapters,
+            output_configs,
+            result=result,
+            output_dir=root,
+        )
+    except OutputAdapterExecutionError as exc:
+        raise _CliExecutionError(str(exc)) from exc
     rows = []
     for index, ((_, candidate, _), path) in enumerate(zip(selected, paths, strict=True), start=1):
         row = {
@@ -321,6 +357,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (
         _CliConfigError,
         ConfigAdapterResolutionError,
+        OutputAdapterResolutionError,
         ValidationError,
         ValueError,
     ) as exc:

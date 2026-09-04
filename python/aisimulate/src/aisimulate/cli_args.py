@@ -76,6 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="pace prediction against the real wall clock instead of virtual time",
     )
+    subparsers.choices["recommend"].add_argument(
+        "--output",
+        dest="outputs",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="write additional artifacts using an installed output adapter",
+    )
     add_support_parser(subparsers)
     return parser
 
