@@ -128,10 +128,8 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - name: Checkout code with LFS data
+      - name: Checkout code
         uses: actions/checkout@v7
-        with:
-          lfs: true
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"

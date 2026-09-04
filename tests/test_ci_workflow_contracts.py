@@ -107,6 +107,20 @@ def test_macos_wheel_environment_seeds_pip_for_shared_verification() -> None:
     assert "python -m pip install --quiet wheelhouse/aisimulate-*.whl" in commands
 
 
+def test_containerized_workflows_do_not_require_git_lfs_during_checkout() -> None:
+    jobs = (
+        ("ci.yml", "rust-python-parity"),
+        ("collector-check.yml", "cross-backend-consistency"),
+        ("fpe-support-matrix.yml", "generate"),
+        ("prediction-regression-gate.yml", "collect"),
+    )
+
+    for workflow_name, job_name in jobs:
+        job = _workflow(workflow_name)["jobs"][job_name]
+        checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        assert checkout.get("with", {}).get("lfs") != "true"
+
+
 def test_active_workflows_do_not_call_nested_inert_workflows() -> None:
     for path in WORKFLOW_ROOT.glob("*.yml"):
         assert "./python/aisimulate/.github/workflows/" not in path.read_text(encoding="utf-8")

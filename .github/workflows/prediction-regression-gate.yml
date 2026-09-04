@@ -78,7 +78,6 @@ jobs:
         with:
           ref: ${{ matrix.side == 'old' && needs.refs.outputs.old || github.sha }}
           fetch-depth: 0
-          lfs: true
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
