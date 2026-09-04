@@ -6,10 +6,9 @@ subtitle: Attention-FFN disaggregation, pipeline evaluation, and P/D rate matchi
 ---
 
 > [!WARNING]
-> **Experimental.** `SmartSearchConfig` can place AFD topologies in a generic Sweeper study, but
-> the public recommendation schema and deployment artifacts do not yet support AFD. The built-in
-> engine runner supports analytical `backend/afd` and `backend/afd+pd` replay for fixed synthetic
-> lengths; it does not claim that a physical serving backend can launch the topology.
+> **Experimental.** The public CLI and `SmartSearchConfig` support analytical `backend/afd` and
+> `backend/afd+pd` replay for fixed synthetic lengths. AFD prediction emits a replay contract and a
+> qualification artifact, but no physical serving adapter or native launch renderer exists yet.
 
 Attention-FFN Disaggregation (AFD) places attention operations on an A-worker pool and FFN/MoE
 operations on an F-worker pool. `aisimulate.sweeper.afd` provides a backend-neutral contract for
@@ -147,6 +146,20 @@ KV-relative traffic load is intentionally rejected for AFD in this layer because
 not yet expose scheduler-visible KV capacity. Use a synthetic request rate or absolute concurrency
 with concrete `isl` and `osl`.
 See [Sweeper Configuration](configuration.md#attention-ffn-disaggregation) for an internal example.
+
+## Qualification Artifacts
+
+Every successful public AFD prediction writes `afd-replay-spec.json` and
+`afd-qualification.json`. The replay artifact freezes the complete runner input; the qualification
+artifact checks measurement phase coverage, topology/provenance agreement, P/D companion shape,
+and A/F plus companion GPU accounting. Its logical plan describes the attention and FFN pools and
+routing order, while `native_deployment_supported: false` and `launch.supported: false` prevent it
+from being mistaken for a runnable backend manifest.
+
+The artifacts have deterministic JSON ordering and a SHA-256 link from the qualification record to
+the replay spec. They qualify the analytical path for regression and release testing. They do not
+remove the need for `aiconfigurator cli generate` where native Dynamo, llm-d, or FPM output is
+required.
 
 ## Infeasibility and Provenance
 

@@ -341,9 +341,12 @@ aisimulate recommend --config recommendation.yaml
 
 Each selected recommendation contains a concrete `engine.afd` topology and, for `afd+pd`, its
 regular companion worker. That generated YAML can be passed directly to `aisimulate predict`.
-Both commands use AISimulate's analytical AFD foreground engine; they do not imply native
-request-level AFD serving or deployment-artifact generation. AFD currently requires fixed-length
-synthetic request traffic and an absolute load; trace, session, random-length, and
+The prediction output includes `afd-replay-spec.json`, which freezes the exact topology,
+measurements, workload, and companion contract, plus `afd-qualification.json`, which validates A/F
+pool routing and GPU accounting. Both artifacts explicitly mark native deployment unsupported.
+The commands use AISimulate's analytical AFD foreground engine; they do not imply native
+request-level AFD serving or Kubernetes/shell deployment generation. AFD currently requires
+fixed-length synthetic request traffic and an absolute load; trace, session, random-length, and
 `kv_capacity_fraction` traffic fail validation.
 
 ## Workflows that must remain on AIC

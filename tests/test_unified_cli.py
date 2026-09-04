@@ -518,6 +518,8 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     unrelated.write_text("keep")
     (root / "prediction.json").write_text("old")
     (root / "recommendation.json").write_text("old")
+    (root / "afd-replay-spec.json").write_text("old")
+    (root / "afd-qualification.json").write_text("old")
     (recommendations / "0001.yaml").write_text("old")
     (recommendations / "notes.txt").write_text("keep")
 
@@ -530,6 +532,8 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert (recommendations / "notes.txt").read_text() == "keep"
     assert not (root / "prediction.json").exists()
     assert not (root / "recommendation.json").exists()
+    assert not (root / "afd-replay-spec.json").exists()
+    assert not (root / "afd-qualification.json").exists()
     assert not (recommendations / "0001.yaml").exists()
 
 
