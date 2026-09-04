@@ -691,6 +691,22 @@ def test_afd_summary_phase_both_paired_scalars_and_nan_unprefixed(monkeypatch):
     assert result["decode_balance_ratio"] == pytest.approx(1.33)
     assert result["decode_t_step"] == pytest.approx(50.0)
     assert result["decode_comm_hidden"] is False
+    assert result["afd_layer_measurements"] == {
+        "prefill": {
+            "attention_ms": 0.5,
+            "ffn_ms": 0.7,
+            "a_to_f_ms": 0.05,
+            "f_to_a_ms": 0.05,
+            "num_layers": 4,
+        },
+        "decode": {
+            "attention_ms": 1.2,
+            "ffn_ms": 0.9,
+            "a_to_f_ms": 0.1,
+            "f_to_a_ms": 0.1,
+            "num_layers": 4,
+        },
+    }
 
     # Un-prefixed scalars are NaN (numeric) / None (bool) so consumers
     # cannot accidentally treat decode-only values as the both-phase answer.

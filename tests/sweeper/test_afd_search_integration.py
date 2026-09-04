@@ -6,7 +6,12 @@
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.sweeper.afd import AFDInfeasible, AFDParallelConfig, AFDReasonCategory
+from aisimulate.sweeper.afd import (
+    AFDInfeasible,
+    AFDLayerTimes,
+    AFDParallelConfig,
+    AFDReasonCategory,
+)
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.model_hw import ModelHardware, NoViableParallelConfig
@@ -57,7 +62,7 @@ def _config(mode: str, **search_overrides) -> SmartSearchConfig:
     search_space.update(search_overrides)
     return SmartSearchConfig(
         search_space=search_space,
-        workload={"trace_path": "/tmp/afd-trace.jsonl"},
+        workload={"isl": 128, "osl": 32, "concurrency": 8, "num_request_ratio": 2},
     )
 
 
@@ -264,6 +269,26 @@ def test_sweeper_runs_afd_branch_through_an_explicitly_capable_runner(monkeypatc
         def create(self, worker_id: int) -> Runner:
             return self.runner
 
+    class PerformanceModel:
+        def measure(self, request):
+            phases = (
+                ("prefill", "decode")
+                if request.topology.phase.value == "both"
+                else (request.topology.phase.value,)
+            )
+            return tuple(
+                AFDLayerTimes(
+                    phase=phase,
+                    attention_ms=1.0,
+                    ffn_ms=2.0,
+                    a_to_f_ms=0.1,
+                    f_to_a_ms=0.2,
+                    num_layers=32,
+                    provenance={"provider": "test"},
+                )
+                for phase in phases
+            )
+
     factory = Factory()
     config = _config("afd")
     config.sweep.max_rounds = 1
@@ -271,14 +296,22 @@ def test_sweeper_runs_afd_branch_through_an_explicitly_capable_runner(monkeypatc
     config.sweep.parallel_evals = 1
     config.sweep.algorithm = "random"
 
-    result = Sweeper(runner_factory=factory, show_progress=False).run(
-        config, top_n=None
-    )
+    result = Sweeper(
+        runner_factory=factory,
+        afd_performance_model=PerformanceModel(),
+        show_progress=False,
+    ).run(config, top_n=None)
 
     assert len(result.selected_candidates) == 1
     assert result.selected_candidates[0].used_gpus == 8
     assert factory.runner.specs[0].backend_deployment.deployment_mode == "afd"
     assert factory.runner.specs[0].backend_deployment.agg_engine_args is None
+    assert (
+        factory.runner.specs[0].backend_deployment.performance_model_metadata["afd"][
+            "provider"
+        ]
+        == "test"
+    )
 
 
 @pytest.mark.parametrize(
