@@ -39,6 +39,7 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert aggregated.engine.workers.aggregated is not None
     assert aggregated.engine.workers.aggregated.scheduler.max_batched_tokens == 8192
     assert aggregated.engine.workers.aggregated.scheduler.max_sequences == 256
+    assert aggregated.engine.workers.aggregated.scheduler.prefill_schedule_interval == 1
 
     disaggregated = CorePredictionConfig.model_validate(
         {
@@ -53,8 +54,10 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert disaggregated.engine.workers.decode is not None
     assert disaggregated.engine.workers.prefill.scheduler.max_batched_tokens == 8192
     assert disaggregated.engine.workers.prefill.scheduler.max_sequences == 1
+    assert disaggregated.engine.workers.prefill.scheduler.prefill_schedule_interval == 1
     assert disaggregated.engine.workers.decode.scheduler.max_batched_tokens == 8192
     assert disaggregated.engine.workers.decode.scheduler.max_sequences == 256
+    assert disaggregated.engine.workers.decode.scheduler.prefill_schedule_interval == 1
 
     programmatic = WorkersPredictionConfig(
         prefill=WorkerPredictionConfig(), decode=WorkerPredictionConfig()
@@ -63,6 +66,14 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert programmatic.decode is not None
     assert programmatic.prefill.scheduler.max_sequences == 1
     assert programmatic.decode.scheduler.max_sequences == 256
+
+
+def test_prediction_rejects_nonpositive_prefill_schedule_interval() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"scheduler": {"prefill_schedule_interval": 0}}
+
+    with pytest.raises(ValidationError, match="prefill_schedule_interval"):
+        CorePredictionConfig.model_validate({"engine": engine})
 
 
 def test_prediction_accepts_trtllm_disaggregated_dp1() -> None:

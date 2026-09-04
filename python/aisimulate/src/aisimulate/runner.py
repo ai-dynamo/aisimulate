@@ -106,7 +106,7 @@ class EngineReplayRunnerFactory:
         return RunnerCapabilities(
             replay_spec_api_version=1,
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
-            supports_disaggregated_attention_dp=False,
+            supports_disaggregated_attention_dp=True,
         )
 
     def create(self, worker_id: int) -> EngineReplayRunner:
@@ -246,14 +246,6 @@ def _materialize_engine_execution_spec(
             raw_decode,
             "decode",
         )
-        for role, role_config in (("prefill", prefill), ("decode", decode)):
-            # TODO(#12965): Keep this fail-fast until disaggregated handoff and
-            # lifecycle evidence carry a logical-worker plus DP-rank identity.
-            if role_config["dp_size"] != 1:
-                raise ValueError(
-                    "disaggregated engine replay requires "
-                    f"{role} dp_size=1; attention-DP handoff identity is not implemented"
-                )
         _require_parallel_match(
             deployment.parallel_config,
             "prefill_replicas",

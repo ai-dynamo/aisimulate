@@ -56,6 +56,10 @@ pub struct DirectRequest {
     /// placement policies may choose whether to honor this preference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_dp_rank: Option<u32>,
+    /// Optional disaggregated-prefill override. The decode/aggregated preference above is the
+    /// fallback when this is absent, matching Dynamo's request-routing contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_prefill_dp_rank: Option<u32>,
     pub arrival_timestamp_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub priority: i32,
