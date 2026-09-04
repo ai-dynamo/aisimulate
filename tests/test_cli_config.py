@@ -97,6 +97,40 @@ def test_prediction_accepts_trtllm_disaggregated_dp1() -> None:
     assert config.engine.workers.decode is not None
 
 
+@pytest.mark.parametrize("value", [-1, (1 << 53) + 1])
+def test_prediction_rejects_invalid_cuda_graph_reservation(value: int) -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {
+        "kv_cache": {
+            "capacity": {
+                "type": "default",
+                "cuda_graph_reserved_bytes": value,
+            }
+        }
+    }
+
+    with pytest.raises(ValidationError, match="cuda_graph_reserved_bytes"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_prediction_rejects_cuda_graph_reservation_with_fixed_capacity() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {
+        "kv_cache": {
+            "capacity": {
+                "type": "fixed",
+                "blocks": 128,
+                "cuda_graph_reserved_bytes": 1 << 30,
+            }
+        }
+    }
+
+    with pytest.raises(
+        ValidationError, match="fixed KV capacity rejects cuda_graph_reserved_bytes"
+    ):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
 def test_prediction_rejects_recommendation_domain() -> None:
     with pytest.raises(ValidationError):
         CorePredictionConfig.model_validate(

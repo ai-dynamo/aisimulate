@@ -469,6 +469,11 @@ def _materialize_engine_role(
     role_config.pop("startup_time", None)
     model = role_config.pop("aic_model_path", None)
     system = role_config.pop("aic_system", None)
+    # Capacity-only input. It has already been consumed by the Python AIC
+    # materializer and is not a native scheduler rank field. Preserve it in
+    # the AIC timing config because the native runtime rematerializes inferred
+    # capacity before execution.
+    cuda_graph_reserved_bytes = role_config.pop("cuda_graph_reserved_bytes", None)
     raw_dp_size = _pop_matching_aliases(role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1)
     raw_tp_size = _pop_matching_aliases(role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1)
     dp_size = _positive_int(
@@ -507,6 +512,20 @@ def _materialize_engine_role(
         # role mappings may use the same shorthand.
         rank = role_config
 
+    nested_cuda_graph_reserved_bytes = rank.pop("cuda_graph_reserved_bytes", None)
+    if cuda_graph_reserved_bytes is not None and nested_cuda_graph_reserved_bytes is not None:
+        raise ValueError(f"engine provider {role} config duplicates cuda_graph_reserved_bytes")
+    if nested_cuda_graph_reserved_bytes is not None:
+        cuda_graph_reserved_bytes = nested_cuda_graph_reserved_bytes
+    if cuda_graph_reserved_bytes is not None and (
+        not isinstance(cuda_graph_reserved_bytes, int)
+        or isinstance(cuda_graph_reserved_bytes, bool)
+        or not 0 <= cuda_graph_reserved_bytes <= 1 << 53
+    ):
+        raise ValueError(
+            f"engine provider {role} cuda_graph_reserved_bytes must be a non-negative integer no greater than 2**53"
+        )
+
     configured_backend = rank.get("backend")
     if configured_backend is not None and not isinstance(configured_backend, str):
         raise ValueError(f"engine provider {role} rank backend must be a string")
@@ -544,8 +563,10 @@ def _materialize_engine_role(
             or not 0.0 <= value <= 1.0
         ):
             raise ValueError(f"engine provider {role} {memory_field} must be between 0 and 1")
-        # Capacity estimation consumes memory fraction independently of timing.
-        if not capacity_materialized:
+        # Preserve every inferred-capacity input for native rematerialization.
+        # A flat config is first materialized in Python, but the Rust runtime
+        # repeats that estimate because num_gpu_blocks_is_explicit remains false.
+        if not num_gpu_blocks_is_explicit:
             memory_fraction_overrides[memory_field] = float(value)
 
     aic_timing_overrides: dict[str, JSONValue] = {}
@@ -569,6 +590,14 @@ def _materialize_engine_role(
         and timing_model.get("type") == "external"
         and timing_model.get("provider") == "aic"
     )
+    if cuda_graph_reserved_bytes is not None and uses_aic_timing:
+        aic_timing_overrides["cuda_graph_reserved_bytes"] = cuda_graph_reserved_bytes
+    elif cuda_graph_reserved_bytes is not None and not capacity_materialized and not num_gpu_blocks_is_explicit:
+        raise ValueError(
+            f"engine provider {role} cuda_graph_reserved_bytes requires an AIC "
+            "timing model when nested rank capacity is inferred; set "
+            "rank.num_gpu_blocks explicitly or use AIC timing"
+        )
     if deployment_backend_version:
         configured_version = aic_timing_overrides.get("backend_version")
         if configured_version is not None and configured_version != deployment_backend_version:
@@ -594,6 +623,8 @@ def _materialize_engine_role(
     # interpreted as an attempt to override that concrete timing model.
     if not uses_aic_timing:
         aic_timing_overrides.clear()
+        if capacity_materialized:
+            memory_fraction_overrides.clear()
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:

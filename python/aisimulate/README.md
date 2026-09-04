@@ -166,6 +166,16 @@ For a full end-to-end walkthrough (support check, sweep, deploy, benchmark), see
 
 Refer to [CLI User Guide](docs/cli_user_guide.md)
 
+KV-cache estimation and AISimulate engine replay accept an optional
+`cuda_graph_reserved_bytes` rank-local reservation. For SGLang, the value is
+additional to headroom already encoded by `mem_fraction_static`. The default is zero. See
+the [core API contract](../../docs/core-api.md#kv-cache-capacity-reservation)
+for the Python and Rust fields and budget semantics.
+
+The standard prediction CLI accepts the same value at
+`engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` when
+`capacity.type` is `default`.
+
 ### Python API
 
 You can also use `aiconfigurator` programmatically in Python:
