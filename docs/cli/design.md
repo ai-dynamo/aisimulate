@@ -504,6 +504,9 @@ Weka is the public AgentX source format and AISimulate is its prediction entry p
 deterministically lowers Weka into Agentic Mooncake v2, the versioned producer-neutral interchange
 format, and then validates that lower IR as a `ValidatedAgenticGraph`, the runtime representation.
 Dynamo is an optional integration and is not required to parse, convert, or predict a Weka corpus.
+The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
+deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
+ordered graph must provide one unique contiguous ordinal for every play.
 An explicit `agentic_lanes: N` assigns plays round-robin to N lanes and starts the next play in a lane
 only after the current play becomes quiescent. Omitting the field preserves authored timestamp
 behavior; corpus wrapping and fixed-duration lane orchestration are outside the version 1 contract.

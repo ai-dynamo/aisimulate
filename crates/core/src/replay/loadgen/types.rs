@@ -154,6 +154,11 @@ pub struct AgenticDependency {
 pub struct AgenticMooncakeRow {
     pub request_id: String,
     pub play_id: String,
+    /// Zero-based source corpus order for this play. When present, every play
+    /// must provide one unique contiguous ordinal. This keeps scheduling order
+    /// independent of producer-generated play IDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_play_ordinal: Option<usize>,
     pub session_id: String,
     pub model: String,
     #[serde(default, alias = "input_tokens")]
@@ -217,6 +222,8 @@ pub struct TurnTrace {
 pub struct AgenticNode {
     pub(super) request_id: String,
     pub(super) play_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) source_play_ordinal: Option<usize>,
     pub(super) session_id: String,
     pub(super) model: String,
     pub(super) input_length: usize,
@@ -236,6 +243,8 @@ pub struct AgenticNode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgenticPlay {
     pub(super) play_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) source_play_ordinal: Option<usize>,
     pub(super) root_nodes: Vec<usize>,
     pub(super) nodes: Vec<usize>,
 }
@@ -283,6 +292,10 @@ impl AgenticNode {
 
     pub fn play_id(&self) -> &str {
         &self.play_id
+    }
+
+    pub fn source_play_ordinal(&self) -> Option<usize> {
+        self.source_play_ordinal
     }
 
     pub fn session_id(&self) -> &str {

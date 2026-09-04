@@ -424,8 +424,12 @@ def test_engine_stack_runs_weka_directory_with_one_agentic_lane(tmp_path) -> Non
     by_play: dict[str, list[dict]] = {}
     for record in records:
         by_play.setdefault(record["play_id"], []).append(record)
-    ordered = sorted(by_play)
+    ordered = sorted(
+        by_play,
+        key=lambda play_id: min(record["dispatched_at_ms"] for record in by_play[play_id]),
+    )
     assert len(ordered) == 2
+    assert [play_id.rsplit(":play:", 1)[1] for play_id in ordered] == ["a", "b"]
     assert min(record["dispatched_at_ms"] for record in by_play[ordered[1]]) >= max(
         record["terminal_time_ms"] for record in by_play[ordered[0]]
     )

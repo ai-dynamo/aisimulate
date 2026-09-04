@@ -577,6 +577,7 @@ fn lower_agentic(
             Ok(AgenticMooncakeRow {
                 request_id: entry.request.request_id.clone(),
                 play_id: "dynamo-request-trace".to_string(),
+                source_play_ordinal: None,
                 session_id: context.session_id.clone(),
                 model: entry
                     .request

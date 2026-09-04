@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -41,24 +41,23 @@ pub struct WekaImportSummary {
 /// A preflighted local Weka corpus.
 ///
 /// Opening performs deterministic traversal, rejects symlinks and mixed block
-/// sizes, and computes the raw corpus digest before any row can be emitted.
+/// sizes, computes the raw corpus digest, and writes the validated lowering to
+/// a private spool before any row can be emitted. Later source-file
+/// changes therefore cannot diverge emitted rows from the header provenance.
 pub struct WekaImporter {
     root: PathBuf,
-    files: Vec<WekaFile>,
+    files: usize,
     plays: usize,
+    requests: usize,
+    raw_zero_outputs: usize,
     header: AgenticMooncakeHeader,
+    rows: tempfile::NamedTempFile,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SubagentMode {
     Blocking,
     Background,
-}
-
-struct WekaFile {
-    path: PathBuf,
-    relative_path: String,
-    digest: blake3::Hash,
 }
 
 impl WekaImporter {
@@ -76,43 +75,69 @@ impl WekaImporter {
         corpus_hasher.update(b"aisimulate-weka-corpus-v1\0");
         let mut block_size = None;
         let mut plays = 0;
-        let mut preflighted = Vec::with_capacity(files.len());
+        let mut requests = 0;
+        let mut raw_zero_outputs = 0;
+        let file_count = files.len();
+        let mut canonical_rows =
+            tempfile::NamedTempFile::new().context("creating Weka row spool")?;
         for (file_path, relative_path) in files {
-            let digest = hash_source_file(&file_path, &relative_path, Some(&mut corpus_hasher))?;
-            for_each_source_trace(&file_path, &relative_path, |trace, source_name| {
-                validate_trace_header(trace, source_name)?;
-                validate_trace_models(trace, source_name)?;
-                match block_size {
-                    Some(expected) if expected != trace.block_size => bail!(
-                        "Weka corpus mixes block sizes: {} has {}, expected {}",
-                        source_name,
-                        trace.block_size,
-                        expected
-                    ),
-                    None => block_size = Some(trace.block_size),
-                    _ => {}
-                }
-                // Preflight the complete lowering contract before callers are
-                // allowed to observe a single emitted row. This catches
-                // malformed timing, ownership, status, and graph topology in
-                // every play while keeping memory bounded to one play.
-                let lowered = lower_trace(trace, source_name)?;
-                validate_preflight_graph(trace.block_size, lowered.rows)?;
-                plays += 1;
-                Ok(())
-            })?;
-            preflighted.push(WekaFile {
-                path: file_path,
-                relative_path,
-                digest,
-            });
+            let snapshot = snapshot_source_file(&file_path, &relative_path, &mut corpus_hasher)?;
+            let jsonl = is_jsonl(&file_path);
+            for_each_source_trace(
+                snapshot,
+                jsonl,
+                &file_path,
+                &relative_path,
+                |trace, source_name| {
+                    validate_trace_header(trace, source_name)?;
+                    validate_trace_models(trace, source_name)?;
+                    match block_size {
+                        Some(expected) if expected != trace.block_size => bail!(
+                            "Weka corpus mixes block sizes: {} has {}, expected {}",
+                            source_name,
+                            trace.block_size,
+                            expected
+                        ),
+                        None => block_size = Some(trace.block_size),
+                        _ => {}
+                    }
+                    // Preflight the complete lowering contract before callers are
+                    // allowed to observe a single emitted row. This catches
+                    // malformed timing, ownership, status, and graph topology in
+                    // every play while keeping memory bounded to one play.
+                    let lowered = lower_trace(trace, source_name, plays)?;
+                    validate_preflight_graph(trace.block_size, &lowered.rows)?;
+                    raw_zero_outputs += lowered.raw_zero_outputs;
+                    requests += lowered.rows.len();
+                    for row in lowered.rows {
+                        serde_json::to_writer(canonical_rows.as_file_mut(), &row)
+                            .context("writing preflighted Weka row spool")?;
+                        canonical_rows
+                            .as_file_mut()
+                            .write_all(b"\n")
+                            .context("writing preflighted Weka row delimiter")?;
+                    }
+                    plays += 1;
+                    Ok(())
+                },
+            )?;
         }
+        canonical_rows
+            .as_file_mut()
+            .flush()
+            .context("flushing preflighted Weka row spool")?;
+        canonical_rows
+            .as_file_mut()
+            .seek(SeekFrom::Start(0))
+            .context("rewinding preflighted Weka row spool")?;
         let digest = corpus_hasher.finalize().to_hex().to_string();
 
         Ok(Self {
             root,
-            files: preflighted,
+            files: file_count,
             plays,
+            requests,
+            raw_zero_outputs,
             header: AgenticMooncakeHeader {
                 schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
                 version: AGENTIC_MOONCAKE_VERSION,
@@ -123,6 +148,7 @@ impl WekaImporter {
                     digest,
                 },
             },
+            rows: canonical_rows,
         })
     }
 
@@ -134,44 +160,35 @@ impl WekaImporter {
         &self.root
     }
 
-    /// Lower one source file at a time and move rows into the caller's sink.
+    /// Stream the immutable rows produced during preflight into the caller's sink.
     pub fn for_each_row<F>(&self, mut emit: F) -> Result<WekaImportSummary>
     where
         F: FnMut(AgenticMooncakeRow) -> Result<()>,
     {
-        let mut requests = 0;
-        let mut raw_zero_outputs = 0;
-        // Verify the complete corpus before invoking the caller's sink. In a
-        // multi-file corpus, a changed final file must not allow rows from an
-        // earlier file to escape first.
-        for file in &self.files {
-            let digest = hash_source_file(&file.path, &file.relative_path, None)?;
-            if digest != file.digest {
-                bail!(
-                    "Weka source {} changed after preflight: expected {}, found {}",
-                    file.relative_path,
-                    file.digest.to_hex(),
-                    digest.to_hex()
-                );
-            }
+        let rows = self
+            .rows
+            .reopen()
+            .context("reopening preflighted Weka row spool")?;
+        let stream = serde_json::Deserializer::from_reader(BufReader::new(rows))
+            .into_iter::<AgenticMooncakeRow>();
+        let mut emitted = 0;
+        for row in stream {
+            emit(row.context("reading preflighted Weka row spool")?)?;
+            emitted += 1;
         }
-        for file in &self.files {
-            for_each_source_trace(&file.path, &file.relative_path, |trace, source_name| {
-                let lowered = lower_trace(trace, source_name)?;
-                raw_zero_outputs += lowered.raw_zero_outputs;
-                requests += lowered.rows.len();
-                for row in lowered.rows {
-                    emit(row)?;
-                }
-                Ok(())
-            })?;
+        if emitted != self.requests {
+            bail!(
+                "preflighted Weka row spool contained {} requests, expected {}",
+                emitted,
+                self.requests
+            );
         }
         Ok(WekaImportSummary {
             header: self.header.clone(),
-            files: self.files.len(),
+            files: self.files,
             plays: self.plays,
-            requests,
-            raw_zero_outputs,
+            requests: self.requests,
+            raw_zero_outputs: self.raw_zero_outputs,
         })
     }
 
@@ -222,7 +239,7 @@ pub fn load_weka_agentic_graph(
     builder.finish()
 }
 
-fn validate_preflight_graph(block_size: usize, rows: Vec<AgenticMooncakeRow>) -> Result<()> {
+fn validate_preflight_graph(block_size: usize, rows: &[AgenticMooncakeRow]) -> Result<()> {
     let header = AgenticMooncakeHeader {
         schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
         version: AGENTIC_MOONCAKE_VERSION,
@@ -238,6 +255,10 @@ fn validate_preflight_graph(block_size: usize, rows: Vec<AgenticMooncakeRow>) ->
     };
     let mut builder = AgenticGraphBuilder::new(header)?;
     for row in rows {
+        let mut row = row.clone();
+        // Validation is intentionally bounded to one play, so normalize its
+        // corpus-wide ordinal before applying the contiguous-order contract.
+        row.source_play_ordinal = Some(0);
         builder.push(row)?;
     }
     builder.finish()?;
@@ -378,7 +399,11 @@ struct LoweredTrace {
     raw_zero_outputs: usize,
 }
 
-fn lower_trace(trace: &WekaTrace, relative_path: &str) -> Result<LoweredTrace> {
+fn lower_trace(
+    trace: &WekaTrace,
+    relative_path: &str,
+    source_play_ordinal: usize,
+) -> Result<LoweredTrace> {
     validate_trace_header(trace, relative_path)?;
     let namespace = namespace(relative_path);
     let play_id = format!("{namespace}:play:{}", trace.id);
@@ -657,6 +682,7 @@ fn lower_trace(trace: &WekaTrace, relative_path: &str) -> Result<LoweredTrace> {
             rows.push(AgenticMooncakeRow {
                 request_id,
                 play_id: play_id.clone(),
+                source_play_ordinal: Some(source_play_ordinal),
                 session_id: stream.session_id.clone(),
                 model: request.request.model.clone(),
                 input_length: Some(request.request.input_length),
@@ -1318,11 +1344,11 @@ fn namespace(relative_path: &str) -> String {
     format!("weka:{}", &digest[..16])
 }
 
-fn hash_source_file(
+fn snapshot_source_file(
     path: &Path,
     relative_path: &str,
-    mut corpus_hasher: Option<&mut blake3::Hasher>,
-) -> Result<blake3::Hash> {
+    corpus_hasher: &mut blake3::Hasher,
+) -> Result<File> {
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("reading metadata for Weka source {}", path.display()))?;
     if metadata.file_type().is_symlink() {
@@ -1334,14 +1360,13 @@ fn hash_source_file(
     let file =
         File::open(path).with_context(|| format!("opening Weka source {}", path.display()))?;
     let byte_len = metadata.len();
-    if let Some(hasher) = corpus_hasher.as_deref_mut() {
-        hasher.update(&(relative_path.len() as u64).to_le_bytes());
-        hasher.update(relative_path.as_bytes());
-        hasher.update(&byte_len.to_le_bytes());
-    }
+    corpus_hasher.update(&(relative_path.len() as u64).to_le_bytes());
+    corpus_hasher.update(relative_path.as_bytes());
+    corpus_hasher.update(&byte_len.to_le_bytes());
 
     let mut reader = BufReader::new(file);
-    let mut file_hasher = blake3::Hasher::new();
+    let mut snapshot = tempfile::tempfile()
+        .with_context(|| format!("creating snapshot for Weka source {}", path.display()))?;
     let mut buffer = [0_u8; 64 * 1024];
     let mut bytes_read = 0_u64;
     loop {
@@ -1354,10 +1379,10 @@ fn hash_source_file(
         bytes_read = bytes_read
             .checked_add(count as u64)
             .context("Weka source byte count overflowed u64")?;
-        file_hasher.update(&buffer[..count]);
-        if let Some(hasher) = corpus_hasher.as_deref_mut() {
-            hasher.update(&buffer[..count]);
-        }
+        corpus_hasher.update(&buffer[..count]);
+        snapshot
+            .write_all(&buffer[..count])
+            .with_context(|| format!("snapshotting Weka source {}", path.display()))?;
     }
     if bytes_read != byte_len {
         bail!(
@@ -1367,7 +1392,10 @@ fn hash_source_file(
             bytes_read
         );
     }
-    Ok(file_hasher.finalize())
+    snapshot
+        .seek(SeekFrom::Start(0))
+        .with_context(|| format!("rewinding Weka source snapshot {}", path.display()))?;
+    Ok(snapshot)
 }
 
 fn has_weka_extension(path: &Path) -> bool {
@@ -1378,30 +1406,37 @@ fn has_weka_extension(path: &Path) -> bool {
         })
 }
 
-fn for_each_source_trace<F>(path: &Path, relative_path: &str, mut visit: F) -> Result<usize>
+fn is_jsonl(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+}
+
+fn for_each_source_trace<R, F>(
+    reader: R,
+    jsonl: bool,
+    display_path: &Path,
+    relative_path: &str,
+    mut visit: F,
+) -> Result<usize>
 where
+    R: Read,
     F: FnMut(&WekaTrace, &str) -> Result<()>,
 {
-    let file =
-        File::open(path).with_context(|| format!("opening Weka source {}", path.display()))?;
-    let jsonl = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"));
     let stream =
-        serde_json::Deserializer::from_reader(BufReader::new(file)).into_iter::<WekaTrace>();
+        serde_json::Deserializer::from_reader(BufReader::new(reader)).into_iter::<WekaTrace>();
     let mut count = 0;
     for (index, trace) in stream.enumerate() {
         if !jsonl && index > 0 {
             bail!(
                 "Weka JSON source {} contains more than one object; use a .jsonl extension",
-                path.display()
+                display_path.display()
             );
         }
         let trace = trace.with_context(|| {
             format!(
                 "parsing Weka source {} object {}",
-                path.display(),
+                display_path.display(),
                 index + 1
             )
         })?;
@@ -1414,7 +1449,10 @@ where
         count += 1;
     }
     if count == 0 {
-        bail!("Weka source {} contains no trace objects", path.display());
+        bail!(
+            "Weka source {} contains no trace objects",
+            display_path.display()
+        );
     }
     Ok(count)
 }
@@ -1843,29 +1881,29 @@ mod tests {
     }
 
     #[test]
-    fn emission_rejects_source_changes_after_preflight() {
+    fn emission_is_bound_to_preflight_snapshot_during_callback_mutation() {
         let directory = tempdir().unwrap();
         let first = directory.path().join("a.json");
         let last = directory.path().join("z.json");
         write_trace(&first, serde_json::json!([request(0.0, 4, 1, &[1])]));
         write_trace(&last, serde_json::json!([request(0.0, 4, 1, &[2])]));
         let importer = WekaImporter::open(directory.path()).unwrap();
+        let (_, expected) = importer.collect_rows().unwrap();
 
-        write_trace(&last, serde_json::json!([request(0.0, 4, 1, &[3])]));
         let mut emitted = Vec::new();
-        let error = importer
+        importer
             .for_each_row(|row| {
+                if emitted.is_empty() {
+                    write_trace(&last, serde_json::json!([request(0.0, 4, 1, &[3])]));
+                }
                 emitted.push(row);
                 Ok(())
             })
-            .unwrap_err();
+            .unwrap();
 
-        assert!(emitted.is_empty());
-        assert!(
-            error
-                .to_string()
-                .contains("Weka source z.json changed after preflight"),
-            "{error:#}"
+        assert_eq!(
+            serde_json::to_value(emitted).unwrap(),
+            serde_json::to_value(expected).unwrap()
         );
     }
 
@@ -1934,6 +1972,60 @@ mod tests {
             error.to_string().contains("empty request model"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn jsonl_source_order_controls_single_lane_play_order() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("traces.jsonl");
+        let authored_ids = (0..8)
+            .map(|index| format!("play-{index}"))
+            .collect::<Vec<_>>();
+        let jsonl = authored_ids
+            .iter()
+            .enumerate()
+            .map(|(index, play_id)| {
+                trace_value(
+                    play_id,
+                    serde_json::json!([request(0.0, 4, 1, &[index as u64 + 1])]),
+                )
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, format!("{jsonl}\n")).unwrap();
+
+        let importer = WekaImporter::open(&path).unwrap();
+        let header = importer.header().clone();
+        let (_, rows) = importer.collect_rows().unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.source_play_ordinal.unwrap())
+                .collect::<Vec<_>>(),
+            (0..authored_ids.len()).collect::<Vec<_>>()
+        );
+
+        let graph = AgenticTrace::from_agentic_mooncake_rows(header, rows).unwrap();
+        let mut driver =
+            crate::replay::loadgen::WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1)
+                .unwrap();
+        let mut dispatched = Vec::new();
+        for index in 0..authored_ids.len() {
+            let mut ready = driver.pop_ready(index as f64, usize::MAX);
+            assert_eq!(ready.len(), 1);
+            let turn = ready.pop().unwrap();
+            dispatched.push(
+                turn.play_id
+                    .as_deref()
+                    .unwrap()
+                    .rsplit_once(":play:")
+                    .unwrap()
+                    .1
+                    .to_string(),
+            );
+            driver.on_complete(turn.request_uuid, index as f64).unwrap();
+        }
+        assert_eq!(dispatched, authored_ids);
     }
 
     #[test]
@@ -2031,7 +2123,7 @@ mod tests {
         );
         assert_eq!(
             direct.graph_digest(),
-            "648791b3a470d35590a3dac0eab243eb65d904a826db675293d160d1f887b115"
+            "2e60268dc89a8eca31d4acd674df13cd43fe0d2a649a772db2d5a0d4a4a53ff2"
         );
         let importer = WekaImporter::open(&source).unwrap();
         let (summary, rows) = importer.collect_rows().unwrap();

@@ -1485,6 +1485,7 @@ mod tests {
                     .filter(|node_index| nodes[*node_index].dependencies.is_empty())
                     .collect(),
                 play_id,
+                source_play_ordinal: None,
                 nodes: node_indices,
             })
             .collect::<Vec<_>>();
