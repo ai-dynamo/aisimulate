@@ -160,6 +160,7 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
                 } else {
                     0.0
                 },
+                recorded_api_time_ms: None,
                 priority: raw.priority,
                 strict_priority: raw.strict_priority,
                 policy_class: raw.policy_class,
@@ -1376,6 +1377,16 @@ impl AgenticTraceBuilder {
                 raw.not_before_ms
             );
         }
+        if raw
+            .recorded_api_time_ms
+            .is_some_and(|duration| !duration.is_finite() || duration < 0.0)
+        {
+            bail!(
+                "trace line {} has invalid recorded_api_time_ms {:?}",
+                line_idx + 1,
+                raw.recorded_api_time_ms
+            );
+        }
         for dependency in &raw.dependencies {
             if dependency.request_id.trim().is_empty() {
                 bail!(
@@ -1426,6 +1437,7 @@ impl AgenticTraceBuilder {
             output_token_ids,
             hash_ids,
             not_before_ms: raw.not_before_ms,
+            recorded_api_time_ms: raw.recorded_api_time_ms,
             priority: raw.priority.unwrap_or(0),
             strict_priority: raw.strict_priority.unwrap_or(0),
             policy_class: raw.policy_class,
@@ -1606,6 +1618,9 @@ impl AgenticTrace {
 
         for node in &mut self.nodes {
             node.not_before_ms /= ratio;
+            if let Some(recorded_api_time_ms) = node.recorded_api_time_ms.as_mut() {
+                *recorded_api_time_ms /= ratio;
+            }
             for dependency in &mut node.dependencies {
                 dependency.delay_ms /= ratio;
             }
