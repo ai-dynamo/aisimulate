@@ -312,6 +312,7 @@ pub struct AgenticReplayConfig {
     pub start_max_ratio: f64,
     pub warmup_requests_per_lane: usize,
     pub profile_duration_ms: f64,
+    pub post_profile_grace_ms: f64,
     pub trace_idle_gap_cap_ms: f64,
     pub system_idle_gap_cap_ms: f64,
 }
@@ -325,6 +326,7 @@ impl Default for AgenticReplayConfig {
             start_max_ratio: 0.75,
             warmup_requests_per_lane: 10,
             profile_duration_ms: 3_600_000.0,
+            post_profile_grace_ms: 30_000.0,
             trace_idle_gap_cap_ms: 300_000.0,
             system_idle_gap_cap_ms: 10_000.0,
         }

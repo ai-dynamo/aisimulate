@@ -374,6 +374,7 @@ fn agentx_disagg_report_excludes_priming_and_warmup_requests() {
             start_max_ratio: 0.5,
             warmup_requests_per_lane: 1,
             profile_duration_ms: 0.000_001,
+            post_profile_grace_ms: 30_000.0,
             trace_idle_gap_cap_ms: 300_000.0,
             system_idle_gap_cap_ms: 10_000.0,
         },

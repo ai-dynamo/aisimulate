@@ -586,6 +586,13 @@ fn finish_report(mut collector: crate::replay::TraceCollector, sla: SlaThreshold
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::{EngineConfig, TimingModelConfig};
+    use crate::replay::engine::ReplayEngineConfig;
+    use crate::replay::loadgen::{
+        AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticHashIdScope,
+        AgenticMooncakeHeader, AgenticMooncakeRow, AgenticReplayConfig, AgenticSourceProvenance,
+        AgenticTrace,
+    };
     use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayRequest, ReplayTopology, WorkerPoolSpec,
     };
@@ -690,5 +697,98 @@ mod tests {
             .pop_front()
             .unwrap();
         assert_ne!(first.uuid, Some(Uuid::from_u128(1)));
+    }
+
+    #[test]
+    fn both_topologies_honor_agentic_stop_deadline() {
+        let block_size = 64;
+        let trace = AgenticTrace::from_agentic_mooncake_rows(
+            AgenticMooncakeHeader {
+                schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
+                version: AGENTIC_MOONCAKE_VERSION,
+                block_size,
+                hash_id_scope: AgenticHashIdScope::Local,
+                source: AgenticSourceProvenance {
+                    format: "test".to_string(),
+                    digest: "aggregated-stop-deadline".to_string(),
+                },
+            },
+            [("short", 1, 1), ("long", 20, 2)]
+                .into_iter()
+                .map(|(request_id, output_length, hash_id)| AgenticMooncakeRow {
+                    request_id: request_id.to_string(),
+                    play_id: "play".to_string(),
+                    session_id: request_id.to_string(),
+                    model: "model".to_string(),
+                    input_length: Some(block_size),
+                    output_length: Some(output_length),
+                    hash_ids: Some(vec![hash_id]),
+                    ..Default::default()
+                })
+                .collect(),
+        )
+        .unwrap();
+        let rank = EngineConfig {
+            block_size,
+            num_gpu_blocks: 256,
+            max_num_batched_tokens: 8_192,
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 10.0,
+                decode_ms: 10.0,
+            },
+            ..EngineConfig::default()
+        };
+        let engine = serde_json::to_value(ReplayEngineConfig {
+            dp_size: 1,
+            tensor_parallel_size: 1,
+            cache_domain_ids: Vec::new(),
+            rank,
+            prefill: None,
+            decode: None,
+        })
+        .unwrap();
+
+        for topology in [
+            ReplayTopology::aggregated(1),
+            ReplayTopology::Disaggregated {
+                prefill: WorkerPoolSpec::default(),
+                decode: WorkerPoolSpec::default(),
+                handoff_latency_ms: 0.0,
+            },
+        ] {
+            let driver = WorkloadDriver::new_agentic_replay(
+                trace.clone(),
+                block_size,
+                AgenticReplayConfig {
+                    lanes: 1,
+                    start_min_ratio: 0.0,
+                    start_max_ratio: 0.0,
+                    warmup_requests_per_lane: 0,
+                    profile_duration_ms: 1.0,
+                    post_profile_grace_ms: 30.0,
+                    ..AgenticReplayConfig::default()
+                },
+            )
+            .unwrap();
+            let spec = ReplaySpec {
+                version: 1,
+                topology,
+                engine: engine.clone(),
+                adapters: ReplayAdapters::default(),
+                max_sim_time_ms: None,
+                max_in_flight: None,
+                record_per_request: false,
+                sla: SlaThresholds::default(),
+                requests: Vec::new(),
+            };
+            let report = Replayer::new(spec, ReplayEngineFactory::new())
+                .unwrap()
+                .with_runtime_input(ReplayRuntimeInput::Workload(driver))
+                .run()
+                .unwrap();
+
+            assert_eq!(report.request_counts.num_requests, 2);
+            assert_eq!(report.request_counts.completed_requests, 1);
+        }
     }
 }

@@ -1097,7 +1097,8 @@ where
 
     /// Cap the simulated wall-clock duration. After construction, call this to
     /// have `run()` stop gracefully once the simulated clock would exceed
-    /// `ms`. Pass `None` to run to natural completion (the default).
+    /// `ms`. `None` disables this caller-owned cap; a workload may still own
+    /// an earlier stop deadline.
     ///
     /// max_sim_time_ms is a **soft cap** on the scheduling loop, not a hard truncation
     /// of recorded work. When the next scheduled simulated timestamp would
@@ -3074,8 +3075,8 @@ where
                     self.cluster_in_flight()
                 );
             };
-            if let Some(cap_ms) = self.max_sim_time_ms
-                && next_timestamp_ms > cap_ms
+            if choose_next_timestamp(self.max_sim_time_ms, self.admission.stop_deadline_ms())
+                .is_some_and(|deadline_ms| next_timestamp_ms > deadline_ms)
             {
                 break;
             }
@@ -3086,10 +3087,9 @@ where
         Ok(())
     }
 
-    /// Run the staged offline replay until both prefill and decode pipelines are drained.
-    /// If `max_sim_time_ms` is set, exits gracefully when the next scheduled
-    /// timestamp would exceed that cap; in-flight requests at that point are
-    /// reported as incomplete.
+    /// Run until both pipelines drain or the next timestamp exceeds a stop deadline.
+    /// The earliest caller-owned `max_sim_time_ms` or workload-owned deadline
+    /// wins; in-flight requests at that point are reported as incomplete.
     pub(crate) fn run(mut self) -> Result<(TraceCollector, DisaggRuntimeStats)> {
         self.run_to_completion()?;
 

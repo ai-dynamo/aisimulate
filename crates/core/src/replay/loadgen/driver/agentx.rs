@@ -36,12 +36,16 @@ impl AgenticReplayConfig {
         }
         for (name, value) in [
             ("profile_duration_ms", self.profile_duration_ms),
+            ("post_profile_grace_ms", self.post_profile_grace_ms),
             ("trace_idle_gap_cap_ms", self.trace_idle_gap_cap_ms),
             ("system_idle_gap_cap_ms", self.system_idle_gap_cap_ms),
         ] {
             if !value.is_finite() || value < 0.0 {
                 bail!("{name} must be finite and non-negative; got {value}");
             }
+        }
+        if !(self.profile_duration_ms + self.post_profile_grace_ms).is_finite() {
+            bail!("profile_duration_ms plus post_profile_grace_ms must be finite");
         }
         Ok(self)
     }

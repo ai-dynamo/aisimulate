@@ -335,6 +335,13 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         driver.agentic_trajectory_snapshot()
     }
 
+    pub(crate) fn stop_deadline_ms(&self) -> Option<f64> {
+        let AdmissionSource::Workload(driver) = &self.source else {
+            return None;
+        };
+        driver.stop_deadline_ms()
+    }
+
     pub(crate) fn agentic_graph_identity(
         &self,
     ) -> Option<crate::replay::loadgen::AgenticGraphIdentity> {

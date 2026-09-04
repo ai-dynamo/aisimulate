@@ -1742,6 +1742,16 @@ impl WorkloadDriver {
         }
     }
 
+    pub(crate) fn stop_deadline_ms(&self) -> Option<f64> {
+        let SchedulingPolicy::Agentic(state) = &self.policy else {
+            return None;
+        };
+        let replay = state.replay.as_ref()?;
+        replay
+            .profile_deadline_ms
+            .map(|deadline_ms| deadline_ms + replay.config.post_profile_grace_ms)
+    }
+
     pub fn agentic_graph_identity(&self) -> Option<AgenticGraphIdentity> {
         self.agentic_graph_identity.clone()
     }
@@ -2748,9 +2758,33 @@ mod tests {
             start_max_ratio: 0.5,
             warmup_requests_per_lane: 1,
             profile_duration_ms: 5.0,
+            post_profile_grace_ms: 30.0,
             trace_idle_gap_cap_ms: 300.0,
             system_idle_gap_cap_ms: 10.0,
         }
+    }
+
+    #[test]
+    fn agentx_replay_rejects_negative_post_profile_grace() {
+        let error = AgenticReplayConfig {
+            post_profile_grace_ms: -1.0,
+            ..agentx_config()
+        }
+        .validate(1)
+        .unwrap_err();
+        assert!(error.to_string().contains("post_profile_grace_ms"));
+    }
+
+    #[test]
+    fn agentx_replay_rejects_overflowing_profile_window() {
+        let error = AgenticReplayConfig {
+            profile_duration_ms: f64::MAX,
+            post_profile_grace_ms: f64::MAX,
+            ..agentx_config()
+        }
+        .validate(1)
+        .unwrap_err();
+        assert!(error.to_string().contains("plus"));
     }
 
     fn sequential_agentic_trace(delay_ms: f64) -> AgenticTrace {
@@ -2809,6 +2843,7 @@ mod tests {
         let profiled = driver.pop_ready(2.0, usize::MAX).pop().unwrap();
         assert_eq!(profiled.authored_request_id.as_deref(), Some("turn-2"));
         assert!(profiled.measured);
+        assert_eq!(driver.stop_deadline_ms(), Some(37.0));
         assert_eq!(profiled.request.max_output_tokens, 3);
         assert_eq!(profiled.session_id, first_occurrence_session);
         driver.on_complete(profiled.request_uuid, 3.0).unwrap();
