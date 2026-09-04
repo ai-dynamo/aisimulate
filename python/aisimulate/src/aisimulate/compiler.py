@@ -266,6 +266,8 @@ def _traffic(
             workload["replay_concurrency"] = load.concurrency
         else:
             workload["arrival_speedup_ratio"] = load.speedup or 1.0
+            if load.agentic_lanes is not None:
+                workload["agentic_lanes"] = load.agentic_lanes
         if stop is not None and stop.max_virtual_time_seconds is not None:
             workload["max_sim_time_ms"] = 1_000.0 * stop.max_virtual_time_seconds
         return workload, None

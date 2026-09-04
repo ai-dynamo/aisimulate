@@ -50,6 +50,7 @@ TraceFormat = Literal[
     "agentic_mooncake",
     "applied_compute_agentic",
     "dynamo",
+    "weka",
 ]
 
 
@@ -70,7 +71,7 @@ class TraceSource(StrictModel):
     def _validate_path_count(self) -> TraceSource:
         if self.format != "dynamo" and len(self.paths) != 1:
             raise ValueError(f"trace format {self.format!r} requires exactly one path")
-        if self.format != "dynamo" and self.block_size is None:
+        if self.format not in {"dynamo", "weka"} and self.block_size is None:
             self.block_size = 512
         return self
 
@@ -101,6 +102,7 @@ class TrafficPredictionLoad(StrictModel):
     sessions_per_second: PositiveFloat | None = None
     seed: NonNegativeInt | None = None
     speedup: PositiveFloat | None = None
+    agentic_lanes: PositiveInt | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -130,6 +132,7 @@ class TrafficRecommendationLoad(StrictModel):
     seed: NonNegativeInt | None = None
     fraction: PositiveFloat | Choices[PositiveFloat] | NumericRange | None = None
     speedup: PositiveFloat | Choices[PositiveFloat] | NumericRange | None = None
+    agentic_lanes: PositiveInt | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -148,6 +151,7 @@ class TrafficRecommendationLoad(StrictModel):
             "sessions_per_second",
             "fraction",
             "speedup",
+            "agentic_lanes",
         ):
             value = getattr(self, name)
             if isinstance(value, (IntegerRange, NumericRange)) and value.range.min <= 0:
@@ -165,6 +169,7 @@ def _validate_load_fields(load) -> None:
             "seed",
             "fraction",
             "speedup",
+            "agentic_lanes",
         )
         if getattr(load, name, None) is not None
     }
@@ -173,7 +178,7 @@ def _validate_load_fields(load) -> None:
         "poisson": {"requests_per_second", "sessions_per_second", "seed"},
         "constant_rate": {"requests_per_second", "sessions_per_second"},
         "kv_capacity_fraction": {"fraction"},
-        "trace_timestamps": {"speedup"},
+        "trace_timestamps": {"speedup", "agentic_lanes"},
     }[load.type]
     unexpected = used - allowed
     if unexpected:
@@ -210,17 +215,21 @@ class _TrafficConfigBase(StrictModel):
                 )
             ):
                 raise ValueError("trace traffic only accepts max_virtual_time_seconds")
-            agentic = source.format == "agentic_mooncake"
+            agentic = source.format in {"agentic_mooncake", "weka"}
             if agentic and load.type != "trace_timestamps":
-                raise ValueError("agentic_mooncake requires trace_timestamps load")
+                raise ValueError(f"{source.format} requires trace_timestamps load")
             if source.format == "applied_compute_agentic" and load.type != "concurrency":
                 raise ValueError("applied_compute_agentic requires concurrency load")
             if agentic and stop is not None and stop.max_virtual_time_seconds is not None:
-                raise ValueError("agentic_mooncake does not support max_virtual_time_seconds")
+                raise ValueError(f"{source.format} does not support max_virtual_time_seconds")
+            if load.agentic_lanes is not None and not agentic and source.format != "dynamo":
+                raise ValueError("agentic_lanes requires weka, agentic_mooncake, or agentic dynamo input")
             return
 
         if load.type == "trace_timestamps":
             raise ValueError("synthetic traffic does not accept trace_timestamps load")
+        if load.agentic_lanes is not None:
+            raise ValueError("synthetic traffic does not accept agentic_lanes")
         rate = load.requests_per_second if isinstance(source, SyntheticSource) else load.sessions_per_second
         wrong_rate = load.sessions_per_second if isinstance(source, SyntheticSource) else load.requests_per_second
         if load.type in {"poisson", "constant_rate"} and rate is None:
