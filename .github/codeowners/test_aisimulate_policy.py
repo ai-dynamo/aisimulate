@@ -211,13 +211,23 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert full_config["on"]["push"]["branches"] == ["main", "release/*"]
     application_wheel = full_config["jobs"]["application-wheel"]
     assert "if" not in application_wheel
-    assert any(
-        step.get("name") == "Verify exact staged wheel"
+    verify_steps = [
+        step
         for step in application_wheel["steps"]
+        if step.get("name") == "Verify exact staged wheel"
+    ]
+    assert len(verify_steps) == 1
+    verify_step = verify_steps[0]
+    assert verify_step["run"] == (
+        "python python/aisimulate/tools/verify_release_wheels.py dist"
     )
-    assert "github.event_name == 'push'" in full_config["jobs"][
-        "stage-application-wheel"
-    ]["if"]
+    assert "if" not in verify_step
+    assert "continue-on-error" not in verify_step
+    assert full_config["jobs"]["stage-application-wheel"]["if"] == (
+        "github.event_name == 'push' && "
+        "(github.ref == 'refs/heads/main' ||\n "
+        "startsWith(github.ref, 'refs/heads/release/'))"
+    )
 
 
 def test_coderabbit_is_opted_in_by_review_ready_label() -> None:
