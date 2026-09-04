@@ -7,9 +7,9 @@ subtitle: Attention-FFN disaggregation, pipeline evaluation, and P/D rate matchi
 
 > [!WARNING]
 > **Experimental.** `SmartSearchConfig` can place AFD topologies in a generic Sweeper study, but
-> the public recommendation schema, production runner, Replay/Mocker execution, and deployment
-> artifacts do not yet support AFD. A runner must explicitly advertise `backend/afd` or
-> `backend/afd+pd`; the built-in engine runner currently advertises neither.
+> the public recommendation schema and deployment artifacts do not yet support AFD. The built-in
+> engine runner supports analytical `backend/afd` and `backend/afd+pd` replay for fixed synthetic
+> lengths; it does not claim that a physical serving backend can launch the topology.
 
 Attention-FFN Disaggregation (AFD) places attention operations on an A-worker pool and FFN/MoE
 operations on an F-worker pool. `aisimulate.sweeper.afd` provides a backend-neutral contract for
@@ -70,8 +70,20 @@ domain = enumerate_afd_topologies(
 
 ## Pipeline Evaluation
 
-An estimator adapter supplies non-negative per-layer A compute, F compute, A-to-F transfer, and
-F-to-A transfer times. The core applies the legacy pipeline regimes:
+`AICAFDPerformanceModel` uses AIC's public estimate API to supply full-precision, non-negative
+per-layer A-pool, F-pool, A-to-F transfer, and F-to-A transfer times. The measurement request pins
+the model, hardware, backend version, topology, and workload lengths. Its transfer inputs are
+uncalibrated: the core applies `comm_overhead_factor` exactly once when evaluating the candidate.
+The resulting `ReplaySpec` records the measurement API version, units, source, workload point, and
+backend version. Missing phases, duplicate phases, unsupported estimates, and OOM results fail
+closed during candidate materialization.
+
+This measurement layer currently requires a synthetic workload with concrete positive `isl` and
+`osl`. A trace-only AFD sweep is rejected because one fixed A/F layer measurement cannot honestly
+represent requests with differing sequence lengths. Trace-aware measurement belongs with the AFD
+replay lifecycle in a later layer.
+
+The core applies the legacy pipeline regimes:
 
 - optimistic: `max(A, F, A_to_F + F_to_A)`, with the legacy minimum-microbatch check;
 - conservative: `max(A + A_to_F, F + F_to_A)`; and
@@ -79,6 +91,28 @@ F-to-A transfer times. The core applies the legacy pipeline regimes:
 
 Global step latency includes pipeline fill and every microbatch-layer cadence. Pure AFD can cover
 prefill, decode, or both. When both phases use the same A/F pools, GPU count is not doubled.
+
+`AFDForegroundEngine` expands that same formula into deterministic A, A-to-F, F, and F-to-A
+intervals for every layer and microbatch. Starting a pass eagerly fixes the whole non-preemptive
+schedule; completion effects remain hidden until its modeled full-pass boundary. A second pass
+cannot start while one is in flight, and a late caller wakeup does not inflate the modeled
+completion time. A topology covering both phases executes prefill and decode as separate full
+passes through the same engine. For `afd+pd`, this engine owns only the configured AFD phase; the
+ordinary companion remains a replay-layer responsibility.
+
+## Analytical Replay
+
+`EngineReplayRunner` advertises AFD only after validating and consuming the complete measurement
+contract. Pure `afd` replay requires `phase: both`; a single AFD phase must use `afd+pd` so the
+opposite phase is present. The latter measures a regular companion through AIC static estimation
+or an explicit fixed timing model, then schedules the two independent pools as a two-stage flow.
+This preserves arrival and queueing delay in TTFT and end-to-end latency while keeping decode step
+latency separate as TPOT. Reports include throughput, goodput, GPU-hours, per-request latency on
+request, batch/pass counts, and exact A/F plus companion GPU accounting.
+
+Replay currently requires fixed synthetic `isl` and `osl`, `random_range_ratio: 1.0`, and no trace.
+Those restrictions keep each request aligned with the performance-model point instead of silently
+reusing a measurement at a different sequence length.
 
 ## Combined AFD and P/D
 
@@ -110,7 +144,8 @@ the opposite phase. Pure AFD has no ordinary engine argument payload. AFD+P/D ma
 arguments only for its companion phase.
 
 KV-relative traffic load is intentionally rejected for AFD in this layer because the A/F pools do
-not yet expose scheduler-visible KV capacity. Use a trace, request rate, or absolute concurrency.
+not yet expose scheduler-visible KV capacity. Use a synthetic request rate or absolute concurrency
+with concrete `isl` and `osl`.
 See [Sweeper Configuration](configuration.md#attention-ffn-disaggregation) for an internal example.
 
 ## Infeasibility and Provenance

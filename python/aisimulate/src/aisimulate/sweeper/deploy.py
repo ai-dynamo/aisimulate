@@ -144,7 +144,8 @@ def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) ->
         }
         performance_model_metadata = {
             "afd": {
-                "provider": "aic",
+                "provider": "unresolved",
+                "measurement_required": True,
                 "config": sample["afd"],
                 "provenance": sample["afd_provenance"],
             }
