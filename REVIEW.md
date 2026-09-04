@@ -1,0 +1,66 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# AISimulate review contract
+
+Review for behavior and evidence, not just whether the diff looks reasonable.
+Start at the changed input, follow the real consumer to the externally visible
+output, and identify every contract crossed along the way. Prefer one precise
+root-cause finding over several comments on its symptoms.
+
+Use these priorities:
+
+- **P0**: exploitable security issue, data loss, or repository-wide outage.
+- **P1**: incorrect public behavior, corrupted or materially wrong prediction,
+  deadlock, release breakage, or an unsafe compatibility change.
+- **P2**: reachable defect, missing validation, significant performance
+  regression, or insufficient evidence for a changed contract.
+- **P3**: low-risk maintainability concern with a concrete future failure mode.
+
+Do not report preference-only naming, formatting, or documentation nits already
+covered by automated tools. Do not treat bot approval, `MERGEABLE`, CODEOWNERS,
+DCO, or a small green check set as merge readiness. Technical findings and
+governance status are separate; merge readiness is assessed on the exact head.
+
+## Product invariants
+
+- Python describes and orchestrates work. Rust computes per-operation latency,
+  energy, and SOL values. Do not introduce a second performance oracle.
+- Formulas, table selection, interpolation, quantization, fallback ordering, and
+  performance data are product behavior. Changed answers require reproducible,
+  explained before/after evidence; never refresh goldens merely to make tests
+  pass.
+- Public configuration, serialized schemas, CLI options, Python types/imports,
+  Rust types/exports, defaults, docs, and fixtures must change together.
+- Missing optional data may use an explicitly documented and observable absence
+  path. Corrupt, ambiguous, or unsupported input must fail loudly rather than
+  silently selecting another model, runtime, backend, kernel, or default.
+- Keep provenance exact: distinguish measured values, estimates, proxies,
+  synthetic fixtures, parity results, fake-runner results, and production
+  traces. Do not turn parity into a predictive-accuracy claim.
+- Binary parquet changes require a machine-readable summary of keys, shapes,
+  units, row counts, coverage, and anomalies plus proof that a real consumer
+  reaches the new data. A clean binary diff is not evidence.
+- AISimulate is standalone. Dynamo is a downstream compatibility target, not a
+  required runtime dependency. The release surface remains one `aisimulate`
+  wheel and one `aisimulate-core` crate unless the artifact contract is changed
+  deliberately.
+- Only workflows under the repository-root `.github/workflows/` run for this
+  repository. Imported workflows below `python/aisimulate/` are provenance, not
+  hosted-CI evidence.
+
+## High-value review paths
+
+For schedulers and simulation state, inspect cancellation, preemption, draining,
+retry, duplication, empty inputs, terminal events, queue fairness, time units,
+and determinism. For performance modeling, compare cold, warm, and sweep paths;
+selection rules and data-source precedence deserve the same scrutiny as
+formulas. For cross-layer changes, require a test that exercises the final
+consumer, not only object construction or an isolated mock.
+
+Ask for the smallest evidence that would disprove the risky assumption: a
+negative test, boundary case, exact command and result, explained golden diff,
+held-out comparison, or production trace. When that evidence is unavailable,
+say precisely what remains unmodeled or unverified.
