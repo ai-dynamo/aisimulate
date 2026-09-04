@@ -119,6 +119,7 @@ def test_representative_routing_contract() -> None:
 
     # Active and imported repository metadata.
     assert _owners(".github/workflows/ci.yml") == {INFRA}
+    assert _owners(".github/workflows/fast-ci.yml") == {INFRA}
     assert _owners(".gitattributes") == {INFRA, MAINTAINERS}
     assert _owners("scripts/build_release_artifacts.py") == {INFRA, MAINTAINERS}
     assert _owners("tests/test_source_compliance.py") == {INFRA}
@@ -170,3 +171,30 @@ def test_dependency_policy_covers_every_rust_manifest_root() -> None:
         "crates/tests/public-api/Cargo.toml",
     ):
         assert f"--manifest-path {manifest}" in workflow
+
+
+def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
+    fast = (ROOT / ".github/workflows/fast-ci.yml").read_text()
+    full = (ROOT / ".github/workflows/ci.yml").read_text()
+
+    for inexpensive_gate in (
+        "Check source and packaged legal files",
+        "Check CODEOWNERS policy and generated artifacts",
+        "ruff check",
+        "python -m compileall",
+        "cargo fmt --all -- --check",
+    ):
+        assert inexpensive_gate in fast
+
+    for expensive_gate in (
+        "cargo-deny",
+        "cargo test --workspace",
+        "crates/tests/public-api/Cargo.toml",
+        "Application Tests",
+        "Release Artifact Contract",
+        "Application Wheel",
+    ):
+        assert expensive_gate in full
+
+    assert "uses: ./.github/workflows/fast-ci.yml" in full
+    assert "needs: fast-ci" in full

@@ -28,6 +28,10 @@ from CI.
 -->
 
 - Tests:
+- Fast CI:
+- Full CI:
+- CodeRabbit reviewed commit:
+- Codex reviewed commit: <!-- required for medium / high -->
 - Negative or boundary cases:
 - Expected-value derivation (for exact numerical assertions):
 - Before/after output, trace, benchmark, or golden diff:

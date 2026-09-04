@@ -24,6 +24,33 @@ covered by automated tools. Do not treat bot approval, `MERGEABLE`, CODEOWNERS,
 DCO, or a small green check set as merge readiness. Technical findings and
 governance status are separate; merge readiness is assessed on the exact head.
 
+## Risk-tiered review and CI
+
+Applying `review-ready` starts the inexpensive evidence-gathering stage. Fast CI
+and CodeRabbit run in parallel for every non-draft PR. Medium- and high-risk PRs
+also require a Codex review of the same commit. The risk level changes review
+depth, not merge authority: every tier still requires the applicable CODEOWNER
+approval.
+
+| Risk | Review before Full CI | Human merge gate |
+| --- | --- | --- |
+| Low | Fast CI and CodeRabbit | Applicable CODEOWNER |
+| Medium | Fast CI, CodeRabbit, and Codex | Applicable CODEOWNER |
+| High | Fast CI, CodeRabbit, and Codex | CODEOWNER plus relevant domain, architecture, security, or release owner |
+
+Fast CI contains quick deterministic checks: source and legal policy, generated
+CODEOWNERS integrity, lint, syntax compilation, whitespace, and Rust formatting.
+Full CI contains the expensive multi-architecture dependency, Rust, Python,
+public-API, build, and release-artifact tests. Dispatch Full CI only after the
+required reviews have completed on the current commit with no unresolved P0/P1
+finding. Lower-priority findings and CODEOWNER review may proceed while Full CI
+runs, but all required conversations, approvals, and exact-head checks must be
+complete before merge.
+
+During the review-acceleration pilot, a maintainer dispatches Full CI after
+verifying those conditions. Do not claim conditional Codex or Full CI automation
+until an approved service credential and exact-head dispatcher are installed.
+
 ## Product invariants
 
 - Python describes and orchestrates work. Rust computes per-operation latency,

@@ -1,7 +1,13 @@
-name: CI
+name: Full CI
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Optional exact commit expected for this run
+        required: false
+        type: string
+        default: ""
   push:
     # Velonix admits canonical pushes, not untrusted pull_request events.
     branches:
@@ -13,27 +19,15 @@ permissions:
   contents: read
 
 jobs:
-  spdx-headers:
-    name: Source Compliance
-    runs-on: prod-aisimulate-default-amd64-v1
-    timeout-minutes: 5
-    container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
-      env:
-        HOME: /__w/aisimulate/aisimulate
-        USER: runner
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: Check NVIDIA/Apache-2.0 SPDX headers
-        run: python scripts/check_copyright.py
-      - name: Check packaged legal-file copies
-        run: python scripts/check_packaged_legal_files.py
+  fast-ci:
+    name: Fast CI
+    uses: ./.github/workflows/fast-ci.yml
+    with:
+      expected_sha: ${{ inputs.expected_sha || github.sha }}
 
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +74,7 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -109,6 +104,7 @@ jobs:
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -136,12 +132,11 @@ jobs:
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
     needs:
-      - spdx-headers
+      - fast-ci
       - cargo-deny
       - rust
       - public-api-rust
       - application-tests
-      - lint
       - release-artifact-contract
     # Only trusted branch-copy and post-merge pushes may stage wheels. In
     # particular, workflow_dispatch must not acquire either staging environment.
@@ -312,6 +307,7 @@ jobs:
 
   application-tests:
     name: Application Tests (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -353,33 +349,9 @@ jobs:
           --timeout=180
         working-directory: python/aisimulate
 
-  lint:
-    name: Lint (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
-    container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
-      env:
-        HOME: /__w/aisimulate/aisimulate
-        USER: runner
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - run: python -m pip install ruff==0.14.1
-      - run: >-
-          ruff check
-          --config python/aisimulate/pyproject.toml
-          python/aisimulate/src/aisimulate
-          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
-          tests
-
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
