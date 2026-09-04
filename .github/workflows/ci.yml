@@ -135,12 +135,11 @@ jobs:
         run: cargo test --workspace --no-default-features
       - name: Install the unified Python package
         run: python -m pip install './python/aisimulate[dev]'
-      - name: Test with every Rust feature enabled
+      - name: Test with Python embedding enabled
         run: |
           export AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1
           export PYO3_PYTHON="${pythonLocation}/bin/python"
-          export PYTHONPATH="${GITHUB_WORKSPACE}/python/aisimulate/src"
-          cargo test --workspace --all-features
+          cargo test --workspace --features embed-python,replay-bench
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})

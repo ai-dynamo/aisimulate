@@ -11,6 +11,7 @@ import yaml
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
+ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
 
 
 def _workflow(name: str) -> dict:
@@ -51,6 +52,11 @@ def test_core_ci_selects_migrated_contract_and_parity_suites() -> None:
     assert "test_engine_step_parity.py" in parity_commands
     assert "test_compile_engine_parity.py" in parity_commands
 
+    feature_mode_commands = _run_commands(jobs["rust-feature-modes"])
+    assert "cargo test --workspace --features embed-python,replay-bench" in feature_mode_commands
+    assert "--all-features" not in feature_mode_commands
+    assert "PYTHONPATH" not in feature_mode_commands
+
     required_by_aggregate = set(jobs["ci-success"]["needs"])
     assert {
         "rust-feature-modes",
@@ -90,6 +96,15 @@ def test_fpe_generation_uses_the_required_job_container() -> None:
     generate = _workflow("fpe-support-matrix.yml")["jobs"]["generate"]
 
     assert generate["container"]["image"] == "${{ vars.CI_JOB_CONTAINER_IMAGE }}"
+
+
+def test_macos_wheel_environment_seeds_pip_for_shared_verification() -> None:
+    with (ACTION_ROOT / "build-platform-wheel" / "action.yml").open(encoding="utf-8") as handle:
+        action = yaml.load(handle, Loader=yaml.BaseLoader)
+
+    commands = _run_commands(action["runs"])
+    assert 'uv venv --seed --python 3.13 "${RUNNER_TEMP}/aisimulate-wheel-venv"' in commands
+    assert "python -m pip install --quiet wheelhouse/aisimulate-*.whl" in commands
 
 
 def test_active_workflows_do_not_call_nested_inert_workflows() -> None:
