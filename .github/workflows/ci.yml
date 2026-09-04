@@ -154,14 +154,6 @@ jobs:
       - public-api-rust
       - application-tests
       - release-artifact-contract
-    # Only trusted branch-copy and post-merge pushes may stage wheels. In
-    # particular, workflow_dispatch must not acquire either staging environment.
-    if: >-
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' ||
-       startsWith(github.ref, 'refs/heads/release/') ||
-       startsWith(github.ref, 'refs/heads/pull-request/'))
-    environment: ${{ startsWith(github.ref, 'refs/heads/pull-request/') && 'pr-wheel-staging' || 'automated-release' }}
     strategy:
       fail-fast: false
       matrix:
@@ -197,6 +189,38 @@ jobs:
           staged-wheel-smoke/bin/python -c \
             "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
             assert aisimulate_core._build_smoke() > 0"
+      - name: Preserve wheel for trusted staging
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-wheel-${{ matrix.arch }}
+          path: dist/*.whl
+
+  stage-application-wheel:
+    name: Stage Application Wheel (${{ matrix.arch }})
+    needs: application-wheel
+    # Manual PR validation builds and verifies wheels without acquiring release
+    # credentials. Only post-merge and release lifecycle pushes may stage them.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/heads/release/'))
+    environment: automated-release
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-wheel-${{ matrix.arch }}
+          path: dist
       - name: Stage wheel in Artifactory
         shell: bash
         env:
@@ -227,16 +251,6 @@ jobs:
           esac
 
           case "${GITHUB_REF}" in
-            refs/heads/pull-request/*)
-              pr_number="${GITHUB_REF#refs/heads/pull-request/}"
-              case "${pr_number}" in
-                ""|*[!0-9]*)
-                  echo "::error::expected numeric pull-request/<id> ref, got ${GITHUB_REF}"
-                  exit 1
-                  ;;
-              esac
-              subpath="${pr_number}/${GITHUB_SHA}/${GITHUB_RUN_ID}"
-              ;;
             refs/heads/main|refs/heads/release/*)
               subpath="post-merge/${GITHUB_SHA}/${GITHUB_RUN_ID}"
               ;;

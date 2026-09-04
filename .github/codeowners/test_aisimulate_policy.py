@@ -209,6 +209,15 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
     assert "workflow_dispatch" in full_config["on"]
     assert full_config["on"]["push"]["branches"] == ["main", "release/*"]
+    application_wheel = full_config["jobs"]["application-wheel"]
+    assert "if" not in application_wheel
+    assert any(
+        step.get("name") == "Verify exact staged wheel"
+        for step in application_wheel["steps"]
+    )
+    assert "github.event_name == 'push'" in full_config["jobs"][
+        "stage-application-wheel"
+    ]["if"]
 
 
 def test_coderabbit_is_opted_in_by_review_ready_label() -> None:
@@ -218,3 +227,10 @@ def test_coderabbit_is_opted_in_by_review_ready_label() -> None:
     assert auto_review["enabled"] is False
     assert auto_review["labels"] == ["review-ready", "!wip", "!do-not-review"]
     assert auto_review["drafts"] is False
+    assert auto_review["base_branches"] == ["release/.*"]
+    assert auto_review["ignore_title_keywords"] == [
+        "WIP",
+        "[skip review]",
+        "[no review]",
+    ]
+    assert policy["reviews"]["request_changes_workflow"] is False

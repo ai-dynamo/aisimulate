@@ -23,6 +23,12 @@ preserved at `python/aisimulate/.coderabbit.yaml` as migration provenance.
 Upstream source:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/.coderabbit.yaml
 
+Pinned upstream collection and preserved-file SHA-256:
+`5fb7a61a53f71f476169fa8e2419d3073c8d7e96206d8986b7d4fbb0f11fbcdd`
+
+AISimulate-modified root overlay SHA-256:
+`70960b92994caaad52f806bd5c618353670c9e754a4d61525962f561360d9d48`
+
 Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 This material is licensed under the Apache License 2.0. The upstream license
