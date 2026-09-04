@@ -29,6 +29,7 @@ from CI.
 
 - Tests:
 - Negative or boundary cases:
+- Expected-value derivation (for exact numerical assertions):
 - Before/after output, trace, benchmark, or golden diff:
 
 ## Modeling or data provenance
