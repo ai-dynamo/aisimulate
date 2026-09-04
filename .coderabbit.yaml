@@ -1,5 +1,9 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Adapted and modified for AISimulate from AIConfigurator's .coderabbit.yaml:
+# https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/.coderabbit.yaml
+# Upstream license: Apache-2.0
 
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # Active repository-level CodeRabbit policy. The copy under

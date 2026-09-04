@@ -13,6 +13,22 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## AIConfigurator
+
+The repository-root `.coderabbit.yaml` is adapted and modified from
+AIConfigurator's `.coderabbit.yaml` at commit
+`13b5cf2697876692b0a52098266c81162add11fc`. The original imported policy is
+preserved at `python/aisimulate/.coderabbit.yaml` as migration provenance.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/.coderabbit.yaml
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at the identified revision is available at:
+https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
+
 ## vLLM
 
 The following files are derived from vLLM's attention test utilities at tag
