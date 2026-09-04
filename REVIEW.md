@@ -26,11 +26,11 @@ governance status are separate; merge readiness is assessed on the exact head.
 
 ## Risk-tiered review and CI
 
-Applying `review-ready` starts the inexpensive evidence-gathering stage. Fast CI
-and CodeRabbit run in parallel for every non-draft PR. Medium- and high-risk PRs
-also require a Codex review of the same commit. The risk level changes review
-depth, not merge authority: every tier still requires the applicable CODEOWNER
-approval.
+The `review-ready` label is the explicit admission gate for the inexpensive
+evidence-gathering stage. Once it is applied, Fast CI and CodeRabbit run in
+parallel for every non-draft PR. Medium- and high-risk PRs also require a Codex
+review of the same commit. The risk level changes review depth, not merge
+authority: every tier still requires the applicable CODEOWNER approval.
 
 | Risk | Review before Full CI | Human merge gate |
 | --- | --- | --- |

@@ -195,6 +195,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "Application Wheel",
     ):
         assert expensive_gate in full
+        assert expensive_gate not in fast
 
     assert "uses: ./.github/workflows/fast-ci.yml" in full
     assert "needs: fast-ci" in full
