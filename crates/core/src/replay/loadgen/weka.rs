@@ -2152,7 +2152,7 @@ mod tests {
             scaled
                 .nodes()
                 .iter()
-                .any(|node| node.recorded_api_time_ms() == Some(125.0))
+                .any(|node| node.recorded_api_time_ms() == Some(250.0))
         );
     }
 

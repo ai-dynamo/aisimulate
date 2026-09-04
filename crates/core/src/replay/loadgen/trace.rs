@@ -1661,9 +1661,6 @@ impl AgenticTrace {
 
         for node in &mut self.nodes {
             node.not_before_ms /= ratio;
-            if let Some(recorded_api_time_ms) = node.recorded_api_time_ms.as_mut() {
-                *recorded_api_time_ms /= ratio;
-            }
             for dependency in &mut node.dependencies {
                 dependency.delay_ms /= ratio;
             }
