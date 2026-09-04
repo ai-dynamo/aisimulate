@@ -671,12 +671,13 @@ def sweep_agg(
         ) from terminal_error
     if not saw_model_fit:
         if perf_misses:
-            raise NoFeasibleConfigError(
+            message = (
                 f"sweep_agg: no results — {perf_misses} batch point(s) had no answerable perf data "
                 "(e.g. FPM queries outside the collected domain, or no collected cell matches the "
                 "model identity/quant modes). Check the collected cells against the resolved quant "
                 "configuration, or use forward_model='op_level'."
             )
+            raise NoFeasibleConfigError(message) from PerfDataNotAvailableError(message)
         raise InsufficientMemoryError(
             "sweep_agg: no results — model does not fit in GPU memory for any parallel config. "
             "Try increasing --total-gpus, using a quantized model, or a system with more VRAM per GPU."
@@ -806,12 +807,13 @@ def _get_disagg_worker_candidates(
             ) from terminal_error
         if all_configs_oom:
             if perf_misses:
-                raise NoFeasibleConfigError(
+                message = (
                     f"sweep_disagg/{role}: no results — {perf_misses} batch point(s) had no answerable "
                     "perf data (e.g. FPM queries outside the collected domain, or no collected cell "
                     "matches the model identity/quant modes). Check the collected cells against the "
                     "resolved quant configuration, or use forward_model='op_level'."
                 )
+                raise NoFeasibleConfigError(message) from PerfDataNotAvailableError(message)
             raise InsufficientMemoryError(
                 f"sweep_disagg/{role}: no results — model does not fit in GPU memory for any parallel config. "
                 "Try increasing GPU budget, using a quantized model, or a system with more VRAM per GPU."

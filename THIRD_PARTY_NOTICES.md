@@ -313,6 +313,23 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Meta Muse Glimmer model configuration
+
+`src/aiconfigurator_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
+is an unmodified copy of `config.json` from the Meta Muse Glimmer model
+repository at immutable revision
+`f84ecc3a0ea984a4c04542a84269e3d065350a6e`:
+
+https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a84269e3d065350a6e/config.json
+
+Copyright owner: Meta Platforms, Inc. and affiliates.
+
+License: Apache License 2.0. The upstream license is available at:
+https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a84269e3d065350a6e/LICENSE
+
+The Apache License 2.0 terms are reproduced in this distribution's `LICENSE`
+file.
+
 ## Hugging Face Transformers
 
 The `rotate_half` function in `collector/trtllm/collect_mla.py` is copied from

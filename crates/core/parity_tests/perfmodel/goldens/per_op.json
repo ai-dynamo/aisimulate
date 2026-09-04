@@ -367,7 +367,7 @@
         },
         "context_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 4.378710653449074,
+          "latency_ms": 4.378710653449075,
           "source": "mixed"
         },
         "context_embedding": {
@@ -429,8 +429,8 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 0.9147111334267539,
-          "source": "silicon"
+          "latency_ms": 2.551590493426754,
+          "source": "mixed"
         },
         "generation_embedding": {
           "energy_wms": 0.0,
@@ -560,8 +560,8 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 0.6767809201521837,
-          "source": "silicon"
+          "latency_ms": 2.3136602801521837,
+          "source": "mixed"
         },
         "generation_embedding": {
           "energy_wms": 0.0,
@@ -691,8 +691,8 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 2.3937974687053307,
-          "source": "silicon"
+          "latency_ms": 8.94131490870533,
+          "source": "mixed"
         },
         "generation_embedding": {
           "energy_wms": 0.0,
@@ -822,8 +822,8 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 0.6767809201521837,
-          "source": "silicon"
+          "latency_ms": 2.3136602801521837,
+          "source": "mixed"
         },
         "generation_embedding": {
           "energy_wms": 0.0,
@@ -1089,8 +1089,8 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 0.5174666896229609,
-          "source": "silicon"
+          "latency_ms": 1.7847456839086753,
+          "source": "mixed"
         },
         "generation_embedding": {
           "energy_wms": 0.0,
@@ -1174,19 +1174,19 @@
     },
     "minimax-m25-b200-sglang-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
     },
     "minimax-m25-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
     },
     "minimax-m25-b200-vllm-sampled-prefix": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
     },
     "minimax-m27-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
@@ -1194,7 +1194,7 @@
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
     }
   }
 }

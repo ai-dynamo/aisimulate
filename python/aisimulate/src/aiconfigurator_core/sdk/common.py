@@ -225,6 +225,18 @@ class Gemma4MixConfig:
 
 
 @dataclass(frozen=True)
+class MuseGlimmerConfig:
+    """Muse Glimmer hybrid-attention layout (dense model, uniform head geometry).
+
+    Per-layer kind comes from ``layer_types`` ("sliding_attention" or
+    "full_attention"); only the window layout differs between layer kinds.
+    """
+
+    layer_types: tuple[str, ...]
+    sliding_window_size: int
+
+
+@dataclass(frozen=True)
 class Qwen35Config:
     """Config for Qwen3.5 hybrid GDN + full-attention model (dense and MoE).
 
@@ -633,6 +645,8 @@ DefaultHFModels = {
     "nvidia/Nemotron-H-56B-Base-8K",
     # Google Gemma 4 Models
     "google/gemma-4-26B-A4B",
+    # Meta Muse Glimmer
+    "meta-models/Muse-Glimmer-30B",
     # StepFun Step-3.7 Models
     "stepfun-ai/Step-3.7-Flash",
     "stepfun-ai/Step-3.7-Flash-FP8",
@@ -702,6 +716,7 @@ ModelFamily = {
     "QWEN3VL_MOE",
     "GEMMA4MIX",
     "MINIMAXM3",
+    "MUSEGLIMMER",
     "STEP3P7",
 }
 ARCHITECTURE_TO_MODEL_FAMILY = {
@@ -741,6 +756,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "Qwen3_5ForConditionalGeneration": "QWEN35",
     "Qwen3_5MoeForConditionalGeneration": "QWEN35",
     "Gemma4ForConditionalGeneration": "GEMMA4MIX",
+    "MuseGlimmerForConditionalGeneration": "MUSEGLIMMER",
 }
 
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
@@ -757,6 +773,7 @@ MULTIMODAL_TEXT_CONFIG_KEY = {
     "Qwen3_5ForConditionalGeneration": "text_config",
     "Qwen3_5MoeForConditionalGeneration": "text_config",
     "Gemma4ForConditionalGeneration": "text_config",
+    "MuseGlimmerForConditionalGeneration": "text_config",
     "Qwen3VLForConditionalGeneration": "text_config",
     "Qwen3VLMoeForConditionalGeneration": "text_config",
     "MiniMaxM3SparseForConditionalGeneration": "text_config",
