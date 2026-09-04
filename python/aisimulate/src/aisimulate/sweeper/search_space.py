@@ -316,7 +316,7 @@ def _afd_branch(
             runner_incompatible.append(backend)
             continue
         if not combined_with_pd:
-            candidates = [AFDParallelConfig(topology=topology) for topology in topology_domain.candidates]
+            candidates = (AFDParallelConfig(topology=topology) for topology in topology_domain.candidates)
         else:
             try:
                 legal_companions = parallel_configs_for(
@@ -334,24 +334,24 @@ def _afd_branch(
                 continue
             legal_set = set(legal_companions)
             companion_domain = pinned_companions or tuple(legal_companions)
-            candidates = [
+            candidates = (
                 AFDParallelConfig(topology=topology, companion=companion)
                 for topology in topology_domain.candidates
                 for companion in companion_domain
                 if companion in legal_set
                 and topology.total_gpus + companion.total_gpus <= ss.gpu_budget
                 and (ss.min_gpu_budget is None or topology.total_gpus + companion.total_gpus >= ss.min_gpu_budget)
-            ]
+            )
         for candidate in candidates:
             if _runner_supports_parallel_config(runner_capabilities, deployment_mode, candidate):
                 support.setdefault(candidate, set()).add(backend)
-        if len(support) > ss.afd_max_candidates:
-            raise AFDInfeasible(
-                AFDReasonCategory.CANDIDATE_LIMIT,
-                f"AFD combined domain exceeds afd_max_candidates={ss.afd_max_candidates}; "
-                "narrow the topology or companion domain",
-                provenance={"generated_count": len(support), "count_is_lower_bound": True},
-            )
+                if len(support) > ss.afd_max_candidates:
+                    raise AFDInfeasible(
+                        AFDReasonCategory.CANDIDATE_LIMIT,
+                        f"AFD combined domain exceeds afd_max_candidates={ss.afd_max_candidates}; "
+                        "narrow the topology or companion domain",
+                        provenance={"generated_count": len(support), "count_is_lower_bound": True},
+                    )
 
     unsupported_topologies = [
         topology for topology in pinned if not any(candidate.topology == topology for candidate in support)

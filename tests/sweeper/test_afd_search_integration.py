@@ -95,6 +95,8 @@ def test_pure_afd_uses_finite_generic_sampler_and_serializes_no_engine(monkeypat
     assert deployment.prefill_engine_args is None
     assert deployment.decode_engine_args is None
     assert deployment.num_workers == 0
+    assert deployment.performance_model_metadata["afd"]["provider"] == "unresolved"
+    assert deployment.performance_model_metadata["afd"]["measurement_required"] is True
 
 
 def test_afd_plus_pd_pairs_only_opposite_phase_companion(monkeypatch):
@@ -199,6 +201,34 @@ def test_afd_complete_domain_limit_fails_instead_of_truncating(monkeypatch):
         enumerate_branches(config, runner_capabilities=_capabilities("afd"))
 
     assert exc_info.value.category is AFDReasonCategory.CANDIDATE_LIMIT
+
+
+def test_afd_combined_product_limit_fails_during_generation(monkeypatch):
+    companions = [
+        ReplicaParallelConfig(
+            shape=ParallelShape(tp=tp, dp=1, moe_tp=1, moe_ep=1),
+            replicas=1,
+        )
+        for tp in (1, 2, 4)
+    ]
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        lambda *args, **kwargs: _model_hardware(),
+    )
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        lambda *args, **kwargs: companions,
+    )
+    config = _config("afd+pd", afd_max_candidates=2)
+
+    with pytest.raises(AFDInfeasible) as exc_info:
+        enumerate_branches(config, runner_capabilities=_capabilities("afd+pd"))
+
+    assert exc_info.value.category is AFDReasonCategory.CANDIDATE_LIMIT
+    assert exc_info.value.provenance == {
+        "generated_count": 3,
+        "count_is_lower_bound": True,
+    }
 
 
 def test_sweeper_runs_afd_branch_through_an_explicitly_capable_runner(monkeypatch):
