@@ -1,0 +1,359 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Active repository-level CodeRabbit policy. The copy under
+# python/aisimulate/ is preserved migration provenance and is not active here.
+language: "en-US"
+tone_instructions: >-
+  Be direct, technical, and concise. Report only actionable findings tied to
+  behavior, contracts, evidence, or risk; skip praise, restatements, and style
+  nits. Suggest a patch only when the local fix is complete and safe.
+early_access: false
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  high_level_summary_instructions: |
+    Lead with the risk level and the three areas that deserve the most human
+    attention. Identify changed behavior and public contracts, then summarize
+    the evidence supplied and the evidence still missing. Separate technical
+    quality from merge readiness; never treat the bot review as approval.
+  changed_files_summary: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  poem: false
+  in_progress_fortune: false
+  review_status: true
+  review_details: true
+  review_progress: true
+  collapse_walkthrough: true
+  enable_prompt_for_ai_agents: true
+
+  auto_review:
+    # Keep the pilot opt-in: applying the review-ready label triggers review
+    # even while automatic review is disabled globally.
+    enabled: false
+    drafts: false
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 5
+    base_branches:
+      - "release/.*"
+    ignore_title_keywords:
+      - "WIP"
+      - "[skip review]"
+      - "[no review]"
+    labels:
+      - "review-ready"
+      - "!wip"
+      - "!do-not-review"
+
+  # Use an allowlist so data and compatibility artifacts are reviewed even
+  # when their file types would normally be skipped.
+  path_filters:
+    - ".claude/**"
+    - ".github/**"
+    - "crates/**"
+    - "docker/**"
+    - "docs/**"
+    - "examples/**"
+    - "python/**"
+    - "scripts/**"
+    - "tests/**"
+    - ".coderabbit.yaml"
+    - ".dockerignore"
+    - ".gitattributes"
+    - ".gitignore"
+    - "AGENTS.md"
+    - "Cargo.lock"
+    - "Cargo.toml"
+    - "CODEOWNERS"
+    - "CONTRIBUTORS.md"
+    - "LICENSE"
+    - "README.md"
+    - "REVIEW.md"
+    - "deny.toml"
+    - "pytest.ini"
+    - "*.json"
+    - "*.md"
+    - "*.toml"
+    - "*.yaml"
+    - "*.yml"
+
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Read REVIEW.md before commenting. Trace each changed input through its
+        real consumer and output. Prioritize correctness, compatibility,
+        security, numerical behavior, failure handling, and missing tests.
+        Ignore formatting and naming preferences already enforced by tools.
+        Prefer one root-cause comment over repeated symptom comments. State the
+        concrete failure mode and the smallest adequate validation. Use a
+        GitHub Suggested Change only for a complete, local, unambiguous fix.
+
+    - path: "crates/core/src/perfmodel/**"
+      instructions: |
+        Enforce the single-oracle and golden-diff rules in
+        python/aisimulate/.claude/rules/rust-core/parity.md. Treat formulas,
+        table selection, interpolation, quantization, defaults, and fallback
+        ordering as numerical behavior. Require an explained before/after
+        golden diff or hand-derived oracle evidence for changed answers. Check
+        bincode enum ordering and synchronized schema-version changes.
+
+    - path: "crates/core/perfmodel/**"
+      instructions: |
+        Treat model and performance data as product behavior, not generated
+        noise. Verify provenance, units, keys, coverage, metadata, and consumer
+        reachability. Binary parquet changes need machine-readable summaries
+        and anomaly checks; a clean binary diff is not validation.
+
+    - path: "crates/core/parity_tests/perfmodel/**"
+      instructions: |
+        Golden changes must be narrow, reproducible, and explained numerically.
+        Flag bulk refreshes that hide unrelated drift or lack a modeling
+        rationale. New behavior needs an independent oracle or justified
+        append-only parity case.
+
+    - path: "python/aisimulate/src/aiconfigurator_core/**"
+      instructions: |
+        Preserve the Rust single oracle: Python may describe operations, load
+        raw data, orchestrate, and present results, but must not compute per-op
+        performance values. Check Python/Rust schema and public import parity,
+        explicit absence behavior, and loud handling of corrupt or unsupported
+        inputs. Do not reintroduce public per-call query shims.
+
+    - path: "python/aisimulate/src/aiconfigurator/generator/**"
+      instructions: |
+        Enforce the mapped generator guidelines. Trace input parsing, defaults,
+        rules, parameter mapping, rendering, and emitted artifacts. Preserve
+        Guard and Why annotations in templates and rule files. Check TRT-LLM,
+        vLLM, and SGLang consistency plus CLI, validator, docs, and tests when a
+        user-facing parameter or supported backend version changes.
+
+    - path: "python/aisimulate/tools/generator_validator/**"
+      instructions: |
+        Verify the validator checks emitted behavior across applicable backends
+        and versions rather than command success alone. New flags, templates,
+        or defaults need corresponding output assertions.
+
+    - path: "python/aisimulate/collector/**"
+      instructions: |
+        Enforce the mapped collector guidelines. A queued case must execute or
+        raise; only generation-time memory feasibility may filter cases, with
+        counted drops. Reject invented geometry or kernel fallbacks, selector
+        exception machinery, untraceable results, and undocumented producer to
+        consumer schema changes. Verify runtime versions, commands, GPU
+        assumptions, and failure evidence.
+
+    - path: "crates/core/src/engine/**"
+      instructions: |
+        Review scheduler state transitions and event ordering, including cancel,
+        preempt, drain, retry, duplicate, empty, and terminal paths. Look for
+        time-unit mistakes, nondeterminism, queue starvation, accounting drift,
+        and Rust/Python binding mismatches. Require tests that pin transitions,
+        not only end-state success.
+
+    - path: "crates/core/src/replay/**"
+      instructions: |
+        Preserve deterministic Replay semantics and explicit validation. Check
+        schema changes across Rust, Python, CLI, and serialized fixtures. Flag
+        silent coercion, dropped events, order-dependent behavior, or claims of
+        predictive accuracy unsupported by production traces.
+
+    - path: "python/aisimulate/src/aisimulate/**"
+      instructions: |
+        Check unified CLI, Replay, Sweeper, and orchestration behavior together.
+        Preserve documented defaults, plain-output and non-TTY behavior, config
+        round trips, deterministic seeds, and clear failure messages. Trace new
+        public options through execution and tests.
+
+    - path: "**/pyproject.toml"
+      instructions: |
+        Treat these as public and release boundaries. Verify Python imports,
+        Rust exports, versions, feature flags, bindings, documentation, and the
+        two-artifact contract stay synchronized. AISimulate must remain
+        standalone and must not acquire a hard Dynamo runtime dependency.
+
+    - path: "**/Cargo.toml"
+      instructions: |
+        Treat these as public and release boundaries. Verify Python imports,
+        Rust exports, versions, feature flags, bindings, documentation, and the
+        two-artifact contract stay synchronized. AISimulate must remain
+        standalone and must not acquire a hard Dynamo runtime dependency.
+
+    - path: "crates/core/src/*.rs"
+      instructions: |
+        Treat top-level exports and bindings as public and release boundaries.
+        Verify Rust exports, Python bindings, feature flags, versions, docs, and
+        the two-artifact contract stay synchronized.
+
+    - path: "python/aisimulate/src/aisimulate/__init__.py"
+      instructions: |
+        Treat public imports as a compatibility and release boundary. Verify
+        exports, bindings, versions, docs, and deprecation behavior stay
+        synchronized.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        Only root workflows are active. Check least-privilege permissions,
+        untrusted PR inputs, shell injection, secret exposure, fork behavior,
+        exact-head coverage, matrices, caches, artifacts, and release effects.
+        Never accept a nested migrated workflow as evidence that hosted CI ran.
+
+    - path: "tests/**"
+      instructions: |
+        Require coverage of the changed behavior and its negative or boundary
+        cases. Flag mocks that bypass the changed consumer, assertions that only
+        prove construction, unexplained golden refreshes, and tests that confuse
+        parity with production accuracy.
+
+    - path: "docs/**"
+      instructions: |
+        Check commands, defaults, supported runtimes, public names, and claims
+        against executable behavior. Flag predictive-accuracy or compatibility
+        claims that exceed the supplied evidence.
+
+    - path: "README.md"
+      instructions: |
+        Check commands, defaults, supported runtimes, public names, and claims
+        against executable behavior. Flag predictive-accuracy or compatibility
+        claims that exceed the supplied evidence.
+
+    - path: "examples/**"
+      instructions: |
+        Check examples against executable public behavior. Flag stale imports,
+        options, defaults, outputs, or unsupported compatibility claims.
+
+    - path: "THIRD_PARTY_NOTICES.md"
+      instructions: |
+        Verify upstream provenance, license text, collection and overlay hashes,
+        local modification notices, and generated derivative records remain
+        complete and internally consistent.
+
+    - path: "python/aisimulate/collector/**/patches/**"
+      instructions: |
+        Verify upstream provenance, license text, collection and overlay hashes,
+        local modification notices, and generated derivative records remain
+        complete and internally consistent.
+
+  suggested_labels: false
+  suggested_reviewers: false
+  sequence_diagrams: false
+  related_issues: true
+  related_prs: true
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+
+  pre_merge_checks:
+    title:
+      mode: warning
+      requirements: >-
+        State the behavioral change precisely; avoid vague titles such as
+        update, cleanup, fixes, changes, or improvements.
+    description:
+      mode: warning
+    issue_assessment:
+      mode: warning
+    docstrings:
+      mode: off
+    override_requested_reviewers_only: true
+    custom_checks:
+      - name: "Cross-layer contract"
+        mode: warning
+        instructions: |
+          Pass when every changed public input, schema field, default, or output
+          is traced through all affected Rust, Python, CLI, serialization,
+          documentation, and test consumers. Fail when a layer is stale, a new
+          path is untested, or the PR asserts compatibility without evidence.
+      - name: "Modeling and data evidence"
+        mode: warning
+        instructions: |
+          For formulas, selection logic, model/performance data, or predicted
+          outputs, pass only when the PR supplies provenance and reproducible
+          before/after evidence: an explained golden diff, independent oracle,
+          held-out comparison, or machine-readable data summary with anomaly
+          checks. Fail unexplained refreshes and binary-only validation.
+      - name: "Compatibility boundaries"
+        mode: warning
+        instructions: |
+          Pass when Python and Rust public surfaces, schemas, versions, bindings,
+          and documented defaults remain synchronized; AISimulate stays
+          standalone from Dynamo; and the one-wheel plus one-crate artifact
+          contract remains intact or is deliberately updated with evidence.
+      - name: "Review evidence"
+        mode: warning
+        instructions: |
+          Pass when the PR description names relevant commands and results,
+          includes negative or boundary validation appropriate to the risk, and
+          distinguishes local, fake-runner, parity, and production evidence.
+          Fail when inactive nested workflows are cited as hosted CI evidence.
+
+  tools:
+    ruff:
+      enabled: true
+    clippy:
+      enabled: true
+    shellcheck:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    hadolint:
+      enabled: true
+    github-checks:
+      enabled: true
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+
+knowledge_base:
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - files: "REVIEW.md,AGENTS.md"
+        applyTo: "**/*"
+      - files: "python/aisimulate/.claude/rules/generator-development.md,python/aisimulate/.claude/rules/generator/*.md"
+        applyTo: "python/aisimulate/src/aiconfigurator/generator/**,python/aisimulate/tools/generator_validator/**"
+      - files: "python/aisimulate/.claude/rules/collector/*.md"
+        applyTo: "python/aisimulate/collector/**,python/aisimulate/tests/unit/collector/**"
+      - files: "python/aisimulate/.claude/rules/rust-core/parity.md"
+        applyTo: "crates/core/src/perfmodel/**,crates/core/perfmodel/**,crates/core/parity_tests/perfmodel/**,python/aisimulate/src/aiconfigurator_core/**,python/aisimulate/tests/unit/sdk/test_opspec_coverage.py,python/aisimulate/tests/cross_package/test_single_oracle_contract.py"
+  learnings:
+    scope: local
+    approval_delay: 7
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  linear:
+    usage: auto
+    team_keys:
+      - "AIC"
+      - "DGH"
+      - "OPS"
+  linked_repositories:
+    - repository: "ai-dynamo/dynamo"
+      instructions: >-
+        Downstream runtime and integration consumer. Check public schemas,
+        bindings, CLI contracts, Replay inputs, and release compatibility.
+    - repository: "ai-dynamo/aiconfigurator"
+      instructions: >-
+        Frozen migration and compatibility reference. Use it to detect omitted
+        ports or unintended behavior drift, not as a runtime dependency.
+
+chat:
+  auto_reply: true
