@@ -27,7 +27,8 @@ The design does not cover:
 - How the `engine` and `dynamo` stacks execute a prediction.
 - AIConfigurator (AIC), Planner, router, optimizer, worker-pool, caching, or timeout internals.
 - Compatibility shims, migration code, or implementation sequencing.
-- Online replay. Both commands are offline-only in version 1.
+- Online replay runtime internals. `predict` can request online execution from a capable optional
+  stack; `recommend` remains offline-only.
 
 ## Commands
 
@@ -73,6 +74,7 @@ The `predict` verb is intentional: one pinned configuration predicts serving beh
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
+| `--online` | flag | `false` | Pace prediction against the real wall clock instead of virtual time. The selected stack must advertise online support. |
 
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
 `--num-workers`. YAML is the authoritative semantic configuration surface.
@@ -82,6 +84,11 @@ The CLI deliberately does not expose field-specific flags such as `--request-per
 The `engine` runner factory ships with AISimulate. Optional stacks are discovered through the
 `aisimulate.runner_factories` Python entry-point group; the `ai-dynamo` package registers `dynamo`.
 Entry-point names are the accepted `--stack` values and must be unique.
+
+Runner factories advertise their supported execution modes. The built-in `engine` stack supports
+offline prediction. Optional stacks may additionally support `predict --online`. A stack that does
+not advertise online execution fails before runner creation instead of silently falling back to
+offline execution. The selected runner validates finer stack-specific combinations.
 
 Optional component configuration is discovered separately through
 `aisimulate.config_adapters`. Adapter names are `<stack>.<section>`, such as `dynamo.router` and

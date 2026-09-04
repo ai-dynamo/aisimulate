@@ -12,6 +12,7 @@ import aisimulate
 from aisimulate import aic
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.replay.config import ReplayCliConfig, ReplayOutputConfig
 from aisimulate.runner import (
     EngineReplayRunner,
     EngineReplayRunnerFactory,
@@ -98,6 +99,24 @@ def test_public_namespace_exports_engine_runner_contract():
     assert aisimulate.EngineReplayRunnerFactory is EngineReplayRunnerFactory
 
 
+def test_legacy_replay_config_preserves_execution_mode() -> None:
+    config = ReplayCliConfig(
+        trace_files=(),
+        extra_engine_args={"engine_type": "vllm"},
+        prefill_engine_args=None,
+        decode_engine_args=None,
+        num_workers=1,
+        num_prefill_workers=0,
+        num_decode_workers=0,
+        replay_mode="online",
+        workload={"isl": 8, "osl": 2, "request_count": 1, "concurrency": 1},
+        goal={},
+        output=ReplayOutputConfig(),
+    )
+
+    assert config.to_replay_spec().execution_mode == "online"
+
+
 def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     factory = pickle.loads(pickle.dumps(EngineReplayRunnerFactory()))
     capabilities = factory.capabilities()
@@ -106,6 +125,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_backend_topology("sglang", "disagg")
     assert capabilities.supports_backend_topology("trtllm", "disagg")
     assert capabilities.supports_disaggregated_attention_dp
+    assert capabilities.supported_execution_modes == ("offline",)
     assert capabilities.supported_hooks == ()
 
 
