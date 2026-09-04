@@ -23,7 +23,7 @@ The design covers:
 The design does not cover:
 
 - Python APIs, `ReplaySpec`, runner/factory implementation internals, or adapter internals beyond the
-  stack-discovery contract.
+  stack- and output-discovery contracts.
 - How the `engine` and `dynamo` stacks execute a prediction.
 - AIConfigurator (AIC), Planner, router, optimizer, worker-pool, caching, or timeout internals.
 - Compatibility shims, migration code, or implementation sequencing.
@@ -74,6 +74,12 @@ The `predict` verb is intentional: one pinned configuration predicts serving beh
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
 
+`recommend` also accepts:
+
+| Option | Type | Default | Meaning |
+|---|---|---:|---|
+| `--output NAME` | repeatable string | None | Invoke an installed post-recommendation output adapter. A matching top-level configuration section is required. |
+
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
 `--num-workers`. YAML is the authoritative semantic configuration surface.
 
@@ -96,6 +102,26 @@ Internal runtime config is a third, fully resolved layer and is never used as th
 The config-adapter ABI has three operations: compile a concrete prediction section, compile a
 recommendation section into a search plan, and materialize one candidate. The legacy Sweeper
 provider ABI remains a separate SDK compatibility surface.
+
+Post-recommendation artifacts are discovered independently through
+`aisimulate.output_adapters`. An output adapter name is an accepted `--output` value and identifies
+the same-named top-level configuration section. AISimulate removes explicitly selected output
+sections before validating simulation configuration, then passes each resolved section, the final
+`SweepResult`, and the prepared `--output-dir` to its adapter after writing canonical recommendation
+files. The adapter returns the relative paths it wrote. Output adapters do not affect simulation,
+ranking, or recommended prediction configurations.
+
+The output-adapter ABI has one operation:
+
+```python
+adapter.write(config, result=result, output_dir=output_dir)
+```
+
+Adapters are loaded only when selected. Names must be unique, implementations must declare the
+supported output-adapter API version, and reported paths must be relative to the supplied output
+directory and exist after the call. A plugin failure leaves canonical recommendation output intact
+and makes the command fail. Version 1 invokes adapters only after final Candidate selection; it does
+not expose per-round incumbent callbacks.
 
 If a requested optional stack is not installed, the CLI exits with code `2` before loading the
 configuration and reports an actionable error:
@@ -1092,7 +1118,9 @@ after adapter canonicalization and deduplication so it maps one-to-one to the nu
 
 ## Outputs
 
-Output controls are CLI-only. They never appear in an input or recommended YAML file.
+Core output controls are CLI-only. A selected output adapter owns its same-named top-level input
+section; that section is configuration for artifact generation and is excluded from recommended
+prediction YAML files.
 
 Recommendation output uses the schema-versioned `SweepResult` contract documented in
 [`docs/sweeper/results.md`](../sweeper/results.md). It preserves run metadata, a candidate-attempt
@@ -1115,6 +1143,7 @@ Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j
 ```text
 <output-dir>/
 ├── recommendation.json
+├── <plugin artifacts>             # only with --output NAME
 └── recommendations/
     ├── 0001.yaml
     ├── 0002.yaml
@@ -1147,6 +1176,10 @@ must not recursively clear an arbitrary directory.
 Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `requests.jsonl`, and
 numbered `recommendations/NNNN.yaml` files. Other files, including non-numbered files inside
 `recommendations/`, are preserved.
+
+Output adapters receive this prepared directory directly; AISimulate does not create an additional
+adapter-specific subdirectory. An adapter owns replacement and cleanup of the relative paths it
+reports and must preserve unrelated files.
 
 ### Standard Output
 

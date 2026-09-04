@@ -12,6 +12,7 @@ import yaml
 
 import aisimulate.main as cli
 from aisimulate.output import prepare_output_directory
+from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
 from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
@@ -133,6 +134,20 @@ class _PlacementAdapter:
     def materialize_candidate(self, plan, selection, context):
         del selection, context
         return AdapterReplaySpec(config=dict(plan.state))
+
+
+class _DGDOutputAdapter:
+    name = "dgd"
+    api_version = OUTPUT_ADAPTER_API_VERSION
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def write(self, config, *, result, output_dir):
+        self.calls.append((config, result, output_dir))
+        path = output_dir / f"{config['name']}.yaml"
+        path.write_text("kind: DynamoGraphDeployment\n")
+        return [path.relative_to(output_dir)]
 
 
 def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> None:
@@ -508,6 +523,131 @@ def test_recommendation_outputs_each_concrete_prediction_once(
     assert result["candidates"][0]["prediction_config"] == yaml.safe_load(
         (output / "recommendations" / "0001.yaml").read_text()
     )
+
+
+@pytest.mark.parametrize("stack", ["engine", "dynamo"])
+def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, capsys, stack) -> None:
+    prediction = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "context_length": 4096,
+            "workers": {"aggregated": {}},
+        }
+    }
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                **prediction,
+                "optimization": {
+                    "target": "throughput",
+                    "constraints": {"max_candidate_gpus": 1},
+                },
+                "dgd": {
+                    "name": "original",
+                    "renderer": "aic",
+                    "format": "manifest",
+                },
+            }
+        )
+    )
+    candidate = Candidate(
+        config={"backend": "vllm"},
+        used_gpus=1,
+        score=1.0,
+        metrics={},
+        prediction_config=prediction,
+    )
+    result = _RecommendationResult([candidate])
+    selected_stack = []
+    adapter = _DGDOutputAdapter()
+
+    def resolve_stack(name):
+        selected_stack.append(name)
+        return _Factory(_Runner())
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", resolve_stack)
+    monkeypatch.setattr(
+        cli,
+        "resolve_output_adapters",
+        lambda names: resolve_output_adapters(
+            names,
+            injected={"dgd": adapter},
+            entry_points=[],
+        ),
+    )
+    monkeypatch.setattr(
+        "aisimulate.recommend.run_recommendation",
+        lambda *args, **kwargs: result,
+    )
+
+    output = tmp_path / "out"
+    assert (
+        cli.main(
+            [
+                "recommend",
+                "--stack",
+                stack,
+                "--config",
+                str(config_path),
+                "--set",
+                "dgd.name=qwen",
+                "--output",
+                "dgd",
+                "--output-dir",
+                str(output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    assert selected_stack == [stack]
+    assert len(adapter.calls) == 1
+    output_config, received_result, received_dir = adapter.calls[0]
+    assert output_config == {
+        "name": "qwen",
+        "renderer": "aic",
+        "format": "manifest",
+    }
+    assert received_result is result
+    assert received_dir == output
+    assert (output / "qwen.yaml").read_text() == "kind: DynamoGraphDeployment\n"
+    assert "dgd" not in yaml.safe_load((output / "recommendations" / "0001.yaml").read_text())
+    assert json.loads(capsys.readouterr().out)[0]["score"] == 1.0
+
+
+def test_selected_output_requires_matching_configuration_section(tmp_path, monkeypatch, capsys) -> None:
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output",
+                "dgd",
+            ]
+        )
+
+    assert "requires a top-level 'dgd' configuration section" in capsys.readouterr().err
 
 
 def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
