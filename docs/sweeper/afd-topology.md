@@ -92,6 +92,14 @@ The core applies the legacy pipeline regimes:
 Global step latency includes pipeline fill and every microbatch-layer cadence. Pure AFD can cover
 prefill, decode, or both. When both phases use the same A/F pools, GPU count is not doubled.
 
+`AFDForegroundEngine` expands that same formula into deterministic A, A-to-F, F, and F-to-A
+intervals for every layer and microbatch. Starting a pass eagerly fixes the whole non-preemptive
+schedule; completion effects remain hidden until its modeled full-pass boundary. A second pass
+cannot start while one is in flight, and a late caller wakeup does not inflate the modeled
+completion time. A topology covering both phases executes prefill and decode as separate full
+passes through the same engine. For `afd+pd`, this engine owns only the configured AFD phase; the
+ordinary companion remains a replay-layer responsibility.
+
 ## Combined AFD and P/D
 
 `rate_match_afd_with_pd` pairs a single-phase AFD pool with static options for the other phase. It
