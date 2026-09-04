@@ -455,6 +455,26 @@ def _validate_pinned(config: AFDSearchConfig) -> tuple[AFDTopology, ...]:
                     "search_num_experts": config.num_experts,
                 },
             )
+        contract_mismatches = {
+            name: {"topology": actual, "search": expected}
+            for name, actual, expected in (
+                ("phase", topology.phase.value, config.phase.value),
+                ("combined_with_pd", topology.combined_with_pd, config.combined_with_pd),
+                (
+                    "comm_overhead_factor",
+                    topology.comm_overhead_factor,
+                    config.comm_overhead_factor,
+                ),
+                ("boundary_on_attn", topology.boundary_on_attn, config.boundary_on_attn),
+            )
+            if actual != expected
+        }
+        if contract_mismatches:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "pinned topology contradicts its AFD search phase, mode, or communication contract",
+                provenance={"mismatches": contract_mismatches},
+            )
         if topology.total_gpus > config.total_gpus or (
             config.min_gpu_budget is not None and topology.total_gpus < config.min_gpu_budget
         ):
@@ -876,8 +896,27 @@ def evaluate_pure_afd(
         ("decode_latency_correction", decode_latency_correction),
     ):
         _positive_finite(name, factor)
-    by_phase = {item.phase: item for item in measurements}
     expected = (AFDPhase.PREFILL, AFDPhase.DECODE) if topology.phase is AFDPhase.BOTH else (topology.phase,)
+    by_phase: dict[AFDPhase, AFDLayerTimes] = {}
+    for item in measurements:
+        if not isinstance(item, AFDLayerTimes):
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_MEASUREMENT,
+                f"measurements must contain only AFDLayerTimes, got {type(item).__name__}",
+            )
+        if item.phase in by_phase:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_MEASUREMENT,
+                f"duplicate AFD layer measurements for phase {item.phase.value!r}",
+            )
+        by_phase[item.phase] = item
+    unexpected = sorted(phase.value for phase in by_phase if phase not in expected)
+    if unexpected:
+        raise AFDInfeasible(
+            AFDReasonCategory.INVALID_MEASUREMENT,
+            f"unexpected AFD layer measurements for phase(s): {unexpected}",
+            provenance=topology.provenance(),
+        )
     missing = [phase.value for phase in expected if phase not in by_phase]
     if missing:
         raise AFDInfeasible(
