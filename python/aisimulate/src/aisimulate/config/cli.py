@@ -20,6 +20,7 @@ from .common import (
 )
 from .engine import EnginePredictionConfig, EngineRecommendationConfig
 from .traffic import (
+    SyntheticSource,
     TraceSource,
     TrafficPredictionConfig,
     TrafficRecommendationConfig,
@@ -34,6 +35,8 @@ class CorePredictionConfig(StrictModel):
     @model_validator(mode="after")
     def _validate_cross_component(self) -> CorePredictionConfig:
         source = self.traffic.source
+        if self.engine.mode == "afd" and not isinstance(source, SyntheticSource):
+            raise ValueError("AFD prediction requires fixed-length synthetic request traffic")
         if (
             isinstance(source, TraceSource)
             and source.format in {"mooncake-delta", "agentic_mooncake"}
@@ -60,6 +63,10 @@ class CoreRecommendationConfig(StrictModel):
             raise ValueError("engine.hardware='auto' requires one optimization.hardware")
         source = self.traffic.source if self.traffic is not None else None
         modes = set(self.engine.mode.choices) if hasattr(self.engine.mode, "choices") else {self.engine.mode}
+        if "afd" in modes and source is not None and not isinstance(source, SyntheticSource):
+            raise ValueError("AFD recommendation requires fixed-length synthetic request traffic")
+        if "afd" in modes and self.traffic is not None and self.traffic.load.type == "kv_capacity_fraction":
+            raise ValueError("AFD recommendation requires an absolute traffic load, not kv_capacity_fraction")
         if (
             isinstance(source, TraceSource)
             and source.format in {"mooncake-delta", "agentic_mooncake"}

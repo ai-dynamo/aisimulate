@@ -585,17 +585,18 @@ engine:
 
 ### Engine Fields
 
-`<role>` is `aggregated`, `prefill`, or `decode` as selected by `engine.mode`.
+`<role>` is `aggregated`, `prefill`, or `decode` as selected by `engine.mode`. AFD uses
+`engine.afd` for its A/F pool and an optional opposite-phase regular worker.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `-` | `aggregated` or `disaggregated`. |
+| `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `-` | `aggregated`, `disaggregated`, or explicit `afd`. AFD cannot be mixed into a recommendation mode domain. |
 | `engine.model` | Required | `x` | `-` | Nonempty and fixed during recommendation. |
 | `engine.hardware` | Required | `auto` | `-` | One hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
-| `engine.workers` | Required | `x` | `-` | Aggregated role or prefill plus decode roles. |
+| `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. |
 | `engine.workers.<role>.parallelism.preset` | `default` in `recommend` | `auto` | `-` | Generated default space, complete mapping list, `false`, or `{}`. |
 | `engine.workers.<role>.parallelism.replicas` | `1` | Feasible positive values within GPU budget | `parallelism` | Positive. |
 | `engine.workers.<role>.parallelism.tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
@@ -621,6 +622,15 @@ engine:
 | `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
 | `engine.kv_transfer.timing_mode` | `destination_missing` | `x` | `-` | `full_prompt` or `destination_missing`; disaggregated mode only. |
+| `engine.afd.phase` | Required for AFD | `x` | `-` | `both` for pure AFD; `prefill` or `decode` when `combined_with_pd: true`. |
+| `engine.afd.combined_with_pd` | Required for AFD | `x` | `-` | Selects pure `afd` or internal `afd+pd`; it is never inferred from workers. |
+| `engine.afd.a_batch_size` | Required for AFD | User-supplied finite domain | `-` | Positive, memory-qualified A-worker batch size. Prediction requires one value. |
+| `engine.afd.n_a_nodes`, `n_f_nodes`, `tp_a` | Required for AFD prediction | Enumerated within the GPU budget | `-` | Positive concrete topology fields. Recommendation may optionally constrain `tp_a`. |
+| `engine.afd.f_moe_ep_size` | `1` for prediction; model-derived domain for recommendation | Optional choices | `-` | Positive; recommendation also accepts `n_f_nodes` or `ffn_tp`. Dense models require `1`. |
+| `engine.afd.num_microbatches` | `3` for prediction | `{choices: [2, 3, 4]}` | `-` | Positive. |
+| `engine.afd.pipeline_model` | `optimistic` for prediction | `{choices: [optimistic, conservative]}` | `-` | `optimistic`, `conservative`, or `serial`. |
+| `engine.afd.comm_overhead_factor` | `1.0` | `x` | `-` | Positive factor applied once by the AFD evaluator. |
+| `engine.afd.boundary_on_attn` | `true` | `x` | `-` | Fixed A/F boundary convention. |
 
 `engine.hardware: auto` is valid only in `recommend` and requires the single hardware identifier under
 `optimization.hardware`. Every recommended prediction YAML replaces `auto` with that concrete
@@ -666,6 +676,15 @@ All worker roles share the top-level model, hardware, backend, backend version, 
 version 1. Role-specific model, hardware, or backend selection is rejected. If `engine.mode` is a
 recommendation domain containing both modes, `workers` declares all three roles. Each concrete
 candidate retains only the role or roles active for its selected mode.
+
+An AFD prediction is concrete: pure AFD requires `phase: both` and explicit `n_a_nodes`,
+`n_f_nodes`, `tp_a`, and `a_batch_size`. A single-phase topology sets
+`combined_with_pd: true` and supplies only its opposite regular worker: a decode-side AFD pool uses
+`workers.prefill`, while a prefill-side AFD pool uses `workers.decode`. Recommendation enumerates
+the node split under `optimization.constraints.max_candidate_gpus`; it still requires an explicit,
+memory-qualified `a_batch_size` domain. AFD supports fixed-length synthetic request traffic and an
+absolute load only. The implementation is an analytical foreground-engine execution path, not a
+claim that the selected topology was physically served.
 
 `kv_cache.capacity.type: default` and `timing.type: default` replace the previous public name `aic`.
 They select the stack's default capacity estimator and timing provider. The initial default registry

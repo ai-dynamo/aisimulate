@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pydantic import ValidationError
 
 from aiconfigurator.sdk.task_v2 import build_afd_parallel_lists
 from aisimulate.config import CoreRecommendationConfig
@@ -101,6 +100,7 @@ def test_documented_afd_migration_contract_is_well_formed():
         "afd": {
             "phase": "decode",
             "combined_with_pd": True,
+            "a_batch_size": 128,
         },
     }
     assert payload["evaluation"]["sla"] == {
@@ -114,20 +114,14 @@ def test_documented_afd_migration_contract_is_well_formed():
     }
 
 
-@pytest.mark.xfail(
-    reason=(
-        "AIC-1775 PR 17 defines the AFD Sweeper-core contract; the public "
-        "recommendation schema and lowering land in a later PR"
-    ),
-    raises=ValidationError,
-    strict=True,
-)
 def test_documented_afd_migration_contract_lowers_to_sweeper():
     config = CoreRecommendationConfig.model_validate(_documented_afd_recommendation())
 
     lowered = recommendation_to_sweeper(config)
 
-    assert lowered.search_space.deployment_mode == ["afd"]
+    assert lowered.search_space.deployment_mode == ["afd+pd"]
+    assert lowered.search_space.afd_phase == "decode"
+    assert lowered.search_space.afd_batch_size_candidates == [128]
 
 
 def test_topology_derives_workers_batch_and_gpu_accounting():
