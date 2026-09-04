@@ -600,6 +600,7 @@ fn lower_agentic(
                 } else {
                     0.0
                 },
+                recorded_api_time_ms: None,
                 priority: None,
                 strict_priority: None,
                 policy_class: None,

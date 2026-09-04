@@ -165,6 +165,11 @@ pub struct AgenticMooncakeRow {
     #[serde(default)]
     pub hash_ids: Option<Vec<u64>>,
     pub not_before_ms: f64,
+    /// Source-recorded API service time. This is provenance for snapshot
+    /// reconstruction; replay completion continues to be driven by the
+    /// configured engine timing model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_api_time_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -220,6 +225,8 @@ pub struct AgenticNode {
     pub(super) replay_key: Option<String>,
     pub(super) hash_ids: Vec<u64>,
     pub(super) not_before_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) recorded_api_time_ms: Option<f64>,
     pub(super) priority: i32,
     pub(super) strict_priority: u32,
     pub(super) policy_class: Option<String>,
@@ -278,8 +285,24 @@ impl AgenticNode {
         &self.play_id
     }
 
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    pub fn input_length(&self) -> usize {
+        self.input_length
+    }
+
+    pub fn max_output_tokens(&self) -> usize {
+        self.max_output_tokens
+    }
+
+    pub fn hash_ids(&self) -> &[u64] {
+        &self.hash_ids
     }
 
     pub fn dependencies(&self) -> &[AgenticDependency] {
@@ -288,6 +311,10 @@ impl AgenticNode {
 
     pub fn not_before_ms(&self) -> f64 {
         self.not_before_ms
+    }
+
+    pub fn recorded_api_time_ms(&self) -> Option<f64> {
+        self.recorded_api_time_ms
     }
 }
 
