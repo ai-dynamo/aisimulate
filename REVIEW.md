@@ -48,7 +48,8 @@ runs, but all required conversations, approvals, and exact-head checks must be
 complete before merge.
 
 During the review-acceleration pilot, a maintainer dispatches Full CI after
-verifying those conditions. Automatic Full CI push runs on `main` and
+verifying those conditions, supplying the reviewed full commit SHA through the
+required `expected_sha` input. Automatic Full CI push runs on `main` and
 `release/*` are lifecycle validation outside the pre-merge sequence;
 `pull-request/*` copies do not trigger Full CI. Do not claim conditional Codex
 or Full CI automation until an approved service credential and exact-head

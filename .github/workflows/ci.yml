@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       expected_sha:
-        description: Optional exact commit expected for this run
-        required: false
+        description: Exact reviewed commit required for this run
+        required: true
         type: string
-        default: ""
   push:
     # PR validation is admitted through workflow_dispatch after review. Keep
     # automatic runs only for post-merge and release lifecycle validation.

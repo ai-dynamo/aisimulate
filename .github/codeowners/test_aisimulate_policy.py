@@ -208,6 +208,9 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert "needs: verify-target" in full
     assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
     assert "workflow_dispatch" in full_config["on"]
+    dispatch_sha = full_config["on"]["workflow_dispatch"]["inputs"]["expected_sha"]
+    assert dispatch_sha["required"] == "true"
+    assert "default" not in dispatch_sha
     assert full_config["on"]["push"]["branches"] == ["main", "release/*"]
     application_wheel = full_config["jobs"]["application-wheel"]
     assert "if" not in application_wheel
