@@ -270,6 +270,7 @@ def test_pinned_domain_is_lossless_and_honors_budget():
             gpus_per_node=8,
             is_moe=False,
             pinned_topologies=(pinned,),
+            combined_with_pd=False,
         )
     )
     assert result.candidates == (pinned,)
@@ -282,9 +283,39 @@ def test_pinned_domain_is_lossless_and_honors_budget():
                 gpus_per_node=8,
                 is_moe=False,
                 pinned_topologies=(pinned,),
+                combined_with_pd=False,
             )
         )
     assert budget_error.value.category is AFDReasonCategory.GPU_BUDGET
+
+
+@pytest.mark.parametrize(
+    ("topology_overrides", "config_overrides", "field"),
+    [
+        ({"phase": "prefill"}, {}, "phase"),
+        ({"combined_with_pd": False}, {}, "combined_with_pd"),
+        ({"comm_overhead_factor": 2.0}, {}, "comm_overhead_factor"),
+        ({"boundary_on_attn": False}, {}, "boundary_on_attn"),
+    ],
+)
+def test_pinned_domain_rejects_search_contract_mismatches(
+    topology_overrides, config_overrides, field
+):
+    pinned = _topology(**topology_overrides)
+
+    with pytest.raises(AFDInfeasible) as error:
+        enumerate_afd_topologies(
+            AFDSearchConfig(
+                total_gpus=16,
+                gpus_per_node=8,
+                is_moe=False,
+                pinned_topologies=(pinned,),
+                **config_overrides,
+            )
+        )
+
+    assert error.value.category is AFDReasonCategory.INVALID_TOPOLOGY
+    assert field in error.value.provenance["mismatches"]
 
 
 def test_candidate_limit_requires_a_complete_domain():
@@ -395,6 +426,29 @@ def test_pure_prefill_does_not_report_generation_throughput():
     assert result.phase_evaluations["prefill"].tokens_per_second > 0
     assert result.tokens_per_second == 0
     assert result.tokens_per_second_per_gpu == 0
+
+
+def test_pure_afd_rejects_duplicate_and_unexpected_phase_measurements():
+    decode = _times("decode")
+    topology = _topology(phase="decode", combined_with_pd=False)
+
+    with pytest.raises(AFDInfeasible, match="duplicate") as duplicate:
+        evaluate_pure_afd(
+            topology,
+            [decode, decode],
+            input_length=128,
+            output_length=16,
+        )
+    assert duplicate.value.category is AFDReasonCategory.INVALID_MEASUREMENT
+
+    with pytest.raises(AFDInfeasible, match="unexpected") as unexpected:
+        evaluate_pure_afd(
+            topology,
+            [decode, _times("prefill")],
+            input_length=128,
+            output_length=16,
+        )
+    assert unexpected.value.category is AFDReasonCategory.INVALID_MEASUREMENT
 
 
 def test_decode_afd_rate_matches_static_prefill_and_accounts_all_gpus():
