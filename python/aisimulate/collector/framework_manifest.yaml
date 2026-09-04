@@ -3,9 +3,11 @@
 #
 # Collector V3 manifest (schema v2): one `default` runtime per framework plus
 # explicit per-family overrides (design: docs/perf_database/
-# collector-v3-op-centric-design.md §4). Public images are digest-pinned;
-# bare internal image names are exempt. WideEP runtimes are peer framework
-# entries (wideep_<base>) so per-op resolution is uniform.
+# collector-v3-op-centric-design.md §4), plus optional per-model overrides
+# (`models:`) that pin one model's entire run regardless of family. Public
+# images are digest-pinned; bare internal image names are exempt. WideEP
+# runtimes are peer framework entries (wideep_<base>) so per-op resolution is
+# uniform.
 
 schema_version: 2
 
@@ -33,6 +35,48 @@ frameworks:
         version: "0.5.16"
         images:
           default: "lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0"
+    # Model-scoped collector runtime pins: when the resolved run model_path
+    # exactly equals one of these keys, the pin overrides BOTH the family
+    # pins above and the framework default for every op in the run — the
+    # whole run moves to this runtime, not just the ops that would otherwise
+    # resolve here. A run with no model identity, or one that does not match
+    # a key, resolves exactly as before (family/default), so this section is
+    # purely additive. Precedence: a model pin beats a family pin even for an
+    # op that has one (e.g. a hypothetical model-pinned run requesting a kda
+    # op still gets the model's runtime, not 0.5.16) — unlike the family pins
+    # above, which move a whole op family for every model, a model pin moves
+    # one model's entire run and leaves every other model's resolution (and
+    # every other op's family/default resolution) unchanged.
+    #
+    # SGLang v0.5.17 registers Qwen3_5MoeForCausalLM /
+    # Qwen3_5ForCausalLM; v0.5.14 predates that model integration and cannot
+    # collect these cases. Both tags below resolve to the same multi-arch
+    # index digest. These are collector-runtime declarations, not claims of
+    # whole-checkpoint serving validation (in particular for the RadixArk
+    # NVFP4 collection fixture).
+    #
+    # Scope: the override is selected only when collect.py resolves a single
+    # exact model_path (normally through --model-path, or through an
+    # architecture case file with one primary model). A full/unfiltered plan
+    # has no single model identity and therefore uses the framework/family
+    # runtime; run these model-pinned campaigns separately at their declared
+    # runtime rather than mixing them into an unfiltered invocation.
+    models:
+      "Qwen/Qwen3.8-2.4T-A95B":
+        version: "0.5.17"
+        images:
+          default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+          cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+      "Qwen/Qwen3.8-2.4T-A95B-FP8":
+        version: "0.5.17"
+        images:
+          default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+          cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+      "RadixArk/Qwen3.8-2.4T-A95B-NVFP4":
+        version: "0.5.17"
+        images:
+          default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+          cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
   trtllm:
     source_repo: "https://github.com/NVIDIA/TensorRT-LLM.git"
     default:
@@ -138,6 +182,38 @@ frameworks:
       # sha256:d61e062d" observation was the manifest list's arm64 entry,
       # not a new build. On aarch64 hosts (gb200/gb300) resolve the arm64
       # entry of the same tag and re-verify the version string before use.)
+    # Model-scoped collector runtime pins use the same precedence as
+    # frameworks.sglang.models above: an exact run model_path overrides both
+    # family pins and the framework default for every op in that run.
+    #
+    # Qwen3.8-Max needs vLLM v0.27.1. The vLLM model registry first maps the
+    # bare Qwen3_5MoeForCausalLM architecture string at v0.27.1
+    # (model_executor/models/registry.py:202 at tag v0.27.1, commit
+    # 6e448d0ea9bf3d88d898b65449ca6dc2aec170ac); v0.24.0 has the model class
+    # but no standard registry route for that architecture. Docker Hub's
+    # registry API reported the immutable index digests below on 2026-08-21.
+    # v0.27.1 has default and cu129 variants, but no cu128/cu130 tags.
+    #
+    # Scope: the override is selected only when collect.py resolves one exact
+    # model_path. A full/unfiltered plan has no single model identity and uses
+    # the normal framework/family runtime; run these campaigns separately at
+    # their declared runtime.
+    models:
+      "Qwen/Qwen3.8-2.4T-A95B":
+        version: "0.27.1"
+        images:
+          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
+      "Qwen/Qwen3.8-2.4T-A95B-FP8":
+        version: "0.27.1"
+        images:
+          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
+      "RadixArk/Qwen3.8-2.4T-A95B-NVFP4":
+        version: "0.27.1"
+        images:
+          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
   vllm_xpu:
     base_framework: vllm
     data_backend: vllm

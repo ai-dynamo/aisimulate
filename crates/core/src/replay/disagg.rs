@@ -1407,6 +1407,7 @@ where
 
     fn route_prefill(&mut self, uuid: Uuid, action: IssuedHandoffAction) -> Result<()> {
         self.state_mut(uuid)?.phase = DisaggPhase::QueuedPrefill;
+        self.state_mut(uuid)?.select_prefill_dp_rank()?;
         let metadata =
             Metadata::from_hashes(self.state_mut(uuid)?.take_replay_hashes()).for_prefill();
         let session_id = self.state(uuid)?.session_id().map(str::to_owned);
@@ -1454,6 +1455,7 @@ where
 
     fn route_destination(&mut self, uuid: Uuid, action: IssuedHandoffAction) -> Result<()> {
         self.state_mut(uuid)?.await_destination();
+        self.state_mut(uuid)?.select_decode_dp_rank()?;
         // TODO: Keep the destination side compact through decode routing and
         // reservation once decode-block hashes can be derived without prompt
         // expansion and the scheduler accepts compact metadata. Destination-

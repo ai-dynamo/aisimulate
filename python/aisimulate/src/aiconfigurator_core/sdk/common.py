@@ -183,6 +183,8 @@ class VisionEncoderConfig:
             rotated fraction — the 2-axis vision RoPE always rotates the full
             head_dim (vLLM ApplyRotaryEmb / SGLang cat([cos, cos])). Only gates
             the encoder_rope_apply op; 0.0 means no RoPE.
+        in_channels (int): Number of image/video input channels consumed by the
+            patch embedding projection.
     """
 
     depth: int
@@ -197,6 +199,7 @@ class VisionEncoderConfig:
     projector_dims: tuple[tuple[int, int], ...] = ()
     projector_n_instances: int = 1
     partial_rotary_factor: float = 0.0
+    in_channels: int = 3
 
 
 @dataclass(frozen=True)
@@ -225,13 +228,28 @@ class Gemma4MixConfig:
 
 
 @dataclass(frozen=True)
+class MuseGlimmerConfig:
+    """Muse Glimmer hybrid-attention layout (dense model, uniform head geometry).
+
+    Per-layer kind comes from ``layer_types`` ("sliding_attention" or
+    "full_attention"); only the window layout differs between layer kinds.
+    """
+
+    layer_types: tuple[str, ...]
+    sliding_window_size: int
+
+
+@dataclass(frozen=True)
 class Qwen35Config:
-    """Config for Qwen3.5 hybrid GDN + full-attention model (dense and MoE).
+    """Config for Qwen3.5's multimodal hybrid model (dense and MoE).
 
     layer_types: per-layer tuple of "linear_attention" (GDN) or "full_attention" (standard GQA)
     linear_*: GDN layer dimensions (linear_key_head_dim=128, linear_value_head_dim=128,
               linear_conv_kernel_dim=4, linear_num_key_heads=16 across all current models)
     MoE fields default to 0 for the dense 27B; populated for 35B-A3B and 397B-A17B.
+    vision_config: the separate Qwen3-VL-derived ViT + single patch-merger contract.
+    image_token_id/video_token_id: top-level multimodal token identities retained
+        when the nested text_config is unwrapped.
     """
 
     layer_types: tuple[str, ...]  # per-layer: "linear_attention" (GDN) or "full_attention"
@@ -245,6 +263,9 @@ class Qwen35Config:
     num_experts: int = 0
     moe_inter_size: int = 0
     shared_expert_inter_size: int = 0
+    vision_config: VisionEncoderConfig | None = None
+    image_token_id: int = 0
+    video_token_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -617,6 +638,9 @@ DefaultHFModels = {
     # Qwen 3.6 Models
     "nvidia/Qwen3.6-27B-NVFP4",
     "nvidia/Qwen3.6-35B-A3B-NVFP4",
+    # Qwen3.8-Max Models
+    "Qwen/Qwen3.8-2.4T-A95B",
+    "Qwen/Qwen3.8-2.4T-A95B-FP8",
     # MiMo Models
     "XiaomiMiMo/MiMo-V2-Flash",
     "XiaomiMiMo/MiMo-7B-Base",
@@ -633,6 +657,8 @@ DefaultHFModels = {
     "nvidia/Nemotron-H-56B-Base-8K",
     # Google Gemma 4 Models
     "google/gemma-4-26B-A4B",
+    # Meta Muse Glimmer
+    "meta-models/Muse-Glimmer-30B",
     # StepFun Step-3.7 Models
     "stepfun-ai/Step-3.7-Flash",
     "stepfun-ai/Step-3.7-Flash-FP8",
@@ -702,6 +728,7 @@ ModelFamily = {
     "QWEN3VL_MOE",
     "GEMMA4MIX",
     "MINIMAXM3",
+    "MUSEGLIMMER",
     "STEP3P7",
 }
 ARCHITECTURE_TO_MODEL_FAMILY = {
@@ -740,7 +767,11 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "Llama4ForConditionalGeneration": "HYBRIDMOE",
     "Qwen3_5ForConditionalGeneration": "QWEN35",
     "Qwen3_5MoeForConditionalGeneration": "QWEN35",
+    # Qwen3.8-Max: FLAT config (no text_config nesting) -- do NOT add to
+    # MULTIMODAL_TEXT_CONFIG_KEY below, unlike the two VLM classes above.
+    "Qwen3_5MoeForCausalLM": "QWEN35",
     "Gemma4ForConditionalGeneration": "GEMMA4MIX",
+    "MuseGlimmerForConditionalGeneration": "MUSEGLIMMER",
 }
 
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
@@ -757,6 +788,7 @@ MULTIMODAL_TEXT_CONFIG_KEY = {
     "Qwen3_5ForConditionalGeneration": "text_config",
     "Qwen3_5MoeForConditionalGeneration": "text_config",
     "Gemma4ForConditionalGeneration": "text_config",
+    "MuseGlimmerForConditionalGeneration": "text_config",
     "Qwen3VLForConditionalGeneration": "text_config",
     "Qwen3VLMoeForConditionalGeneration": "text_config",
     "MiniMaxM3SparseForConditionalGeneration": "text_config",

@@ -153,7 +153,7 @@ impl<K: AxisCoordinate> AxisCurve<K> {
 
 /// Power-carrying twin of [`AxisCurve`]: an immutable one-axis curve over
 /// measured `{latency, power, energy}` leaves, specialized away from the
-/// generic nested-`Node` engine but preserving `perf_interp::query_value`
+/// generic nested-`Node` engine but preserving `PreparedGrid::query_value`
 /// semantics bit-for-bit (exact hit returns the leaf verbatim; in-range
 /// blends lerp latency and blend-power and re-derive
 /// `energy = power * latency`; boundary util-holds scale latency by the SOL
@@ -214,7 +214,7 @@ impl<K: AxisCoordinate> LeafAxisCurve<K> {
     /// re-derived as `power * latency`), and a boundary-util hold outside
     /// it with `k_tail=1` (latency scales by the SOL ratio; power holds at
     /// the anchor's blend power). Keep this in sync with
-    /// `perf_interp::query_value`; the differential tests below guard the
+    /// `PreparedGrid::query_value`; the differential tests below guard the
     /// shared behavior.
     pub(crate) fn query(
         &self,
@@ -285,7 +285,7 @@ impl<K: AxisCoordinate> LeafAxisCurve<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::perf_database::perf_interp::{self, Node, OpInterpConfig};
+    use crate::perf_database::perf_interp::{Node, OpInterpConfig, PreparedGrid};
 
     #[test]
     fn axis_curve_resolves_exact_interpolated_and_held_values() {
@@ -331,7 +331,7 @@ mod tests {
         }
         let generic_sol = |coords: &[f64]| sol(coords[0]);
         let config = OpInterpConfig::grid(&["num_tokens"], &generic_sol);
-        let expected = perf_interp::query(&config, &node, &[num_tokens]);
+        let expected = PreparedGrid::new(node).query(&config, &[num_tokens]);
         let actual = curve.query(num_tokens, sol);
         match (actual, expected) {
             (Ok(actual), Ok(expected)) => assert_eq!(actual.to_bits(), expected.to_bits()),
@@ -395,9 +395,10 @@ mod tests {
         let sol = |tokens: f64| tokens * tokens + 1.0;
         let generic_sol = |coords: &[f64]| sol(coords[0]);
         let config = OpInterpConfig::grid(&["num_tokens"], &generic_sol);
+        let prepared = PreparedGrid::new(node.clone());
 
         for tokens in [5.0, 10.0, 15.5, 20.0, 31.0, 40.0, 80.0] {
-            let expected = perf_interp::query_value(&config, &node, &[tokens]).unwrap();
+            let expected = prepared.query_value(&config, &[tokens]).unwrap();
             let actual = curve.query(tokens, &sol).unwrap();
             for (name, actual, expected) in [
                 ("latency", actual.latency, expected.latency),
@@ -418,7 +419,8 @@ mod tests {
         let empty_node = Node::branch();
         assert_eq!(
             empty.query(10.0, &sol).unwrap_err().to_string(),
-            perf_interp::query_value(&config, &empty_node, &[10.0])
+            PreparedGrid::new(empty_node)
+                .query_value(&config, &[10.0])
                 .unwrap_err()
                 .to_string()
         );
@@ -427,7 +429,8 @@ mod tests {
         let zero_config = OpInterpConfig::grid(&["num_tokens"], &generic_zero_sol);
         assert_eq!(
             curve.query(80.0, &zero_sol).unwrap_err().to_string(),
-            perf_interp::query_value(&zero_config, &node, &[80.0])
+            PreparedGrid::new(node)
+                .query_value(&zero_config, &[80.0])
                 .unwrap_err()
                 .to_string()
         );

@@ -36,13 +36,20 @@ def a2a_covers_parallel(
 ) -> bool:
     """Whether A2A data can serve a target EP/node scale.
 
-    Prefer an exact scale. Otherwise, vLLM/TRT-LLM DeepEP HT/LL may use the
-    physical full-node ``(ep=gpus_per_node, node_num=1)`` row. SGLang keeps
-    its legacy normalized ``(ep=8, node_num=1)`` coordinate from PR #1314.
-    The query engine marks every substitution as estimated.
+    Prefer an exact scale. DeepEP-LL Stage 1 may use any matching single-domain
+    row because the Rust estimator applies topology-aware donor scaling.
+    Other vLLM/TRT-LLM DeepEP backends may use the physical full-node
+    ``(ep=gpus_per_node, node_num=1)`` row, while SGLang HT keeps its legacy
+    normalized ``(ep=8, node_num=1)`` coordinate from PR #1314. The query
+    engine marks every substitution as estimated.
     """
     if (moe_ep_size, expected_nodes) in pairs:
         return True
+    if comm_backend == "deepep_ll":
+        # LL Stage 1 calibrates any target topology from a same-H/K/N
+        # single-domain curve. GB legacy rows are EP4 while HGX rows are EP8,
+        # so the donor coordinate is intentionally not hardcoded.
+        return any(node_num == 1 for _ep_size, node_num in pairs)
     if comm_backend not in _DEEPEP_NODE1_FALLBACK_BACKENDS or expected_nodes <= 1:
         return False
     if framework == "sglang":
@@ -200,6 +207,11 @@ def resolve_model_config_moe_comm(
             )
             for comm_backend, backend_spec in MOE_A2A_BACKENDS.items():
                 if backend_name not in backend_spec.frameworks or phase not in backend_spec.inference_phases:
+                    continue
+                if comm_backend == "deepep_ll" and model_config.enable_eplb:
+                    # DeepEP-LL + EPLB is intentionally unsupported in Stage
+                    # 1. Prune it during coverage resolution instead of
+                    # admitting a configuration that fails only at runtime.
                     continue
                 if backend_name == "trtllm" and int(model_config.attention_dp_size or 1) <= 1:
                     # Keep parity with Task._resolve_moe_comm_backend: TRT-LLM

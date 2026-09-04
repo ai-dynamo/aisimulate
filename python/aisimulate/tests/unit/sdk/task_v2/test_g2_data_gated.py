@@ -94,11 +94,12 @@ def _a2a_rows() -> list[dict]:
         for ep_size, node_num in _PAIRS:
             for phase in ("dispatch", "combine"):
                 for num_tokens in _TOKEN_POINTS:
+                    comm_dtype = ("fp8" if phase == "dispatch" else "bfloat16") if backend == "deepep_ll" else "default"
                     rows.append(
                         {
                             "comm_backend": backend,
                             "phase": phase,
-                            "comm_dtype": "default",
+                            "comm_dtype": comm_dtype,
                             "ep_size": ep_size,
                             "node_num": node_num,
                             "hidden_size": SYNTH_HIDDEN,
@@ -106,7 +107,11 @@ def _a2a_rows() -> list[dict]:
                             "num_experts": SYNTH_EXPERTS,
                             "sms": sms,
                             "num_tokens": num_tokens,
-                            "latency": 50.0,  # us (loader divides by 1000)
+                            # Positive-slope LL curves are required for the
+                            # Stage-1 OLS calibration. The HT rows may use the
+                            # same synthetic curve without changing their test
+                            # purpose.
+                            "latency": 20.0 + 0.01 * num_tokens,  # us
                             "power": 300.0,
                         }
                     )
@@ -181,8 +186,14 @@ def _write_version_dir(root: str, family: str, backend: str, filename: str, rows
     os.makedirs(version_dir, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows), os.path.join(version_dir, filename))
     stem = filename.split(".")[0]
-    with open(os.path.join(version_dir, "collection_meta.yaml"), "w", encoding="utf-8") as f:
-        yaml.safe_dump({"schema_version": 1, "tables": {stem: {"status": "complete"}}}, f)
+    meta_path = os.path.join(version_dir, "collection_meta.yaml")
+    meta = {"status": "complete", "schema_version": 2, "tables": {}}
+    if os.path.exists(meta_path):
+        with open(meta_path, encoding="utf-8") as f:
+            meta = yaml.safe_load(f) or meta
+    meta.setdefault("tables", {})[stem] = {"status": "complete"}
+    with open(meta_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(meta, f)
 
 
 @pytest.fixture(scope="module")
