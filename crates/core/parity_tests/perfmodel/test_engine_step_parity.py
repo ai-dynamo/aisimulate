@@ -493,6 +493,48 @@ SMOKE_CASES = [
         ),
         id="qwen35-27b-b200-sglang-lanes-trtllm-mha",
     ),
+    # Qwen3.8-Max (Qwen3.5-family hybrid GDN + full-attention, 2.4T-A95B)
+    # on gb300/sglang/0.5.17 exercises the sparse 0.5.17 data identity:
+    # model-specific gemm/gdn/moe measurements with the approved shared-layer
+    # attention/communication/quantization tables. The native FP8 checkpoint
+    # needs tp=16 to fit its estimated weight footprint. Keep EP node-local
+    # on GB300's four-GPU node (the current engine rejects cross-node EP),
+    # while the wider aggregate batch exercises the IFB batch dimension at
+    # this model scale.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+            system_name="gb300",
+            backend_name="sglang",
+            backend_version="0.5.17",
+            tp_size=16,
+            moe_tp_size=4,
+            moe_ep_size=4,
+            agg_batch_size=32,
+            nextn=0,
+        ),
+        id="qwen38-max-gb300-sglang-0517-fp8-agg",
+    ),
+    # Simulation-only quantization override on the bf16 checkpoint. This
+    # covers the measured NVFP4 MoE rows and a non-trivial disaggregated
+    # node-local EP topology; it is not a declaration that the checkpoint has
+    # been validated for NVFP4 serving.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="Qwen/Qwen3.8-2.4T-A95B",
+            system_name="gb300",
+            backend_name="sglang",
+            backend_version="0.5.17",
+            moe_quant_mode="nvfp4",
+            moe_tp_size=2,
+            moe_ep_size=4,
+            disagg_prefill_num_workers=2,
+            disagg_decode_batch_size=8,
+            disagg_decode_num_workers=2,
+            nextn=0,
+        ),
+        id="qwen38-max-gb300-sglang-0517-nvfp4-disagg",
+    ),
 ]
 
 PARITY_RTOL = 0.01
