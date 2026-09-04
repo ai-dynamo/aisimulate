@@ -108,9 +108,10 @@ Searched (non-pinned) AFD requires an explicit `afd_batch_size_candidates` list.
 also supports `afd_tp_a_candidates`, `afd_f_moe_ep_size_candidates`,
 `afd_microbatch_candidates`, `afd_pipeline_model_candidates`, and `afd_max_candidates`.
 
-AFD rejects `kv_load_ratio` until the execution layer exposes scheduler-visible KV capacity. Use a
-trace, request rate, or absolute concurrency instead. The complete topology and capability contract
-is documented in [AFD Topology Contract](afd-topology.md).
+AFD rejects `kv_load_ratio` until the execution layer exposes scheduler-visible KV capacity. The
+current performance-model adapter also requires concrete positive `isl` and `osl`, so use a
+synthetic request rate or absolute concurrency rather than a trace-only workload. The complete
+topology and capability contract is documented in [AFD Topology Contract](afd-topology.md).
 
 ## Pinned Parallel Configurations
 
