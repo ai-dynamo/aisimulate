@@ -2168,20 +2168,24 @@ class Task:
                 f"decode_cp_candidates={cp_list}. Enable CP via prefill/agg instead."
             )
 
-        return iter(
-            enumerate_parallel_config(
-                num_gpu_list=_cands("num_gpu"),
-                tp_list=_cands("tp"),
-                pp_list=_cands("pp"),
-                dp_list=_cands("dp"),
-                moe_tp_list=_cands("moe_tp"),
-                moe_ep_list=_cands("moe_ep"),
-                cp_list=cp_list,
-                is_moe=self._is_moe,
-                backend=common.BackendName[self._role_attr(role, "backend_name")],
-                moe_backend=self.moe_backend,
-            )
+        backend = common.BackendName[self._role_attr(role, "backend_name")]
+        parallel = enumerate_parallel_config(
+            num_gpu_list=_cands("num_gpu"),
+            tp_list=_cands("tp"),
+            pp_list=_cands("pp"),
+            dp_list=_cands("dp"),
+            moe_tp_list=_cands("moe_tp"),
+            moe_ep_list=_cands("moe_ep"),
+            cp_list=cp_list,
+            is_moe=self._is_moe,
+            backend=backend,
+            moe_backend=self.moe_backend,
         )
+        if self._model_family == "MUSEGLIMMER" and backend == common.BackendName.sglang:
+            # Muse supports pure TP and pure prefill CP, but SGLang rejects a
+            # mixed attention TP/CP topology before model construction.
+            parallel = [cfg for cfg in parallel if cfg[5] == 1 or (cfg[0] == 1 and cfg[2] == 1)]
+        return iter(parallel)
 
     # =====================================================================
     # Validation

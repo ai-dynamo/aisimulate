@@ -175,14 +175,17 @@ def test_sglang_sm90_full_structural_population_is_stable(monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
 
     for phase, sweep_getter, expected in (
-        # 157/143 since the Kimi-K3 declarations added 8 SM90 head configs
+        # 161/147 after Muse Glimmer adds 4 window=2048 SM90 head configs per
+        # phase (TP shards 32/2, 16/1, 8/1, 4/1 @hd128). Its window=0 shards
+        # dedupe against existing base-grid points.
+        # Previous 157/143 since the Kimi-K3 declarations added 8 SM90 head configs
         # (DSPARK draft GQA shards 64/32/16/8 q-heads @hd64 + MLA 96-family
         # 96/48/24/12 @hd128, all fa3-routed; net +4 context / +5 generation),
         # and the current Qwen3.6/Gemma-4 NVIDIA profiles add two distinct
         # context/generation geometries, plus 4 context / 4 generation from
         # Step-3.7-Flash's hybrid SWA/global head shapes.
-        ("context", get_attention_context_shape_sweeps, 157),
-        ("generation", get_attention_generation_shape_sweeps, 143),
+        ("context", get_attention_context_shape_sweeps, 161),
+        ("generation", get_attention_generation_shape_sweeps, 147),
     ):
         configs = [
             config
@@ -247,6 +250,19 @@ def test_sglang_0514_model_runtime_contracts(monkeypatch):
     assert gpt_oss[128].runtime_window_size == 127
     assert all(config.has_attention_sink for config in gpt_oss.values())
     assert {config.kernel_source for config in gpt_oss.values()} == {"fa3"}
+
+    muse_configs = [
+        config
+        for config in _model_configs(monkeypatch, "meta-models/Muse-Glimmer-30B", 90, "context")
+        if config.num_heads == 32
+    ]
+    assert len(muse_configs) == 2
+    muse = {config.window_size: config for config in muse_configs}
+    assert set(muse) == {0, 2048}
+    assert muse[2048].runtime_window_size == 2047
+    assert muse[0].runtime_window_size == -1
+    assert not any(config.has_attention_sink for config in muse_configs)
+    assert {config.kernel_source for config in muse_configs} == {"fa3"}
 
     assert {
         config.kernel_source for config in _model_configs(monkeypatch, "nvidia/Nemotron-H-56B-Base-8K", 100, "context")
