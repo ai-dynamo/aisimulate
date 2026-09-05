@@ -711,7 +711,7 @@ struct HoldAnchor {
 }
 
 /// One entry in the bounded nearest-leaf set.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct HoldCandidate {
     distance_sq: f64,
     leaf_idx: usize,
@@ -734,7 +734,46 @@ impl HoldCandidates {
     fn new(limit: usize) -> Self {
         Self {
             limit,
-            values: Vec::with_capacity(limit + 1),
+            values: Vec::with_capacity(limit),
+        }
+    }
+
+    /// Consume the max-heap and return the exact nearest-first order expected
+    /// by validity filtering and support-radius selection.
+    fn into_sorted_values(mut self) -> Vec<HoldCandidate> {
+        self.values.sort_unstable_by(|left, right| left.cmp(*right));
+        self.values
+    }
+
+    fn sift_up(&mut self, mut child: usize) {
+        while child > 0 {
+            let parent = (child - 1) / 2;
+            if !self.values[child].cmp(self.values[parent]).is_gt() {
+                break;
+            }
+            self.values.swap(child, parent);
+            child = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut parent: usize) {
+        loop {
+            let left = parent * 2 + 1;
+            if left >= self.values.len() {
+                break;
+            }
+            let right = left + 1;
+            let worse_child =
+                if right < self.values.len() && self.values[right].cmp(self.values[left]).is_gt() {
+                    right
+                } else {
+                    left
+                };
+            if !self.values[worse_child].cmp(self.values[parent]).is_gt() {
+                break;
+            }
+            self.values.swap(parent, worse_child);
+            parent = worse_child;
         }
     }
 }
@@ -748,28 +787,21 @@ impl NeighborCollector for HoldCandidates {
             distance_sq,
             leaf_idx,
         };
-        if self.values.len() == self.limit {
-            if !candidate
-                .cmp(*self.values.last().expect("full hold candidate set"))
-                .is_lt()
-            {
-                return;
-            }
-            self.values.pop();
+        if self.values.len() < self.limit {
+            self.values.push(candidate);
+            self.sift_up(self.values.len() - 1);
+            return;
         }
-        let position = self
-            .values
-            .partition_point(|current| !current.cmp(candidate).is_gt());
-        self.values.insert(position, candidate);
+
+        if !candidate.cmp(self.values[0]).is_lt() {
+            return;
+        }
+        self.values[0] = candidate;
+        self.sift_down(0);
     }
 
     fn cutoff_distance_squared(&self) -> Option<f64> {
-        (self.limit > 0 && self.values.len() == self.limit).then(|| {
-            self.values
-                .last()
-                .expect("full hold candidate set")
-                .distance_sq
-        })
+        (self.limit > 0 && self.values.len() == self.limit).then(|| self.values[0].distance_sq)
     }
 }
 
@@ -818,7 +850,7 @@ fn hold_anchor_weights_prepared(
     let mut support_r = f64::INFINITY;
     let mut support_found = false;
     let mut anchor = Vec::with_capacity(coords.len());
-    for candidate in best.values {
+    for candidate in best.into_sorted_values() {
         let c = index.coords(candidate.leaf_idx);
         let leaf = index.leaves[candidate.leaf_idx];
         anchor.clear();
@@ -2186,6 +2218,52 @@ mod tests {
             prepared.hold_index.get().unwrap() as *const FlatHoldIndex,
             index
         );
+    }
+
+    #[test]
+    fn hold_candidate_heap_matches_exact_sorted_top_k() {
+        let tiny_squared = f64::MIN_POSITIVE * f64::MIN_POSITIVE;
+        let distances = [
+            4.0,
+            1.0,
+            9.0,
+            1.0,
+            0.0,
+            16.0,
+            4.0,
+            2.0,
+            2.0,
+            8.0,
+            3.0,
+            tiny_squared,
+        ];
+
+        for limit in [0, 1, 2, 5, 12, 20] {
+            let mut expected = distances
+                .iter()
+                .enumerate()
+                .map(|(leaf_idx, &distance_sq)| HoldCandidate {
+                    distance_sq,
+                    leaf_idx,
+                })
+                .collect::<Vec<_>>();
+            expected.sort_unstable_by(|left, right| left.cmp(*right));
+            expected.truncate(limit);
+
+            let mut actual = HoldCandidates::new(limit);
+            for (leaf_idx, &distance_sq) in distances.iter().enumerate() {
+                actual.consider(leaf_idx, distance_sq);
+            }
+            if limit > 0 && limit <= distances.len() {
+                assert_eq!(
+                    actual.cutoff_distance_squared().unwrap().to_bits(),
+                    expected.last().unwrap().distance_sq.to_bits()
+                );
+            } else {
+                assert!(actual.cutoff_distance_squared().is_none());
+            }
+            assert_eq!(actual.into_sorted_values(), expected);
+        }
     }
 
     #[test]
