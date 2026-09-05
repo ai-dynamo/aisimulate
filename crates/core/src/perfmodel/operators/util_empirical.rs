@@ -39,6 +39,7 @@ use quick_cache::sync::{Cache, DefaultLifecycle};
 use quick_cache::{DefaultHashBuilder, Equivalent, OptionsBuilder, UnitWeighter};
 
 use crate::common::error::AicError;
+use crate::perfmodel::kd_tree::{KdTree, NeighborCollector};
 
 /// Empirical provenance tiers, mirroring Python's `PROVENANCE_ORDER`
 /// (`sdk/operations/util_empirical.py`): ordered by DECREASING confidence,
@@ -161,7 +162,7 @@ pub struct UtilGrid {
     utils: Vec<f64>,
     mins: Vec<f64>,
     spans: Vec<f64>,
-    index: Option<UtilKdTree>,
+    index: Option<KdTree>,
     query_cache: Arc<OnceLock<UtilQueryCache>>,
     /// Transfer tag of the reference slice this grid was built from
     /// (`xshape` / `xquant` / ...), when borrowed from a sibling.
@@ -278,127 +279,17 @@ impl NearestTwo {
     }
 }
 
-#[derive(Debug, Clone)]
-struct KdNode {
-    sample: usize,
-    axis: usize,
-    left: Option<usize>,
-    right: Option<usize>,
-}
-
-/// Immutable exact nearest-two index over a `UtilGrid`'s normalised samples.
-#[derive(Debug, Clone)]
-struct UtilKdTree {
-    nodes: Vec<KdNode>,
-    root: usize,
-    dims: usize,
-}
-
-impl UtilKdTree {
-    fn build(norm: &[Vec<f64>]) -> Option<Self> {
-        if norm.len() < 3 {
-            return None;
-        }
-        let dims = norm.first()?.len();
-        if dims == 0
-            || norm
-                .iter()
-                .any(|row| row.len() != dims || row.iter().any(|v| !v.is_finite()))
-        {
-            return None;
-        }
-
-        fn build_nodes(
-            norm: &[Vec<f64>],
-            samples: &mut [usize],
-            depth: usize,
-            dims: usize,
-            nodes: &mut Vec<KdNode>,
-        ) -> Option<usize> {
-            if samples.is_empty() {
-                return None;
-            }
-            let axis = depth % dims;
-            let mid = samples.len() / 2;
-            samples.select_nth_unstable_by(mid, |&a, &b| {
-                norm[a][axis]
-                    .total_cmp(&norm[b][axis])
-                    .then_with(|| a.cmp(&b))
-            });
-            let (left_samples, middle_and_right) = samples.split_at_mut(mid);
-            let (sample, right_samples) = middle_and_right
-                .split_first_mut()
-                .expect("non-empty kd-tree partition");
-
-            let node = nodes.len();
-            nodes.push(KdNode {
-                sample: *sample,
-                axis,
-                left: None,
-                right: None,
-            });
-            let left = build_nodes(norm, left_samples, depth + 1, dims, nodes);
-            let right = build_nodes(norm, right_samples, depth + 1, dims, nodes);
-            nodes[node].left = left;
-            nodes[node].right = right;
-            Some(node)
-        }
-
-        let mut samples: Vec<usize> = (0..norm.len()).collect();
-        let mut nodes = Vec::with_capacity(norm.len());
-        let root = build_nodes(norm, &mut samples, 0, dims, &mut nodes)
-            .expect("non-empty util grid has a kd-tree root");
-        Some(Self { nodes, root, dims })
+impl NeighborCollector for NearestTwo {
+    fn consider(&mut self, sample: usize, distance_squared: f64) {
+        self.consider(Neighbor {
+            sample,
+            distance: distance_squared.sqrt(),
+            distance_squared,
+        });
     }
 
-    fn nearest_two(&self, norm: &[Vec<f64>], query: &[f64]) -> NearestTwo {
-        fn visit(
-            tree: &UtilKdTree,
-            norm: &[Vec<f64>],
-            query: &[f64],
-            node_index: usize,
-            nearest: &mut NearestTwo,
-        ) {
-            let node = &tree.nodes[node_index];
-            let row = &norm[node.sample];
-            let distance_squared = row
-                .iter()
-                .zip(query)
-                .map(|(&x, &y)| (x - y) * (x - y))
-                .sum::<f64>();
-            nearest.consider(Neighbor {
-                sample: node.sample,
-                distance: distance_squared.sqrt(),
-                distance_squared,
-            });
-
-            let axis = node.axis;
-            let delta = query[axis] - row[axis];
-            let (near, far) = if delta.is_sign_negative() {
-                (node.left, node.right)
-            } else {
-                (node.right, node.left)
-            };
-            if let Some(near) = near {
-                visit(tree, norm, query, near, nearest);
-            }
-            // Equality must visit the far branch: it can contain an equally
-            // distant sample with an earlier original index. Compare squared
-            // values so sqrt rounding cannot incorrectly prune that branch.
-            if nearest
-                .second
-                .is_none_or(|second| delta * delta <= second.distance_squared)
-            {
-                if let Some(far) = far {
-                    visit(tree, norm, query, far, nearest);
-                }
-            }
-        }
-
-        debug_assert_eq!(query.len(), self.dims);
-        let mut nearest = NearestTwo::default();
-        visit(self, norm, query, self.root, &mut nearest);
-        nearest
+    fn cutoff_distance_squared(&self) -> Option<f64> {
+        self.second.map(|second| second.distance_squared)
     }
 }
 
@@ -447,7 +338,7 @@ impl UtilGrid {
             })
             .collect();
         let utils = samples.iter().map(|s| s.util).collect();
-        let index = UtilKdTree::build(&norm);
+        let index = KdTree::build(norm.as_slice());
         Self {
             norm,
             utils,
@@ -476,12 +367,14 @@ impl UtilGrid {
             .map(|(a, &v)| ((log_floor(v) - self.mins[a]) / self.spans[a]).clamp(0.0, 1.0))
             .collect();
         let (nearest, cache) =
-            if let Some(index) = self.index.as_ref().filter(|index| index.dims == q.len()) {
+            if let Some(index) = self.index.as_ref().filter(|index| index.can_query(&q)) {
                 let cache = self.query_cache.get_or_init(util_query_cache);
                 if let Some(value) = cache.get(&UtilQueryRef(&q)) {
                     return Some(value);
                 }
-                (index.nearest_two(&self.norm, &q), Some(cache))
+                let mut nearest = NearestTwo::default();
+                index.search(self.norm.as_slice(), &q, &mut nearest);
+                (nearest, Some(cache))
             } else {
                 // Preserve the former behavior for tiny, non-finite, ragged,
                 // or dimension-mismatched grids that cannot use the index.
@@ -1095,11 +988,12 @@ mod tests {
     fn far_branch_pruning_preserves_underflowed_distance_ties() {
         let tiny = f64::MIN_POSITIVE;
         let norm = vec![vec![0.0], vec![tiny], vec![3.0 * tiny]];
-        let tree = UtilKdTree::build(&norm).unwrap();
+        let tree = KdTree::build(norm.as_slice()).unwrap();
 
         // All three squared distances underflow to zero. The far branch still
         // contains the first sample, which stable ordering must select.
-        let nearest = tree.nearest_two(&norm, &[2.0 * tiny]);
+        let mut nearest = NearestTwo::default();
+        tree.search(norm.as_slice(), &[2.0 * tiny], &mut nearest);
         assert_eq!(nearest.nearest.unwrap().sample, 0);
         assert_eq!(nearest.second.unwrap().sample, 1);
     }

@@ -29,6 +29,7 @@ pub(crate) mod common;
 pub(crate) mod config;
 pub mod engine;
 pub(crate) mod fpm;
+pub(crate) mod kd_tree;
 pub mod memory;
 pub(crate) mod operators;
 pub(crate) mod perf_database;
