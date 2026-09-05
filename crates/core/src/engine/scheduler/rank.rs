@@ -44,6 +44,13 @@ pub struct SchedulerRank {
     handoff_requests: HashMap<HandoffId, Uuid>,
 }
 
+// SAFETY: Rc-backed state is confined to one scheduler rank, except for host-cache
+// domains created by EngineFactory::build_with_cache_domains. Those aliases are
+// encapsulated by one non-decomposable GeneralizedMockerEngine, so moving a rank or
+// grouped engine transfers every reachable alias to the same thread. SchedulerRank
+// is never shared between threads; synchronization is intentionally unnecessary.
+unsafe impl Send for SchedulerRank {}
+
 impl SchedulerRank {
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
         self.core.set_host_offload_observer(observer);
