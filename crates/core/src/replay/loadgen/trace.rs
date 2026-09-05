@@ -1586,12 +1586,13 @@ impl AgenticTrace {
         let min_timestamp_ms = self
             .nodes
             .iter()
+            .filter(|node| node.dependencies.is_empty())
             .map(|node| node.not_before_ms)
             .min_by(|left, right| left.total_cmp(right))
             .unwrap_or(0.0);
 
         for node in &mut self.nodes {
-            node.not_before_ms -= min_timestamp_ms;
+            node.not_before_ms = (node.not_before_ms - min_timestamp_ms).max(0.0);
         }
         self.graph_digest = canonical_agentic_graph_digest(self.block_size, &mut self.nodes)
             .expect("validated agentic graph remains serializable after normalization");

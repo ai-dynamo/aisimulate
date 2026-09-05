@@ -368,7 +368,7 @@ fn test_from_agentic_mooncake_builds_typed_graph() {
             "play_id": "play",
             "session_id": "root",
             "model": "model",
-            "not_before_ms": 0.0,
+            "not_before_ms": 100.0,
             "input_length": 4,
             "output_length": 1,
             "hash_ids": [1],
@@ -380,7 +380,7 @@ fn test_from_agentic_mooncake_builds_typed_graph() {
             "play_id": "play",
             "session_id": "root",
             "model": "model",
-            "not_before_ms": 100.0,
+            "not_before_ms": 0.0,
             "dependencies": [{
                 "request_id": "r1",
                 "trigger": "dispatch",
@@ -406,6 +406,9 @@ fn test_from_agentic_mooncake_builds_typed_graph() {
     assert_eq!(trace.nodes[1].dependencies[0].delay_ms, 12.0);
     assert_eq!(trace.plays.len(), 1);
     assert_eq!(trace.plays[0].root_nodes, vec![0]);
+    let normalized = trace.normalize_starts();
+    assert_eq!(normalized.nodes()[0].not_before_ms(), 0.0);
+    assert_eq!(normalized.nodes()[1].not_before_ms(), 0.0);
 }
 
 #[test]
