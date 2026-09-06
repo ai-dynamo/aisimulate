@@ -2005,6 +2005,134 @@ mod forward_pass_metrics {
         );
     }
 
+    fn chunk6_args(num_gpu_blocks: usize) -> MockEngineArgs {
+        MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .block_size(1)
+            .num_gpu_blocks(num_gpu_blocks)
+            .max_num_batched_tokens(Some(6))
+            .max_num_seqs(Some(4))
+            .speedup_ratio(0.0)
+            .sglang(Some(SglangArgs {
+                page_size: Some(1),
+                chunked_prefill_size: Some(6),
+                max_prefill_tokens: Some(6),
+                ..Default::default()
+            }))
+            .build()
+            .unwrap()
+    }
+
+    /// Prefill `tokens` as request `id` with one output token and run passes until it has finished,
+    /// so its full sequence is cached.
+    fn finish_and_cache(core: &mut SglangCore, id: u128, tokens: Vec<u32>, now: &mut f64) {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 1,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(id)),
+            arrival_timestamp_ms: None,
+        });
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        for _ in 0..16 {
+            let pass = core.execute_pass(&mut collector, *now);
+            *now = pass.end_ms + 1.0;
+            if core.running.is_empty() && core.waiting.is_empty() {
+                return;
+            }
+        }
+        panic!("request {id} did not finish");
+    }
+
+    #[test]
+    fn test_first_admission_matches_whole_prompt_once() {
+        // r1 (12 tokens) finishes and is cached. r2 shares r1's first 10 tokens: SGLang matches
+        // the whole prompt once at admission (`extend_input_len` = 4 <= chunk 6), so r2 is a single
+        // non-chunked 4-token prefill rather than a 6-token chunk plus continuations.
+        let mut core = SglangCore::new(chunk6_args(256));
+        let mut now = 0.0;
+        finish_and_cache(&mut core, 1, (0..12).collect(), &mut now);
+
+        let mut r2: Vec<u32> = (0..10).collect();
+        r2.extend([100, 101, 102, 103]);
+        core.receive(DirectRequest {
+            tokens: r2,
+            max_output_tokens: 1,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(2)),
+            arrival_timestamp_ms: None,
+        });
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass = core.execute_pass(&mut collector, now);
+        let fpm = pass.fpm.expect("FPM should be present");
+        assert_eq!(fpm.num_prefill_requests, 1);
+        assert_eq!(
+            fpm.sum_prefill_tokens, 4,
+            "only the four uncached tokens are computed"
+        );
+        assert!(
+            pass.end_ms > now,
+            "a prefill pass that computes tokens takes time"
+        );
+        assert!(
+            core.waiting.is_empty(),
+            "the prefill completed in one pass, nothing is chunked"
+        );
+    }
+
+    #[test]
+    fn test_fully_cached_prompt_still_computes_its_last_token() {
+        // SGLang caps the match at `input_len - 1`, so a duplicate prompt is a one-token prefill
+        // rather than a zero-duration pass.
+        let mut core = SglangCore::new(chunk6_args(256));
+        let mut now = 0.0;
+        finish_and_cache(&mut core, 1, (0..5).collect(), &mut now);
+        core.receive(DirectRequest {
+            tokens: (0..5).collect(),
+            max_output_tokens: 1,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(2)),
+            arrival_timestamp_ms: None,
+        });
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass = core.execute_pass(&mut collector, now);
+        let fpm = pass.fpm.expect("FPM should be present");
+        assert_eq!(fpm.num_prefill_requests, 1);
+        assert_eq!(fpm.sum_prefill_tokens, 1);
+        assert!(pass.end_ms > now);
+    }
+
+    #[test]
+    fn test_small_request_is_co_admitted_behind_mostly_cached_long_request() {
+        // r2 = 20 cached tokens + 4 new, r3 = 2 fresh tokens. Only r2's 4 uncached tokens count
+        // against the 6-token chunk budget, so r3 fits in the same prefill batch.
+        let mut core = SglangCore::new(chunk6_args(256));
+        let mut now = 0.0;
+        finish_and_cache(&mut core, 1, (0..20).collect(), &mut now);
+
+        let mut r2: Vec<u32> = (0..20).collect();
+        r2.extend([100, 101, 102, 103]);
+        for (id, tokens) in [(2u128, r2), (3u128, vec![200, 201])] {
+            core.receive(DirectRequest {
+                tokens,
+                max_output_tokens: 2,
+                output_token_ids: None,
+                uuid: Some(Uuid::from_u128(id)),
+                arrival_timestamp_ms: None,
+            });
+        }
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass = core.execute_pass(&mut collector, now);
+        let fpm = pass.fpm.expect("FPM should be present");
+        assert_eq!(
+            fpm.num_prefill_requests, 2,
+            "r2 and r3 share the prefill batch"
+        );
+        assert_eq!(fpm.sum_prefill_tokens, 6);
+        assert_eq!(core.running.len(), 2);
+        assert!(core.waiting.is_empty());
+    }
+
     #[test]
     fn test_fpm_retracted_decode_becomes_queued_decode() {
         // Very tight KV to force decode retraction. Fill the KV with running
