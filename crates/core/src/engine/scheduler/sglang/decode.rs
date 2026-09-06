@@ -201,6 +201,7 @@ pub(super) fn simulate_decode_step(
         None,
         current_time_ms,
         apply_speedup,
+        true,
     )
     .expect("SGLang decode simulation failed");
     for mut request in result.completed_requests.drain(..) {
@@ -229,6 +230,7 @@ pub(super) fn simulate_decode_step_with_sampler(
     mut sampler: Option<&mut SpeculativeDecodeSampler>,
     current_time_ms: f64,
     apply_speedup: bool,
+    charge_time: bool,
 ) -> anyhow::Result<DecodeResult> {
     if running.is_empty() {
         return Ok(DecodeResult {
@@ -320,7 +322,13 @@ pub(super) fn simulate_decode_step_with_sampler(
     let effective_ratio = config.speedup_ratio * config.decode_speedup_ratio;
     let speedup_ratio = if apply_speedup { effective_ratio } else { 0.0 };
     let modeled_ms = modeled_duration_ms(decode_time, speedup_ratio)?;
-    let total_time = Duration::from_secs_f64(modeled_ms / 1_000.0);
+    // `charge_time == false`: this step only records tokens already produced by the prefill
+    // forward that ran in the same pass (SGLang prefill-first), so it does not advance the clock.
+    let total_time = if charge_time {
+        Duration::from_secs_f64(modeled_ms / 1_000.0)
+    } else {
+        Duration::ZERO
+    };
 
     let reserved_page_tokens = decode_page_growth_needed(running, config.block_size, max_burst);
     let reserved_pages = reserved_page_tokens / config.block_size;

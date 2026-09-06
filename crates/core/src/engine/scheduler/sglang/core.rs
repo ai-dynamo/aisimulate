@@ -711,6 +711,7 @@ impl SglangCore {
         let prefill_time =
             simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
 
+        let previously_running = self.running.len();
         for mut req in admit.can_run {
             if req.materialized_tokens < req.current_sequence_len() {
                 cache_materialized_prefix(&mut req, &mut self.kv_manager, &self.config);
@@ -720,13 +721,29 @@ impl SglangCore {
             }
         }
 
-        // Capture scheduled decode data before the decode step modifies running.
-        let scheduled_decode_lens: Vec<u64> = self
-            .running
-            .iter()
-            .filter(|req| req.remaining_output_tokens() > 0)
-            .map(|req| req.current_sequence_len() as u64)
-            .collect();
+        // SGLang `Scheduler.get_next_batch_to_run`: "Run prefill first if possible". A pass that
+        // formed a prefill batch runs only that batch (prefill and decode share a forward only
+        // with `--enable-mixed-chunk`, which is not modeled). Requests that were already running
+        // do not decode in this pass; the freshly prefilled requests receive the first token
+        // produced by the prefill forward itself, so that bookkeeping step is not charged any time.
+        let prefill_pass = batch_size > 0;
+        let mut stalled: Vec<SglangRequest> = if prefill_pass && previously_running > 0 {
+            self.running.drain(..previously_running).collect()
+        } else {
+            Vec::new()
+        };
+
+        // Capture scheduled decode data before the decode step modifies running. A prefill-first
+        // pass is a pure prefill forward: nothing is scheduled for decode.
+        let scheduled_decode_lens: Vec<u64> = if prefill_pass {
+            Vec::new()
+        } else {
+            self.running
+                .iter()
+                .filter(|req| req.remaining_output_tokens() > 0)
+                .map(|req| req.current_sequence_len() as u64)
+                .collect()
+        };
 
         let decode_start_ms = now_ms + prefill_time.as_secs_f64() * 1000.0;
         let mut decode = simulate_decode_step_with_sampler(
@@ -736,7 +753,13 @@ impl SglangCore {
             self.speculative_sampler.as_mut(),
             decode_start_ms,
             true,
+            !prefill_pass,
         )?;
+        if !stalled.is_empty() {
+            // Keep FIFO order: older requests stay ahead of the ones admitted in this pass.
+            stalled.append(&mut self.running);
+            self.running = stalled;
+        }
 
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);

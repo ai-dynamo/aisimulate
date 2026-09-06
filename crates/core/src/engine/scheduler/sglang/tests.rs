@@ -242,6 +242,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
         None,
         0.0,
         false,
+        true,
     )
     .unwrap();
 
@@ -1489,9 +1490,9 @@ mod forward_pass_metrics {
             fpm.sum_prefill_tokens > 0,
             "prefill tokens should be computed"
         );
-        // In SGLang, after prefill the request immediately joins running and
-        // participates in the decode step of the same pass.
-        assert_eq!(fpm.num_decode_requests, 1);
+        // SGLang runs a formed prefill batch on its own; the request's first token comes out of
+        // that prefill forward, so no decode work is scheduled in this pass.
+        assert_eq!(fpm.num_decode_requests, 0);
         assert_eq!(fpm.num_queued_prefill, 0);
         assert_eq!(fpm.num_queued_decode, 0);
         assert!(fpm.wall_time_secs > 0.0);
@@ -1526,16 +1527,87 @@ mod forward_pass_metrics {
             arrival_timestamp_ms: None,
         });
 
-        // Pass 2: r2 prefill + decode step runs on all running (r1 + r2)
+        // Pass 2: SGLang runs the r2 prefill batch alone ("run prefill first if possible");
+        // r1 waits for the next pass.
         let pass2 = core.execute_pass(&mut collector, 1.0);
         let fpm2 = pass2.fpm.expect("FPM should be present");
         assert_eq!(fpm2.num_prefill_requests, 1, "r2 is prefilling");
-        // In SGLang, after r2 prefill completes it joins running alongside r1,
-        // so the decode step sees both.
-        assert_eq!(fpm2.num_decode_requests, 2, "r1 + r2 both in decode step");
+        assert_eq!(
+            fpm2.num_decode_requests, 0,
+            "r1 does not decode during r2's prefill"
+        );
+        assert_eq!(fpm2.sum_decode_kv_tokens, 0);
+
+        // Pass 3: no new prefill work, so the running batch (r1 + r2) decodes.
+        let pass3 = core.execute_pass(&mut collector, pass2.end_ms);
+        let fpm3 = pass3.fpm.expect("FPM should be present");
+        assert_eq!(fpm3.num_prefill_requests, 0);
+        assert_eq!(fpm3.num_decode_requests, 2, "r1 + r2 both in decode step");
         assert!(
-            fpm2.sum_decode_kv_tokens > 0,
+            fpm3.sum_decode_kv_tokens > 0,
             "decode requests should have KV context"
+        );
+    }
+
+    #[test]
+    fn test_prefill_pass_stalls_running_decodes_and_charges_no_decode_time() {
+        let mut core = SglangCore::new(fpm_args());
+        let r1 = Uuid::from_u128(1);
+        let r2 = Uuid::from_u128(2);
+        core.receive(DirectRequest {
+            tokens: (0..4).collect(),
+            max_output_tokens: 3,
+            output_token_ids: None,
+            uuid: Some(r1),
+            arrival_timestamp_ms: None,
+        });
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass1 = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(
+            pass1
+                .output_signals
+                .iter()
+                .map(|s| s.uuid)
+                .collect::<Vec<_>>(),
+            vec![r1],
+            "the prefill forward yields r1's first token"
+        );
+        assert_eq!(core.running[0].output_len(), 1);
+
+        core.receive(DirectRequest {
+            tokens: (100..104).collect(),
+            max_output_tokens: 3,
+            output_token_ids: None,
+            uuid: Some(r2),
+            arrival_timestamp_ms: None,
+        });
+        let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
+        assert_eq!(
+            pass2
+                .output_signals
+                .iter()
+                .map(|s| s.uuid)
+                .collect::<Vec<_>>(),
+            vec![r2],
+            "only the freshly prefilled request emits a token; r1 stalls"
+        );
+        assert_eq!(core.running.len(), 2);
+        assert_eq!(core.running[0].uuid, r1, "FIFO order: r1 stays ahead of r2");
+        assert_eq!(core.running[0].output_len(), 1, "r1 did not decode");
+        assert_eq!(core.running[1].output_len(), 1);
+        let decode_only = core.execute_pass(&mut collector, pass2.end_ms);
+        assert_eq!(
+            decode_only
+                .output_signals
+                .iter()
+                .map(|s| s.uuid)
+                .collect::<Vec<_>>(),
+            vec![r1, r2],
+            "with no prefill work the whole running batch decodes"
+        );
+        assert!(
+            decode_only.end_ms - pass2.end_ms > 0.0,
+            "a decode pass advances the clock"
         );
     }
 
