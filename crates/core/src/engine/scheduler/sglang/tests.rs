@@ -1908,6 +1908,104 @@ mod forward_pass_metrics {
     }
 
     #[test]
+    fn test_retraction_requeues_at_back_and_reestimates_new_token_ratio() {
+        // Tight KV (56 tokens): two running requests grow until a decode step must retract one.
+        // SGLang appends the retracted request to the back of the FCFS waiting queue (behind a
+        // request that has never run) and re-estimates `new_token_ratio` from the remaining batch
+        // instead of resetting it to the initial ratio.
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .block_size(4)
+            .num_gpu_blocks(14)
+            .max_num_batched_tokens(Some(32))
+            .max_num_seqs(Some(4))
+            .speedup_ratio(0.0)
+            .sglang(Some(SglangArgs {
+                page_size: Some(4),
+                chunked_prefill_size: Some(32),
+                // Low conservativeness so the second request is admitted while the first runs.
+                schedule_conservativeness: Some(0.3),
+                ..Default::default()
+            }))
+            .build()
+            .unwrap();
+        let mut core = SglangCore::new(args);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let r1 = Uuid::from_u128(1);
+        let r2 = Uuid::from_u128(2);
+        let fresh = Uuid::from_u128(3);
+        for (uuid, tokens, max_output_tokens) in [
+            (r1, (0..4).collect::<Vec<_>>(), 30),
+            (r2, (100..104).collect(), 30),
+        ] {
+            core.receive(DirectRequest {
+                tokens,
+                max_output_tokens,
+                output_token_ids: None,
+                uuid: Some(uuid),
+                arrival_timestamp_ms: None,
+            });
+        }
+        // Pass 1 admits r1 only (r2 needs its full output reserved); r2 is admitted on the next
+        // pass once r1's remaining output is only reserved at `new_token_ratio`.
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(core.running.len(), 1);
+        // A request that does not fit waits in the queue ahead of any retraction.
+        core.receive(DirectRequest {
+            tokens: (200..232).collect(),
+            max_output_tokens: 40,
+            output_token_ids: None,
+            uuid: Some(fresh),
+            arrival_timestamp_ms: None,
+        });
+
+        let mut now = first.end_ms;
+        let mut retracted_seen = false;
+        let mut saw_two_running = false;
+        for _ in 0..40 {
+            let pass = core.execute_pass(&mut collector, now);
+            now = pass.end_ms + 1.0;
+            saw_two_running |= core.running.len() == 2;
+            if let Some(pos) = core.waiting.iter().position(|req| req.output_len() > 0) {
+                assert!(
+                    saw_two_running,
+                    "test setup: both requests should have run together"
+                );
+                retracted_seen = true;
+                let fresh_pos = core
+                    .waiting
+                    .iter()
+                    .position(|req| req.uuid == fresh)
+                    .expect("fresh request still waiting");
+                assert!(
+                    fresh_pos < pos,
+                    "retracted request must queue behind the never-run request"
+                );
+                let remaining = core.running.len();
+                assert_eq!(remaining, 1);
+                let decoded: usize = core.running.iter().map(|req| req.output_len()).sum();
+                let max_new: usize = core.running.iter().map(|req| req.max_output_tokens).sum();
+                let expected =
+                    ((decoded as f64 + 20.0 * remaining as f64) / (max_new as f64 + 1.0)).min(1.0);
+                assert!(
+                    (core.new_token_ratio - expected).abs() < 1e-9,
+                    "ratio {} should be re-estimated to {expected}",
+                    core.new_token_ratio
+                );
+                assert!(
+                    (expected - core.config.init_new_token_ratio).abs() > 1e-9,
+                    "test setup: the estimate must differ from the initial ratio"
+                );
+                break;
+            }
+        }
+        assert!(
+            retracted_seen,
+            "expected a decode retraction under KV pressure"
+        );
+    }
+
+    #[test]
     fn test_fpm_retracted_decode_becomes_queued_decode() {
         // Very tight KV to force decode retraction. Fill the KV with running
         // requests, then the decode step should retract some, and those should

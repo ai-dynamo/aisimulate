@@ -37,6 +37,10 @@ use crate::engine::scheduler::{
     capture_kv_event_sink,
 };
 
+/// SGLang `SGLANG_RETRACT_DECODE_STEPS`: decode steps worth of KV reserved per remaining request
+/// when re-estimating `new_token_ratio` after a retraction.
+const RETRACT_DECODE_STEPS: usize = 20;
+
 pub(crate) struct SglangCore {
     pub(super) config: SglangConfig,
     dp_rank: u32,
@@ -691,9 +695,9 @@ impl SglangCore {
             ),
         };
 
-        if admit.oom {
-            self.new_token_ratio = self.config.init_new_token_ratio;
-        }
+        // SGLang's `get_new_batch_prefill` only marks the running batch full on
+        // `AddReqResult.NO_TOKEN`; it does not reset `new_token_ratio` there.
+        let _ = admit.oom;
 
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
@@ -773,16 +777,27 @@ impl SglangCore {
             }
         }
 
-        for req in decode.requests.drain(..).rev() {
-            self.waiting.push_front(req);
+        // SGLang re-queues retracted requests through `_add_request_to_queue`, i.e. at the back of
+        // the FCFS waiting queue, behind requests that have not run yet.
+        for req in decode.requests.drain(..) {
+            self.waiting.push_back(req);
         }
 
         if decode.retracted_any {
-            self.new_token_ratio = self.config.init_new_token_ratio;
+            // `ScheduleBatch.retract_decode` re-estimates the output reservation ratio from the
+            // remaining batch: min(1, (decoded + RETRACT_DECODE_STEPS * n) / (max_new + 1)).
+            let remaining = self.running.len();
+            let total_decoded: usize = self.running.iter().map(|req| req.output_len()).sum();
+            let total_max_new: usize = self.running.iter().map(|req| req.max_output_tokens).sum();
+            let estimate = (total_decoded as f64 + RETRACT_DECODE_STEPS as f64 * remaining as f64)
+                / (total_max_new as f64 + 1.0);
+            self.new_token_ratio = estimate.min(1.0);
             self.bump_capacity_generation();
+        } else if !prefill_pass {
+            // The ratio decays in `update_running_batch`, i.e. only on decode passes.
+            self.new_token_ratio = (self.new_token_ratio - self.config.new_token_ratio_decay_step)
+                .max(self.config.min_new_token_ratio);
         }
-        self.new_token_ratio = (self.new_token_ratio - self.config.new_token_ratio_decay_step)
-            .max(self.config.min_new_token_ratio);
 
         // Build FPM snapshot now that all state has settled.
         let sglang_cache_hit_tokens = prefill_fpm
