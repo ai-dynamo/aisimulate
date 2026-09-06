@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -22,6 +23,20 @@ const SEAM_MAX_GAP_SECONDS: f64 = 3600.0;
 const SEAM_MIN_OVERLAP_RATIO: f64 = 0.5;
 const NANOSECONDS_PER_SECOND: f64 = 1_000_000_000.0;
 const NANOSECONDS_PER_MILLISECOND: f64 = 1_000_000.0;
+/// Versioned domain separator for persisted Weka corpus provenance.
+///
+/// Changing these bytes intentionally changes every Weka source digest and,
+/// consequently, the persisted graph identity. Increment the algorithm
+/// version only when making an explicit provenance compatibility break.
+const WEKA_CORPUS_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-weka-corpus-v1\0";
+
+#[derive(Default)]
+struct WekaGraphCache {
+    path_digests: HashMap<PathBuf, String>,
+    graphs: HashMap<String, AgenticTrace>,
+}
+
+static WEKA_GRAPH_CACHE: OnceLock<Mutex<WekaGraphCache>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WekaImportSummary {
@@ -65,8 +80,7 @@ impl WekaImporter {
             );
         }
 
-        let mut corpus_hasher = blake3::Hasher::new();
-        corpus_hasher.update(b"aisimulate-weka-corpus-v1\0");
+        let mut corpus_hasher = new_corpus_hasher();
         let mut block_size = None;
         let mut plays = 0;
         let mut requests = 0;
@@ -217,20 +231,77 @@ pub fn load_weka_agentic_graph(
     path: impl AsRef<Path>,
     expected_block_size: Option<usize>,
 ) -> Result<AgenticTrace> {
+    load_weka_agentic_graph_with_cache_status(path.as_ref(), expected_block_size)
+        .map(|(graph, _cache_hit)| graph)
+}
+
+fn load_weka_agentic_graph_with_cache_status(
+    path: &Path,
+    expected_block_size: Option<usize>,
+) -> Result<(AgenticTrace, bool)> {
+    let canonical_path = canonical_source_path(path)?;
+    let cache = WEKA_GRAPH_CACHE.get_or_init(|| Mutex::new(WekaGraphCache::default()));
+
+    let known_digest = cache
+        .lock()
+        .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?
+        .path_digests
+        .get(&canonical_path)
+        .cloned();
+    if let Some(known_digest) = known_digest {
+        // A path is only a lookup hint. Re-hash its current bytes before every
+        // reuse so replacing or editing a corpus can never return a stale
+        // compiled graph. This still avoids the expensive snapshot, parse,
+        // lowering, row-spool, and graph-build work for sweep candidates.
+        let current_digest = compute_corpus_digest(path)?;
+        let cache = cache
+            .lock()
+            .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?;
+        if current_digest == known_digest
+            && let Some(graph) = cache.graphs.get(&current_digest)
+        {
+            assert_expected_block_size(graph, expected_block_size)?;
+            return Ok((graph.clone(), true));
+        }
+    }
+
     let importer = WekaImporter::open(path)?;
     let header = importer.header().clone();
+    assert_source_block_size(header.block_size, expected_block_size)?;
+    let mut builder = AgenticGraphBuilder::new(header)?;
+    importer.for_each_row(|row| builder.push(row))?;
+    let graph = builder.finish()?;
+    let mut cache = cache
+        .lock()
+        .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?;
+    cache
+        .path_digests
+        .insert(canonical_path, graph.source().digest.clone());
+    cache
+        .graphs
+        .entry(graph.source().digest.clone())
+        .or_insert_with(|| graph.clone());
+    Ok((graph, false))
+}
+
+fn assert_expected_block_size(
+    graph: &AgenticTrace,
+    expected_block_size: Option<usize>,
+) -> Result<()> {
+    assert_source_block_size(graph.block_size(), expected_block_size)
+}
+
+fn assert_source_block_size(block_size: usize, expected_block_size: Option<usize>) -> Result<()> {
     if let Some(expected) = expected_block_size
-        && expected != header.block_size
+        && expected != block_size
     {
         bail!(
             "Weka source block size {} does not match configured block size {}",
-            header.block_size,
+            block_size,
             expected
         );
     }
-    let mut builder = AgenticGraphBuilder::new(header)?;
-    importer.for_each_row(|row| builder.push(row))?;
-    builder.finish()
+    Ok(())
 }
 
 fn validate_preflight_graph(block_size: usize, rows: &[AgenticMooncakeRow]) -> Result<()> {
@@ -469,13 +540,20 @@ fn lower_trace(
 
         let mut inner = Vec::with_capacity(subagent.requests.len());
         for (inner_index, entry) in subagent.requests.iter().enumerate() {
-            let mut request = match entry {
+            let request = match entry {
                 WekaInnerEntry::Normal(request) | WekaInnerEntry::Streaming(request) => {
                     request.clone()
                 }
             };
             if request.t + JOIN_EPSILON_SECONDS < subagent.t {
-                request.t += subagent.t;
+                bail!(
+                    "Weka trace {} has subagent {} inner request {} at {} before its marker at {}; published Weka timestamps must be absolute trace-relative values",
+                    relative_path,
+                    subagent.agent_id,
+                    inner_index,
+                    request.t,
+                    subagent.t
+                );
             }
             validate_request(&request, relative_path)?;
             raw_zero_outputs += usize::from(request.output_length == 0);
@@ -680,7 +758,11 @@ fn lower_trace(
                 session_id: stream.session_id.clone(),
                 model: request.request.model.clone(),
                 input_length: Some(request.request.input_length),
-                output_length: Some(request.request.output_length.max(1)),
+                // Preserve an authored zero: AISimulate's native replay treats
+                // it as a prefill-only/KV-cache-warmup request. HTTP adapters
+                // may need a non-zero wire value, but that endpoint limitation
+                // must not change the canonical graph.
+                output_length: Some(request.request.output_length),
                 output_token_ids: None,
                 hash_ids: Some(hash_ids),
                 not_before_ms: seconds_to_milliseconds(request.request.t - root_time),
@@ -1300,17 +1382,18 @@ fn subagent_end(subagent: &WekaSubagent) -> f64 {
         .iter()
         .map(|entry| match entry {
             WekaInnerEntry::Normal(request) | WekaInnerEntry::Streaming(request) => {
-                let mut request = request.clone();
-                if request.t + JOIN_EPSILON_SECONDS < subagent.t {
-                    request.t += subagent.t;
-                }
-                request_end(&request)
+                request_end(request)
             }
         })
         .fold(subagent.t, f64::max)
 }
 
 fn request_end(request: &WekaRequest) -> f64 {
+    // AIPerf's Weka contract treats an absent/null api_time as a zero-width
+    // recorded interval for dependency inference. Keep the authored value as
+    // `None` in `recorded_api_time_ms` so unknown duration remains distinct
+    // from an explicit zero in provenance and graph identity. Negative and
+    // non-finite values are rejected by `validate_request`.
     request.t + request.api_time.unwrap_or(0.0).max(0.0)
 }
 
@@ -1338,11 +1421,62 @@ fn namespace(relative_path: &str) -> String {
     format!("weka:{}", &digest[..16])
 }
 
+fn new_corpus_hasher() -> blake3::Hasher {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(WEKA_CORPUS_DIGEST_DOMAIN_V1);
+    hasher
+}
+
+fn canonical_source_path(path: &Path) -> Result<PathBuf> {
+    // Validate the source kind and symlink policy before canonicalizing it;
+    // canonicalization alone would otherwise hide a symlinked input.
+    collect_source_files(path)?;
+    std::fs::canonicalize(path)
+        .with_context(|| format!("canonicalizing Weka source {}", path.display()))
+}
+
+fn compute_corpus_digest(path: &Path) -> Result<String> {
+    let (_root, files) = collect_source_files(path)?;
+    if files.is_empty() {
+        bail!(
+            "Weka source {} contains no JSON or JSONL files",
+            path.display()
+        );
+    }
+    let mut hasher = new_corpus_hasher();
+    for (file_path, relative_path) in files {
+        hash_source_file(&file_path, &relative_path, &mut hasher, |_| Ok(()))?;
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 fn snapshot_source_file(
     path: &Path,
     relative_path: &str,
     corpus_hasher: &mut blake3::Hasher,
 ) -> Result<File> {
+    let mut snapshot = tempfile::tempfile()
+        .with_context(|| format!("creating snapshot for Weka source {}", path.display()))?;
+    hash_source_file(path, relative_path, corpus_hasher, |bytes| {
+        snapshot
+            .write_all(bytes)
+            .with_context(|| format!("snapshotting Weka source {}", path.display()))
+    })?;
+    snapshot
+        .seek(SeekFrom::Start(0))
+        .with_context(|| format!("rewinding Weka source snapshot {}", path.display()))?;
+    Ok(snapshot)
+}
+
+fn hash_source_file<F>(
+    path: &Path,
+    relative_path: &str,
+    corpus_hasher: &mut blake3::Hasher,
+    mut consume: F,
+) -> Result<()>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("reading metadata for Weka source {}", path.display()))?;
     if metadata.file_type().is_symlink() {
@@ -1359,8 +1493,6 @@ fn snapshot_source_file(
     corpus_hasher.update(&byte_len.to_le_bytes());
 
     let mut reader = BufReader::new(file);
-    let mut snapshot = tempfile::tempfile()
-        .with_context(|| format!("creating snapshot for Weka source {}", path.display()))?;
     let mut buffer = [0_u8; 64 * 1024];
     let mut bytes_read = 0_u64;
     loop {
@@ -1374,9 +1506,7 @@ fn snapshot_source_file(
             .checked_add(count as u64)
             .context("Weka source byte count overflowed u64")?;
         corpus_hasher.update(&buffer[..count]);
-        snapshot
-            .write_all(&buffer[..count])
-            .with_context(|| format!("snapshotting Weka source {}", path.display()))?;
+        consume(&buffer[..count])?;
     }
     if bytes_read != byte_len {
         bail!(
@@ -1386,10 +1516,7 @@ fn snapshot_source_file(
             bytes_read
         );
     }
-    snapshot
-        .seek(SeekFrom::Start(0))
-        .with_context(|| format!("rewinding Weka source snapshot {}", path.display()))?;
-    Ok(snapshot)
+    Ok(())
 }
 
 fn has_weka_extension(path: &Path) -> bool {
@@ -1613,7 +1740,7 @@ mod tests {
             .iter()
             .find(|row| row.request_id.ends_with("outer:3:inner:0"))
             .unwrap();
-        assert_eq!(background.output_length, Some(1));
+        assert_eq!(background.output_length, Some(0));
         assert!(!rows.iter().any(|row| {
             row.dependencies.iter().any(|edge| {
                 edge.request_id == background.request_id
@@ -2096,6 +2223,102 @@ mod tests {
     }
 
     #[test]
+    fn subagent_request_before_marker_is_rejected_as_non_absolute() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[1]},
+                {"t":1.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":0.25,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+
+        let error = load_weka_agentic_rows(&path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("published Weka timestamps must be absolute trace-relative values"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn missing_null_and_zero_api_time_follow_aiperf_interval_contract() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        let cases = [
+            ("absent", None, None),
+            ("null", Some(serde_json::Value::Null), None),
+            ("zero", Some(serde_json::json!(0.0)), Some(0.0)),
+        ];
+
+        for (name, api_time, expected_recorded) in cases {
+            let mut first = request(0.0, 4, 1, &[1]);
+            if let Some(api_time) = api_time {
+                first["api_time"] = api_time;
+            }
+            write_trace(
+                &path,
+                serde_json::json!([first, request(1.0, 8, 1, &[1, 2])]),
+            );
+
+            let (_, rows) = load_weka_agentic_rows(&path).unwrap();
+            let first = rows
+                .iter()
+                .find(|row| row.request_id.ends_with("outer:0"))
+                .unwrap();
+            let second = rows
+                .iter()
+                .find(|row| row.request_id.ends_with("outer:1"))
+                .unwrap();
+            assert_eq!(
+                first.recorded_api_time_ms, expected_recorded,
+                "{name} must preserve its distinct provenance"
+            );
+            assert!(
+                second.dependencies.iter().any(|edge| {
+                    edge.request_id == first.request_id
+                        && edge.relation == AgenticDependencyRelation::Sequence
+                        && edge.trigger == AgenticDependencyTrigger::Completion
+                        && (edge.delay_ms - 1_000.0).abs() < 1e-6
+                }),
+                "{name} must use a zero-width interval for graph shaping: {rows:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiled_graph_cache_reuses_unchanged_content_and_invalidates_edits() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(&path, serde_json::json!([request(0.0, 4, 1, &[1])]));
+
+        let (first, first_hit) = load_weka_agentic_graph_with_cache_status(&path, Some(4)).unwrap();
+        let (second, second_hit) =
+            load_weka_agentic_graph_with_cache_status(&path, Some(4)).unwrap();
+        assert!(!first_hit);
+        assert!(second_hit);
+        assert_eq!(first.identity(), second.identity());
+
+        write_trace(&path, serde_json::json!([request(0.0, 8, 0, &[1, 2])]));
+        let (changed, changed_hit) =
+            load_weka_agentic_graph_with_cache_status(&path, Some(4)).unwrap();
+        assert!(!changed_hit);
+        assert_ne!(first.source().digest, changed.source().digest);
+        assert_eq!(changed.nodes()[0].max_output_tokens(), 0);
+
+        let error = load_weka_agentic_graph_with_cache_status(&path, Some(8)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match configured block size")
+        );
+    }
+
+    #[test]
     fn direct_weka_and_materialized_v2_have_identical_graph_identity() {
         let directory = tempdir().unwrap();
         let source = directory.path().join("trace.json");
@@ -2106,27 +2329,29 @@ mod tests {
                 {"t":0.1,"type":"subagent","agent_id":"worker","subagent_type":"Explore","duration_ms":400,"status":"completed","requests":[
                     {"t":0.2,"type":"s","model":"model","in":4,"out":1,"hash_ids":[3],"api_time":0.1}
                 ],"models":["model"]},
-                {"t":0.6,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,4]}
+                {"t":0.6,"type":"s","model":"model","in":12,"out":0,"hash_ids":[1,2,4]}
             ]),
         );
 
         let direct = load_weka_agentic_graph(&source, Some(4)).unwrap();
         assert_eq!(
             direct.source().digest,
-            "5de997508b75b27a724157c08c2a8d3a3fa7d543ae1af57ac1db5ee7daa628f1"
+            "fc925971fc3d74f8eaba6ca76fb2b93288b711de40e8da61dd104a9f832eafb9"
         );
         assert_eq!(
             direct.graph_digest(),
-            "2e60268dc89a8eca31d4acd674df13cd43fe0d2a649a772db2d5a0d4a4a53ff2"
+            "7e8753e35fcf0269a70f07884e4786987afa4c07cc0d65740a90493ceb6c3e3d"
         );
         let importer = WekaImporter::open(&source).unwrap();
         let (summary, rows) = importer.collect_rows().unwrap();
         assert_eq!(summary.requests, 3);
         assert_eq!(summary.plays, 1);
+        assert_eq!(summary.raw_zero_outputs, 1);
         assert!(
             rows.iter()
                 .any(|row| row.recorded_api_time_ms == Some(250.0))
         );
+        assert!(rows.iter().any(|row| row.output_length == Some(0)));
 
         let materialized = directory.path().join("trace-v2.jsonl");
         let mut jsonl = serde_json::to_string(&summary.header).unwrap();

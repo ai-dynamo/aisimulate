@@ -329,3 +329,7 @@ def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
     assert min(record["dispatched_at_ms"] for record in by_play[ordered[1]]) >= max(
         record["terminal_time_ms"] for record in by_play[ordered[0]]
     )
+    prefill_only = by_play[ordered[1]][0]
+    assert prefill_only["requested_output_length"] == 0
+    assert prefill_only["output_length"] == 0
+    assert prefill_only["first_token_ms"] is None
