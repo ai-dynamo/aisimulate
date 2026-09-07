@@ -9,7 +9,11 @@ areas:
   - label: maintainers
     github_team: "@ai-dynamo/access-aisimulate-maintain"
     path_globs:
+      - AGENTS.md
+      - CODE_OF_CONDUCT.md
+      - DEVELOPMENT.md
       - LICENSE
+      - THIRD_PARTY_NOTICES.md
       - README.md
       - SECURITY.md
       - CONTRIBUTING.md
@@ -58,6 +62,7 @@ areas:
     github_team: "@ai-dynamo/aisimulate-infra-codeowners"
     path_globs:
       - .github/
+      - .dockerignore
       - .gitignore
       - CODEOWNERS
       - Cargo.lock
@@ -70,6 +75,7 @@ areas:
       - tests/test_aic_sync.py
       - tests/test_pages_site.py
       - tests/test_e2e_accuracy_overview.py
+      - tests/test_source_compliance.py
 
 # More-specific shared entries are emitted after base area rules, preserving
 # GitHub's last-match-wins behavior. As in AIConfigurator, the maintainer team
@@ -168,6 +174,10 @@ shared:
     owners: [infra, maintainers]
   - glob: SECURITY.md
     owners: [infra, maintainers]
+  - glob: AGENTS.md
+    owners: [infra, maintainers]
+  - glob: DEVELOPMENT.md
+    owners: [infra, maintainers]
   - glob: .gitattributes
     owners: [infra, maintainers]
   # Imported AIC repository metadata is inactive in this monorepo, but changes
@@ -187,12 +197,6 @@ shared:
     owners: [infra, maintainers]
   - glob: python/aisimulate/.pre-commit-config.yaml
     owners: [infra, maintainers]
-  - glob: python/aisimulate/AGENTS.md
-    owners: [infra, maintainers]
-  - glob: python/aisimulate/DEVELOPMENT.md
-    owners: [infra, maintainers]
-  - glob: python/aisimulate/SECURITY.md
-    owners: [infra, maintainers]
   - glob: python/aisimulate/eslint.config.js
     owners: [infra, maintainers]
   - glob: python/aisimulate/pyproject.toml
@@ -208,8 +212,6 @@ shared:
   - glob: python/aisimulate/.github/codeowners/
     owners: [infra, maintainers]
   - glob: python/aisimulate/.github/workflows/codeowners.yml
-    owners: [infra, maintainers]
-  - glob: python/aisimulate/CODEOWNERS
     owners: [infra, maintainers]
   - glob: .github/codeowners/
     owners: [infra, maintainers]

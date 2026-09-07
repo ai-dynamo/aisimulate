@@ -23,6 +23,7 @@ def prediction_to_replay_spec(
     config: CorePredictionConfig,
     *,
     adapter_specs: dict[str, AdapterReplaySpec] | None = None,
+    execution_mode: str = "offline",
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
@@ -36,6 +37,7 @@ def prediction_to_replay_spec(
         backend_deployment=deployment,
         workload=workload,
         goal=goal,
+        execution_mode=execution_mode,
         concurrency=concurrency,
         adapters=dict(adapter_specs or {}),
     )
@@ -151,6 +153,7 @@ def _worker_engine_args(
         "aic_attention_dp_size": parallel.attention_data,
         "max_num_batched_tokens": worker.scheduler.max_batched_tokens,
         "max_num_seqs": worker.scheduler.max_sequences,
+        "prefill_schedule_interval": worker.scheduler.prefill_schedule_interval,
         "block_size": block_size,
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
@@ -173,6 +176,7 @@ def _worker_engine_args(
         payload["num_gpu_blocks"] = capacity.blocks
     else:
         assert memory_fraction is not None
+        payload["cuda_graph_reserved_bytes"] = capacity.cuda_graph_reserved_bytes
         payload[
             {
                 "vllm": "gpu_memory_utilization",

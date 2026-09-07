@@ -11,6 +11,7 @@ from tools.support_matrix.support_matrix import (
     STATUS_FAIL,
     STATUS_FRAMEWORK_INCOMPATIBLE,
     STATUS_HW_INCOMPATIBLE,
+    STATUS_HYBRID_PASS,
     SupportMatrix,
     TestConstraints,
 )
@@ -53,7 +54,7 @@ def _patch_large_constraints(monkeypatch) -> None:
     )
 
 
-def test_qwen36_encoder_unsupported_preempts_text_backbone_hybrid_rescue(monkeypatch):
+def test_w4a16_nvfp4_moe_silicon_gap_is_rescued_by_hybrid_with_image_workload(monkeypatch):
     calls: list[str] = []
 
     def fake_run_mode(**kwargs):
@@ -63,9 +64,13 @@ def test_qwen36_encoder_unsupported_preempts_text_backbone_hybrid_rescue(monkeyp
                 "Unsupported moe quant mode 'w4a16_nvfp4' for system='b200_sxm', backend='vllm', version='0.22.0'."
             )
         note_provenance("xprofile")
-        return pd.DataFrame({"x": [1.0]})
+        # Qwen3.6 implements its encoder (nested vision_config), so the rescue
+        # must carry the canonical image workload and positive encoder evidence.
+        assert kwargs["image_workload"] is not None
+        return pd.DataFrame({"encoder_latency": [1.25], "encoder_memory": [0.5]})
 
     monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    monkeypatch.setattr(support_matrix_module, "_encoder_perf_data_available", lambda *_args: True)
     _patch_large_constraints(monkeypatch)
 
     statuses, errors, commands, provenance = SupportMatrix.run_single_test(
@@ -78,11 +83,12 @@ def test_qwen36_encoder_unsupported_preempts_text_backbone_hybrid_rescue(monkeyp
         include_commands=True,
     )
 
-    assert statuses == {"agg": STATUS_FAIL}
-    assert errors["agg"].startswith("ENCODER_UNSUPPORTED:")
-    assert provenance == {"agg": ""}
-    assert calls == []
-    assert "--expect-error-prefix ENCODER_UNSUPPORTED:" in commands["agg"]
+    assert statuses == {"agg": STATUS_HYBRID_PASS}
+    assert errors == {"agg": None}
+    assert provenance == {"agg": "xprofile"}
+    assert calls == ["SILICON", "HYBRID"]
+    assert "--database-mode HYBRID" in commands["agg"]
+    assert "--image-height 1024 --image-width 1024 --num-images 1" in commands["agg"]
 
 
 def test_dsv4_vllm_019_unsupported_mxfp8_quant_is_framework_incompatible(monkeypatch):

@@ -35,3 +35,9 @@ feature exposes registration hooks for the unified `aisimulate._runtime`
 extension, and `embed-python` additionally enables PyO3 interpreter
 initialization for standalone Rust applications that call into Python during
 one-time model compilation.
+
+## Scheduler fidelity
+
+The replay engine models vLLM's attention-DP prefill cadence through
+`EngineConfig::prefill_schedule_interval`. See the
+[configuration and validation notes](../../docs/vllm-prefill-schedule-interval.md).

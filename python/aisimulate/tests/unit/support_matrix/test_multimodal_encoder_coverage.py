@@ -156,7 +156,7 @@ def test_encoder_model_cannot_pass_with_zero_encoder_evidence(monkeypatch, mode,
 @pytest.mark.parametrize(
     "model",
     [
-        "Qwen/Qwen3.5-27B",
+        "google/gemma-4-26B-A4B",
         "meta-llama/Llama-4-Scout-17B-16E-Instruct",
         "stepfun-ai/Step-3.7-Flash",
     ],
@@ -200,7 +200,7 @@ def test_encoder_unsupported_row_persists_a_valid_preflight_replay_command(monke
     _patch_constraints(monkeypatch)
 
     statuses, errors, commands, _sources = SupportMatrix.run_single_test(
-        model="Qwen/Qwen3.5-27B",
+        model="google/gemma-4-26B-A4B",
         system="b200_sxm",
         backend="vllm",
         version="0.24.0",
@@ -208,8 +208,8 @@ def test_encoder_unsupported_row_persists_a_valid_preflight_replay_command(monke
         include_commands=True,
     )
     row = [
-        "Qwen/Qwen3.5-27B",
-        "Qwen3_5ForConditionalGeneration",
+        "google/gemma-4-26B-A4B",
+        "Gemma4ForConditionalGeneration",
         "b200_sxm",
         "vllm",
         "0.24.0",
@@ -238,7 +238,7 @@ def test_encoder_unsupported_row_persists_a_valid_preflight_replay_command(monke
             "HW_INCOMPATIBLE",
             (
                 "uv run python tools/support_matrix/generate_support_matrix.py "
-                "--model Qwen/Qwen3.5-27B --system b200_sxm --backend vllm "
+                "--model google/gemma-4-26B-A4B --system b200_sxm --backend vllm "
                 "--backend-version 0.24.0 --mode agg --no-save --expect-status FAIL "
                 "--expect-error-prefix ENCODER_UNSUPPORTED:"
             ),
@@ -248,8 +248,8 @@ def test_encoder_unsupported_row_persists_a_valid_preflight_replay_command(monke
 )
 def test_encoder_unsupported_row_requires_failure_preflight_contract(status, command, expected_error):
     row = [
-        "Qwen/Qwen3.5-27B",
-        "Qwen3_5ForConditionalGeneration",
+        "google/gemma-4-26B-A4B",
+        "Gemma4ForConditionalGeneration",
         "b200_sxm",
         "vllm",
         "0.24.0",
@@ -620,3 +620,33 @@ def test_preflight_replay_command_must_not_carry_image_arguments(monkeypatch):
     errors = check_csv_sanity(SUPPORT_MATRIX_HEADER, [row])
 
     assert any("must not carry image arguments" in error for error in errors)
+
+
+@pytest.mark.parametrize("model", ["Qwen/Qwen3.5-27B", "nvidia/Qwen3.6-35B-A3B-NVFP4"])
+def test_qwen35_encoder_is_implemented_through_the_nested_vision_config(monkeypatch, model):
+    calls = []
+
+    def fake_run_mode(**kwargs):
+        calls.append(kwargs)
+        return _encoder_df(kwargs["mode"])
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_constraints(monkeypatch)
+
+    statuses, errors, commands, _sources = SupportMatrix.run_single_test(
+        model=model,
+        system="b200_sxm",
+        backend="vllm",
+        version="0.24.0",
+        system_spec=_b200_system_spec(),
+        modes_to_test=("agg",),
+        include_commands=True,
+    )
+
+    coverage = _get_encoder_coverage(model)
+    assert coverage.checkpoint_declares_encoder
+    assert coverage.aic_encoder_implemented
+    assert statuses == {"agg": STATUS_PASS}
+    assert errors == {"agg": None}
+    assert calls[0]["image_workload"] == SUPPORT_MATRIX_IMAGE_WORKLOAD
+    assert "--image-height 1024 --image-width 1024 --num-images 1" in commands["agg"]

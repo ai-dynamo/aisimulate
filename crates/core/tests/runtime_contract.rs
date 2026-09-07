@@ -32,6 +32,7 @@ fn request(
         output_tokens,
         output_token_ids: None,
         dp_rank: None,
+        prefill_dp_rank: None,
         session_id: None,
         turn_index: None,
         metadata: serde_json::Value::Null,

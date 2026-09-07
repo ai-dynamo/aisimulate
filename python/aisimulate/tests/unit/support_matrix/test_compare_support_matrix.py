@@ -280,7 +280,7 @@ def test_hardware_incompatible_to_fail_is_blocking_transition():
 @pytest.mark.parametrize("old_status", [STATUS_PASS, STATUS_HYBRID_PASS, STATUS_HW_INCOMPATIBLE])
 def test_explicit_encoder_unsupported_migration_is_not_blocking(old_status):
     old_row = _row(old_status)
-    old_row[:2] = ["Qwen/Qwen3.5-27B", "Qwen3_5ForConditionalGeneration"]
+    old_row[:2] = ["google/gemma-4-26B-A4B", "Gemma4ForConditionalGeneration"]
     new_row = _row(
         STATUS_FAIL,
         "ENCODER_UNSUPPORTED: checkpoint declares vision but AIC has no encoder implementation",

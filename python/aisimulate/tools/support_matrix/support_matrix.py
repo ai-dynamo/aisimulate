@@ -154,10 +154,14 @@ def _get_encoder_coverage(model: str) -> EncoderCoverage:
     )
 
     # ``VisionEncoderConfig`` is emitted only when the config parser knows how to
-    # normalize this architecture's encoder. The subsequent nonzero evidence gate
-    # catches a model implementation that fails to turn it into executable ops.
-    aic_encoder_implemented = checkpoint_declares_encoder and isinstance(
-        model_info.get("extra_params"), common.VisionEncoderConfig
+    # normalize this architecture's encoder: either as the model's extra_params
+    # (Qwen3-VL) or nested under a hybrid model config's ``vision_config``
+    # (Qwen3.5). The subsequent nonzero evidence gate catches a model
+    # implementation that fails to turn it into executable ops.
+    extra_params = model_info.get("extra_params")
+    aic_encoder_implemented = checkpoint_declares_encoder and (
+        isinstance(extra_params, common.VisionEncoderConfig)
+        or isinstance(getattr(extra_params, "vision_config", None), common.VisionEncoderConfig)
     )
     return EncoderCoverage(
         checkpoint_declares_encoder=checkpoint_declares_encoder,
