@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::engine::CacheTierAttribution;
 use crate::replay::PlacementCacheSample;
 use crate::replay::loadgen::{
-    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticTrajectorySnapshot,
+    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPlayOutcome, AgenticTrajectorySnapshot,
 };
 
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
@@ -34,6 +34,8 @@ pub struct ReplayReport {
     /// Canonical driver lifecycle evidence. The compact JSON report publishes
     /// only its digest and event count; conformance tests can inspect all events.
     pub agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    /// One explicit completed, failed, or incomplete result per authored play.
+    pub agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
     /// SLA-goodput stats. `Some` only when an SLA was supplied to the collector
     /// (via `set_sla_thresholds`); `None` otherwise — goodput is undefined
     /// without an SLA, so the `goodput_*` keys are omitted from the report.
@@ -327,6 +329,9 @@ impl Serialize for ReplayReport {
                 "agentic_lifecycle_digest",
                 &lifecycle.digest().map_err(serde::ser::Error::custom)?,
             )?;
+        }
+        if let Some(outcomes) = &self.agentic_play_outcomes {
+            map.serialize_entry("agentic_play_outcomes", outcomes)?;
         }
         serialize_distribution(&mut map, "e2e_latency", &self.latency.e2e)?;
         serialize_rate_distribution(
@@ -794,6 +799,7 @@ pub struct TraceCollector {
     agentic_trajectory: Option<AgenticTrajectorySnapshot>,
     agentic_graph: Option<AgenticGraphIdentity>,
     agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
 }
 
 impl TraceRequestStats {
@@ -1009,6 +1015,10 @@ impl TraceCollector {
 
     pub fn set_agentic_lifecycle(&mut self, transcript: AgenticLifecycleTranscript) {
         self.agentic_lifecycle = Some(transcript);
+    }
+
+    pub fn set_agentic_play_outcomes(&mut self, outcomes: Vec<AgenticPlayOutcome>) {
+        self.agentic_play_outcomes = Some(outcomes);
     }
 
     /// Retain the ReplaySpec correlation fields before the request crosses
@@ -1444,6 +1454,7 @@ impl TraceCollector {
         let runtime_evidence = self.runtime_evidence;
         let agentic_graph = self.agentic_graph;
         let agentic_lifecycle = self.agentic_lifecycle;
+        let agentic_play_outcomes = self.agentic_play_outcomes;
         let trajectories = self
             .agentic_trajectory
             .map(|snapshot| TraceTrajectoryStats {
@@ -1598,6 +1609,7 @@ impl TraceCollector {
             trajectories,
             agentic_graph,
             agentic_lifecycle,
+            agentic_play_outcomes,
             goodput,
             per_request,
             runtime_evidence,
