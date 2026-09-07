@@ -347,6 +347,29 @@ pub struct AgenticTrajectorySnapshot {
     pub e2e_latencies_ms: Vec<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgenticPlayStatus {
+    Completed,
+    Failed,
+    Incomplete,
+}
+
+/// Canonical terminal state for one authored agentic play.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgenticPlayOutcome {
+    pub play_id: String,
+    pub status: AgenticPlayStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causal_terminal_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_status: Option<crate::replay::ReplayTerminalStatus>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgenticGraphIdentity {
     pub source: AgenticSourceProvenance,

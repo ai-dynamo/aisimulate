@@ -1348,6 +1348,23 @@ fn agentic_pd_edges_use_emission_and_final_decode_boundaries(#[case] engine_type
     assert_eq!(trajectories.total, 1);
     assert_eq!(trajectories.completed, 1);
     assert_eq!(trajectories.incomplete, 0);
+    let outcomes = report.agentic_play_outcomes.as_ref().unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0].status,
+        crate::replay::loadgen::AgenticPlayStatus::Completed
+    );
+    assert!(outcomes[0].settled_at_ms.is_some());
+    assert!(
+        report
+            .agentic_lifecycle
+            .as_ref()
+            .unwrap()
+            .events
+            .iter()
+            .any(|event| event.event
+                == crate::replay::loadgen::AgenticLifecycleEventKind::PlayQuiescent)
+    );
 }
 
 #[rstest::rstest]
@@ -1705,6 +1722,29 @@ fn agentic_prefill_rejection_skips_descendants_and_releases_the_lane() {
     assert_eq!(trajectories.total, 2);
     assert_eq!(trajectories.completed, 1);
     assert_eq!(trajectories.incomplete, 1);
+    let outcomes = report
+        .agentic_play_outcomes
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|outcome| (outcome.play_id.as_str(), outcome))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        outcomes["play-0"].status,
+        crate::replay::loadgen::AgenticPlayStatus::Failed
+    );
+    assert_eq!(
+        outcomes["play-0"].failure_request_id.as_deref(),
+        Some("rejected-root")
+    );
+    assert_eq!(
+        outcomes["play-0"].failure_status,
+        Some(ReplayTerminalStatus::Rejected)
+    );
+    assert_eq!(
+        outcomes["play-1"].status,
+        crate::replay::loadgen::AgenticPlayStatus::Completed
+    );
 }
 
 #[test]
