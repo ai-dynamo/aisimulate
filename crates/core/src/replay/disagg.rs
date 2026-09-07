@@ -32,10 +32,10 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp, pop_ready_scaling_tick,
-    pop_ready_telemetry_tick, pop_ready_transfer_complete, pop_ready_worker_completions,
-    pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_transfer_complete,
-    push_worker_completions, push_worker_ready,
+    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
+    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_transfer_complete,
+    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
+    push_transfer_complete, push_worker_completions, push_worker_ready,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 #[cfg(test)]
@@ -937,6 +937,8 @@ where
     /// above. Only the planner consumes them, so the plain `run()` path leaves this
     /// `false`.
     collect_fpm: bool,
+    drive_started: bool,
+    drive_finalized: bool,
 }
 
 #[cfg(test)]
@@ -1072,6 +1074,8 @@ where
             scaling_policy: None,
             telemetry: None,
             collect_fpm: false,
+            drive_started: false,
+            drive_finalized: false,
         })
     }
 
@@ -1232,11 +1236,11 @@ where
             return Ok(());
         };
         self.admission
-            .on_request_causal_terminal(uuid, self.now_ms, status)
+            .defer_causal_terminal(uuid, self.now_ms, status)
     }
 
     fn notify_quiescent(&mut self, uuid: Uuid) -> Result<()> {
-        self.admission.on_request_quiescent(uuid, self.now_ms)
+        self.admission.defer_quiescent(uuid, self.now_ms)
     }
 
     /// Submit a coordinator-owned prefill onto a selected worker.
@@ -2009,7 +2013,7 @@ where
     /// Process one decode output signal, including decode router frees and request completion.
     fn process_decode_signal(&mut self, signal: OutputSignal) -> Result<()> {
         if let Some(token_id) = signal.token_id {
-            CoreAdmissionSource::on_output_token(&mut self.admission, signal.uuid, token_id)?;
+            self.admission.defer_output_token(signal.uuid, token_id)?;
             // Generalized-engine completion effects become visible at the
             // attention-DP group boundary. Recording the token here therefore
             // preserves the old EngineComponent::align_pass_token_times
@@ -2451,8 +2455,9 @@ where
             changed |= self.apply_worker_completions()?;
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
-            changed |= self.release_ready_arrivals()?;
             changed |= self.drive_pending_actions()?;
+            changed |= self.admission.flush_agentic_feedback(self.now_ms)?;
+            changed |= self.release_ready_arrivals()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;
             let removed_prefill = self
@@ -3223,7 +3228,10 @@ where
         self.decode_fpm_buffer.take()
     }
 
-    fn run_to_completion(&mut self) -> Result<()> {
+    fn ensure_drive_started(&mut self) -> Result<bool> {
+        if self.drive_started {
+            return Ok(false);
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -3231,11 +3239,25 @@ where
         }
         self.drain_current_timestamp()?;
         self.seed_first_telemetry_tick()?;
-        // With a planner attached, seed the recurring heartbeat; ticks then fire as
-        // events inside drain_current_timestamp.
         self.seed_first_scaling_tick()?;
+        self.drive_started = true;
+        Ok(true)
+    }
 
-        while !self.is_done() {
+    /// Advance to the next fully settled semantic timestamp while preserving
+    /// the live engine, router, handoff, placement, and KV state.
+    pub(crate) fn step(&mut self) -> Result<ReplayStepOutcome> {
+        let just_started = self.ensure_drive_started()?;
+        if self.is_done() {
+            return Ok(ReplayStepOutcome::Complete);
+        }
+        if just_started {
+            return Ok(ReplayStepOutcome::Settled {
+                now_ms: self.now_ms,
+            });
+        }
+
+        loop {
             let (next_timestamp_ms, canonical_timestamp_ms) = self.next_timestamps();
             let Some(canonical_timestamp_ms) = canonical_timestamp_ms else {
                 if self.prefill_engine.has_runnable_worker()
@@ -3256,7 +3278,9 @@ where
             if let Some(cap_ms) = self.max_sim_time_ms
                 && canonical_timestamp_ms > cap_ms
             {
-                break;
+                return Ok(ReplayStepOutcome::TimeLimitReached {
+                    now_ms: self.now_ms,
+                });
             }
             let next_timestamp_ms = next_timestamp_ms
                 .expect("canonical replay activity must have a next scheduled timestamp");
@@ -3266,9 +3290,22 @@ where
             }
             self.advance_now_ms(next_timestamp_ms);
             self.drain_current_timestamp()?;
+            return Ok(if self.is_done() {
+                ReplayStepOutcome::Complete
+            } else {
+                ReplayStepOutcome::Settled {
+                    now_ms: self.now_ms,
+                }
+            });
         }
+    }
 
-        self.publish_final_telemetry_sample()?;
+    fn run_to_completion(&mut self) -> Result<()> {
+        while let ReplayStepOutcome::Settled { .. } = self.step()? {}
+        if !self.drive_finalized {
+            self.publish_final_telemetry_sample()?;
+            self.drive_finalized = true;
+        }
 
         Ok(())
     }
@@ -3287,6 +3324,9 @@ where
         }
         if let Some(identity) = self.admission.agentic_graph_identity() {
             self.collector.set_agentic_graph(identity);
+        }
+        if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
+            self.collector.set_agentic_lifecycle(transcript);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
         Ok((self.collector, self.stats))

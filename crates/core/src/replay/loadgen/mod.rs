@@ -13,7 +13,11 @@ mod weka;
 use rand::Rng;
 use rand::rngs::StdRng;
 
-pub use driver::WorkloadDriver;
+pub use driver::{
+    AGENTIC_LIFECYCLE_SCHEMA_V1, AgenticFeedbackBatch, AgenticLifecycleEvent,
+    AgenticLifecycleEventKind, AgenticLifecycleTranscript, AgenticOutputFeedback,
+    AgenticTerminalFeedback, WorkloadDriver,
+};
 pub use dynamo::DynamoRequestTrace;
 pub use generated::GeneratedRequests;
 pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableEngine, SteppableReplay};

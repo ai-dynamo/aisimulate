@@ -8,9 +8,11 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use super::ReplayMode;
+use crate::replay::ReplayTerminalStatus;
 use crate::replay::core::{AdmissionSource as CoreAdmissionSource, ReadyArrival};
 use crate::replay::loadgen::{
-    GeneratedRequests, ReplayRequestHashes, ReplayRequestPayload, WorkloadDriver,
+    AgenticFeedbackBatch, AgenticOutputFeedback, AgenticTerminalFeedback, GeneratedRequests,
+    ReplayRequestHashes, ReplayRequestPayload, WorkloadDriver,
 };
 use crate::replay::protocol::DirectRequest;
 
@@ -84,6 +86,9 @@ pub(crate) struct AdmissionQueue<Metadata = NoReplayMetadata> {
     source: AdmissionSource,
     mode: ReplayMode,
     metadata: PhantomData<Metadata>,
+    pending_agentic_outputs: Vec<AgenticOutputFeedback>,
+    pending_agentic_terminals: Vec<AgenticTerminalFeedback>,
+    pending_agentic_quiescence: Vec<Uuid>,
 }
 
 impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
@@ -92,6 +97,9 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             source: AdmissionSource::Requests(source),
             mode,
             metadata: PhantomData,
+            pending_agentic_outputs: Vec::new(),
+            pending_agentic_terminals: Vec::new(),
+            pending_agentic_quiescence: Vec::new(),
         }
     }
 
@@ -108,6 +116,9 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             source: AdmissionSource::Workload(driver),
             mode,
             metadata: PhantomData,
+            pending_agentic_outputs: Vec::new(),
+            pending_agentic_terminals: Vec::new(),
+            pending_agentic_quiescence: Vec::new(),
         }
     }
 
@@ -342,6 +353,91 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         driver.on_output_token(uuid, token_id)
     }
 
+    fn is_agentic(&self) -> bool {
+        matches!(&self.source, AdmissionSource::Workload(driver) if driver.is_agentic())
+    }
+
+    pub(crate) fn defer_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
+        if !self.is_agentic() {
+            return CoreAdmissionSource::on_output_token(self, uuid, token_id);
+        }
+        if let Some(existing) = self
+            .pending_agentic_outputs
+            .iter_mut()
+            .find(|feedback| feedback.request_uuid == uuid)
+        {
+            existing.token_ids.push(token_id);
+        } else {
+            self.pending_agentic_outputs.push(AgenticOutputFeedback {
+                request_uuid: uuid,
+                token_ids: vec![token_id],
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn defer_causal_terminal(
+        &mut self,
+        uuid: Uuid,
+        now_ms: f64,
+        status: ReplayTerminalStatus,
+    ) -> Result<()> {
+        if !self.is_agentic() {
+            return self.on_request_causal_terminal(uuid, now_ms, status);
+        }
+        self.pending_agentic_terminals
+            .push(AgenticTerminalFeedback {
+                request_uuid: uuid,
+                status,
+            });
+        Ok(())
+    }
+
+    pub(crate) fn defer_quiescent(&mut self, uuid: Uuid, now_ms: f64) -> Result<()> {
+        if !self.is_agentic() {
+            return self.on_request_quiescent(uuid, now_ms);
+        }
+        self.pending_agentic_quiescence.push(uuid);
+        Ok(())
+    }
+
+    pub(crate) fn defer_terminal(
+        &mut self,
+        uuid: Uuid,
+        now_ms: f64,
+        status: ReplayTerminalStatus,
+    ) -> Result<()> {
+        if !self.is_agentic() {
+            return CoreAdmissionSource::on_terminal(self, uuid, now_ms, status);
+        }
+        self.pending_agentic_terminals
+            .push(AgenticTerminalFeedback {
+                request_uuid: uuid,
+                status,
+            });
+        self.pending_agentic_quiescence.push(uuid);
+        Ok(())
+    }
+
+    pub(crate) fn flush_agentic_feedback(&mut self, now_ms: f64) -> Result<bool> {
+        if self.pending_agentic_outputs.is_empty()
+            && self.pending_agentic_terminals.is_empty()
+            && self.pending_agentic_quiescence.is_empty()
+        {
+            return Ok(false);
+        }
+        let AdmissionSource::Workload(driver) = &mut self.source else {
+            unreachable!("only an agentic workload can buffer agentic feedback");
+        };
+        driver.apply_agentic_feedback_batch(AgenticFeedbackBatch {
+            at_ms: now_ms,
+            output_tokens: std::mem::take(&mut self.pending_agentic_outputs),
+            causal_terminals: std::mem::take(&mut self.pending_agentic_terminals),
+            quiescent_requests: std::mem::take(&mut self.pending_agentic_quiescence),
+        })?;
+        Ok(true)
+    }
+
     pub(crate) fn is_drained(&self) -> bool {
         match &self.source {
             AdmissionSource::Requests(pending) => pending.is_empty(),
@@ -379,6 +475,15 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             return None;
         };
         driver.agentic_graph_identity()
+    }
+
+    pub(crate) fn agentic_lifecycle_transcript(
+        &self,
+    ) -> Option<crate::replay::loadgen::AgenticLifecycleTranscript> {
+        let AdmissionSource::Workload(driver) = &self.source else {
+            return None;
+        };
+        driver.agentic_lifecycle_transcript()
     }
 }
 

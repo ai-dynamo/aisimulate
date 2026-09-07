@@ -8,22 +8,115 @@ use anyhow::{Context, Result, anyhow, bail};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rustc_hash::FxHashMap;
+use serde::Serialize;
 use uuid::Uuid;
 
 use super::trace::validate_synthesizable_prompt;
 use super::types::{
-    AgenticDependencyTrigger, AgenticGraphIdentity, AgenticTrace, AgenticTrajectorySnapshot,
-    CompactReadyTurn, ReadyTurn, ReplayRequestHashes, ReplayRequestPayload, Trace,
+    AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticTrace,
+    AgenticTrajectorySnapshot, CompactReadyTurn, ReadyTurn, ReplayRequestHashes,
+    ReplayRequestPayload, Trace,
 };
 use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
 use crate::replay::ReplayTerminalStatus;
-use crate::replay::protocol::DirectRequest;
+use crate::replay::protocol::{
+    AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+};
+
+pub const AGENTIC_LIFECYCLE_SCHEMA_V1: &str = "aisimulate.agentic.lifecycle.v1";
+const AGENTIC_LIFECYCLE_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-agentic-lifecycle-v1\0";
+
+/// Output progress for one request inside a same-timestamp feedback batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgenticOutputFeedback {
+    pub request_uuid: Uuid,
+    pub token_ids: Vec<u32>,
+}
+
+/// Causal terminal state for one request inside a same-timestamp batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgenticTerminalFeedback {
+    pub request_uuid: Uuid,
+    pub status: ReplayTerminalStatus,
+}
+
+/// Runtime feedback that becomes visible at one logical timestamp.
+///
+/// The runtime owns `at_ms`. The driver canonicalizes request order by graph
+/// ordinal and applies output progress, causal terminals, then quiescence.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgenticFeedbackBatch {
+    pub at_ms: f64,
+    pub output_tokens: Vec<AgenticOutputFeedback>,
+    pub causal_terminals: Vec<AgenticTerminalFeedback>,
+    pub quiescent_requests: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgenticLifecycleEventKind {
+    Dispatch,
+    CausalTerminal,
+    Quiescent,
+    Skipped,
+    PlayQuiescent,
+}
+
+/// Canonical workload-level lifecycle record produced by the agentic driver.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgenticLifecycleEvent {
+    pub schema: &'static str,
+    pub ordinal: u64,
+    pub at_ms: f64,
+    pub play_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    pub event: AgenticLifecycleEventKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ReplayTerminalStatus>,
+}
+
+/// Byte-stable lifecycle evidence for one preloaded graph execution.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgenticLifecycleTranscript {
+    pub events: Vec<AgenticLifecycleEvent>,
+}
+
+impl AgenticLifecycleTranscript {
+    pub fn to_jsonl(&self) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        for event in &self.events {
+            serde_json::to_writer(&mut bytes, event)
+                .context("serializing agentic lifecycle event")?;
+            bytes.push(b'\n');
+        }
+        Ok(bytes)
+    }
+
+    pub fn digest(&self) -> Result<String> {
+        let bytes = self.to_jsonl()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(AGENTIC_LIFECYCLE_DIGEST_DOMAIN_V1);
+        hasher.update(&bytes);
+        Ok(hasher.finalize().to_hex().to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AgenticLifecycleRecord {
+    ordinal: u64,
+    at_ms: f64,
+    play_index: usize,
+    node_index: Option<usize>,
+    event: AgenticLifecycleEventKind,
+    status: Option<ReplayTerminalStatus>,
+}
 
 #[derive(Debug)]
 enum SchedulingPolicy {
     Trace,
     Concurrency(ConcurrencyState),
-    Agentic(AgenticState),
+    Agentic(Box<AgenticState>),
 }
 
 #[derive(Debug)]
@@ -35,6 +128,7 @@ struct ConcurrencyState {
 
 #[derive(Debug)]
 struct AgenticState {
+    identities: Vec<AgenticRuntimeIdentity>,
     node_states: Vec<AgenticNodeState>,
     remaining_dependencies: Vec<usize>,
     authored_not_before_ms: Vec<f64>,
@@ -44,6 +138,8 @@ struct AgenticState {
     node_to_play: Vec<usize>,
     plays: Vec<AgenticPlayState>,
     lanes: Vec<AgenticLaneState>,
+    lifecycle: Vec<AgenticLifecycleRecord>,
+    next_lifecycle_ordinal: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +160,7 @@ struct AgenticDependentEdge {
 
 #[derive(Debug)]
 struct AgenticPlayState {
+    play_id: String,
     nodes: Vec<usize>,
     root_nodes: Vec<usize>,
     lane_index: Option<usize>,
@@ -290,6 +387,29 @@ impl ConcurrencyState {
 }
 
 impl AgenticState {
+    fn record_lifecycle(
+        &mut self,
+        at_ms: f64,
+        play_index: usize,
+        node_index: Option<usize>,
+        event: AgenticLifecycleEventKind,
+        status: Option<ReplayTerminalStatus>,
+    ) {
+        let ordinal = self.next_lifecycle_ordinal;
+        self.next_lifecycle_ordinal = self
+            .next_lifecycle_ordinal
+            .checked_add(1)
+            .expect("agentic lifecycle ordinal overflow");
+        self.lifecycle.push(AgenticLifecycleRecord {
+            ordinal,
+            at_ms,
+            play_index,
+            node_index,
+            event,
+            status,
+        });
+    }
+
     fn activate_play(
         &mut self,
         play_index: usize,
@@ -421,6 +541,13 @@ impl AgenticState {
                     .map_or(now_ms, |seen| seen.min(now_ms)),
             );
         }
+        self.record_lifecycle(
+            now_ms,
+            self.node_to_play[node_index],
+            Some(node_index),
+            AgenticLifecycleEventKind::Dispatch,
+            None,
+        );
     }
 
     fn on_node_terminal(
@@ -432,6 +559,19 @@ impl AgenticState {
         outcome: TurnOutcome,
     ) {
         let play_index = self.node_to_play[node_index];
+        let status = match outcome {
+            TurnOutcome::Completed => ReplayTerminalStatus::Completed,
+            TurnOutcome::Rejected => ReplayTerminalStatus::Rejected,
+            TurnOutcome::Cancelled => ReplayTerminalStatus::Canceled,
+            TurnOutcome::Failed => ReplayTerminalStatus::Failed,
+        };
+        self.record_lifecycle(
+            now_ms,
+            play_index,
+            Some(node_index),
+            AgenticLifecycleEventKind::CausalTerminal,
+            Some(status),
+        );
         let was_failed = self.plays[play_index].failed;
         {
             let play = &mut self.plays[play_index];
@@ -453,7 +593,8 @@ impl AgenticState {
                 self.node_states[node_index] = AgenticNodeState::Failed;
                 self.plays[play_index].failed = true;
                 if !was_failed {
-                    for &pending_node in &self.plays[play_index].nodes {
+                    let play_nodes = self.plays[play_index].nodes.clone();
+                    for pending_node in play_nodes {
                         if matches!(
                             self.node_states[pending_node],
                             AgenticNodeState::Blocked | AgenticNodeState::Ready
@@ -462,6 +603,13 @@ impl AgenticState {
                             let session = &mut sessions[pending_node];
                             session.next_ready_at_ms = None;
                             session.next_turn_index = session.turns.len();
+                            self.record_lifecycle(
+                                now_ms,
+                                play_index,
+                                Some(pending_node),
+                                AgenticLifecycleEventKind::Skipped,
+                                None,
+                            );
                         }
                     }
                 }
@@ -477,6 +625,13 @@ impl AgenticState {
         now_ms: f64,
     ) -> Result<()> {
         let play_index = self.node_to_play[node_index];
+        self.record_lifecycle(
+            now_ms,
+            play_index,
+            Some(node_index),
+            AgenticLifecycleEventKind::Quiescent,
+            None,
+        );
         let play = &mut self.plays[play_index];
         play.emitted_in_flight = play
             .emitted_in_flight
@@ -502,6 +657,13 @@ impl AgenticState {
             return;
         }
         self.plays[play_index].quiescent = true;
+        self.record_lifecycle(
+            now_ms,
+            play_index,
+            None,
+            AgenticLifecycleEventKind::PlayQuiescent,
+            None,
+        );
         let Some(lane_index) = self.plays[play_index].lane_index else {
             return;
         };
@@ -550,6 +712,10 @@ pub struct WorkloadDriver {
 }
 
 impl WorkloadDriver {
+    pub fn is_agentic(&self) -> bool {
+        matches!(self.policy, SchedulingPolicy::Agentic(_))
+    }
+
     pub fn new_trace(trace: Trace, engine_block_size: usize) -> Result<Self> {
         Self::new(
             trace,
@@ -687,6 +853,36 @@ impl WorkloadDriver {
         for (node_index, node) in trace.nodes.iter().enumerate() {
             index_by_id.insert(node.request_id.clone(), node_index);
         }
+        let root_id_by_play = trace
+            .plays
+            .iter()
+            .map(|play| {
+                let root_id = (play.root_nodes.len() == 1)
+                    .then(|| trace.nodes[play.root_nodes[0]].request_id.clone());
+                (play.play_id.clone(), root_id)
+            })
+            .collect::<FxHashMap<_, _>>();
+        let mut identities = trace
+            .nodes
+            .iter()
+            .map(|node| {
+                let parent_id = node
+                    .dependencies
+                    .iter()
+                    .filter(|dependency| dependency.relation == AgenticDependencyRelation::Spawn)
+                    .min_by_key(|dependency| index_by_id[&dependency.request_id])
+                    .map(|dependency| dependency.request_id.clone());
+                AgenticRuntimeIdentity {
+                    request_id: node.request_id.clone(),
+                    play_id: node.play_id.clone(),
+                    conversation_id: node.session_id.clone(),
+                    lane_id: None,
+                    root_id: root_id_by_play.get(&node.play_id).cloned().flatten(),
+                    parent_id,
+                    cache_id: None,
+                }
+            })
+            .collect::<Vec<_>>();
         let mut dispatch_dependents = vec![Vec::new(); trace.nodes.len()];
         let mut completion_dependents = vec![Vec::new(); trace.nodes.len()];
         let mut remaining_dependencies = Vec::with_capacity(trace.nodes.len());
@@ -779,6 +975,7 @@ impl WorkloadDriver {
                     node_to_play[node_index] = play_index;
                 }
                 AgenticPlayState {
+                    play_id: play.play_id,
                     nodes: play.nodes,
                     root_nodes: play.root_nodes,
                     lane_index: None,
@@ -806,9 +1003,16 @@ impl WorkloadDriver {
                 plays[play_index].lane_index = Some(lane_index);
                 lanes[lane_index].plays.push(play_index);
             }
+            for (node_index, identity) in identities.iter_mut().enumerate() {
+                identity.lane_id = Some(format!(
+                    "lane:{}",
+                    plays[node_to_play[node_index]].lane_index.unwrap()
+                ));
+            }
         }
 
         let mut state = AgenticState {
+            identities,
             node_states: vec![AgenticNodeState::Blocked; sessions.len()],
             remaining_dependencies,
             ready_after_ms: authored_not_before_ms.clone(),
@@ -818,6 +1022,8 @@ impl WorkloadDriver {
             node_to_play,
             plays,
             lanes,
+            lifecycle: Vec::new(),
+            next_lifecycle_ordinal: 0,
         };
         let mut ready_sessions = BinaryHeap::new();
         if state.lanes.is_empty() {
@@ -844,7 +1050,7 @@ impl WorkloadDriver {
         }
 
         Ok(Self {
-            policy: SchedulingPolicy::Agentic(state),
+            policy: SchedulingPolicy::Agentic(Box::new(state)),
             prompt_mode: PromptMode::Full,
             emit_session_metadata: true,
             trace_block_size,
@@ -1066,8 +1272,22 @@ impl WorkloadDriver {
                 continue;
             };
             let request_uuid = self.request_uuid(session_index, turn_index);
+            let agentic_identity = match &self.policy {
+                SchedulingPolicy::Agentic(state) => Some(state.identities[session_index].clone()),
+                SchedulingPolicy::Trace | SchedulingPolicy::Concurrency(_) => None,
+            };
             let session = &mut self.sessions[session_index];
             let turn = &mut session.turns[turn_index];
+            let replay_context = turn.request_id.as_ref().zip(turn.play_id.as_ref()).map(
+                |(request_id, _play_id)| ReplayRequestContext {
+                    authored_id: request_id.clone(),
+                    session_id: Some(session.session_id.clone()),
+                    turn_index: None,
+                    metadata: serde_json::Value::Null,
+                    prompt_token_source: ReplayPromptTokenSource::Materialized,
+                    agentic: agentic_identity,
+                },
+            );
             let arrival_timestamp_ms = self.policy.arrival_timestamp_ms(scheduled_ready_at_ms);
             let (request, replay_hashes) = match self.prompt_mode {
                 PromptMode::Full => {
@@ -1084,7 +1304,7 @@ impl WorkloadDriver {
                         priority: turn.priority,
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
-                        replay_context: None,
+                        replay_context: replay_context.clone(),
                     };
                     let request = ReplayRequestPayload::deferred(
                         request_metadata,
@@ -1127,7 +1347,7 @@ impl WorkloadDriver {
                         priority: turn.priority,
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
-                        replay_context: None,
+                        replay_context,
                     });
                     (request, replay_hashes)
                 }
@@ -1207,6 +1427,96 @@ impl WorkloadDriver {
             .emitted_output_tokens
             .checked_add(1)
             .context("workload emitted output token count overflow")?;
+        Ok(())
+    }
+
+    fn agentic_node_ordinal(&self, request_uuid: Uuid) -> Result<usize> {
+        self.in_flight
+            .get(&request_uuid)
+            .map(|turn| turn.session_index)
+            .or_else(|| self.agentic_settling.get(&request_uuid).copied())
+            .ok_or_else(|| anyhow!("unknown agentic workload request {request_uuid}"))
+    }
+
+    /// Apply every workload-visible effect at one runtime-owned timestamp.
+    ///
+    /// Callers may collect effects in engine-specific order. This boundary
+    /// makes that order unobservable by sorting requests by immutable graph
+    /// ordinal, then applying output progress, causal terminals, and finally
+    /// resource quiescence.
+    pub fn apply_agentic_feedback_batch(&mut self, mut batch: AgenticFeedbackBatch) -> Result<()> {
+        if !batch.at_ms.is_finite() || batch.at_ms < 0.0 {
+            bail!(
+                "agentic feedback timestamp must be finite and non-negative; got {}",
+                batch.at_ms
+            );
+        }
+        if !matches!(self.policy, SchedulingPolicy::Agentic(_)) {
+            bail!("agentic feedback batch requires an agentic workload driver");
+        }
+
+        let ordinal_by_uuid = batch
+            .output_tokens
+            .iter()
+            .map(|feedback| feedback.request_uuid)
+            .chain(
+                batch
+                    .causal_terminals
+                    .iter()
+                    .map(|feedback| feedback.request_uuid),
+            )
+            .chain(batch.quiescent_requests.iter().copied())
+            .map(|uuid| Ok((uuid, self.agentic_node_ordinal(uuid)?)))
+            .collect::<Result<FxHashMap<_, _>>>()?;
+        batch
+            .output_tokens
+            .sort_by_key(|feedback| ordinal_by_uuid[&feedback.request_uuid]);
+        batch
+            .causal_terminals
+            .sort_by_key(|feedback| ordinal_by_uuid[&feedback.request_uuid]);
+        batch
+            .quiescent_requests
+            .sort_by_key(|uuid| ordinal_by_uuid[uuid]);
+
+        for pair in batch.output_tokens.windows(2) {
+            if pair[0].request_uuid == pair[1].request_uuid {
+                bail!(
+                    "agentic request {} has duplicate output groups at {} ms",
+                    pair[0].request_uuid,
+                    batch.at_ms
+                );
+            }
+        }
+        for pair in batch.causal_terminals.windows(2) {
+            if pair[0].request_uuid == pair[1].request_uuid {
+                bail!(
+                    "agentic request {} has duplicate causal terminals at {} ms",
+                    pair[0].request_uuid,
+                    batch.at_ms
+                );
+            }
+        }
+        for pair in batch.quiescent_requests.windows(2) {
+            if pair[0] == pair[1] {
+                bail!(
+                    "agentic request {} has duplicate quiescence at {} ms",
+                    pair[0],
+                    batch.at_ms
+                );
+            }
+        }
+
+        for feedback in batch.output_tokens {
+            for token_id in feedback.token_ids {
+                self.on_output_token(feedback.request_uuid, token_id)?;
+            }
+        }
+        for feedback in batch.causal_terminals {
+            self.on_causal_terminal(feedback.request_uuid, batch.at_ms, feedback.status)?;
+        }
+        for request_uuid in batch.quiescent_requests {
+            self.on_quiescent(request_uuid, batch.at_ms)?;
+        }
         Ok(())
     }
 
@@ -1441,6 +1751,32 @@ impl WorkloadDriver {
 
     pub fn agentic_graph_identity(&self) -> Option<AgenticGraphIdentity> {
         self.agentic_graph_identity.clone()
+    }
+
+    pub fn agentic_lifecycle_transcript(&self) -> Option<AgenticLifecycleTranscript> {
+        let SchedulingPolicy::Agentic(state) = &self.policy else {
+            return None;
+        };
+        Some(AgenticLifecycleTranscript {
+            events: state
+                .lifecycle
+                .iter()
+                .map(|record| AgenticLifecycleEvent {
+                    schema: AGENTIC_LIFECYCLE_SCHEMA_V1,
+                    ordinal: record.ordinal,
+                    at_ms: record.at_ms,
+                    play_id: state.plays[record.play_index].play_id.clone(),
+                    request_id: record.node_index.map(|node_index| {
+                        self.sessions[node_index].turns[0]
+                            .request_id
+                            .clone()
+                            .expect("agentic node must retain its authored request ID")
+                    }),
+                    event: record.event,
+                    status: record.status,
+                })
+                .collect(),
+        })
     }
 }
 
@@ -2288,6 +2624,78 @@ mod tests {
 
         assert_eq!(ids[0], ids[1]);
         assert_eq!(ids[0], vec![Uuid::from_u128(1), Uuid::from_u128(2)]);
+    }
+
+    #[test]
+    fn agentic_dispatch_carries_the_stable_identity_envelope() {
+        let trace = agentic_trace(vec![agentic_node("root", "play-a", 0.0, Vec::new())]);
+        let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+
+        let ready = driver.pop_ready(0.0, 1).pop().unwrap();
+        let context = ready.request.replay_context.as_ref().unwrap();
+        let identity = context.agentic.as_ref().unwrap();
+
+        assert_eq!(context.authored_id, "root");
+        assert_eq!(identity.request_id, "root");
+        assert_eq!(identity.play_id, "play-a");
+        assert_eq!(identity.conversation_id, "play-a");
+        assert_eq!(identity.lane_id.as_deref(), Some("lane:0"));
+        assert_eq!(identity.root_id.as_deref(), Some("root"));
+        assert_eq!(identity.parent_id, None);
+    }
+
+    #[test]
+    fn same_timestamp_feedback_is_canonicalized_by_graph_ordinal() {
+        let trace = agentic_trace(vec![
+            agentic_node("a", "play", 0.0, Vec::new()),
+            agentic_node("b", "play", 0.0, Vec::new()),
+        ]);
+
+        let run = |reverse: bool| {
+            let mut driver = WorkloadDriver::new_agentic_trace(trace.clone(), 1).unwrap();
+            let ready = driver.pop_ready(0.0, usize::MAX);
+            let mut terminals = vec![
+                AgenticTerminalFeedback {
+                    request_uuid: ready[0].request_uuid,
+                    status: ReplayTerminalStatus::Completed,
+                },
+                AgenticTerminalFeedback {
+                    request_uuid: ready[1].request_uuid,
+                    status: ReplayTerminalStatus::Failed,
+                },
+            ];
+            let mut quiescent = ready
+                .iter()
+                .map(|turn| turn.request_uuid)
+                .collect::<Vec<_>>();
+            if reverse {
+                terminals.reverse();
+                quiescent.reverse();
+            }
+            driver
+                .apply_agentic_feedback_batch(AgenticFeedbackBatch {
+                    at_ms: 10.0,
+                    output_tokens: Vec::new(),
+                    causal_terminals: terminals,
+                    quiescent_requests: quiescent,
+                })
+                .unwrap();
+            driver.agentic_lifecycle_transcript().unwrap()
+        };
+
+        let authored = run(false);
+        let reversed = run(true);
+        assert_eq!(authored.to_jsonl().unwrap(), reversed.to_jsonl().unwrap());
+        assert_eq!(authored.digest().unwrap(), reversed.digest().unwrap());
+        assert_eq!(
+            authored
+                .events
+                .iter()
+                .filter(|event| event.event == AgenticLifecycleEventKind::CausalTerminal)
+                .map(|event| event.request_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
     }
 
     #[test]
