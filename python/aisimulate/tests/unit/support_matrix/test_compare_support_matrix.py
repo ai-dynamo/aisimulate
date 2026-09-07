@@ -367,3 +367,78 @@ def test_fail_to_framework_incompatible_is_reported_but_not_blocking():
     assert errors == []
     assert "Reclassified as framework-incompatible" in pr_description
     assert "| Qwen/Qwen3-32B-FP8 |" in pr_description
+
+
+_ENCODER_DATA_UNAVAILABLE = "ENCODER_DATA_UNAVAILABLE: a100_sxm/trtllm v1.0.0 has no encoder_attention perf data"
+
+
+def _qwen3_vl_row(status: str, err_msg: str = "", **kwargs) -> list[str]:
+    row = _row(status, err_msg, **kwargs)
+    row[:2] = ["Qwen/Qwen3-VL-8B-Instruct", "Qwen3VLForConditionalGeneration"]
+    return row
+
+
+@pytest.mark.parametrize("old_status", [STATUS_PASS, STATUS_HYBRID_PASS])
+def test_encoder_data_unavailable_migration_is_not_blocking_for_legacy_rows(old_status):
+    old_row = _qwen3_vl_row(old_status)
+    new_row = _qwen3_vl_row(
+        STATUS_FRAMEWORK_INCOMPATIBLE,
+        _ENCODER_DATA_UNAVAILABLE,
+        image_height="1024",
+        image_width="1024",
+        num_images="1",
+    )
+    changed = (*old_row[:6], old_status, STATUS_FRAMEWORK_INCOMPATIBLE)
+
+    errors = find_blocking_status_transitions([changed], [new_row], [old_row])
+
+    assert errors == []
+
+
+def test_encoder_data_unavailable_after_image_backed_pass_is_blocking():
+    old_row = _qwen3_vl_row(STATUS_PASS, image_height="1024", image_width="1024", num_images="1")
+    new_row = _qwen3_vl_row(
+        STATUS_FRAMEWORK_INCOMPATIBLE,
+        _ENCODER_DATA_UNAVAILABLE,
+        image_height="1024",
+        image_width="1024",
+        num_images="1",
+    )
+    changed = (*old_row[:6], STATUS_PASS, STATUS_FRAMEWORK_INCOMPATIBLE)
+
+    errors = find_blocking_status_transitions([changed], [new_row], [old_row])
+
+    assert len(errors) == 1
+    assert "PASS -> FRAMEWORK_INCOMPATIBLE" in errors[0]
+
+
+def test_text_only_model_cannot_claim_encoder_data_unavailable_migration():
+    new_row = _row(STATUS_FRAMEWORK_INCOMPATIBLE, "ENCODER_DATA_UNAVAILABLE: bogus classification")
+
+    errors = find_blocking_status_transitions(
+        [_changed(STATUS_PASS, STATUS_FRAMEWORK_INCOMPATIBLE)],
+        [new_row],
+        [_row(STATUS_PASS)],
+    )
+
+    assert len(errors) == 1
+    assert "PASS -> FRAMEWORK_INCOMPATIBLE" in errors[0]
+
+
+def test_encoder_data_unavailable_waiver_requires_a_system_without_encoder_data():
+    old_row = _qwen3_vl_row(STATUS_PASS)
+    old_row[2:5] = ["b200_sxm", "vllm", "0.24.0"]
+    new_row = _qwen3_vl_row(
+        STATUS_FRAMEWORK_INCOMPATIBLE,
+        "ENCODER_DATA_UNAVAILABLE: b200_sxm/vllm v0.24.0 has no encoder_attention perf data",
+        image_height="1024",
+        image_width="1024",
+        num_images="1",
+    )
+    new_row[2:5] = old_row[2:5]
+    changed = (*old_row[:6], STATUS_PASS, STATUS_FRAMEWORK_INCOMPATIBLE)
+
+    errors = find_blocking_status_transitions([changed], [new_row], [old_row])
+
+    assert len(errors) == 1
+    assert "PASS -> FRAMEWORK_INCOMPATIBLE" in errors[0]

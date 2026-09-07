@@ -9,11 +9,13 @@ from tools.support_matrix import support_matrix as support_matrix_module
 from tools.support_matrix.compare_support_matrix import check_csv_sanity, read_csv
 from tools.support_matrix.support_matrix import (
     STATUS_FAIL,
+    STATUS_FRAMEWORK_INCOMPATIBLE,
     STATUS_PASS,
     SUPPORT_MATRIX_HEADER,
     SUPPORT_MATRIX_IMAGE_WORKLOAD,
     SupportMatrix,
     TestConstraints,
+    _encoder_perf_data_available,
     _get_encoder_coverage,
     _image_workload_csv_values,
 )
@@ -437,3 +439,184 @@ def test_legacy_encoder_row_cannot_be_upgraded_without_image_evidence(tmp_path, 
 
     with pytest.raises(ValueError, match="Legacy multimodal rows cannot be upgraded"):
         SupportMatrix.__new__(SupportMatrix).save_results_to_csv([row], str(tmp_path / "support.csv"))
+
+
+@pytest.mark.parametrize(
+    ("system", "backend", "version", "expected"),
+    [
+        ("a100_sxm", "trtllm", "1.0.0", False),
+        ("b60", "vllm", "0.26.0", False),
+        ("b200_sxm", "vllm", "0.24.0", True),
+    ],
+)
+def test_encoder_perf_data_availability_matches_bundled_databases(system, backend, version, expected):
+    assert _encoder_perf_data_available(system, backend, version) is expected
+
+
+def _run_without_encoder_perf_data(monkeypatch):
+    monkeypatch.setattr(
+        SupportMatrix,
+        "_run_mode",
+        staticmethod(lambda **_kwargs: pytest.fail("the image workload must not run without encoder perf data")),
+    )
+    monkeypatch.setattr(support_matrix_module, "_encoder_perf_data_available", lambda *_args: False)
+    _patch_constraints(monkeypatch)
+    return SupportMatrix.run_single_test(
+        model="Qwen/Qwen3-VL-8B-Instruct",
+        system="a100_sxm",
+        backend="trtllm",
+        version="1.0.0",
+        system_spec=_b200_system_spec(),
+        include_commands=True,
+    )
+
+
+def test_implemented_encoder_without_perf_data_is_a_framework_incompatible_preflight(monkeypatch):
+    statuses, errors, commands, sources = _run_without_encoder_perf_data(monkeypatch)
+
+    assert statuses == {"agg": STATUS_FRAMEWORK_INCOMPATIBLE, "disagg": STATUS_FRAMEWORK_INCOMPATIBLE}
+    assert all(error.startswith("ENCODER_DATA_UNAVAILABLE:") for error in errors.values())
+    assert "a100_sxm/trtllm v1.0.0" in errors["agg"]
+    assert "1x1024x1024" in errors["agg"]
+    assert sources == {"agg": "", "disagg": ""}
+    for mode, command in commands.items():
+        assert "tools/support_matrix/generate_support_matrix.py" in command
+        assert f"--mode {mode}" in command
+        assert "--no-save" in command
+        assert "--expect-status FRAMEWORK_INCOMPATIBLE" in command
+        assert "--expect-error-prefix ENCODER_DATA_UNAVAILABLE:" in command
+        assert "--image-height" not in command
+
+
+def test_encoder_data_unavailable_row_persists_a_valid_preflight_replay_command(monkeypatch):
+    statuses, errors, commands, _sources = _run_without_encoder_perf_data(monkeypatch)
+    row = [
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "Qwen3VLForConditionalGeneration",
+        "a100_sxm",
+        "trtllm",
+        "1.0.0",
+        "agg",
+        statuses["agg"],
+        errors["agg"],
+        commands["agg"],
+        "",
+        *_image_workload_csv_values("Qwen/Qwen3-VL-8B-Instruct"),
+    ]
+
+    assert check_csv_sanity(SUPPORT_MATRIX_HEADER, [row]) == []
+
+
+@pytest.mark.parametrize(
+    ("model", "architecture", "status", "expected_error"),
+    [
+        (
+            "Qwen/Qwen3-VL-8B-Instruct",
+            "Qwen3VLForConditionalGeneration",
+            STATUS_FAIL,
+            "ENCODER_DATA_UNAVAILABLE rows must use status FRAMEWORK_INCOMPATIBLE",
+        ),
+        (
+            "Qwen/Qwen3-8B",
+            "Qwen3ForCausalLM",
+            STATUS_FRAMEWORK_INCOMPATIBLE,
+            "requires a checkpoint with an implemented encoder",
+        ),
+    ],
+)
+def test_encoder_data_unavailable_row_requires_preflight_contract(model, architecture, status, expected_error):
+    command = (
+        f"uv run python tools/support_matrix/generate_support_matrix.py --model {model} "
+        "--system a100_sxm --backend trtllm --backend-version 1.0.0 --mode agg --max-workers 1 --no-save "
+        "--expect-status FRAMEWORK_INCOMPATIBLE --expect-error-prefix ENCODER_DATA_UNAVAILABLE:"
+    )
+    row = [
+        model,
+        architecture,
+        "a100_sxm",
+        "trtllm",
+        "1.0.0",
+        "agg",
+        status,
+        "ENCODER_DATA_UNAVAILABLE: a100_sxm/trtllm v1.0.0 has no encoder_attention perf data",
+        command,
+        "",
+        *_image_workload_csv_values(model),
+    ]
+
+    errors = check_csv_sanity(SUPPORT_MATRIX_HEADER, [row])
+
+    assert any(expected_error in error for error in errors)
+
+
+def test_hardware_incompatibility_takes_precedence_over_missing_encoder_perf_data(monkeypatch):
+    monkeypatch.setattr(
+        SupportMatrix,
+        "_run_mode",
+        staticmethod(lambda **_kwargs: pytest.fail("neither preflight may fall through to the sweep")),
+    )
+    monkeypatch.setattr(support_matrix_module, "_encoder_perf_data_available", lambda *_args: False)
+    monkeypatch.setattr(
+        support_matrix_module,
+        "get_hardware_incompatibility",
+        lambda **_kwargs: support_matrix_module.HardwareIncompatibility(("fp8",), "no FP8 on this GPU"),
+    )
+    _patch_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="Qwen/Qwen3-VL-8B-Instruct",
+        system="a100_sxm",
+        backend="trtllm",
+        version="1.0.0",
+        system_spec=_b200_system_spec(),
+        modes_to_test=("agg",),
+    )
+
+    assert statuses == {"agg": "HW_INCOMPATIBLE"}
+    assert "no FP8 on this GPU" in errors["agg"]
+
+
+def test_encoder_data_unavailable_claim_on_a_system_with_encoder_data_is_rejected():
+    command = (
+        "uv run python tools/support_matrix/generate_support_matrix.py --model Qwen/Qwen3-VL-8B-Instruct "
+        "--system b200_sxm --backend vllm --backend-version 0.24.0 --mode agg --max-workers 1 --no-save "
+        "--expect-status FRAMEWORK_INCOMPATIBLE --expect-error-prefix ENCODER_DATA_UNAVAILABLE:"
+    )
+    row = [
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "Qwen3VLForConditionalGeneration",
+        "b200_sxm",
+        "vllm",
+        "0.24.0",
+        "agg",
+        STATUS_FRAMEWORK_INCOMPATIBLE,
+        "ENCODER_DATA_UNAVAILABLE: b200_sxm/vllm v0.24.0 has no encoder_attention perf data",
+        command,
+        "",
+        *_image_workload_csv_values("Qwen/Qwen3-VL-8B-Instruct"),
+    ]
+
+    errors = check_csv_sanity(SUPPORT_MATRIX_HEADER, [row])
+
+    assert any("no encoder_attention perf data for its system/backend/version" in error for error in errors)
+
+
+def test_preflight_replay_command_must_not_carry_image_arguments(monkeypatch):
+    statuses, errors, commands, _sources = _run_without_encoder_perf_data(monkeypatch)
+    row = [
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "Qwen3VLForConditionalGeneration",
+        "a100_sxm",
+        "trtllm",
+        "1.0.0",
+        "agg",
+        statuses["agg"],
+        errors["agg"],
+        commands["agg"] + " --image-height 512",
+        "",
+        *_image_workload_csv_values("Qwen/Qwen3-VL-8B-Instruct"),
+    ]
+
+    errors = check_csv_sanity(SUPPORT_MATRIX_HEADER, [row])
+
+    assert any("must not carry image arguments" in error for error in errors)

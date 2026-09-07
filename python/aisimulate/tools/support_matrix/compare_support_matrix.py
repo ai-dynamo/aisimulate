@@ -32,6 +32,8 @@ sys.path.insert(0, os.path.join(_REPO_ROOT, "src"))
 sys.path.insert(0, _REPO_ROOT)
 
 from tools.support_matrix.support_matrix import (
+    ENCODER_DATA_UNAVAILABLE_PREFIX,
+    ENCODER_UNSUPPORTED_PREFIX,
     STATUS_FAIL,
     STATUS_FRAMEWORK_INCOMPATIBLE,
     STATUS_HW_INCOMPATIBLE,
@@ -43,6 +45,7 @@ from tools.support_matrix.support_matrix import (
     VALID_PROVENANCE_SOURCES,
     VALID_STATUSES,
     SupportMatrix,
+    _encoder_perf_data_available,
     _get_encoder_coverage,
 )
 
@@ -64,6 +67,35 @@ def _has_declared_unimplemented_encoder(model: str) -> bool:
     except Exception:
         return False
     return coverage.checkpoint_declares_encoder and not coverage.aic_encoder_implemented
+
+
+def _has_implemented_encoder_without_perf_data(model: str, system: str, backend: str, version: str) -> bool:
+    try:
+        coverage = _get_encoder_coverage(model)
+        if not coverage.aic_encoder_implemented:
+            return False
+        return _encoder_perf_data_available(system, backend, version) is False
+    except Exception:
+        return False
+
+
+# Deterministic encoder preflights persisted by SupportMatrix.run_single_test:
+# ErrMsg prefix -> (required status, row predicate, requirement wording). The
+# predicates decide the classification from the row alone, so a row cannot
+# claim a preflight outcome that the generator would not have produced for it.
+_ENCODER_PREFLIGHTS = {
+    ENCODER_UNSUPPORTED_PREFIX: (
+        STATUS_FAIL,
+        lambda row: _has_declared_unimplemented_encoder(row[0]),
+        "a declared but unimplemented encoder",
+    ),
+    ENCODER_DATA_UNAVAILABLE_PREFIX: (
+        STATUS_FRAMEWORK_INCOMPATIBLE,
+        lambda row: _has_implemented_encoder_without_perf_data(row[0], row[2], row[3], row[4]),
+        "an implemented encoder and no encoder_attention perf data for its system/backend/version",
+    ),
+}
+_IMAGE_FLAG_NAMES = ("--image-height", "--image-width", "--num-images")
 
 
 def _read_single_csv(csv_path: Path) -> tuple[list[str], list[list[str]]]:
@@ -212,20 +244,24 @@ def check_csv_sanity(
             except ValueError as exc:
                 errors.append(f"Row {i}: Command is not valid shell syntax: {exc}")
             else:
-                encoder_unsupported_replay = err_msg.startswith("ENCODER_UNSUPPORTED:")
-                if encoder_unsupported_replay:
-                    if status != STATUS_FAIL:
-                        errors.append(f"Row {i}: ENCODER_UNSUPPORTED rows must use status {STATUS_FAIL}")
+                encoder_preflight = next(
+                    (prefix for prefix in _ENCODER_PREFLIGHTS if err_msg.startswith(prefix)),
+                    None,
+                )
+                if encoder_preflight is not None:
+                    preflight_status, preflight_predicate, preflight_requirement = _ENCODER_PREFLIGHTS[
+                        encoder_preflight
+                    ]
+                    preflight_label = encoder_preflight.rstrip(":")
+                    if status != preflight_status:
+                        errors.append(f"Row {i}: {preflight_label} rows must use status {preflight_status}")
                     if "tools/support_matrix/generate_support_matrix.py" not in command_parts:
                         errors.append(
-                            f"Row {i}: ENCODER_UNSUPPORTED replay command must invoke "
+                            f"Row {i}: {preflight_label} replay command must invoke "
                             "tools/support_matrix/generate_support_matrix.py"
                         )
-                    if not _has_declared_unimplemented_encoder(row[0]):
-                        errors.append(
-                            f"Row {i}: ENCODER_UNSUPPORTED requires a checkpoint with a declared "
-                            "but unimplemented encoder"
-                        )
+                    if not preflight_predicate(row):
+                        errors.append(f"Row {i}: {preflight_label} requires a checkpoint with {preflight_requirement}")
 
                 def _option_values(flag: str) -> list[str]:
                     values = []
@@ -236,25 +272,27 @@ def check_csv_sanity(
                             values.append(part.partition("=")[2])
                     return values
 
-                if encoder_unsupported_replay:
+                if encoder_preflight is not None:
                     required_values = {
                         "--model": row[0],
                         "--system": row[2],
                         "--backend": row[3],
                         "--backend-version": row[4],
                         "--mode": row[5],
-                        "--expect-status": STATUS_FAIL,
-                        "--expect-error-prefix": "ENCODER_UNSUPPORTED:",
+                        "--expect-status": preflight_status,
+                        "--expect-error-prefix": encoder_preflight,
                     }
                     for flag, expected_value in required_values.items():
                         actual_values = _option_values(flag)
                         if actual_values != [expected_value]:
                             errors.append(
-                                f"Row {i}: encoder-unsupported replay command must include exactly one "
+                                f"Row {i}: {preflight_label} replay command must include exactly one "
                                 f"{flag} {expected_value}; found {actual_values or 'none'}"
                             )
                     if "--no-save" not in command_parts:
-                        errors.append(f"Row {i}: encoder-unsupported replay command must include --no-save")
+                        errors.append(f"Row {i}: {preflight_label} replay command must include --no-save")
+                    if any(_option_values(flag) for flag in _IMAGE_FLAG_NAMES):
+                        errors.append(f"Row {i}: {preflight_label} replay command must not carry image arguments")
                 else:
                     database_modes = [value.upper() for value in _option_values("--database-mode")]
                     if database_modes != [expected_database_mode]:
@@ -266,7 +304,6 @@ def check_csv_sanity(
                 if header == SUPPORT_MATRIX_HEADER:
                     image_values = row[10:13]
                     populated_image_values = [value for value in image_values if value.strip()]
-                    image_flag_names = ("--image-height", "--image-width", "--num-images")
                     if populated_image_values and len(populated_image_values) != 3:
                         errors.append(
                             f"Row {i}: ImageHeight, ImageWidth, and NumImages must be populated together or all empty"
@@ -279,22 +316,22 @@ def check_csv_sanity(
                         else:
                             if any(int(value) <= 0 for value in expected_image_values):
                                 errors.append(f"Row {i}: image workload metadata must contain positive integers")
-                            image_flags = {
-                                "--image-height": expected_image_values[0],
-                                "--image-width": expected_image_values[1],
-                                "--num-images": expected_image_values[2],
-                            }
-                            for flag, expected_value in image_flags.items():
-                                actual_values = _option_values(flag)
-                                if actual_values != [expected_value]:
-                                    errors.append(
-                                        f"Row {i}: replay command must include exactly one {flag} {expected_value}; "
-                                        f"found {actual_values or 'none'}"
-                                    )
+                            # Preflight rows record the canonical workload that could not be
+                            # exercised; their replay command is the preflight itself and
+                            # carries no image arguments.
+                            if encoder_preflight is None:
+                                image_flags = dict(zip(_IMAGE_FLAG_NAMES, expected_image_values, strict=True))
+                                for flag, expected_value in image_flags.items():
+                                    actual_values = _option_values(flag)
+                                    if actual_values != [expected_value]:
+                                        errors.append(
+                                            f"Row {i}: replay command must include exactly one "
+                                            f"{flag} {expected_value}; found {actual_values or 'none'}"
+                                        )
                     elif any(
                         part == flag or part.startswith(f"{flag}=")
                         for part in command_parts
-                        for flag in image_flag_names
+                        for flag in _IMAGE_FLAG_NAMES
                     ):
                         errors.append(
                             f"Row {i}: replay command includes image arguments but image workload metadata is empty"
@@ -473,23 +510,21 @@ def find_blocking_status_transitions(
         except (TypeError, ValueError):
             return True
 
-    encoder_migration_keys = set()
+    encoder_migration_keys: set[tuple[tuple[str, ...], str]] = set()
     for row in new_data_rows or []:
         key = tuple(row[:6])
-        if (
-            len(row) > 7
-            and row[6] == STATUS_FAIL
-            and row[7].strip().startswith("ENCODER_UNSUPPORTED:")
-            and _is_legacy_backbone_only_row(old_rows.get(key))
-            and _has_declared_unimplemented_encoder(row[0])
-        ):
-            encoder_migration_keys.add(key)
+        if len(row) <= 7 or not _is_legacy_backbone_only_row(old_rows.get(key)):
+            continue
+        for prefix, (preflight_status, preflight_predicate, _requirement) in _ENCODER_PREFLIGHTS.items():
+            if row[6] == preflight_status and row[7].strip().startswith(prefix) and preflight_predicate(row):
+                encoder_migration_keys.add((key, preflight_status))
     for huggingface_id, architecture, system, backend, version, mode, old_status, new_status in changed_rows:
         key = (huggingface_id, architecture, system, backend, version, mode)
-        if new_status == STATUS_FAIL and key in encoder_migration_keys:
-            # AIC-1738 intentionally replaces stale backbone-only coverage with
-            # an explicit encoder-unsupported classification. Only rows without
-            # prior image evidence receive this one-time migration waiver.
+        if (key, new_status) in encoder_migration_keys:
+            # AIC-1738 intentionally replaces stale backbone-only coverage with an
+            # explicit encoder classification (unsupported encoder, or no encoder
+            # perf data on this system). Only rows without prior image evidence
+            # receive this one-time migration waiver.
             continue
         if old_status == STATUS_PASS and new_status != STATUS_PASS:
             errors.append(

@@ -51,6 +51,13 @@ row fails with `ENCODER_NOT_EXERCISED`. It must not inherit PASS from a
 successful text-backbone-only estimate. Text-only checkpoints keep their
 existing workload and leave the image metadata empty.
 
+If AIC implements the encoder but the system/backend/version database has no
+`encoder_attention` perf data, the image workload cannot be answered there. The
+row is classified `FRAMEWORK_INCOMPATIBLE` with an `ENCODER_DATA_UNAVAILABLE`
+reason and a replayable preflight command; the text backbone is not run, the
+row is not retried, and the image metadata records the canonical workload that
+could not be exercised.
+
 ## Retired from default generation
 
 The following bundled configs remain usable explicitly but are superseded in

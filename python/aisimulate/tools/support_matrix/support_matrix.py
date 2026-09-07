@@ -30,6 +30,7 @@ from aiconfigurator.sdk import common, perf_database
 from aiconfigurator.sdk import config as sdk_config
 from aiconfigurator.sdk.models import _get_model_info
 from aiconfigurator.sdk.models.helpers import _apply_model_quant_defaults
+from aiconfigurator.sdk.operations.attention import EncoderAttention
 from aiconfigurator.sdk.operations.util_empirical import PROVENANCE_ORDER, capture_provenance, worst_provenance
 from aiconfigurator.sdk.task_v2 import Task
 
@@ -40,6 +41,9 @@ STATUS_HYBRID_PASS = "HYBRID_PASS"
 STATUS_FAIL = "FAIL"
 STATUS_HW_INCOMPATIBLE = "HW_INCOMPATIBLE"
 STATUS_FRAMEWORK_INCOMPATIBLE = "FRAMEWORK_INCOMPATIBLE"
+# ErrMsg prefixes of the deterministic encoder preflights in run_single_test.
+ENCODER_UNSUPPORTED_PREFIX = "ENCODER_UNSUPPORTED:"
+ENCODER_DATA_UNAVAILABLE_PREFIX = "ENCODER_DATA_UNAVAILABLE:"
 VALID_STATUSES = frozenset(
     {STATUS_PASS, STATUS_HYBRID_PASS, STATUS_FAIL, STATUS_HW_INCOMPATIBLE, STATUS_FRAMEWORK_INCOMPATIBLE}
 )
@@ -164,9 +168,36 @@ def _get_encoder_coverage(model: str) -> EncoderCoverage:
 
 def _encoder_unsupported_error(model: str, coverage: EncoderCoverage) -> str:
     return (
-        "ENCODER_UNSUPPORTED: checkpoint "
+        f"{ENCODER_UNSUPPORTED_PREFIX} checkpoint "
         f"{model!r} declares a vision encoder, but AIC has no encoder implementation "
         f"for architecture {coverage.architecture!r}."
+    )
+
+
+def _encoder_perf_data_available(system: str, backend: str, version: str) -> bool | None:
+    """Return whether the encoder-attention perf table exists for this database.
+
+    ``None`` means no database exists for the combination at all; the regular
+    sweep path owns that failure. ``False`` means the ``encoder_attention``
+    table is absent, so the canonical image workload can never be answered on
+    this system/backend/version.
+    """
+    database = perf_database.get_database(system, backend, version)
+    if database is None:
+        return None
+    EncoderAttention.load_data(database)
+    data = getattr(database, "_encoder_attention_data", None)
+    return bool(data is not None and data.loaded)
+
+
+def _encoder_data_unavailable_error(
+    model: str, system: str, backend: str, version: str, workload: ImageWorkload
+) -> str:
+    return (
+        f"{ENCODER_DATA_UNAVAILABLE_PREFIX} "
+        f"{system}/{backend} v{version} has no encoder_attention perf data, so the canonical "
+        f"{workload.num_images}x{workload.image_height}x{workload.image_width} image workload "
+        f"for {model!r} cannot be exercised."
     )
 
 
@@ -232,15 +263,17 @@ def _support_matrix_row_command(
     return " ".join(shlex.quote(str(part)) for part in parts)
 
 
-def _encoder_unsupported_row_command(
+def _encoder_preflight_row_command(
     *,
     model: str,
     system: str,
     backend: str,
     version: str,
     mode: str,
+    expect_status: str,
+    expect_error_prefix: str,
 ) -> str:
-    """Return a replay command for the support-matrix encoder preflight."""
+    """Return a replay command for a deterministic support-matrix encoder preflight."""
     parts = [
         "uv",
         "run",
@@ -260,9 +293,9 @@ def _encoder_unsupported_row_command(
         "1",
         "--no-save",
         "--expect-status",
-        STATUS_FAIL,
+        expect_status,
         "--expect-error-prefix",
-        "ENCODER_UNSUPPORTED:",
+        expect_error_prefix,
     ]
     return " ".join(shlex.quote(str(part)) for part in parts)
 
@@ -858,12 +891,14 @@ class SupportMatrix:
             statuses = dict.fromkeys(modes_to_test, STATUS_FAIL)
             error_messages = dict.fromkeys(modes_to_test, reason)
             commands = {
-                mode: _encoder_unsupported_row_command(
+                mode: _encoder_preflight_row_command(
                     model=model,
                     system=system,
                     backend=backend,
                     version=version,
                     mode=mode,
+                    expect_status=STATUS_FAIL,
+                    expect_error_prefix=ENCODER_UNSUPPORTED_PREFIX,
                 )
                 for mode in modes_to_test
             }
@@ -893,6 +928,31 @@ class SupportMatrix:
                 if include_commands:
                     return statuses, error_messages, commands, provenance
                 return statuses, error_messages
+
+        if image_workload is not None and _encoder_perf_data_available(system, backend, version) is False:
+            # The encoder is implemented, but this database has no encoder_attention
+            # table, so the image-bearing run can never be answered here. Classify
+            # deterministically instead of letting the sweep fail with a raw traceback,
+            # which the compare gate would treat as a PASS -> FAIL regression and
+            # Phase 2 would retry as if it were transient.
+            reason = _encoder_data_unavailable_error(model, system, backend, version, image_workload)
+            statuses = dict.fromkeys(modes_to_test, STATUS_FRAMEWORK_INCOMPATIBLE)
+            error_messages = dict.fromkeys(modes_to_test, reason)
+            commands = {
+                mode: _encoder_preflight_row_command(
+                    model=model,
+                    system=system,
+                    backend=backend,
+                    version=version,
+                    mode=mode,
+                    expect_status=STATUS_FRAMEWORK_INCOMPATIBLE,
+                    expect_error_prefix=ENCODER_DATA_UNAVAILABLE_PREFIX,
+                )
+                for mode in modes_to_test
+            }
+            if include_commands:
+                return statuses, error_messages, commands, provenance
+            return statuses, error_messages
 
         # By default the matrix runs SILICON first (including declared shared-layer
         # collected rows) and re-runs only structured data gaps (plus explicitly known
@@ -1163,7 +1223,7 @@ class SupportMatrix:
         for model, _arch, system, backend, version, _mode, status, err, _command, _source, *_image in results:
             # Encoder-unsupported is a deterministic checkpoint/AIC contract,
             # not a transient worker failure, so a sequential retry cannot help.
-            if status == STATUS_FAIL and not str(err or "").startswith("ENCODER_UNSUPPORTED:"):
+            if status == STATUS_FAIL and not str(err or "").startswith(ENCODER_UNSUPPORTED_PREFIX):
                 retry_combos.add((model, system, backend, version))
 
         # -- Phase 2: sequential single-process retry of all failures --
