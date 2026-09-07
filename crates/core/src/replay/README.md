@@ -45,6 +45,31 @@ the importer against two revision-pinned rows from the public SemiAnalysis
 `cc-traces-weka-062126-256k` dataset. The rows are held in a temporary directory
 and deleted when the check exits; the complete 570 MB corpus is not downloaded.
 
+### Agentic driver/runtime contract
+
+M1 execution consumes one completely preloaded, immutable
+`ValidatedAgenticGraph`; neither the runtime nor an engine adapter polls a
+client or extends the graph dynamically. The replay runtime is the sole owner
+of logical time. At each timestamp it collects engine feedback and applies it
+as one `AgenticFeedbackBatch`, ordered by immutable graph ordinal: output
+progress first, causal terminals second, and resource quiescence last.
+
+A causal terminal releases completion-triggered graph edges. Quiescence means
+the engine/router/handoff state owned by that request has settled; a failed
+play does not release its lane until every already-dispatched request is
+quiescent. Equal-time event phases are engine pass completion, worker ready,
+transfer completion, admission, telemetry, then scaling. Within a phase,
+stable worker/pass/handoff identities replace insertion order as the primary
+tie-breaker.
+
+Both aggregated and disaggregated runtimes expose an internal `step()` seam.
+It returns only after a semantic timestamp reaches a fixed point and preserves
+all engine, placement, router, handoff, and KV state, so resuming does not
+rebuild the simulation. Agentic requests carry a stable identity envelope
+(request, play, conversation, and optional lane/tree/cache identities) across
+the workload-to-runtime boundary. The driver can emit a canonical lifecycle
+JSONL transcript and domain-separated digest for conformance tests.
+
 ## File Map
 
 - `src/replay/replayer.rs`

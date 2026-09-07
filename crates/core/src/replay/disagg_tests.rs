@@ -565,6 +565,35 @@ fn run_trace_collect(
         .unwrap()
 }
 
+#[test]
+fn disagg_settled_steps_resume_without_changing_the_result() {
+    let config = disagg_config();
+    let pending = VecDeque::from([request(1, 64, 2, 0.0), request(2, 64, 1, 3.0)]);
+    let (continuous, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .run()
+            .unwrap();
+
+    let mut stepped =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace).unwrap();
+    let mut settled_boundaries = 0;
+    loop {
+        match stepped.step().unwrap() {
+            ReplayStepOutcome::Settled { .. } => settled_boundaries += 1,
+            ReplayStepOutcome::Complete => break,
+            ReplayStepOutcome::TimeLimitReached { .. } => panic!("unexpected time limit"),
+        }
+    }
+    let (resumed, _) = stepped.run().unwrap();
+
+    assert!(settled_boundaries >= 2);
+    assert_eq!(
+        serde_json::to_value(continuous.finish()).unwrap(),
+        serde_json::to_value(resumed.finish()).unwrap()
+    );
+}
+
 fn run_concurrency_collect(
     config: &TestDisaggConfig,
     requests: Vec<DirectRequest>,
