@@ -17,6 +17,7 @@ from typing import Protocol, runtime_checkable
 from .aic import materialize_aic_num_gpu_blocks
 from .sweeper.provider import JSONValue
 from .sweeper.replay import (
+    BackendDeploymentSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
@@ -222,8 +223,10 @@ def _materialize_engine_execution_spec(
 
     deployment = spec.backend_deployment
     deployment_mode = deployment.deployment_mode
+    execution_model: str | None = None
     if deployment_mode == "agg":
         raw_engine_args = _required_engine_args(deployment.agg_engine_args, "aggregated")
+        execution_model = _execution_target_model(deployment, "aggregated", raw_engine_args)
         engine = _materialize_engine_role(
             deployment.backend,
             deployment.backend_version,
@@ -332,8 +335,32 @@ def _materialize_engine_execution_spec(
         }
         if traffic.get("trace_format") not in {"dynamo", "weka"}:
             traffic.setdefault("trace_block_size", trace_block_size)
+        if traffic.get("trace_format") in {"agentic_mooncake", "dynamo", "weka"}:
+            if execution_model is None:
+                raise ValueError("agentic execution requires a configured target model")
+            traffic["execution_model"] = execution_model
         return {"spec": execution_spec, "traffic": traffic}
     return execution_spec
+
+
+def _execution_target_model(
+    deployment: BackendDeploymentSpec,
+    role: str,
+    raw_engine_args: Mapping[str, JSONValue],
+) -> str | None:
+    """Resolve the deployment model identity independently of timing implementation."""
+
+    metadata = deployment.performance_model_metadata.get(role)
+    if isinstance(metadata, Mapping):
+        config = metadata.get("config")
+        if isinstance(config, Mapping):
+            model = config.get("model_path")
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+    model = raw_engine_args.get("aic_model_path")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
 
 
 def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:

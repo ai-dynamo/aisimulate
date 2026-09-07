@@ -313,6 +313,11 @@ def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
     assert native["agentic_input_format"] == "weka"
     assert native["agentic_lanes"] == 1
     assert native["agentic_qualification"] == "functional_only"
+    assert native["agentic_model_projection"] == {
+        "policy": "project_to_configured_target",
+        "source_models": ["model", "other-model"],
+        "target_model": "example/model",
+    }
     records = native["per_request"]
     by_play: dict[str, list[dict]] = {}
     for record in records:

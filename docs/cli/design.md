@@ -504,6 +504,12 @@ Weka is the public AgentX source format and AISimulate is its prediction entry p
 deterministically lowers Weka into Agentic Mooncake v2, the versioned producer-neutral interchange
 format, and then validates that lower IR as a `ValidatedAgenticGraph`, the runtime representation.
 Dynamo is an optional integration and is not required to parse, convert, or predict a Weka corpus.
+The neutral importer accepts mixed source models and preserves each request's model label in graph
+provenance and identity. Version 1 execution is intentionally single-target: before the graph enters
+the model-neutral `WorkloadDriver`, AISimulate projects every request onto the one model configured by
+`engine.model`. The report records the sorted source-model set, target model, and
+`project_to_configured_target` policy under `agentic_model_projection`; per-node heterogeneous timing
+models are not supported yet.
 The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
 deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
 ordered graph must provide one unique contiguous ordinal for every play.

@@ -1,1 +1,1 @@
-{"id":"play-b","models":["model"],"block_size":4,"hash_id_scope":"local","requests":[{"t":0.0,"type":"s","model":"model","in":4,"out":0,"hash_ids":[20],"api_time":0.01}]}
+{"id":"play-b","models":["other-model"],"block_size":4,"hash_id_scope":"local","requests":[{"t":0.0,"type":"s","model":"other-model","in":4,"out":0,"hash_ids":[20],"api_time":0.01}]}

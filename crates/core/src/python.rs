@@ -35,6 +35,10 @@ enum ExecutionPayload {
 #[serde(deny_unknown_fields)]
 struct RuntimeTraffic {
     source_type: String,
+    /// Configured deployment model used to time every agentic request. Source
+    /// model labels remain provenance on the validated graph.
+    #[serde(default)]
+    execution_model: Option<String>,
     #[serde(default)]
     load_type: Option<String>,
     #[serde(default)]
@@ -80,6 +84,17 @@ struct RuntimeTraffic {
     kv_load_ratio: Option<serde_json::Value>,
     #[serde(default)]
     max_sim_time_ms: Option<f64>,
+}
+
+const AGENTIC_MODEL_PROJECTION_POLICY: &str = "project_to_configured_target";
+
+fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
+    traffic
+        .execution_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .context("agentic execution requires a configured target model")
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -648,6 +663,7 @@ fn build_runtime_input(
             );
         }
         if format == "agentic_mooncake" {
+            require_agentic_execution_model(&traffic)?;
             ensure!(
                 traffic.load_type.as_deref() == Some("trace_timestamps"),
                 "agentic_mooncake requires trace_timestamps load"
@@ -678,6 +694,7 @@ fn build_runtime_input(
             ));
         }
         if format == "weka" {
+            require_agentic_execution_model(&traffic)?;
             ensure!(
                 traffic.load_type.as_deref() == Some("trace_timestamps"),
                 "weka requires trace_timestamps load"
@@ -725,6 +742,7 @@ fn build_runtime_input(
                     }
                 }
                 DynamoRequestTrace::Agentic(trace) => {
+                    require_agentic_execution_model(&traffic)?;
                     ensure!(
                         traffic.replay_concurrency.is_none(),
                         "agentic Dynamo trace does not support concurrency load"
@@ -855,7 +873,13 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             .trace_format
             .as_deref()
             .filter(|format| matches!(*format, "weka" | "agentic_mooncake" | "dynamo"))
-            .map(|format| (format.to_string(), traffic.agentic_lanes))
+            .map(|format| {
+                (
+                    format.to_string(),
+                    traffic.agentic_lanes,
+                    traffic.execution_model.clone(),
+                )
+            })
     });
     if capture_artifacts {
         ensure!(
@@ -971,8 +995,19 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
     if report.agentic_graph.is_some()
-        && let Some((input_format, agentic_lanes)) = agentic_input
+        && let Some((input_format, agentic_lanes, execution_model)) = agentic_input
     {
+        let source_models = report
+            .agentic_graph
+            .as_ref()
+            .expect("agentic graph presence was checked")
+            .source_models
+            .clone();
+        let execution_model = execution_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .context("agentic execution did not declare its configured target model")?;
         let object = report_json
             .as_object_mut()
             .context("AISimulate replay report did not serialize as an object")?;
@@ -988,6 +1023,14 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             "agentic_lanes".to_string(),
             serde_json::to_value(agentic_lanes)
                 .context("serializing configured agentic lane count")?,
+        );
+        object.insert(
+            "agentic_model_projection".to_string(),
+            serde_json::json!({
+                "policy": AGENTIC_MODEL_PROJECTION_POLICY,
+                "source_models": source_models,
+                "target_model": execution_model,
+            }),
         );
     }
     if !report.per_request.is_empty() {

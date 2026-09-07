@@ -2078,6 +2078,13 @@ mod tests {
                 .len(),
             2
         );
+        assert_eq!(
+            load_weka_agentic_graph(&path, None)
+                .unwrap()
+                .identity()
+                .source_models,
+            ["model".to_string(), "other-model".to_string()]
+        );
 
         let invalid = trace_value(
             "invalid",

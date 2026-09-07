@@ -154,7 +154,36 @@ def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size()
     traffic = runtime.execution_spec["traffic"]
     assert traffic["trace_format"] == "weka"
     assert traffic["agentic_lanes"] == 2
+    assert traffic["execution_model"] == "test-model"
     assert "trace_block_size" not in traffic
+
+
+def test_runner_rejects_agentic_execution_without_a_target_model():
+    engine_args = _engine_args()
+    engine_args.pop("aic_model_path")
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="agentic execution requires a configured target model",
+    ):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=deployment,
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "weka-corpus",
+                    "trace_format": "weka",
+                },
+            )
+        )
 
 
 def test_prediction_compiler_carries_weka_agentic_lanes() -> None:

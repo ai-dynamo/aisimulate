@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -281,6 +283,13 @@ impl ValidatedAgenticGraph {
             block_size: self.block_size,
             node_count: self.nodes.len(),
             play_count: self.plays.len(),
+            source_models: self
+                .nodes
+                .iter()
+                .map(|node| node.model.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
         }
     }
 }
@@ -345,6 +354,10 @@ pub struct AgenticGraphIdentity {
     pub block_size: usize,
     pub node_count: usize,
     pub play_count: usize,
+    /// Sorted source model labels retained as workload provenance. The replay
+    /// execution boundary separately declares how these labels map to the
+    /// configured target timing model.
+    pub source_models: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
