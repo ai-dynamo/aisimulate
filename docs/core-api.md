@@ -203,6 +203,22 @@ per-op result tuple `(name, latency_ms, energy_wms, source)` returned by the
 `*_per_op` / `evaluate_*` methods (the thin op-list evaluation FFI); per-op
 energy is 0.0 wherever the perf tables carry no power columns.
 
+## Replay timing evidence
+
+The runtime-neutral `TimingModel` contract exposes optional accumulated
+evidence through `evidence_summary()`. Op-level AIC providers return a
+`TimingEvidenceSummary` split into prefill and decode phases. Each
+`TimingPhaseEvidence` carries total modeled energy in W-ms, total latency,
+latency covered by nonzero energy data, merged provenance, and name-folded
+`TimingOperationEvidence` records with the same fields. Missing operation
+energy is represented by `None`, never by a synthesized zero.
+
+Whole-model FPM timing and the built-in fixed and polynomial timing models are
+latency-only and return `None` from `evidence_summary()`. Consumers must keep
+that distinction when producing power metrics: absence of evidence is not a
+zero-watt prediction. FPM decode timing continues to query the exact total
+past-KV coordinate rather than the op-level mean-context coordinate.
+
 ## Compatibility rules
 
 - The `aisimulate` wheel and `aisimulate-core` crate versions must match for
