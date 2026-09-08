@@ -56,8 +56,10 @@ collisions without adding feature-specific fields to the core schema.
 
 ## Replay and Failure Semantics
 
-Before execution, `RunnerCapabilities` verifies the replay-spec version, backend/topology pair, and
-every runtime hook. Unsupported combinations fail before the optimizer spends trials on them.
+Before execution, `RunnerCapabilities` verifies the replay-spec version, execution mode,
+backend/topology pair, and every runtime hook. Unsupported coarse capabilities fail before the
+optimizer spends trials on them. Runner implementations validate finer stack-specific combinations
+when they execute a replay.
 
 Optimizer ask/tell stays in the main process. Exact repeated suggestions use a run-local result
 cache. Candidate build failures, replay failures, GPU-budget violations, and timeouts become

@@ -83,6 +83,8 @@ pub(crate) struct DisaggRequestState {
     pub(crate) coordinator: HandoffCoordinatorCore,
     pub(crate) counted_in_flight: bool,
     replay_hashes: Option<ReplayRequestHashes>,
+    prefill_dp_rank: Option<u32>,
+    decode_dp_rank: Option<u32>,
     prefill_worker_idx: Option<usize>,
     decode_worker_idx: Option<usize>,
     pub(crate) prefill_routed: bool,
@@ -114,6 +116,11 @@ impl DisaggRequestState {
     ) -> Self {
         #[cfg(not(test))]
         let _ = arrival_ms;
+        let decode_dp_rank = request.metadata().preferred_dp_rank;
+        let prefill_dp_rank = request
+            .metadata()
+            .preferred_prefill_dp_rank
+            .or(decode_dp_rank);
         Self {
             original: Some(request),
             session_id,
@@ -131,6 +138,8 @@ impl DisaggRequestState {
             ),
             counted_in_flight: true,
             replay_hashes,
+            prefill_dp_rank,
+            decode_dp_rank,
             prefill_worker_idx: None,
             decode_worker_idx: None,
             prefill_routed: false,
@@ -157,6 +166,26 @@ impl DisaggRequestState {
         self.original
             .as_ref()
             .ok_or_else(|| anyhow!("offline disagg replay request payload was already released"))
+    }
+
+    pub(crate) fn select_prefill_dp_rank(&mut self) -> Result<()> {
+        let prefill_dp_rank = self.prefill_dp_rank;
+        self.original
+            .as_mut()
+            .ok_or_else(|| anyhow!("offline disagg replay request payload was already released"))?
+            .metadata_mut()
+            .preferred_dp_rank = prefill_dp_rank;
+        Ok(())
+    }
+
+    pub(crate) fn select_decode_dp_rank(&mut self) -> Result<()> {
+        let decode_dp_rank = self.decode_dp_rank;
+        self.original
+            .as_mut()
+            .ok_or_else(|| anyhow!("offline disagg replay request payload was already released"))?
+            .metadata_mut()
+            .preferred_dp_rank = decode_dp_rank;
+        Ok(())
     }
 
     pub(crate) fn input_length(&self) -> Result<usize> {

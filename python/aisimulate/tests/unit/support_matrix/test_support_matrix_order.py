@@ -14,6 +14,8 @@ from tools.support_matrix.support_matrix import (
     STATUS_PASS,
     SupportMatrix,
     TestConstraints,
+    _get_encoder_coverage,
+    _support_matrix_row_command,
 )
 
 pytestmark = pytest.mark.unit
@@ -143,3 +145,67 @@ def test_task_uses_silicon_database_mode(monkeypatch):
     assert captured_kwargs["database_mode"] == common.DatabaseMode.SILICON.name
     # The engine backend is hardcoded inside _create_task (host-independence pin).
     assert captured_kwargs["engine_step_backend"] == "rust"
+
+
+def test_qwen35_support_matrix_runs_and_replays_with_image_workload(monkeypatch):
+    captured_kwargs = {}
+
+    class FakeTask:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setattr(support_matrix_module, "Task", FakeTask)
+    constraints = TestConstraints(total_gpus=32, isl=256, osl=256, prefix=128, ttft=2000.0, tpot=50.0)
+    coverage = _get_encoder_coverage("Qwen/Qwen3.5-27B")
+    assert coverage.aic_encoder_implemented
+
+    SupportMatrix._create_task(
+        mode="agg",
+        model="Qwen/Qwen3.5-27B",
+        system="b200_sxm",
+        backend="vllm",
+        version="0.24.0",
+        constraints=constraints,
+        image_workload=coverage.workload,
+    )
+    command = _support_matrix_row_command(
+        model="Qwen/Qwen3.5-27B",
+        system="b200_sxm",
+        backend="vllm",
+        version="0.24.0",
+        constraints=constraints,
+        image_workload=coverage.workload,
+    )
+
+    assert captured_kwargs["image_height"] == 1024
+    assert captured_kwargs["image_width"] == 1024
+    assert captured_kwargs["num_images_per_request"] == 1
+    assert "--image-height 1024 --image-width 1024 --num-images 1" in command
+
+
+def test_run_single_test_keeps_encoder_metadata_failures_fail_fast(monkeypatch):
+    monkeypatch.setattr(
+        support_matrix_module,
+        "_get_test_constraints",
+        lambda _model: TestConstraints(total_gpus=32, isl=256, osl=256, prefix=128, ttft=2000.0, tpot=50.0),
+    )
+    monkeypatch.setattr(
+        support_matrix_module,
+        "_get_encoder_coverage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("broken encoder metadata")),
+    )
+    monkeypatch.setattr(
+        SupportMatrix,
+        "_run_mode",
+        lambda **_kwargs: pytest.fail("metadata failure must abort before support attempts"),
+    )
+
+    with pytest.raises(RuntimeError, match="broken encoder metadata"):
+        SupportMatrix.run_single_test(
+            "Qwen/Qwen3.5-27B",
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            system_spec={},
+            modes_to_test=("agg",),
+        )

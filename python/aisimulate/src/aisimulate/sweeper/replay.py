@@ -47,6 +47,7 @@ class ReplaySpec:
     concurrency: int | None = None
     adapters: dict[str, AdapterReplaySpec] = field(default_factory=dict)
     api_version: int = REPLAY_SPEC_API_VERSION
+    execution_mode: str = "offline"
 
     @property
     def runtime_hooks(self) -> tuple[RuntimeHookSpec, ...]:
@@ -111,6 +112,7 @@ class RunnerCapabilities:
     supported_backend_topologies: tuple[tuple[str, str], ...] = ()
     supported_hooks: tuple[HookCapability, ...] = ()
     supports_disaggregated_attention_dp: bool = False
+    supported_execution_modes: tuple[str, ...] = ("offline",)
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -123,6 +125,11 @@ class RunnerCapabilities:
             (supported_backend in (backend, "*")) and (supported_topology in (topology, "*"))
             for supported_backend, supported_topology in self.supported_backend_topologies
         )
+
+    def supports_execution_mode(self, mode: str) -> bool:
+        """Return whether this runner can execute the requested clock mode."""
+
+        return mode in self.supported_execution_modes
 
     def supports_hook(self, hook: RuntimeHookSpec) -> bool:
         return any(capability.supports(hook) for capability in self.supported_hooks)
@@ -150,6 +157,8 @@ class RunnerCapabilities:
         """Raise a clear error when this runner cannot execute ``spec``."""
 
         self.require_replay_spec_version(spec.api_version)
+        if not self.supports_execution_mode(spec.execution_mode):
+            raise ValueError(f"runner does not support execution mode {spec.execution_mode!r}")
         deployment = spec.backend_deployment
         if not self.supports_backend_topology(deployment.backend, deployment.deployment_mode):
             raise ValueError(

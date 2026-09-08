@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::engine::HostOffloadObserver;
 use crate::engine::common::protocols::{
-    DirectRequest, KvEventPublishers, MockEngineArgs, OutputSignal, PreemptionMode, PrefillCost,
-    SchedulingPolicy, WorkerType,
+    DirectRequest, EngineType, KvEventPublishers, MockEngineArgs, OutputSignal, PreemptionMode,
+    PrefillCost, SchedulingPolicy, WorkerType,
 };
 use crate::engine::common::speculative::{
     SpeculativeDecodeSampler, normalize_conditional_accept_rates,
@@ -577,6 +577,9 @@ pub(crate) struct VllmCore {
     retain_local_hashes: bool,
     emit_token_ids: bool,
     native_host_offload: Option<VllmHostOffloadAdapter>,
+    wave_step: u64,
+    attention_dp_size: u32,
+    prefill_capacity_bound: bool,
 }
 
 struct HeldVllmPrefill {
@@ -709,7 +712,15 @@ impl VllmCore {
             retain_local_hashes,
             emit_token_ids,
             native_host_offload,
+            wave_step: 0,
+            attention_dp_size: 1,
+            prefill_capacity_bound: false,
         }
+    }
+
+    pub(crate) fn prepare_group_pass(&mut self, wave_step: u64, dp_size: u32) {
+        self.wave_step = wave_step;
+        self.attention_dp_size = dp_size;
     }
 
     #[cfg(test)]
@@ -1550,6 +1561,21 @@ impl VllmCore {
         let requests_before = self.state.requests.len();
         self.state.compact_running();
         let mut token_budget = self.args.max_num_batched_tokens.unwrap_or(usize::MAX);
+        let cadence_step = self.wave_step.is_multiple_of(
+            u64::try_from(self.args.prefill_schedule_interval)
+                .expect("prefill schedule interval fits in u64"),
+        );
+        let has_running_decode = self.state.running.iter().any(|uuid| {
+            self.state
+                .requests
+                .get(uuid)
+                .is_some_and(VllmRequestState::prompt_is_prebuilt)
+        });
+        let defer_prefills = self.attention_dp_size > 1
+            && self.args.engine_type == EngineType::Vllm
+            && !cadence_step
+            && !self.prefill_capacity_bound
+            && has_running_decode;
         let waiting_capacity_hint = self
             .state
             .waiting_members
@@ -1572,6 +1598,16 @@ impl VllmCore {
         let mut req_index = 0usize;
         while req_index < self.state.running.len() && token_budget > 0 {
             let uuid = self.state.running[req_index];
+            if defer_prefills
+                && self
+                    .state
+                    .requests
+                    .get(&uuid)
+                    .is_some_and(|request| !request.prompt_is_prebuilt())
+            {
+                req_index += 1;
+                continue;
+            }
             match self.schedule_request(
                 uuid,
                 false,
@@ -1835,6 +1871,14 @@ impl VllmCore {
                 }
             }
 
+            // Match vLLM's cadence check at the local-compute admission site.
+            // Connector loads above and materialized/near-total prefix hits
+            // continue on throttled steps; only requests needing more than the
+            // final token of local prefill work remain queued.
+            if defer_prefills && prefill_cost.new_tokens > 1 {
+                break;
+            }
+
             let outcome = self.schedule_request(
                 uuid,
                 true,
@@ -1880,6 +1924,10 @@ impl VllmCore {
                 self.state
                     .restore_connector_waiting_front(uuid, deadline_only);
             }
+        }
+
+        if !defer_prefills && !preempted_any {
+            self.prefill_capacity_bound = !self.state.waiting_members.is_empty();
         }
 
         if let Some(adapter) = self.native_host_offload.as_mut() {

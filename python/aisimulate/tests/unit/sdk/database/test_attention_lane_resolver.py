@@ -46,10 +46,10 @@ def systems_root(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _resolve(backend, version, sm_version, override, systems_root):
+def _resolve(backend, version, sm_version, override, systems_root, architecture=None):
     from aiconfigurator_core.sdk.attention_lanes import resolve_attention_lane_order
 
-    return resolve_attention_lane_order(backend, version, sm_version, override, systems_root)
+    return resolve_attention_lane_order(backend, version, sm_version, override, systems_root, architecture)
 
 
 # ---------------------------------------------------------------------------
@@ -254,3 +254,99 @@ def test_custom_systems_root_without_lane_defaults_falls_back_to_packaged_copy(t
 
     assert result[0] == "triton", f"packaged sglang/0.5.14/sm103 default must survive; got {result}"
     assert "falling back to packaged attention-lane defaults" in caplog.text
+
+
+_ARCH_YAML = """\
+sglang:
+  "0.5.14":
+    90: fa3
+    100: triton
+    103: triton
+    120: flashinfer
+vllm:
+  "0.24.0":
+    90: default
+    100: default
+    103: default
+architectures:
+  Qwen3_5MoeForCausalLM:
+    sglang:
+      "0.5.17":
+        90: fa3
+        100: trtllm_mha
+        103: trtllm_mha
+        120: flashinfer
+"""
+
+_MAX_ARCH = "Qwen3_5MoeForCausalLM"
+_CONDGEN_ARCH = "Qwen3_5MoeForConditionalGeneration"
+
+
+@pytest.fixture
+def arch_systems_root(tmp_path):
+    (tmp_path / "attention_lane_defaults.yaml").write_text(_ARCH_YAML, encoding="utf-8")
+    return str(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "sm_version,expected_head",
+    [(90, "fa3"), (100, "trtllm_mha"), (103, "trtllm_mha"), (120, "flashinfer")],
+)
+def test_architecture_default_heads_by_sm_when_no_override(arch_systems_root, sm_version, expected_head):
+    result = _resolve("sglang", "0.5.17", sm_version, None, arch_systems_root, architecture=_MAX_ARCH)
+    assert result[0] == expected_head
+    assert result[-1] == "default"
+    assert result.framework_default_matched
+
+
+def test_architecture_default_is_the_only_default_pin(arch_systems_root):
+    from aiconfigurator_core.sdk.attention_lanes import split_attention_lane_tiers
+
+    result = _resolve("sglang", "0.5.17", 103, None, arch_systems_root, architecture=_MAX_ARCH)
+    pinned, donors = split_attention_lane_tiers(result)
+    assert pinned == ("trtllm_mha",)
+    assert "triton" in donors
+
+
+def test_override_wins_over_architecture_default(arch_systems_root):
+    result = _resolve("sglang", "0.5.17", 103, "triton", arch_systems_root, architecture=_MAX_ARCH)
+    assert result[0] == "triton"
+    assert result.count("triton") == 1
+
+
+def test_unlisted_architecture_falls_back_to_global_map(arch_systems_root):
+    with_arch = _resolve("sglang", "0.5.14", 103, None, arch_systems_root, architecture=_CONDGEN_ARCH)
+    without_arch = _resolve("sglang", "0.5.14", 103, None, arch_systems_root)
+    assert with_arch == without_arch
+    assert with_arch[0] == "triton"
+
+
+def test_version_below_architecture_floor_falls_back_to_global_map(arch_systems_root):
+    below_floor = _resolve("sglang", "0.5.14", 103, None, arch_systems_root, architecture=_MAX_ARCH)
+    global_only = _resolve("sglang", "0.5.14", 103, None, arch_systems_root)
+    assert below_floor == global_only
+    assert below_floor[0] == "triton"
+
+
+@pytest.mark.parametrize(
+    "malformed_yaml,match",
+    [
+        ('sglang:\n  "0.5.14":\n    100: trtllm-mha\n', "not a known lane"),
+        ('sglang:\n  "0.5.14":\n    "100": trtllm_mha\n', "must be an int"),
+        ('sglang:\n  "0.5.14": trtllm_mha\n', "must be a mapping"),
+        (
+            'architectures:\n  Qwen3_5MoeForCausalLM:\n    sglang:\n      "0.5.17":\n        100: trtllm-mha\n',
+            "not a known lane",
+        ),
+    ],
+)
+def test_malformed_global_and_architecture_entries_fail_loudly(tmp_path, malformed_yaml, match):
+    (tmp_path / "attention_lane_defaults.yaml").write_text(malformed_yaml, encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        _resolve("sglang", "0.5.17", 100, None, str(tmp_path), architecture=_MAX_ARCH)
+
+
+def test_real_shipped_yaml_qwen38max_sm100_trtllm_mha():
+    result = _resolve("sglang", "0.5.17", 100, None, None, architecture=_MAX_ARCH)
+    assert result[0] == "trtllm_mha"
+    assert result[-1] == "default"
