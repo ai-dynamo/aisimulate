@@ -2,18 +2,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 title: AFD Topology Contract
-subtitle: Attention-FFN disaggregation, pipeline evaluation, and P/D rate matching
+subtitle: Attention-FFN parallel shapes and complete enumeration
 ---
 
 > [!WARNING]
-> **Experimental.** The AFD contract is available as a Sweeper-core Python API. The generic search
+> **Experimental.** The AFD parallel contract is available as a Sweeper-core Python API. The generic search
 > domain does not yet place AFD topologies in a `SmartSearchConfig` study. That wiring
 > depends on the shared execution-dimension work tracked by AIC-1773.
 
 Attention-FFN Disaggregation (AFD) places attention operations on an A-worker pool and FFN/MoE
-operations on an F-worker pool. `aisimulate.sweeper.afd` provides a backend-neutral contract for
-enumerating and evaluating those shapes. Runtime serving and deployment generation remain adapter
-responsibilities.
+operations on an F-worker pool. `aisimulate.sweeper.afd_parallel` provides the backend-neutral
+parallel shape, validation, GPU accounting, and complete finite enumeration. Performance
+measurement, staged evaluation, generic search integration, replay, and deployment generation
+belong to later layers.
 
 ## Legacy Mapping
 
@@ -26,9 +27,8 @@ responsibilities.
 | `a_batch_size` | `AFDTopology.a_batch_size` |
 | `num_microbatches` | `AFDTopology.num_microbatches` |
 | `pipeline_model` | `optimistic`, `conservative`, or `serial` |
-| `combined_with_pd` | exact `afd+pd` adapter capability and companion rate matching |
-| `num_total_gpus` | A GPUs + F GPUs + any P/D companion GPUs |
-| `t_a_layer`, `t_f_layer`, transfers | `AFDLayerTimes` |
+| `combined_with_pd` | whether a later layer must add the complementary P/D phase |
+| `num_total_gpus` | A GPUs + F GPUs for this AFD topology |
 | AFD rejection logs | `AFDInfeasible.category`, detail, and provenance |
 
 Phase-1 F-side semantics are intentionally strict: one F replica spans all F GPUs, so F TP equals
@@ -67,37 +67,9 @@ domain = enumerate_afd_topologies(
 )
 ```
 
-## Pipeline Evaluation
-
-An estimator adapter supplies non-negative per-layer A compute, F compute, A-to-F transfer, and
-F-to-A transfer times. The core applies the legacy pipeline regimes:
-
-- optimistic: `max(A, F, A_to_F + F_to_A)`, with the legacy minimum-microbatch check;
-- conservative: `max(A + A_to_F, F + F_to_A)`; and
-- serial: the sum of all compute and transfer stages.
-
-Global step latency includes pipeline fill and every microbatch-layer cadence. Pure AFD can cover
-prefill, decode, or both. When both phases use the same A/F pools, GPU count is not doubled.
-
-## Combined AFD and P/D
-
-`rate_match_afd_with_pd` pairs a single-phase AFD pool with static options for the other phase. It
-considers every companion worker count through the rate-matched count, caps end-to-end sequence
-rate at the slower phase, applies prefill/decode degradation and latency corrections, and selects
-the highest output-tokens/s/GPU feasible combination. The result reports A, F, and companion GPU
-counts separately. The companion domain is bounded at 256 candidates by default; like the topology
-domain, exceeding that limit fails instead of returning a partial result. The bound counts each
-concrete `(option, worker-count)` combination, so the exhaustive search cannot expand into an
-unbounded worker loop.
-
-Adapters fail closed. A pure AFD topology requires an explicit `afd` capability; combined AFD+P/D
-requires `afd+pd`. An adapter that advertises only `agg` or `disagg` cannot consume or generate an
-AFD candidate.
-
 ## Infeasibility and Provenance
 
-Every hard failure uses a stable category such as `gpu_budget`, `expert_divisibility`,
-`candidate_limit`, `unsupported_adapter`, or `no_feasible_companion`. Enumeration reports filter
-counts and whether its finite domain was complete. Evaluation records the formula, corrected layer
-times, topology, degradation factors, latency corrections, companion source, and lossless GPU
-accounting.
+Every topology failure uses a stable category such as `invalid_topology`, `gpu_budget`,
+`expert_divisibility`, or `candidate_limit`. Enumeration reports filter counts, the canonical
+candidate dimensions, and whether its finite domain was complete. Each topology records its phase,
+parallel shape, and lossless A/F GPU accounting.

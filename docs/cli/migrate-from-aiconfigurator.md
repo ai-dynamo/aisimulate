@@ -270,9 +270,8 @@ from request-level goodput.
 
 Attention-FFN Disaggregation (AFD) is migrating in layers. The
 [AFD topology contract](../sweeper/afd-topology.md) defines complete A/F topology enumeration,
-pipeline evaluation, P/D companion rate matching, GPU accounting, and capability gates. Later work
-will connect that contract to the public recommendation schema, generic search, and an AFD-capable
-runner.
+validation, and A/F GPU accounting. Later work will add performance measurement, staged evaluation,
+the public recommendation schema, generic search, and an AFD-capable runner.
 
 > [!IMPORTANT]
 > The AISimulate configuration below is a **contract preview**, not a runnable command in this PR.
@@ -333,9 +332,8 @@ optimization:
 <!-- afd-migration-contract-end -->
 
 This preserves the legacy command's default of decode-side AFD combined with a static prefill
-companion. The GPU constraint covers the A pool, F pool, and companion together; the Sweeper AFD
-contract accounts for each contribution explicitly. Once the remaining layers land, the target
-invocation will be:
+companion. The GPU constraint will cover the A pool, F pool, and companion together once the
+remaining evaluation and runner layers land. The target invocation will be:
 
 ```bash
 aisimulate recommend --config recommendation.yaml
