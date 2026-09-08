@@ -78,39 +78,67 @@ impl TimingOperationEvidence {
         energy_wms: Option<f64>,
         source: TimingEvidenceSource,
     ) -> Result<Self> {
-        let name = name.into();
-        ensure!(
-            !name.is_empty(),
-            "timing evidence operation name cannot be empty"
-        );
-        ensure!(
-            latency_ms.is_finite() && latency_ms >= 0.0,
-            "timing evidence operation {name:?} returned invalid latency {latency_ms}ms"
-        );
-        ensure!(
-            energy_wms.is_none_or(|energy| energy.is_finite() && energy >= 0.0),
-            "timing evidence operation {name:?} returned invalid energy {energy_wms:?}W-ms"
-        );
-        let energy_wms = energy_wms.filter(|energy| *energy > 0.0);
-        let covered_latency_ms = energy_wms.map_or(0.0, |_| latency_ms);
-        Ok(Self {
-            name,
+        let covered_latency_ms = energy_wms
+            .is_some_and(|energy| energy > 0.0)
+            .then_some(latency_ms)
+            .unwrap_or(0.0);
+        Self {
+            name: name.into(),
             energy_wms,
             latency_ms,
             covered_latency_ms,
             source,
-        })
+        }
+        .canonicalized()
     }
 
-    fn accumulate(&mut self, other: Self) {
-        self.latency_ms += other.latency_ms;
-        self.covered_latency_ms += other.covered_latency_ms;
-        self.energy_wms = match (self.energy_wms, other.energy_wms) {
+    fn canonicalized(mut self) -> Result<Self> {
+        ensure!(
+            !self.name.is_empty(),
+            "timing evidence operation name cannot be empty"
+        );
+        ensure!(
+            self.latency_ms.is_finite() && self.latency_ms >= 0.0,
+            "timing evidence operation {:?} returned invalid latency {}ms",
+            self.name,
+            self.latency_ms
+        );
+        ensure!(
+            self.energy_wms
+                .is_none_or(|energy| energy.is_finite() && energy >= 0.0),
+            "timing evidence operation {:?} returned invalid energy {:?}W-ms",
+            self.name,
+            self.energy_wms
+        );
+        ensure!(
+            self.covered_latency_ms.is_finite()
+                && self.covered_latency_ms >= 0.0
+                && self.covered_latency_ms <= self.latency_ms,
+            "timing evidence operation {:?} returned invalid covered latency {}ms for {}ms total",
+            self.name,
+            self.covered_latency_ms,
+            self.latency_ms
+        );
+        self.energy_wms = self.energy_wms.filter(|energy| *energy > 0.0);
+        if self.energy_wms.is_none() {
+            self.covered_latency_ms = 0.0;
+        }
+        Ok(self)
+    }
+
+    fn accumulate(&mut self, other: Self) -> Result<()> {
+        let mut combined = self.clone().canonicalized()?;
+        let other = other.canonicalized()?;
+        combined.latency_ms += other.latency_ms;
+        combined.covered_latency_ms += other.covered_latency_ms;
+        combined.energy_wms = match (combined.energy_wms, other.energy_wms) {
             (Some(left), Some(right)) => Some(left + right),
             (Some(energy), None) | (None, Some(energy)) => Some(energy),
             (None, None) => None,
         };
-        self.source = self.source.clone().merge(other.source);
+        combined.source = combined.source.merge(other.source);
+        *self = combined.canonicalized()?;
+        Ok(())
     }
 }
 
@@ -125,41 +153,108 @@ pub struct TimingPhaseEvidence {
 }
 
 impl TimingPhaseEvidence {
-    pub fn from_operations(operations: Vec<TimingOperationEvidence>) -> Self {
+    /// Build phase totals from operation evidence, rejecting invalid public
+    /// field values and canonicalizing uncovered latency before aggregation.
+    pub fn try_from_operations(operations: Vec<TimingOperationEvidence>) -> Result<Self> {
         let mut phase = Self::default();
         for operation in operations {
-            phase.accumulate_operation(operation);
+            phase.accumulate_operation(operation.canonicalized()?)?;
         }
-        phase
+        phase.canonicalized()
+    }
+
+    /// Build phase totals from valid operation evidence.
+    ///
+    /// Call [`Self::try_from_operations`] when accepting evidence assembled
+    /// through the public fields so invalid values can be handled as errors.
+    #[track_caller]
+    pub fn from_operations(operations: Vec<TimingOperationEvidence>) -> Self {
+        Self::try_from_operations(operations).expect("invalid timing operation evidence")
     }
 
     pub fn coverage(&self) -> f64 {
-        if self.latency_ms > 0.0 {
+        let has_valid_energy = self
+            .energy_wms
+            .is_some_and(|energy| energy.is_finite() && energy > 0.0);
+        if has_valid_energy
+            && self.latency_ms.is_finite()
+            && self.latency_ms > 0.0
+            && self.covered_latency_ms.is_finite()
+            && self.covered_latency_ms >= 0.0
+            && self.covered_latency_ms <= self.latency_ms
+        {
             (self.covered_latency_ms / self.latency_ms).clamp(0.0, 1.0)
         } else {
             0.0
         }
     }
 
-    pub fn accumulate(&mut self, other: Self) {
-        self.latency_ms += other.latency_ms;
-        self.covered_latency_ms += other.covered_latency_ms;
-        self.energy_wms = match (self.energy_wms, other.energy_wms) {
+    /// Fallibly add another phase after validating and canonicalizing both
+    /// operands. The update is atomic when validation fails.
+    pub fn try_accumulate(&mut self, other: Self) -> Result<()> {
+        let mut combined = self.clone().canonicalized()?;
+        let other = other.canonicalized()?;
+        combined.latency_ms += other.latency_ms;
+        combined.covered_latency_ms += other.covered_latency_ms;
+        combined.energy_wms = match (combined.energy_wms, other.energy_wms) {
             (Some(left), Some(right)) => Some(left + right),
             (Some(energy), None) | (None, Some(energy)) => Some(energy),
             (None, None) => None,
         };
-        self.source = match (self.source.take(), other.source) {
+        combined.source = match (combined.source.take(), other.source) {
             (Some(left), Some(right)) => Some(left.merge(right)),
             (Some(source), None) | (None, Some(source)) => Some(source),
             (None, None) => None,
         };
         for operation in other.operations {
-            self.merge_operation(operation);
+            combined.merge_operation(operation)?;
         }
+        *self = combined.canonicalized()?;
+        Ok(())
     }
 
-    fn accumulate_operation(&mut self, operation: TimingOperationEvidence) {
+    /// Add another phase that is already known to contain valid evidence.
+    ///
+    /// Call [`Self::try_accumulate`] at public or provider boundaries.
+    #[track_caller]
+    pub fn accumulate(&mut self, other: Self) {
+        self.try_accumulate(other)
+            .expect("invalid timing phase evidence");
+    }
+
+    fn canonicalized(mut self) -> Result<Self> {
+        ensure!(
+            self.latency_ms.is_finite() && self.latency_ms >= 0.0,
+            "timing phase evidence returned invalid latency {}ms",
+            self.latency_ms
+        );
+        ensure!(
+            self.energy_wms
+                .is_none_or(|energy| energy.is_finite() && energy >= 0.0),
+            "timing phase evidence returned invalid energy {:?}W-ms",
+            self.energy_wms
+        );
+        ensure!(
+            self.covered_latency_ms.is_finite()
+                && self.covered_latency_ms >= 0.0
+                && self.covered_latency_ms <= self.latency_ms,
+            "timing phase evidence returned invalid covered latency {}ms for {}ms total",
+            self.covered_latency_ms,
+            self.latency_ms
+        );
+        self.energy_wms = self.energy_wms.filter(|energy| *energy > 0.0);
+        if self.energy_wms.is_none() {
+            self.covered_latency_ms = 0.0;
+        }
+        self.operations = self
+            .operations
+            .into_iter()
+            .map(TimingOperationEvidence::canonicalized)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(self)
+    }
+
+    fn accumulate_operation(&mut self, operation: TimingOperationEvidence) -> Result<()> {
         self.latency_ms += operation.latency_ms;
         self.covered_latency_ms += operation.covered_latency_ms;
         self.energy_wms = match (self.energy_wms, operation.energy_wms) {
@@ -171,19 +266,20 @@ impl TimingPhaseEvidence {
             Some(source) => source.merge(operation.source.clone()),
             None => operation.source.clone(),
         });
-        self.merge_operation(operation);
+        self.merge_operation(operation)
     }
 
-    fn merge_operation(&mut self, operation: TimingOperationEvidence) {
+    fn merge_operation(&mut self, operation: TimingOperationEvidence) -> Result<()> {
         if let Some(existing) = self
             .operations
             .iter_mut()
             .find(|existing| existing.name == operation.name)
         {
-            existing.accumulate(operation);
+            existing.accumulate(operation)?;
         } else {
             self.operations.push(operation);
         }
+        Ok(())
     }
 }
 
@@ -430,6 +526,62 @@ mod tests {
 
         assert_eq!(operation.energy_wms, None);
         assert_eq!(operation.covered_latency_ms, 0.0);
+    }
+
+    #[test]
+    fn public_operation_fields_cannot_fabricate_coverage() {
+        let operation = TimingOperationEvidence {
+            name: "attention".into(),
+            energy_wms: None,
+            latency_ms: 10.0,
+            covered_latency_ms: 10.0,
+            source: TimingEvidenceSource::Empirical,
+        };
+
+        let raw_phase = TimingPhaseEvidence {
+            energy_wms: None,
+            latency_ms: 10.0,
+            covered_latency_ms: 10.0,
+            source: Some(TimingEvidenceSource::Empirical),
+            operations: vec![operation.clone()],
+        };
+        assert_eq!(raw_phase.coverage(), 0.0);
+
+        let phase = TimingPhaseEvidence::try_from_operations(vec![operation]).unwrap();
+
+        assert_eq!(phase.energy_wms, None);
+        assert_eq!(phase.covered_latency_ms, 0.0);
+        assert_eq!(phase.coverage(), 0.0);
+        assert_eq!(phase.operations[0].covered_latency_ms, 0.0);
+
+        let mut accumulated = TimingPhaseEvidence::default();
+        accumulated
+            .try_accumulate(TimingPhaseEvidence {
+                energy_wms: None,
+                latency_ms: 10.0,
+                covered_latency_ms: 10.0,
+                source: Some(TimingEvidenceSource::Empirical),
+                operations: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(accumulated.covered_latency_ms, 0.0);
+        assert_eq!(accumulated.coverage(), 0.0);
+    }
+
+    #[test]
+    fn fallible_phase_accumulation_is_atomic_on_invalid_public_fields() {
+        let mut phase = TimingPhaseEvidence::from_operations(vec![
+            TimingOperationEvidence::new("gemm", 2.0, Some(900.0), TimingEvidenceSource::Silicon)
+                .unwrap(),
+        ]);
+        let before = phase.clone();
+        let invalid = TimingPhaseEvidence {
+            latency_ms: f64::NAN,
+            ..TimingPhaseEvidence::default()
+        };
+
+        assert!(phase.try_accumulate(invalid).is_err());
+        assert_eq!(phase, before);
     }
 
     #[test]

@@ -314,9 +314,9 @@ impl AicTimingModel {
             .lock()
             .map_err(|_| anyhow!("AIC timing evidence accumulator was poisoned"))?;
         if prefill {
-            evidence.prefill.accumulate(phase);
+            evidence.prefill.try_accumulate(phase)?;
         } else {
-            evidence.decode.accumulate(phase);
+            evidence.decode.try_accumulate(phase)?;
         }
         Ok(())
     }
@@ -340,7 +340,7 @@ fn phase_evidence_from_python(
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(TimingPhaseEvidence::from_operations(operations))
+    TimingPhaseEvidence::try_from_operations(operations)
 }
 
 impl TimingModel for AicTimingModel {
