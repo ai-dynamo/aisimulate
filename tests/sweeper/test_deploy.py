@@ -369,3 +369,4 @@ def test_fixed_timing_drops_the_forward_model_field(monkeypatch):
 
     assert "aic_forward_model" not in deployment.agg_engine_args
     assert deployment.agg_engine_args["timing_model"]["type"] == "fixed"
+    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"

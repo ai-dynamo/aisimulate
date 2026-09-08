@@ -31,7 +31,11 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
         "moe_tp_size": moe_tp if moe_tp * moe_ep > 1 else None,
         "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
         "nextn": sample.get("aic_nextn"),
-        "forward_model": sample.get(f"{role}_forward_model") or "op_level",
+        "forward_model": (
+            (sample.get(f"{role}_forward_model") or "op_level")
+            if sample.get(f"{role}_timing_model") is None
+            else "op_level"
+        ),
     }
     return {"provider": "aic", "config": config}
 

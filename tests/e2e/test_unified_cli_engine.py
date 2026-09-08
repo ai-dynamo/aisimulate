@@ -155,7 +155,7 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
 _FPM_CASE = _CONFIG_ROOT / "predict/fpm/01-minimax-m27-h200-tp4-fpm.yaml"
 
 
-def test_engine_predict_forward_model_switches_the_timing_source(tmp_path: Path) -> None:
+def test_engine_predict_accepts_forward_model_from_yaml_and_set(tmp_path: Path) -> None:
     # The bundled FPM cell is collected outside the queryable version slots.
     env = {"AIC_ALLOW_UNLISTED_VERSIONS": "1"}
     fpm = json.loads(
