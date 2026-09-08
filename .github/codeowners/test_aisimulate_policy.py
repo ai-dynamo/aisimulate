@@ -210,10 +210,11 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert "uses: ./.github/workflows/validate-platform-wheels.yml" in full
     assert "uses: ./.github/workflows/collector-check.yml" in full
     assert "uses: ./.github/workflows/prediction-regression-gate.yml" in full
-    assert "needs: fast-ci" in full
-    assert 'EXPECTED_SHA: ${{ inputs.expected_sha }}' in full
-    assert 'RUN_SHA: ${{ github.sha }}' in full
-    assert 'expected_sha: ${{ github.sha }}' in full
+    assert "name: Select Full CI Scope" in full
+    assert "needs: [fast-ci, select-full-ci]" in full
+    assert "EXPECTED_SHA: ${{ inputs.expected_sha }}" in full
+    assert "RUN_SHA: ${{ github.sha }}" in full
+    assert "expected_sha: ${{ github.sha }}" in full
     assert "needs: verify-target" in full
     assert "name: Fast CI Success" in fast
     assert "name: Full CI Success" in full
@@ -228,7 +229,10 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "release/*",
     ]
     application_wheel = full_config["jobs"]["application-wheel"]
-    assert "if" not in application_wheel
+    assert "select-full-ci" in application_wheel["needs"]
+    assert "needs.select-full-ci.outputs.application_wheel == 'true'" in (
+        application_wheel["if"]
+    )
     verify_steps = [
         step
         for step in application_wheel["steps"]

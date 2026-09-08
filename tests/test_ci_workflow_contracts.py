@@ -5,10 +5,16 @@
 
 from __future__ import annotations
 
+import base64
+import json
+import os
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
+
+from scripts.select_full_ci import COMPONENTS, select_components
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
@@ -22,6 +28,44 @@ def _workflow(name: str) -> dict:
 
 def _run_commands(job: dict) -> str:
     return "\n".join(step.get("run", "") for step in job["steps"])
+
+
+def _run_full_ci_aggregate(
+    results: dict[str, str],
+    plan: dict[str, str],
+    *,
+    expected_stage: str = "skipped",
+) -> subprocess.CompletedProcess[str]:
+    aggregate = _workflow("ci.yml")["jobs"]["full-ci-success"]
+    script = aggregate["steps"][0]["run"]
+    needs = {name: {"result": result, "outputs": {}} for name, result in results.items()}
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPOSITORY_ROOT,
+        env={
+            **os.environ,
+            "NEEDS_JSON": json.dumps(needs),
+            "PLAN_JSON": json.dumps(plan),
+            "EXPECTED_STAGE_RESULT": expected_stage,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_workflow_script(
+    script: str,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPOSITORY_ROOT,
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_restored_workflows_are_active_at_repository_root() -> None:
@@ -104,12 +148,275 @@ def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
     aggregate = _workflow("ci.yml")["jobs"]["full-ci-success"]
     commands = _run_commands(aggregate)
 
+    assert "select-full-ci" in aggregate["needs"]
     assert "stage-application-wheel" in aggregate["needs"]
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
-    assert 'expected = {name: "success" for name in needs}' in commands
+    assert aggregate["steps"][0]["env"]["PLAN_JSON"] == ("${{ toJSON(needs.select-full-ci.outputs) }}")
+    assert 'selected not in {"true", "false"}' in commands
+    assert '"success" if selected == "true" else "skipped"' in commands
     assert 'expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]' in commands
     assert 'payload["result"]' in commands
     assert "Full CI did not pass" in commands
+
+
+def test_selective_full_ci_keeps_the_aggregate_fail_closed() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+    aggregate_needs = set(jobs["full-ci-success"]["needs"])
+    component_jobs = {component.replace("_", "-") for component in COMPONENTS}
+    assert component_jobs.issubset(aggregate_needs)
+
+    for component in COMPONENTS:
+        job = jobs[component.replace("_", "-")]
+        assert "select-full-ci" in job["needs"]
+        assert f"needs.select-full-ci.outputs.{component} == 'true'" in job["if"]
+
+
+def test_full_ci_selector_uses_the_complete_exact_head_pr_change_set() -> None:
+    selector = _workflow("ci.yml")["jobs"]["select-full-ci"]
+    commands = _run_commands(selector)
+
+    assert "pulls/${pr_number}/files?per_page=100" in commands
+    assert "--paginate" in commands
+    assert ".previous_filename" in commands
+    assert "@base64" in commands
+    assert "changed_files > 3000" in commands
+    assert '"${pr_head}" != "${GITHUB_SHA}"' in commands
+    assert "workflow_dispatch:*|push:refs/heads/main|push:refs/heads/release/*" in commands
+    assert "force_all=true" in commands
+
+
+def test_full_ci_scope_resolver_handles_copy_manual_and_race_cases(
+    tmp_path: Path,
+) -> None:
+    selector = _workflow("ci.yml")["jobs"]["select-full-ci"]
+    scope_script = next(
+        step["run"] for step in selector["steps"] if step.get("name") == "Resolve the trusted change set"
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'if [[ ${FAKE_GH_EXIT:-0} != 0 ]]; then exit "${FAKE_GH_EXIT}"; fi\n'
+        "args=$*\n"
+        "if [[ ${args} == *'.changed_files'* ]]; then\n"
+        "  printf '%s\\n' \"${FAKE_CHANGED_FILES:-2}\"\n"
+        "elif [[ ${args} == *'/files?per_page=100'* ]]; then\n"
+        "  [[ ${FAKE_FAIL_FILES:-false} != true ]]\n"
+        "  printf '%s\\n' \"${FAKE_FILES:-README.md}\"\n"
+        "elif [[ ${args} == *'.head.sha'* ]]; then\n"
+        "  printf '%s\\n' \"${FAKE_PR_HEAD:-}\"\n"
+        "else\n"
+        "  exit 2\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+
+    output = tmp_path / "copy-output"
+    target_sha = "0123456789abcdef"
+    copy_env = {
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": "refs/heads/pull-request/136",
+        "GITHUB_SHA": target_sha,
+        "GITHUB_OUTPUT": str(output),
+        "RUNNER_TEMP": str(tmp_path),
+        "REPOSITORY": "ai-dynamo/aisimulate",
+        "FAKE_PR_HEAD": target_sha,
+        "FAKE_FILES": "\n".join(
+            base64.b64encode(path.encode()).decode() for path in ("README.md", "crates/core/src/replay/event.rs")
+        ),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+    }
+    copy_result = _run_workflow_script(scope_script, copy_env)
+    assert copy_result.returncode == 0, copy_result.stdout + copy_result.stderr
+    assert "force_all=false" in output.read_text(encoding="utf-8")
+    encoded_paths = (tmp_path / "full-ci-paths.b64").read_text(encoding="ascii").splitlines()
+    assert [base64.b64decode(path).decode() for path in encoded_paths] == [
+        "README.md",
+        "crates/core/src/replay/event.rs",
+    ]
+
+    output.unlink()
+    oversized = _run_workflow_script(
+        scope_script,
+        {
+            **copy_env,
+            "FAKE_CHANGED_FILES": "3001",
+            "FAKE_FAIL_FILES": "true",
+        },
+    )
+    assert oversized.returncode == 0, oversized.stdout + oversized.stderr
+    assert "force_all=true" in output.read_text(encoding="utf-8")
+
+    raced = _run_workflow_script(
+        scope_script,
+        {**copy_env, "FAKE_PR_HEAD": "fedcba9876543210"},
+    )
+    assert raced.returncode != 0
+    assert "PR head changed" in raced.stdout
+
+    manual_output = tmp_path / "manual-output"
+    manual = _run_workflow_script(
+        scope_script,
+        {
+            **copy_env,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": "refs/heads/codex/topic",
+            "GITHUB_OUTPUT": str(manual_output),
+            "FAKE_GH_EXIT": "1",
+        },
+    )
+    assert manual.returncode == 0, manual.stdout + manual.stderr
+    assert "force_all=true" in manual_output.read_text(encoding="utf-8")
+
+
+def test_full_ci_aggregate_accepts_only_explicit_na_results() -> None:
+    plan = dict.fromkeys(COMPONENTS, "false")
+    plan["application_tests"] = "true"
+    results = {
+        "verify-target": "success",
+        "select-full-ci": "success",
+        "fast-ci": "success",
+        "stage-application-wheel": "skipped",
+        **{
+            component.replace("_", "-"): ("success" if plan[component] == "true" else "skipped")
+            for component in COMPONENTS
+        },
+    }
+
+    passed = _run_full_ci_aggregate(results, plan)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+
+    results["application-tests"] = "skipped"
+    missing_selected_job = _run_full_ci_aggregate(results, plan)
+    assert missing_selected_job.returncode != 0
+    assert "application-tests=skipped, expected success" in missing_selected_job.stdout
+
+    results["application-tests"] = "success"
+    results["rust"] = "success"
+    unexpected_unselected_job = _run_full_ci_aggregate(results, plan)
+    assert unexpected_unselected_job.returncode != 0
+    assert "rust=success, expected skipped" in unexpected_unselected_job.stdout
+
+
+def test_full_ci_aggregate_rejects_missing_selection_output() -> None:
+    plan = dict.fromkeys(COMPONENTS, "false")
+    del plan["collector_data"]
+    results = {
+        "verify-target": "success",
+        "select-full-ci": "success",
+        "fast-ci": "success",
+        "stage-application-wheel": "skipped",
+        **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
+    }
+
+    result = _run_full_ci_aggregate(results, plan)
+    assert result.returncode != 0
+    assert "invalid selection outputs: collector_data=None" in result.stdout
+
+
+def test_full_ci_selector_skips_heavy_jobs_for_documentation() -> None:
+    plan = select_components(["README.md", "docs/architecture.md"])
+
+    assert plan["run_all"] is False
+    assert not any(plan["components"].values())
+
+
+def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
+    python_plan = select_components(["python/aisimulate/src/aisimulate/traffic.py"])
+    assert {component for component, selected in python_plan["components"].items() if selected} == {
+        "platform_wheels",
+        "application_wheel",
+        "application_tests",
+        "python_compatibility",
+        "release_artifact_contract",
+    }
+
+    rust_plan = select_components(["crates/core/src/replay/event.rs"])
+    assert rust_plan["components"]["rust"] is True
+    assert rust_plan["components"]["prediction_regression"] is True
+    assert rust_plan["components"]["collector_data"] is False
+    assert rust_plan["components"]["cargo_deny"] is False
+
+    data_plan = select_components(["python/aisimulate/src/aiconfigurator_core/systems/data/b200/op.parquet"])
+    assert data_plan["components"]["collector_data"] is True
+    assert data_plan["components"]["prediction_regression"] is True
+    assert data_plan["components"]["engine_golden_regression"] is True
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        [],
+        ["future/unclassified.file"],
+        [".github/workflows/ci.yml"],
+        ["scripts/select_full_ci.py"],
+    ],
+)
+def test_full_ci_selector_defaults_unknown_or_contract_changes_to_all(
+    paths: list[str],
+) -> None:
+    plan = select_components(paths)
+
+    assert plan["run_all"] is True
+    assert all(plan["components"].values())
+
+
+def test_full_ci_selector_force_all_and_path_validation() -> None:
+    forced = select_components(["README.md"], force_all=True)
+    assert forced["run_all"] is True
+    assert all(forced["components"].values())
+
+    with pytest.raises(ValueError, match="repository-relative"):
+        select_components(["../outside.py"])
+
+    whitespace_name = select_components([" README.md"])
+    assert whitespace_name["run_all"] is True
+    backslash_name = select_components([r"docs\architecture.md"])
+    assert backslash_name["run_all"] is True
+    with pytest.raises(ValueError, match="repository-relative"):
+        select_components(["docs/readme.md\nREADME.md"])
+
+
+def test_full_ci_selector_cli_decodes_paths_and_writes_outputs(tmp_path: Path) -> None:
+    encoded = tmp_path / "paths.b64"
+    encoded.write_text(
+        base64.b64encode(b"README.md").decode() + "\n",
+        encoding="ascii",
+    )
+    output = tmp_path / "github-output"
+    summary = tmp_path / "summary.md"
+
+    result = subprocess.run(
+        [
+            "python3",
+            "scripts/select_full_ci.py",
+            "--base64-paths-file",
+            str(encoded),
+            "--github-output",
+            str(output),
+            "--summary",
+            str(summary),
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "run_all=false" in output.read_text(encoding="utf-8")
+    assert "application_tests=false" in output.read_text(encoding="utf-8")
+    assert "Explicitly N/A" in summary.read_text(encoding="utf-8")
+
+
+def test_python_dependency_changes_run_the_complete_matrix() -> None:
+    plan = select_components(["python/aisimulate/pyproject.toml"])
+
+    assert plan["run_all"] is True
+    assert all(plan["components"].values())
 
 
 def test_fast_ci_owns_static_and_workflow_contract_checks() -> None:

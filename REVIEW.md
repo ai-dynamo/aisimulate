@@ -44,6 +44,16 @@ Full CI contains the expensive multi-architecture dependency, Rust, Python,
 public-API, feature-mode, engine-golden, platform-wheel, collector-data,
 prediction-regression, build, and release-artifact tests. The FPE support
 matrix remains a scheduled/manual product-support audit rather than a PR gate.
+`Full CI Success` is required for every admitted PR, but trusted
+`pull-request/*` copies select only the components affected by the pull
+request's complete changed-file set. Renames classify both the old and new
+paths. Documentation and review-policy-only changes may mark every expensive
+component explicitly N/A; unknown paths and changes to CI execution contracts
+run the complete matrix. Manual, `main`, and `release/*` runs also execute the
+complete matrix. The aggregate gate accepts a skipped component only when the
+selector explicitly marked that component N/A; missing selection outputs,
+unexpected skips, failures, and cancellations fail closed.
+
 Dispatch Full CI only after the required reviews have completed on the current
 commit with no unresolved P0/P1 finding. Lower-priority findings and CODEOWNER
 review may proceed while Full CI runs, but all required conversations,

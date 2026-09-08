@@ -35,10 +35,131 @@ jobs:
       - name: Reject a mismatched requested commit
         shell: bash
         run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -z "${EXPECTED_SHA}" ]]; then
+            echo "::error::manual Full CI requires a nonempty expected_sha"
+            exit 1
+          fi
           if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
             echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
             exit 1
           fi
+      - name: Verify trusted PR copy matches originating head
+        if: startsWith(github.ref, 'refs/heads/pull-request/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr_number="${GITHUB_REF#refs/heads/pull-request/}"
+          if [[ ! "${pr_number}" =~ ^[0-9]+$ ]]; then
+            echo "::error::invalid trusted PR copy ref: ${GITHUB_REF}"
+            exit 1
+          fi
+          pr_head="$(
+            gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" --jq '.head.sha'
+          )"
+          if [[ "${pr_head}" != "${RUN_SHA}" ]]; then
+            echo "::error::trusted copy ${RUN_SHA} does not match PR #${pr_number} head ${pr_head}"
+            exit 1
+          fi
+
+  select-full-ci:
+    name: Select Full CI Scope
+    needs: verify-target
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_all: ${{ steps.plan.outputs.run_all }}
+      platform_wheels: ${{ steps.plan.outputs.platform_wheels }}
+      collector_data: ${{ steps.plan.outputs.collector_data }}
+      prediction_regression: ${{ steps.plan.outputs.prediction_regression }}
+      cargo_deny: ${{ steps.plan.outputs.cargo_deny }}
+      rust: ${{ steps.plan.outputs.rust }}
+      rust_feature_modes: ${{ steps.plan.outputs.rust_feature_modes }}
+      public_api_rust: ${{ steps.plan.outputs.public_api_rust }}
+      application_wheel: ${{ steps.plan.outputs.application_wheel }}
+      application_tests: ${{ steps.plan.outputs.application_tests }}
+      python_compatibility: ${{ steps.plan.outputs.python_compatibility }}
+      engine_golden_regression: ${{ steps.plan.outputs.engine_golden_regression }}
+      release_artifact_contract: ${{ steps.plan.outputs.release_artifact_contract }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Resolve the trusted change set
+        id: scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          paths="${RUNNER_TEMP}/full-ci-paths.b64"
+          force_all=false
+
+          case "${GITHUB_EVENT_NAME}:${GITHUB_REF}" in
+            workflow_dispatch:*|push:refs/heads/main|push:refs/heads/release/*)
+              force_all=true
+              : > "${paths}"
+              ;;
+            push:refs/heads/pull-request/*)
+              pr_number="${GITHUB_REF#refs/heads/pull-request/}"
+              if [[ ! "${pr_number}" =~ ^[0-9]+$ ]]; then
+                echo "::error::invalid trusted PR copy ref: ${GITHUB_REF}"
+                exit 1
+              fi
+              changed_files="$(
+                gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" \
+                  --jq '.changed_files'
+              )"
+              if (( changed_files > 3000 )); then
+                echo "::notice::PR has ${changed_files} changed files; running all components"
+                force_all=true
+                : > "${paths}"
+              else
+                gh api --paginate \
+                  "repos/${REPOSITORY}/pulls/${pr_number}/files?per_page=100" \
+                  --jq '.[] | (.filename, (.previous_filename // empty)) | @base64' \
+                  | LC_ALL=C sort -u > "${paths}"
+              fi
+              pr_head="$(
+                gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" --jq '.head.sha'
+              )"
+              if [[ "${pr_head}" != "${GITHUB_SHA}" ]]; then
+                echo "::error::PR head changed while resolving its changed-file set"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::unsupported Full CI event/ref: ${GITHUB_EVENT_NAME}:${GITHUB_REF}"
+              exit 1
+              ;;
+          esac
+
+          echo "force_all=${force_all}" >> "${GITHUB_OUTPUT}"
+          echo "paths=${paths}" >> "${GITHUB_OUTPUT}"
+      - name: Plan required Full CI components
+        id: plan
+        shell: bash
+        env:
+          FORCE_ALL: ${{ steps.scope.outputs.force_all }}
+          PATHS_FILE: ${{ steps.scope.outputs.paths }}
+        run: |
+          set -euo pipefail
+          args=(
+            --base64-paths-file "${PATHS_FILE}"
+            --github-output "${GITHUB_OUTPUT}"
+            --summary "${GITHUB_STEP_SUMMARY}"
+          )
+          if [[ "${FORCE_ALL}" == "true" ]]; then
+            args+=(--force-all)
+          fi
+          python scripts/select_full_ci.py "${args[@]}"
 
   fast-ci:
     name: Fast CI
@@ -49,21 +170,24 @@ jobs:
 
   platform-wheels:
     name: Platform Wheels
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.platform_wheels == 'true' }}
     uses: ./.github/workflows/validate-platform-wheels.yml
     with:
       expected_sha: ${{ github.sha }}
 
   collector-data:
     name: Collector Data
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.collector_data == 'true' }}
     uses: ./.github/workflows/collector-check.yml
     with:
       expected_sha: ${{ github.sha }}
 
   prediction-regression:
     name: Prediction Regression
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.prediction_regression == 'true' }}
     uses: ./.github/workflows/prediction-regression-gate.yml
     with:
       expected_sha: ${{ github.sha }}
@@ -71,7 +195,8 @@ jobs:
 
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.cargo_deny == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -118,7 +243,8 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.arch }})
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.rust == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -138,7 +264,8 @@ jobs:
 
   rust-feature-modes:
     name: Rust feature modes
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.rust_feature_modes == 'true' }}
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
     container:
@@ -161,7 +288,8 @@ jobs:
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.public_api_rust == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -191,6 +319,14 @@ jobs:
       - python-compatibility
       - engine-golden-regression
       - release-artifact-contract
+      - select-full-ci
+    if: >-
+      ${{
+        always() &&
+        !failure() &&
+        !cancelled() &&
+        needs.select-full-ci.outputs.application_wheel == 'true'
+      }}
     strategy:
       fail-fast: false
       matrix:
@@ -367,7 +503,8 @@ jobs:
 
   application-tests:
     name: Application Tests (${{ matrix.arch }})
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -408,7 +545,8 @@ jobs:
 
   python-compatibility:
     name: Python ${{ matrix.python-version }} compatibility
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.python_compatibility == 'true' }}
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
     strategy:
@@ -438,7 +576,8 @@ jobs:
 
   engine-golden-regression:
     name: Engine Golden Regression
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.engine_golden_regression == 'true' }}
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 45
     container:
@@ -468,7 +607,8 @@ jobs:
 
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
-    needs: fast-ci
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.release_artifact_contract == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -509,6 +649,7 @@ jobs:
     if: always()
     needs:
       - verify-target
+      - select-full-ci
       - fast-ci
       - platform-wheels
       - collector-data
@@ -529,6 +670,7 @@ jobs:
       - name: Report and require every Full CI job
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          PLAN_JSON: ${{ toJSON(needs.select-full-ci.outputs) }}
           EXPECTED_STAGE_RESULT: >-
             ${{ github.event_name == 'push' &&
                 (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) &&
@@ -539,15 +681,46 @@ jobs:
           import os
 
           needs = json.loads(os.environ["NEEDS_JSON"])
-          expected = {name: "success" for name in needs}
+          plan = json.loads(os.environ["PLAN_JSON"])
+          component_outputs = {
+              "platform-wheels": "platform_wheels",
+              "collector-data": "collector_data",
+              "prediction-regression": "prediction_regression",
+              "cargo-deny": "cargo_deny",
+              "rust": "rust",
+              "rust-feature-modes": "rust_feature_modes",
+              "public-api-rust": "public_api_rust",
+              "application-wheel": "application_wheel",
+              "application-tests": "application_tests",
+              "python-compatibility": "python_compatibility",
+              "engine-golden-regression": "engine_golden_regression",
+              "release-artifact-contract": "release_artifact_contract",
+          }
+          expected = {
+              "verify-target": "success",
+              "select-full-ci": "success",
+              "fast-ci": "success",
+          }
+          invalid_outputs = []
+          for job, output in component_outputs.items():
+              selected = plan.get(output)
+              if selected not in {"true", "false"}:
+                  invalid_outputs.append(f"{output}={selected!r}")
+                  continue
+              expected[job] = "success" if selected == "true" else "skipped"
           expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]
           failures = []
           for name, payload in sorted(needs.items()):
               result = payload["result"]
-              wanted = expected[name]
+              wanted = expected.get(name)
+              if wanted is None:
+                  failures.append(f"{name}=unexpected dependency")
+                  continue
               print(f"{name}: {result} (expected {wanted})")
               if result != wanted:
                   failures.append(f"{name}={result}, expected {wanted}")
+          if invalid_outputs:
+              failures.append("invalid selection outputs: " + ", ".join(invalid_outputs))
           if failures:
               print("::error::Full CI did not pass: " + "; ".join(failures))
               raise SystemExit(1)
