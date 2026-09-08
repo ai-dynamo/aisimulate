@@ -112,6 +112,16 @@ Use `from_native(...)` instead when native AIC support is required and an
 unsupported configuration or native data failure should surface rather than
 fall back. This strict-native constructor does not take `worker_type`.
 
+`EngineConfig.database_mode` selects `SILICON`, `HYBRID`, `EMPIRICAL`, or
+`SOL` for native forward-pass construction. The Python dictionary form uses
+those uppercase strings; Rust uses `DatabaseMode`. `EMPIRICAL` always uses the
+SOL/util path and is intended for research estimates when matching silicon
+data is unavailable. Set `enable_shared_layer=true` when empirical estimation
+may reuse sibling or cross-version calibration data; `transfer_policy` can
+limit the allowed transfer kinds. Version-slot validation is unchanged; raw versions
+outside the maintained slots still require the existing explicit SDK or
+environment escape hatch.
+
 Use `RustForwardPassPerfModel.from_regression(worker_type, options=None)` or
 `ForwardPassPerfModel::from_regression(worker_type, options)` for a
 regression-only model. It owns one two-dimensional retained sample set and one

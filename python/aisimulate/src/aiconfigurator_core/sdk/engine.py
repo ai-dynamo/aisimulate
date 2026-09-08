@@ -381,6 +381,10 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    database_mode: str | None = None,
+    shared_layer: bool | None = None,
+    transfer_policy: str | list[str] | None = None,
+    strict_provenance: bool | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -418,7 +422,16 @@ def compile_engine(
     # tolerant database load — `_maybe_load_database` forgives LOAD failures
     # (the Rust core falls back to its own defaults), never policy violations.
     literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
-    database = _maybe_load_database(system, backend, literal_version, systems_path)
+    database = _maybe_load_database(
+        system,
+        backend,
+        literal_version,
+        systems_path,
+        database_mode,
+        shared_layer,
+        transfer_policy,
+        strict_provenance,
+    )
 
     spec_json = build_engine_spec_json(
         model,
@@ -741,12 +754,34 @@ def _evaluate_single_op(
             op._lane_order = original_lane_order
 
 
-def _maybe_load_database(system: str, backend: str, backend_version: str | None, systems_path: str | None) -> Any:
+def _maybe_load_database(
+    system: str,
+    backend: str,
+    backend_version: str | None,
+    systems_path: str | None,
+    database_mode: str | None,
+    shared_layer: bool | None,
+    transfer_policy: str | list[str] | None,
+    strict_provenance: bool | None,
+) -> Any:
     try:
         from aiconfigurator_core.sdk import perf_database
 
-        return perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
+        formula_only = database_mode is not None and database_mode.upper() in {"EMPIRICAL", "SOL"}
+        return perf_database.get_database_view(
+            system,
+            backend,
+            backend_version,
+            systems_paths=systems_path,
+            allow_missing_data=formula_only,
+            database_mode=database_mode,
+            shared_layer=shared_layer,
+            transfer_policy=transfer_policy,
+            strict_provenance=strict_provenance,
+        )
     except Exception:
+        if database_mode is not None:
+            raise
         return None
 
 
