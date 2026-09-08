@@ -15,18 +15,35 @@ on:
     branches:
       - "pull-request/*"
     paths:
+      # Keep this filter aligned with the measured Rust and Python call path.
       - ".github/workflows/performance.yml"
       - "Cargo.toml"
       - "Cargo.lock"
-      - "crates/**"
-      - "python/aisimulate/**"
+      - "crates/core/Cargo.toml"
+      - "crates/core/src/lib.rs"
+      - "crates/core/src/python.rs"
+      - "crates/core/src/engine/**"
+      - "crates/core/src/perfmodel/**"
+      - "python/aisimulate/pyproject.toml"
+      - "python/aisimulate/src/aisimulate/__init__.py"
+      - "python/aisimulate/src/aiconfigurator/sdk/**"
+      - "python/aisimulate/src/aiconfigurator_core/*.py"
+      - "python/aisimulate/src/aiconfigurator_core/sdk/**"
+      - "python/aisimulate/src/aiconfigurator_core/model_configs/Qwen--Qwen3-32B_config.json"
+      - "python/aisimulate/src/aiconfigurator_core/model_configs/Qwen--Qwen3-235B-A22B_config.json"
+      - "python/aisimulate/src/aiconfigurator_core/systems/*.yaml"
+      - "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/**"
+      - "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/**"
+      - "python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/**"
+      - "python/aisimulate/tools/forward_perf_gate/**"
+      - "python/aisimulate/tools/prediction_regression_gate/grid.py"
 
 permissions:
   contents: read
   pull-requests: read
 
 concurrency:
-  group: forward-prediction-performance-${{ inputs.pr_number || github.ref }}
+  group: ${{ github.event_name == 'workflow_dispatch' && format('pull-request/{0}', inputs.pr_number) || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -116,13 +133,45 @@ jobs:
           base_sha="$(git merge-base "${PR_HEAD_SHA}" "${base_tip}")"
 
           gate_path="python/aisimulate/tools/forward_perf_gate"
-          if ! git cat-file -e "${base_sha}:${gate_path}/run.py" || \
-             ! git cat-file -e "${base_sha}:${gate_path}/worker.py"; then
+          skip_reason=""
+          for revision_label in base head; do
+            if [[ "${revision_label}" == "base" ]]; then
+              revision="${base_sha}"
+            else
+              revision="${PR_HEAD_SHA}"
+            fi
+            for gate_file in __init__.py run.py worker.py; do
+              if ! git cat-file -e "${revision}:${gate_path}/${gate_file}" 2>/dev/null; then
+                skip_reason="${revision_label} revision \`${revision}\` does not contain the complete forward-performance gate"
+                break 2
+              fi
+            done
+          done
+
+          if [[ -z "${skip_reason}" ]]; then
+            base_protocol="$(
+              git show "${base_sha}:${gate_path}/__init__.py" 2>/dev/null |
+                sed -nE 's/^PROTOCOL_VERSION[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p'
+            )"
+            head_protocol="$(
+              git show "${PR_HEAD_SHA}:${gate_path}/__init__.py" 2>/dev/null |
+                sed -nE 's/^PROTOCOL_VERSION[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p'
+            )"
+            if [[ ! "${base_protocol}" =~ ^[0-9]+$ ]]; then
+              skip_reason="could not read PROTOCOL_VERSION from base revision \`${base_sha}\`"
+            elif [[ ! "${head_protocol}" =~ ^[0-9]+$ ]]; then
+              skip_reason="could not read PROTOCOL_VERSION from head revision \`${PR_HEAD_SHA}\`"
+            elif [[ "${base_protocol}" != "${head_protocol}" ]]; then
+              skip_reason="protocol versions differ: base is ${base_protocol}, head is ${head_protocol}"
+            fi
+          fi
+
+          if [[ -n "${skip_reason}" ]]; then
             echo "run_comparison=false" >> "${GITHUB_OUTPUT}"
             {
               echo "## Forward Prediction Performance (advisory)"
               echo
-              echo "**SKIPPED** — base revision \`${base_sha}\` predates the forward-performance protocol."
+              echo "**SKIPPED** — ${skip_reason}."
               echo
               echo "Head \`${PR_HEAD_SHA}\` was not benchmarked."
             } >> "${GITHUB_STEP_SUMMARY}"
@@ -215,4 +264,4 @@ jobs:
           if [[ -n "${HEAD_SRC:-}" ]]; then
             git worktree remove --force "${HEAD_SRC}" || true
           fi
-          git worktree prune
+          git worktree prune || true
