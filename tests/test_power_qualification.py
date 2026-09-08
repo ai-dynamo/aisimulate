@@ -68,15 +68,45 @@ def _qualified_document(revision: str) -> dict:
 def test_checked_in_power_qualification_ledger_is_structurally_valid() -> None:
     document = QUALIFICATION.load_and_validate(LEDGER)
     invariant = _gate(document, "power-data-invariants")
-    failure = invariant["execution"]["evidence"][0]
-    artifact = ROOT / failure["artifact"]
+    evidence = invariant["execution"]["evidence"][0]
+    artifact = ROOT / evidence["artifact"]
 
     assert document["release_state"] == "not_qualified"
-    assert invariant["execution"]["status"] == "failed"
-    assert failure["result"] == "fail"
+    assert invariant["execution"]["status"] == "passed"
+    assert evidence["result"] == "pass"
     assert artifact.is_file()
-    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == failure["sha256"]
+    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == evidence["sha256"]
     assert QUALIFICATION.main([]) == 0
+
+
+def test_power_data_invariant_evidence_is_complete_and_machine_readable() -> None:
+    document = _document()
+    evidence = _gate(document, "power-data-invariants")["execution"]["evidence"][0]
+    text = (ROOT / evidence["artifact"]).read_text(encoding="utf-8")
+    result = json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0])
+
+    assert result["files_scanned"] == len(result["files"]) == 3
+    assert result["rows_scanned"] == sum(
+        file_result["rows_scanned"] for file_result in result["files"]
+    )
+    assert result["rows_scanned"] == 122362
+    assert result["checks"]["power_and_limit_columns_paired"] == {
+        "result": "pass",
+        "files_missing_pair": [],
+    }
+    assert result["checks"]["finite_nonnegative_values"] == {
+        "result": "pass",
+        "power": {"unit": "W", "nan_count": 0, "negative_count": 0},
+        "power_limit": {"unit": "W", "nan_count": 0, "non_positive_count": 0},
+    }
+    assert all(
+        file_result["power_columns_present"] == ["power", "power_limit"]
+        and file_result["pairing_result"] == "pass"
+        and file_result["key_columns"]
+        and file_result["power"]["unit"] == "W"
+        and file_result["power_limit"]["unit"] == "W"
+        for file_result in result["files"]
+    )
 
 
 def test_schema_is_versioned_and_machine_readable() -> None:

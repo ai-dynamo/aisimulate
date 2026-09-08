@@ -140,21 +140,21 @@
       ],
       "execution": {
         "kind": "automated",
-        "status": "failed",
-        "command": "python -m pytest -q python/aisimulate/tests/unit/sdk/database/test_power_data_invariants.py",
+        "status": "passed",
+        "command": "uv run --project python/aisimulate --extra dev python -m pytest -q python/aisimulate/tests/unit/sdk/database/test_power_data_invariants.py",
         "command_status": "available",
         "evidence": [
           {
-            "result": "fail",
-            "artifact": "docs/power/evidence/power-data-invariants-def18eb3.txt",
-            "sha256": "dde612501946b436ff5ef9ee14a8ca7e078fee8b035dd15cccc69d7dbfd522b4",
-            "source_revision": "def18eb344a3bf5015059c53affecce5c9073cea",
-            "recorded_at": "2026-09-08T22:57:13Z"
+            "result": "pass",
+            "artifact": "docs/power/evidence/power-data-invariants-bb31ab4.txt",
+            "sha256": "e643168bcc60ae02ebfdd16f127aa474ff62d88597bef7f68ac414dfcbfca7ba",
+            "source_revision": "bb31ab48cbe1e519683ce27bf7bc82f0e090ed67",
+            "recorded_at": "2026-09-08T23:25:00Z"
           }
         ],
         "blocked_by": []
       },
-      "notes": "The current invariant test failure is preserved as immutable evidence. A future pass is necessary but does not establish end-to-end modeled-power coverage or accuracy."
+      "notes": "The repository-bound invariant test passes and is preserved as immutable evidence. This data-plane result does not establish end-to-end modeled-power coverage or accuracy."
     },
     {
       "id": "aic-power-parity",
