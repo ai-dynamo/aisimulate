@@ -13,7 +13,11 @@ from aisimulate.config.engine import (
     WorkerPredictionConfig,
     WorkersPredictionConfig,
 )
-from aisimulate.recommend import recommendation_to_sweeper
+from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisimulate.sweeper.deploy import build_backend_deployment
+from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.replay import ReplaySpec
+from aisimulate.sweeper.sample import unroll_sample
 
 
 def _engine() -> dict:
@@ -744,3 +748,108 @@ def test_recommendation_timing_accepts_forward_model_per_role() -> None:
     assert config.engine.workers.decode is not None
     assert config.engine.workers.prefill.timing.forward_model == "op_level"
     assert config.engine.workers.decode.timing.forward_model == "fpm"
+
+
+def _fpm_recommendation() -> CoreRecommendationConfig:
+    return CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "mode": "aggregated",
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 2048,
+                "workers": {
+                    "aggregated": {
+                        "parallelism": {"preset": False, "tensor": 1, "moe_tensor": 1, "moe_expert": 1},
+                        "kv_cache": {"capacity": {"type": "fixed", "blocks": 256}},
+                        "timing": {"type": "default", "forward_model": "fpm"},
+                    }
+                },
+            },
+            "optimization": {"constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+
+
+def test_recommendation_lowers_forward_model_per_role() -> None:
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "mode": "disaggregated",
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 4096,
+                "workers": {
+                    "prefill": {"timing": {"type": "default"}},
+                    "decode": {"timing": {"type": "default", "forward_model": "fpm"}},
+                },
+            },
+            "optimization": {"constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+
+    space = recommendation_to_sweeper(config).search_space
+
+    assert space.prefill_forward_model == "op_level"
+    assert space.decode_forward_model == "fpm"
+    assert space.agg_forward_model == "op_level"
+
+
+def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
+    config = _fpm_recommendation()
+    smart = recommendation_to_sweeper(config)
+    assert smart.search_space.agg_forward_model == "fpm"
+
+    sample = unroll_sample(
+        search_space=smart.search_space,
+        selection={
+            "deployment_mode": "agg",
+            "backend": "vllm",
+            "agg_max_num_batched_tokens": 8192,
+            "agg_max_num_seqs": 256,
+        },
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+    )
+    assert sample["agg_forward_model"] == "fpm"
+    deployment = build_backend_deployment(sample, backend_version="test")
+    assert deployment.agg_engine_args["aic_forward_model"] == "fpm"
+
+    prediction = _candidate_prediction(
+        config,
+        sample,
+        ReplaySpec(backend_deployment=deployment, workload={}, goal={}),
+        adapter_sections={},
+    )
+
+    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "fpm"}
+    CorePredictionConfig.model_validate(prediction)
+
+
+def test_recommendation_candidate_yaml_keeps_default_timing_unchanged_for_op_level() -> None:
+    config = _fpm_recommendation()
+    raw = config.model_dump(mode="python", exclude_none=True)
+    raw["engine"]["workers"]["aggregated"]["timing"] = {"type": "default"}
+    config = CoreRecommendationConfig.model_validate(raw)
+    smart = recommendation_to_sweeper(config)
+    sample = unroll_sample(
+        search_space=smart.search_space,
+        selection={
+            "deployment_mode": "agg",
+            "backend": "vllm",
+            "agg_max_num_batched_tokens": 8192,
+            "agg_max_num_seqs": 256,
+        },
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+    )
+    deployment = build_backend_deployment(sample, backend_version="test")
+
+    prediction = _candidate_prediction(
+        config,
+        sample,
+        ReplaySpec(backend_deployment=deployment, workload={}, goal={}),
+        adapter_sections={},
+    )
+
+    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default"}
