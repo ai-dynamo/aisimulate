@@ -142,6 +142,58 @@ def test_single_gpu_moe_branch_materializes_backend_deployment():
     assert "aic_moe_ep_size" not in engine
 
 
+@pytest.mark.model("Qwen/Qwen3-VL-30B-A3B-Instruct-FP8")
+def test_single_gpu_moe_disagg_branch_materializes_both_roles():
+    config = _config(
+        model_name="Qwen/Qwen3-VL-30B-A3B-Instruct-FP8",
+        hardware_sku="gb200",
+        backend=["vllm"],
+        deployment_mode=["disagg"],
+        gpu_budget=2,
+    )
+    (branch,) = enumerate_branches(
+        config,
+        runner_capabilities=_capabilities(("vllm", "disagg")),
+    )
+    role = ReplicaParallelConfig(
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1),
+        replicas=1,
+    )
+    expected = DisaggParallelConfig(prefill=role, decode=role)
+    assert branch.parallel_configs == (expected,)
+
+    selection = {
+        "deployment_mode": "disagg",
+        **{name: values[0] for name, values in branch.knob_choices.items()},
+    }
+    sample = unroll_sample(
+        search_space=config.search_space,
+        selection=selection,
+        parallel_config=expected,
+    )
+    deployment = build_backend_deployment(
+        sample,
+        backend_version=resolve_backend_version("gb200", "vllm"),
+    )
+
+    assert deployment.parallel_config == {
+        "prefill_tp": 1,
+        "prefill_pp": 1,
+        "prefill_attention_dp": 1,
+        "prefill_moe_tp": 1,
+        "prefill_moe_ep": 1,
+        "prefill_strategy": "tp",
+        "prefill_replicas": 1,
+        "decode_tp": 1,
+        "decode_pp": 1,
+        "decode_attention_dp": 1,
+        "decode_moe_tp": 1,
+        "decode_moe_ep": 1,
+        "decode_strategy": "tp",
+        "decode_replicas": 1,
+    }
+
+
 def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
     calls = []
 
