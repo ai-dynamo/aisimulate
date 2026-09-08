@@ -6,7 +6,7 @@
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.sweeper.afd import AFDInfeasible, AFDParallelConfig, AFDReasonCategory
+from aisimulate.sweeper.afd_parallel import AFDInfeasible, AFDParallelConfig, AFDReasonCategory
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.model_hw import ModelHardware, NoViableParallelConfig
@@ -154,9 +154,7 @@ def test_afd_runner_capability_gate_fails_closed(monkeypatch):
     with pytest.raises(NoViableParallelConfig, match="runner-compatible"):
         enumerate_branches(
             _config("afd"),
-            runner_capabilities=RunnerCapabilities(
-                supported_backend_topologies=(("vllm", "agg"),)
-            ),
+            runner_capabilities=RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),)),
         )
 
 
@@ -247,9 +245,7 @@ def test_sweeper_runs_afd_branch_through_an_explicitly_capable_runner(monkeypatc
 
         def run(self, spec: ReplaySpec, *, output_requirements=None) -> ReplayReport:
             self.specs.append(spec)
-            return ReplayReport(
-                metrics={"output_throughput_tok_s": 10.0, "gpu_hours": 1.0}
-            )
+            return ReplayReport(metrics={"output_throughput_tok_s": 10.0, "gpu_hours": 1.0})
 
         def close(self) -> None:
             pass
@@ -271,9 +267,7 @@ def test_sweeper_runs_afd_branch_through_an_explicitly_capable_runner(monkeypatc
     config.sweep.parallel_evals = 1
     config.sweep.algorithm = "random"
 
-    result = Sweeper(runner_factory=factory, show_progress=False).run(
-        config, top_n=None
-    )
+    result = Sweeper(runner_factory=factory, show_progress=False).run(config, top_n=None)
 
     assert len(result.selected_candidates) == 1
     assert result.selected_candidates[0].used_gpus == 8
