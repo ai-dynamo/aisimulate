@@ -303,6 +303,7 @@ def test_agg_candidate_materializes_backend_default_kv_capacity(backend, backend
         ("vllm", "0.24.0"),
         ("sglang", "0.5.14"),
         ("trtllm", "1.3.0rc20"),
+        ("trtllm", "1.3.0rc23"),
     ],
 )
 def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backend, backend_version):
