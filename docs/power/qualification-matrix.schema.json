@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ai-dynamo/aisimulate/blob/main/docs/power/qualification-matrix.schema.json",
+  "title": "AISimulate modeled-power release qualification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "release_target",
+    "release_state",
+    "policy",
+    "gates"
+  ],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema_version": {"const": "1.0"},
+    "release_target": {"const": "0.13.0"},
+    "release_state": {"enum": ["not_qualified", "qualified"]},
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum_power_coverage_ratio",
+        "aic_parity_relative_tolerance",
+        "silicon_accuracy"
+      ],
+      "properties": {
+        "minimum_power_coverage_ratio": {"const": 0.9},
+        "aic_parity_relative_tolerance": {"const": 0.01},
+        "silicon_accuracy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "metric",
+            "maximum_error_pct",
+            "minimum_points_per_case",
+            "threshold_status"
+          ],
+          "properties": {
+            "metric": {"const": "power_w_mape_pct"},
+            "maximum_error_pct": {"type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 100},
+            "minimum_points_per_case": {"type": ["integer", "null"], "minimum": 1},
+            "threshold_status": {"enum": ["pending_approval", "approved"]}
+          }
+        }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/gate"}
+    }
+  },
+  "$defs": {
+    "stringArray": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_families",
+        "deployments",
+        "runners",
+        "timing_backends",
+        "coverage_states"
+      ],
+      "properties": {
+        "model_families": {"$ref": "#/$defs/stringArray"},
+        "deployments": {"$ref": "#/$defs/stringArray"},
+        "runners": {"$ref": "#/$defs/stringArray"},
+        "timing_backends": {"$ref": "#/$defs/stringArray"},
+        "coverage_states": {"$ref": "#/$defs/stringArray"}
+      }
+    },
+    "assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "expectation", "thresholds"],
+      "properties": {
+        "when": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/stringArray"}
+        },
+        "expectation": {
+          "enum": [
+            "modeled_power",
+            "unavailable_power",
+            "operation_energy_evidence",
+            "aic_parity",
+            "silicon_accuracy",
+            "runner_output",
+            "packaged_output",
+            "integration_available",
+            "data_invariants"
+          ]
+        },
+        "thresholds": {"type": "object"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "artifact", "sha256", "source_revision", "recorded_at"],
+      "properties": {
+        "result": {"enum": ["pass", "fail"]},
+        "artifact": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "status", "command", "evidence", "blocked_by"],
+      "properties": {
+        "kind": {"enum": ["automated", "manual"]},
+        "status": {"enum": ["pending", "blocked", "passed", "failed"]},
+        "command": {"type": ["string", "null"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "blocked_by": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "category",
+        "title",
+        "release_blocking",
+        "depends_on",
+        "matrix",
+        "assertions",
+        "execution",
+        "notes"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "category": {
+          "enum": [
+            "contract",
+            "data",
+            "functional",
+            "diagnostics",
+            "parity",
+            "accuracy",
+            "runner",
+            "packaging",
+            "integration"
+          ]
+        },
+        "title": {"type": "string", "minLength": 1},
+        "release_blocking": {"type": "boolean"},
+        "depends_on": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^AIC-[0-9]+$"}
+        },
+        "matrix": {"$ref": "#/$defs/matrix"},
+        "assertions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/assertion"}
+        },
+        "execution": {"$ref": "#/$defs/execution"},
+        "notes": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

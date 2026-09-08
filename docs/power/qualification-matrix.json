@@ -1,0 +1,289 @@
+{
+  "$schema": "./qualification-matrix.schema.json",
+  "schema_version": "1.0",
+  "release_target": "0.13.0",
+  "release_state": "not_qualified",
+  "policy": {
+    "minimum_power_coverage_ratio": 0.9,
+    "aic_parity_relative_tolerance": 0.01,
+    "silicon_accuracy": {
+      "metric": "power_w_mape_pct",
+      "maximum_error_pct": null,
+      "minimum_points_per_case": null,
+      "threshold_status": "pending_approval"
+    }
+  },
+  "gates": [
+    {
+      "id": "modeled-power-matrix",
+      "category": "functional",
+      "title": "Modeled active power and coverage behavior",
+      "release_blocking": true,
+      "depends_on": ["AIC-1933", "AIC-1934", "AIC-1935", "AIC-1936"],
+      "matrix": {
+        "model_families": ["dense", "moe"],
+        "deployments": ["aggregated", "disaggregated"],
+        "runners": ["standard", "dynamo"],
+        "timing_backends": ["default_op_level"],
+        "coverage_states": ["covered", "undercovered"]
+      },
+      "assertions": [
+        {
+          "when": {"coverage_states": ["covered"]},
+          "expectation": "modeled_power",
+          "thresholds": {"power_coverage_ratio_minimum": 0.9, "power_w_minimum_exclusive": 0}
+        },
+        {
+          "when": {"coverage_states": ["undercovered"]},
+          "expectation": "unavailable_power",
+          "thresholds": {"power_coverage_ratio_maximum_exclusive": 0.9}
+        },
+        {
+          "when": {"runners": ["standard", "dynamo"]},
+          "expectation": "runner_output",
+          "thresholds": {"required_fields": ["power_w", "power_coverage", "power_provenance"]}
+        }
+      ],
+      "execution": {
+        "kind": "automated",
+        "status": "pending",
+        "command": "python -m pytest -q tests/qualification/test_power_prediction_matrix.py",
+        "evidence": [],
+        "blocked_by": []
+      },
+      "notes": "The full cross product is 16 scenarios. Covered rows must report modeled per-GPU active forward-pass power; undercovered rows must keep power unavailable rather than serialize zero."
+    },
+    {
+      "id": "unsupported-timing-no-fabrication",
+      "category": "functional",
+      "title": "Unsupported timing backends never fabricate modeled power",
+      "release_blocking": true,
+      "depends_on": ["AIC-1935", "AIC-1936"],
+      "matrix": {
+        "model_families": ["dense", "moe"],
+        "deployments": ["aggregated", "disaggregated"],
+        "runners": ["standard", "dynamo"],
+        "timing_backends": ["default_fpm", "fixed", "polynomial"],
+        "coverage_states": ["not_applicable"]
+      },
+      "assertions": [
+        {
+          "when": {"timing_backends": ["default_fpm", "fixed", "polynomial"]},
+          "expectation": "unavailable_power",
+          "thresholds": {"forbid_numeric_power_w": true, "forbid_measured_provenance": true}
+        }
+      ],
+      "execution": {
+        "kind": "automated",
+        "status": "pending",
+        "command": "python -m pytest -q tests/qualification/test_power_prediction_matrix.py -k no_fabrication",
+        "evidence": [],
+        "blocked_by": []
+      },
+      "notes": "This covers 24 negative scenarios and keeps the timing-only FPM, fixed, and polynomial paths outside the modeled-power support claim."
+    },
+    {
+      "id": "operation-energy-evidence",
+      "category": "diagnostics",
+      "title": "Phase and per-operation energy evidence reconciles with totals",
+      "release_blocking": true,
+      "depends_on": ["AIC-1933", "AIC-1937"],
+      "matrix": {
+        "model_families": ["dense", "moe"],
+        "deployments": ["aggregated", "disaggregated"],
+        "runners": ["standard", "dynamo"],
+        "timing_backends": ["default_op_level"],
+        "coverage_states": ["covered", "undercovered"]
+      },
+      "assertions": [
+        {
+          "when": {"coverage_states": ["covered", "undercovered"]},
+          "expectation": "operation_energy_evidence",
+          "thresholds": {
+            "required_fields": ["phase", "operation", "latency_ms", "energy_w_ms", "covered_latency_ms", "source"],
+            "reconciliation_relative_tolerance": 0.01
+          }
+        }
+      ],
+      "execution": {
+        "kind": "automated",
+        "status": "pending",
+        "command": "python -m pytest -q tests/qualification/test_power_diagnostics.py",
+        "evidence": [],
+        "blocked_by": []
+      },
+      "notes": "Evidence must retain missing-data boundaries and source attribution. A zero energy total from a timing-only path is not accepted as operation-level coverage."
+    },
+    {
+      "id": "power-data-invariants",
+      "category": "data",
+      "title": "Packaged operation data obeys the power column contract",
+      "release_blocking": true,
+      "depends_on": ["AIC-1934"],
+      "matrix": {
+        "model_families": ["dense", "moe"],
+        "deployments": ["any"],
+        "runners": ["any"],
+        "timing_backends": ["default_op_level"],
+        "coverage_states": ["covered", "undercovered"]
+      },
+      "assertions": [
+        {
+          "when": {},
+          "expectation": "data_invariants",
+          "thresholds": {"finite_nonnegative_values": true, "power_and_limit_columns_paired": true}
+        }
+      ],
+      "execution": {
+        "kind": "automated",
+        "status": "pending",
+        "command": "python -m pytest -q python/aisimulate/tests/unit/sdk/database/test_power_data_invariants.py",
+        "evidence": [],
+        "blocked_by": []
+      },
+      "notes": "Passing the data invariant test is necessary but does not establish end-to-end modeled-power coverage or accuracy."
+    },
+    {
+      "id": "aic-power-parity",
+      "category": "parity",
+      "title": "AISimulate modeled power matches the frozen AIC reference",
+      "release_blocking": true,
+      "depends_on": ["AIC-1933", "AIC-1934", "AIC-1935", "AIC-1936", "AIC-1937"],
+      "matrix": {
+        "model_families": ["dense", "moe"],
+        "deployments": ["aggregated", "disaggregated"],
+        "runners": ["standard"],
+        "timing_backends": ["default_op_level"],
+        "coverage_states": ["covered"]
+      },
+      "assertions": [
+        {
+          "when": {},
+          "expectation": "aic_parity",
+          "thresholds": {"maximum_relative_error_ratio": 0.01, "reference_must_be_immutable": true}
+        }
+      ],
+      "execution": {
+        "kind": "automated",
+        "status": "pending",
+        "command": "python -m pytest -q crates/core/parity_tests/perfmodel/test_engine_step_parity.py -k power",
+        "evidence": [],
+        "blocked_by": []
+      },
+      "notes": "The existing 1% perfmodel parity tolerance is retained. Release evidence must include non-zero covered power cases; well-typed zero-energy surfaces alone are insufficient."
+    },
+    {
+      "id": "silicon-power-accuracy",
+      "category": "accuracy",
+      "title": "Modeled power is accurate against measured silicon",
+      "release_blocking": true,
+      "depends_on": ["AIC-1934", "AIC-1935", "AIC-1936"],
+      "matrix": {
+        "model_families": ["dense", "moe"],
+        "deployments": ["aggregated", "disaggregated"],
+        "runners": ["standard", "dynamo"],
+        "timing_backends": ["default_op_level"],
+        "coverage_states": ["covered"]
+      },
+      "assertions": [
+        {
+          "when": {},
+          "expectation": "silicon_accuracy",
+          "thresholds": {
+            "metric": "power_w_mape_pct",
+            "maximum_error_pct": null,
+            "minimum_points_per_case": null,
+            "threshold_status": "pending_approval"
+          }
+        }
+      ],
+      "execution": {
+        "kind": "manual",
+        "status": "pending",
+        "command": null,
+        "evidence": [],
+        "blocked_by": []
+      },
+      "notes": "No universal power-accuracy threshold has been approved. The release owner must approve the MAPE and sample-count thresholds before attaching public-safe, immutable evidence."
+    },
+    {
+      "id": "application-wheel",
+      "category": "packaging",
+      "title": "Power-capable CLI and data ship in the single application wheel",
+      "release_blocking": true,
+      "depends_on": ["AIC-1934", "AIC-1936", "AIC-1937"],
+      "matrix": {
+        "model_families": ["any"],
+        "deployments": ["any"],
+        "runners": ["standard", "dynamo"],
+        "timing_backends": ["any"],
+        "coverage_states": ["not_applicable"]
+      },
+      "assertions": [
+        {
+          "when": {},
+          "expectation": "packaged_output",
+          "thresholds": {"distribution_count": 1, "wheel_smoke_required": true, "packaged_data_required": true}
+        }
+      ],
+      "execution": {
+        "kind": "automated",
+        "status": "pending",
+        "command": "python scripts/build_release_artifacts.py --check-only",
+        "evidence": [],
+        "blocked_by": []
+      },
+      "notes": "This gate preserves the single AISimulate wheel contract. Dynamo remains an optional runtime integration; the wheel must expose the same modeled-power result contract when that runner is available."
+    },
+    {
+      "id": "afd-power-integration",
+      "category": "integration",
+      "title": "AFD modeled-power integration",
+      "release_blocking": false,
+      "depends_on": ["AIC-1938"],
+      "matrix": {
+        "model_families": ["dense", "moe"],
+        "deployments": ["afd"],
+        "runners": ["standard", "dynamo"],
+        "timing_backends": ["default_op_level"],
+        "coverage_states": ["covered", "undercovered"]
+      },
+      "assertions": [
+        {"when": {}, "expectation": "integration_available", "thresholds": {"required": false}}
+      ],
+      "execution": {
+        "kind": "manual",
+        "status": "blocked",
+        "command": null,
+        "evidence": [],
+        "blocked_by": ["AFD runner integration is not available on main"]
+      },
+      "notes": "AFD is recorded explicitly but remains outside the 0.13 power-support claim until its runner integration lands and receives its own evidence."
+    },
+    {
+      "id": "epd-power-integration",
+      "category": "integration",
+      "title": "EPD modeled-power integration",
+      "release_blocking": false,
+      "depends_on": ["AIC-1938"],
+      "matrix": {
+        "model_families": ["dense", "moe"],
+        "deployments": ["epd"],
+        "runners": ["standard", "dynamo"],
+        "timing_backends": ["default_op_level"],
+        "coverage_states": ["covered", "undercovered"]
+      },
+      "assertions": [
+        {"when": {}, "expectation": "integration_available", "thresholds": {"required": false}}
+      ],
+      "execution": {
+        "kind": "manual",
+        "status": "blocked",
+        "command": null,
+        "evidence": [],
+        "blocked_by": ["EPD runner integration is not available on main"]
+      },
+      "notes": "EPD is recorded explicitly but remains outside the 0.13 power-support claim until its runner integration lands and receives its own evidence."
+    }
+  ]
+}

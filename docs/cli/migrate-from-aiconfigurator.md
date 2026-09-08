@@ -82,6 +82,12 @@ does not make a capability available through the unified path.
 | Predicted `power_w` and power coverage | No AIC-equivalent unified output | Optional runner metadata is not a replacement for AIC power analysis |
 | `--save-dir`, `--deployment-target` | No direct flag mapping on the new `aisimulate` CLI | `aisimulate recommend --output-dir` writes recommendation results and prediction-ready configs, not deployment manifests. For programmatic generation, select a candidate and use `from_sweeper_candidate(...)` with `generate_from_request(...)`; continue using `aiconfigurator cli generate` for a direct CLI workflow. |
 
+The modeled-power migration is tracked by the
+[0.13 qualification ledger](../power/README.md). That ledger remains
+`not_qualified` until its release-blocking functional, parity, silicon, and
+packaging gates carry immutable passing evidence. Its presence does not change
+the conservative compatibility boundary in this table.
+
 The examples below use the built-in engine runner. Use `--stack dynamo` only when `ai-dynamo` is
 installed and the workflow needs its runner or Router/Planner adapters. The stack selection is a CLI
 option; it is not written into the YAML.
