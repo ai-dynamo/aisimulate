@@ -51,6 +51,14 @@ def test_full_ci_selects_migrated_contract_and_regression_suites() -> None:
     assert "test_core_public_api.py" not in application_commands
     assert "test_core_public_api.py" not in compatibility_commands
 
+    recommendation_path = "tests/e2e/cli/test_cli_recommend.py"
+    recommendation_steps = [
+        step for step in jobs["application-tests"]["steps"] if recommendation_path in step.get("run", "")
+    ]
+    assert len(recommendation_steps) == 2
+    assert "-n auto" not in recommendation_steps[0]["run"]
+    assert f"--ignore={recommendation_path}" in recommendation_steps[1]["run"]
+
     regression = jobs["engine-golden-regression"]
     regression_commands = _run_commands(regression)
     assert regression["name"] == "Engine golden regression"

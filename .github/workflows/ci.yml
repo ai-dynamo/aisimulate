@@ -371,11 +371,15 @@ jobs:
           python/aisimulate/tests/cross_package
       - run: aiconfigurator version
       - run: python -m pytest -q -c pytest.ini tests
+      - name: Run recommendation E2E without parallel resource contention
+        run: python -m pytest -q tests/e2e/cli/test_cli_recommend.py --timeout=180
+        working-directory: python/aisimulate
       - run: >-
           python -m pytest -q
           tests
           -m 'unit or build'
           --ignore=tests/unit/sdk/database/test_moe_dispatch.py
+          --ignore=tests/e2e/cli/test_cli_recommend.py
           -n auto
           --timeout=180
         working-directory: python/aisimulate
