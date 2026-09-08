@@ -640,10 +640,7 @@ def _candidate_prediction(
         if isinstance(timing_model, dict):
             timing = deepcopy(timing_model)
         else:
-            timing = {"type": "default"}
-            forward_model = sample.get(f"{role}_forward_model")
-            if forward_model is not None and forward_model != "op_level":
-                timing["forward_model"] = forward_model
+            timing = {"type": "default", "forward_model": sample.get(f"{role}_forward_model") or "op_level"}
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],
@@ -704,9 +701,6 @@ def _candidate_prediction(
     except ValueError as exc:
         raise InfeasibleCandidate(f"generated prediction config is infeasible: {exc}") from exc
     public = prediction.model_dump(mode="python", exclude_none=True)
-    for worker in public["engine"]["workers"].values():
-        if worker["timing"].get("forward_model") == "op_level":
-            del worker["timing"]["forward_model"]
     public.update(concrete_adapters)
     return public
 

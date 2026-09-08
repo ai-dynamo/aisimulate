@@ -827,7 +827,7 @@ def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
     CorePredictionConfig.model_validate(prediction)
 
 
-def test_recommendation_candidate_yaml_keeps_default_timing_unchanged_for_op_level() -> None:
+def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults() -> None:
     config = _fpm_recommendation()
     raw = config.model_dump(mode="python", exclude_none=True)
     raw["engine"]["workers"]["aggregated"]["timing"] = {"type": "default"}
@@ -852,4 +852,5 @@ def test_recommendation_candidate_yaml_keeps_default_timing_unchanged_for_op_lev
         adapter_sections={},
     )
 
-    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default"}
+    # Normalization materializes every schema default into the candidate; forward_model is no exception.
+    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "op_level"}
