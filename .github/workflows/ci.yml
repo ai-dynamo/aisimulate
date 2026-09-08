@@ -1,9 +1,16 @@
-name: CI
+name: Full CI
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed commit required for this run
+        required: true
+        type: string
   push:
-    # Velonix admits canonical pushes, not untrusted pull_request events.
+    # Keep trusted copy-pr-bot branches as an automatic coverage backstop until
+    # the main ruleset requires the exact-SHA Full CI checks. Reviewed PR
+    # validation may also be admitted explicitly through workflow_dispatch.
     branches:
       - main
       - "pull-request/*"
@@ -13,27 +20,31 @@ permissions:
   contents: read
 
 jobs:
-  spdx-headers:
-    name: Source Compliance
-    runs-on: prod-aisimulate-default-amd64-v1
-    timeout-minutes: 5
-    container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
-      env:
-        HOME: /__w/aisimulate/aisimulate
-        USER: runner
+  verify-target:
+    name: Verify Exact Target
+    runs-on: ubuntu-latest
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      RUN_SHA: ${{ github.sha }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: Check NVIDIA/Apache-2.0 SPDX headers
-        run: python scripts/check_copyright.py
-      - name: Check packaged legal-file copies
-        run: python scripts/check_packaged_legal_files.py
+      - name: Reject a mismatched requested commit
+        shell: bash
+        run: |
+          if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
+            echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
+            exit 1
+          fi
+
+  fast-ci:
+    name: Fast CI
+    needs: verify-target
+    uses: ./.github/workflows/fast-ci.yml
+    with:
+      expected_sha: ${{ github.sha }}
 
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +91,7 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -109,6 +121,7 @@ jobs:
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -136,21 +149,12 @@ jobs:
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
     needs:
-      - spdx-headers
+      - fast-ci
       - cargo-deny
       - rust
       - public-api-rust
       - application-tests
-      - lint
       - release-artifact-contract
-    # Only trusted branch-copy and post-merge pushes may stage wheels. In
-    # particular, workflow_dispatch must not acquire either staging environment.
-    if: >-
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' ||
-       startsWith(github.ref, 'refs/heads/release/') ||
-       startsWith(github.ref, 'refs/heads/pull-request/'))
-    environment: ${{ startsWith(github.ref, 'refs/heads/pull-request/') && 'pr-wheel-staging' || 'automated-release' }}
     strategy:
       fail-fast: false
       matrix:
@@ -186,6 +190,38 @@ jobs:
           staged-wheel-smoke/bin/python -c \
             "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
             assert aisimulate_core._build_smoke() > 0"
+      - name: Preserve wheel for trusted staging
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-wheel-${{ matrix.arch }}
+          path: dist/*.whl
+
+  stage-application-wheel:
+    name: Stage Application Wheel (${{ matrix.arch }})
+    needs: application-wheel
+    # Manual PR validation builds and verifies wheels without acquiring release
+    # credentials. Only post-merge and release lifecycle pushes may stage them.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/heads/release/'))
+    environment: automated-release
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-wheel-${{ matrix.arch }}
+          path: dist
       - name: Stage wheel in Artifactory
         shell: bash
         env:
@@ -216,16 +252,6 @@ jobs:
           esac
 
           case "${GITHUB_REF}" in
-            refs/heads/pull-request/*)
-              pr_number="${GITHUB_REF#refs/heads/pull-request/}"
-              case "${pr_number}" in
-                ""|*[!0-9]*)
-                  echo "::error::expected numeric pull-request/<id> ref, got ${GITHUB_REF}"
-                  exit 1
-                  ;;
-              esac
-              subpath="${pr_number}/${GITHUB_SHA}/${GITHUB_RUN_ID}"
-              ;;
             refs/heads/main|refs/heads/release/*)
               subpath="post-merge/${GITHUB_SHA}/${GITHUB_RUN_ID}"
               ;;
@@ -312,6 +338,7 @@ jobs:
 
   application-tests:
     name: Application Tests (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -353,33 +380,9 @@ jobs:
           --timeout=180
         working-directory: python/aisimulate
 
-  lint:
-    name: Lint (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
-    container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
-      env:
-        HOME: /__w/aisimulate/aisimulate
-        USER: runner
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - run: python -m pip install ruff==0.14.1
-      - run: >-
-          ruff check
-          --config python/aisimulate/pyproject.toml
-          python/aisimulate/src/aisimulate
-          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
-          tests
-
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:

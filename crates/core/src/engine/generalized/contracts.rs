@@ -290,6 +290,12 @@ pub trait RankEngine: Sized {
         false
     }
 
+    /// Prepare this rank for the next shared attention-DP group pass.
+    ///
+    /// `wave_step` starts at zero and resets after every rank drains. The
+    /// default is a no-op for rank engines without group-step scheduling.
+    fn prepare_group_pass(&mut self, _wave_step: u64, _dp_size: NonZeroU32) {}
+
     /// Eagerly commit one non-preemptive pass.
     fn execute_pass(
         &mut self,
