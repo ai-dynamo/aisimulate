@@ -315,6 +315,7 @@ jobs:
       - rust
       - rust-feature-modes
       - public-api-rust
+      - application-test-wheel
       - application-tests
       - python-compatibility
       - engine-golden-regression
@@ -340,14 +341,17 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-python-rust
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - run: python -m pip install 'maturin>=1.12,<2'
-      - name: Build application wheel
-        run: python -m maturin build --release --out ../../dist
-        working-directory: python/aisimulate
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-test-wheel-${{ matrix.arch }}
+          path: dist
       - name: Verify exact staged wheel
         run: python python/aisimulate/tools/verify_release_wheels.py dist
       - name: Smoke-test exact staged wheel

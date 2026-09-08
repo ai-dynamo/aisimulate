@@ -168,7 +168,14 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
         "rust-feature-modes",
         "python-compatibility",
         "engine-golden-regression",
+        "application-test-wheel",
     }.issubset(required_before_wheel_staging)
+    application_wheel_commands = _run_commands(jobs["application-wheel"])
+    assert "maturin build" not in application_wheel_commands
+    assert any(
+        step.get("with", {}).get("name") == "application-test-wheel-${{ matrix.arch }}"
+        for step in jobs["application-wheel"]["steps"]
+    )
 
 
 def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
@@ -645,7 +652,6 @@ def test_shared_python_rust_setup_is_used_by_same_revision_jobs() -> None:
         "rust",
         "rust-feature-modes",
         "public-api-rust",
-        "application-wheel",
         "application-test-wheel",
         "python-compatibility",
         "engine-golden-regression",
