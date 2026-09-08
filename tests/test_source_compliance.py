@@ -61,6 +61,33 @@ def test_hash_stamped_patch_is_not_rewritten_as_owned_source(checker, tmp_path):
     assert not checker.is_source(path)
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "# SPDX-License-Identifier: Apache-2.0",
+        "// SPDX-License-Identifier: Apache-2.0",
+        "/* SPDX-License-Identifier: Apache-2.0 */",
+        "SPDX-License-Identifier: Apache-2.0",
+        "<!-- SPDX-License-Identifier: Apache-2.0 -->",
+    ],
+)
+def test_apache_spdx_identifier_accepts_complete_tag_lines(checker, line):
+    assert checker.has_required_license_identifier(f"{line}\n")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "{# SPDX-License-Identifier: Apache-2.0 -#}",
+        "{# SPDX-License-Identifier: Apache-2.0 #}",
+        "SPDX-License-Identifier: Apache-2.0 -#}",
+        "SPDX-License-Identifier: MIT",
+    ],
+)
+def test_apache_spdx_identifier_rejects_malformed_or_wrong_expressions(checker, line):
+    assert not checker.has_required_license_identifier(f"{line}\n")
+
+
 @pytest.mark.parametrize("name", ROOT_ONLY_GOVERNANCE_FILES)
 def test_repository_governance_file_lives_only_at_root(name):
     assert (ROOT / name).is_file()
