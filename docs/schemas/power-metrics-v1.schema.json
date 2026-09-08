@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ai-dynamo/aisimulate/blob/main/docs/schemas/power-metrics-v1.schema.json",
+  "title": "AISimulate modeled-power metrics v1",
+  "description": "Optional modeled-power fields carried by replay reports and Sweeper candidate metrics.",
+  "type": "object",
+  "properties": {
+    "power_w": {
+      "description": "Active forward-pass average power per GPU in watts.",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "power_coverage": {
+      "description": "Latency-weighted fraction of modeled active latency with positive operation-energy evidence.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "power_w"
+        ]
+      },
+      "then": {
+        "required": [
+          "power_coverage"
+        ],
+        "properties": {
+          "power_coverage": {
+            "minimum": 0.9
+          }
+        }
+      }
+    }
+  ]
+}

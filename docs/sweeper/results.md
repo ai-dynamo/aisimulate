@@ -71,6 +71,12 @@ Metric names and units are explicit: throughput is `*_tok_s`, latency is `*_ms`,
 power is `*_w`, duration is `duration_ms`, and `gpu_hours` is GPU-hours. `score` is not assumed to
 have a unit; use the named metric or `objectives` for display and comparisons.
 
+When a runner supplies modeled power, `power_w` and `power_coverage` follow the
+[modeled-power contract](../power-model.md): active-forward-pass power per GPU,
+energy-over-active-latency aggregation, and a fail-closed `0.9` latency-weighted coverage gate. Below that gate,
+`power_coverage` remains in metrics and provenance while `power_w` is omitted. A runner without
+typed operation-energy evidence must omit both fields rather than inventing a zero value.
+
 ### Counts
 
 `evaluated` is the number of candidate attempts that reached materialization or replay and equals
@@ -159,7 +165,7 @@ field names.
 | `tokens/s/user` | `metrics.mean_output_token_throughput_per_user` | Tokens/s/user. |
 | `seq/s`, `seq/s/gpu`, role worker rates | `metrics` | Sequences/s, with the legacy label preserved in migration metadata until a typed metric is added. |
 | `balance_score`, `num_ctx_reqs`, `num_gen_reqs`, `num_tokens`, `ctx_tokens`, `gen_tokens` | `metrics` | Exact numeric values; request/token counts are counts. |
-| `power_w` | `provenance.power.power_w` | Watts. |
+| `power_w`, `power_coverage` | `metrics` and `provenance.power` | Watts per GPU and a latency-weighted ratio in `[0, 1]`; a converter must follow the modeled-power contract and omit `power_w` below the gate. |
 | `gemm`, `kvcache`, `fmha`, `moe`, `comm`, `memory`, role variants | `metrics` | Legacy component estimates remain named metrics with original units recorded by the converter. |
 | EPD `(a)workers` and `(e)workers`, `(e)tp`, `(e)pp`, `(e)bs`, `(e)parallel`, `(e)memory` | `config` and `provenance.topology` | Preserve the rate-matched aggregate and encoder cell as explicit roles. |
 | AFD `phase`, `(a)nodes/tp/bs/micro_bs/workers`, `(f)nodes/tp/ep/workers` | `config` and `provenance.topology` | Preserve attention/FFN role topology and whether AFD applies to prefill, decode, or both. |

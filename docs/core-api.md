@@ -201,7 +201,11 @@ StaticResult, PerOpValue}` and `engine::spec::{EngineSpec, OpSpec}` to load and
 execute a previously compiled specification directly. `PerOpValue` is the
 per-op result tuple `(name, latency_ms, energy_wms, source)` returned by the
 `*_per_op` / `evaluate_*` methods (the thin op-list evaluation FFI); per-op
-energy is 0.0 wherever the perf tables carry no power columns.
+energy is 0.0 wherever the perf tables carry no power columns. That zero is a
+missing-data sentinel, not evidence of a zero-power operation. See the
+[modeled-power contract](power-model.md) for the latency-weighted coverage gate,
+aggregation rules, and public output boundary. Typed per-op energy alone does
+not make unified replay power available.
 
 ## Compatibility rules
 

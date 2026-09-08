@@ -50,6 +50,7 @@ areas:
       - tests/test_stack_discovery.py
       - tests/test_unified_cli.py
       - tests/test_unified_traffic_runtime.py
+      - tests/test_power_contract.py
       - tests/test_host_offload_cli.py
       - tests/test_runner.py
       - tests/test_traffic.py
@@ -106,6 +107,10 @@ shared:
     owners: [forward-pass-engine, infra, maintainers]
   - glob: docs/core-api.md
     owners: [forward-pass-engine, maintainers]
+  - glob: docs/power-model.md
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: docs/schemas/power-metrics-v1.schema.json
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/__init__.py
     owners: [forward-pass-engine, sweeper, replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/aic.py
@@ -136,6 +141,8 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
     owners: [replay, maintainers]
+  - glob: tests/test_power_contract.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_host_offload_cli.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
