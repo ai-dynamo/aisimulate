@@ -23,6 +23,7 @@ def prediction_to_replay_spec(
     config: CorePredictionConfig,
     *,
     adapter_specs: dict[str, AdapterReplaySpec] | None = None,
+    execution_mode: str = "offline",
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
@@ -36,6 +37,7 @@ def prediction_to_replay_spec(
         backend_deployment=deployment,
         workload=workload,
         goal=goal,
+        execution_mode=execution_mode,
         concurrency=concurrency,
         adapters=dict(adapter_specs or {}),
     )
@@ -120,6 +122,7 @@ def _worker_performance_model_metadata(
             "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
             "nextn": None,
+            "forward_model": worker.timing.forward_model,
         },
     }
 
@@ -163,6 +166,9 @@ def _worker_engine_args(
     if parallel.moe_tensor * parallel.moe_expert > 1:
         payload["aic_moe_tp_size"] = parallel.moe_tensor
         payload["aic_moe_ep_size"] = parallel.moe_expert
+    if worker.timing.type == "default" and worker.timing.forward_model != "op_level":
+        # Only the non-default forward model is spelled out, so op_level specs stay byte-identical.
+        payload["aic_forward_model"] = worker.timing.forward_model
     if backend == "vllm":
         payload["max_model_len"] = (
             engine.context_length

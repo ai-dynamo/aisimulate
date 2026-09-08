@@ -69,7 +69,12 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   v12 alongside PR-6's `DsaModuleOp` `attn_projection_quant_modes` v12,
 //   and v14 alongside #1533's `GdnOp::mamba_ssm_dtype` v14); each landed
 //   first, so this renumbers to 15 at merge (same v3/v4, v5/v6 precedent).
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 15;
+// - 16 (Muse Glimmer continuation): `GenerationAttentionOp` gained
+//   `use_qk_norm`, which is preserved across the Python/Rust boundary and
+//   contributes decode latency.
+// - 17 (Muse Glimmer review follow-up): `ContextAttentionOp` gained
+//   `apply_rope`, allowing global NoPE layers to omit the fused RoPE cost.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 17;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

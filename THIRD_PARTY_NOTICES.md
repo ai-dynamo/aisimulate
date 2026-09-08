@@ -335,6 +335,60 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Meta Muse Glimmer model configuration
+
+`src/aiconfigurator_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
+is an unmodified copy of `config.json` from the Meta Muse Glimmer model
+repository at immutable revision
+`f84ecc3a0ea984a4c04542a84269e3d065350a6e`:
+
+https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a84269e3d065350a6e/config.json
+
+Copyright owner: Meta Platforms, Inc. and affiliates.
+
+License: Apache License 2.0. The upstream license is available at:
+https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a84269e3d065350a6e/LICENSE
+
+The Apache License 2.0 terms are reproduced in this distribution's `LICENSE`
+file.
+
+## Qwen3.8-Max model configuration files
+
+The following model configuration files are copied byte-for-byte from the
+named Qwen model repositories at the immutable revisions shown:
+
+| Packaged file | Upstream revision |
+| --- | --- |
+| `aiconfigurator_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json` | `Qwen/Qwen3.8-2.4T-A95B@207bd685a7e3696cfaff12ded7c6a7ea0f88c996` |
+| `aiconfigurator_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json` | `Qwen/Qwen3.8-2.4T-A95B-FP8@d2dc35658bcf77e66643428cb52e774cc3b5bd29` |
+
+Upstream repositories:
+https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B and
+https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B-FP8
+
+Copyright owner: Qwen. The copied files are unmodified. Both upstream
+revisions apply the same custom Qwen3.8-Max License, reproduced in full
+below:
+
+```text
+Qwen3.8-Max License
+
+Copyright (c) 2026 Qwen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software, including the model weights, parameters, configuration files, inference code and associated documentation files (collectively, the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, sell, deploy, host, fine-tune, and create derivative works from (collectively, "Use" or "Using") copies of the Software; and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. If the Software (or any derivative works thereof) is Used for any of the licensee's commercial products or services that have more than 100,000,000 monthly active users or US$ 20,000,000 (or equivalent in other currencies) monthly revenue, respective model name must be prominently displayed on the user interface of such product or service; and,
+
+2. If the licensee or any of its affiliates conducts a Model as a Service or AI Work Assistant business, and the aggregate revenue of the licensee and its affiliates exceeds US$50,000,000 (or the equivalent amount in any other currencies) during any consecutive twelve (12) months, the licensee shall obtain a separate license from Qwen before Using the Software or its derivative works for any commercial purpose. The foregoing requirement shall not apply to the licensee's internal Use of the Software, provided that such Use does not make the Software, its outputs, or its underlying model capabilities available to any third party.
+
+"Model as a Service" means giving a third party access to language model inference or fine-tuning (e.g., via API or a hosted endpoint) in a manner that allows such third parties to exercise meaningful control over the inputs, parameters, or training data. This does not include the mere relaying of requests to models hosted by other third parties.
+“AI Work Assistant” means an independent AI-powered product primarily designed for AI-assisted coding or office productivity (e.g., Qoder and QwenWork). It does not include: (a) a single-purpose AI tool (such as an AI translation tool); (b) an AI assistant primarily designed for a domain other than coding or office productivity (such as Taobao AI Shopping Assistant or AMap AI Chat); or (c) an AI assistant that is a feature of a product whose primary purpose is not AI-assisted coding or office productivity.
+
+THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL QWEN, ITS AFFILIATES OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. THE USE OF THE SOFTWARE MUST COMPLY WITH APPLICABLE LAWS AND REGULATIONS, AND MUST NOT INFRINGE THE INTELLECTUAL PROPERTY RIGHTS OF ANY THIRD PARTY.
+
+For any questions regarding this license, please contact model-business@notice.qwencloud.com.
+```
+
 ## Hugging Face Transformers
 
 The `rotate_half` function in `collector/trtllm/collect_mla.py` is copied from

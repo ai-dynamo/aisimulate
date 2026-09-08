@@ -75,7 +75,8 @@ does not make a capability available through the unified path.
 | `--request-latency` | `evaluation.sla.e2e_ms` | Mutually exclusive with `ttft_ms` and `itl_ms` |
 | `--strict-sla` | `optimization.strict_sla: true` | Recommendation-only aggregate-mean filter |
 | `--prefix` | No general direct mapping | Session shared-prefix controls have different semantics |
-| `--database-mode`, `--forward-model`, `--transfer-policy`, `--systems-paths` | No unified CLI mapping | Continue using AIC when estimator/data-source selection is required |
+| `--forward-model` | `engine.workers.<role>.timing.forward_model` | `op_level` (default) or `fpm`; per worker role; `default` timing only |
+| `--database-mode`, `--transfer-policy`, `--systems-paths` | No unified CLI mapping | Continue using AIC when performance-data source selection is required |
 | GEMM, KV-cache, FMHA, MoE, and communication quantization flags | No unified CLI mapping | Continue using AIC when explicit estimator quantization overrides are required |
 | `--detail` and per-op memory/time/energy/source reports | No unified CLI mapping | Continue using AIC for single-point diagnostic breakdowns |
 | Predicted `power_w` and power coverage | No AIC-equivalent unified output | Optional runner metadata is not a replacement for AIC power analysis |
@@ -276,7 +277,7 @@ Continue using the compatibility command for:
 - multimodal image-input and EPD modeling;
 - exact single-point FPM, static, AFD, per-op, detail, or power estimation;
 - heterogeneous P/D systems, backends, or versions;
-- AIC-specific database modes, forward-model selection, and expert estimator flags.
+- AIC-specific database modes and expert estimator flags.
 
 The compatibility command remains available in AISimulate 0.12.0 and is targeted for removal in
 AISimulate 0.13.0. Removal is gated on verified unified CLI replacements for every remaining workflow
