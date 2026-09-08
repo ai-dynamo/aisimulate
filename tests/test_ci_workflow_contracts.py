@@ -170,6 +170,10 @@ def test_selective_full_ci_keeps_the_aggregate_fail_closed() -> None:
         assert "select-full-ci" in job["needs"]
         assert f"needs.select-full-ci.outputs.{component} == 'true'" in job["if"]
 
+    wheel_condition = jobs["application-wheel"]["if"]
+    assert "needs.fast-ci.result == 'success'" in wheel_condition
+    assert "needs.select-full-ci.result == 'success'" in wheel_condition
+
 
 def test_full_ci_selector_uses_the_complete_exact_head_pr_change_set() -> None:
     selector = _workflow("ci.yml")["jobs"]["select-full-ci"]

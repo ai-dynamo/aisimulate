@@ -325,6 +325,8 @@ jobs:
         always() &&
         !failure() &&
         !cancelled() &&
+        needs.fast-ci.result == 'success' &&
+        needs.select-full-ci.result == 'success' &&
         needs.select-full-ci.outputs.application_wheel == 'true'
       }}
     strategy:
