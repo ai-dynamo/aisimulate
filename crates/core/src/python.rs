@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::{
-    Backend, EngineConfig, TimingModel, TimingModelConfig, TimingPhasePower, TimingPowerSummary,
+    Backend, EngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
 };
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
@@ -197,9 +198,9 @@ impl AicTimingConfig {
 
 struct AicTimingModel {
     engine: Py<PyAny>,
-    power: Mutex<TimingPowerSummary>,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
+    evidence: Mutex<TimingEvidenceSummary>,
 }
 
 impl AicTimingModel {
@@ -267,20 +268,20 @@ impl AicTimingModel {
         })?;
         Ok(Self {
             engine,
-            power: Mutex::new(TimingPowerSummary::default()),
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
+            evidence: Mutex::new(TimingEvidenceSummary::default()),
         })
     }
 
-    fn predict_phase(
+    fn predict_phase_evidence(
         &self,
         batch_size: u32,
         isl: u32,
         osl: u32,
         prefix: u32,
         mode: &str,
-    ) -> Result<TimingPhasePower> {
+    ) -> Result<TimingPhaseEvidence> {
         let (context, generation) = Python::with_gil(|py| {
             let kwargs = PyDict::new(py);
             kwargs.set_item("batch_size", batch_size)?;
@@ -300,46 +301,47 @@ impl AicTimingModel {
                     Vec<(String, f64, f64, String)>,
                 )>()
         })
-        .map_err(|error| anyhow!("AIC {mode} power prediction failed: {error}"))?;
-        summarize_power_entries(if mode == "static_ctx" {
-            &context
+        .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
+        phase_evidence_from_python(if mode == "static_ctx" {
+            context
         } else {
-            &generation
+            generation
         })
     }
 
-    fn record_power(&self, phase: TimingPhasePower, prefill: bool) -> Result<()> {
-        let mut power = self
-            .power
+    fn record_evidence(&self, phase: TimingPhaseEvidence, prefill: bool) -> Result<()> {
+        let mut evidence = self
+            .evidence
             .lock()
-            .map_err(|_| anyhow!("AIC timing power accumulator was poisoned"))?;
+            .map_err(|_| anyhow!("AIC timing evidence accumulator was poisoned"))?;
         if prefill {
-            power.prefill.accumulate(phase);
+            evidence.prefill.accumulate(phase);
         } else {
-            power.decode.accumulate(phase);
+            evidence.decode.accumulate(phase);
         }
         Ok(())
     }
 }
 
-fn summarize_power_entries(entries: &[(String, f64, f64, String)]) -> Result<TimingPhasePower> {
-    let mut summary = TimingPhasePower::default();
-    for (name, latency_ms, energy_wms, _source) in entries {
-        ensure!(
-            latency_ms.is_finite() && *latency_ms >= 0.0,
-            "AIC operation {name:?} returned invalid latency {latency_ms}ms"
-        );
-        ensure!(
-            energy_wms.is_finite() && *energy_wms >= 0.0,
-            "AIC operation {name:?} returned invalid energy {energy_wms}Wms"
-        );
-        summary.latency_ms += latency_ms;
-        summary.energy_wms += energy_wms;
-        if *energy_wms > 0.0 {
-            summary.covered_latency_ms += latency_ms;
-        }
-    }
-    Ok(summary)
+fn phase_evidence_from_python(
+    entries: Vec<(String, f64, f64, String)>,
+) -> Result<TimingPhaseEvidence> {
+    let operations = entries
+        .into_iter()
+        .map(|(name, latency_ms, energy_wms, source)| {
+            ensure!(
+                energy_wms.is_finite() && energy_wms >= 0.0,
+                "AIC operation {name:?} returned invalid energy {energy_wms}W-ms"
+            );
+            TimingOperationEvidence::new(
+                name,
+                latency_ms,
+                (energy_wms > 0.0).then_some(energy_wms),
+                TimingEvidenceSource::from_provider(source),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(TimingPhaseEvidence::from_operations(operations))
 }
 
 impl TimingModel for AicTimingModel {
@@ -352,9 +354,23 @@ impl TimingModel for AicTimingModel {
         let batch_size = checked_u32(batch_size, "prefill batch size")?;
         let mean_isl = checked_u32(mean_isl, "mean input length")?;
         let mean_prefix = checked_u32(mean_prefix, "mean prefix length")?;
-        let power = self.predict_phase(batch_size, mean_isl, 1, mean_prefix, "static_ctx")?;
-        self.record_power(power, true)?;
-        Ok(power.latency_ms)
+        if !self.use_fpm_decode_totals {
+            let evidence =
+                self.predict_phase_evidence(batch_size, mean_isl, 1, mean_prefix, "static_ctx")?;
+            let latency_ms = evidence.latency_ms;
+            self.record_evidence(evidence, true)?;
+            return Ok(latency_ms);
+        }
+        Python::with_gil(|py| {
+            self.engine
+                .bind(py)
+                .call_method1(
+                    "predict_prefill_latency",
+                    (batch_size, mean_isl, mean_prefix),
+                )?
+                .extract::<f64>()
+        })
+        .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
     }
 
     fn predict_decode_ms(
@@ -385,17 +401,18 @@ impl TimingModel for AicTimingModel {
 
         let batch_size = checked_u32(batch_size, "decode batch size")?;
         let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
-        let power = self.predict_phase(batch_size, mean_context_length, 2, 0, "static_gen")?;
-        self.record_power(power, false)?;
-        Ok(power.latency_ms)
+        let evidence =
+            self.predict_phase_evidence(batch_size, mean_context_length, 2, 0, "static_gen")?;
+        let latency_ms = evidence.latency_ms;
+        self.record_evidence(evidence, false)?;
+        Ok(latency_ms)
     }
 
-    fn power_summary(&self) -> Option<TimingPowerSummary> {
+    fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
         if self.use_fpm_decode_totals {
-            None
-        } else {
-            self.power.lock().ok().map(|summary| *summary)
+            return None;
         }
+        self.evidence.lock().ok().map(|evidence| evidence.clone())
     }
 }
 
@@ -867,9 +884,9 @@ impl TimingPowerSource {
 }
 
 fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePowerStats>> {
-    let mut combined = TimingPhasePower::default();
+    let mut combined = TimingPhaseEvidence::default();
     for source in sources {
-        let Some(summary) = source.timing.power_summary() else {
+        let Some(summary) = source.timing.evidence_summary() else {
             return Ok(None);
         };
         combined.accumulate(scale_power_phase(
@@ -889,7 +906,12 @@ fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePower
     }
     let coverage = (combined.covered_latency_ms / combined.latency_ms).clamp(0.0, 1.0);
     let power_w = (coverage >= POWER_DATA_COVERAGE_THRESHOLD)
-        .then_some(combined.energy_wms / combined.latency_ms);
+        .then(|| {
+            combined
+                .energy_wms
+                .map(|energy| energy / combined.latency_ms)
+        })
+        .flatten();
     ensure!(
         power_w.is_none_or(f64::is_finite),
         "AIC timing provider produced non-finite replay power"
@@ -897,7 +919,10 @@ fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePower
     Ok(Some(TracePowerStats { power_w, coverage }))
 }
 
-fn scale_power_phase(phase: TimingPhasePower, speedup_ratio: f64) -> Result<TimingPhasePower> {
+fn scale_power_phase(
+    mut phase: TimingPhaseEvidence,
+    speedup_ratio: f64,
+) -> Result<TimingPhaseEvidence> {
     ensure!(
         speedup_ratio.is_finite() && speedup_ratio >= 0.0,
         "modeled speedup ratio must be finite and non-negative, got {speedup_ratio}"
@@ -907,11 +932,15 @@ fn scale_power_phase(phase: TimingPhasePower, speedup_ratio: f64) -> Result<Timi
     } else {
         1.0
     };
-    Ok(TimingPhasePower {
-        energy_wms: phase.energy_wms * scale,
-        latency_ms: phase.latency_ms * scale,
-        covered_latency_ms: phase.covered_latency_ms * scale,
-    })
+    phase.energy_wms = phase.energy_wms.map(|energy| energy * scale);
+    phase.latency_ms *= scale;
+    phase.covered_latency_ms *= scale;
+    for operation in &mut phase.operations {
+        operation.energy_wms = operation.energy_wms.map(|energy| energy * scale);
+        operation.latency_ms *= scale;
+        operation.covered_latency_ms *= scale;
+    }
+    Ok(phase)
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
@@ -1104,7 +1133,7 @@ mod tests {
 
     use super::*;
 
-    struct PowerTiming(TimingPowerSummary);
+    struct PowerTiming(TimingEvidenceSummary);
 
     impl TimingModel for PowerTiming {
         fn predict_prefill_ms(
@@ -1126,8 +1155,8 @@ mod tests {
             Ok(0.0)
         }
 
-        fn power_summary(&self) -> Option<TimingPowerSummary> {
-            Some(self.0)
+        fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
+            Some(self.0.clone())
         }
     }
 
@@ -1179,6 +1208,53 @@ mod tests {
                 Vec::new(),
                 vec![("decode".into(), latency_ms, 0.0, "test".into())],
             )
+        }
+    }
+
+    #[pyclass]
+    struct PerOpEvidenceProbe;
+
+    type TestPerOpEvidence = (String, f64, f64, String);
+
+    #[pymethods]
+    impl PerOpEvidenceProbe {
+        #[allow(clippy::too_many_arguments)]
+        #[allow(unused_variables)]
+        fn run_static_per_op(
+            &self,
+            batch_size: u32,
+            beam_width: u32,
+            isl: u32,
+            osl: u32,
+            prefix: u32,
+            seq_imbalance_correction_scale: f64,
+            gen_seq_imbalance_correction_scale: f64,
+            mode: &str,
+            stride: u32,
+        ) -> (Vec<TestPerOpEvidence>, Vec<TestPerOpEvidence>) {
+            match mode {
+                "static_ctx" => (
+                    vec![
+                        ("gemm".into(), 8.0, 3_200.0, "silicon".into()),
+                        ("attention".into(), 2.0, 0.0, "empirical".into()),
+                    ],
+                    Vec::new(),
+                ),
+                "static_gen" => (
+                    Vec::new(),
+                    vec![("gemm".into(), 4.0, 1_600.0, "silicon".into())],
+                ),
+                unexpected => panic!("unexpected mode {unexpected}"),
+            }
+        }
+    }
+
+    fn timing_model(engine: Py<PyAny>, use_fpm_decode_totals: bool) -> AicTimingModel {
+        AicTimingModel {
+            engine,
+            use_fpm_decode_totals,
+            fpm_decode_kv_ceiling: None,
+            evidence: Mutex::new(TimingEvidenceSummary::default()),
         }
     }
 
@@ -1296,13 +1372,13 @@ mod tests {
 
     #[test]
     fn per_op_power_summary_matches_aic_coverage_semantics() {
-        let summary = summarize_power_entries(&[
+        let summary = phase_evidence_from_python(vec![
             ("covered".into(), 100.0, 50_000.0, "silicon".into()),
             ("missing".into(), 25.0, 0.0, "empirical".into()),
             ("no-op".into(), 0.0, 0.0, "silicon".into()),
         ])
         .unwrap();
-        assert_eq!(summary.energy_wms, 50_000.0);
+        assert_eq!(summary.energy_wms, Some(50_000.0));
         assert_eq!(summary.latency_ms, 125.0);
         assert_eq!(summary.covered_latency_ms, 100.0);
     }
@@ -1310,16 +1386,18 @@ mod tests {
     #[test]
     fn replay_power_applies_phase_speedups_before_weighting() {
         let source = TimingPowerSource {
-            timing: Arc::new(PowerTiming(TimingPowerSummary {
-                prefill: TimingPhasePower {
-                    energy_wms: 100_000.0,
+            timing: Arc::new(PowerTiming(TimingEvidenceSummary {
+                prefill: TimingPhaseEvidence {
+                    energy_wms: Some(100_000.0),
                     latency_ms: 200.0,
                     covered_latency_ms: 190.0,
+                    ..Default::default()
                 },
-                decode: TimingPhasePower {
-                    energy_wms: 150_000.0,
+                decode: TimingPhaseEvidence {
+                    energy_wms: Some(150_000.0),
                     latency_ms: 300.0,
                     covered_latency_ms: 300.0,
+                    ..Default::default()
                 },
             })),
             prefill_speedup_ratio: 2.0,
@@ -1333,13 +1411,14 @@ mod tests {
     #[test]
     fn replay_power_is_withheld_below_aic_coverage_gate() {
         let source = TimingPowerSource {
-            timing: Arc::new(PowerTiming(TimingPowerSummary {
-                prefill: TimingPhasePower {
-                    energy_wms: 40_000.0,
+            timing: Arc::new(PowerTiming(TimingEvidenceSummary {
+                prefill: TimingPhaseEvidence {
+                    energy_wms: Some(40_000.0),
                     latency_ms: 100.0,
                     covered_latency_ms: 80.0,
+                    ..Default::default()
                 },
-                decode: TimingPhasePower::default(),
+                decode: TimingPhaseEvidence::default(),
             })),
             prefill_speedup_ratio: 1.0,
             decode_speedup_ratio: 1.0,
@@ -1366,30 +1445,21 @@ mod tests {
     fn fpm_decode_timing_queries_exact_past_kv_total() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let timing = AicTimingModel {
-            engine,
-            power: Mutex::new(TimingPowerSummary::default()),
-            use_fpm_decode_totals: true,
-            fpm_decode_kv_ceiling: None,
-        };
+        let timing = timing_model(engine, true);
 
         let latency = timing
             .predict_decode_ms(35, 546_081, 15_602, 546_048)
             .unwrap();
 
         assert_eq!(latency, 546_046.0);
+        assert_eq!(timing.evidence_summary(), None);
     }
 
     #[test]
     fn fpm_decode_timing_caps_logical_past_kv_at_physical_capacity() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let timing = AicTimingModel {
-            engine,
-            power: Mutex::new(TimingPowerSummary::default()),
-            use_fpm_decode_totals: true,
-            fpm_decode_kv_ceiling: None,
-        };
+        let timing = timing_model(engine, true);
 
         let latency = timing
             .predict_decode_ms(35, 546_116, 15_603, 546_048)
@@ -1399,21 +1469,36 @@ mod tests {
     }
 
     #[test]
-    fn op_level_decode_timing_keeps_legacy_mean_coordinate() {
+    fn op_level_timing_exposes_typed_python_evidence() {
         pyo3::prepare_freethreaded_python();
-        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let timing = AicTimingModel {
-            engine,
-            power: Mutex::new(TimingPowerSummary::default()),
-            use_fpm_decode_totals: false,
-            fpm_decode_kv_ceiling: None,
-        };
+        let engine = Python::with_gil(|py| Py::new(py, PerOpEvidenceProbe).unwrap().into_any());
+        let timing = timing_model(engine, false);
 
-        let latency = timing
-            .predict_decode_ms(35, 546_081, 15_602, 546_048)
-            .unwrap();
+        assert_eq!(timing.predict_prefill_ms(2, 128, 0).unwrap(), 10.0);
+        assert_eq!(timing.predict_decode_ms(2, 258, 128, 1024).unwrap(), 4.0);
 
-        assert_eq!(latency, 546_105.0);
+        let evidence = timing.evidence_summary().unwrap();
+        assert_eq!(evidence.prefill.energy_wms, Some(3_200.0));
+        assert_eq!(evidence.prefill.latency_ms, 10.0);
+        assert_eq!(evidence.prefill.covered_latency_ms, 8.0);
+        assert_eq!(evidence.prefill.coverage(), 0.8);
+        assert_eq!(evidence.prefill.source, Some(TimingEvidenceSource::Mixed));
+        assert_eq!(evidence.prefill.operations.len(), 2);
+        assert_eq!(evidence.prefill.operations[1].energy_wms, None);
+        assert_eq!(
+            evidence.prefill.operations[1].source,
+            TimingEvidenceSource::Empirical
+        );
+        assert_eq!(evidence.decode.energy_wms, Some(1_600.0));
+        assert_eq!(evidence.decode.coverage(), 1.0);
+    }
+
+    #[test]
+    fn python_evidence_rejects_invalid_energy_before_missing_value_conversion() {
+        let error =
+            phase_evidence_from_python(vec![("bad".into(), 1.0, f64::NAN, "silicon".into())])
+                .unwrap_err();
+        assert!(error.to_string().contains("invalid energy"));
     }
 
     #[test]
