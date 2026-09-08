@@ -96,10 +96,25 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert jobs["collector-data"]["uses"] == "./.github/workflows/collector-check.yml"
     assert jobs["prediction-regression"]["uses"] == "./.github/workflows/prediction-regression-gate.yml"
 
+    application_test_wheel = jobs["application-test-wheel"]
+    assert application_test_wheel["timeout-minutes"] == "10"
+    assert {"fast-ci", "select-full-ci"}.issubset(application_test_wheel["needs"])
+    assert "application-test-wheel" in jobs["application-tests"]["needs"]
+    assert set(jobs["application-tests"]["strategy"]["matrix"]["shard"]) == {
+        "contracts",
+        "unit",
+        "cli-build",
+        "support-matrix",
+        "tools-build",
+    }
     application_commands = _run_commands(jobs["application-tests"])
     compatibility_commands = _run_commands(jobs["python-compatibility"])
     assert "python/aisimulate/tests/cross_package" in application_commands
     assert "python/aisimulate/tests/cross_package" in compatibility_commands
+    assert "-m 'unit and not build'" in application_commands
+    assert "tests/e2e/cli" in application_commands
+    assert "tests/e2e/support_matrix" in application_commands
+    assert "tests/e2e/tools" in application_commands
     assert "test_core_public_api.py" not in application_commands
     assert "test_core_public_api.py" not in compatibility_commands
 
@@ -110,6 +125,17 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert len(recommendation_steps) == 2
     assert "-n auto" not in recommendation_steps[0]["run"]
     assert f"--ignore={recommendation_path}" in recommendation_steps[1]["run"]
+
+    build_marker_files = {
+        path.relative_to(REPOSITORY_ROOT / "python" / "aisimulate").as_posix()
+        for path in (REPOSITORY_ROOT / "python" / "aisimulate" / "tests").rglob("test_*.py")
+        if "pytest.mark.build" in path.read_text(encoding="utf-8")
+    }
+    assert build_marker_files
+    assert all(
+        path.startswith(("tests/e2e/cli/", "tests/e2e/support_matrix/", "tests/e2e/tools/"))
+        for path in build_marker_files
+    )
 
     regression = jobs["engine-golden-regression"]
     regression_commands = _run_commands(regression)
@@ -132,6 +158,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
         "platform-wheels",
         "collector-data",
         "prediction-regression",
+        "application-test-wheel",
     }.issubset(required_by_aggregate)
     aggregate = jobs["full-ci-success"]
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
@@ -307,6 +334,7 @@ def test_full_ci_aggregate_accepts_only_explicit_na_results() -> None:
             component.replace("_", "-"): ("success" if plan[component] == "true" else "skipped")
             for component in COMPONENTS
         },
+        "application-test-wheel": "success",
     }
 
     passed = _run_full_ci_aggregate(results, plan)
@@ -333,6 +361,7 @@ def test_full_ci_aggregate_rejects_missing_selection_output() -> None:
         "fast-ci": "success",
         "stage-application-wheel": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
+        "application-test-wheel": "skipped",
     }
 
     result = _run_full_ci_aggregate(results, plan)
@@ -348,6 +377,7 @@ def test_full_ci_aggregate_rejects_missing_dependency() -> None:
         "fast-ci": "success",
         "stage-application-wheel": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
+        "application-test-wheel": "skipped",
     }
     del results["collector-data"]
 
@@ -463,71 +493,26 @@ def test_python_dependency_changes_run_the_complete_matrix() -> None:
         assert all(plan["components"].values())
 
 
-@pytest.mark.parametrize(
-    ("path", "selected"),
-    [
-        (
-            "Cargo.lock",
-            {
-                "platform_wheels",
-                "prediction_regression",
-                "cargo_deny",
-                "rust",
-                "rust_feature_modes",
-                "public_api_rust",
-                "application_wheel",
-                "application_tests",
-                "python_compatibility",
-                "engine_golden_regression",
-                "release_artifact_contract",
-            },
-        ),
-        (
-            "crates/core/Cargo.toml",
-            {
-                "platform_wheels",
-                "prediction_regression",
-                "cargo_deny",
-                "rust",
-                "rust_feature_modes",
-                "public_api_rust",
-                "application_wheel",
-                "application_tests",
-                "python_compatibility",
-                "engine_golden_regression",
-                "release_artifact_contract",
-            },
-        ),
-        (
-            "THIRD_PARTY_NOTICES.md",
-            {
-                "platform_wheels",
-                "application_wheel",
-                "application_tests",
-                "python_compatibility",
-                "release_artifact_contract",
-            },
-        ),
-        (
-            "python/aisimulate/docker/Dockerfile",
-            {
-                "platform_wheels",
-                "application_wheel",
-                "application_tests",
-                "python_compatibility",
-                "release_artifact_contract",
-            },
-        ),
-        ("tests/test_runner.py", {"application_tests"}),
-        ("examples/sweeper/run_sweep.py", {"application_tests"}),
-    ],
-)
-def test_full_ci_selector_mapping_oracle(path: str, selected: set[str]) -> None:
-    plan = select_components([path])
+def test_full_ci_selector_matches_the_independent_mapping_oracle() -> None:
+    oracle_path = REPOSITORY_ROOT / ".github" / "full-ci-selection-cases.yml"
+    oracle = yaml.safe_load(oracle_path.read_text(encoding="utf-8"))
+    assert oracle["schema_version"] == 1
+    cases = oracle["cases"]
+    assert len({case["id"] for case in cases}) == len(cases)
 
-    actual = {component for component, is_selected in plan["components"].items() if is_selected}
-    assert plan["run_all"] is False
-    assert actual == selected
+    observed_components: set[str] = set()
+    for case in cases:
+        plan = select_components(
+            case["paths"],
+            force_all=case.get("force_all", False),
+        )
+        actual = {component for component, is_selected in plan["components"].items() if is_selected}
+        expected = set(COMPONENTS) if case["run_all"] else set(case["selected"])
+        assert plan["run_all"] is case["run_all"], case["id"]
+        assert actual == expected, case["id"]
+        observed_components.update(actual)
+
+    assert observed_components == set(COMPONENTS)
 
 
 def test_fast_ci_owns_static_and_workflow_contract_checks() -> None:
@@ -653,7 +638,7 @@ def test_shared_python_rust_setup_is_used_by_same_revision_jobs() -> None:
         "rust-feature-modes",
         "public-api-rust",
         "application-wheel",
-        "application-tests",
+        "application-test-wheel",
         "python-compatibility",
         "engine-golden-regression",
         "release-artifact-contract",

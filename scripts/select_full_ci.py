@@ -277,18 +277,14 @@ def _write_summary(path: Path, plan: dict[str, object]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    paths_group = parser.add_mutually_exclusive_group()
-    paths_group.add_argument("--paths-file", type=Path)
-    paths_group.add_argument("--base64-paths-file", type=Path)
+    parser.add_argument("--base64-paths-file", type=Path)
     parser.add_argument("--force-all", action="store_true")
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--summary", type=Path)
     args = parser.parse_args()
 
     paths = []
-    if args.paths_file:
-        paths = args.paths_file.read_text(encoding="utf-8").splitlines()
-    elif args.base64_paths_file:
+    if args.base64_paths_file:
         encoded_paths = args.base64_paths_file.read_text(encoding="ascii").splitlines()
         paths = [base64.b64decode(encoded, validate=True).decode("utf-8") for encoded in encoded_paths]
     plan = select_components(paths, force_all=args.force_all)
