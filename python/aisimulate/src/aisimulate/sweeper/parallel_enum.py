@@ -169,7 +169,11 @@ def enumerate_worker_shapes(
                         and moe_ep == 1
                         and ((tp > 1 and dp == 1) or (tp == 1 and dp > 1))
                     )
-                    if not (is_tep or is_dep or is_moe_tp):
+                    # At width one, all four dimensions collapse to the identity
+                    # shape. It is the degenerate form of every pure strategy and
+                    # must remain available for MoE models that fit on one GPU.
+                    is_single_gpu = tp == dp == moe_tp == moe_ep == 1
+                    if not (is_single_gpu or is_tep or is_dep or is_moe_tp):
                         continue
                     shapes.append(ParallelShape(tp=tp, dp=dp, moe_tp=moe_tp, moe_ep=moe_ep))
     return shapes

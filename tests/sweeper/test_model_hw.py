@@ -14,6 +14,7 @@ from aisimulate.sweeper.model_hw import (
     parallel_configs_for,
     resolve_model_hardware,
 )
+from aisimulate.sweeper.parallel_enum import ParallelShape
 
 DEEPSEEK = "deepseek-ai/DeepSeek-V3"
 QWEN = "Qwen/Qwen3-32B"
@@ -113,6 +114,46 @@ def test_role_runtime_preserves_legacy_three_tuple_contract(monkeypatch):
     assert seen["max_num_tokens"] == 4096
     assert seen["max_batch_size"] == 32
     assert seen["memory_fraction"] == 0.75
+
+
+def test_single_gpu_moe_shape_reaches_kv_feasibility(monkeypatch):
+    monkeypatch.setattr(
+        mh_mod,
+        "resolve_model_hardware",
+        lambda *args, **kwargs: ModelHardware(
+            model_name="moe-model",
+            hardware_sku="hardware",
+            backend="vllm",
+            is_moe=True,
+            mla=False,
+            enable_wideep=False,
+            weight_bytes=1,
+            vram_per_gpu=80,
+            gpus_per_node=8,
+            max_context=2048,
+        ),
+    )
+    seen = []
+
+    def fake_feasible(shapes, **kwargs):
+        seen.extend(shapes)
+        return dict.fromkeys(shapes, 4096)
+
+    monkeypatch.setattr(mh_mod, "feasible_shape_tokens", fake_feasible)
+
+    configs = parallel_configs_for(
+        "moe-model",
+        "hardware",
+        gpu_budget=1,
+        deployment_mode="agg",
+        backend="vllm",
+    )
+
+    expected = ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1, pp=1)
+    assert seen == [expected]
+    assert len(configs) == 1
+    assert configs[0].shape == expected
+    assert configs[0].replicas == 1
 
 
 @pytest.mark.model(DEEPSEEK)
