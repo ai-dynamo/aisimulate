@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from aisimulate.sweeper.afd import AFDInfeasible, AFDLayerTimes, AFDPhase, AFDTopology
+from aisimulate.sweeper.afd_parallel import AFDInfeasible, AFDPhase, AFDTopology
 from aisimulate.sweeper.afd_perfmodel import (
+    AFDLayerTimes,
     AICAFDPerformanceModel,
     attach_afd_measurements,
     measurement_request_from_candidate,
@@ -80,9 +81,7 @@ def test_attach_measurements_replaces_unresolved_metadata():
         deployment_mode="afd",
         backend="vllm",
         backend_version="test-version",
-        performance_model_metadata={
-            "afd": {"provider": "unresolved", "measurement_required": True}
-        },
+        performance_model_metadata={"afd": {"provider": "unresolved", "measurement_required": True}},
     )
 
     class Provider:
@@ -109,10 +108,7 @@ def test_attach_measurements_replaces_unresolved_metadata():
     assert deployment.performance_model_metadata["afd"]["provider"] == "unresolved"
     assert measured.performance_model_metadata["afd"]["provider"] == "test"
     assert measured.performance_model_metadata["afd"]["measurement_required"] is False
-    assert (
-        measured.performance_model_metadata["afd"]["measurements"][0]["phase"]
-        == "decode"
-    )
+    assert measured.performance_model_metadata["afd"]["measurements"][0]["phase"] == "decode"
 
 
 def test_measurement_boundary_rejects_trace_without_concrete_lengths():

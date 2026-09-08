@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .sweeper.afd import AFDTopology
+from .sweeper.afd_parallel import AFDTopology
 from .sweeper.provider import JSONValue
 from .sweeper.replay import REPLAY_SPEC_API_VERSION, ReplaySpec, canonical_json
 
