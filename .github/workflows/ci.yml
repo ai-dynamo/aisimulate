@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   verify-target:
@@ -30,8 +31,32 @@ jobs:
       - name: Reject a mismatched requested commit
         shell: bash
         run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -z "${EXPECTED_SHA}" ]]; then
+            echo "::error::manual Full CI requires a nonempty expected_sha"
+            exit 1
+          fi
           if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
             echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
+            exit 1
+          fi
+      - name: Verify trusted PR copy matches originating head
+        if: startsWith(github.ref, 'refs/heads/pull-request/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr_number="${GITHUB_REF#refs/heads/pull-request/}"
+          if [[ ! "${pr_number}" =~ ^[0-9]+$ ]]; then
+            echo "::error::invalid trusted PR copy ref: ${GITHUB_REF}"
+            exit 1
+          fi
+          pr_head="$(
+            gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" --jq '.head.sha'
+          )"
+          if [[ "${pr_head}" != "${RUN_SHA}" ]]; then
+            echo "::error::trusted copy ${RUN_SHA} does not match PR #${pr_number} head ${pr_head}"
             exit 1
           fi
 
@@ -424,3 +449,79 @@ jobs:
           assert installed.isdisjoint(forbidden), installed & forbidden"
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
+
+  readiness:
+    name: Full CI Success
+    if: ${{ always() }}
+    needs:
+      - verify-target
+      - fast-ci
+      - cargo-deny
+      - rust
+      - public-api-rust
+      - application-tests
+      - release-artifact-contract
+      - application-wheel
+      - stage-application-wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      VERIFY_TARGET_RESULT: ${{ needs.verify-target.result }}
+      FAST_CI_RESULT: ${{ needs.fast-ci.result }}
+      CARGO_DENY_RESULT: ${{ needs.cargo-deny.result }}
+      RUST_RESULT: ${{ needs.rust.result }}
+      PUBLIC_API_RUST_RESULT: ${{ needs.public-api-rust.result }}
+      APPLICATION_TESTS_RESULT: ${{ needs.application-tests.result }}
+      RELEASE_ARTIFACT_RESULT: ${{ needs.release-artifact-contract.result }}
+      APPLICATION_WHEEL_RESULT: ${{ needs.application-wheel.result }}
+      STAGE_APPLICATION_WHEEL_RESULT: ${{ needs.stage-application-wheel.result }}
+      STAGING_REQUIRED: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) }}
+    steps:
+      - name: Require complete Full CI evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          failures=0
+          {
+            echo "### Full CI evidence for \`${GITHUB_SHA}\`"
+            echo
+            echo "| Required job | Result |"
+            echo "| --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          record_expected() {
+            local job_name="$1"
+            local job_result="$2"
+            local expected_result="$3"
+            local outcome="PASS"
+            if [[ "${job_result}" != "${expected_result}" ]]; then
+              outcome="FAIL"
+              failures=$((failures + 1))
+              echo "::error::${job_name} finished with ${job_result:-missing}; expected ${expected_result}"
+            fi
+            printf '| %s | %s (`%s`, expected `%s`) |\n' \
+              "${job_name}" "${outcome}" "${job_result:-missing}" "${expected_result}" \
+              >> "${GITHUB_STEP_SUMMARY}"
+          }
+
+          record_expected "Verify Exact Target" "${VERIFY_TARGET_RESULT}" "success"
+          record_expected "Fast CI" "${FAST_CI_RESULT}" "success"
+          record_expected "Cargo Deny" "${CARGO_DENY_RESULT}" "success"
+          record_expected "Rust" "${RUST_RESULT}" "success"
+          record_expected "Public API Rust" "${PUBLIC_API_RUST_RESULT}" "success"
+          record_expected "Application Tests" "${APPLICATION_TESTS_RESULT}" "success"
+          record_expected "Release Artifact Contract" "${RELEASE_ARTIFACT_RESULT}" "success"
+          record_expected "Application Wheel" "${APPLICATION_WHEEL_RESULT}" "success"
+
+          if [[ "${STAGING_REQUIRED}" == "true" ]]; then
+            record_expected \
+              "Stage Application Wheel" "${STAGE_APPLICATION_WHEEL_RESULT}" "success"
+          else
+            record_expected \
+              "Stage Application Wheel (not applicable)" \
+              "${STAGE_APPLICATION_WHEEL_RESULT}" "skipped"
+          fi
+
+          if (( failures > 0 )); then
+            exit 1
+          fi
