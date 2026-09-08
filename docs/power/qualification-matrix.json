@@ -247,7 +247,7 @@
       "category": "integration",
       "title": "AFD modeled-power integration",
       "release_blocking": false,
-      "depends_on": ["AIC-1938"],
+      "depends_on": [],
       "matrix": {
         "model_families": ["dense", "moe"],
         "deployments": ["afd"],
@@ -273,7 +273,7 @@
       "category": "integration",
       "title": "EPD modeled-power integration",
       "release_blocking": false,
-      "depends_on": ["AIC-1938"],
+      "depends_on": [],
       "matrix": {
         "model_families": ["dense", "moe"],
         "deployments": ["epd"],
