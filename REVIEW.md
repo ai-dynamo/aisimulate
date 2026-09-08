@@ -49,11 +49,15 @@ complete before merge.
 
 During the review-acceleration pilot, a maintainer dispatches Full CI after
 verifying those conditions, supplying the reviewed full commit SHA through the
-required `expected_sha` input. Automatic Full CI push runs on `main` and
-`release/*` are lifecycle validation outside the pre-merge sequence;
-`pull-request/*` copies do not trigger Full CI. Do not claim conditional Codex
-or Full CI automation until an approved service credential and exact-head
-dispatcher are installed.
+required `expected_sha` input. Trusted copy-pr-bot `pull-request/*` branches also
+run Full CI automatically as a temporary coverage backstop while the `main`
+ruleset does not require the exact-SHA checks; treat such a run as PR evidence
+only after confirming that its copied SHA equals the PR head. Automatic runs on
+`main` and `release/*` remain lifecycle validation outside the pre-merge
+sequence. Do not remove the copy-branch backstop until the ruleset enforces the
+Fast and Full CI checks and requires branches to be current. Do not claim
+conditional Codex or post-review Full CI automation until an approved service
+credential and exact-head dispatcher are installed.
 
 ## Product invariants
 

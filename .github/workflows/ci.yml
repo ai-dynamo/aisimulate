@@ -8,10 +8,12 @@ on:
         required: true
         type: string
   push:
-    # PR validation is admitted through workflow_dispatch after review. Keep
-    # automatic runs only for post-merge and release lifecycle validation.
+    # Keep trusted copy-pr-bot branches as an automatic coverage backstop until
+    # the main ruleset requires the exact-SHA Full CI checks. Reviewed PR
+    # validation may also be admitted explicitly through workflow_dispatch.
     branches:
       - main
+      - "pull-request/*"
       - "release/*"
 
 permissions:

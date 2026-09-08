@@ -211,7 +211,11 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     dispatch_sha = full_config["on"]["workflow_dispatch"]["inputs"]["expected_sha"]
     assert dispatch_sha["required"] == "true"
     assert "default" not in dispatch_sha
-    assert full_config["on"]["push"]["branches"] == ["main", "release/*"]
+    assert full_config["on"]["push"]["branches"] == [
+        "main",
+        "pull-request/*",
+        "release/*",
+    ]
     application_wheel = full_config["jobs"]["application-wheel"]
     assert "if" not in application_wheel
     verify_steps = [
