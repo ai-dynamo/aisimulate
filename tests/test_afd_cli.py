@@ -25,11 +25,7 @@ class _AFDPerformanceModel:
 
     def measure(self, request):
         self.requests.append(request)
-        phases = (
-            ("prefill", "decode")
-            if request.topology.phase.value == "both"
-            else (request.topology.phase.value,)
-        )
+        phases = ("prefill", "decode") if request.topology.phase.value == "both" else (request.topology.phase.value,)
         return tuple(
             AFDLayerTimes(
                 phase=phase,
@@ -97,15 +93,9 @@ def test_afd_prediction_lowers_to_measured_replay_contract() -> None:
     assert deployment.deployment_mode == "afd"
     assert deployment.backend_version
     assert deployment.parallel_config["afd"]["gpus_per_node"] == 8
-    assert (
-        deployment.parallel_config["afd_provenance"]["gpu_accounting"]["total_gpus"]
-        == 16
-    )
+    assert deployment.parallel_config["afd_provenance"]["gpu_accounting"]["total_gpus"] == 16
     assert deployment.performance_model_metadata["afd"]["measurement_required"] is False
-    assert {
-        item["phase"]
-        for item in deployment.performance_model_metadata["afd"]["measurements"]
-    } == {
+    assert {item["phase"] for item in deployment.performance_model_metadata["afd"]["measurements"]} == {
         "prefill",
         "decode",
     }
@@ -149,9 +139,7 @@ def test_afd_plus_pd_prediction_requires_and_materializes_opposite_worker() -> N
         ),
     ],
 )
-def test_afd_recommendation_rejects_ambiguous_or_incomplete_contract(
-    afd, match
-) -> None:
+def test_afd_recommendation_rejects_ambiguous_or_incomplete_contract(afd, match) -> None:
     with pytest.raises(ValidationError, match=match):
         CoreRecommendationConfig.model_validate(
             {
@@ -177,18 +165,14 @@ def test_afd_rejects_trace_traffic_at_public_boundary() -> None:
         CorePredictionConfig.model_validate(raw)
 
 
-def test_public_afd_predict_cli_writes_summary_and_per_request(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_public_afd_predict_cli_writes_summary_and_per_request(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "afd-prediction.yaml"
     config_path.write_text(yaml.safe_dump(_pure_prediction()))
     output = tmp_path / "out"
     performance_model = _AFDPerformanceModel()
     compile_prediction = prediction_to_replay_spec
 
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: EngineReplayRunnerFactory()
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: EngineReplayRunnerFactory())
     monkeypatch.setattr(
         cli,
         "prediction_to_replay_spec",
@@ -251,9 +235,7 @@ def test_afd_recommendation_emits_prediction_ready_candidate() -> None:
     result = run_recommendation(
         config,
         stack="engine",
-        runner_factory=EngineReplayRunnerFactory(
-            afd_companion_model=_CompanionPerformanceModel()
-        ),
+        runner_factory=EngineReplayRunnerFactory(afd_companion_model=_CompanionPerformanceModel()),
         afd_performance_model=_AFDPerformanceModel(),
         show_progress=False,
     )

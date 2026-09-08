@@ -16,7 +16,7 @@ from aisimulate.afd_artifacts import (
     build_afd_qualification,
     write_afd_qualification_artifacts,
 )
-from aisimulate.sweeper.afd import AFDParallelConfig, AFDTopology
+from aisimulate.sweeper.afd_parallel import AFDParallelConfig, AFDTopology
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
 
@@ -119,9 +119,7 @@ def _spec(*, combined_with_pd: bool = False, afd_phase: str = "decode") -> Repla
 
 
 def test_pure_afd_qualification_matches_golden() -> None:
-    rendered = (
-        json.dumps(build_afd_qualification(_spec()), indent=2, sort_keys=True) + "\n"
-    )
+    rendered = json.dumps(build_afd_qualification(_spec()), indent=2, sort_keys=True) + "\n"
     golden = Path(__file__).parent / "golden" / "afd-qualification.json"
 
     assert rendered == golden.read_text(encoding="utf-8")
@@ -153,9 +151,7 @@ def test_afd_plus_pd_qualification_preserves_companion_and_gpu_accounting() -> N
 
 
 def test_afd_plus_pd_qualification_supports_decode_companion() -> None:
-    artifact = build_afd_qualification(
-        _spec(combined_with_pd=True, afd_phase="prefill")
-    )
+    artifact = build_afd_qualification(_spec(combined_with_pd=True, afd_phase="prefill"))
 
     companion = artifact["deployment_plan"]["pools"]["companion"]
     assert companion["role"] == "decode"
@@ -167,9 +163,7 @@ def test_qualification_rejects_unresolved_measurements() -> None:
     spec = _spec()
     deployment = replace(
         spec.backend_deployment,
-        performance_model_metadata={
-            "afd": {"provider": "unresolved", "measurement_required": True}
-        },
+        performance_model_metadata={"afd": {"provider": "unresolved", "measurement_required": True}},
     )
 
     with pytest.raises(AFDQualificationError, match="resolved layer measurements"):
