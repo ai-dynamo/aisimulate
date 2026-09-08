@@ -43,7 +43,14 @@ def test_power_columns_satisfy_energy_model_input_contract():
     problems = []
     for path in files:
         rel = path.relative_to(_DATA_ROOT)
-        table = pq.read_table(path, columns=[c for c in _POWER_COLUMNS if c in pq.read_schema(path).names])
+        schema = pq.read_schema(path)
+        present = [column for column in _POWER_COLUMNS if column in schema.names]
+        missing = [column for column in _POWER_COLUMNS if column not in schema.names]
+        if missing:
+            problems.append(
+                f"{rel}: power columns must be paired; present={present}, missing={missing}"
+            )
+        table = pq.read_table(path, columns=present)
         frame = table.to_pandas()
         if "power" in frame:
             bad = frame["power"].isna() | (frame["power"] < 0)
