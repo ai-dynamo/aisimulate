@@ -276,6 +276,7 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
     assert "stack unavailable" in capsys.readouterr().err
 
 
+@pytest.mark.filterwarnings("error")
 def test_recommend_runner_incompatibility_is_cli_config_error(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -310,10 +311,7 @@ def test_recommend_runner_incompatibility_is_cli_config_error(
         lambda stack: IncompatibleFactory(_Runner()),
     )
 
-    with (
-        pytest.warns(UserWarning, match="runner-incompatible.*vllm"),
-        pytest.raises(SystemExit, match="2"),
-    ):
+    with pytest.raises(SystemExit, match="2"):
         cli.main(
             [
                 "recommend",

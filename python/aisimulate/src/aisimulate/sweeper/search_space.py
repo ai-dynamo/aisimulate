@@ -194,8 +194,20 @@ def enumerate_branches(
     ss = config.search_space
     branches: list[BranchSpace] = []
     skipped: list[str] = []  # modes dropped because no backend was viable
-    runner_incompatibilities: dict[str, tuple[str, ...]] = {}
+    skip_warnings: list[str] = []
+    deployment_modes = tuple(dict.fromkeys(ss.deployment_mode))
     unique_backends = tuple(dict.fromkeys(ss.backend))
+    runner_incompatibilities = {
+        mode: tuple(
+            backend
+            for backend in unique_backends
+            if runner_capabilities is not None and not runner_capabilities.supports_backend_topology(backend, mode)
+        )
+        for mode in deployment_modes
+    }
+    all_runner_incompatible = runner_capabilities is not None and all(
+        runner_incompatibilities[mode] == unique_backends for mode in deployment_modes
+    )
 
     def role_runtime(backend: str, mode: str) -> dict[str, tuple[int, int, float, int | None]]:
         roles = ("agg",) if mode == "agg" else ("prefill", "decode")
@@ -224,7 +236,7 @@ def enumerate_branches(
 
     # Dedupe modes (preserving order): a repeated deployment_mode would yield duplicate
     # branches and hence colliding Vizier study_ids (one study per mode).
-    for deployment_mode in dict.fromkeys(ss.deployment_mode):
+    for deployment_mode in deployment_modes:
         # Pinned configs (if any) are parsed once, then validated per backend; otherwise
         # each backend contributes its full enumerated menu.
         raw_pinned = ss.parallel_configs_by_mode.get(deployment_mode, ss.parallel_configs)
@@ -238,14 +250,7 @@ def enumerate_branches(
             return all(_parallel_role(config, role) in choices for role, choices in custom_by_role.items())
 
         support: dict[_ParallelConfig, set[str]] = {}
-        runner_incompatible = [
-            backend
-            for backend in dict.fromkeys(ss.backend)
-            if runner_capabilities is not None
-            and not runner_capabilities.supports_backend_topology(backend, deployment_mode)
-        ]
-        if runner_incompatible:
-            runner_incompatibilities[deployment_mode] = tuple(runner_incompatible)
+        runner_incompatible = list(runner_incompatibilities[deployment_mode])
         for backend in ss.backend:
             if runner_capabilities is not None and not runner_capabilities.supports_backend_topology(
                 backend, deployment_mode
@@ -276,7 +281,7 @@ def enumerate_branches(
                     support.setdefault(cfg, set()).add(backend)
 
         if not support:
-            if (pinned is not None or custom_by_role) and tuple(runner_incompatible) == unique_backends:
+            if (pinned is not None or custom_by_role) and all_runner_incompatible:
                 raise RunnerIncompatibleError(
                     "no configured backend/topology is supported by the Replay runner; "
                     f"deployment_mode={deployment_mode!r}: "
@@ -290,11 +295,10 @@ def enumerate_branches(
                     + (f"; runner-incompatible backends={runner_incompatible}" if runner_incompatible else "")
                 )
             # natural infeasibility for this mode -> skip it, keep any viable modes
-            warnings.warn(
+            skip_warnings.append(
                 f"smart-sweep: deployment_mode={deployment_mode!r} skipped — no configured backend "
                 f"has a viable parallel config within gpu_budget={ss.gpu_budget}"
-                + (f"; runner-incompatible backends={runner_incompatible}" if runner_incompatible else ""),
-                stacklevel=2,
+                + (f"; runner-incompatible backends={runner_incompatible}" if runner_incompatible else "")
             )
             skipped.append(deployment_mode)
             continue
@@ -303,6 +307,11 @@ def enumerate_branches(
             if illegal:
                 raise NoViableParallelConfig(
                     f"pinned parallel_configs are legal/KV-feasible for no configured backend: {illegal}"
+                    + (
+                        f"; deployment_mode={deployment_mode!r}: runner-incompatible backends={runner_incompatible}"
+                        if runner_incompatible
+                        else ""
+                    )
                 )
 
         knob_choices = branch_knob_choices(ss, deployment_mode)
@@ -378,7 +387,7 @@ def enumerate_branches(
         )
 
     if not branches:
-        if skipped and all(runner_incompatibilities.get(mode) == unique_backends for mode in skipped):
+        if skipped and all_runner_incompatible:
             details = "; ".join(
                 f"deployment_mode={mode!r}: runner-incompatible backends={list(runner_incompatibilities[mode])}"
                 for mode in skipped
@@ -389,10 +398,13 @@ def enumerate_branches(
         runner_details = "; ".join(
             f"deployment_mode={mode!r}: runner-incompatible backends={list(backends)}"
             for mode, backends in runner_incompatibilities.items()
+            if backends
         )
         raise NoViableParallelConfig(
             f"no deployment_mode has a viable parallel config (skipped {skipped}); check "
             f"backends / model / hardware / gpu_budget={ss.gpu_budget}"
             + (f"; {runner_details}" if runner_details else "")
         )
+    for message in skip_warnings:
+        warnings.warn(message, stacklevel=2)
     return branches
