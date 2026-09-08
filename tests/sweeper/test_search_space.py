@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from aisimulate.sweeper.config import SmartSearchConfig
-from aisimulate.sweeper.kv_estimate import NoPerfDatabase
+from aisimulate.sweeper.deploy import build_backend_deployment
+from aisimulate.sweeper.kv_estimate import NoPerfDatabase, resolve_backend_version
 from aisimulate.sweeper.model_hw import NoViableParallelConfig
 from aisimulate.sweeper.parallel_enum import (
     DisaggParallelConfig,
@@ -16,6 +17,7 @@ from aisimulate.sweeper.parallel_enum import (
     ReplicaParallelConfig,
 )
 from aisimulate.sweeper.replay import RunnerCapabilities
+from aisimulate.sweeper.sample import unroll_sample
 from aisimulate.sweeper.search_space import branch_knob_choices, enumerate_branches
 
 TRACE = str(Path(__file__).parent / "data" / "mooncake_tiny.jsonl")
@@ -86,6 +88,58 @@ def test_enumerate_real_backend_space_honors_runner_topologies():
         for config in branch.parallel_configs
     )
     assert "agg_max_num_seqs" in branch.knob_choices
+
+
+@pytest.mark.model("Qwen/Qwen3-VL-30B-A3B-Instruct-FP8")
+def test_single_gpu_moe_branch_materializes_backend_deployment():
+    config = _config(
+        model_name="Qwen/Qwen3-VL-30B-A3B-Instruct-FP8",
+        hardware_sku="gb200",
+        backend=["vllm"],
+        deployment_mode=["agg"],
+        gpu_budget=1,
+    )
+    (branch,) = enumerate_branches(
+        config,
+        runner_capabilities=_capabilities(("vllm", "agg")),
+    )
+    expected = ReplicaParallelConfig(
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1),
+        replicas=1,
+    )
+    assert branch.parallel_configs == (expected,)
+
+    selection = {
+        "deployment_mode": "agg",
+        **{name: values[0] for name, values in branch.knob_choices.items()},
+    }
+    sample = unroll_sample(
+        search_space=config.search_space,
+        selection=selection,
+        parallel_config=expected,
+    )
+    deployment = build_backend_deployment(
+        sample,
+        backend_version=resolve_backend_version("gb200", "vllm"),
+    )
+
+    assert deployment.parallel_config == {
+        "tp": 1,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 1,
+        "strategy": "tp",
+        "replicas": 1,
+    }
+    engine = deployment.agg_engine_args
+    assert engine["aic_model_path"] == "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
+    assert engine["aic_tp_size"] == 1
+    assert engine["aic_attention_dp_size"] == 1
+    # Engine defaults are one, so the payload omits redundant MoE dimensions;
+    # the explicit values remain in deployment.parallel_config above.
+    assert "aic_moe_tp_size" not in engine
+    assert "aic_moe_ep_size" not in engine
 
 
 def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):

@@ -7,8 +7,9 @@ The per-worker shape enumeration mirrors
 ``aiconfigurator.sdk.utils.enumerate_parallel_config`` + ``filter_real_silicon_configs``
 (real-silicon profile): ``pp`` is pinned to 1; the MoE width constraint
 ``dp*tp == moe_tp*moe_ep`` holds; for MoE only the pure TEP / DEP / MoE-TP patterns are
-kept (MoE-TP — moe_ep==1 under tensor- or DP-attention — gated by ``allow_moe_pure_tp``,
-now enabled for every MoE model incl. MLA); dense models use plain TP.
+kept, plus their shared width-one identity shape (MoE-TP — moe_ep==1 under tensor- or
+DP-attention — gated by ``allow_moe_pure_tp``, now enabled for every MoE model incl.
+MLA); dense models use plain TP. Model fit remains a downstream KV-feasibility decision.
 The backend-specific MoE filters are mirrored too.
 
 ``enumerate_parallel_config`` stops at *one worker's* shape (GPUs/worker = tp*pp*dp).
@@ -56,7 +57,7 @@ class ParallelShape:
         (attention-DP + expert-EP), ``dtp`` (attention-DP + MoE tensor-parallel —
         e.g. InferenceX GLM-5's EP=1 + DP-attention)."""
         if self.moe_tp == 1 and self.moe_ep == 1:
-            return "tp"  # dense
+            return "tp"  # dense, or the degenerate one-GPU MoE identity
         if self.tp > 1 and self.dp == 1 and self.moe_tp == 1 and self.moe_ep > 1:
             return "tep"
         if self.tp == 1 and self.dp > 1 and self.moe_tp == 1 and self.moe_ep > 1:
@@ -122,8 +123,9 @@ def enumerate_worker_shapes(
     ``filter_real_silicon_configs``. For MoE, TEP / DEP are always scanned; MoE
     tensor-parallel (moe_ep == 1, under tensor- or DP-attention) is kept when
     ``allow_moe_pure_tp`` — now enabled for every MoE model, MLA included, since
-    real deployments run it (InferenceX GLM-5 reports EP=1). Dense models scan
-    plain TP and are unaffected. Backend EP-only filters (sglang wideep) still apply.
+    real deployments run it (InferenceX GLM-5 reports EP=1). At width one, MoE keeps
+    the identity ``(tp=1, dp=1, moe_tp=1, moe_ep=1)`` for the downstream KV check.
+    Dense models scan plain TP and are unaffected. Backend EP-only filters still apply.
     """
     g = gpus_per_worker
     if not is_moe:
