@@ -7,12 +7,12 @@ import pytest
 from pydantic import ValidationError
 
 from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper.afd import (
+from aisimulate.sweeper.afd_parallel import (
     AFDInfeasible,
-    AFDLayerTimes,
     AFDParallelConfig,
     AFDReasonCategory,
 )
+from aisimulate.sweeper.afd_perfmodel import AFDLayerTimes
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.model_hw import ModelHardware, NoViableParallelConfig

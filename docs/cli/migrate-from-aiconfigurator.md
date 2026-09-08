@@ -270,11 +270,11 @@ from request-level goodput.
 
 ## AFD translation
 
-The Attention-FFN Disaggregation (AFD)
-[topology contract](../sweeper/afd-topology.md) defines complete A/F topology enumeration,
-pipeline evaluation, P/D companion rate matching, GPU accounting, and capability gates. The
-generic Sweeper accepts internal `afd` and `afd+pd` branches, and the public CLI lowers
-`engine.mode: afd` into those typed branches.
+Attention-FFN Disaggregation (AFD) is implemented as layered contracts. The
+[AFD topology contract](../sweeper/afd-topology.md) owns complete A/F parallel enumeration,
+validation, and A/F GPU accounting; later layers own search composition, measurements, staged
+execution, analytical replay, and the public CLI. The generic Sweeper accepts internal `afd` and
+`afd+pd` branches, and the public CLI lowers `engine.mode: afd` into those typed branches.
 
 Legacy AFD command:
 

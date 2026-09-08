@@ -34,7 +34,7 @@ from itertools import product
 from typing import Any, Protocol
 
 from ._quiet import configure_vizier_runtime
-from .afd import AFDParallelConfig
+from .afd_parallel import AFDParallelConfig
 from .parallel_enum import DisaggParallelConfig, ReplicaParallelConfig
 from .parallel_projection import (
     InfeasibleParallelSelection,

@@ -14,7 +14,7 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-from .afd import AFDParallelConfig
+from .afd_parallel import AFDParallelConfig
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from .search_space import BranchSpace
 

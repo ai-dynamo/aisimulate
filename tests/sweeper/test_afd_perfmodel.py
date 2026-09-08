@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from aisimulate.sweeper.afd import AFDInfeasible, AFDLayerTimes, AFDPhase, AFDTopology
+from aisimulate.sweeper.afd_parallel import AFDInfeasible, AFDPhase, AFDTopology
 from aisimulate.sweeper.afd_perfmodel import (
+    AFDLayerTimes,
     AICAFDPerformanceModel,
     attach_afd_measurements,
     measurement_request_from_candidate,

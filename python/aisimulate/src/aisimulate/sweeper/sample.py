@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .afd import AFDParallelConfig
+from .afd_parallel import AFDParallelConfig
 from .config import SearchSpace
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
