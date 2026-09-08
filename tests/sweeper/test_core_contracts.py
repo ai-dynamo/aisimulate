@@ -202,6 +202,29 @@ def test_runner_capabilities_accept_supported_spec_and_wildcards():
     capabilities.require_compatible(_replay_spec(hook=hook))
 
 
+def test_runner_capabilities_require_explicit_online_support():
+    spec = _replay_spec()
+    spec = ReplaySpec(
+        backend_deployment=spec.backend_deployment,
+        workload=spec.workload,
+        goal=spec.goal,
+        execution_mode="online",
+        concurrency=spec.concurrency,
+        adapters=spec.adapters,
+    )
+    offline = RunnerCapabilities(
+        supported_backend_topologies=(("vllm", "agg"),),
+    )
+    with pytest.raises(ValueError, match="execution mode 'online'"):
+        offline.require_compatible(spec)
+
+    online = RunnerCapabilities(
+        supported_execution_modes=("offline", "online"),
+        supported_backend_topologies=(("vllm", "agg"),),
+    )
+    online.require_compatible(spec)
+
+
 def test_runner_capabilities_reject_spec_version_backend_and_hook():
     capabilities = RunnerCapabilities(
         supported_backend_topologies=(("vllm", "agg"),),

@@ -70,6 +70,14 @@ impl ReplaySpec {
         let mut ids = BTreeSet::new();
         for request in &self.requests {
             request.validate()?;
+            if matches!(self.topology, ReplayTopology::Aggregated { .. })
+                && request.prefill_dp_rank.is_some()
+            {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "aggregated request {:?} cannot specify prefill_dp_rank",
+                    request.id
+                )));
+            }
             if !ids.insert(request.id.clone()) {
                 return Err(ReplayError::InvalidSpec(format!(
                     "duplicate request id {:?}",
@@ -176,9 +184,13 @@ pub struct ReplayRequest {
     /// native generation while `output_tokens` remains the authored maximum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
-    /// Optional attention-DP rank selected by the workload.
+    /// Optional aggregated or disaggregated decode attention-DP rank selected by the workload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dp_rank: Option<u32>,
+    /// Optional disaggregated prefill attention-DP rank. When omitted, prefill falls back to
+    /// `dp_rank`, matching Dynamo's request-routing contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_dp_rank: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Zero-based turn index within `session_id`, when the workload has one.

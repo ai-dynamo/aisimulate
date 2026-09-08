@@ -12,6 +12,7 @@ from pydantic import Field, field_validator, model_validator
 from .common import Choices, IntegerRange, NumericRange, StrictModel
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
+CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
 Fraction = Annotated[float, Field(strict=True, gt=0, le=1, allow_inf_nan=False)]
@@ -73,12 +74,14 @@ class ParallelismPredictionConfig(StrictModel):
 class SchedulerPredictionConfig(StrictModel):
     max_batched_tokens: PositiveInt = 8192
     max_sequences: PositiveInt = 256
+    prefill_schedule_interval: PositiveInt = 1
 
 
 class KvCapacityPredictionConfig(StrictModel):
     type: Literal["default", "fixed"] = "default"
     memory_fraction: Fraction | None = None
     blocks: PositiveInt | None = None
+    cuda_graph_reserved_bytes: CudaGraphReservedBytes = 0
 
     @model_validator(mode="after")
     def _validate_capacity(self) -> KvCapacityPredictionConfig:
@@ -87,6 +90,8 @@ class KvCapacityPredictionConfig(StrictModel):
                 raise ValueError("fixed KV capacity requires blocks")
             if self.memory_fraction is not None:
                 raise ValueError("fixed KV capacity rejects memory_fraction")
+            if self.cuda_graph_reserved_bytes != 0:
+                raise ValueError("fixed KV capacity rejects cuda_graph_reserved_bytes")
         elif self.blocks is not None:
             raise ValueError("default KV capacity rejects blocks")
         return self
@@ -108,6 +113,7 @@ class KvCachePredictionConfig(StrictModel):
 
 class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
+    forward_model: Literal["op_level", "fpm"] = "op_level"
     prefill_ms: float | None = Field(default=None, ge=0.0)
     decode_ms: float | None = Field(default=None, ge=0.0)
 
@@ -118,6 +124,11 @@ class TimingConfig(StrictModel):
                 raise ValueError("fixed timing requires prefill_ms and decode_ms")
         elif self.prefill_ms is not None or self.decode_ms is not None:
             raise ValueError(f"{self.type} timing rejects fixed timing values")
+        if self.type != "default" and self.forward_model != "op_level":
+            raise ValueError(
+                f"{self.type} timing rejects forward_model={self.forward_model!r}; "
+                "forward_model applies to default timing only"
+            )
         return self
 
 

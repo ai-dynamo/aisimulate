@@ -9,8 +9,8 @@
 //! wraps the raw `AttentionTable` query with:
 //!
 //! - prefix correction `(full_s² − prefix²) / full_s²` for context paths
-//! - fused-op extras for context: qk_norm (optional), apply_rope, kv_write
-//!   via the analytic `mem_op` formula
+//! - fused-op extras: context qk_norm / apply_rope (optional), kv_write; and
+//!   generation qk_norm (optional), via the analytic `mem_op` formula
 //! - 1.1× correction factor on the extras (matches Python)
 //! - `seq_imbalance_correction_scale` / `gen_seq_imbalance_correction_scale`
 //!   multiplier for unbalanced sequence distributions
@@ -172,8 +172,8 @@ pub struct ContextAttentionOp {
     /// Context-parallel factor (Python's `_cp_size`, = `cp_size`). When `>1`,
     /// prefill FMHA is modeled as rank-0's two zigzag chunks:
     /// `ctx(c, prefix) + ctx(c, prefix + isl - c)` with `c = ceil(isl / 2cp)`.
-    /// Defaults to 1 (no CP). The fused rope/kv_write/qk_norm extras are still
-    /// added once, not per chunk.
+    /// Defaults to 1 (no CP). The enabled fused rope/kv_write/qk_norm extras
+    /// are still added once, not per chunk.
     #[serde(default = "crate::operators::gemm::default_seq_split")]
     pub cp_size: u32,
     /// Kernel-source lane precedence, RESOLVED python-side
@@ -182,18 +182,28 @@ pub struct ContextAttentionOp {
     /// lanes, density-ranked donor tiers, `"default"`, and the table's own
     /// leftover lanes — and it is REPLAYED VERBATIM here: no re-deriving, no
     /// extending, no sorting. Appended at the struct TAIL because bincode
-    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 15).
+    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 17).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
+    /// Whether the fused prefill kernel applies rotary position embeddings.
+    /// Defaults to true for all pre-v17 JSON specs and existing model families;
+    /// Muse Glimmer's global NoPE layers explicitly disable it.
+    /// Appended at the struct tail because bincode payloads are positional.
+    #[serde(default = "default_apply_rope")]
+    pub apply_rope: bool,
 }
 
 /// Lane precedence for ops built without an explicit order (Rust-side
 /// constructors and hand-written JSON fixtures predating the `lane_order`
-/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 15).
+/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 17).
 /// Mirrors the Python fallback in `_attention_lane_order` for an
 /// unresolvable database: the always-valid `("default",)`.
 pub(crate) fn default_lane_order() -> Vec<String> {
     vec![crate::perf_database::attention::DEFAULT_LANE.to_string()]
+}
+
+fn default_apply_rope() -> bool {
+    true
 }
 
 impl ContextAttentionOp {
@@ -217,6 +227,7 @@ impl ContextAttentionOp {
             use_qk_norm: false,
             cp_size: 1,
             lane_order: default_lane_order(),
+            apply_rope: true,
         }
     }
 
@@ -260,7 +271,7 @@ impl ContextAttentionOp {
             ctx(isl, prefix)?
         };
 
-        // Fused-op extras (qk_norm optional, rope + kv_write mandatory).
+        // Fused-op extras (qk_norm / rope optional, kv_write mandatory).
         // Python evaluates them through the mode-aware `query_mem_op` and
         // composes full PerformanceResults, so the extras keep their
         // provenance (empirical formula under SILICON/HYBRID/EMPIRICAL, sol
@@ -281,10 +292,13 @@ impl ContextAttentionOp {
                 .plus(mem_op(k_num * 2.0).scaled(2.0));
             extra = extra.plus(qk_norm.scaled(2.0)); // elementwise before norm
         }
-        let apply_rope = mem_op(q_num * 2.0 + k_num * 2.0).scaled(2.0);
+        if self.apply_rope {
+            let apply_rope = mem_op(q_num * 2.0 + k_num * 2.0).scaled(2.0);
+            extra = extra.plus(apply_rope);
+        }
         let kv_write = mem_op(k_num * self.fmha_quant_mode.mapping().memory)
             .plus(mem_op(v_num * self.fmha_quant_mode.mapping().memory));
-        extra = extra.plus(apply_rope.plus(kv_write));
+        extra = extra.plus(kv_write);
 
         // Python's correction factor for the fused extras
         // (`result += extra_latency * 1.1`): latency and energy both sum
@@ -315,9 +329,13 @@ pub struct GenerationAttentionOp {
     pub kv_cache_dtype: KvCacheQuantMode,
     /// Kernel-source lane precedence; see
     /// [`ContextAttentionOp::lane_order`] (appended at the struct TAIL —
-    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 15).
+    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 17).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
+    /// Per-head RMSNorm on Q and K before decode attention. Appended at the
+    /// struct tail because bincode payloads are positional (schema v16).
+    #[serde(default)]
+    pub use_qk_norm: bool,
 }
 
 impl GenerationAttentionOp {
@@ -337,6 +355,7 @@ impl GenerationAttentionOp {
             window_size: 0,
             kv_cache_dtype,
             lane_order: default_lane_order(),
+            use_qk_norm: false,
         }
     }
 
@@ -358,6 +377,18 @@ impl GenerationAttentionOp {
             self.window_size,
             self.kv_cache_dtype,
         )?;
+        if self.use_qk_norm {
+            // Match ContextAttention's Q/K RMSNorm accounting: two memory
+            // passes before the norm, two for the norm, then the established
+            // fused-extra correction factor.
+            let q_num = (self.n * self.head_size) as f64;
+            let k_num = (self.n_kv * self.head_size) as f64;
+            let qk_norm = query_mem_op(db, q_num * 2.0)
+                .scaled(2.0)
+                .plus(query_mem_op(db, k_num * 2.0).scaled(2.0))
+                .scaled(2.0 * 1.1);
+            result = result.plus(qk_norm);
+        }
         if gen_seq_imbalance_correction_scale != 1.0 {
             // Python `result * scale` scales latency AND energy.
             result = result.scaled(gen_seq_imbalance_correction_scale);
@@ -1305,6 +1336,66 @@ mod tests {
             "expected positive 5-sample-averaged gen latency, got {}",
             result.latency_ms
         );
+    }
+
+    #[test]
+    fn generation_qk_norm_adds_fused_latency_and_preserves_energy() {
+        let db = b200_vllm_db();
+        let base = with_vllm_lanes_gen(GenerationAttentionOp::new(
+            "gen",
+            64,
+            4,
+            128,
+            KvCacheQuantMode::Fp8,
+        ));
+        let plain = base.query(&db, 32, 2048, 1.0).expect("plain decode");
+
+        let mut normalized = base;
+        normalized.use_qk_norm = true;
+        let with_norm = normalized
+            .query(&db, 32, 2048, 1.0)
+            .expect("Q/K-normalized decode");
+
+        let q_num = (64 * 128) as f64;
+        let k_num = (4 * 128) as f64;
+        let expected_extra = query_mem_op(&db, q_num * 2.0)
+            .scaled(2.0)
+            .plus(query_mem_op(&db, k_num * 2.0).scaled(2.0))
+            .scaled(2.0 * 1.1);
+        assert!(
+            (with_norm.latency_ms - plain.latency_ms - expected_extra.latency_ms).abs() < 1e-12
+        );
+        assert_eq!(with_norm.energy_wms, plain.energy_wms);
+        assert_eq!(with_norm.source, Source::Mixed);
+    }
+
+    #[test]
+    fn context_apply_rope_flag_controls_fused_latency_and_preserves_energy() {
+        let db = b200_vllm_db();
+        let with_rope = with_vllm_lanes_ctx(ContextAttentionOp::new(
+            "context",
+            64,
+            4,
+            128,
+            KvCacheQuantMode::Fp8,
+            FmhaQuantMode::Bfloat16,
+        ));
+        let rotary = with_rope
+            .query(&db, 4, 512, 0, 1.0)
+            .expect("RoPE context attention");
+
+        let mut no_rope = with_rope;
+        no_rope.apply_rope = false;
+        let nope = no_rope
+            .query(&db, 4, 512, 0, 1.0)
+            .expect("NoPE context attention");
+
+        let q_num = (64 * 128) as f64;
+        let k_num = (4 * 128) as f64;
+        let expected_rope = query_mem_op(&db, q_num * 2.0 + k_num * 2.0).scaled(2.0 * 1.1);
+        assert!((rotary.latency_ms - nope.latency_ms - expected_rope.latency_ms).abs() < 1e-12);
+        assert_eq!(rotary.energy_wms, nope.energy_wms);
+        assert_eq!(rotary.source, nope.source);
     }
 
     #[test]
