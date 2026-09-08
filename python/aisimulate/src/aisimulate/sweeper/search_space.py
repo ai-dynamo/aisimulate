@@ -195,6 +195,7 @@ def enumerate_branches(
     branches: list[BranchSpace] = []
     skipped: list[str] = []  # modes dropped because no backend was viable
     runner_incompatibilities: dict[str, tuple[str, ...]] = {}
+    unique_backends = tuple(dict.fromkeys(ss.backend))
 
     def role_runtime(backend: str, mode: str) -> dict[str, tuple[int, int, float, int | None]]:
         roles = ("agg",) if mode == "agg" else ("prefill", "decode")
@@ -275,6 +276,12 @@ def enumerate_branches(
                     support.setdefault(cfg, set()).add(backend)
 
         if not support:
+            if (pinned is not None or custom_by_role) and tuple(runner_incompatible) == unique_backends:
+                raise RunnerIncompatibleError(
+                    "no configured backend/topology is supported by the Replay runner; "
+                    f"deployment_mode={deployment_mode!r}: "
+                    f"runner-incompatible backends={runner_incompatible}"
+                )
             if pinned is not None or custom_by_role:
                 # an explicit pin that no backend can run is a user error -> fail fast
                 raise NoViableParallelConfig(
@@ -370,7 +377,6 @@ def enumerate_branches(
         )
 
     if not branches:
-        unique_backends = tuple(dict.fromkeys(ss.backend))
         if skipped and all(runner_incompatibilities.get(mode) == unique_backends for mode in skipped):
             details = "; ".join(
                 f"deployment_mode={mode!r}: runner-incompatible backends={list(runner_incompatibilities[mode])}"

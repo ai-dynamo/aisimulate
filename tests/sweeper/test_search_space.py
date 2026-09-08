@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import aisimulate.sweeper as sweeper_api
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.kv_estimate import NoPerfDatabase
 from aisimulate.sweeper.model_hw import NoViableParallelConfig
@@ -51,6 +52,11 @@ def _config(**search_overrides) -> SmartSearchConfig:
 
 def _capabilities(*pairs):
     return RunnerCapabilities(supported_backend_topologies=tuple(pairs))
+
+
+def test_runner_incompatible_error_is_public():
+    assert sweeper_api.RunnerIncompatibleError is RunnerIncompatibleError
+    assert "RunnerIncompatibleError" in sweeper_api.__all__
 
 
 def test_branch_knobs_are_backend_only_and_mode_specific():
@@ -149,6 +155,41 @@ def test_all_backends_runner_incompatible_raises_typed_terminal_error(monkeypatc
             RunnerIncompatibleError,
             match=r"deployment_mode='disagg': runner-incompatible backends=\['trtllm'\]",
         ),
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+
+@pytest.mark.parametrize(
+    "explicit_parallel_override",
+    [
+        {"parallel_configs": [{"tp": 1}]},
+        {"parallel_custom_configs_by_mode": {"agg": {"agg": [{"tp": 1}]}}},
+    ],
+)
+def test_explicit_parallel_config_preserves_runner_incompatibility(
+    monkeypatch,
+    explicit_parallel_override,
+):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm"],
+        gpu_budget=1,
+        **explicit_parallel_override,
+    )
+
+    with pytest.raises(
+        RunnerIncompatibleError,
+        match=r"deployment_mode='agg': runner-incompatible backends=\['vllm'\]",
     ):
         enumerate_branches(
             config,
