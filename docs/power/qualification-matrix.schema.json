@@ -161,7 +161,29 @@
         "command_status": {"enum": ["available", "planned", "not_applicable"]},
         "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
         "blocked_by": {"type": "array", "items": {"type": "string", "minLength": 1}}
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"const": "passed"}},
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "command_status": {"not": {"const": "planned"}},
+              "evidence": {
+                "minItems": 1,
+                "items": {
+                  "allOf": [
+                    {"$ref": "#/$defs/evidence"},
+                    {"properties": {"result": {"const": "pass"}}}
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "gate": {
       "type": "object",

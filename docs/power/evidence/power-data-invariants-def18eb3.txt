@@ -1,0 +1,30 @@
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+AISimulate modeled-power qualification evidence
+Gate: power-data-invariants
+Result: FAIL
+Source revision: def18eb344a3bf5015059c53affecce5c9073cea
+Recorded at: 2026-09-08T22:57:13Z
+Command: python -m pytest -q python/aisimulate/tests/unit/sdk/database/test_power_data_invariants.py
+Exit code: 1
+
+The test reported NaN/non-positive power_limit values in these packaged files:
+
+- b200_sxm/attention/trtllm/1.3.0rc20/context_attention_perf.parquet: 15 rows
+- b200_sxm/attention/trtllm/1.3.0rc20/generation_attention_perf.parquet: 28 rows
+- b200_sxm/encoder_attention/trtllm/1.3.0rc20/encoder_attention_perf.parquet: 26 rows
+- b200_sxm/gemm/trtllm/1.3.0rc20/gemm_perf.parquet: 900 rows
+- b200_sxm/linear_attention/trtllm/1.3.0rc20/gdn_perf.parquet: 157 rows
+- b200_sxm/linear_attention/trtllm/1.3.0rc20/mamba2_perf.parquet: 1 row
+- b200_sxm/mla/trtllm/1.3.0rc20/context_mla_perf.parquet: 1 row
+- b200_sxm/mla/trtllm/1.3.0rc20/generation_mla_perf.parquet: 2 rows
+- b200_sxm/mla/trtllm/1.3.0rc20/mla_context_module_perf.parquet: 18 rows
+- b200_sxm/mla_bmm/trtllm/1.3.0rc20/mla_bmm_perf.parquet: 23 rows
+- b200_sxm/moe/trtllm/1.3.0rc20/moe_perf.parquet: 39262 rows
+- b200_sxm/quantize/trtllm/1.3.0rc20/computescale_perf.parquet: 5 rows
+- b200_sxm/quantize/trtllm/1.3.0rc20/scale_matrix_perf.parquet: 3 rows
+- b200_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_context_module_perf.parquet: 15 rows
+- b200_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_generation_module_perf.parquet: 93 rows
+
+Pytest summary: 1 failed in 3.72s.

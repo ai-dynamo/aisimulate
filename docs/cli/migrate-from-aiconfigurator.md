@@ -84,8 +84,9 @@ does not make a capability available through the unified path.
 
 The modeled-power migration is tracked by the
 [0.13 qualification ledger](../power/README.md). That ledger remains
-`not_qualified` until its release-blocking functional, parity, silicon, and
-packaging gates carry immutable passing evidence. Its presence does not change
+`not_qualified` until all seven release-blocking gates across the functional,
+diagnostics, data, parity, accuracy, and packaging categories carry immutable
+passing evidence. Its presence does not change
 the conservative compatibility boundary in this table.
 
 The examples below use the built-in engine runner. Use `--stack dynamo` only when `ai-dynamo` is

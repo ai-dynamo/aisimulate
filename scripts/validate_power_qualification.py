@@ -186,7 +186,11 @@ def _validate_evidence(evidence: Any, context: str, errors: list[str]) -> None:
         path_parts = Path(artifact).parts
         _expect(
             artifact.startswith("https://")
-            or (not Path(artifact).is_absolute() and ".." not in path_parts),
+            or (
+                "://" not in artifact
+                and not Path(artifact).is_absolute()
+                and ".." not in path_parts
+            ),
             f"{context}.artifact must be HTTPS or a repository-relative path",
             errors,
         )
@@ -892,13 +896,20 @@ def validate_document(
         raise QualificationError("\n".join(f"- {error}" for error in errors))
 
 
+def _reject_json_constant(constant: str) -> None:
+    raise QualificationError(f"ledger contains non-JSON constant {constant!r}")
+
+
 def load_and_validate(
     path: Path,
     *,
     require_release_ready: bool = False,
     expected_revision: str | None = None,
 ) -> dict[str, Any]:
-    document = json.loads(path.read_text(encoding="utf-8"))
+    document = json.loads(
+        path.read_text(encoding="utf-8"),
+        parse_constant=_reject_json_constant,
+    )
     validate_document(
         document,
         require_release_ready=require_release_ready,

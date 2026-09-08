@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -66,8 +67,15 @@ def _qualified_document(revision: str) -> dict:
 
 def test_checked_in_power_qualification_ledger_is_structurally_valid() -> None:
     document = QUALIFICATION.load_and_validate(LEDGER)
+    invariant = _gate(document, "power-data-invariants")
+    failure = invariant["execution"]["evidence"][0]
+    artifact = ROOT / failure["artifact"]
 
     assert document["release_state"] == "not_qualified"
+    assert invariant["execution"]["status"] == "failed"
+    assert failure["result"] == "fail"
+    assert artifact.is_file()
+    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == failure["sha256"]
     assert QUALIFICATION.main([]) == 0
 
 
@@ -98,6 +106,26 @@ def test_schema_rejects_unsupported_dimensions() -> None:
     )
 
 
+def test_schema_rejects_passing_planned_or_evidence_free_gates() -> None:
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    revision = "a" * 40
+
+    planned = _document()
+    planned_gate = _gate(planned, "modeled-power-matrix")
+    planned_gate["execution"]["status"] = "passed"
+    planned_gate["execution"]["evidence"] = [
+        _passing_evidence(revision, "modeled-power-matrix")
+    ]
+    assert list(validator.iter_errors(planned))
+
+    evidence_free = _document()
+    evidence_free_gate = _gate(evidence_free, "power-data-invariants")
+    evidence_free_gate["execution"]["status"] = "passed"
+    evidence_free_gate["execution"]["evidence"] = []
+    assert list(validator.iter_errors(evidence_free))
+
+
 def test_dependency_free_validator_rejects_schema_identity_drift() -> None:
     document = _document()
     document["$schema"] = "https://example.invalid/other-schema.json"
@@ -124,6 +152,38 @@ def test_release_check_accepts_one_fully_qualified_candidate_revision() -> None:
         require_release_ready=True,
         expected_revision=revision,
     )
+
+
+def test_cli_release_gate_fails_closed_and_checks_expected_revision(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert QUALIFICATION.main(["--require-release-ready"]) == 1
+    assert "power qualification failed" in capsys.readouterr().err
+
+    revision = "a" * 40
+    ledger = tmp_path / "qualification-matrix.json"
+    ledger.write_text(json.dumps(_qualified_document(revision)), encoding="utf-8")
+
+    assert (
+        QUALIFICATION.main(
+            [str(ledger), "--require-release-ready", "--expected-revision", revision]
+        )
+        == 0
+    )
+    assert "state=qualified" in capsys.readouterr().out
+
+    assert (
+        QUALIFICATION.main(
+            [
+                str(ledger),
+                "--require-release-ready",
+                "--expected-revision",
+                "b" * 40,
+            ]
+        )
+        == 1
+    )
+    assert "does not match expected_revision" in capsys.readouterr().err
 
 
 def test_release_check_rejects_stale_or_mixed_candidate_evidence() -> None:
@@ -197,6 +257,7 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
     document = _document()
     gate = _gate(document, "power-data-invariants")
     gate["execution"]["status"] = "passed"
+    gate["execution"]["evidence"] = []
 
     with pytest.raises(
         QUALIFICATION.QualificationError, match="cannot be passed without evidence"
@@ -217,6 +278,28 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
     gate["execution"]["evidence"][0]["sha256"] = int("1" * 64)
     with pytest.raises(QUALIFICATION.QualificationError, match="sha256"):
         QUALIFICATION.validate_document(document)
+
+    gate["execution"]["evidence"][0]["sha256"] = "1" * 64
+    gate["execution"]["evidence"][0]["artifact"] = (
+        "http://example.invalid/power-data-invariants.json"
+    )
+    with pytest.raises(QUALIFICATION.QualificationError, match="HTTPS"):
+        QUALIFICATION.validate_document(document)
+
+
+def test_loader_rejects_non_json_constants(tmp_path: Path) -> None:
+    ledger = tmp_path / "qualification-matrix.json"
+    ledger.write_text(
+        LEDGER.read_text(encoding="utf-8").replace(
+            '"minimum_power_coverage_ratio": 0.9',
+            '"minimum_power_coverage_ratio": NaN',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(QUALIFICATION.QualificationError, match="non-JSON constant"):
+        QUALIFICATION.load_and_validate(ledger)
 
 
 def test_planned_command_cannot_be_presented_as_passing() -> None:
