@@ -125,9 +125,15 @@ def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
         "prefill",
         "decode",
     ]
-    assert diagnostics["energy_wms"] == pytest.approx(
-        sum(phase.get("energy_wms", 0.0) for phase in diagnostics["phases"])
-    )
+    phase_energies = [
+        phase["energy_wms"]
+        for phase in diagnostics["phases"]
+        if "energy_wms" in phase
+    ]
+    if phase_energies:
+        assert diagnostics["energy_wms"] == pytest.approx(sum(phase_energies))
+    else:
+        assert "energy_wms" not in diagnostics
     assert diagnostics["latency_ms"] == pytest.approx(
         sum(phase["latency_ms"] for phase in diagnostics["phases"])
     )

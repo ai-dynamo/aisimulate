@@ -82,6 +82,10 @@ def test_power_diagnostics_table_is_bounded_and_energy_specific() -> None:
     assert "modeled:estimated" not in rendered
     assert "wall-clock or provisioned-fleet energy" in rendered
 
+    complete = format_power_diagnostics(_diagnostics(), top_n=2)
+    assert "timing provider returned no positive energy evidence" in complete
+    assert "missing measured:empirical" in complete
+
 
 def test_power_diagnostics_json_stdout_keeps_complete_operation_evidence() -> None:
     output = format_prediction_stdout(

@@ -164,6 +164,10 @@ def format_power_diagnostics(
         for operation in ordered[:top_n]:
             source = str(operation.get("source", "missing"))
             source_kind = str(operation.get("source_kind", "missing"))
+            status_source = f"{operation.get('status', 'missing')} {source_kind}:{source}"
+            uncovered_reason = operation.get("uncovered_reason")
+            if isinstance(uncovered_reason, str) and uncovered_reason:
+                status_source += f"; {uncovered_reason}"
             operation_rows.append(
                 [
                     phase_name,
@@ -172,7 +176,7 @@ def format_power_diagnostics(
                     _format_latency(operation.get("latency_ms")),
                     _format_percent(operation.get("power_coverage")),
                     _format_percent(operation.get("energy_contribution")),
-                    f"{source_kind}:{source}",
+                    status_source,
                 ]
             )
         if len(ordered) > top_n:
@@ -201,7 +205,7 @@ def format_power_diagnostics(
                         "covered",
                         "coverage",
                         "power",
-                        "source",
+                        "status/source",
                     ],
                     phase_rows,
                 ),
