@@ -1429,6 +1429,26 @@ mod tests {
     }
 
     #[test]
+    fn replay_power_is_published_at_the_exact_coverage_gate() {
+        let source = TimingPowerSource {
+            timing: Arc::new(PowerTiming(TimingEvidenceSummary {
+                prefill: TimingPhaseEvidence {
+                    energy_wms: Some(45_000.0),
+                    latency_ms: 100.0,
+                    covered_latency_ms: 90.0,
+                    ..Default::default()
+                },
+                decode: TimingPhaseEvidence::default(),
+            })),
+            prefill_speedup_ratio: 1.0,
+            decode_speedup_ratio: 1.0,
+        };
+        let power = replay_power_stats(&[source]).unwrap().unwrap();
+        assert_eq!(power.coverage, POWER_DATA_COVERAGE_THRESHOLD);
+        assert_eq!(power.power_w, Some(450.0));
+    }
+
+    #[test]
     fn aic_timing_config_accepts_fpm_forward_model() {
         let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
             "model": "test-model",

@@ -113,9 +113,8 @@ def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
         }
     )
 
-    coverage = report.metrics["power_coverage"]
-    assert 0.0 <= coverage <= 1.0
-    assert ("power_w" in report.metrics) is (coverage >= 0.9)
+    assert report.metrics["power_coverage"] == 0.0
+    assert "power_w" not in report.metrics
 
 
 def test_engine_stack_runs_ordered_synthetic_sessions() -> None:

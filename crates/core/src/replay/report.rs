@@ -1966,6 +1966,12 @@ mod tests {
         let summary = serde_json::to_value(&unavailable).unwrap();
         assert!(summary.get("power_w").is_none());
         assert_eq!(summary["power_coverage"], 0.42);
+
+        let absent = TraceCollector::default().finish();
+        assert_eq!(absent.power, None);
+        let summary = serde_json::to_value(&absent).unwrap();
+        assert!(summary.get("power_w").is_none());
+        assert!(summary.get("power_coverage").is_none());
     }
 
     #[test]
