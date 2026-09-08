@@ -53,17 +53,23 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert jobs["prediction-regression"]["uses"] == "./.github/workflows/prediction-regression-gate.yml"
 
     application_commands = _run_commands(jobs["application-tests"])
-    assert "test_core_public_api.py" in application_commands
-    assert "test_single_distribution.py" in application_commands
+    compatibility_commands = _run_commands(jobs["python-compatibility"])
+    assert "python/aisimulate/tests/cross_package" in application_commands
+    assert "python/aisimulate/tests/cross_package" in compatibility_commands
+    assert "test_core_public_api.py" not in application_commands
+    assert "test_core_public_api.py" not in compatibility_commands
 
-    golden_commands = _run_commands(jobs["engine-golden-regression"])
-    assert "test_engine_step_parity.py" in golden_commands
-    assert "test_compile_engine_parity.py" in golden_commands
-    assert golden_commands.count("-c python/aisimulate/pytest.ini") == 2
+    regression = jobs["engine-golden-regression"]
+    regression_commands = _run_commands(regression)
+    assert regression["name"] == "Engine Golden Regression"
+    assert "test_engine_step_parity.py" in regression_commands
+    assert "test_compile_engine_parity.py" in regression_commands
+    assert regression_commands.count("-c python/aisimulate/pytest.ini") == 2
 
     feature_mode_commands = _run_commands(jobs["rust-feature-modes"])
     assert "cargo test --workspace --features embed-python,replay-bench" in feature_mode_commands
     assert "--all-features" not in feature_mode_commands
+    assert "cargo test --workspace --no-default-features" in feature_mode_commands
     assert "PYTHONPATH" not in feature_mode_commands
 
     required_by_aggregate = set(jobs["full-ci-success"]["needs"])
@@ -84,6 +90,18 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
         "python-compatibility",
         "engine-golden-regression",
     }.issubset(required_before_wheel_staging)
+
+
+def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
+    aggregate = _workflow("ci.yml")["jobs"]["full-ci-success"]
+    commands = _run_commands(aggregate)
+
+    assert "stage-application-wheel" in aggregate["needs"]
+    assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
+    assert 'expected = {name: "success" for name in needs}' in commands
+    assert 'expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]' in commands
+    assert 'payload["result"]' in commands
+    assert "Full CI did not pass" in commands
 
 
 def test_fast_ci_owns_static_and_workflow_contract_checks() -> None:
@@ -147,21 +165,70 @@ def test_migrated_workflows_keep_reviewed_safety_fixes() -> None:
     assert "github.run_id" in prediction["concurrency"]["group"]
 
 
-def test_platform_wheel_build_includes_and_verifies_collector_payload() -> None:
-    dockerfile = (REPOSITORY_ROOT / "python/aisimulate/docker/Dockerfile").read_text(encoding="utf-8")
-    verifier = (REPOSITORY_ROOT / "python/aisimulate/tools/verify_installed_package_layers.py").read_text(
-        encoding="utf-8"
-    )
+def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
+    dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
+    release_verifier = (REPOSITORY_ROOT / "python" / "aisimulate" / "tools" / "verify_release_wheels.py").read_text()
+    installed_verifier = (
+        REPOSITORY_ROOT / "python" / "aisimulate" / "tools" / "verify_installed_package_layers.py"
+    ).read_text()
 
     assert "COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/" in dockerfile
-    assert '"collector/model_cases.py"' in verifier
-    assert '"collector/fpm_forward/runtime/fpm_exec.sh"' in verifier
+    assert '"cases/**/*.yaml"' in release_verifier
+    assert '"fpm_forward/**/*.py"' in release_verifier
+    assert '"collector/fpm_forward/runtime/fpm_exec.sh"' in installed_verifier
+    assert 'importlib.import_module("collector.fpm_forward")' in installed_verifier
 
 
-def test_fpe_generation_uses_the_required_job_container() -> None:
+def test_prediction_gate_owns_report_dependencies_and_pre_harness_fallback() -> None:
+    jobs = _workflow("prediction-regression-gate.yml")["jobs"]
+    report_commands = _run_commands(jobs["report"])
+    collect_commands = _run_commands(jobs["collect"])
+
+    assert "python -m pip install pyyaml==6.0.3" in report_commands
+    assert "NO_HARNESS.txt" in collect_commands
+    assert "predates the prediction-regression harness" in collect_commands
+
+
+def test_collector_comparison_fetch_preserves_full_history() -> None:
+    commands = _run_commands(_workflow("collector-check.yml")["jobs"]["check"])
+
+    assert 'git fetch --no-tags origin "${BASE_SHA}"' in commands
+    assert "--depth=1" not in commands
+
+
+def test_fpe_job_uses_required_container_without_legacy_lfs_data() -> None:
     generate = _workflow("fpe-support-matrix.yml")["jobs"]["generate"]
+    checkout = next(step for step in generate["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+    tracked = subprocess.check_output(
+        ["git", "-C", str(REPOSITORY_ROOT), "ls-files", "python/aisimulate/src/aiconfigurator_core/systems/**/*.txt"],
+        text=True,
+    ).splitlines()
 
     assert generate["container"]["image"] == "${{ vars.CI_JOB_CONTAINER_IMAGE }}"
+    assert checkout.get("with", {}).get("lfs") == "true" or not tracked, (
+        "FPE checkout must enable LFS before a legacy systems/**/*.txt payload is tracked"
+    )
+
+
+def test_shared_python_rust_setup_is_used_by_same_revision_jobs() -> None:
+    action_path = "./.github/actions/setup-python-rust"
+    full_ci = _workflow("ci.yml")["jobs"]
+    for job_name in (
+        "rust",
+        "rust-feature-modes",
+        "public-api-rust",
+        "application-wheel",
+        "application-tests",
+        "python-compatibility",
+        "engine-golden-regression",
+        "release-artifact-contract",
+    ):
+        assert any(step.get("uses") == action_path for step in full_ci[job_name]["steps"])
+
+    assert any(step.get("uses") == action_path for step in _workflow("collector-check.yml")["jobs"]["check"]["steps"])
+    assert any(
+        step.get("uses") == action_path for step in _workflow("fpe-support-matrix.yml")["jobs"]["generate"]["steps"]
+    )
 
 
 def test_macos_wheel_environment_seeds_pip_for_shared_verification() -> None:
@@ -173,19 +240,19 @@ def test_macos_wheel_environment_seeds_pip_for_shared_verification() -> None:
     assert "python -m pip install --quiet wheelhouse/aisimulate-*.whl" in commands
 
 
-def test_fpe_checkout_matches_tracked_lfs_payload() -> None:
-    generate = _workflow("fpe-support-matrix.yml")["jobs"]["generate"]
-    checkout = next(step for step in generate["steps"] if step.get("uses", "").startswith("actions/checkout@"))
-    tracked = subprocess.check_output(
-        ["git", "-C", str(REPOSITORY_ROOT), "ls-files", "python/aisimulate/src/aiconfigurator_core/systems/**/*.txt"],
-        text=True,
-    ).splitlines()
-
-    assert checkout.get("with", {}).get("lfs") == "true" or not tracked, (
-        "FPE checkout must enable LFS before a legacy systems/**/*.txt payload is tracked"
+def test_containerized_workflows_do_not_require_git_lfs_during_checkout() -> None:
+    jobs = (
+        ("ci.yml", "engine-golden-regression"),
+        ("collector-check.yml", "cross-backend-consistency"),
+        ("prediction-regression-gate.yml", "collect"),
     )
 
+    for workflow_name, job_name in jobs:
+        job = _workflow(workflow_name)["jobs"][job_name]
+        checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        assert checkout.get("with", {}).get("lfs") != "true"
 
-def test_active_workflows_do_not_call_nested_inert_workflows() -> None:
+
+def test_active_workflows_do_not_call_nested_inert_github_assets() -> None:
     for path in WORKFLOW_ROOT.glob("*.yml"):
         assert "./python/aisimulate/.github/" not in path.read_text(encoding="utf-8")

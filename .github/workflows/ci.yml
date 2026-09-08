@@ -131,16 +131,9 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: cargo test --workspace
 
   rust-feature-modes:
@@ -155,16 +148,9 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Test without Python embedding
         run: cargo test --workspace --no-default-features
       - name: Install the unified Python package
@@ -190,16 +176,9 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: cargo test --manifest-path crates/tests/public-api/Cargo.toml
 
   application-wheel:
@@ -226,16 +205,9 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: python -m pip install 'maturin>=1.12,<2'
       - name: Build application wheel
         run: python -m maturin build --release --out ../../dist
@@ -412,27 +384,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: python -m pip install maturin pytest pytest-asyncio
       - run: python -m pip install './python/aisimulate[dev]'
       - run: >-
           python -m pytest -q
           python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py
-          python/aisimulate/tests/cross_package/test_core_public_api.py
-          python/aisimulate/tests/cross_package/test_core_version_contract.py
-          python/aisimulate/tests/cross_package/test_import_contract.py
-          python/aisimulate/tests/cross_package/test_single_distribution.py
-          python/aisimulate/tests/cross_package/test_single_oracle_contract.py
-          python/aisimulate/tests/cross_package/test_table_view_registry.py
+          python/aisimulate/tests/cross_package
       - run: aiconfigurator version
       - run: python -m pytest -q -c pytest.ini tests
       - run: >-
@@ -460,16 +420,9 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install AISimulate and development dependencies
         run: python -m pip install './python/aisimulate[dev]'
       - name: Verify interpreter and dependency compatibility
@@ -479,12 +432,7 @@ jobs:
       - name: Test unified-package contracts
         run: >-
           python -m pytest -q
-          python/aisimulate/tests/cross_package/test_core_public_api.py
-          python/aisimulate/tests/cross_package/test_core_version_contract.py
-          python/aisimulate/tests/cross_package/test_import_contract.py
-          python/aisimulate/tests/cross_package/test_single_distribution.py
-          python/aisimulate/tests/cross_package/test_single_oracle_contract.py
-          python/aisimulate/tests/cross_package/test_table_view_registry.py
+          python/aisimulate/tests/cross_package
 
   engine-golden-regression:
     name: Engine Golden Regression
@@ -500,26 +448,22 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install AISimulate and development dependencies
         run: python -m pip install './python/aisimulate[dev]'
-      - name: Run engine-step parity suite
+      - name: Run engine-step golden regression suite
         run: >-
-          python -m pytest -c python/aisimulate/pytest.ini -q -rx -n 4
+          python -m pytest -q -rx -n 4
+          -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_engine_step_parity.py
-      - name: Run compiled-engine parity suite
+      - name: Run compiled-engine golden regression suite
         run: >-
-          python -m pytest -c python/aisimulate/pytest.ini -q -rx -n 4
+          python -m pytest -q -rx -n 4
+          -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
     needs: fast-ci
@@ -535,16 +479,9 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: python -m pip install build maturin
       - run: python scripts/build_release_artifacts.py --check-only
       - run: python scripts/build_release_artifacts.py --output-dir dist
@@ -579,6 +516,7 @@ jobs:
       - rust-feature-modes
       - public-api-rust
       - application-wheel
+      - stage-application-wheel
       - application-tests
       - python-compatibility
       - engine-golden-regression
@@ -586,22 +524,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every CI job to pass
+      - name: Report and require every Full CI job
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          EXPECTED_STAGE_RESULT: >-
+            ${{ github.event_name == 'push' &&
+                (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) &&
+                'success' || 'skipped' }}
         run: |
           python - <<'PY'
           import json
           import os
 
           needs = json.loads(os.environ["NEEDS_JSON"])
-          failed = {
-              name: payload["result"]
-              for name, payload in needs.items()
-              if payload["result"] != "success"
-          }
+          expected = {name: "success" for name in needs}
+          expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]
+          failures = []
           for name, payload in sorted(needs.items()):
-              print(f"{name}: {payload['result']}")
-          if failed:
-              raise SystemExit(f"Full CI dependencies did not pass: {failed}")
+              result = payload["result"]
+              wanted = expected[name]
+              print(f"{name}: {result} (expected {wanted})")
+              if result != wanted:
+                  failures.append(f"{name}={result}, expected {wanted}")
+          if failures:
+              print("::error::Full CI did not pass: " + "; ".join(failures))
+              raise SystemExit(1)
           PY

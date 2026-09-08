@@ -44,6 +44,7 @@ unified package layout and Fast CI / Full CI execution model:
 
 - repository-root `.github/workflows/ci.yml` (selected jobs)
 - repository-root `.github/actions/build-platform-wheel/action.yml`
+- repository-root `.github/actions/setup-python-rust/action.yml`
 - repository-root `.github/workflows/collector-check.yml`
 - repository-root `.github/workflows/prediction-regression-gate.yml`
 - repository-root `.github/workflows/validate-platform-wheels.yml`
