@@ -335,7 +335,7 @@ fn phase_evidence_from_python(
             TimingOperationEvidence::new(
                 name,
                 latency_ms,
-                (energy_wms > 0.0).then_some(energy_wms),
+                Some(energy_wms),
                 TimingEvidenceSource::from_provider(source),
             )
         })

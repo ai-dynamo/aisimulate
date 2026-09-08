@@ -91,9 +91,8 @@ impl TimingOperationEvidence {
             energy_wms.is_none_or(|energy| energy.is_finite() && energy >= 0.0),
             "timing evidence operation {name:?} returned invalid energy {energy_wms:?}W-ms"
         );
-        let covered_latency_ms = energy_wms
-            .filter(|energy| *energy > 0.0)
-            .map_or(0.0, |_| latency_ms);
+        let energy_wms = energy_wms.filter(|energy| *energy > 0.0);
+        let covered_latency_ms = energy_wms.map_or(0.0, |_| latency_ms);
         Ok(Self {
             name,
             energy_wms,
@@ -417,6 +416,20 @@ mod tests {
         assert_eq!(phase.operations.len(), 2);
         assert_eq!(phase.operations[0].energy_wms, Some(4_800.0));
         assert_eq!(phase.operations[1].energy_wms, None);
+    }
+
+    #[test]
+    fn zero_energy_is_canonicalized_to_missing() {
+        let operation = TimingOperationEvidence::new(
+            "attention",
+            5.0,
+            Some(0.0),
+            TimingEvidenceSource::Empirical,
+        )
+        .unwrap();
+
+        assert_eq!(operation.energy_wms, None);
+        assert_eq!(operation.covered_latency_ms, 0.0);
     }
 
     #[test]
