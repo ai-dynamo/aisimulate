@@ -212,6 +212,11 @@ evidence through `evidence_summary()`. Op-level AIC providers return a
 latency covered by nonzero energy data, merged provenance, and name-folded
 `TimingOperationEvidence` records with the same fields. Missing operation
 energy is represented by `None`, never by a synthesized zero.
+Providers that assemble these public records directly should use
+`TimingPhaseEvidence::try_from_operations` and `try_accumulate`; those paths
+validate numeric fields and canonicalize covered latency to zero when energy is
+missing. The original infallible helpers remain available for already-valid
+evidence.
 
 Whole-model FPM timing and the built-in fixed and polynomial timing models are
 latency-only and return `None` from `evidence_summary()`. Consumers must keep
