@@ -15,8 +15,9 @@ from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
 from .aic import materialize_aic_num_gpu_blocks
-from .sweeper.afd import AFDLayerTimes, AFDPhase, AFDTopology
 from .sweeper.afd_engine import AFDForegroundEngine
+from .sweeper.afd_parallel import AFDPhase, AFDTopology
+from .sweeper.afd_perfmodel import AFDLayerTimes
 from .sweeper.provider import JSONValue
 from .sweeper.replay import (
     ReplayOutputRequirements,
