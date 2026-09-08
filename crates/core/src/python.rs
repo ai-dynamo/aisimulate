@@ -1082,6 +1082,8 @@ fn operation_power_diagnostics(
             "missing",
             Some("timing provider returned latency without positive energy evidence"),
         )
+    } else if operation.latency_ms == 0.0 {
+        ("available", None)
     } else if power_coverage < 1.0 {
         (
             "partial",
@@ -1669,6 +1671,27 @@ mod tests {
     }
 
     #[test]
+    fn replay_power_is_published_at_the_exact_coverage_gate() {
+        let source = TimingPowerSource {
+            timing: Arc::new(PowerTiming(TimingEvidenceSummary {
+                prefill: TimingPhaseEvidence {
+                    energy_wms: Some(45_000.0),
+                    latency_ms: 100.0,
+                    covered_latency_ms: 90.0,
+                    ..Default::default()
+                },
+                decode: TimingPhaseEvidence::default(),
+            })),
+            prefill_speedup_ratio: 1.0,
+            decode_speedup_ratio: 1.0,
+        };
+        let evidence = replay_timing_evidence(&[source]).unwrap().unwrap();
+        let power = replay_power_stats(&evidence).unwrap();
+        assert_eq!(power.coverage, POWER_DATA_COVERAGE_THRESHOLD);
+        assert_eq!(power.power_w, Some(450.0));
+    }
+
+    #[test]
     fn power_diagnostics_preserve_missingness_sources_and_reconciliation() {
         let summary = TimingEvidenceSummary {
             prefill: TimingPhaseEvidence::from_operations(vec![
@@ -1737,6 +1760,21 @@ mod tests {
                 .unwrap()
                 .contains("some")
         );
+
+        let zero_latency = operation_power_diagnostics(
+            &TimingOperationEvidence {
+                name: "zero-latency".into(),
+                energy_wms: Some(400.0),
+                latency_ms: 0.0,
+                covered_latency_ms: 0.0,
+                source: TimingEvidenceSource::Silicon,
+            },
+            Some(400.0),
+        );
+        let zero_latency = serde_json::to_value(zero_latency).unwrap();
+        assert_eq!(zero_latency["status"], "available");
+        assert_eq!(zero_latency["power_coverage"], 0.0);
+        assert!(zero_latency.get("uncovered_reason").is_none());
     }
 
     #[test]
