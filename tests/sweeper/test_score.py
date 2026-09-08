@@ -42,8 +42,6 @@ REPORT = {
     "goodput_output_throughput_tok_s": 4000.0,
     "gpu_hours": 2.0,
     "duration_ms": 1_800_000.0,  # 0.5 h
-    "power_w": 487.5,
-    "power_coverage": 0.95,
     "planner_total_ticks": 3.0,
 }
 
@@ -62,12 +60,6 @@ def test_objective_per_target():
 def test_candidate_preserves_planner_tick_metric():
     candidate = make_candidate({"used_gpus": 4}, REPORT, OptimizationTarget.THROUGHPUT)
     assert candidate.metrics["planner_total_ticks"] == 3.0
-
-
-def test_candidate_preserves_power_metrics():
-    candidate = make_candidate({"used_gpus": 4}, REPORT, OptimizationTarget.THROUGHPUT)
-    assert candidate.metrics["power_w"] == 487.5
-    assert candidate.metrics["power_coverage"] == 0.95
 
 
 def test_throughput_per_gpu_zero_when_avg_gpu_unavailable():

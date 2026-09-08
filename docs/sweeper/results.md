@@ -71,13 +71,6 @@ Metric names and units are explicit: throughput is `*_tok_s`, latency is `*_ms`,
 power is `*_w`, duration is `duration_ms`, and `gpu_hours` is GPU-hours. `score` is not assumed to
 have a unit; use the named metric or `objectives` for display and comparisons.
 
-For candidates replayed entirely with the AIC timing provider, `power_coverage` is the
-latency-weighted fraction of modeled operations with positive energy data. `power_w` is retained in
-the candidate metrics only when coverage is at least `0.9`; otherwise coverage remains available and
-power is omitted. This matches AIC's fail-closed coverage gate. The value is active forward-pass
-average power per GPU, not whole-cluster or wall-plug power. Runners using fixed or polynomial timing
-do not invent a power estimate.
-
 ### Counts
 
 `evaluated` is the number of candidate attempts that reached materialization or replay and equals
@@ -166,7 +159,7 @@ field names.
 | `tokens/s/user` | `metrics.mean_output_token_throughput_per_user` | Tokens/s/user. |
 | `seq/s`, `seq/s/gpu`, role worker rates | `metrics` | Sequences/s, with the legacy label preserved in migration metadata until a typed metric is added. |
 | `balance_score`, `num_ctx_reqs`, `num_gen_reqs`, `num_tokens`, `ctx_tokens`, `gen_tokens` | `metrics` | Exact numeric values; request/token counts are counts. |
-| `power_w`, `power_coverage` | `metrics` and `provenance.power` | Watts and a latency-weighted ratio in `[0, 1]`; omit `power_w` below the coverage gate. |
+| `power_w` | `provenance.power.power_w` | Watts. |
 | `gemm`, `kvcache`, `fmha`, `moe`, `comm`, `memory`, role variants | `metrics` | Legacy component estimates remain named metrics with original units recorded by the converter. |
 | EPD `(a)workers` and `(e)workers`, `(e)tp`, `(e)pp`, `(e)bs`, `(e)parallel`, `(e)memory` | `config` and `provenance.topology` | Preserve the rate-matched aggregate and encoder cell as explicit roles. |
 | AFD `phase`, `(a)nodes/tp/bs/micro_bs/workers`, `(f)nodes/tp/ep/workers` | `config` and `provenance.topology` | Preserve attention/FFN role topology and whether AFD applies to prefill, decode, or both. |
