@@ -529,6 +529,37 @@ mod tests {
     }
 
     #[test]
+    fn operation_evidence_rejects_invalid_public_values() {
+        assert!(
+            TimingOperationEvidence::new("", 1.0, None, TimingEvidenceSource::Silicon).is_err()
+        );
+
+        for latency_ms in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            assert!(
+                TimingOperationEvidence::new(
+                    "gemm",
+                    latency_ms,
+                    None,
+                    TimingEvidenceSource::Silicon,
+                )
+                .is_err()
+            );
+        }
+
+        for energy_wms in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            assert!(
+                TimingOperationEvidence::new(
+                    "gemm",
+                    1.0,
+                    Some(energy_wms),
+                    TimingEvidenceSource::Silicon,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn public_operation_fields_cannot_fabricate_coverage() {
         let operation = TimingOperationEvidence {
             name: "attention".into(),
