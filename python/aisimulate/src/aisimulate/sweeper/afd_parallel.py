@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Attention--FFN topology and enumeration contracts for the AISimulate Sweeper.
+"""Attention--FFN parallel topology contracts for the AISimulate Sweeper.
 
-This module owns only backend-neutral A/F parallel shapes, their validation,
-and finite candidate enumeration. Performance measurements, foreground
-execution, replay, and deployment generation live in their owning layers.
-The default candidate order follows the imported legacy AIC implementation in
-``Task.build_afd_parallel_lists``.
+This module owns only the backend-neutral A/F parallel shape, validation, GPU
+accounting, and complete finite enumeration. Performance measurement, staged
+evaluation, search integration, replay, and deployment generation live in their
+own layers. The default candidate order follows the imported legacy AIC
+implementation in ``Task.build_afd_parallel_lists``.
 """
 
 from __future__ import annotations

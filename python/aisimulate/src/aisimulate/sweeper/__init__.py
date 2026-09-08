@@ -78,10 +78,7 @@ _LAZY_EXPORTS = {
     "AFDReasonCategory": (".afd_parallel", "AFDReasonCategory"),
     "AFDSearchConfig": (".afd_parallel", "AFDSearchConfig"),
     "AFDTopology": (".afd_parallel", "AFDTopology"),
-    "enumerate_afd_topologies": (
-        ".afd_parallel",
-        "enumerate_afd_topologies",
-    ),
+    "enumerate_afd_topologies": (".afd_parallel", "enumerate_afd_topologies"),
     "build_backend_deployment": (".deploy", "build_backend_deployment"),
     "NoPerfDatabase": (".kv_estimate", "NoPerfDatabase"),
     "estimate_kv_tokens": (".kv_estimate", "estimate_kv_tokens"),

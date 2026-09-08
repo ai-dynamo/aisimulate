@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""First-class AFD topology and finite-enumeration contracts."""
+"""AFD parallel topology and complete-enumeration contracts."""
 
 import re
 from pathlib import Path
@@ -21,12 +21,7 @@ from aisimulate.sweeper import (
     enumerate_afd_topologies,
 )
 
-_AFD_MIGRATION_GUIDE = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "cli"
-    / "migrate-from-aiconfigurator.md"
-)
+_AFD_MIGRATION_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "cli" / "migrate-from-aiconfigurator.md"
 
 
 def _documented_afd_recommendation() -> dict:
@@ -37,9 +32,7 @@ def _documented_afd_recommendation() -> dict:
         text,
         flags=re.DOTALL,
     )
-    assert match is not None, (
-        "AFD migration guide must contain one marked YAML contract"
-    )
+    assert match is not None, "AFD migration guide must contain one marked YAML contract"
     payload = yaml.safe_load(match.group(1))
     assert isinstance(payload, dict)
     return payload
@@ -217,9 +210,7 @@ def test_moe_domain_resolves_symbolic_ep_and_filters_expert_divisibility():
 
 
 def test_search_candidate_types_are_strict():
-    with pytest.raises(
-        AFDInfeasible, match="tp_a_candidates must be a positive integer"
-    ):
+    with pytest.raises(AFDInfeasible, match="tp_a_candidates must be a positive integer"):
         AFDSearchConfig(
             total_gpus=16,
             gpus_per_node=8,
@@ -227,9 +218,7 @@ def test_search_candidate_types_are_strict():
             tp_a_candidates=("8",),
         )
 
-    with pytest.raises(
-        AFDInfeasible, match="f_moe_ep_size_candidates accepts positive integers"
-    ):
+    with pytest.raises(AFDInfeasible, match="f_moe_ep_size_candidates accepts positive integers"):
         AFDSearchConfig(
             total_gpus=16,
             gpus_per_node=8,
@@ -274,9 +263,7 @@ def test_pinned_domain_is_lossless_and_honors_budget():
         ({"boundary_on_attn": False}, {}, "boundary_on_attn"),
     ],
 )
-def test_pinned_domain_rejects_search_contract_mismatches(
-    topology_overrides, config_overrides, field
-):
+def test_pinned_domain_rejects_search_contract_mismatches(topology_overrides, config_overrides, field):
     pinned = _topology(**topology_overrides)
 
     with pytest.raises(AFDInfeasible) as error:
@@ -310,8 +297,6 @@ def test_candidate_limit_requires_a_complete_domain():
 
 def test_search_requires_two_node_minimum_with_actionable_budget_reason():
     with pytest.raises(AFDInfeasible) as error:
-        enumerate_afd_topologies(
-            AFDSearchConfig(total_gpus=8, gpus_per_node=8, is_moe=False)
-        )
+        enumerate_afd_topologies(AFDSearchConfig(total_gpus=8, gpus_per_node=8, is_moe=False))
     assert error.value.category is AFDReasonCategory.GPU_BUDGET
     assert "at least 16 GPUs" in error.value.detail
