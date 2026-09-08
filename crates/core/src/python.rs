@@ -23,7 +23,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -883,26 +883,89 @@ impl TimingPowerSource {
     }
 }
 
-fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePowerStats>> {
-    let mut combined = TimingPhaseEvidence::default();
+#[derive(Debug, Serialize)]
+struct ReplayPowerDiagnostics {
+    schema_version: &'static str,
+    scope: &'static str,
+    power_w_unit: &'static str,
+    energy_unit: &'static str,
+    latency_unit: &'static str,
+    coverage_gate: f64,
+    publication_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    energy_wms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    covered_latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    power_w: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    power_coverage: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unavailable_reason: Option<&'static str>,
+    phases: Vec<ReplayPhasePowerDiagnostics>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReplayPhasePowerDiagnostics {
+    name: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    energy_wms: Option<f64>,
+    latency_ms: f64,
+    covered_latency_ms: f64,
+    power_coverage: f64,
+    publication_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    power_w: Option<f64>,
+    source: String,
+    source_kind: &'static str,
+    operations: Vec<ReplayOperationPowerDiagnostics>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReplayOperationPowerDiagnostics {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    energy_wms: Option<f64>,
+    latency_ms: f64,
+    covered_latency_ms: f64,
+    power_coverage: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    energy_contribution: Option<f64>,
+    source: String,
+    source_kind: &'static str,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uncovered_reason: Option<&'static str>,
+}
+
+fn replay_timing_evidence(sources: &[TimingPowerSource]) -> Result<Option<TimingEvidenceSummary>> {
+    let mut combined = TimingEvidenceSummary::default();
     for source in sources {
         let Some(summary) = source.timing.evidence_summary() else {
             return Ok(None);
         };
-        combined.accumulate(scale_power_phase(
+        combined.prefill.accumulate(scale_power_phase(
             summary.prefill,
             source.prefill_speedup_ratio,
         )?);
-        combined.accumulate(scale_power_phase(
+        combined.decode.accumulate(scale_power_phase(
             summary.decode,
             source.decode_speedup_ratio,
         )?);
     }
+    Ok(Some(combined))
+}
+
+fn replay_power_stats(summary: &TimingEvidenceSummary) -> Result<TracePowerStats> {
+    let mut combined = summary.prefill.clone();
+    combined.accumulate(summary.decode.clone());
     if combined.latency_ms <= 0.0 {
-        return Ok(Some(TracePowerStats {
+        return Ok(TracePowerStats {
             power_w: None,
             coverage: 0.0,
-        }));
+        });
     }
     let coverage = (combined.covered_latency_ms / combined.latency_ms).clamp(0.0, 1.0);
     let power_w = (coverage >= POWER_DATA_COVERAGE_THRESHOLD)
@@ -916,7 +979,153 @@ fn replay_power_stats(sources: &[TimingPowerSource]) -> Result<Option<TracePower
         power_w.is_none_or(f64::is_finite),
         "AIC timing provider produced non-finite replay power"
     );
-    Ok(Some(TracePowerStats { power_w, coverage }))
+    Ok(TracePowerStats { power_w, coverage })
+}
+
+fn replay_power_diagnostics(
+    summary: Option<&TimingEvidenceSummary>,
+    unavailable_reason: Option<&'static str>,
+) -> Result<ReplayPowerDiagnostics> {
+    let Some(summary) = summary else {
+        return Ok(ReplayPowerDiagnostics {
+            schema_version: "1.0",
+            scope: "active_forward_pass_per_gpu",
+            power_w_unit: "W",
+            energy_unit: "W-ms",
+            latency_unit: "ms",
+            coverage_gate: POWER_DATA_COVERAGE_THRESHOLD,
+            publication_status: "unsupported",
+            energy_wms: None,
+            latency_ms: None,
+            covered_latency_ms: None,
+            power_w: None,
+            power_coverage: None,
+            unavailable_reason,
+            phases: Vec::new(),
+        });
+    };
+
+    let stats = replay_power_stats(summary)?;
+    let mut combined = summary.prefill.clone();
+    combined.accumulate(summary.decode.clone());
+    let observed = combined.latency_ms > 0.0;
+    Ok(ReplayPowerDiagnostics {
+        schema_version: "1.0",
+        scope: "active_forward_pass_per_gpu",
+        power_w_unit: "W",
+        energy_unit: "W-ms",
+        latency_unit: "ms",
+        coverage_gate: POWER_DATA_COVERAGE_THRESHOLD,
+        publication_status: publication_status(stats.power_w, stats.coverage, observed),
+        energy_wms: combined.energy_wms.filter(|energy| *energy > 0.0),
+        latency_ms: Some(combined.latency_ms),
+        covered_latency_ms: Some(combined.covered_latency_ms),
+        power_w: stats.power_w,
+        power_coverage: Some(stats.coverage),
+        unavailable_reason: (!observed).then_some("no forward-pass timing evidence was observed"),
+        phases: vec![
+            phase_power_diagnostics("prefill", &summary.prefill),
+            phase_power_diagnostics("decode", &summary.decode),
+        ],
+    })
+}
+
+fn phase_power_diagnostics(
+    name: &'static str,
+    phase: &TimingPhaseEvidence,
+) -> ReplayPhasePowerDiagnostics {
+    let coverage = phase.coverage();
+    let phase_energy = phase.energy_wms.filter(|energy| *energy > 0.0);
+    let power_w = (coverage >= POWER_DATA_COVERAGE_THRESHOLD && phase.latency_ms > 0.0)
+        .then(|| phase_energy.map(|energy| energy / phase.latency_ms))
+        .flatten();
+    let mut operations = phase
+        .operations
+        .iter()
+        .map(|operation| operation_power_diagnostics(operation, phase_energy))
+        .collect::<Vec<_>>();
+    operations.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    let source = phase.source.as_ref().map_or_else(
+        || "missing".to_string(),
+        |source| source.as_str().to_string(),
+    );
+    ReplayPhasePowerDiagnostics {
+        name,
+        energy_wms: phase_energy,
+        latency_ms: phase.latency_ms,
+        covered_latency_ms: phase.covered_latency_ms,
+        power_coverage: coverage,
+        publication_status: publication_status(power_w, coverage, phase.latency_ms > 0.0),
+        power_w,
+        source_kind: evidence_source_kind(phase.source.as_ref(), phase_energy.is_some()),
+        source,
+        operations,
+    }
+}
+
+fn operation_power_diagnostics(
+    operation: &TimingOperationEvidence,
+    phase_energy: Option<f64>,
+) -> ReplayOperationPowerDiagnostics {
+    let energy_wms = operation.energy_wms.filter(|energy| *energy > 0.0);
+    let power_coverage = if operation.latency_ms > 0.0 {
+        (operation.covered_latency_ms / operation.latency_ms).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ReplayOperationPowerDiagnostics {
+        name: operation.name.clone(),
+        energy_wms,
+        latency_ms: operation.latency_ms,
+        covered_latency_ms: operation.covered_latency_ms,
+        power_coverage,
+        energy_contribution: energy_wms
+            .zip(phase_energy)
+            .map(|(energy, total)| energy / total),
+        source: operation.source.as_str().to_string(),
+        source_kind: evidence_source_kind(Some(&operation.source), energy_wms.is_some()),
+        status: if energy_wms.is_some() {
+            "available"
+        } else {
+            "missing"
+        },
+        uncovered_reason: energy_wms
+            .is_none()
+            .then_some("timing provider returned latency without positive energy evidence"),
+    }
+}
+
+fn publication_status(power_w: Option<f64>, coverage: f64, observed: bool) -> &'static str {
+    if !observed {
+        "not_observed"
+    } else if power_w.is_some() {
+        "available"
+    } else if coverage < POWER_DATA_COVERAGE_THRESHOLD {
+        "withheld"
+    } else {
+        "missing"
+    }
+}
+
+fn evidence_source_kind(
+    source: Option<&TimingEvidenceSource>,
+    energy_available: bool,
+) -> &'static str {
+    if !energy_available {
+        return "missing";
+    }
+    match source.map(TimingEvidenceSource::as_str) {
+        Some("silicon" | "empirical") => "measured",
+        Some("transferred") => "transferred",
+        Some("sol" | "estimated") => "modeled",
+        Some("mixed") => "mixed",
+        Some(_) => "other",
+        None => "missing",
+    }
 }
 
 fn scale_power_phase(
@@ -1074,15 +1283,37 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         }
     }
     .context("AISimulate replay failed")?;
-    if power_sources.len() == expected_power_sources {
-        report = report.with_power(replay_power_stats(&power_sources)?);
+    let (timing_evidence, unavailable_reason) = if power_sources.len() == expected_power_sources {
+        (
+            replay_timing_evidence(&power_sources)?,
+            Some(concat!(
+                "timing provider does not expose typed operation energy evidence; ",
+                "whole-model FPM and latency-only providers are unsupported"
+            )),
+        )
+    } else {
+        (
+            None,
+            Some("one or more replay roles have no timing provider"),
+        )
+    };
+    if let Some(summary) = timing_evidence.as_ref() {
+        report = report.with_power(Some(replay_power_stats(summary)?));
     }
     let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+    let object = report_json
+        .as_object_mut()
+        .context("AISimulate replay report did not serialize as an object")?;
+    object.insert(
+        "power_diagnostics".to_string(),
+        serde_json::to_value(replay_power_diagnostics(
+            timing_evidence.as_ref(),
+            unavailable_reason,
+        )?)
+        .context("serializing AISimulate power diagnostics")?,
+    );
     if !report.per_request.is_empty() {
-        let object = report_json
-            .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?;
         object.insert(
             "per_request".to_string(),
             serde_json::to_value(&report.per_request)
@@ -1403,7 +1634,8 @@ mod tests {
             prefill_speedup_ratio: 2.0,
             decode_speedup_ratio: 4.0,
         };
-        let power = replay_power_stats(&[source]).unwrap().unwrap();
+        let evidence = replay_timing_evidence(&[source]).unwrap().unwrap();
+        let power = replay_power_stats(&evidence).unwrap();
         assert_eq!(power.power_w, Some(500.0));
         assert!((power.coverage - 170.0 / 175.0).abs() < 1e-12);
     }
@@ -1423,9 +1655,81 @@ mod tests {
             prefill_speedup_ratio: 1.0,
             decode_speedup_ratio: 1.0,
         };
-        let power = replay_power_stats(&[source]).unwrap().unwrap();
+        let evidence = replay_timing_evidence(&[source]).unwrap().unwrap();
+        let power = replay_power_stats(&evidence).unwrap();
         assert_eq!(power.power_w, None);
         assert_eq!(power.coverage, 0.8);
+    }
+
+    #[test]
+    fn power_diagnostics_preserve_missingness_sources_and_reconciliation() {
+        let summary = TimingEvidenceSummary {
+            prefill: TimingPhaseEvidence::from_operations(vec![
+                TimingOperationEvidence::new(
+                    "gemm",
+                    8.0,
+                    Some(3_200.0),
+                    TimingEvidenceSource::Silicon,
+                )
+                .unwrap(),
+                TimingOperationEvidence::new(
+                    "attention",
+                    2.0,
+                    None,
+                    TimingEvidenceSource::Empirical,
+                )
+                .unwrap(),
+            ]),
+            decode: TimingPhaseEvidence::from_operations(vec![
+                TimingOperationEvidence::new(
+                    "moe",
+                    4.0,
+                    Some(1_600.0),
+                    TimingEvidenceSource::from_provider("transferred"),
+                )
+                .unwrap(),
+            ]),
+        };
+
+        let diagnostics = replay_power_diagnostics(Some(&summary), None).unwrap();
+        let value = serde_json::to_value(diagnostics).unwrap();
+
+        assert_eq!(value["publication_status"], "withheld");
+        assert_eq!(value["power_coverage"], 12.0 / 14.0);
+        assert_eq!(value["energy_wms"], 4_800.0);
+        assert_eq!(value["latency_ms"], 14.0);
+        assert_eq!(value["covered_latency_ms"], 12.0);
+        assert!(value.get("power_w").is_none());
+        assert_eq!(value["phases"][0]["energy_wms"], 3_200.0);
+        assert_eq!(value["phases"][1]["energy_wms"], 1_600.0);
+        assert_eq!(value["phases"][1]["power_w"], 400.0);
+        assert_eq!(value["phases"][1]["source_kind"], "transferred");
+        let operations = value["phases"][0]["operations"].as_array().unwrap();
+        assert_eq!(operations[0]["name"], "attention");
+        assert!(operations[0].get("energy_wms").is_none());
+        assert_eq!(operations[0]["status"], "missing");
+        assert_eq!(operations[0]["source"], "empirical");
+        assert_eq!(operations[1]["energy_contribution"], 1.0);
+    }
+
+    #[test]
+    fn power_diagnostics_fail_closed_for_latency_only_providers() {
+        let diagnostics = replay_power_diagnostics(
+            None,
+            Some("timing provider does not expose typed operation energy evidence"),
+        )
+        .unwrap();
+        let value = serde_json::to_value(diagnostics).unwrap();
+
+        assert_eq!(value["publication_status"], "unsupported");
+        assert!(value.get("power_w").is_none());
+        assert!(value.get("power_coverage").is_none());
+        assert!(value.get("energy_wms").is_none());
+        assert_eq!(
+            value["unavailable_reason"],
+            "timing provider does not expose typed operation energy evidence"
+        );
+        assert_eq!(value["phases"].as_array().unwrap().len(), 0);
     }
 
     #[test]
