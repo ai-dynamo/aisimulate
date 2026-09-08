@@ -173,6 +173,9 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     application_wheel_commands = _run_commands(jobs["application-wheel"])
     assert "maturin build" not in application_wheel_commands
     assert any(
+        step.get("uses", "").startswith("dtolnay/rust-toolchain@") for step in jobs["application-wheel"]["steps"]
+    )
+    assert any(
         step.get("with", {}).get("name") == "application-test-wheel-${{ matrix.arch }}"
         for step in jobs["application-wheel"]["steps"]
     )
