@@ -11,7 +11,7 @@ subtitle: Attention-FFN disaggregation, pipeline evaluation, and P/D rate matchi
 > depends on the shared execution-dimension work tracked by AIC-1773.
 
 Attention-FFN Disaggregation (AFD) places attention operations on an A-worker pool and FFN/MoE
-operations on an F-worker pool. `aisimulate.sweeper.afd` provides a backend-neutral contract for
+operations on an F-worker pool. `aisimulate.sweeper.afd_parallel` provides a backend-neutral contract for
 enumerating and evaluating those shapes. Runtime serving and deployment generation remain adapter
 responsibilities.
 
