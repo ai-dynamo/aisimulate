@@ -30,7 +30,6 @@ from aisimulate.sweeper import (
     require_afd_runner_support,
 )
 
-
 _AFD_MIGRATION_GUIDE = (
     Path(__file__).resolve().parents[2]
     / "docs"
