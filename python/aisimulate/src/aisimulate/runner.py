@@ -71,7 +71,10 @@ _AIC_TIMING_FIELD_ALIASES = {
     "kv_cache_dtype": ("kv_cache_dtype", "aic_kv_cache_dtype"),
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
+    "forward_model": ("forward_model", "aic_forward_model"),
 }
+
+_AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
 
 
 class RunnerUnavailableError(RuntimeError):
@@ -582,6 +585,10 @@ def _materialize_engine_role(
             value = _positive_int(value, f"engine provider {role} {target}")
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")
+        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
+            raise ValueError(
+                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
+            )
         aic_timing_overrides[target] = value
 
     timing_model = rank.get("timing_model")

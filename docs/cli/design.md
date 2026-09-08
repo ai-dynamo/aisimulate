@@ -589,6 +589,7 @@ engine:
           cuda_graph_reserved_bytes: 0
       timing:
         type: default
+        forward_model: op_level
       startup_seconds: 0
 ```
 
@@ -628,6 +629,7 @@ engine:
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
+| `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.startup_seconds` | `0` | `x` | `-` | Nonnegative. |
 | `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
@@ -683,6 +685,16 @@ They select the stack's default capacity estimator and timing provider. The init
 preserves current replay and Sweeper behavior, including the backend and role defaults in the table.
 Backend-version-specific defaults are deferred beyond version 1; adding them changes the registry, not
 the YAML shape.
+
+`timing.forward_model` selects the forward-pass model behind the default timing provider. `op_level`
+composes per-operator measurements; `fpm` replays whole-forward measurements from a collected FPM
+cell and requires an exact match on model, hardware, backend version, parallel shape and
+quantization. A candidate without a matching cell fails at replay and is recorded as a failed
+candidate (reason category `replay_runtime`) rather than silently falling back to `op_level`. In
+`fpm` mode with `capacity.type: default`, the KV capacity is also capped to the cell's collected
+decode-KV ceiling. The bundled FPM cells are collected at backend versions outside the queryable
+version slots; until FPM cells are slot-queryable, set the transitional escape hatch
+`AIC_ALLOW_UNLISTED_VERSIONS=1` to use them.
 
 `kv_cache.capacity.type: fixed` requires `blocks`, so users can directly provide cache size. It rejects
 `memory_fraction` and nonzero `cuda_graph_reserved_bytes`. Conversely, `type: default` rejects `blocks`
