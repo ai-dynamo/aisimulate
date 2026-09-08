@@ -81,6 +81,11 @@ def _verify_payload() -> None:
             "aiconfigurator_core/sdk/engine.py",
             "aiconfigurator_core/sdk/memory.py",
             "aiconfigurator_core/systems/h100_sxm.yaml",
+            "collector/__init__.py",
+            "collector/model_cases.py",
+            "collector/cases/base_ops/mla_module.yaml",
+            "collector/fpm_forward/cli.py",
+            "collector/fpm_forward/runtime/fpm_exec.sh",
         ),
     )
     _forbid_distribution_files(

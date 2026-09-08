@@ -1,12 +1,20 @@
-# The Rust feature-mode, Python compatibility, prediction-parity, and
-# aggregate jobs were adapted from NVIDIA AIConfigurator at commit
+# The Rust feature-mode, Python compatibility, engine-golden, platform-wheel,
+# collector-data, and prediction-regression jobs were adapted from NVIDIA
+# AIConfigurator at commit
 # 77fd0773407b3683d8a671fe24a30a7110651b64.
-name: CI
+name: Full CI
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed commit required for this run
+        required: true
+        type: string
   push:
-    # Velonix admits canonical pushes, not untrusted pull_request events.
+    # Keep trusted copy-pr-bot branches as an automatic coverage backstop until
+    # the main ruleset requires the exact-SHA Full CI checks. Reviewed PR
+    # validation may also be admitted explicitly through workflow_dispatch.
     branches:
       - main
       - "pull-request/*"
@@ -14,29 +22,56 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
-  spdx-headers:
-    name: Source Compliance
-    runs-on: prod-aisimulate-default-amd64-v1
-    timeout-minutes: 5
-    container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
-      env:
-        HOME: /__w/aisimulate/aisimulate
-        USER: runner
+  verify-target:
+    name: Verify Exact Target
+    runs-on: ubuntu-latest
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      RUN_SHA: ${{ github.sha }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: Check NVIDIA/Apache-2.0 SPDX headers
-        run: python scripts/check_copyright.py
-      - name: Check packaged legal-file copies
-        run: python scripts/check_packaged_legal_files.py
+      - name: Reject a mismatched requested commit
+        shell: bash
+        run: |
+          if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
+            echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
+            exit 1
+          fi
+
+  fast-ci:
+    name: Fast CI
+    needs: verify-target
+    uses: ./.github/workflows/fast-ci.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
+  platform-wheels:
+    name: Platform Wheels
+    needs: fast-ci
+    uses: ./.github/workflows/validate-platform-wheels.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
+  collector-data:
+    name: Collector Data
+    needs: fast-ci
+    uses: ./.github/workflows/collector-check.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
+  prediction-regression:
+    name: Prediction Regression
+    needs: fast-ci
+    uses: ./.github/workflows/prediction-regression-gate.yml
+    with:
+      expected_sha: ${{ github.sha }}
+      old-ref: main
 
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -83,6 +118,7 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -105,13 +141,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends build-essential
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
       - run: cargo test --workspace
 
   rust-feature-modes:
     name: Rust feature modes
+    needs: fast-ci
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
     container:
@@ -143,6 +177,7 @@ jobs:
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -170,24 +205,15 @@ jobs:
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
     needs:
-      - spdx-headers
+      - fast-ci
       - cargo-deny
       - rust
       - rust-feature-modes
       - public-api-rust
       - application-tests
       - python-compatibility
-      - rust-python-parity
-      - lint
+      - engine-golden-regression
       - release-artifact-contract
-    # Only trusted branch-copy and post-merge pushes may stage wheels. In
-    # particular, workflow_dispatch must not acquire either staging environment.
-    if: >-
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' ||
-       startsWith(github.ref, 'refs/heads/release/') ||
-       startsWith(github.ref, 'refs/heads/pull-request/'))
-    environment: ${{ startsWith(github.ref, 'refs/heads/pull-request/') && 'pr-wheel-staging' || 'automated-release' }}
     strategy:
       fail-fast: false
       matrix:
@@ -223,6 +249,38 @@ jobs:
           staged-wheel-smoke/bin/python -c \
             "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
             assert aisimulate_core._build_smoke() > 0"
+      - name: Preserve wheel for trusted staging
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-wheel-${{ matrix.arch }}
+          path: dist/*.whl
+
+  stage-application-wheel:
+    name: Stage Application Wheel (${{ matrix.arch }})
+    needs: application-wheel
+    # Manual PR validation builds and verifies wheels without acquiring release
+    # credentials. Only post-merge and release lifecycle pushes may stage them.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/heads/release/'))
+    environment: automated-release
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-wheel-${{ matrix.arch }}
+          path: dist
       - name: Stage wheel in Artifactory
         shell: bash
         env:
@@ -253,16 +311,6 @@ jobs:
           esac
 
           case "${GITHUB_REF}" in
-            refs/heads/pull-request/*)
-              pr_number="${GITHUB_REF#refs/heads/pull-request/}"
-              case "${pr_number}" in
-                ""|*[!0-9]*)
-                  echo "::error::expected numeric pull-request/<id> ref, got ${GITHUB_REF}"
-                  exit 1
-                  ;;
-              esac
-              subpath="${pr_number}/${GITHUB_SHA}/${GITHUB_RUN_ID}"
-              ;;
             refs/heads/main|refs/heads/release/*)
               subpath="post-merge/${GITHUB_SHA}/${GITHUB_RUN_ID}"
               ;;
@@ -349,6 +397,7 @@ jobs:
 
   application-tests:
     name: Application Tests (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -397,6 +446,7 @@ jobs:
 
   python-compatibility:
     name: Python ${{ matrix.python-version }} compatibility
+    needs: fast-ci
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
     strategy:
@@ -436,8 +486,9 @@ jobs:
           python/aisimulate/tests/cross_package/test_single_oracle_contract.py
           python/aisimulate/tests/cross_package/test_table_view_registry.py
 
-  rust-python-parity:
-    name: Rust/Python prediction parity
+  engine-golden-regression:
+    name: Engine Golden Regression
+    needs: fast-ci
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 45
     container:
@@ -463,48 +514,15 @@ jobs:
         run: python -m pip install './python/aisimulate[dev]'
       - name: Run engine-step parity suite
         run: >-
-          python -m pytest -q -rx -n 4
+          python -m pytest -c python/aisimulate/pytest.ini -q -rx -n 4
           crates/core/parity_tests/perfmodel/test_engine_step_parity.py
       - name: Run compiled-engine parity suite
         run: >-
-          python -m pytest -q -rx -n 4
+          python -m pytest -c python/aisimulate/pytest.ini -q -rx -n 4
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
-
-  lint:
-    name: Lint (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
-    container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
-      env:
-        HOME: /__w/aisimulate/aisimulate
-        USER: runner
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - run: python -m pip install ruff==0.14.1
-      - run: >-
-          ruff check
-          --config python/aisimulate/pyproject.toml
-          python/aisimulate/src/aisimulate
-          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
-          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
-          tests
-      - run: >-
-          ruff format --check
-          --config python/aisimulate/pyproject.toml
-          python/aisimulate/src/aisimulate
-          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
-          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
-          tests/test_ci_workflow_contracts.py
-
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -547,11 +565,15 @@ jobs:
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
 
-  ci-success:
-    name: CI Success
+  full-ci-success:
+    name: Full CI Success
     if: always()
     needs:
-      - spdx-headers
+      - verify-target
+      - fast-ci
+      - platform-wheels
+      - collector-data
+      - prediction-regression
       - cargo-deny
       - rust
       - rust-feature-modes
@@ -559,39 +581,27 @@ jobs:
       - application-wheel
       - application-tests
       - python-compatibility
-      - rust-python-parity
-      - lint
+      - engine-golden-regression
       - release-artifact-contract
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every CI job to pass
         env:
-          SPDX_HEADERS_RESULT: ${{ needs.spdx-headers.result }}
-          CARGO_DENY_RESULT: ${{ needs.cargo-deny.result }}
-          RUST_RESULT: ${{ needs.rust.result }}
-          RUST_FEATURE_MODES_RESULT: ${{ needs.rust-feature-modes.result }}
-          PUBLIC_API_RUST_RESULT: ${{ needs.public-api-rust.result }}
-          APPLICATION_WHEEL_RESULT: ${{ needs.application-wheel.result }}
-          APPLICATION_TESTS_RESULT: ${{ needs.application-tests.result }}
-          PYTHON_COMPATIBILITY_RESULT: ${{ needs.python-compatibility.result }}
-          RUST_PYTHON_PARITY_RESULT: ${{ needs.rust-python-parity.result }}
-          LINT_RESULT: ${{ needs.lint.result }}
-          RELEASE_ARTIFACT_CONTRACT_RESULT: ${{ needs.release-artifact-contract.result }}
-          EXPECTED_APPLICATION_WHEEL_RESULT: ${{ github.event_name == 'workflow_dispatch' && 'skipped' || 'success' }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          test "${APPLICATION_WHEEL_RESULT}" = "${EXPECTED_APPLICATION_WHEEL_RESULT}"
-          for result in \
-            "${SPDX_HEADERS_RESULT}" \
-            "${CARGO_DENY_RESULT}" \
-            "${RUST_RESULT}" \
-            "${RUST_FEATURE_MODES_RESULT}" \
-            "${PUBLIC_API_RUST_RESULT}" \
-            "${APPLICATION_TESTS_RESULT}" \
-            "${PYTHON_COMPATIBILITY_RESULT}" \
-            "${RUST_PYTHON_PARITY_RESULT}" \
-            "${LINT_RESULT}" \
-            "${RELEASE_ARTIFACT_CONTRACT_RESULT}"
-          do
-            test "${result}" = "success"
-          done
+          python - <<'PY'
+          import json
+          import os
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          failed = {
+              name: payload["result"]
+              for name, payload in needs.items()
+              if payload["result"] != "success"
+          }
+          for name, payload in sorted(needs.items()):
+              print(f"{name}: {payload['result']}")
+          if failed:
+              raise SystemExit(f"Full CI dependencies did not pass: {failed}")
+          PY

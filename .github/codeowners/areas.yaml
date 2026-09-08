@@ -179,6 +179,10 @@ shared:
     owners: [infra, maintainers]
   - glob: AGENTS.md
     owners: [infra, maintainers]
+  - glob: .coderabbit.yaml
+    owners: [infra, maintainers]
+  - glob: REVIEW.md
+    owners: [infra, maintainers]
   - glob: DEVELOPMENT.md
     owners: [infra, maintainers]
   - glob: .gitattributes

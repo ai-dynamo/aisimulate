@@ -72,6 +72,7 @@ class KvCachePredictionConfig(StrictModel):
 
 class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
+    forward_model: Literal["op_level", "fpm"] = "op_level"
     prefill_ms: float | None = Field(default=None, ge=0.0)
     decode_ms: float | None = Field(default=None, ge=0.0)
 
@@ -82,6 +83,11 @@ class TimingConfig(StrictModel):
                 raise ValueError("fixed timing requires prefill_ms and decode_ms")
         elif self.prefill_ms is not None or self.decode_ms is not None:
             raise ValueError(f"{self.type} timing rejects fixed timing values")
+        if self.type != "default" and self.forward_model != "op_level":
+            raise ValueError(
+                f"{self.type} timing rejects forward_model={self.forward_model!r}; "
+                "forward_model applies to default timing only"
+            )
         return self
 
 

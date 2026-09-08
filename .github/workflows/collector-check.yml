@@ -1,20 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from ai-dynamo/AIConfigurator at commit
-# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISimulate paths and copied-PR refs.
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified as a reusable AISimulate Full CI gate.
 
 name: Collector Data Check
 
 on:
-  push:
-    # Velonix admits canonical copied-PR pushes, not untrusted pull_request events.
-    branches:
-      - "pull-request/*"
-    paths:
-      - "python/aisimulate/src/aiconfigurator_core/systems/data/**"
-      - "python/aisimulate/src/aiconfigurator_core/sdk/perf_database.py"
-      - "python/aisimulate/collector/**"
-      - "python/aisimulate/tools/perf_database/**"
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact commit that Full CI expects this workflow to validate
+        required: false
+        type: string
+        default: ""
+      base_sha:
+        description: Optional comparison base; defaults to the repository default branch
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
 
 permissions:
@@ -22,7 +25,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: collector-data-${{ github.ref }}
+  # Manual and reusable invocations must not cancel another comparison run.
+  group: collector-data-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -39,38 +43,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.expected_sha || github.sha }}
           fetch-depth: 0
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
       - name: Resolve comparison base
         id: base
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          BASE_SHA_INPUT: ${{ inputs.base_sha }}
         with:
           script: |
-            if (context.eventName === "workflow_dispatch") {
-              const {data: branch} = await github.rest.repos.getBranch({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                branch: context.payload.repository.default_branch,
-              });
-              core.setOutput("sha", branch.commit.sha);
+            if (process.env.BASE_SHA_INPUT) {
+              core.setOutput("sha", process.env.BASE_SHA_INPUT);
               return;
             }
 
-            const match = context.ref.match(/^refs\/heads\/pull-request\/(\d+)$/);
-            if (!match) {
-              core.setFailed(`expected copied-PR ref, got ${context.ref}`);
-              return;
-            }
-
-            const {data: pull} = await github.rest.pulls.get({
+            const {data: branch} = await github.rest.repos.getBranch({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: Number(match[1]),
+              branch: context.payload.repository.default_branch,
             });
-            core.setOutput("sha", pull.base.sha);
+            core.setOutput("sha", branch.commit.sha);
       - name: Fetch comparison base
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
-        run: git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+        run: git fetch --no-tags origin "${BASE_SHA}"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -130,6 +128,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"

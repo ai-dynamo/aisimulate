@@ -1,15 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from ai-dynamo/AIConfigurator at commit
-# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISimulate paths and copied-PR refs.
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified as a reusable AISimulate Full CI gate.
 
 name: Prediction Regression Gate
 
 on:
-  push:
-    # Velonix admits canonical copied-PR pushes, not untrusted pull_request events.
-    branches:
-      - "pull-request/*"
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact commit that Full CI expects this workflow to validate
+        required: false
+        type: string
+        default: ""
+      old-ref:
+        description: Old revision to compare against
+        required: false
+        type: string
+        default: main
   workflow_dispatch:
     inputs:
       old-ref:
@@ -22,7 +30,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: prediction-regression-${{ github.ref }}
+  # Manual and reusable invocations must not cancel another comparison run.
+  group: prediction-regression-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -33,30 +42,19 @@ jobs:
     outputs:
       old: ${{ steps.resolve.outputs.old }}
     steps:
-      - name: Resolve copied PR base or manual old ref
+      - name: Resolve comparison base
         id: resolve
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           OLD_REF_INPUT: ${{ inputs.old-ref }}
         with:
           script: |
-            if (context.eventName === "workflow_dispatch") {
+            if (context.eventName === "workflow_dispatch" || context.eventName === "workflow_call") {
               core.setOutput("old", process.env.OLD_REF_INPUT || "main");
               return;
             }
 
-            const match = context.ref.match(/^refs\/heads\/pull-request\/(\d+)$/);
-            if (!match) {
-              core.setFailed(`expected copied-PR ref, got ${context.ref}`);
-              return;
-            }
-
-            const {data: pull} = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: Number(match[1]),
-            });
-            core.setOutput("old", pull.base.sha);
+            core.setFailed(`unsupported event: ${context.eventName}`);
 
   collect:
     name: Collect prediction snapshot (${{ matrix.side }})
@@ -76,24 +74,45 @@ jobs:
       - name: Checkout comparison revision
         uses: actions/checkout@v7
         with:
-          ref: ${{ matrix.side == 'old' && needs.refs.outputs.old || github.sha }}
+          ref: ${{ matrix.side == 'old' && needs.refs.outputs.old || inputs.expected_sha || github.sha }}
           fetch-depth: 0
+      - name: Verify comparison target
+        env:
+          TARGET_SHA: ${{ matrix.side == 'old' && needs.refs.outputs.old || inputs.expected_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
+      - name: Detect prediction harness
+        id: harness
+        working-directory: python/aisimulate
+        run: |
+          mkdir -p /tmp/gate-snapshot
+          if [[ -f tools/prediction_regression_gate/collect_static.py ]]; then
+            echo "available=true" >> "${GITHUB_OUTPUT}"
+          else
+            touch /tmp/gate-snapshot/NO_HARNESS
+            echo "available=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::comparison revision predates the prediction-regression harness"
+          fi
       - uses: actions/setup-python@v7
+        if: steps.harness.outputs.available == 'true'
         with:
           python-version: "3.13"
       - name: Configure Python linker path
+        if: steps.harness.outputs.available == 'true'
         run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
       - name: Install native build toolchain
+        if: steps.harness.outputs.available == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends build-essential
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        if: steps.harness.outputs.available == 'true'
       - name: Install AISimulate and development dependencies
+        if: steps.harness.outputs.available == 'true'
         run: python -m pip install './python/aisimulate[dev]'
       - name: Collect static, scheduling, and silicon snapshots
+        if: steps.harness.outputs.available == 'true'
         working-directory: python/aisimulate
         run: |
-          mkdir -p /tmp/gate-snapshot
           python tools/prediction_regression_gate/collect_static.py \
             --output-dir /tmp/gate-snapshot \
             --jobs "$(nproc)"
@@ -122,6 +141,15 @@ jobs:
           echo "::error::prediction snapshot collection result: ${{ needs.collect.result }}"
           exit 1
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install report dependencies
+        run: python -m pip install pyyaml==6.0.3
       - name: Download prediction snapshots
         uses: actions/download-artifact@v8
         with:

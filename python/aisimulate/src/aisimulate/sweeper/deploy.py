@@ -31,6 +31,11 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
         "moe_tp_size": moe_tp if moe_tp * moe_ep > 1 else None,
         "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
         "nextn": sample.get("aic_nextn"),
+        "forward_model": (
+            (sample.get(f"{role}_forward_model") or "op_level")
+            if sample.get(f"{role}_timing_model") is None
+            else "op_level"
+        ),
     }
     return {"provider": "aic", "config": config}
 
@@ -76,6 +81,9 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         payload["aic_moe_ep_size"] = moe_ep
     if sample.get("aic_nextn") is not None:
         payload["aic_nextn"] = int(sample["aic_nextn"])
+    forward_model = sample.get(f"{role}_forward_model")
+    if forward_model is not None and forward_model != "op_level":
+        payload["aic_forward_model"] = str(forward_model)
     startup = sample.get(f"{role}_startup_time")
     if startup is None:
         startup = sample.get("startup_time")
@@ -95,6 +103,7 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
             "aic_moe_tp_size",
             "aic_moe_ep_size",
             "aic_nextn",
+            "aic_forward_model",
         ):
             payload.pop(name, None)
     host_offload = sample.get(f"{role}_native_host_offload")
