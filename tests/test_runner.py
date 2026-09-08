@@ -897,3 +897,76 @@ def test_runner_rejects_nested_backend_that_conflicts_with_deployment():
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
             _spec(deployment=deployment)
         )
+
+
+def test_runner_threads_forward_model_alias_into_aic_timing():
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("timing_model")
+    engine_args["aic_forward_model"] = "fpm"
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="0.25.1",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert rank["timing_model"]["config"]["forward_model"] == "fpm"
+    assert "aic_forward_model" not in rank
+
+
+def test_runner_rejects_forward_model_on_rank_and_in_explicit_aic_timing():
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "test-model",
+            "backend": "vllm",
+            "system": "test-system",
+            "tp": 2,
+            "attention_dp": 1,
+            "forward_model": "fpm",
+        },
+    }
+    engine_args = _engine_args(timing=timing)
+    engine_args["aic_forward_model"] = "fpm"
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"configured both on the rank and inside timing_model\.config: forward_model",
+    ):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(deployment=deployment)
+        )
+
+
+@pytest.mark.parametrize("value", ["layerwise", "", 3])
+def test_runner_rejects_unknown_forward_model(value):
+    engine_args = _engine_args()
+    engine_args.pop("timing_model")
+    engine_args["aic_forward_model"] = value
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+
+    with pytest.raises(ValueError, match="forward_model"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(deployment=deployment)
+        )
