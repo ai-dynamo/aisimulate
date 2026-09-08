@@ -173,6 +173,9 @@ def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
     ).read_text()
 
     assert "COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/" in dockerfile
+    assert "ln -s ../src /workspace/python/aisimulate/aic-core/src" in dockerfile
+    assert "test -d /workspace/python/aisimulate/src/aiconfigurator/model_configs" in dockerfile
+    assert "test -d /workspace/python/aisimulate/src/aiconfigurator/systems" in dockerfile
     assert '"cases/**/*.yaml"' in release_verifier
     assert '"fpm_forward/**/*.py"' in release_verifier
     assert '"collector/fpm_forward/runtime/fpm_exec.sh"' in installed_verifier
@@ -200,7 +203,13 @@ def test_fpe_job_uses_required_container_without_legacy_lfs_data() -> None:
     generate = _workflow("fpe-support-matrix.yml")["jobs"]["generate"]
     checkout = next(step for step in generate["steps"] if step.get("uses", "").startswith("actions/checkout@"))
     tracked = subprocess.check_output(
-        ["git", "-C", str(REPOSITORY_ROOT), "ls-files", "python/aisimulate/src/aiconfigurator_core/systems/**/*.txt"],
+        [
+            "git",
+            "-C",
+            str(REPOSITORY_ROOT),
+            "ls-files",
+            "python/aisimulate/src/aiconfigurator_core/systems/**/*.txt",
+        ],
         text=True,
     ).splitlines()
 
