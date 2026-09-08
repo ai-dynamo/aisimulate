@@ -3,6 +3,7 @@
 
 """Repository-specific routing contract for AISimulate's generated CODEOWNERS."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,26 @@ AREA_TEAMS = {FPE, SWEEPER, REPLAY, MOCKER}
 def _owners(path: str) -> set[str]:
     rules = parse_codeowners((ROOT / "CODEOWNERS").read_text())
     return set(resolve_owners(rules, path))
+
+
+def _run_readiness_script(
+    script: str, tmp_path: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    summary = tmp_path / "summary.md"
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_SHA": "0123456789abcdef",
+            "GITHUB_STEP_SUMMARY": str(summary),
+            **env,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def test_subsystem_teams_retain_maintainer_coownership() -> None:
@@ -178,6 +199,7 @@ def test_dependency_policy_covers_every_rust_manifest_root() -> None:
 def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     fast = (ROOT / ".github/workflows/fast-ci.yml").read_text()
     full = (ROOT / ".github/workflows/ci.yml").read_text()
+    fast_config = yaml.load(fast, Loader=yaml.BaseLoader)
     full_config = yaml.load(full, Loader=yaml.BaseLoader)
 
     for inexpensive_gate in (
@@ -206,6 +228,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert 'RUN_SHA: ${{ github.sha }}' in full
     assert 'expected_sha: ${{ github.sha }}' in full
     assert "needs: verify-target" in full
+    assert "manual Full CI requires a nonempty expected_sha" in full
     assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
     assert "workflow_dispatch" in full_config["on"]
     dispatch_sha = full_config["on"]["workflow_dispatch"]["inputs"]["expected_sha"]
@@ -216,6 +239,66 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "pull-request/*",
         "release/*",
     ]
+
+    fast_readiness = fast_config["jobs"]["readiness"]
+    assert fast_readiness["name"] == "Fast CI Success"
+    assert fast_readiness["if"] == "${{ always() }}"
+    assert set(fast_readiness["needs"]) == {
+        "policy",
+        "python-static",
+        "rust-format",
+    }
+    assert fast_readiness["env"] == {
+        "IS_DRAFT": "${{ github.event.pull_request.draft || false }}",
+        "HAS_REVIEW_READY": "${{ github.event_name != 'pull_request' || "
+        "contains(github.event.pull_request.labels.*.name, 'review-ready') }}",
+        "POLICY_RESULT": "${{ needs.policy.result }}",
+        "PYTHON_STATIC_RESULT": "${{ needs.python-static.result }}",
+        "RUST_FORMAT_RESULT": "${{ needs.rust-format.result }}",
+    }
+    fast_readiness_script = fast_readiness["steps"][0]["run"]
+    assert "must have the review-ready label" in fast_readiness_script
+    for result in (
+        "${POLICY_RESULT}",
+        "${PYTHON_STATIC_RESULT}",
+        "${RUST_FORMAT_RESULT}",
+    ):
+        assert result in fast_readiness_script
+
+    assert full_config["permissions"]["pull-requests"] == "read"
+    verify_target = full_config["jobs"]["verify-target"]
+    verify_copy_steps = [
+        step
+        for step in verify_target["steps"]
+        if step.get("name") == "Verify trusted PR copy matches originating head"
+    ]
+    assert len(verify_copy_steps) == 1
+    assert verify_copy_steps[0]["if"] == (
+        "startsWith(github.ref, 'refs/heads/pull-request/')"
+    )
+    assert "repos/${REPOSITORY}/pulls/${pr_number}" in verify_copy_steps[0]["run"]
+    assert '"${pr_head}" != "${RUN_SHA}"' in verify_copy_steps[0]["run"]
+
+    full_readiness = full_config["jobs"]["readiness"]
+    assert full_readiness["name"] == "Full CI Success"
+    assert full_readiness["if"] == "${{ always() }}"
+    assert set(full_readiness["needs"]) == {
+        "verify-target",
+        "fast-ci",
+        "cargo-deny",
+        "rust",
+        "public-api-rust",
+        "application-tests",
+        "release-artifact-contract",
+        "application-wheel",
+        "stage-application-wheel",
+    }
+    full_readiness_script = full_readiness["steps"][0]["run"]
+    assert "${VERIFY_TARGET_RESULT}" in full_readiness_script
+    assert "${APPLICATION_WHEEL_RESULT}" in full_readiness_script
+    assert "${STAGE_APPLICATION_WHEEL_RESULT}" in full_readiness_script
+    assert '"${STAGE_APPLICATION_WHEEL_RESULT}" "skipped"' in full_readiness_script
+
     application_wheel = full_config["jobs"]["application-wheel"]
     assert "if" not in application_wheel
     verify_steps = [
@@ -235,6 +318,74 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "(github.ref == 'refs/heads/main' ||\n "
         "startsWith(github.ref, 'refs/heads/release/'))"
     )
+
+
+def test_fast_ci_readiness_fails_closed(tmp_path: Path) -> None:
+    config = yaml.load(
+        (ROOT / ".github/workflows/fast-ci.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    script = config["jobs"]["readiness"]["steps"][0]["run"]
+    passing = {
+        "IS_DRAFT": "false",
+        "HAS_REVIEW_READY": "true",
+        "POLICY_RESULT": "success",
+        "PYTHON_STATIC_RESULT": "success",
+        "RUST_FORMAT_RESULT": "success",
+    }
+
+    assert _run_readiness_script(script, tmp_path, passing).returncode == 0
+
+    missing_label = {**passing, "HAS_REVIEW_READY": "false"}
+    assert _run_readiness_script(script, tmp_path, missing_label).returncode != 0
+
+    skipped_job = {**passing, "PYTHON_STATIC_RESULT": "skipped"}
+    assert _run_readiness_script(script, tmp_path, skipped_job).returncode != 0
+
+    draft = {**passing, "IS_DRAFT": "true", "HAS_REVIEW_READY": "false"}
+    assert _run_readiness_script(script, tmp_path, draft).returncode == 0
+
+
+def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
+    config = yaml.load(
+        (ROOT / ".github/workflows/ci.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    script = config["jobs"]["readiness"]["steps"][0]["run"]
+    passing_pr = {
+        "VERIFY_TARGET_RESULT": "success",
+        "FAST_CI_RESULT": "success",
+        "CARGO_DENY_RESULT": "success",
+        "RUST_RESULT": "success",
+        "PUBLIC_API_RUST_RESULT": "success",
+        "APPLICATION_TESTS_RESULT": "success",
+        "RELEASE_ARTIFACT_RESULT": "success",
+        "APPLICATION_WHEEL_RESULT": "success",
+        "STAGE_APPLICATION_WHEEL_RESULT": "skipped",
+        "STAGING_REQUIRED": "false",
+    }
+
+    assert _run_readiness_script(script, tmp_path, passing_pr).returncode == 0
+
+    canceled_job = {**passing_pr, "RUST_RESULT": "cancelled"}
+    assert _run_readiness_script(script, tmp_path, canceled_job).returncode != 0
+
+    missing_job = {**passing_pr, "APPLICATION_TESTS_RESULT": ""}
+    assert _run_readiness_script(script, tmp_path, missing_job).returncode != 0
+
+    passing_release = {
+        **passing_pr,
+        "STAGING_REQUIRED": "true",
+        "STAGE_APPLICATION_WHEEL_RESULT": "success",
+    }
+    assert _run_readiness_script(script, tmp_path, passing_release).returncode == 0
+
+    skipped_release_staging = {
+        **passing_release,
+        "STAGE_APPLICATION_WHEEL_RESULT": "skipped",
+    }
+    result = _run_readiness_script(script, tmp_path, skipped_release_staging)
+    assert result.returncode != 0
 
 
 def test_coderabbit_is_opted_in_by_review_ready_label() -> None:

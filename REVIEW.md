@@ -47,6 +47,15 @@ finding. Lower-priority findings and CODEOWNER review may proceed while Full CI
 runs, but all required conversations, approvals, and exact-head checks must be
 complete before merge.
 
+`Fast CI Success` and `Full CI Success` are the stable merge-gate results. Both
+run with `always()` semantics and fail when required evidence is missing,
+skipped unexpectedly, canceled, or failed. A non-draft PR without the
+`review-ready` label fails `Fast CI Success`; making a PR ready or removing the
+label retriggers the workflow. Release staging is explicitly not applicable to
+manual and trusted-copy PR validation, while it remains required for `main` and
+`release/*` lifecycle pushes. Configure branch rules against these stable
+results rather than individual conditional jobs.
+
 During the review-acceleration pilot, a maintainer dispatches Full CI after
 verifying those conditions, supplying the reviewed full commit SHA through the
 required `expected_sha` input. Trusted copy-pr-bot `pull-request/*` branches also
