@@ -133,6 +133,22 @@ def test_single_gpu_moe_shape_passes_real_kv_feasibility():
     assert configs[0].replicas == 1
 
 
+@pytest.mark.model(QWEN3_VL_MOE)
+def test_single_gpu_moe_shape_still_fails_real_kv_infeasibility():
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"no parallel config holds a 1000000000-token sequence",
+    ):
+        parallel_configs_for(
+            QWEN3_VL_MOE,
+            "gb200",
+            gpu_budget=1,
+            deployment_mode="agg",
+            backend="vllm",
+            max_seq_len=1_000_000_000,
+        )
+
+
 @pytest.mark.model(DEEPSEEK)
 def test_max_seq_len_defaults_to_model_context(monkeypatch):
     # Omitting max_seq_len uses the model's max context length.
