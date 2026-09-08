@@ -14,6 +14,7 @@ from tools.support_matrix.support_matrix import (
     STATUS_PASS,
     SupportMatrix,
     TestConstraints,
+    _get_encoder_coverage,
     _support_matrix_row_command,
 )
 
@@ -155,6 +156,8 @@ def test_qwen35_support_matrix_runs_and_replays_with_image_workload(monkeypatch)
 
     monkeypatch.setattr(support_matrix_module, "Task", FakeTask)
     constraints = TestConstraints(total_gpus=32, isl=256, osl=256, prefix=128, ttft=2000.0, tpot=50.0)
+    coverage = _get_encoder_coverage("Qwen/Qwen3.5-27B")
+    assert coverage.aic_encoder_implemented
 
     SupportMatrix._create_task(
         mode="agg",
@@ -163,6 +166,7 @@ def test_qwen35_support_matrix_runs_and_replays_with_image_workload(monkeypatch)
         backend="vllm",
         version="0.24.0",
         constraints=constraints,
+        image_workload=coverage.workload,
     )
     command = _support_matrix_row_command(
         model="Qwen/Qwen3.5-27B",
@@ -170,23 +174,24 @@ def test_qwen35_support_matrix_runs_and_replays_with_image_workload(monkeypatch)
         backend="vllm",
         version="0.24.0",
         constraints=constraints,
+        image_workload=coverage.workload,
     )
 
-    assert captured_kwargs["image_height"] == 448
-    assert captured_kwargs["image_width"] == 448
+    assert captured_kwargs["image_height"] == 1024
+    assert captured_kwargs["image_width"] == 1024
     assert captured_kwargs["num_images_per_request"] == 1
-    assert "--image-height 448 --image-width 448 --num-images 1" in command
+    assert "--image-height 1024 --image-width 1024 --num-images 1" in command
 
 
 def test_run_single_test_keeps_encoder_metadata_failures_fail_fast(monkeypatch):
     monkeypatch.setattr(
         support_matrix_module,
-        "_get_model_info",
-        lambda _model: {"architecture": "Qwen3_5ForConditionalGeneration"},
+        "_get_test_constraints",
+        lambda _model: TestConstraints(total_gpus=32, isl=256, osl=256, prefix=128, ttft=2000.0, tpot=50.0),
     )
     monkeypatch.setattr(
         support_matrix_module,
-        "_has_modeled_encoder",
+        "_get_encoder_coverage",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("broken encoder metadata")),
     )
     monkeypatch.setattr(

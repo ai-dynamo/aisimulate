@@ -47,6 +47,7 @@ ENV UV_PYTHON=/opt/python/cp313-cp313/bin/python3
 COPY Cargo.toml Cargo.lock /workspace/
 COPY crates/ /workspace/crates/
 COPY python/aisimulate/src/ /workspace/python/aisimulate/src/
+COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/
 COPY python/aisimulate/LICENSE python/aisimulate/THIRD_PARTY_NOTICES.md python/aisimulate/pyproject.toml python/aisimulate/README.md /workspace/python/aisimulate/
 COPY python/aisimulate/tools/verify_release_wheels.py /workspace/python/aisimulate/tools/verify_release_wheels.py
 COPY python/aisimulate/tools/verify_installed_package_layers.py /workspace/python/aisimulate/tools/verify_installed_package_layers.py
@@ -121,4 +122,5 @@ COPY python/aisimulate/tests/ /workspace/tests/
 COPY python/aisimulate/src/ /workspace/src/
 COPY python/aisimulate/tools/ /workspace/tools/
 COPY python/aisimulate/collector/ /workspace/collector/
+COPY python/aisimulate/docs/support-matrix/index.html /workspace/docs/support-matrix/index.html
 COPY python/aisimulate/.agents/ /workspace/.agents/

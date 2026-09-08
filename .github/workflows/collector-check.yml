@@ -22,7 +22,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: collector-data-${{ github.ref }}
+  group: collector-data-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -70,17 +70,10 @@ jobs:
       - name: Fetch comparison base
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
-        run: git fetch --no-tags --depth=1 origin "${BASE_SHA}"
-      - uses: actions/setup-python@v7
+        run: git fetch --no-tags origin "${BASE_SHA}"
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install AISimulate and development dependencies
         run: python -m pip install './python/aisimulate[dev]'
       - name: Check Collector V3 data invariants

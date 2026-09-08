@@ -95,6 +95,7 @@
 # --- Shared ownership: multi-team (any one approves; wins via last-match) ---
 /scripts/                                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /AGENTS.md                                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/REVIEW.md                                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /deny.toml                                           @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /CODEOWNERS                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /Cargo.lock                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -106,6 +107,7 @@
 /.gitattributes                                      @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /DEVELOPMENT.md                                      @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/sweeper/                                      @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
+/.coderabbit.yaml                                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/aic-sync.md                                    @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/core-api.md                                    @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /examples/sweeper/                                   @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain

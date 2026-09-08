@@ -11,8 +11,10 @@ on:
       # copy-pr-bot is the approval boundary for privileged pull-request builds.
       - "pull-request/*"
     paths:
+      - ".dockerignore"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "THIRD_PARTY_NOTICES.md"
       - "crates/**"
       - ".github/actions/build-platform-wheel/**"
       - ".github/workflows/build-platform-wheels-copied-pr.yml"
@@ -20,6 +22,9 @@ on:
       - "python/aisimulate/docker/Dockerfile"
       - "python/aisimulate/LICENSE"
       - "python/aisimulate/pyproject.toml"
+      - "python/aisimulate/README.md"
+      - "python/aisimulate/THIRD_PARTY_NOTICES.md"
+      - "python/aisimulate/collector/**"
       - "python/aisimulate/src/**"
       - "python/aisimulate/tools/build_legacy_monolith_fixture.py"
       - "python/aisimulate/tools/verify_installed_package_layers.py"

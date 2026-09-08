@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Adapted from ai-dynamo/AIConfigurator at commit
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISimulate's job containers.
+
+name: Set up Python and Rust
+description: Install the shared Python, linker, native-build, and Rust toolchain prerequisites
+
+inputs:
+  python-version:
+    description: Python version passed to actions/setup-python
+    required: true
+  rust-components:
+    description: Optional comma-separated rustup components
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Configure Python linker path
+      shell: bash
+      run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+    - name: Install native build toolchain
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends build-essential
+    - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      with:
+        components: ${{ inputs.rust-components }}
