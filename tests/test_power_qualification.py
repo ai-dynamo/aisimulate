@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "validate_power_qualification.py"
@@ -28,6 +29,41 @@ def _gate(document: dict, gate_id: str) -> dict:
     return next(gate for gate in document["gates"] if gate["id"] == gate_id)
 
 
+def _passing_evidence(revision: str, suffix: str) -> dict:
+    return {
+        "result": "pass",
+        "artifact": f"https://example.invalid/{suffix}.json",
+        "sha256": "1" * 64,
+        "source_revision": revision,
+        "recorded_at": "2026-09-08T12:00:00Z",
+    }
+
+
+def _qualified_document(revision: str) -> dict:
+    document = _document()
+    document["candidate_revision"] = revision
+    document["release_state"] = "qualified"
+    policy = document["policy"]["silicon_accuracy"]
+    policy.update(
+        {
+            "maximum_error_pct": 10.0,
+            "minimum_points_per_case": 3,
+            "threshold_status": "approved",
+        }
+    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
+        copy.deepcopy(policy)
+    )
+    for gate in document["gates"]:
+        if not gate["release_blocking"]:
+            continue
+        gate["execution"]["status"] = "passed"
+        if gate["execution"]["command_status"] == "planned":
+            gate["execution"]["command_status"] = "available"
+        gate["execution"]["evidence"] = [_passing_evidence(revision, gate["id"])]
+    return document
+
+
 def test_checked_in_power_qualification_ledger_is_structurally_valid() -> None:
     document = QUALIFICATION.load_and_validate(LEDGER)
 
@@ -41,7 +77,33 @@ def test_schema_is_versioned_and_machine_readable() -> None:
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["properties"]["schema_version"]["const"] == "1.0"
     assert schema["properties"]["release_target"]["const"] == "0.13.0"
-    assert {"gate", "matrix", "assertion", "execution", "evidence"} <= set(schema["$defs"])
+    assert {"gate", "matrix", "assertion", "execution", "evidence"} <= set(
+        schema["$defs"]
+    )
+
+    Draft202012Validator.check_schema(schema)
+    Draft202012Validator(schema).validate(_document())
+
+
+def test_schema_rejects_unsupported_dimensions() -> None:
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    document = _document()
+    _gate(document, "modeled-power-matrix")["matrix"]["runners"] = ["bogus-runner"]
+
+    errors = list(Draft202012Validator(schema).iter_errors(document))
+
+    assert any(
+        error.validator == "enum" and "bogus-runner" in error.message
+        for error in errors
+    )
+
+
+def test_dependency_free_validator_rejects_schema_identity_drift() -> None:
+    document = _document()
+    document["$schema"] = "https://example.invalid/other-schema.json"
+
+    with pytest.raises(QUALIFICATION.QualificationError, match=r"\$schema must be"):
+        QUALIFICATION.validate_document(document)
 
 
 def test_release_check_fails_closed_on_pending_evidence_and_threshold() -> None:
@@ -54,11 +116,61 @@ def test_release_check_fails_closed_on_pending_evidence_and_threshold() -> None:
     assert "release_state must be 'qualified'" in message
 
 
+def test_release_check_accepts_one_fully_qualified_candidate_revision() -> None:
+    revision = "a" * 40
+
+    QUALIFICATION.validate_document(
+        _qualified_document(revision),
+        require_release_ready=True,
+        expected_revision=revision,
+    )
+
+
+def test_release_check_rejects_stale_or_mixed_candidate_evidence() -> None:
+    revision = "a" * 40
+    document = _qualified_document(revision)
+
+    with pytest.raises(
+        QUALIFICATION.QualificationError, match="does not match expected_revision"
+    ):
+        QUALIFICATION.validate_document(
+            document,
+            require_release_ready=True,
+            expected_revision="b" * 40,
+        )
+
+    _gate(document, "application-wheel")["execution"]["evidence"][0][
+        "source_revision"
+    ] = "c" * 40
+    with pytest.raises(
+        QUALIFICATION.QualificationError,
+        match="evidence does not match candidate_revision",
+    ):
+        QUALIFICATION.validate_document(
+            document,
+            require_release_ready=True,
+            expected_revision=revision,
+        )
+
+    with pytest.raises(QUALIFICATION.QualificationError, match="expected_revision"):
+        QUALIFICATION.validate_document(
+            document,
+            require_release_ready=True,
+            expected_revision=123,  # type: ignore[arg-type]
+        )
+
+    document["candidate_revision"] = int("1" * 40)
+    with pytest.raises(QUALIFICATION.QualificationError, match="candidate_revision"):
+        QUALIFICATION.validate_document(document)
+
+
 def test_qualified_state_cannot_bypass_release_check() -> None:
     document = _document()
     document["release_state"] = "qualified"
 
-    with pytest.raises(QUALIFICATION.QualificationError, match="release-blocking gates"):
+    with pytest.raises(
+        QUALIFICATION.QualificationError, match="release-blocking gates"
+    ):
         QUALIFICATION.validate_document(document)
 
 
@@ -75,7 +187,9 @@ def test_unsupported_timing_backends_must_remain_unavailable() -> None:
     assertion = _gate(document, "unsupported-timing-no-fabrication")["assertions"][0]
     assertion["expectation"] = "modeled_power"
 
-    with pytest.raises(QUALIFICATION.QualificationError, match="must require unavailable power"):
+    with pytest.raises(
+        QUALIFICATION.QualificationError, match="qualification contract"
+    ):
         QUALIFICATION.validate_document(document)
 
 
@@ -84,7 +198,9 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
     gate = _gate(document, "power-data-invariants")
     gate["execution"]["status"] = "passed"
 
-    with pytest.raises(QUALIFICATION.QualificationError, match="cannot be passed without evidence"):
+    with pytest.raises(
+        QUALIFICATION.QualificationError, match="cannot be passed without evidence"
+    ):
         QUALIFICATION.validate_document(document)
 
     gate["execution"]["evidence"] = [
@@ -97,6 +213,10 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
         }
     ]
     QUALIFICATION.validate_document(document)
+
+    gate["execution"]["evidence"][0]["sha256"] = int("1" * 64)
+    with pytest.raises(QUALIFICATION.QualificationError, match="sha256"):
+        QUALIFICATION.validate_document(document)
 
 
 def test_planned_command_cannot_be_presented_as_passing() -> None:
@@ -113,7 +233,9 @@ def test_planned_command_cannot_be_presented_as_passing() -> None:
         }
     ]
 
-    with pytest.raises(QUALIFICATION.QualificationError, match="command is only planned"):
+    with pytest.raises(
+        QUALIFICATION.QualificationError, match="command is only planned"
+    ):
         QUALIFICATION.validate_document(document)
 
 
@@ -128,11 +250,95 @@ def test_silicon_gate_and_policy_thresholds_cannot_drift() -> None:
         }
     )
 
-    with pytest.raises(QUALIFICATION.QualificationError, match="thresholds must match"):
+    with pytest.raises(
+        QUALIFICATION.QualificationError, match="qualification contract"
+    ):
         QUALIFICATION.validate_document(document)
 
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
+        copy.deepcopy(policy)
+    )
     QUALIFICATION.validate_document(document)
+
+
+def test_silicon_approval_rejects_boolean_thresholds() -> None:
+    document = _document()
+    policy = document["policy"]["silicon_accuracy"]
+    policy.update(
+        {
+            "maximum_error_pct": True,
+            "minimum_points_per_case": True,
+            "threshold_status": "approved",
+        }
+    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
+        copy.deepcopy(policy)
+    )
+
+    with pytest.raises(QUALIFICATION.QualificationError, match="silicon"):
+        QUALIFICATION.validate_document(document)
+
+
+@pytest.mark.parametrize(
+    ("gate_id", "path", "weakened_value"),
+    [
+        (
+            "modeled-power-matrix",
+            ("assertions", 0, "thresholds", "power_coverage_ratio_minimum"),
+            0.5,
+        ),
+        (
+            "unsupported-timing-no-fabrication",
+            ("assertions", 0, "thresholds", "forbid_numeric_power_w"),
+            False,
+        ),
+        (
+            "operation-energy-evidence",
+            ("assertions", 0, "thresholds", "reconciliation_relative_tolerance"),
+            0.5,
+        ),
+        (
+            "power-data-invariants",
+            ("assertions", 0, "thresholds", "finite_nonnegative_values"),
+            False,
+        ),
+        ("aic-power-parity", ("matrix", "runners"), ["dynamo"]),
+        (
+            "silicon-power-accuracy",
+            ("matrix", "timing_backends"),
+            ["default_fpm"],
+        ),
+        (
+            "application-wheel",
+            ("assertions", 0, "thresholds", "wheel_smoke_required"),
+            False,
+        ),
+        (
+            "afd-power-integration",
+            ("assertions", 0, "thresholds", "required"),
+            True,
+        ),
+    ],
+)
+def test_release_qualification_contracts_cannot_be_weakened(
+    gate_id: str, path: tuple[str | int, ...], weakened_value: object
+) -> None:
+    document = _document()
+    target: object = _gate(document, gate_id)
+    for key in path[:-1]:
+        target = target[key]  # type: ignore[index]
+    target[path[-1]] = weakened_value  # type: ignore[index]
+
+    with pytest.raises(QUALIFICATION.QualificationError):
+        QUALIFICATION.validate_document(document)
+
+
+def test_release_blocking_gates_cannot_be_downgraded() -> None:
+    document = _document()
+    _gate(document, "application-wheel")["release_blocking"] = False
+
+    with pytest.raises(QUALIFICATION.QualificationError, match="release_blocking"):
+        QUALIFICATION.validate_document(document)
 
 
 def test_afd_and_epd_remain_explicitly_blocked_not_silently_dropped() -> None:
@@ -141,5 +347,8 @@ def test_afd_and_epd_remain_explicitly_blocked_not_silently_dropped() -> None:
     afd["execution"]["status"] = "pending"
     afd["execution"]["blocked_by"] = []
 
-    with pytest.raises(QUALIFICATION.QualificationError, match="afd-power-integration must remain blocked"):
+    with pytest.raises(
+        QUALIFICATION.QualificationError,
+        match="afd-power-integration must remain blocked",
+    ):
         QUALIFICATION.validate_document(document)

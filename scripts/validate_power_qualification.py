@@ -62,14 +62,18 @@ def _expect(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
-def _expect_keys(value: Any, required: set[str], context: str, errors: list[str]) -> None:
+def _expect_keys(
+    value: Any, required: set[str], context: str, errors: list[str]
+) -> None:
     _expect(isinstance(value, dict), f"{context} must be an object", errors)
     if not isinstance(value, dict):
         return
     missing = required - value.keys()
     _expect(not missing, f"{context} is missing {sorted(missing)}", errors)
     unexpected = value.keys() - required
-    _expect(not unexpected, f"{context} has unexpected keys {sorted(unexpected)}", errors)
+    _expect(
+        not unexpected, f"{context} has unexpected keys {sorted(unexpected)}", errors
+    )
 
 
 def _validate_matrix(matrix: Any, context: str, errors: list[str]) -> None:
@@ -78,15 +82,31 @@ def _validate_matrix(matrix: Any, context: str, errors: list[str]) -> None:
         return
     for dimension, allowed in DIMENSIONS.items():
         values = matrix.get(dimension)
-        _expect(isinstance(values, list) and values, f"{context}.{dimension} must be a non-empty array", errors)
+        _expect(
+            isinstance(values, list) and values,
+            f"{context}.{dimension} must be a non-empty array",
+            errors,
+        )
         if not isinstance(values, list):
             continue
-        _expect(all(isinstance(value, str) for value in values), f"{context}.{dimension} must contain strings", errors)
+        _expect(
+            all(isinstance(value, str) for value in values),
+            f"{context}.{dimension} must contain strings",
+            errors,
+        )
         if not all(isinstance(value, str) for value in values):
             continue
-        _expect(len(values) == len(set(values)), f"{context}.{dimension} contains duplicates", errors)
+        _expect(
+            len(values) == len(set(values)),
+            f"{context}.{dimension} contains duplicates",
+            errors,
+        )
         unknown = set(values) - allowed
-        _expect(not unknown, f"{context}.{dimension} contains unsupported values {sorted(unknown)}", errors)
+        _expect(
+            not unknown,
+            f"{context}.{dimension} contains unsupported values {sorted(unknown)}",
+            errors,
+        )
         _expect(
             "any" not in values or len(values) == 1,
             f"{context}.{dimension} cannot combine 'any' with concrete values",
@@ -94,7 +114,9 @@ def _validate_matrix(matrix: Any, context: str, errors: list[str]) -> None:
         )
 
 
-def _validate_assertion(assertion: Any, matrix: dict[str, list[str]], context: str, errors: list[str]) -> None:
+def _validate_assertion(
+    assertion: Any, matrix: dict[str, list[str]], context: str, errors: list[str]
+) -> None:
     _expect_keys(assertion, {"when", "expectation", "thresholds"}, context, errors)
     if not isinstance(assertion, dict):
         return
@@ -102,22 +124,42 @@ def _validate_assertion(assertion: Any, matrix: dict[str, list[str]], context: s
     _expect(isinstance(when, dict), f"{context}.when must be an object", errors)
     if isinstance(when, dict):
         for dimension, selected in when.items():
-            _expect(dimension in DIMENSIONS, f"{context}.when has unknown dimension {dimension!r}", errors)
-            _expect(isinstance(selected, list) and selected, f"{context}.when.{dimension} must be non-empty", errors)
+            _expect(
+                dimension in DIMENSIONS,
+                f"{context}.when has unknown dimension {dimension!r}",
+                errors,
+            )
+            _expect(
+                isinstance(selected, list) and selected,
+                f"{context}.when.{dimension} must be non-empty",
+                errors,
+            )
             if isinstance(selected, list):
                 _expect(
                     all(isinstance(item, str) for item in selected),
                     f"{context}.when.{dimension} must contain strings",
                     errors,
                 )
-            if dimension in matrix and isinstance(selected, list) and all(isinstance(item, str) for item in selected):
+            if (
+                dimension in matrix
+                and isinstance(selected, list)
+                and all(isinstance(item, str) for item in selected)
+            ):
                 _expect(
                     set(selected) <= set(matrix[dimension]),
                     f"{context}.when.{dimension} is outside the gate matrix",
                     errors,
                 )
-    _expect(assertion.get("expectation") in EXPECTATIONS, f"{context}.expectation is unsupported", errors)
-    _expect(isinstance(assertion.get("thresholds"), dict), f"{context}.thresholds must be an object", errors)
+    _expect(
+        assertion.get("expectation") in EXPECTATIONS,
+        f"{context}.expectation is unsupported",
+        errors,
+    )
+    _expect(
+        isinstance(assertion.get("thresholds"), dict),
+        f"{context}.thresholds must be an object",
+        errors,
+    )
 
 
 def _validate_evidence(evidence: Any, context: str, errors: list[str]) -> None:
@@ -129,21 +171,34 @@ def _validate_evidence(evidence: Any, context: str, errors: list[str]) -> None:
     )
     if not isinstance(evidence, dict):
         return
-    _expect(evidence.get("result") in {"pass", "fail"}, f"{context}.result must be pass or fail", errors)
+    _expect(
+        evidence.get("result") in {"pass", "fail"},
+        f"{context}.result must be pass or fail",
+        errors,
+    )
     artifact = evidence.get("artifact")
-    _expect(isinstance(artifact, str) and bool(artifact.strip()), f"{context}.artifact must be non-empty", errors)
+    _expect(
+        isinstance(artifact, str) and bool(artifact.strip()),
+        f"{context}.artifact must be non-empty",
+        errors,
+    )
     if isinstance(artifact, str) and artifact:
         path_parts = Path(artifact).parts
         _expect(
-            artifact.startswith("https://") or (not Path(artifact).is_absolute() and ".." not in path_parts),
+            artifact.startswith("https://")
+            or (not Path(artifact).is_absolute() and ".." not in path_parts),
             f"{context}.artifact must be HTTPS or a repository-relative path",
             errors,
         )
     _expect(
-        bool(DIGEST_RE.fullmatch(str(evidence.get("sha256", "")))), f"{context}.sha256 must be 64 lowercase hex", errors
+        isinstance(evidence.get("sha256"), str)
+        and bool(DIGEST_RE.fullmatch(evidence["sha256"])),
+        f"{context}.sha256 must be 64 lowercase hex",
+        errors,
     )
     _expect(
-        bool(SHA_RE.fullmatch(str(evidence.get("source_revision", "")))),
+        isinstance(evidence.get("source_revision"), str)
+        and bool(SHA_RE.fullmatch(evidence["source_revision"])),
         f"{context}.source_revision must be a 40-character commit SHA",
         errors,
     )
@@ -153,7 +208,9 @@ def _validate_evidence(evidence: Any, context: str, errors: list[str]) -> None:
     except ValueError:
         parsed_time = None
     _expect(
-        recorded_at.endswith("Z") and parsed_time is not None and parsed_time.utcoffset() == UTC.utcoffset(parsed_time),
+        recorded_at.endswith("Z")
+        and parsed_time is not None
+        and parsed_time.utcoffset() == UTC.utcoffset(parsed_time),
         f"{context}.recorded_at must be UTC ISO-8601",
         errors,
     )
@@ -180,7 +237,10 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
     if not isinstance(gate, dict):
         return
     _expect(
-        bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", str(gate.get("id", "")))), f"{context}.id is invalid", errors
+        isinstance(gate.get("id"), str)
+        and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", gate["id"])),
+        f"{context}.id is invalid",
+        errors,
     )
     _expect(
         gate.get("category")
@@ -203,9 +263,15 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
         f"{context}.title must be non-empty",
         errors,
     )
-    _expect(isinstance(gate.get("release_blocking"), bool), f"{context}.release_blocking must be boolean", errors)
+    _expect(
+        isinstance(gate.get("release_blocking"), bool),
+        f"{context}.release_blocking must be boolean",
+        errors,
+    )
     depends_on = gate.get("depends_on")
-    _expect(isinstance(depends_on, list), f"{context}.depends_on must be an array", errors)
+    _expect(
+        isinstance(depends_on, list), f"{context}.depends_on must be an array", errors
+    )
     if isinstance(depends_on, list):
         _expect(
             all(ISSUE_RE.fullmatch(str(item)) for item in depends_on),
@@ -216,10 +282,16 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
     matrix = gate.get("matrix")
     _validate_matrix(matrix, f"{context}.matrix", errors)
     assertions = gate.get("assertions")
-    _expect(isinstance(assertions, list) and assertions, f"{context}.assertions must be non-empty", errors)
+    _expect(
+        isinstance(assertions, list) and assertions,
+        f"{context}.assertions must be non-empty",
+        errors,
+    )
     if isinstance(matrix, dict) and isinstance(assertions, list):
         for assertion_index, assertion in enumerate(assertions):
-            _validate_assertion(assertion, matrix, f"{context}.assertions[{assertion_index}]", errors)
+            _validate_assertion(
+                assertion, matrix, f"{context}.assertions[{assertion_index}]", errors
+            )
 
     execution = gate.get("execution")
     _expect_keys(
@@ -236,28 +308,48 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
     command_status = execution.get("command_status")
     evidence = execution.get("evidence")
     blocked_by = execution.get("blocked_by")
-    _expect(kind in {"automated", "manual"}, f"{context}.execution.kind is unsupported", errors)
+    _expect(
+        kind in {"automated", "manual"},
+        f"{context}.execution.kind is unsupported",
+        errors,
+    )
     _expect(status in STATUSES, f"{context}.execution.status is unsupported", errors)
     if kind == "automated":
-        _expect(isinstance(command, str) and bool(command.strip()), f"{context}.execution.command is required", errors)
+        _expect(
+            isinstance(command, str) and bool(command.strip()),
+            f"{context}.execution.command is required",
+            errors,
+        )
         _expect(
             command_status in {"available", "planned"},
             f"{context}.execution.command_status must be available or planned",
             errors,
         )
     elif kind == "manual":
-        _expect(command is None, f"{context}.execution.command must be null for manual evidence", errors)
+        _expect(
+            command is None,
+            f"{context}.execution.command must be null for manual evidence",
+            errors,
+        )
         _expect(
             command_status == "not_applicable",
             f"{context}.execution.command_status must be not_applicable for manual evidence",
             errors,
         )
-    _expect(isinstance(evidence, list), f"{context}.execution.evidence must be an array", errors)
+    _expect(
+        isinstance(evidence, list),
+        f"{context}.execution.evidence must be an array",
+        errors,
+    )
     if isinstance(evidence, list):
         for evidence_index, item in enumerate(evidence):
-            _validate_evidence(item, f"{context}.execution.evidence[{evidence_index}]", errors)
+            _validate_evidence(
+                item, f"{context}.execution.evidence[{evidence_index}]", errors
+            )
         if status in {"passed", "failed"}:
-            _expect(bool(evidence), f"{context} cannot be {status} without evidence", errors)
+            _expect(
+                bool(evidence), f"{context} cannot be {status} without evidence", errors
+            )
         if status == "passed":
             _expect(
                 command_status != "planned",
@@ -265,22 +357,38 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
                 errors,
             )
         if status in {"pending", "blocked"}:
-            _expect(not evidence, f"{context} cannot retain evidence while {status}", errors)
+            _expect(
+                not evidence, f"{context} cannot retain evidence while {status}", errors
+            )
         if status == "passed":
             _expect(
-                all(item.get("result") == "pass" for item in evidence if isinstance(item, dict)),
+                all(
+                    item.get("result") == "pass"
+                    for item in evidence
+                    if isinstance(item, dict)
+                ),
                 f"{context} passed with non-passing evidence",
                 errors,
             )
         if status == "failed":
             _expect(
-                any(item.get("result") == "fail" for item in evidence if isinstance(item, dict)),
+                any(
+                    item.get("result") == "fail"
+                    for item in evidence
+                    if isinstance(item, dict)
+                ),
                 f"{context} failed without failing evidence",
                 errors,
             )
-    _expect(isinstance(blocked_by, list), f"{context}.execution.blocked_by must be an array", errors)
+    _expect(
+        isinstance(blocked_by, list),
+        f"{context}.execution.blocked_by must be an array",
+        errors,
+    )
     if status == "blocked":
-        _expect(bool(blocked_by), f"{context} is blocked without naming a blocker", errors)
+        _expect(
+            bool(blocked_by), f"{context} is blocked without naming a blocker", errors
+        )
     elif isinstance(blocked_by, list):
         _expect(not blocked_by, f"{context} names blockers but is not blocked", errors)
     _expect(
@@ -290,128 +398,378 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
     )
 
 
-def _gate_by_id(document: dict[str, Any], gate_id: str, errors: list[str]) -> dict[str, Any]:
+def _gate_by_id(
+    document: dict[str, Any], gate_id: str, errors: list[str]
+) -> dict[str, Any]:
     gate = next(
-        (item for item in document.get("gates", []) if isinstance(item, dict) and item.get("id") == gate_id),
+        (
+            item
+            for item in document.get("gates", [])
+            if isinstance(item, dict) and item.get("id") == gate_id
+        ),
         None,
     )
     _expect(gate is not None, f"required gate {gate_id!r} is missing", errors)
     return gate or {}
 
 
-def _expect_dimension(gate: dict[str, Any], name: str, values: set[str], errors: list[str]) -> None:
+def _expect_dimension(
+    gate: dict[str, Any], name: str, values: set[str], errors: list[str]
+) -> None:
     matrix = gate.get("matrix")
     raw = matrix.get(name, []) if isinstance(matrix, dict) else []
-    actual = set(raw) if isinstance(raw, list) and all(isinstance(item, str) for item in raw) else set()
+    actual = (
+        set(raw)
+        if isinstance(raw, list) and all(isinstance(item, str) for item in raw)
+        else set()
+    )
     _expect(
-        actual == values, f"gate {gate.get('id')!r} must cover {name}={sorted(values)}, got {sorted(actual)}", errors
+        actual == values,
+        f"gate {gate.get('id')!r} must cover {name}={sorted(values)}, got {sorted(actual)}",
+        errors,
+    )
+
+
+def _expect_gate_contract(
+    gate: dict[str, Any],
+    *,
+    release_blocking: bool,
+    matrix: dict[str, set[str]],
+    assertions: list[dict[str, Any]],
+    errors: list[str],
+) -> None:
+    gate_id = gate.get("id")
+    _expect(
+        gate.get("release_blocking") is release_blocking,
+        f"gate {gate_id!r} release_blocking must be {release_blocking}",
+        errors,
+    )
+    for name, values in matrix.items():
+        _expect_dimension(gate, name, values, errors)
+    _expect(
+        gate.get("assertions") == assertions,
+        f"gate {gate_id!r} assertions do not match the 0.13 qualification contract",
+        errors,
     )
 
 
 def _validate_required_coverage(document: dict[str, Any], errors: list[str]) -> None:
     modeled = _gate_by_id(document, "modeled-power-matrix", errors)
-    for name, values in {
-        "model_families": {"dense", "moe"},
-        "deployments": {"aggregated", "disaggregated"},
-        "runners": {"standard", "dynamo"},
-        "timing_backends": {"default_op_level"},
-        "coverage_states": {"covered", "undercovered"},
-    }.items():
-        _expect_dimension(modeled, name, values, errors)
-    modeled_expectations = {item.get("expectation") for item in modeled.get("assertions", []) if isinstance(item, dict)}
-    _expect(
-        {"modeled_power", "unavailable_power", "runner_output"} <= modeled_expectations,
-        "modeled-power-matrix must distinguish covered, undercovered, and serialized runner behavior",
-        errors,
+    _expect_gate_contract(
+        modeled,
+        release_blocking=True,
+        matrix={
+            "model_families": {"dense", "moe"},
+            "deployments": {"aggregated", "disaggregated"},
+            "runners": {"standard", "dynamo"},
+            "timing_backends": {"default_op_level"},
+            "coverage_states": {"covered", "undercovered"},
+        },
+        assertions=[
+            {
+                "when": {"coverage_states": ["covered"]},
+                "expectation": "modeled_power",
+                "thresholds": {
+                    "power_coverage_ratio_minimum": 0.9,
+                    "power_w_minimum_exclusive": 0,
+                },
+            },
+            {
+                "when": {"coverage_states": ["undercovered"]},
+                "expectation": "unavailable_power",
+                "thresholds": {"power_coverage_ratio_maximum_exclusive": 0.9},
+            },
+            {
+                "when": {"runners": ["standard", "dynamo"]},
+                "expectation": "runner_output",
+                "thresholds": {
+                    "required_fields": [
+                        "power_w",
+                        "power_coverage",
+                        "power_provenance",
+                    ]
+                },
+            },
+        ],
+        errors=errors,
     )
 
     unsupported = _gate_by_id(document, "unsupported-timing-no-fabrication", errors)
-    _expect_dimension(unsupported, "timing_backends", {"default_fpm", "fixed", "polynomial"}, errors)
-    _expect_dimension(unsupported, "runners", {"standard", "dynamo"}, errors)
-    _expect(
-        {item.get("expectation") for item in unsupported.get("assertions", []) if isinstance(item, dict)}
-        == {"unavailable_power"},
-        "unsupported-timing-no-fabrication must require unavailable power",
-        errors,
+    _expect_gate_contract(
+        unsupported,
+        release_blocking=True,
+        matrix={
+            "model_families": {"dense", "moe"},
+            "deployments": {"aggregated", "disaggregated"},
+            "runners": {"standard", "dynamo"},
+            "timing_backends": {"default_fpm", "fixed", "polynomial"},
+            "coverage_states": {"not_applicable"},
+        },
+        assertions=[
+            {
+                "when": {"timing_backends": ["default_fpm", "fixed", "polynomial"]},
+                "expectation": "unavailable_power",
+                "thresholds": {
+                    "forbid_numeric_power_w": True,
+                    "forbid_measured_provenance": True,
+                },
+            }
+        ],
+        errors=errors,
     )
 
     operation = _gate_by_id(document, "operation-energy-evidence", errors)
-    _expect_dimension(operation, "model_families", {"dense", "moe"}, errors)
-    _expect_dimension(operation, "deployments", {"aggregated", "disaggregated"}, errors)
-    _expect_dimension(operation, "runners", {"standard", "dynamo"}, errors)
+    _expect_gate_contract(
+        operation,
+        release_blocking=True,
+        matrix={
+            "model_families": {"dense", "moe"},
+            "deployments": {"aggregated", "disaggregated"},
+            "runners": {"standard", "dynamo"},
+            "timing_backends": {"default_op_level"},
+            "coverage_states": {"covered", "undercovered"},
+        },
+        assertions=[
+            {
+                "when": {"coverage_states": ["covered", "undercovered"]},
+                "expectation": "operation_energy_evidence",
+                "thresholds": {
+                    "required_fields": [
+                        "phase",
+                        "operation",
+                        "latency_ms",
+                        "energy_w_ms",
+                        "covered_latency_ms",
+                        "source",
+                    ],
+                    "reconciliation_relative_tolerance": 0.01,
+                },
+            }
+        ],
+        errors=errors,
+    )
+
+    data = _gate_by_id(document, "power-data-invariants", errors)
+    _expect_gate_contract(
+        data,
+        release_blocking=True,
+        matrix={
+            "model_families": {"dense", "moe"},
+            "deployments": {"any"},
+            "runners": {"any"},
+            "timing_backends": {"default_op_level"},
+            "coverage_states": {"covered", "undercovered"},
+        },
+        assertions=[
+            {
+                "when": {},
+                "expectation": "data_invariants",
+                "thresholds": {
+                    "finite_nonnegative_values": True,
+                    "power_and_limit_columns_paired": True,
+                },
+            }
+        ],
+        errors=errors,
+    )
 
     parity = _gate_by_id(document, "aic-power-parity", errors)
-    _expect_dimension(parity, "model_families", {"dense", "moe"}, errors)
-    _expect_dimension(parity, "deployments", {"aggregated", "disaggregated"}, errors)
-    parity_assertions = parity.get("assertions")
-    parity_thresholds = (
-        parity_assertions[0].get("thresholds", {})
-        if isinstance(parity_assertions, list) and parity_assertions and isinstance(parity_assertions[0], dict)
-        else {}
-    )
-    _expect(
-        parity_thresholds.get("maximum_relative_error_ratio") == 0.01,
-        "AIC parity tolerance must stay at the existing 1% parity contract",
-        errors,
+    _expect_gate_contract(
+        parity,
+        release_blocking=True,
+        matrix={
+            "model_families": {"dense", "moe"},
+            "deployments": {"aggregated", "disaggregated"},
+            "runners": {"standard"},
+            "timing_backends": {"default_op_level"},
+            "coverage_states": {"covered"},
+        },
+        assertions=[
+            {
+                "when": {},
+                "expectation": "aic_parity",
+                "thresholds": {
+                    "maximum_relative_error_ratio": 0.01,
+                    "reference_must_be_immutable": True,
+                },
+            }
+        ],
+        errors=errors,
     )
 
     accuracy = _gate_by_id(document, "silicon-power-accuracy", errors)
-    _expect_dimension(accuracy, "model_families", {"dense", "moe"}, errors)
-    _expect_dimension(accuracy, "deployments", {"aggregated", "disaggregated"}, errors)
-    _expect_dimension(accuracy, "runners", {"standard", "dynamo"}, errors)
-    accuracy_assertions = accuracy.get("assertions")
-    accuracy_thresholds = (
-        accuracy_assertions[0].get("thresholds", {})
-        if isinstance(accuracy_assertions, list) and accuracy_assertions and isinstance(accuracy_assertions[0], dict)
-        else {}
-    )
     policy = document.get("policy")
-    accuracy_policy = policy.get("silicon_accuracy", {}) if isinstance(policy, dict) else {}
-    _expect(
-        accuracy_thresholds == accuracy_policy,
-        "silicon-power-accuracy thresholds must match policy.silicon_accuracy",
-        errors,
+    accuracy_policy = (
+        policy.get("silicon_accuracy", {}) if isinstance(policy, dict) else {}
+    )
+    _expect_gate_contract(
+        accuracy,
+        release_blocking=True,
+        matrix={
+            "model_families": {"dense", "moe"},
+            "deployments": {"aggregated", "disaggregated"},
+            "runners": {"standard", "dynamo"},
+            "timing_backends": {"default_op_level"},
+            "coverage_states": {"covered"},
+        },
+        assertions=[
+            {
+                "when": {},
+                "expectation": "silicon_accuracy",
+                "thresholds": accuracy_policy,
+            }
+        ],
+        errors=errors,
     )
 
-    _gate_by_id(document, "power-data-invariants", errors)
-    _gate_by_id(document, "application-wheel", errors)
-    for integration in ("afd-power-integration", "epd-power-integration"):
+    package = _gate_by_id(document, "application-wheel", errors)
+    _expect_gate_contract(
+        package,
+        release_blocking=True,
+        matrix={
+            "model_families": {"any"},
+            "deployments": {"any"},
+            "runners": {"standard", "dynamo"},
+            "timing_backends": {"any"},
+            "coverage_states": {"not_applicable"},
+        },
+        assertions=[
+            {
+                "when": {},
+                "expectation": "packaged_output",
+                "thresholds": {
+                    "distribution_count": 1,
+                    "wheel_smoke_required": True,
+                    "packaged_data_required": True,
+                },
+            }
+        ],
+        errors=errors,
+    )
+
+    for integration, deployment in (
+        ("afd-power-integration", "afd"),
+        ("epd-power-integration", "epd"),
+    ):
         gate = _gate_by_id(document, integration, errors)
+        _expect_gate_contract(
+            gate,
+            release_blocking=False,
+            matrix={
+                "model_families": {"dense", "moe"},
+                "deployments": {deployment},
+                "runners": {"standard", "dynamo"},
+                "timing_backends": {"default_op_level"},
+                "coverage_states": {"covered", "undercovered"},
+            },
+            assertions=[
+                {
+                    "when": {},
+                    "expectation": "integration_available",
+                    "thresholds": {"required": False},
+                }
+            ],
+            errors=errors,
+        )
         _expect(
             gate.get("execution", {}).get("status") == "blocked",
             f"{integration} must remain blocked until its integration exists",
             errors,
         )
-        _expect(
-            not gate.get("release_blocking"), f"{integration} must not silently block the declared 0.13 scope", errors
-        )
 
 
-def validate_document(document: Any, *, require_release_ready: bool = False) -> None:
+def validate_document(
+    document: Any,
+    *,
+    require_release_ready: bool = False,
+    expected_revision: str | None = None,
+) -> None:
     errors: list[str] = []
     _expect_keys(
         document,
-        {"$schema", "schema_version", "release_target", "release_state", "policy", "gates"},
+        {
+            "$schema",
+            "schema_version",
+            "release_target",
+            "release_state",
+            "candidate_revision",
+            "policy",
+            "gates",
+        },
         "document",
         errors,
     )
     if not isinstance(document, dict):
         raise QualificationError("\n".join(errors))
-    _expect(document.get("schema_version") == "1.0", "schema_version must be '1.0'", errors)
-    _expect(document.get("release_target") == "0.13.0", "release_target must be '0.13.0'", errors)
-    _expect(document.get("release_state") in {"not_qualified", "qualified"}, "release_state is unsupported", errors)
+    _expect(
+        document.get("$schema") == "./qualification-matrix.schema.json",
+        "$schema must be './qualification-matrix.schema.json'",
+        errors,
+    )
+    _expect(
+        document.get("schema_version") == "1.0", "schema_version must be '1.0'", errors
+    )
+    _expect(
+        document.get("release_target") == "0.13.0",
+        "release_target must be '0.13.0'",
+        errors,
+    )
+    _expect(
+        document.get("release_state") in {"not_qualified", "qualified"},
+        "release_state is unsupported",
+        errors,
+    )
+    candidate_revision = document.get("candidate_revision")
+    _expect(
+        candidate_revision is None
+        or (
+            isinstance(candidate_revision, str)
+            and bool(SHA_RE.fullmatch(candidate_revision))
+        ),
+        "candidate_revision must be null or a 40-character commit SHA",
+        errors,
+    )
+    _expect(
+        expected_revision is None
+        or (
+            isinstance(expected_revision, str)
+            and bool(SHA_RE.fullmatch(expected_revision))
+        ),
+        "expected_revision must be a 40-character commit SHA",
+        errors,
+    )
 
     policy = document.get("policy")
     _expect_keys(
-        policy, {"minimum_power_coverage_ratio", "aic_parity_relative_tolerance", "silicon_accuracy"}, "policy", errors
+        policy,
+        {
+            "minimum_power_coverage_ratio",
+            "aic_parity_relative_tolerance",
+            "silicon_accuracy",
+        },
+        "policy",
+        errors,
     )
     if isinstance(policy, dict):
-        _expect(policy.get("minimum_power_coverage_ratio") == 0.9, "minimum power coverage must remain 0.9", errors)
-        _expect(policy.get("aic_parity_relative_tolerance") == 0.01, "AIC parity tolerance must remain 0.01", errors)
+        _expect(
+            policy.get("minimum_power_coverage_ratio") == 0.9,
+            "minimum power coverage must remain 0.9",
+            errors,
+        )
+        _expect(
+            policy.get("aic_parity_relative_tolerance") == 0.01,
+            "AIC parity tolerance must remain 0.01",
+            errors,
+        )
         accuracy_policy = policy.get("silicon_accuracy")
         _expect_keys(
             accuracy_policy,
-            {"metric", "maximum_error_pct", "minimum_points_per_case", "threshold_status"},
+            {
+                "metric",
+                "maximum_error_pct",
+                "minimum_points_per_case",
+                "threshold_status",
+            },
             "policy.silicon_accuracy",
             errors,
         )
@@ -422,7 +780,8 @@ def validate_document(document: Any, *, require_release_ready: bool = False) -> 
                 errors,
             )
             _expect(
-                accuracy_policy.get("threshold_status") in {"pending_approval", "approved"},
+                accuracy_policy.get("threshold_status")
+                in {"pending_approval", "approved"},
                 "silicon threshold status is unsupported",
                 errors,
             )
@@ -441,16 +800,24 @@ def validate_document(document: Any, *, require_release_ready: bool = False) -> 
                 maximum = accuracy_policy.get("maximum_error_pct")
                 minimum = accuracy_policy.get("minimum_points_per_case")
                 _expect(
-                    isinstance(maximum, (int, float)) and 0 < maximum < 100,
+                    isinstance(maximum, (int, float))
+                    and not isinstance(maximum, bool)
+                    and 0 < maximum < 100,
                     "approved silicon maximum error must be between 0 and 100",
                     errors,
                 )
                 _expect(
-                    isinstance(minimum, int) and minimum > 0, "approved silicon minimum points must be positive", errors
+                    isinstance(minimum, int)
+                    and not isinstance(minimum, bool)
+                    and minimum > 0,
+                    "approved silicon minimum points must be positive",
+                    errors,
                 )
 
     gates = document.get("gates")
-    _expect(isinstance(gates, list) and gates, "gates must be a non-empty array", errors)
+    _expect(
+        isinstance(gates, list) and gates, "gates must be a non-empty array", errors
+    )
     if isinstance(gates, list):
         for index, gate in enumerate(gates):
             _validate_gate(gate, index, errors)
@@ -460,6 +827,22 @@ def validate_document(document: Any, *, require_release_ready: bool = False) -> 
         _validate_required_coverage(document, errors)
 
     if require_release_ready or document.get("release_state") == "qualified":
+        _expect(
+            expected_revision is not None,
+            "release qualification requires an explicit expected_revision",
+            errors,
+        )
+        _expect(
+            bool(SHA_RE.fullmatch(str(candidate_revision or ""))),
+            "qualified release requires a candidate_revision",
+            errors,
+        )
+        if expected_revision is not None and candidate_revision is not None:
+            _expect(
+                candidate_revision == expected_revision,
+                "candidate_revision does not match expected_revision",
+                errors,
+            )
         if isinstance(policy, dict):
             accuracy_policy = policy.get("silicon_accuracy", {})
             _expect(
@@ -475,16 +858,52 @@ def validate_document(document: Any, *, require_release_ready: bool = False) -> 
                 and gate.get("release_blocking")
                 and gate.get("execution", {}).get("status") != "passed"
             ]
-            _expect(not unfinished, f"release-blocking gates are not passed: {unfinished}", errors)
-        _expect(document.get("release_state") == "qualified", "release_state must be 'qualified'", errors)
+            _expect(
+                not unfinished,
+                f"release-blocking gates are not passed: {unfinished}",
+                errors,
+            )
+            for gate in gates:
+                if (
+                    not isinstance(gate, dict)
+                    or not gate.get("release_blocking")
+                    or gate.get("execution", {}).get("status") != "passed"
+                ):
+                    continue
+                evidence = gate.get("execution", {}).get("evidence", [])
+                mismatched = [
+                    item.get("source_revision")
+                    for item in evidence
+                    if isinstance(item, dict)
+                    and item.get("source_revision") != candidate_revision
+                ]
+                _expect(
+                    not mismatched,
+                    f"gate {gate.get('id')!r} evidence does not match candidate_revision: {mismatched}",
+                    errors,
+                )
+        _expect(
+            document.get("release_state") == "qualified",
+            "release_state must be 'qualified'",
+            errors,
+        )
 
     if errors:
         raise QualificationError("\n".join(f"- {error}" for error in errors))
 
 
-def load_and_validate(path: Path, *, require_release_ready: bool = False) -> dict[str, Any]:
+def load_and_validate(
+    path: Path,
+    *,
+    require_release_ready: bool = False,
+    expected_revision: str | None = None,
+) -> dict[str, Any]:
     document = json.loads(path.read_text(encoding="utf-8"))
-    validate_document(document, require_release_ready=require_release_ready)
+    validate_document(
+        document,
+        require_release_ready=require_release_ready,
+        expected_revision=expected_revision,
+    )
     return document
 
 
@@ -492,9 +911,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ledger", nargs="?", type=Path, default=DEFAULT_LEDGER)
     parser.add_argument("--require-release-ready", action="store_true")
+    parser.add_argument(
+        "--expected-revision",
+        help="exact candidate commit required by --require-release-ready",
+    )
     args = parser.parse_args(argv)
     try:
-        document = load_and_validate(args.ledger, require_release_ready=args.require_release_ready)
+        document = load_and_validate(
+            args.ledger,
+            require_release_ready=args.require_release_ready,
+            expected_revision=args.expected_revision,
+        )
     except (OSError, json.JSONDecodeError, QualificationError) as error:
         print(f"power qualification failed: {error}", file=sys.stderr)
         return 1

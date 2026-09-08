@@ -3,6 +3,7 @@
   "schema_version": "1.0",
   "release_target": "0.13.0",
   "release_state": "not_qualified",
+  "candidate_revision": null,
   "policy": {
     "minimum_power_coverage_ratio": 0.9,
     "aic_parity_relative_tolerance": 0.01,
@@ -170,12 +171,12 @@
       "execution": {
         "kind": "automated",
         "status": "pending",
-        "command": "python -m pytest -q crates/core/parity_tests/perfmodel/test_engine_step_parity.py -k power",
-        "command_status": "available",
+        "command": "python -m pytest -q tests/qualification/test_power_aic_parity.py",
+        "command_status": "planned",
         "evidence": [],
         "blocked_by": []
       },
-      "notes": "The existing 1% perfmodel parity tolerance is retained. Release evidence must include non-zero covered power cases; well-typed zero-energy surfaces alone are insufficient."
+      "notes": "The existing 1% perfmodel parity tolerance is retained. The planned qualification test must include non-zero covered power cases; the current well-typed zero-energy parity surfaces alone are insufficient."
     },
     {
       "id": "silicon-power-accuracy",
@@ -235,12 +236,12 @@
       "execution": {
         "kind": "automated",
         "status": "pending",
-        "command": "python scripts/build_release_artifacts.py --check-only",
-        "command_status": "available",
+        "command": "python -m pytest -q tests/qualification/test_power_release_artifact.py",
+        "command_status": "planned",
         "evidence": [],
         "blocked_by": []
       },
-      "notes": "This gate preserves the single AISimulate wheel contract. Dynamo remains an optional runtime integration; the wheel must expose the same modeled-power result contract when that runner is available."
+      "notes": "This gate preserves the single AISimulate wheel contract. Its planned test must build and install the wheel, smoke the CLI, and verify packaged power data. Dynamo remains an optional runtime integration; the wheel must expose the same modeled-power result contract when that runner is available."
     },
     {
       "id": "afd-power-integration",

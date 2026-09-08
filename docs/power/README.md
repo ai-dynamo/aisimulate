@@ -63,13 +63,16 @@ Run the fail-closed release decision only after every implementation and
 evidence-producing job has completed:
 
 ```bash
-python scripts/validate_power_qualification.py --require-release-ready
+python scripts/validate_power_qualification.py \
+  --require-release-ready \
+  --expected-revision <40-character-candidate-commit>
 ```
 
 The second command fails while any release-blocking gate is not `passed`, while
-the silicon threshold is unapproved, or while `release_state` is not
-`qualified`. This is intentional: validating the ledger format is not the same
-thing as qualifying a release.
+the silicon threshold is unapproved, while `release_state` is not `qualified`,
+or when `candidate_revision`, the explicit expected revision, and any passing
+release evidence disagree. This is intentional: validating the ledger format
+is not the same thing as qualifying a release.
 
 ## Attach evidence
 
@@ -79,7 +82,7 @@ record containing:
 1. a result of `pass`;
 2. an artifact path or HTTPS URL;
 3. the artifact's SHA-256 digest;
-4. the exact 40-character source commit; and
+4. the exact 40-character candidate source commit; and
 5. a UTC ISO-8601 recording time.
 
 Failed evidence moves a gate to `failed`; do not delete it merely to make the
@@ -87,6 +90,12 @@ ledger green. Pending and blocked entries intentionally have empty evidence
 arrays. Evidence should be public-safe and reproducible. Internal workflow IDs,
 raw silicon measurements, and mutable branch names are not sufficient release
 anchors.
+
+At closeout, set the top-level `candidate_revision` to the one integrated commit
+that every release-blocking gate tested. Every passing evidence record must use
+that same commit, and the release command must receive it independently through
+`--expected-revision`. This prevents a plausible-looking ledger from mixing
+passing artifacts produced from different or stale code revisions.
 
 The AIC parity gate retains the existing 1% perfmodel relative tolerance and
 requires non-zero, covered power fixtures. The silicon MAPE and minimum sample
