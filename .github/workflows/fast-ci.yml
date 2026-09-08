@@ -130,3 +130,67 @@ jobs:
       - name: Verify exact target
         run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
       - run: cargo fmt --all -- --check
+
+  # Direct PR runs publish `Fast CI Success`. When Full CI calls this workflow,
+  # GitHub displays `Fast CI / Fast CI Success`; `Full CI Success` aggregates
+  # that composed result for branch-rule enforcement.
+  readiness:
+    name: Fast CI Success
+    if: ${{ always() }}
+    needs: [policy, python-static, rust-format]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      IS_DRAFT: ${{ github.event.pull_request.draft || false }}
+      HAS_REVIEW_READY: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'review-ready') }}
+      POLICY_RESULT: ${{ needs.policy.result }}
+      PYTHON_STATIC_RESULT: ${{ needs.python-static.result }}
+      RUST_FORMAT_RESULT: ${{ needs.rust-format.result }}
+    steps:
+      - name: Require complete Fast CI evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && "${IS_DRAFT}" == "true" ]]; then
+            echo "### Fast CI is not applicable while this pull request is a draft" \
+              >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          if [[ "${HAS_REVIEW_READY}" != "true" ]]; then
+            echo "::error::A non-draft pull request must have the review-ready label."
+            echo "### Fast CI failed: review-ready label is missing" \
+              >> "${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
+
+          failures=0
+          {
+            echo "### Fast CI evidence"
+            echo
+            echo "| Required job | Result |"
+            echo "| --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          record_required() {
+            local job_name="$1"
+            local job_result="$2"
+            local outcome="PASS"
+            if [[ "${job_result}" != "success" ]]; then
+              outcome="FAIL"
+              failures=$((failures + 1))
+              echo "::error::${job_name} finished with ${job_result:-missing}"
+            fi
+            printf '| %s | %s (`%s`) |\n' \
+              "${job_name}" "${outcome}" "${job_result:-missing}" \
+              >> "${GITHUB_STEP_SUMMARY}"
+          }
+
+          record_required "Repository Policy" "${POLICY_RESULT}"
+          record_required "Python Static Checks" "${PYTHON_STATIC_RESULT}"
+          record_required "Rust Format" "${RUST_FORMAT_RESULT}"
+
+          if (( failures > 0 )); then
+            exit 1
+          fi
