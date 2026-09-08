@@ -239,6 +239,14 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "pull-request/*",
         "release/*",
     ]
+    assert set(fast_config["on"]["pull_request"]["types"]) == {
+        "opened",
+        "synchronize",
+        "reopened",
+        "ready_for_review",
+        "labeled",
+        "unlabeled",
+    }
 
     fast_readiness = fast_config["jobs"]["readiness"]
     assert fast_readiness["name"] == "Fast CI Success"
@@ -293,11 +301,19 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "application-wheel",
         "stage-application-wheel",
     }
+    assert set(full_readiness["needs"]) == set(full_config["jobs"]) - {"readiness"}
     full_readiness_script = full_readiness["steps"][0]["run"]
     assert "${VERIFY_TARGET_RESULT}" in full_readiness_script
     assert "${APPLICATION_WHEEL_RESULT}" in full_readiness_script
     assert "${STAGE_APPLICATION_WHEEL_RESULT}" in full_readiness_script
     assert '"${STAGE_APPLICATION_WHEEL_RESULT}" "skipped"' in full_readiness_script
+
+    staging_if = full_config["jobs"]["stage-application-wheel"]["if"]
+    staging_required = full_readiness["env"]["STAGING_REQUIRED"]
+    normalize = lambda text: " ".join(text.split())
+    assert normalize(staging_if) == normalize(
+        staging_required.removeprefix("${{").removesuffix("}}")
+    )
 
     application_wheel = full_config["jobs"]["application-wheel"]
     assert "if" not in application_wheel
@@ -386,6 +402,78 @@ def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
     }
     result = _run_readiness_script(script, tmp_path, skipped_release_staging)
     assert result.returncode != 0
+
+
+def test_full_ci_exact_target_verification(tmp_path: Path) -> None:
+    config = yaml.load(
+        (ROOT / ".github/workflows/ci.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    steps = {step["name"]: step for step in config["jobs"]["verify-target"]["steps"]}
+    manual_script = steps["Reject a mismatched requested commit"]["run"]
+    target_sha = "0123456789abcdef"
+
+    matching = {
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "EXPECTED_SHA": target_sha,
+        "RUN_SHA": target_sha,
+    }
+    assert _run_readiness_script(manual_script, tmp_path, matching).returncode == 0
+
+    empty = {**matching, "EXPECTED_SHA": ""}
+    assert _run_readiness_script(manual_script, tmp_path, empty).returncode != 0
+
+    mismatched = {**matching, "EXPECTED_SHA": "fedcba9876543210"}
+    assert _run_readiness_script(manual_script, tmp_path, mismatched).returncode != 0
+
+    push_without_input = {
+        **matching,
+        "GITHUB_EVENT_NAME": "push",
+        "EXPECTED_SHA": "",
+    }
+    assert (
+        _run_readiness_script(manual_script, tmp_path, push_without_input).returncode
+        == 0
+    )
+
+
+def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
+    config = yaml.load(
+        (ROOT / ".github/workflows/ci.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    steps = {step["name"]: step for step in config["jobs"]["verify-target"]["steps"]}
+    copy_script = steps["Verify trusted PR copy matches originating head"]["run"]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "exit_code=${FAKE_GH_EXIT:-0}\n"
+        "if [[ ${exit_code} != 0 ]]; then exit \"${exit_code}\"; fi\n"
+        "printf '%s\\n' \"${FAKE_PR_HEAD:-}\"\n"
+    )
+    fake_gh.chmod(0o755)
+    target_sha = "0123456789abcdef"
+    matching = {
+        "GITHUB_REF": "refs/heads/pull-request/135",
+        "REPOSITORY": "ai-dynamo/aisimulate",
+        "RUN_SHA": target_sha,
+        "FAKE_PR_HEAD": target_sha,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+    }
+
+    assert _run_readiness_script(copy_script, tmp_path, matching).returncode == 0
+
+    mismatched = {**matching, "FAKE_PR_HEAD": "fedcba9876543210"}
+    assert _run_readiness_script(copy_script, tmp_path, mismatched).returncode != 0
+
+    invalid_ref = {**matching, "GITHUB_REF": "refs/heads/pull-request/not-a-number"}
+    assert _run_readiness_script(copy_script, tmp_path, invalid_ref).returncode != 0
+
+    api_failure = {**matching, "FAKE_GH_EXIT": "1"}
+    assert _run_readiness_script(copy_script, tmp_path, api_failure).returncode != 0
 
 
 def test_coderabbit_is_opted_in_by_review_ready_label() -> None:

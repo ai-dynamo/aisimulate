@@ -51,10 +51,15 @@ complete before merge.
 run with `always()` semantics and fail when required evidence is missing,
 skipped unexpectedly, canceled, or failed. A non-draft PR without the
 `review-ready` label fails `Fast CI Success`; making a PR ready or removing the
-label retriggers the workflow. Release staging is explicitly not applicable to
-manual and trusted-copy PR validation, while it remains required for `main` and
-`release/*` lifecycle pushes. Configure branch rules against these stable
-results rather than individual conditional jobs.
+label retriggers the workflow. Keep the `ready_for_review`, `labeled`, and
+`unlabeled` pull-request activity types so those state changes cannot retain a
+stale green result. Direct pull-request runs publish `Fast CI Success`; Full CI
+displays its reusable invocation as `Fast CI / Fast CI Success` and aggregates
+that result into `Full CI Success`. Release staging is explicitly not
+applicable to manual and trusted-copy PR validation, while it remains required
+for `main` and `release/*` lifecycle pushes. Require the direct `Fast CI
+Success` and aggregate `Full CI Success` results in branch rules rather than
+individual conditional or reusable-workflow jobs.
 
 During the review-acceleration pilot, a maintainer dispatches Full CI after
 verifying those conditions, supplying the reviewed full commit SHA through the

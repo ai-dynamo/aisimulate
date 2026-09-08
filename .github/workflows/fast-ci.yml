@@ -131,6 +131,9 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
       - run: cargo fmt --all -- --check
 
+  # Direct PR runs publish `Fast CI Success`. When Full CI calls this workflow,
+  # GitHub displays `Fast CI / Fast CI Success`; `Full CI Success` aggregates
+  # that composed result for branch-rule enforcement.
   readiness:
     name: Fast CI Success
     if: ${{ always() }}
