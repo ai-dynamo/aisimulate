@@ -47,9 +47,19 @@ def _write_manifest(root: Path, table: Path) -> Path:
             "commit": "a" * 40,
             "license": "Apache-2.0",
         },
+        "dataset": {
+            "system": root.name,
+            "backend": "trtllm",
+            "version": "1.0.0",
+            "units": {"latency": "ms", "power": "W", "power_limit": "W"},
+            "unavailable_sentinel": {"power": 0.0, "power_limit": 0.0},
+            "anomalies": [],
+        },
         "tables": [
             {
                 "path": table.relative_to(root).as_posix(),
+                "identity_columns": ["shape"],
+                "shape_bounds": {"shape": {"min": 1, "max": 2}},
                 "import_mode": "exact-copy",
                 "upstream_sha256": digest,
                 "packaged_sha256": digest,
@@ -97,6 +107,8 @@ def test_manifest_rejects_checksum_drift(power_data_module, tmp_path):
     pq.write_table(
         pa.table(
             {
+                "shape": [1, 2],
+                "latency": [1.0, 2.0],
                 "power": pa.array([500.0, 0.0], type=pa.float64()),
                 "power_limit": pa.array([1000.0, 0.0], type=pa.float64()),
             }
@@ -109,6 +121,28 @@ def test_manifest_rejects_checksum_drift(power_data_module, tmp_path):
     manifest.write_text(json.dumps(payload), encoding="utf-8")
 
     assert any("packaged_sha256 mismatch" in issue for issue in power_data_module.validate_manifest(manifest))
+
+
+def test_manifest_rejects_identity_evidence_drift(power_data_module, tmp_path):
+    table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
+    table_path.parent.mkdir(parents=True)
+    pq.write_table(
+        pa.table(
+            {
+                "shape": [1, 2],
+                "latency": [1.0, 2.0],
+                "power": pa.array([500.0, 0.0], type=pa.float64()),
+                "power_limit": pa.array([1000.0, 0.0], type=pa.float64()),
+            }
+        ),
+        table_path,
+    )
+    manifest = _write_manifest(tmp_path, table_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["tables"][0]["shape_bounds"]["shape"]["max"] = 3
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert any("shape_bounds do not match" in issue for issue in power_data_module.validate_manifest(manifest))
 
 
 def test_shipped_power_manifests_are_current(power_data_module):

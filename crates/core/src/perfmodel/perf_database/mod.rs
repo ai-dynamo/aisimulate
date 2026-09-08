@@ -910,6 +910,7 @@ misc:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::enums::GemmQuantMode;
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -936,6 +937,23 @@ mod tests {
             gemm_sources[0].0.is_file(),
             "resolved GEMM parquet must exist: {}",
             gemm_sources[0].0.display()
+        );
+    }
+
+    #[test]
+    fn b200_trtllm_rc20_power_reaches_gemm_query() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "trtllm", "1.3.0rc20")
+            .expect("b200_sxm/trtllm/1.3.0rc20 must load");
+        let value = db
+            .gemm
+            .query(GemmQuantMode::Bfloat16, 16_384, 65_536, 51_200)
+            .expect("the shipped measured GEMM identity must be queryable");
+
+        assert!(value.latency > 0.0);
+        assert!(value.power > 0.0);
+        assert_eq!(
+            value.energy.to_bits(),
+            (value.power * value.latency).to_bits()
         );
     }
 

@@ -13,9 +13,12 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 POWER_COLUMNS = ("power", "power_limit")
+MEASUREMENT_COLUMNS = ("latency", *POWER_COLUMNS)
+EXPECTED_UNITS = {"latency": "ms", "power": "W", "power_limit": "W"}
 MAX_POWER_LIMIT_RATIO = 1.05
 MANIFEST_BASENAME = "power_data_provenance.json"
 
@@ -90,6 +93,20 @@ def _integer(entry: dict[str, Any], name: str, *, context: str, issues: list[str
     return value
 
 
+def table_identity_evidence(table: pa.Table) -> tuple[list[str], dict[str, dict[str, int | float]]]:
+    """Return ordered identity columns and numeric shape bounds for one table."""
+    identity_columns = [name for name in table.column_names if name not in MEASUREMENT_COLUMNS]
+    shape_bounds: dict[str, dict[str, int | float]] = {}
+    for name in identity_columns:
+        field_type = table.schema.field(name).type
+        if not (pa.types.is_integer(field_type) or pa.types.is_floating(field_type)):
+            continue
+        extrema = pc.min_max(table.column(name)).as_py()
+        if extrema["min"] is not None and extrema["max"] is not None:
+            shape_bounds[name] = {"min": extrema["min"], "max": extrema["max"]}
+    return identity_columns, shape_bounds
+
+
 def validate_manifest(manifest_path: Path) -> list[str]:
     """Validate one adjacent power provenance manifest and its parquet files."""
     try:
@@ -110,12 +127,36 @@ def validate_manifest(manifest_path: Path) -> list[str]:
         if source.get("license") != "Apache-2.0":
             issues.append(f"{manifest_path}: source.license must identify Apache-2.0")
 
+    root = manifest_path.parent.resolve()
+    dataset = manifest.get("dataset")
+    backend: str | None = None
+    version: str | None = None
+    if not isinstance(dataset, dict):
+        issues.append(f"{manifest_path}: dataset must be an object")
+    else:
+        if dataset.get("system") != root.name:
+            issues.append(f"{manifest_path}: dataset.system must match the manifest directory")
+        for name in ("backend", "version"):
+            value = dataset.get(name)
+            if not isinstance(value, str) or not value:
+                issues.append(f"{manifest_path}: dataset.{name} must be a non-empty string")
+            elif name == "backend":
+                backend = value
+            else:
+                version = value
+        if dataset.get("units") != EXPECTED_UNITS:
+            issues.append(f"{manifest_path}: dataset.units must be {EXPECTED_UNITS}")
+        if dataset.get("unavailable_sentinel") != {"power": 0.0, "power_limit": 0.0}:
+            issues.append(f"{manifest_path}: dataset.unavailable_sentinel must be the paired 0.0 sentinel")
+        if not isinstance(dataset.get("anomalies"), list):
+            issues.append(f"{manifest_path}: dataset.anomalies must be an array")
+
     entries = manifest.get("tables")
     if not isinstance(entries, list) or not entries:
         return [*issues, f"{manifest_path}: tables must be a non-empty array"]
 
-    root = manifest_path.parent.resolve()
     seen_paths: set[str] = set()
+    retained_rows_by_path: dict[str, int] = {}
     actual_totals = {"upstream_rows": 0, "packaged_rows": 0, "measured_rows": 0, "zero_sentinel_rows": 0}
     for index, raw_entry in enumerate(entries):
         context = f"{manifest_path}: tables[{index}]"
@@ -139,6 +180,14 @@ def validate_manifest(manifest_path: Path) -> list[str]:
         if not path.is_file():
             issues.append(f"{context}: missing file {relative}")
             continue
+        relative_parts = Path(relative).parts
+        if (
+            len(relative_parts) != 4
+            or backend is None
+            or version is None
+            or relative_parts[1:3] != (backend, version)
+        ):
+            issues.append(f"{context}: path does not match the declared backend/version: {relative}")
 
         packaged_sha = raw_entry.get("packaged_sha256")
         actual_sha = _sha256(path)
@@ -170,7 +219,18 @@ def validate_manifest(manifest_path: Path) -> list[str]:
         for problem in power_metric_issues(table):
             issues.append(f"{context}: {relative}: {problem}")
         if not all(name in table.column_names for name in POWER_COLUMNS):
+            issues.append(f"{context}: manifested table must include power and power_limit: {relative}")
             continue
+
+        identity_columns, shape_bounds = table_identity_evidence(table)
+        if raw_entry.get("identity_columns") != identity_columns:
+            issues.append(f"{context}: identity_columns do not match {relative}")
+        if raw_entry.get("shape_bounds") != shape_bounds:
+            issues.append(f"{context}: shape_bounds do not match {relative}")
+        if not identity_columns:
+            issues.append(f"{context}: table has no identity columns: {relative}")
+        elif table.select(identity_columns).group_by(identity_columns).aggregate([]).num_rows != table.num_rows:
+            issues.append(f"{context}: identity_columns do not uniquely identify every row in {relative}")
 
         power = table.column("power").to_pylist()
         power_limit = table.column("power_limit").to_pylist()
@@ -194,9 +254,20 @@ def validate_manifest(manifest_path: Path) -> list[str]:
                 issues.append(f"{context}: exact-copy row counts differ for {relative}")
             if mode == "identity-merge" and expected["upstream_rows"] > expected["packaged_rows"]:
                 issues.append(f"{context}: identity-merge dropped upstream rows for {relative}")
+            retained_rows_by_path[relative] = expected["packaged_rows"] - expected["upstream_rows"]
         for name in actual_totals:
             if expected[name] is not None:
                 actual_totals[name] += expected[name]
+
+    if backend is not None and version is not None:
+        packaged_paths = {
+            path.relative_to(root).as_posix()
+            for path in root.glob(f"*/{backend}/{version}/*_perf.parquet")
+        }
+        if missing := sorted(packaged_paths - seen_paths):
+            issues.append(f"{manifest_path}: manifest omits packaged tables: {', '.join(missing)}")
+        if extra := sorted(seen_paths - packaged_paths):
+            issues.append(f"{manifest_path}: manifest lists tables outside the dataset: {', '.join(extra)}")
 
     totals = manifest.get("totals")
     if not isinstance(totals, dict):
@@ -215,6 +286,58 @@ def validate_manifest(manifest_path: Path) -> list[str]:
         )
         if valid_total_counts and measured_total + zero_total != packaged_total:
             issues.append(f"{manifest_path}: totals do not cover every packaged row")
+
+    if isinstance(dataset, dict) and isinstance(dataset.get("anomalies"), list):
+        anomalies = dataset["anomalies"]
+        anomaly_rows = 0
+        affected_paths: set[str] = set()
+        for index, anomaly in enumerate(anomalies):
+            context = f"{manifest_path}: dataset.anomalies[{index}]"
+            if not isinstance(anomaly, dict):
+                issues.append(f"{context} must be an object")
+                continue
+            rows = _integer(anomaly, "rows", context=context, issues=issues)
+            if rows is not None:
+                anomaly_rows += rows
+            if anomaly.get("kind") != "aisimulate-only-identities":
+                issues.append(f"{context}: kind must identify aisimulate-only-identities")
+            if anomaly.get("treatment") != "paired-zero-sentinel":
+                issues.append(f"{context}: treatment must identify the paired-zero sentinel")
+            affected = anomaly.get("tables")
+            if not isinstance(affected, list) or not affected:
+                issues.append(f"{context}: tables must be a non-empty array")
+            else:
+                affected_rows = 0
+                for table_index, affected_table in enumerate(affected):
+                    table_context = f"{context}.tables[{table_index}]"
+                    if not isinstance(affected_table, dict):
+                        issues.append(f"{table_context} must be an object")
+                        continue
+                    path = affected_table.get("path")
+                    if path not in seen_paths:
+                        issues.append(f"{table_context}: path must identify a manifested table")
+                    value = _integer(affected_table, "rows", context=table_context, issues=issues)
+                    if value is not None:
+                        affected_rows += value
+                        expected_retained = retained_rows_by_path.get(path)
+                        if expected_retained is not None and value != expected_retained:
+                            issues.append(
+                                f"{table_context}: rows is {value}, expected {expected_retained} retained identities"
+                            )
+                    if isinstance(path, str):
+                        if path in affected_paths:
+                            issues.append(f"{table_context}: duplicate anomaly table path")
+                        affected_paths.add(path)
+                if rows is not None and affected_rows != rows:
+                    issues.append(f"{context}: rows does not match the affected-table sum")
+        retained_rows = actual_totals["packaged_rows"] - actual_totals["upstream_rows"]
+        if anomaly_rows != retained_rows:
+            issues.append(
+                f"{manifest_path}: anomaly rows are {anomaly_rows}, expected {retained_rows} retained identities"
+            )
+        retained_paths = {path for path, rows in retained_rows_by_path.items() if rows}
+        if retained_paths != affected_paths:
+            issues.append(f"{manifest_path}: anomaly table paths do not match tables with retained identities")
     return issues
 
 
