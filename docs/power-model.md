@@ -129,6 +129,9 @@ metrics correctly withheld.
 Human-readable tables display unavailable power as `N/A` or `unavailable`, not
 as `0 W`. CSV exporters use an empty field for unavailable power. JSON omits
 `power_w` rather than serializing `null`, `0`, or a non-finite sentinel.
+Before validating or serializing a host-language metrics object, producers must
+reject `NaN` and positive or negative infinity; permissive encoder extensions
+are not valid JSON values under this contract.
 
 ## Provenance boundary
 

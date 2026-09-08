@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,15 @@ from jsonschema.exceptions import ValidationError
 
 ROOT = Path(__file__).parents[1]
 SCHEMA_PATH = ROOT / "docs" / "schemas" / "power-metrics-v1.schema.json"
+
+
+def validate_strict_json(
+    validator: Draft202012Validator,
+    metrics: dict[str, float | None],
+) -> None:
+    """Reject host-language non-finite numbers before schema validation."""
+    payload = json.dumps(metrics, allow_nan=False)
+    validator.validate(json.loads(payload))
 
 
 @pytest.fixture(scope="module")
@@ -37,7 +47,7 @@ def test_power_contract_accepts_supported_availability_states(
     power_validator: Draft202012Validator,
     metrics: dict[str, float],
 ) -> None:
-    power_validator.validate(metrics)
+    validate_strict_json(power_validator, metrics)
 
 
 @pytest.mark.parametrize(
@@ -49,14 +59,20 @@ def test_power_contract_accepts_supported_availability_states(
         {"power_w": None, "power_coverage": 1.0},
         {"power_coverage": -0.01},
         {"power_coverage": 1.01},
+        {"power_w": math.nan, "power_coverage": 1.0},
+        {"power_w": math.inf, "power_coverage": 1.0},
+        {"power_w": -math.inf, "power_coverage": 1.0},
+        {"power_w": 487.5, "power_coverage": math.nan},
+        {"power_w": 487.5, "power_coverage": math.inf},
+        {"power_w": 487.5, "power_coverage": -math.inf},
     ],
 )
 def test_power_contract_rejects_fabricated_or_invalid_metrics(
     power_validator: Draft202012Validator,
     metrics: dict[str, float | None],
 ) -> None:
-    with pytest.raises(ValidationError):
-        power_validator.validate(metrics)
+    with pytest.raises((ValidationError, ValueError)):
+        validate_strict_json(power_validator, metrics)
 
 
 def test_public_docs_keep_availability_separate_from_semantics() -> None:

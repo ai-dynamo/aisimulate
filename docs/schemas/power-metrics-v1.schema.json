@@ -3,6 +3,7 @@
   "$id": "https://github.com/ai-dynamo/aisimulate/blob/main/docs/schemas/power-metrics-v1.schema.json",
   "title": "AISimulate modeled-power metrics v1",
   "description": "Optional modeled-power fields carried by replay reports and Sweeper candidate metrics.",
+  "$comment": "JSON numbers are finite. Producers validating host-language objects must reject NaN and positive or negative infinity before serialization.",
   "type": "object",
   "properties": {
     "power_w": {
