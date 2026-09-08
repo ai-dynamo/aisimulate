@@ -213,6 +213,19 @@ def test_result_rejects_unknown_schema_version_and_inconsistent_counts():
 
 def test_flat_csv_is_one_row_per_candidate_with_canonical_json_cells():
     result = _complete_result()
+    result.candidates[0].provenance = make_candidate_provenance(
+        result.candidates[0].config,
+        metrics=result.candidates[0].metrics,
+        runner_metadata={
+            "operations": [
+                {
+                    "operation": "attention",
+                    "source": "silicon",
+                    "version": "v1",
+                }
+            ]
+        },
+    )
 
     rows = list(csv.DictReader(io.StringIO(result.to_csv())))
 
@@ -229,7 +242,7 @@ def test_flat_csv_is_one_row_per_candidate_with_canonical_json_cells():
     )
     assert rows[0]["power_w"] == "487.5"
     assert rows[0]["power_coverage"] == "0.95"
-    assert rows[0]["power_source"] == ""
+    assert rows[0]["power_source"] == "runner_reported"
     assert rows[3]["reason_category"] == "runtime_timeout"
 
 
