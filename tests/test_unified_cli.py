@@ -496,6 +496,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert csv_rows[0]["power_coverage"] == "0.95"
     assert csv_rows[0]["power_source"] == "modeled"
 
+    runner.power_coverage = 0.9
     prediction_output = tmp_path / "predict-output"
     assert (
         cli.main(
@@ -511,7 +512,13 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
         )
         == 0
     )
-    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+    prediction_summary = json.loads(capsys.readouterr().out)
+    assert prediction_summary["completed_requests"] == 1
+    assert prediction_summary["power_w"] == 487.5
+    assert prediction_summary["power_coverage"] == 0.9
+    prediction_report = json.loads((prediction_output / "prediction.json").read_text())
+    assert prediction_report["summary"]["power_w"] == 487.5
+    assert prediction_report["summary"]["power_coverage"] == 0.9
     assert runner.spec.goal["sla"] == {sla_field: bound}
 
     withheld_output = tmp_path / "withheld-recommend-output"
@@ -546,6 +553,30 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert withheld_csv["power_w"] == ""
     assert withheld_csv["power_coverage"] == "0.42"
     assert withheld_csv["power_source"] == "modeled"
+
+    withheld_prediction_output = tmp_path / "withheld-predict-output"
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(recommendation),
+                "--output-dir",
+                str(withheld_prediction_output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    withheld_prediction_summary = json.loads(capsys.readouterr().out)
+    assert "power_w" not in withheld_prediction_summary
+    assert withheld_prediction_summary["power_coverage"] == 0.42
+    withheld_prediction_report = json.loads(
+        (withheld_prediction_output / "prediction.json").read_text()
+    )
+    assert "power_w" not in withheld_prediction_report["summary"]
+    assert withheld_prediction_report["summary"]["power_coverage"] == 0.42
 
 
 def test_recommendation_outputs_each_concrete_prediction_once(
