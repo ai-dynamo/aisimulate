@@ -56,7 +56,6 @@ does not make a capability available through the unified path.
 | Estimator and performance-data selection | **Not exposed by the unified CLI.** `engine.backend_version` is available, but database mode, forward model, transfer policy, custom system roots, and estimator tuning remain outside the public YAML. | Continue using AIC when those controls are required. |
 | Explicit quantization overrides | **Not exposed by the unified CLI.** There is no direct mapping for AIC's GEMM, KV-cache, FMHA, MoE, or communication quantization flags. | Let the unified engine resolve model/runtime defaults, or stay on AIC when an explicit estimator override is required. |
 | Heterogeneous P/D hardware or backends | **Partially supported.** Prefill and decode can use independent topology and scheduler settings, but one unified engine config still has one model, hardware, backend, and backend version. AIC role-specific system/backend experiments do not map directly. | Use unified disaggregated mode only for a homogeneous engine identity; keep heterogeneous experiments on AIC. |
-| TensorRT-LLM disaggregated serving | **Supported for the homogeneous DP=1 replay path.** Unified prediction models source-first P/D handoff, transfer delay, and `GUARANTEED_NO_EVICT` decode-capacity reservation. Physical rank-wise KV layout conversion remains abstract. | Use unified prediction for DP=1 P/D replay; keep attention-DP or heterogeneous system/backend experiments on AIC. |
 
 ## Common input mapping
 
@@ -76,7 +75,8 @@ does not make a capability available through the unified path.
 | `--request-latency` | `evaluation.sla.e2e_ms` | Mutually exclusive with `ttft_ms` and `itl_ms` |
 | `--strict-sla` | `optimization.strict_sla: true` | Recommendation-only aggregate-mean filter |
 | `--prefix` | No general direct mapping | Session shared-prefix controls have different semantics |
-| `--database-mode`, `--forward-model`, `--transfer-policy`, `--systems-paths` | No unified CLI mapping | Continue using AIC when estimator/data-source selection is required |
+| `--forward-model` | `engine.workers.<role>.timing.forward_model` | `op_level` (default) or `fpm`; per worker role; `default` timing only |
+| `--database-mode`, `--transfer-policy`, `--systems-paths` | No unified CLI mapping | Continue using AIC when performance-data source selection is required |
 | GEMM, KV-cache, FMHA, MoE, and communication quantization flags | No unified CLI mapping | Continue using AIC when explicit estimator quantization overrides are required |
 | `--detail` and per-op memory/time/energy/source reports | No unified CLI mapping | Continue using AIC for single-point diagnostic breakdowns |
 | Predicted `power_w` and power coverage | No AIC-equivalent unified output | Optional runner metadata is not a replacement for AIC power analysis |
@@ -353,7 +353,7 @@ Continue using the compatibility command for:
 - multimodal image-input and EPD modeling;
 - exact single-point FPM, static, AFD, per-op, detail, or power estimation;
 - heterogeneous P/D systems, backends, or versions;
-- AIC-specific database modes, forward-model selection, and expert estimator flags.
+- AIC-specific database modes and expert estimator flags.
 
 The compatibility command remains available in AISimulate 0.12.0 and is targeted for removal in
 AISimulate 0.13.0. Removal is gated on verified unified CLI replacements for every remaining workflow

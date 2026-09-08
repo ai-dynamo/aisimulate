@@ -44,9 +44,9 @@ _ALLOWED_CLI_FLAGS = {
         "--data-parallel-size",
         "--enable-expert-parallel",
         "--block-size",
+        "--num-gpu-blocks-override",
         "--gpu-memory-utilization",
         "--kv-cache-dtype",
-        "--gpu-memory-utilization",
         "--max-model-len",
         "--max-num-seqs",
         "--max-num-batched-tokens",
@@ -115,7 +115,7 @@ _TRTLLM_TOP_LEVEL_KEYS = {
 }
 
 _TRTLLM_NESTED_KEYS = {
-    "kv_cache_config": {"free_gpu_memory_fraction", "dtype", "tokens_per_block", "enable_block_reuse"},
+    "kv_cache_config": {"free_gpu_memory_fraction", "max_tokens", "dtype", "tokens_per_block", "enable_block_reuse"},
     "cache_transceiver_config": {"backend", "max_tokens_in_buffer"},
     "cuda_graph_config": {"enable_padding", "batch_sizes"},
     "speculative_config": {"decoding_type", "num_nextn_predict_layers"},
