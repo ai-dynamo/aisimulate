@@ -503,8 +503,8 @@ jobs:
             echo "Run attempt: \`${GITHUB_RUN_ATTEMPT}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-  application-tests:
-    name: Application Tests (${{ matrix.arch }})
+  application-test-wheel:
+    name: Application Test Wheel (${{ matrix.arch }})
     needs: [fast-ci, select-full-ci]
     if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
     strategy:
@@ -512,37 +512,119 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    timeout-minutes: 10
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - run: python -m pip install maturin pytest pytest-asyncio
-      - run: python -m pip install './python/aisimulate[dev]'
-      - run: >-
-          python -m pytest -q
-          python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py
-          python/aisimulate/tests/cross_package
-      - run: aiconfigurator version
-      - run: python -m pytest -q -c pytest.ini tests
-      - name: Run recommendation E2E without parallel resource contention
-        run: python -m pytest -q tests/e2e/cli/test_cli_recommend.py --timeout=180
+      - run: python -m pip install 'maturin>=1.12,<2'
+      - name: Build the application test wheel once
+        run: python -m maturin build --release --out ../../application-test-dist
         working-directory: python/aisimulate
-      - run: >-
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-test-wheel-${{ matrix.arch }}
+          path: application-test-dist/*.whl
+          if-no-files-found: error
+
+  application-tests:
+    name: Application Tests (${{ matrix.arch }}, ${{ matrix.shard }})
+    needs: [fast-ci, select-full-ci, application-test-wheel]
+    if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        shard: [contracts, unit, cli-build, support-matrix, tools-build]
+    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    timeout-minutes: 15
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-test-wheel-${{ matrix.arch }}
+          path: application-test-dist
+      - name: Install the prebuilt application and test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(application-test-dist/aisimulate-*.whl)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "::error::expected exactly one application test wheel, found ${#wheels[@]}"
+            exit 1
+          fi
+          python -m pip install "${wheels[0]}[dev]"
+          echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
+      - name: Run repository and package contracts
+        if: matrix.shard == 'contracts'
+        run: |
+          python -m pytest -q \
+            python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
+            python/aisimulate/tests/cross_package
+          aiconfigurator version
+          python -m pytest -q -c pytest.ini tests
+      - name: Run unit tests
+        if: matrix.shard == 'unit'
+        run: >-
           python -m pytest -q
           tests
-          -m 'unit or build'
+          -m 'unit and not build'
           --ignore=tests/unit/sdk/database/test_moe_dispatch.py
+          -n auto
+          --timeout=180
+        working-directory: python/aisimulate
+      - name: Run recommendation E2E without parallel resource contention
+        if: matrix.shard == 'cli-build'
+        run: python -m pytest -q tests/e2e/cli/test_cli_recommend.py --timeout=180
+        working-directory: python/aisimulate
+      - name: Run remaining CLI build tests
+        if: matrix.shard == 'cli-build'
+        run: >-
+          python -m pytest -q
+          tests/e2e/cli
+          -m build
           --ignore=tests/e2e/cli/test_cli_recommend.py
           -n auto
           --timeout=180
+        working-directory: python/aisimulate
+      - name: Run support-matrix build tests
+        if: matrix.shard == 'support-matrix'
+        run: >-
+          python -m pytest -q
+          tests/e2e/support_matrix
+          -m build
+          -n auto
+          --timeout=180
+        working-directory: python/aisimulate
+      - name: Run tool build tests
+        if: matrix.shard == 'tools-build'
+        run: >-
+          python -m pytest -q
+          tests/e2e/tools
+          -m build
+          -n auto
+          --timeout=600
         working-directory: python/aisimulate
 
   python-compatibility:
@@ -662,6 +744,7 @@ jobs:
       - public-api-rust
       - application-wheel
       - stage-application-wheel
+      - application-test-wheel
       - application-tests
       - python-compatibility
       - engine-golden-regression
@@ -693,6 +776,7 @@ jobs:
               "rust-feature-modes": "rust_feature_modes",
               "public-api-rust": "public_api_rust",
               "application-wheel": "application_wheel",
+              "application-test-wheel": "application_tests",
               "application-tests": "application_tests",
               "python-compatibility": "python_compatibility",
               "engine-golden-regression": "engine_golden_regression",
