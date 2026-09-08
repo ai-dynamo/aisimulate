@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/ai-dynamo/aiconfigurator",
+    "commit": "915f590680d8a79fe9c39f6f3a9ff13bc267fcce",
+    "pull_request": "https://github.com/ai-dynamo/aiconfigurator/pull/1584",
+    "license": "Apache-2.0",
+    "license_url": "https://github.com/ai-dynamo/aiconfigurator/blob/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/LICENSE",
+    "copyright": "Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved."
+  },
+  "dataset": {
+    "system": "b200_sxm",
+    "backend": "trtllm",
+    "version": "1.3.0rc20",
+    "measurement": "active per-GPU power in watts",
+    "unavailable_sentinel": {
+      "power": 0.0,
+      "power_limit": 0.0
+    },
+    "notes": "Sixteen tables are byte-identical imports. The two attention tables preserve 2762 newer AISimulate identities and assign only those rows the unavailable sentinel."
+  },
+  "tables": [
+    {
+      "path": "attention/trtllm/1.3.0rc20/context_attention_perf.parquet",
+      "import_mode": "identity-merge",
+      "upstream_sha256": "2ec64496ee67e80343b89386ec692813d23c7a03eddc0872d232ef45e5e64b36",
+      "packaged_sha256": "bac5acf73e155d5dc08b56313c88f54fb4f5affe30b084ba93b2d1d94404d014",
+      "upstream_rows": 69419,
+      "packaged_rows": 70847,
+      "measured_rows": 69404,
+      "zero_sentinel_rows": 1443
+    },
+    {
+      "path": "attention/trtllm/1.3.0rc20/generation_attention_perf.parquet",
+      "import_mode": "identity-merge",
+      "upstream_sha256": "1456c5133fbf85031dfda81b9440b4d5c70b672ee5edb86174b334a12c8681e7",
+      "packaged_sha256": "4e8bd4bc9d60a81e01a94c91f3e0c289c3d4ec7d789716866b0e37aadaed4914",
+      "upstream_rows": 50520,
+      "packaged_rows": 51854,
+      "measured_rows": 50492,
+      "zero_sentinel_rows": 1362
+    },
+    {
+      "path": "comm/trtllm/1.3.0rc20/custom_allreduce_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "b7ef301e0da921733bd70733fcaf75e450f5416148d1e5f43b75cb3e7da39257",
+      "packaged_sha256": "b7ef301e0da921733bd70733fcaf75e450f5416148d1e5f43b75cb3e7da39257",
+      "upstream_rows": 69,
+      "packaged_rows": 69,
+      "measured_rows": 69,
+      "zero_sentinel_rows": 0
+    },
+    {
+      "path": "encoder_attention/trtllm/1.3.0rc20/encoder_attention_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "ffcf7d187fa3b4a06c95350c407861840f6b3081e3eb491c4037a53ceca0f554",
+      "packaged_sha256": "ffcf7d187fa3b4a06c95350c407861840f6b3081e3eb491c4037a53ceca0f554",
+      "upstream_rows": 7679,
+      "packaged_rows": 7679,
+      "measured_rows": 7653,
+      "zero_sentinel_rows": 26
+    },
+    {
+      "path": "gemm/trtllm/1.3.0rc20/gemm_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "850893f77b63c52c25310165b3e5ec9893035993b692315621bbb9f5fabb6a94",
+      "packaged_sha256": "850893f77b63c52c25310165b3e5ec9893035993b692315621bbb9f5fabb6a94",
+      "upstream_rows": 130156,
+      "packaged_rows": 130156,
+      "measured_rows": 129256,
+      "zero_sentinel_rows": 900
+    },
+    {
+      "path": "linear_attention/trtllm/1.3.0rc20/gdn_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "f6745c86d0003d85566ed68efba56cff6b93d55a32de9d6da6372edfbd3bd6d8",
+      "packaged_sha256": "f6745c86d0003d85566ed68efba56cff6b93d55a32de9d6da6372edfbd3bd6d8",
+      "upstream_rows": 1882,
+      "packaged_rows": 1882,
+      "measured_rows": 1725,
+      "zero_sentinel_rows": 157
+    },
+    {
+      "path": "linear_attention/trtllm/1.3.0rc20/mamba2_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "79f99c76f11ccabad90f738c300bab83136ea0ac6c4c1c1c6e1f1ce1ed6c8bca",
+      "packaged_sha256": "79f99c76f11ccabad90f738c300bab83136ea0ac6c4c1c1c6e1f1ce1ed6c8bca",
+      "upstream_rows": 685,
+      "packaged_rows": 685,
+      "measured_rows": 684,
+      "zero_sentinel_rows": 1
+    },
+    {
+      "path": "mhc/trtllm/1.3.0rc20/mhc_module_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "b22d43712ece8e5701f8aace0d902543ceec7a72f1f06139ff8bf3e5bd38140a",
+      "packaged_sha256": "b22d43712ece8e5701f8aace0d902543ceec7a72f1f06139ff8bf3e5bd38140a",
+      "upstream_rows": 139,
+      "packaged_rows": 139,
+      "measured_rows": 139,
+      "zero_sentinel_rows": 0
+    },
+    {
+      "path": "mla/trtllm/1.3.0rc20/context_mla_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "ccfbf6075f4644bd4e39b224552160a3214920ddce7bfd7195347dc0225950f9",
+      "packaged_sha256": "ccfbf6075f4644bd4e39b224552160a3214920ddce7bfd7195347dc0225950f9",
+      "upstream_rows": 1760,
+      "packaged_rows": 1760,
+      "measured_rows": 1759,
+      "zero_sentinel_rows": 1
+    },
+    {
+      "path": "mla/trtllm/1.3.0rc20/generation_mla_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "fd1225a36b158c024ac419be7f419bddc8ec31cfce1d2e27586557f02b529788",
+      "packaged_sha256": "fd1225a36b158c024ac419be7f419bddc8ec31cfce1d2e27586557f02b529788",
+      "upstream_rows": 2896,
+      "packaged_rows": 2896,
+      "measured_rows": 2894,
+      "zero_sentinel_rows": 2
+    },
+    {
+      "path": "mla/trtllm/1.3.0rc20/mla_context_module_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "4e7932ce34c9e2ebc5732c0108dd4409bafe2cc712cf62039887d82aa86e96f2",
+      "packaged_sha256": "4e7932ce34c9e2ebc5732c0108dd4409bafe2cc712cf62039887d82aa86e96f2",
+      "upstream_rows": 5856,
+      "packaged_rows": 5856,
+      "measured_rows": 5838,
+      "zero_sentinel_rows": 18
+    },
+    {
+      "path": "mla/trtllm/1.3.0rc20/mla_generation_module_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "4df91c4a51a4dba00ad97d7b37d4429653f997d6cd0119d709b9dc108d4ba257",
+      "packaged_sha256": "4df91c4a51a4dba00ad97d7b37d4429653f997d6cd0119d709b9dc108d4ba257",
+      "upstream_rows": 8831,
+      "packaged_rows": 8831,
+      "measured_rows": 8831,
+      "zero_sentinel_rows": 0
+    },
+    {
+      "path": "mla_bmm/trtllm/1.3.0rc20/mla_bmm_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "f714e04f688ec2d2b8022fd1c4a2f005d5894fe776d54779b86e62a9ee262f97",
+      "packaged_sha256": "f714e04f688ec2d2b8022fd1c4a2f005d5894fe776d54779b86e62a9ee262f97",
+      "upstream_rows": 848,
+      "packaged_rows": 848,
+      "measured_rows": 825,
+      "zero_sentinel_rows": 23
+    },
+    {
+      "path": "moe/trtllm/1.3.0rc20/moe_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "942d7f65c9b624d1ff261f3764820d44ce385cdd55a23dbf949edbbea8792d5a",
+      "packaged_sha256": "942d7f65c9b624d1ff261f3764820d44ce385cdd55a23dbf949edbbea8792d5a",
+      "upstream_rows": 218295,
+      "packaged_rows": 218295,
+      "measured_rows": 179033,
+      "zero_sentinel_rows": 39262
+    },
+    {
+      "path": "quantize/trtllm/1.3.0rc20/computescale_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "d28351cc04052ab3611b816b5bc713e952fd22e2f1f5b58d393ea441147e2d8f",
+      "packaged_sha256": "d28351cc04052ab3611b816b5bc713e952fd22e2f1f5b58d393ea441147e2d8f",
+      "upstream_rows": 1628,
+      "packaged_rows": 1628,
+      "measured_rows": 1623,
+      "zero_sentinel_rows": 5
+    },
+    {
+      "path": "quantize/trtllm/1.3.0rc20/scale_matrix_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "2fe4746f7f2f8b9e3994c09d20facd83dbdb6d216a63b535bd8e1622a8c50515",
+      "packaged_sha256": "2fe4746f7f2f8b9e3994c09d20facd83dbdb6d216a63b535bd8e1622a8c50515",
+      "upstream_rows": 1628,
+      "packaged_rows": 1628,
+      "measured_rows": 1625,
+      "zero_sentinel_rows": 3
+    },
+    {
+      "path": "sparse_attention/trtllm/1.3.0rc20/dsa_context_module_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "affb173c311fd5eefdcb208b5fddf0b1aa4e5ddb00f4a7e0f80740d5849903db",
+      "packaged_sha256": "affb173c311fd5eefdcb208b5fddf0b1aa4e5ddb00f4a7e0f80740d5849903db",
+      "upstream_rows": 14640,
+      "packaged_rows": 14640,
+      "measured_rows": 14625,
+      "zero_sentinel_rows": 15
+    },
+    {
+      "path": "sparse_attention/trtllm/1.3.0rc20/dsa_generation_module_perf.parquet",
+      "import_mode": "exact-copy",
+      "upstream_sha256": "5d3478300a992c4d4c97ba2f9edc7e9bc04730b4ca1d4282bcfd0172cd036883",
+      "packaged_sha256": "5d3478300a992c4d4c97ba2f9edc7e9bc04730b4ca1d4282bcfd0172cd036883",
+      "upstream_rows": 11040,
+      "packaged_rows": 11040,
+      "measured_rows": 10947,
+      "zero_sentinel_rows": 93
+    }
+  ],
+  "totals": {
+    "upstream_rows": 527971,
+    "packaged_rows": 530733,
+    "measured_rows": 487422,
+    "zero_sentinel_rows": 43311
+  }
+}

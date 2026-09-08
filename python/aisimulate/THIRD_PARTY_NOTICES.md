@@ -35,6 +35,26 @@ This material is licensed under the Apache License 2.0. The upstream license
 at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
 
+The 18 B200 TensorRT-LLM 1.3.0rc20 performance tables under
+`src/aiconfigurator_core/systems/data/b200_sxm/*/trtllm/1.3.0rc20/` include
+power measurements derived from AIConfigurator commit
+`915f590680d8a79fe9c39f6f3a9ff13bc267fcce` (PR #1584). Sixteen tables are
+unmodified, byte-identical copies. The context-attention and
+generation-attention tables are modified derivatives: AISimulate preserves
+newer local timing rows and adds the typed `0.0` / `0.0` unavailable sentinel
+to those local-only identities. Exact per-file source paths, source and
+packaged SHA-256 digests, row counts, and measured coverage are recorded in
+`src/aiconfigurator_core/systems/data/b200_sxm/power_data_provenance.json`.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/tree/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/aic-core/src/aiconfigurator_core/systems/data/b200_sxm
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at the identified revision is available at:
+https://github.com/ai-dynamo/aiconfigurator/blob/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/LICENSE
+
 ## vLLM
 
 The following files are derived from vLLM's attention test utilities at tag
