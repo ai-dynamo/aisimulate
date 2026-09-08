@@ -560,6 +560,16 @@ def test_full_ci_propagates_the_exact_sha_to_reusable_gates() -> None:
         assert "expected_sha" in inputs
 
 
+def test_prediction_gate_accepts_the_callers_event_name() -> None:
+    refs = _workflow("prediction-regression-gate.yml")["jobs"]["refs"]
+    commands = "\n".join(
+        step.get("with", {}).get("script", "") for step in refs["steps"]
+    )
+
+    assert 'process.env.OLD_REF_INPUT || "main"' in commands
+    assert "unsupported event" not in commands
+
+
 def test_migrated_workflows_keep_reviewed_safety_fixes() -> None:
     collector = _workflow("collector-check.yml")
     prediction = _workflow("prediction-regression-gate.yml")

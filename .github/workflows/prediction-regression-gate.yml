@@ -49,12 +49,9 @@ jobs:
           OLD_REF_INPUT: ${{ inputs.old-ref }}
         with:
           script: |
-            if (context.eventName === "workflow_dispatch" || context.eventName === "workflow_call") {
-              core.setOutput("old", process.env.OLD_REF_INPUT || "main");
-              return;
-            }
-
-            core.setFailed(`unsupported event: ${context.eventName}`);
+            // A reusable workflow retains its caller's event name. Resolve the
+            // explicit input for trusted-copy pushes as well as manual runs.
+            core.setOutput("old", process.env.OLD_REF_INPUT || "main");
 
   collect:
     name: Collect prediction snapshot (${{ matrix.side }})
