@@ -16,7 +16,11 @@ from aisimulate.sweeper.parallel_enum import (
     ReplicaParallelConfig,
 )
 from aisimulate.sweeper.replay import RunnerCapabilities
-from aisimulate.sweeper.search_space import branch_knob_choices, enumerate_branches
+from aisimulate.sweeper.search_space import (
+    RunnerIncompatibleError,
+    branch_knob_choices,
+    enumerate_branches,
+)
 
 TRACE = str(Path(__file__).parent / "data" / "mooncake_tiny.jsonl")
 
@@ -123,6 +127,33 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
     assert calls == [("disagg", "vllm")]
     assert branch.knob_choices["backend"] == ["vllm"]
     assert branch.supported_backends[_DISAGG_DP1_CFG] == frozenset({"vllm"})
+
+
+def test_all_backends_runner_incompatible_raises_typed_terminal_error(monkeypatch):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["disagg"],
+        backend=["trtllm"],
+        gpu_budget=8,
+    )
+
+    with (
+        pytest.warns(UserWarning, match="runner-incompatible.*trtllm"),
+        pytest.raises(
+            RunnerIncompatibleError,
+            match=r"deployment_mode='disagg': runner-incompatible backends=\['trtllm'\]",
+        ),
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
 
 
 def test_runner_prunes_disaggregated_attention_dp_before_sampling(monkeypatch):
