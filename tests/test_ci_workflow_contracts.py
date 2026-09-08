@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -25,24 +26,31 @@ def _run_commands(job: dict) -> str:
 
 def test_restored_workflows_are_active_at_repository_root() -> None:
     expected = {
-        "build-platform-wheels-copied-pr.yml",
         "collector-check.yml",
         "prediction-regression-gate.yml",
         "validate-platform-wheels.yml",
     }
 
     assert expected.issubset({path.name for path in WORKFLOW_ROOT.glob("*.yml")})
+    assert not (WORKFLOW_ROOT / "build-platform-wheels-copied-pr.yml").exists()
 
 
-def test_full_ci_selects_migrated_contract_and_regression_suites() -> None:
+def test_full_ci_owns_migrated_expensive_suites() -> None:
     jobs = _workflow("ci.yml")["jobs"]
 
     assert {
         "rust-feature-modes",
         "python-compatibility",
         "engine-golden-regression",
-        "ci-success",
+        "platform-wheels",
+        "collector-data",
+        "prediction-regression",
+        "full-ci-success",
     }.issubset(jobs)
+
+    assert jobs["platform-wheels"]["uses"] == "./.github/workflows/validate-platform-wheels.yml"
+    assert jobs["collector-data"]["uses"] == "./.github/workflows/collector-check.yml"
+    assert jobs["prediction-regression"]["uses"] == "./.github/workflows/prediction-regression-gate.yml"
 
     application_commands = _run_commands(jobs["application-tests"])
     compatibility_commands = _run_commands(jobs["python-compatibility"])
@@ -61,7 +69,7 @@ def test_full_ci_selects_migrated_contract_and_regression_suites() -> None:
 
     regression = jobs["engine-golden-regression"]
     regression_commands = _run_commands(regression)
-    assert regression["name"] == "Engine golden regression"
+    assert regression["name"] == "Engine Golden Regression"
     assert "test_engine_step_parity.py" in regression_commands
     assert "test_compile_engine_parity.py" in regression_commands
     assert regression_commands.count("-c python/aisimulate/pytest.ini") == 2
@@ -72,17 +80,28 @@ def test_full_ci_selects_migrated_contract_and_regression_suites() -> None:
     assert "--no-default-features" not in feature_mode_commands
     assert "PYTHONPATH" not in feature_mode_commands
 
-    migrated_gates = {
+    required_by_aggregate = set(jobs["full-ci-success"]["needs"])
+    assert {
         "rust-feature-modes",
         "python-compatibility",
         "engine-golden-regression",
-    }
-    assert migrated_gates.issubset(set(jobs["ci-success"]["needs"]))
-    assert migrated_gates.issubset(set(jobs["application-wheel"]["needs"]))
+        "platform-wheels",
+        "collector-data",
+        "prediction-regression",
+    }.issubset(required_by_aggregate)
+    aggregate = jobs["full-ci-success"]
+    assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
+
+    required_before_wheel_staging = set(jobs["application-wheel"]["needs"])
+    assert {
+        "rust-feature-modes",
+        "python-compatibility",
+        "engine-golden-regression",
+    }.issubset(required_before_wheel_staging)
 
 
 def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
-    aggregate = _workflow("ci.yml")["jobs"]["ci-success"]
+    aggregate = _workflow("ci.yml")["jobs"]["full-ci-success"]
     commands = _run_commands(aggregate)
 
     assert "stage-application-wheel" in aggregate["needs"]
@@ -93,34 +112,65 @@ def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
     assert "Full CI did not pass" in commands
 
 
-def test_privileged_pr_workflows_use_copied_pr_pushes() -> None:
+def test_fast_ci_owns_static_and_workflow_contract_checks() -> None:
+    jobs = _workflow("fast-ci.yml")["jobs"]
+
+    policy_commands = _run_commands(jobs["policy"])
+    static_commands = _run_commands(jobs["python-static"])
+    assert "tests/test_ci_workflow_contracts.py" in policy_commands
+    assert "test_cli_recommend.py" in static_commands
+    assert "ruff format --check" in static_commands
+    assert "python -m compileall" in static_commands
+    assert set(jobs["fast-ci-success"]["needs"]) == {
+        "policy",
+        "python-static",
+        "rust-format",
+    }
+    assert jobs["fast-ci-success"]["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
+
+
+def test_expensive_workflows_are_reusable_full_ci_components() -> None:
     for filename in (
-        "build-platform-wheels-copied-pr.yml",
         "collector-check.yml",
         "prediction-regression-gate.yml",
+        "validate-platform-wheels.yml",
     ):
         triggers = _workflow(filename)["on"]
-        assert "push" in triggers
+        assert "workflow_call" in triggers
+        assert "workflow_dispatch" in triggers
+        assert "push" not in triggers
         assert "pull_request" not in triggers
 
 
-def test_manual_comparison_runs_have_unique_concurrency_groups() -> None:
-    for filename in ("collector-check.yml", "prediction-regression-gate.yml"):
-        group = _workflow(filename)["concurrency"]["group"]
-        assert "github.event_name == 'workflow_dispatch'" in group
-        assert "github.run_id" in group
+def test_full_ci_propagates_the_exact_sha_to_reusable_gates() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+
+    for job_name in ("platform-wheels", "collector-data", "prediction-regression"):
+        assert jobs[job_name]["with"]["expected_sha"] == "${{ github.sha }}"
+
+    for filename in (
+        "collector-check.yml",
+        "prediction-regression-gate.yml",
+        "validate-platform-wheels.yml",
+    ):
+        inputs = _workflow(filename)["on"]["workflow_call"]["inputs"]
+        assert "expected_sha" in inputs
 
 
-def test_copied_pr_wheel_filter_covers_every_build_input() -> None:
-    paths = set(_workflow("build-platform-wheels-copied-pr.yml")["on"]["push"]["paths"])
+def test_migrated_workflows_keep_reviewed_safety_fixes() -> None:
+    collector = _workflow("collector-check.yml")
+    prediction = _workflow("prediction-regression-gate.yml")
 
-    assert {
-        ".dockerignore",
-        "THIRD_PARTY_NOTICES.md",
-        "python/aisimulate/README.md",
-        "python/aisimulate/THIRD_PARTY_NOTICES.md",
-        "python/aisimulate/collector/**",
-    }.issubset(paths)
+    collector_commands = _run_commands(collector["jobs"]["check"])
+    assert "git fetch --no-tags origin" in collector_commands
+    assert "--depth=1" not in collector_commands
+    assert "github.run_id" in collector["concurrency"]["group"]
+
+    collect_commands = _run_commands(prediction["jobs"]["collect"])
+    report_commands = _run_commands(prediction["jobs"]["report"])
+    assert "NO_HARNESS" in collect_commands
+    assert "pyyaml==6.0.3" in report_commands
+    assert "github.run_id" in prediction["concurrency"]["group"]
 
 
 def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
@@ -131,6 +181,9 @@ def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
     ).read_text()
 
     assert "COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/" in dockerfile
+    assert "ln -s ../src /workspace/python/aisimulate/aic-core/src" in dockerfile
+    assert "test -d /workspace/python/aisimulate/src/aiconfigurator/model_configs" in dockerfile
+    assert "test -d /workspace/python/aisimulate/src/aiconfigurator/systems" in dockerfile
     assert '"cases/**/*.yaml"' in release_verifier
     assert '"fpm_forward/**/*.py"' in release_verifier
     assert '"collector/fpm_forward/runtime/fpm_exec.sh"' in installed_verifier
@@ -157,17 +210,20 @@ def test_collector_comparison_fetch_preserves_full_history() -> None:
 def test_fpe_job_uses_required_container_without_legacy_lfs_data() -> None:
     generate = _workflow("fpe-support-matrix.yml")["jobs"]["generate"]
     checkout = next(step for step in generate["steps"] if step.get("uses", "").startswith("actions/checkout@"))
-    legacy_perf_files = tuple(
-        (REPOSITORY_ROOT / "python" / "aisimulate" / "src" / "aiconfigurator_core" / "systems").rglob("*.txt")
-    )
+    tracked = subprocess.check_output(
+        [
+            "git",
+            "-C",
+            str(REPOSITORY_ROOT),
+            "ls-files",
+            "python/aisimulate/src/aiconfigurator_core/systems/**/*.txt",
+        ],
+        text=True,
+    ).splitlines()
 
     assert generate["container"]["image"] == "${{ vars.CI_JOB_CONTAINER_IMAGE }}"
-    assert checkout.get("with", {}).get("lfs") != "true", (
-        "The current FPE job container does not provide git-lfs; update the CI image before enabling LFS checkout."
-    )
-    assert not legacy_perf_files, (
-        "The FPE job container intentionally omits git-lfs. Before adding a legacy systems/**/*.txt asset, "
-        "materialize LFS in CI or remove the stale .gitattributes rule."
+    assert checkout.get("with", {}).get("lfs") == "true" or not tracked, (
+        "FPE checkout must enable LFS before a legacy systems/**/*.txt payload is tracked"
     )
 
 

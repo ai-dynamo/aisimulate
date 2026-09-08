@@ -67,6 +67,12 @@ jobs:
             echo "::error::Generated CODEOWNERS artifacts are out of date."
             exit 1
           fi
+      - name: Check active workflow contracts
+        run: |
+          python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py -q \
+            -p no:cacheprovider \
+            --override-ini="addopts=" \
+            --override-ini="filterwarnings="
 
   python-static:
     name: Python Static Checks
@@ -108,7 +114,11 @@ jobs:
           python/aisimulate/tests/e2e/cli/test_cli_recommend.py
           tests/test_ci_workflow_contracts.py
       - name: Compile Python sources
-        run: python -m compileall -q python/aisimulate/src tests
+        run: >-
+          python -m compileall -q
+          python/aisimulate/src
+          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
+          tests
       - name: Check changed-line whitespace
         shell: bash
         run: |
@@ -139,3 +149,37 @@ jobs:
       - name: Verify exact target
         run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
       - run: cargo fmt --all -- --check
+
+  fast-ci-success:
+    name: Fast CI Success
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+       (!github.event.pull_request.draft &&
+        contains(github.event.pull_request.labels.*.name, 'review-ready')))
+    needs:
+      - policy
+      - python-static
+      - rust-format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every Fast CI job to pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          failed = {
+              name: payload["result"]
+              for name, payload in needs.items()
+              if payload["result"] != "success"
+          }
+          for name, payload in sorted(needs.items()):
+              print(f"{name}: {payload['result']}")
+          if failed:
+              raise SystemExit(f"Fast CI dependencies did not pass: {failed}")
+          PY

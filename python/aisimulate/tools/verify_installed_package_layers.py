@@ -84,6 +84,7 @@ def _verify_payload() -> None:
             "collector/__init__.py",
             "collector/model_cases.py",
             "collector/cases/base_ops/mla_module.yaml",
+            "collector/fpm_forward/cli.py",
             "collector/fpm_forward/__init__.py",
             "collector/fpm_forward/runtime/fpm_exec.sh",
         ),

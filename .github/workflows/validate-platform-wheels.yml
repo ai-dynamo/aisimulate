@@ -7,6 +7,12 @@ name: Validate platform wheels
 
 on:
   workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact commit that Full CI expects this workflow to validate
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
 
 permissions:
@@ -21,8 +27,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.expected_sha || github.sha }}
           persist-credentials: false
           lfs: true
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
       - name: Build and verify wheel
         uses: ./.github/actions/build-platform-wheel
         with:
@@ -39,8 +48,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.expected_sha || github.sha }}
           persist-credentials: false
           lfs: true
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
       - name: Build and verify wheel
         uses: ./.github/actions/build-platform-wheel
         with:
@@ -61,8 +73,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.expected_sha || github.sha }}
           persist-credentials: false
           lfs: true
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
       - name: Build and verify wheel
         uses: ./.github/actions/build-platform-wheel
         with:

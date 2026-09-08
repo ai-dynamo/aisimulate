@@ -52,6 +52,14 @@ COPY python/aisimulate/LICENSE python/aisimulate/THIRD_PARTY_NOTICES.md python/a
 COPY python/aisimulate/tools/verify_release_wheels.py /workspace/python/aisimulate/tools/verify_release_wheels.py
 COPY python/aisimulate/tools/verify_installed_package_layers.py /workspace/python/aisimulate/tools/verify_installed_package_layers.py
 COPY python/aisimulate/tools/build_legacy_monolith_fixture.py /workspace/python/aisimulate/tools/build_legacy_monolith_fixture.py
+# The source checkout exposes the compatibility data through
+# aic-core/src -> ../src. Recreate that link in the reduced Docker context so
+# maturin can follow aiconfigurator/{model_configs,systems} while assembling the
+# wheel, and fail before the expensive Rust build if the layout ever drifts.
+RUN mkdir -p /workspace/python/aisimulate/aic-core \
+    && ln -s ../src /workspace/python/aisimulate/aic-core/src \
+    && test -d /workspace/python/aisimulate/src/aiconfigurator/model_configs \
+    && test -d /workspace/python/aisimulate/src/aiconfigurator/systems
 # Fail fast if Git LFS content wasn't materialized before the build — otherwise
 # the wheel ships pointer stubs in place of perf data (see DYN-2725).
 RUN set -e; \

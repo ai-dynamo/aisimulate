@@ -1,5 +1,6 @@
-# The Rust feature-mode, Python compatibility, engine-regression, and
-# aggregate jobs were adapted from NVIDIA AIConfigurator at commit
+# The Rust feature-mode, Python compatibility, engine-golden, platform-wheel,
+# collector-data, and prediction-regression jobs were adapted from NVIDIA
+# AIConfigurator at commit
 # 77fd0773407b3683d8a671fe24a30a7110651b64.
 name: Full CI
 
@@ -21,6 +22,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   verify-target:
@@ -44,6 +46,28 @@ jobs:
     uses: ./.github/workflows/fast-ci.yml
     with:
       expected_sha: ${{ github.sha }}
+
+  platform-wheels:
+    name: Platform Wheels
+    needs: fast-ci
+    uses: ./.github/workflows/validate-platform-wheels.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
+  collector-data:
+    name: Collector Data
+    needs: fast-ci
+    uses: ./.github/workflows/collector-check.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
+  prediction-regression:
+    name: Prediction Regression
+    needs: fast-ci
+    uses: ./.github/workflows/prediction-regression-gate.yml
+    with:
+      expected_sha: ${{ github.sha }}
+      old-ref: main
 
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
@@ -110,8 +134,6 @@ jobs:
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-          rust-components: rustfmt
-      - run: cargo fmt --all -- --check
       - run: cargo test --workspace
 
   rust-feature-modes:
@@ -415,7 +437,7 @@ jobs:
           python/aisimulate/tests/cross_package
 
   engine-golden-regression:
-    name: Engine golden regression
+    name: Engine Golden Regression
     needs: fast-ci
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 45
@@ -482,12 +504,15 @@ jobs:
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
 
-  ci-success:
-    name: CI Success
+  full-ci-success:
+    name: Full CI Success
     if: always()
     needs:
       - verify-target
       - fast-ci
+      - platform-wheels
+      - collector-data
+      - prediction-regression
       - cargo-deny
       - rust
       - rust-feature-modes

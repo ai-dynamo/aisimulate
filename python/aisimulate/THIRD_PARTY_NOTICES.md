@@ -13,7 +13,7 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
-## NVIDIA AIConfigurator provenance
+## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
 AIConfigurator's `.coderabbit.yaml` at commit
@@ -35,15 +35,16 @@ This material is licensed under the Apache License 2.0. The upstream license
 at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
 
+## NVIDIA AIConfigurator CI provenance
+
 Selected CI definitions and a recommendation test were adapted from NVIDIA's
 AIConfigurator repository at commit
 `77fd0773407b3683d8a671fe24a30a7110651b64` and modified for AISimulate's
-unified package layout and copied-PR execution model:
+unified package layout and Fast CI / Full CI execution model:
 
 - repository-root `.github/workflows/ci.yml` (selected jobs)
 - repository-root `.github/actions/build-platform-wheel/action.yml`
 - repository-root `.github/actions/setup-python-rust/action.yml`
-- repository-root `.github/workflows/build-platform-wheels-copied-pr.yml`
 - repository-root `.github/workflows/collector-check.yml`
 - repository-root `.github/workflows/prediction-regression-gate.yml`
 - repository-root `.github/workflows/validate-platform-wheels.yml`

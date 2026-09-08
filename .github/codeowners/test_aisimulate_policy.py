@@ -183,7 +183,9 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     for inexpensive_gate in (
         "Check source and packaged legal files",
         "Check CODEOWNERS policy and generated artifacts",
+        "Check active workflow contracts",
         "ruff check",
+        "ruff format --check",
         "python -m compileall",
         "cargo fmt --all -- --check",
     ):
@@ -196,16 +198,25 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "Application Tests",
         "Release Artifact Contract",
         "Application Wheel",
+        "Platform Wheels",
+        "Collector Data",
+        "Prediction Regression",
+        "Engine Golden Regression",
     ):
         assert expensive_gate in full
         assert expensive_gate not in fast
 
     assert "uses: ./.github/workflows/fast-ci.yml" in full
+    assert "uses: ./.github/workflows/validate-platform-wheels.yml" in full
+    assert "uses: ./.github/workflows/collector-check.yml" in full
+    assert "uses: ./.github/workflows/prediction-regression-gate.yml" in full
     assert "needs: fast-ci" in full
     assert 'EXPECTED_SHA: ${{ inputs.expected_sha }}' in full
     assert 'RUN_SHA: ${{ github.sha }}' in full
     assert 'expected_sha: ${{ github.sha }}' in full
     assert "needs: verify-target" in full
+    assert "name: Fast CI Success" in fast
+    assert "name: Full CI Success" in full
     assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
     assert "workflow_dispatch" in full_config["on"]
     dispatch_sha = full_config["on"]["workflow_dispatch"]["inputs"]["expected_sha"]
