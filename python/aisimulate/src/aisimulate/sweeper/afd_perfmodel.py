@@ -5,15 +5,69 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
-from .afd import AFDInfeasible, AFDLayerTimes, AFDPhase, AFDReasonCategory, AFDTopology
+from .afd_parallel import AFDInfeasible, AFDPhase, AFDReasonCategory, AFDTopology
 from .replay import BackendDeploymentSpec
 
 AFD_MEASUREMENT_API_VERSION = 1
+
+
+@dataclass(frozen=True)
+class AFDLayerTimes:
+    """Performance-model measurements for one AFD phase and transformer layer."""
+
+    phase: AFDPhase | str
+    attention_ms: float
+    ffn_ms: float
+    a_to_f_ms: float
+    f_to_a_ms: float
+    num_layers: int
+    provenance: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        try:
+            phase = self.phase if isinstance(self.phase, AFDPhase) else AFDPhase(self.phase)
+        except ValueError as exc:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_MEASUREMENT,
+                f"phase must be prefill or decode, got {self.phase!r}",
+            ) from exc
+        if phase is AFDPhase.BOTH:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_MEASUREMENT,
+                "AFDLayerTimes must describe one phase, not 'both'",
+            )
+        if isinstance(self.num_layers, bool) or not isinstance(self.num_layers, int) or self.num_layers < 1:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_MEASUREMENT,
+                f"num_layers must be a positive integer, got {self.num_layers!r}",
+            )
+        for name in ("attention_ms", "ffn_ms", "a_to_f_ms", "f_to_a_ms"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0.0
+            ):
+                raise AFDInfeasible(
+                    AFDReasonCategory.INVALID_MEASUREMENT,
+                    f"{name} must be a finite non-negative number, got {value!r}",
+                    provenance={"field": name, "value": value},
+                )
+        if max(self.attention_ms, self.ffn_ms, self.a_to_f_ms, self.f_to_a_ms) <= 0:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_MEASUREMENT,
+                "at least one AFD layer time must be positive",
+            )
+        object.__setattr__(self, "phase", phase)
+        object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
 
 
 @dataclass(frozen=True)
@@ -263,6 +317,7 @@ def attach_afd_measurements(
 
 __all__ = [
     "AFD_MEASUREMENT_API_VERSION",
+    "AFDLayerTimes",
     "AFDMeasurementRequest",
     "AFDPerformanceModel",
     "AICAFDPerformanceModel",

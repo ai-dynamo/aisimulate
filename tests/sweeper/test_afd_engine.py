@@ -5,8 +5,9 @@
 
 import pytest
 
-from aisimulate.sweeper.afd import AFDLayerTimes, AFDPipelineModel, AFDTopology
 from aisimulate.sweeper.afd_engine import AFDForegroundEngine, AFDStage
+from aisimulate.sweeper.afd_parallel import AFDPipelineModel, AFDTopology
+from aisimulate.sweeper.afd_perfmodel import AFDLayerTimes
 
 
 def _topology(**overrides) -> AFDTopology:

@@ -6,18 +6,147 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
+from typing import Any
 
-from .afd import (
+from .afd_parallel import (
+    AFD_SCHEMA_VERSION,
     AFDInfeasible,
-    AFDLayerTimes,
     AFDPhase,
-    AFDPhaseEvaluation,
+    AFDPipelineModel,
     AFDReasonCategory,
     AFDTopology,
-    evaluate_afd_phase,
 )
+from .afd_perfmodel import AFDLayerTimes
+
+
+def _positive_int(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise AFDInfeasible(
+            AFDReasonCategory.INVALID_MEASUREMENT,
+            f"{name} must be a positive integer, got {value!r}",
+        )
+
+
+def _positive_finite(name: str, value: float) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) <= 0.0
+    ):
+        raise AFDInfeasible(
+            AFDReasonCategory.INVALID_MEASUREMENT,
+            f"{name} must be a positive finite number, got {value!r}",
+        )
+
+
+@dataclass(frozen=True)
+class AFDPhaseEvaluation:
+    """One phase's A/F pipeline evaluation for foreground execution."""
+
+    phase: AFDPhase
+    step_latency_ms: float
+    sequence_rate: float
+    tokens_per_second: float
+    communication_hidden: bool
+    balance_ratio: float
+    cycle_ms: float
+    pipeline_fill_ms: float
+    requested_pipeline_model: AFDPipelineModel
+    effective_pipeline_model: AFDPipelineModel
+    total_gpus: int
+    provenance: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
+
+
+def evaluate_afd_phase(
+    topology: AFDTopology,
+    times: AFDLayerTimes,
+    *,
+    input_length: int,
+    output_length: int,
+    latency_correction: float = 1.0,
+) -> AFDPhaseEvaluation:
+    """Evaluate one AFD phase with the legacy K=3/K=2/serial formulas."""
+
+    _positive_int("input_length", input_length)
+    _positive_int("output_length", output_length)
+    _positive_finite("latency_correction", latency_correction)
+    if topology.phase is not AFDPhase.BOTH and topology.phase is not times.phase:
+        raise AFDInfeasible(
+            AFDReasonCategory.INCOMPATIBLE_PHASE,
+            f"topology phase={topology.phase.value!r} cannot evaluate measurement phase={times.phase.value!r}",
+            provenance=topology.provenance(),
+        )
+
+    t_a = float(times.attention_ms)
+    t_f = float(times.ffn_ms)
+    t_a2f = float(times.a_to_f_ms) * topology.comm_overhead_factor
+    t_f2a = float(times.f_to_a_ms) * topology.comm_overhead_factor
+    t_c = t_a2f + t_f2a
+    requested = topology.pipeline_model
+    effective = requested
+    hidden = False
+    if requested is AFDPipelineModel.SERIAL:
+        cycle = t_a + t_a2f + t_f + t_f2a
+    elif requested is AFDPipelineModel.CONSERVATIVE:
+        cycle = max(t_a + t_a2f, t_f + t_f2a)
+    else:
+        min_microbatches = 2.0 + t_c / max(t_a, t_f, 1e-9)
+        if topology.num_microbatches < min_microbatches:
+            effective = AFDPipelineModel.CONSERVATIVE
+            cycle = max(t_a + t_a2f, t_f + t_f2a)
+        else:
+            cycle = max(t_a, t_f, t_c)
+            hidden = t_c <= max(t_a, t_f)
+    fill = t_a + t_f + t_a2f + t_f2a
+    step = (
+        fill + cycle * max(topology.num_microbatches * times.num_layers - 1, 0)
+    ) * float(latency_correction)
+    if step <= 0:
+        raise AFDInfeasible(
+            AFDReasonCategory.INVALID_MEASUREMENT,
+            "AFD pipeline evaluation produced a non-positive step latency",
+        )
+    if times.phase is AFDPhase.DECODE:
+        tokens_per_second = topology.total_batch_size / (step / 1000.0)
+        sequence_rate = tokens_per_second / output_length
+    else:
+        sequence_rate = topology.total_batch_size / (step / 1000.0)
+        tokens_per_second = sequence_rate * input_length
+    return AFDPhaseEvaluation(
+        phase=times.phase,
+        step_latency_ms=step,
+        sequence_rate=sequence_rate,
+        tokens_per_second=tokens_per_second,
+        communication_hidden=hidden,
+        balance_ratio=min(t_a, t_f) / max(t_a, t_f, 1e-9),
+        cycle_ms=cycle,
+        pipeline_fill_ms=fill,
+        requested_pipeline_model=requested,
+        effective_pipeline_model=effective,
+        total_gpus=topology.total_gpus,
+        provenance={
+            "schema_version": AFD_SCHEMA_VERSION,
+            "formula": "AFDInferenceSession._pipeline_global_step_latency",
+            "layer_times": {
+                "attention_ms": t_a,
+                "ffn_ms": t_f,
+                "a_to_f_ms": t_a2f,
+                "f_to_a_ms": t_f2a,
+                "num_layers": times.num_layers,
+            },
+            "measurement": dict(times.provenance),
+            "topology": topology.provenance(),
+            "latency_correction": latency_correction,
+        },
+    )
 
 
 class AFDStage(str, Enum):
@@ -227,6 +356,8 @@ __all__ = [
     "AFDForegroundCompletion",
     "AFDForegroundEngine",
     "AFDForegroundPass",
+    "AFDPhaseEvaluation",
     "AFDStage",
     "AFDStageInterval",
+    "evaluate_afd_phase",
 ]
