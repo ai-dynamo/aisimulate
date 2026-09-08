@@ -83,24 +83,23 @@ A trace-only AFD sweep is rejected because one fixed A/F layer measurement canno
 requests with differing sequence lengths. Trace-aware measurement belongs with a later replay
 lifecycle.
 
-## Foreground Engine
+## Staged Evaluation
 
-The foreground-engine layer applies the legacy pipeline regimes:
+The foreground engine applies the legacy pipeline regimes:
 
 - optimistic: `max(A, F, A_to_F + F_to_A)`, with the legacy minimum-microbatch check;
 - conservative: `max(A + A_to_F, F + F_to_A)`; and
 - serial: the sum of all compute and transfer stages.
 
-Global step latency includes pipeline fill and every microbatch-layer cadence. Pure AFD can cover
-prefill, decode, or both. When both phases use the same A/F pools, GPU count is not doubled.
+Global step latency includes pipeline fill and every microbatch-layer cadence.
+`AFDForegroundEngine` expands that formula into deterministic A, A-to-F, F, and F-to-A intervals
+for every layer and microbatch. Starting a pass eagerly fixes the whole non-preemptive schedule;
+completion effects remain hidden until its modeled full-pass boundary. A second pass cannot start
+while one is in flight, and a late caller wakeup does not inflate modeled completion time.
 
-`AFDForegroundEngine` expands that same formula into deterministic A, A-to-F, F, and F-to-A
-intervals for every layer and microbatch. Starting a pass eagerly fixes the whole non-preemptive
-schedule; completion effects remain hidden until its modeled full-pass boundary. A second pass
-cannot start while one is in flight, and a late caller wakeup does not inflate the modeled
-completion time. A topology covering both phases executes prefill and decode as separate full
-passes through the same engine. For `afd+pd`, this engine owns only the configured AFD phase; the
-ordinary companion remains a replay-layer responsibility.
+A topology covering both phases executes prefill and decode as separate full passes through the
+same A/F pool. For `afd+pd`, this engine owns only the configured AFD phase; the ordinary
+companion remains a replay-layer responsibility.
 
 ## Generic Sweeper Domain
 

@@ -23,6 +23,86 @@ from .afd_parallel import (
 from .afd_perfmodel import AFDLayerTimes
 
 
+class AFDStage(str, Enum):
+    """One resource stage in the A-to-F-to-A layer cycle."""
+
+    ATTENTION = "attention"
+    A_TO_F = "a_to_f"
+    FFN = "ffn"
+    F_TO_A = "f_to_a"
+
+
+@dataclass(frozen=True)
+class AFDStageInterval:
+    """One stage's modeled occupancy in a full-pass schedule."""
+
+    stage: AFDStage
+    layer: int
+    microbatch: int
+    start_ms: float
+    end_ms: float
+
+    @property
+    def duration_ms(self) -> float:
+        return self.end_ms - self.start_ms
+
+
+@dataclass(frozen=True)
+class AFDPhaseEvaluation:
+    """One phase's legacy-equivalent AFD pipeline evaluation."""
+
+    phase: AFDPhase
+    step_latency_ms: float
+    sequence_rate: float
+    tokens_per_second: float
+    communication_hidden: bool
+    balance_ratio: float
+    cycle_ms: float
+    pipeline_fill_ms: float
+    requested_pipeline_model: AFDPipelineModel
+    effective_pipeline_model: AFDPipelineModel
+    total_gpus: int
+    provenance: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
+
+
+@dataclass(frozen=True)
+class AFDForegroundPass:
+    """An eagerly planned, non-preemptive AFD full pass."""
+
+    pass_id: int
+    phase: AFDPhase
+    started_at_ms: float
+    end_ms: float
+    input_length: int
+    output_length: int
+    evaluation: AFDPhaseEvaluation
+    intervals: tuple[AFDStageInterval, ...]
+
+
+@dataclass(frozen=True)
+class AFDForegroundCompletion:
+    """Effects released at an AFD full-pass completion boundary."""
+
+    pass_id: int
+    phase: AFDPhase
+    completed_at_ms: float
+    completed_sequences: int
+    completed_tokens: int
+    pass_latency_ms: float
+
+
+def _validate_time(value: float, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError(f"{label} must be a finite non-negative number, got {value!r}")
+    normalized = float(value)
+    if normalized < 0.0:
+        raise ValueError(f"{label} must be a finite non-negative number, got {value!r}")
+    return normalized
+
+
 def _positive_int(name: str, value: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise AFDInfeasible(
@@ -42,27 +122,6 @@ def _positive_finite(name: str, value: float) -> None:
             AFDReasonCategory.INVALID_MEASUREMENT,
             f"{name} must be a positive finite number, got {value!r}",
         )
-
-
-@dataclass(frozen=True)
-class AFDPhaseEvaluation:
-    """One phase's A/F pipeline evaluation for foreground execution."""
-
-    phase: AFDPhase
-    step_latency_ms: float
-    sequence_rate: float
-    tokens_per_second: float
-    communication_hidden: bool
-    balance_ratio: float
-    cycle_ms: float
-    pipeline_fill_ms: float
-    requested_pipeline_model: AFDPipelineModel
-    effective_pipeline_model: AFDPipelineModel
-    total_gpus: int
-    provenance: Mapping[str, Any]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
 
 
 def evaluate_afd_phase(
@@ -106,9 +165,7 @@ def evaluate_afd_phase(
             cycle = max(t_a, t_f, t_c)
             hidden = t_c <= max(t_a, t_f)
     fill = t_a + t_f + t_a2f + t_f2a
-    step = (
-        fill + cycle * max(topology.num_microbatches * times.num_layers - 1, 0)
-    ) * float(latency_correction)
+    step = (fill + cycle * max(topology.num_microbatches * times.num_layers - 1, 0)) * float(latency_correction)
     if step <= 0:
         raise AFDInfeasible(
             AFDReasonCategory.INVALID_MEASUREMENT,
@@ -147,65 +204,6 @@ def evaluate_afd_phase(
             "latency_correction": latency_correction,
         },
     )
-
-
-class AFDStage(str, Enum):
-    """One resource stage in the A-to-F-to-A layer cycle."""
-
-    ATTENTION = "attention"
-    A_TO_F = "a_to_f"
-    FFN = "ffn"
-    F_TO_A = "f_to_a"
-
-
-@dataclass(frozen=True)
-class AFDStageInterval:
-    """One stage's modeled occupancy in a full-pass schedule."""
-
-    stage: AFDStage
-    layer: int
-    microbatch: int
-    start_ms: float
-    end_ms: float
-
-    @property
-    def duration_ms(self) -> float:
-        return self.end_ms - self.start_ms
-
-
-@dataclass(frozen=True)
-class AFDForegroundPass:
-    """An eagerly planned, non-preemptive AFD full pass."""
-
-    pass_id: int
-    phase: AFDPhase
-    started_at_ms: float
-    end_ms: float
-    input_length: int
-    output_length: int
-    evaluation: AFDPhaseEvaluation
-    intervals: tuple[AFDStageInterval, ...]
-
-
-@dataclass(frozen=True)
-class AFDForegroundCompletion:
-    """Effects released at an AFD full-pass completion boundary."""
-
-    pass_id: int
-    phase: AFDPhase
-    completed_at_ms: float
-    completed_sequences: int
-    completed_tokens: int
-    pass_latency_ms: float
-
-
-def _validate_time(value: float, label: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-        raise ValueError(f"{label} must be a finite non-negative number, got {value!r}")
-    normalized = float(value)
-    if normalized < 0.0:
-        raise ValueError(f"{label} must be a finite non-negative number, got {value!r}")
-    return normalized
 
 
 class AFDForegroundEngine:
