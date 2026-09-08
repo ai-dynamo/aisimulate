@@ -257,6 +257,19 @@ def test_full_ci_scope_resolver_handles_copy_manual_and_race_cases(
     assert raced.returncode != 0
     assert "PR head changed" in raced.stdout
 
+    api_failure = _run_workflow_script(
+        scope_script,
+        {**copy_env, "FAKE_GH_EXIT": "1"},
+    )
+    assert api_failure.returncode != 0
+
+    invalid_ref = _run_workflow_script(
+        scope_script,
+        {**copy_env, "GITHUB_REF": "refs/heads/pull-request/not-a-number"},
+    )
+    assert invalid_ref.returncode != 0
+    assert "invalid trusted PR copy ref" in invalid_ref.stdout
+
     manual_output = tmp_path / "manual-output"
     manual = _run_workflow_script(
         scope_script,
