@@ -29,7 +29,12 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
         raise ValueError(f"output directory {root} is not empty; pass --overwrite to replace known AISimulate outputs")
     root.mkdir(parents=True, exist_ok=True)
     if overwrite:
-        for name in ("prediction.json", "recommendation.json", "requests.jsonl"):
+        for name in (
+            "prediction.json",
+            "recommendation.json",
+            "recommendation.csv",
+            "requests.jsonl",
+        ):
             target = root / name
             if target.is_file() or target.is_symlink():
                 target.unlink()
@@ -61,6 +66,14 @@ def write_recommendation_result(root: Path, result: SweepResult) -> Path:
 
     path = root / "recommendation.json"
     path.write_text(result.to_json() + "\n", encoding="utf-8")
+    return path
+
+
+def write_recommendation_csv(root: Path, result: SweepResult) -> Path:
+    """Write the complete candidate ledger as an analysis-friendly CSV."""
+
+    path = root / "recommendation.csv"
+    path.write_text(result.to_csv(), encoding="utf-8")
     return path
 
 
@@ -97,5 +110,13 @@ def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str)
     for row in rows:
         objective = row.get("objectives") or {"score": row.get("score")}
         metrics = ", ".join(f"{key}={value:.4g}" for key, value in objective.items())
-        lines.append(f"{row['rank']}: {metrics} used_gpus={row['used_gpus']} config={row['config_path']}")
+        power = ""
+        if "power_w" in row:
+            power += f" power_w={row['power_w']:.4g}W"
+        if "power_coverage" in row:
+            power += f" power_coverage={row['power_coverage']:.2%}"
+        lines.append(
+            f"{row['rank']}: {metrics} used_gpus={row['used_gpus']}"
+            f"{power} config={row['config_path']}"
+        )
     return "\n".join(lines)

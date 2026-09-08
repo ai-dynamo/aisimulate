@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from copy import deepcopy
 from types import SimpleNamespace
@@ -62,6 +63,9 @@ class _RecommendationResult:
             sort_keys=True,
         )
 
+    def to_csv(self) -> str:
+        return "schema_version\n1.0\n"
+
 
 class _Runner:
     def __init__(self) -> None:
@@ -82,12 +86,16 @@ class _Runner:
                 "mean_ttft_ms": 2.0,
                 "mean_tpot_ms": 1.0,
                 "mean_e2e_latency_ms": 4.0,
+                "power_w": 487.5,
+                "power_coverage": 0.95,
             },
             metadata={
                 "native_report": {
                     "summary": {
                         "completed_requests": 1,
                         "output_throughput_tok_s": 8.0,
+                        "power_w": 487.5,
+                        "power_coverage": 0.95,
                     },
                     "per_request": [{"request_id": "synthetic-0"}],
                 }
@@ -443,6 +451,8 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     rows = json.loads(capsys.readouterr().out)
     recommendation = recommendation_output / "recommendations" / "0001.yaml"
     assert rows[0]["config_path"] == str(recommendation)
+    assert rows[0]["power_w"] == 487.5
+    assert rows[0]["power_coverage"] == 0.95
     generated = yaml.safe_load(recommendation.read_text())
     assert "router" not in generated
     assert "planner" not in generated
@@ -453,6 +463,22 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert result["counts"]["feasible"] == 1
     assert result["views"]["top_n"] == ["candidate-000001"]
     assert result["candidates"][0]["prediction_config"] == generated
+    assert result["candidates"][0]["metrics"]["power_w"] == 487.5
+    assert result["candidates"][0]["metrics"]["power_coverage"] == 0.95
+    assert result["candidates"][0]["provenance"]["power"] == {
+        "coverage_gate": 0.9,
+        "power_coverage": 0.95,
+        "power_w": 487.5,
+        "power_w_unit": "W",
+        "publication_status": "available",
+        "scope": "active_forward_pass_per_gpu",
+        "source": "modeled",
+    }
+    with (recommendation_output / "recommendation.csv").open() as csv_file:
+        csv_rows = list(csv.DictReader(csv_file))
+    assert csv_rows[0]["power_w"] == "487.5"
+    assert csv_rows[0]["power_coverage"] == "0.95"
+    assert csv_rows[0]["power_source"] == "modeled"
 
     prediction_output = tmp_path / "predict-output"
     assert (
@@ -595,6 +621,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     unrelated.write_text("keep")
     (root / "prediction.json").write_text("old")
     (root / "recommendation.json").write_text("old")
+    (root / "recommendation.csv").write_text("old")
     (recommendations / "0001.yaml").write_text("old")
     (recommendations / "notes.txt").write_text("keep")
 
@@ -607,6 +634,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert (recommendations / "notes.txt").read_text() == "keep"
     assert not (root / "prediction.json").exists()
     assert not (root / "recommendation.json").exists()
+    assert not (root / "recommendation.csv").exists()
     assert not (recommendations / "0001.yaml").exists()
 
 

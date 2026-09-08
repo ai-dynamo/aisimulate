@@ -33,6 +33,7 @@ from .output import (
     format_recommendation_stdout,
     prepare_output_directory,
     write_prediction_report,
+    write_recommendation_csv,
     write_recommendation_result,
     write_recommendations,
     write_requests,
@@ -253,20 +254,30 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     )
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
     result_path = write_recommendation_result(root, result)
+    write_recommendation_csv(root, result)
     if not selected:
         sys.stderr.write(f"no feasible candidate found; saved full result to: {result_path}\n")
         return 1
     paths = write_recommendations(root, [config for _, _, config in selected])
-    rows = [
-        {
+    rows = []
+    for index, ((_, candidate, _), path) in enumerate(
+        zip(selected, paths, strict=True), start=1
+    ):
+        row = {
             "rank": index,
             "score": candidate.score,
             "objectives": candidate.objectives,
             "used_gpus": candidate.used_gpus,
             "config_path": str(path),
         }
-        for index, ((_, candidate, _), path) in enumerate(zip(selected, paths, strict=True), start=1)
-    ]
+        row.update(
+            {
+                key: candidate.metrics[key]
+                for key in ("power_w", "power_coverage")
+                if key in candidate.metrics
+            }
+        )
+        rows.append(row)
     sys.stdout.write(format_recommendation_stdout(rows, args.format))
     sys.stdout.write("\n")
     if args.format == "table":

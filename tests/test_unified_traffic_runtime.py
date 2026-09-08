@@ -9,6 +9,7 @@ import pytest
 
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig
+from aisimulate.replay.reporting import format_report_table
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 
@@ -116,6 +117,24 @@ def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
     coverage = report.metrics["power_coverage"]
     assert 0.0 <= coverage <= 1.0
     assert ("power_w" in report.metrics) is (coverage >= 0.9)
+
+
+def test_power_report_table_surfaces_available_power_and_coverage() -> None:
+    table = format_report_table({"power_w": 487.5, "power_coverage": 0.95})
+
+    assert "Active Power per GPU (W)" in table
+    assert "487.50" in table
+    assert "Power Data Coverage (%)" in table
+    assert "95.00" in table
+
+
+def test_power_report_table_surfaces_withheld_power_as_unavailable() -> None:
+    table = format_report_table({"power_coverage": 0.42})
+
+    assert "Active Power per GPU (W)" in table
+    assert "N/A" in table
+    assert "Power Data Coverage (%)" in table
+    assert "42.00" in table
 
 
 def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
