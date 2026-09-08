@@ -79,16 +79,42 @@ impl<Metadata> ReplayReadyArrival<Metadata> {
 enum AdmissionSource {
     Requests(VecDeque<DirectRequest>),
     GeneratedRequests(GeneratedRequests),
-    Workload(WorkloadDriver),
+    Workload {
+        driver: WorkloadDriver,
+        pending_agentic_feedback: PendingAgenticFeedback,
+    },
+}
+
+/// Runtime feedback collected beside the workload driver until the current
+/// logical timestamp is flushed as one deterministic batch.
+#[derive(Default)]
+struct PendingAgenticFeedback {
+    output_tokens: Vec<AgenticOutputFeedback>,
+    causal_terminals: Vec<AgenticTerminalFeedback>,
+    quiescent_requests: Vec<Uuid>,
+}
+
+impl PendingAgenticFeedback {
+    fn is_empty(&self) -> bool {
+        self.output_tokens.is_empty()
+            && self.causal_terminals.is_empty()
+            && self.quiescent_requests.is_empty()
+    }
+
+    fn take_batch(&mut self, at_ms: f64) -> AgenticFeedbackBatch {
+        AgenticFeedbackBatch {
+            at_ms,
+            output_tokens: std::mem::take(&mut self.output_tokens),
+            causal_terminals: std::mem::take(&mut self.causal_terminals),
+            quiescent_requests: std::mem::take(&mut self.quiescent_requests),
+        }
+    }
 }
 
 pub(crate) struct AdmissionQueue<Metadata = NoReplayMetadata> {
     source: AdmissionSource,
     mode: ReplayMode,
     metadata: PhantomData<Metadata>,
-    pending_agentic_outputs: Vec<AgenticOutputFeedback>,
-    pending_agentic_terminals: Vec<AgenticTerminalFeedback>,
-    pending_agentic_quiescence: Vec<Uuid>,
 }
 
 impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
@@ -97,9 +123,6 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             source: AdmissionSource::Requests(source),
             mode,
             metadata: PhantomData,
-            pending_agentic_outputs: Vec::new(),
-            pending_agentic_terminals: Vec::new(),
-            pending_agentic_quiescence: Vec::new(),
         }
     }
 
@@ -113,12 +136,12 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
 
     pub(crate) fn new_workload(driver: WorkloadDriver, mode: ReplayMode) -> Self {
         Self {
-            source: AdmissionSource::Workload(driver),
+            source: AdmissionSource::Workload {
+                driver,
+                pending_agentic_feedback: PendingAgenticFeedback::default(),
+            },
             mode,
             metadata: PhantomData,
-            pending_agentic_outputs: Vec::new(),
-            pending_agentic_terminals: Vec::new(),
-            pending_agentic_quiescence: Vec::new(),
         }
     }
 
@@ -131,10 +154,12 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => pending
                 .front()
                 .and_then(|request| request.arrival_timestamp_ms),
-            (ReplayMode::Trace, AdmissionSource::Workload(driver)) => driver.next_ready_time_ms(),
+            (ReplayMode::Trace, AdmissionSource::Workload { driver, .. }) => {
+                driver.next_ready_time_ms()
+            }
             // Concurrency: the driver owns the session cap and gates admission, so defer to
             // it directly (no in-flight clamp needed here).
-            (ReplayMode::Concurrency { .. }, AdmissionSource::Workload(driver)) => {
+            (ReplayMode::Concurrency { .. }, AdmissionSource::Workload { driver, .. }) => {
                 driver.next_ready_time_ms()
             }
             (ReplayMode::Concurrency { .. }, AdmissionSource::Requests(_))
@@ -198,7 +223,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 }
                 Ok(ready)
             }
-            (ReplayMode::Trace, AdmissionSource::Workload(driver)) => Ok(driver
+            (ReplayMode::Trace, AdmissionSource::Workload { driver, .. }) => Ok(driver
                 .pop_ready_compact(now_ms, usize::MAX)
                 .into_iter()
                 .map(|ready| {
@@ -246,7 +271,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             (ReplayMode::Trace, AdmissionSource::GeneratedRequests(_)) => {
                 anyhow::bail!("generated requests require concurrency admission")
             }
-            (ReplayMode::Concurrency { .. }, AdmissionSource::Workload(driver)) => {
+            (ReplayMode::Concurrency { .. }, AdmissionSource::Workload { driver, .. }) => {
                 // The driver owns the session cap and only ever holds active sessions'
                 // turns in its heap, so drain everything ready in heap (i.e. limit=usize MAX).
                 Ok(driver
@@ -321,7 +346,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         now_ms: f64,
         status: crate::replay::ReplayTerminalStatus,
     ) -> Result<()> {
-        let AdmissionSource::Workload(driver) = &mut self.source else {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_terminal(uuid, now_ms, status)
@@ -333,45 +358,54 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         now_ms: f64,
         status: crate::replay::ReplayTerminalStatus,
     ) -> Result<()> {
-        let AdmissionSource::Workload(driver) = &mut self.source else {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_causal_terminal(uuid, now_ms, status)
     }
 
     pub(crate) fn on_request_quiescent(&mut self, uuid: Uuid, now_ms: f64) -> Result<()> {
-        let AdmissionSource::Workload(driver) = &mut self.source else {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_quiescent(uuid, now_ms)
     }
 
     pub(crate) fn on_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
-        let AdmissionSource::Workload(driver) = &mut self.source else {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_output_token(uuid, token_id)
     }
 
     fn is_agentic(&self) -> bool {
-        matches!(&self.source, AdmissionSource::Workload(driver) if driver.is_agentic())
+        matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.is_agentic())
     }
 
     pub(crate) fn defer_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
         if !self.is_agentic() {
             return CoreAdmissionSource::on_output_token(self, uuid, token_id);
         }
-        if let Some(existing) = self
-            .pending_agentic_outputs
+        let AdmissionSource::Workload {
+            pending_agentic_feedback,
+            ..
+        } = &mut self.source
+        else {
+            unreachable!("only an agentic workload can buffer agentic feedback");
+        };
+        if let Some(existing) = pending_agentic_feedback
+            .output_tokens
             .iter_mut()
             .find(|feedback| feedback.request_uuid == uuid)
         {
             existing.token_ids.push(token_id);
         } else {
-            self.pending_agentic_outputs.push(AgenticOutputFeedback {
-                request_uuid: uuid,
-                token_ids: vec![token_id],
-            });
+            pending_agentic_feedback
+                .output_tokens
+                .push(AgenticOutputFeedback {
+                    request_uuid: uuid,
+                    token_ids: vec![token_id],
+                });
         }
         Ok(())
     }
@@ -385,7 +419,15 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         if !self.is_agentic() {
             return self.on_request_causal_terminal(uuid, now_ms, status);
         }
-        self.pending_agentic_terminals
+        let AdmissionSource::Workload {
+            pending_agentic_feedback,
+            ..
+        } = &mut self.source
+        else {
+            unreachable!("only an agentic workload can buffer agentic feedback");
+        };
+        pending_agentic_feedback
+            .causal_terminals
             .push(AgenticTerminalFeedback {
                 request_uuid: uuid,
                 status,
@@ -397,7 +439,14 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         if !self.is_agentic() {
             return self.on_request_quiescent(uuid, now_ms);
         }
-        self.pending_agentic_quiescence.push(uuid);
+        let AdmissionSource::Workload {
+            pending_agentic_feedback,
+            ..
+        } = &mut self.source
+        else {
+            unreachable!("only an agentic workload can buffer agentic feedback");
+        };
+        pending_agentic_feedback.quiescent_requests.push(uuid);
         Ok(())
     }
 
@@ -410,31 +459,35 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         if !self.is_agentic() {
             return CoreAdmissionSource::on_terminal(self, uuid, now_ms, status);
         }
-        self.pending_agentic_terminals
+        let AdmissionSource::Workload {
+            pending_agentic_feedback,
+            ..
+        } = &mut self.source
+        else {
+            unreachable!("only an agentic workload can buffer agentic feedback");
+        };
+        pending_agentic_feedback
+            .causal_terminals
             .push(AgenticTerminalFeedback {
                 request_uuid: uuid,
                 status,
             });
-        self.pending_agentic_quiescence.push(uuid);
+        pending_agentic_feedback.quiescent_requests.push(uuid);
         Ok(())
     }
 
     pub(crate) fn flush_agentic_feedback(&mut self, now_ms: f64) -> Result<bool> {
-        if self.pending_agentic_outputs.is_empty()
-            && self.pending_agentic_terminals.is_empty()
-            && self.pending_agentic_quiescence.is_empty()
-        {
+        let AdmissionSource::Workload {
+            driver,
+            pending_agentic_feedback,
+        } = &mut self.source
+        else {
+            return Ok(false);
+        };
+        if pending_agentic_feedback.is_empty() {
             return Ok(false);
         }
-        let AdmissionSource::Workload(driver) = &mut self.source else {
-            unreachable!("only an agentic workload can buffer agentic feedback");
-        };
-        driver.apply_agentic_feedback_batch(AgenticFeedbackBatch {
-            at_ms: now_ms,
-            output_tokens: std::mem::take(&mut self.pending_agentic_outputs),
-            causal_terminals: std::mem::take(&mut self.pending_agentic_terminals),
-            quiescent_requests: std::mem::take(&mut self.pending_agentic_quiescence),
-        })?;
+        driver.apply_agentic_feedback_batch(pending_agentic_feedback.take_batch(now_ms))?;
         Ok(true)
     }
 
@@ -442,27 +495,27 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         match &self.source {
             AdmissionSource::Requests(pending) => pending.is_empty(),
             AdmissionSource::GeneratedRequests(source) => source.remaining() == 0,
-            AdmissionSource::Workload(driver) => driver.is_drained(),
+            AdmissionSource::Workload { driver, .. } => driver.is_drained(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn is_workload(&self) -> bool {
-        matches!(self.source, AdmissionSource::Workload(_))
+        matches!(self.source, AdmissionSource::Workload { .. })
     }
 
     pub(crate) fn total_requests(&self) -> usize {
         match &self.source {
             AdmissionSource::Requests(pending) => pending.len(),
             AdmissionSource::GeneratedRequests(source) => source.remaining(),
-            AdmissionSource::Workload(driver) => driver.total_turns(),
+            AdmissionSource::Workload { driver, .. } => driver.total_turns(),
         }
     }
 
     pub(crate) fn agentic_trajectory_snapshot(
         &self,
     ) -> Option<crate::replay::loadgen::AgenticTrajectorySnapshot> {
-        let AdmissionSource::Workload(driver) = &self.source else {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
             return None;
         };
         driver.agentic_trajectory_snapshot()
@@ -471,7 +524,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     pub(crate) fn agentic_graph_identity(
         &self,
     ) -> Option<crate::replay::loadgen::AgenticGraphIdentity> {
-        let AdmissionSource::Workload(driver) = &self.source else {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
             return None;
         };
         driver.agentic_graph_identity()
@@ -480,7 +533,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     pub(crate) fn agentic_lifecycle_transcript(
         &self,
     ) -> Option<crate::replay::loadgen::AgenticLifecycleTranscript> {
-        let AdmissionSource::Workload(driver) = &self.source else {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
             return None;
         };
         driver.agentic_lifecycle_transcript()
