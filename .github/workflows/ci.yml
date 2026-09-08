@@ -723,6 +723,11 @@ jobs:
                   failures.append(f"{name}={result}, expected {wanted}")
           if invalid_outputs:
               failures.append("invalid selection outputs: " + ", ".join(invalid_outputs))
+          missing_dependencies = sorted(set(expected) - set(needs))
+          if missing_dependencies:
+              failures.append(
+                  "missing dependencies: " + ", ".join(missing_dependencies)
+              )
           if failures:
               print("::error::Full CI did not pass: " + "; ".join(failures))
               raise SystemExit(1)

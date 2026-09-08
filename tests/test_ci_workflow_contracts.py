@@ -207,7 +207,7 @@ def test_full_ci_scope_resolver_handles_copy_manual_and_race_cases(
         "if [[ ${args} == *'.changed_files'* ]]; then\n"
         "  printf '%s\\n' \"${FAKE_CHANGED_FILES:-2}\"\n"
         "elif [[ ${args} == *'/files?per_page=100'* ]]; then\n"
-        "  [[ ${FAKE_FAIL_FILES:-false} != true ]]\n"
+        "  if [[ ${FAKE_FAIL_FILES:-false} == true ]]; then exit 1; fi\n"
         "  printf '%s\\n' \"${FAKE_FILES:-README.md}\"\n"
         "elif [[ ${args} == *'.head.sha'* ]]; then\n"
         "  printf '%s\\n' \"${FAKE_PR_HEAD:-}\"\n"
@@ -243,6 +243,12 @@ def test_full_ci_scope_resolver_handles_copy_manual_and_race_cases(
     ]
 
     output.unlink()
+    truncated = _run_workflow_script(
+        scope_script,
+        {**copy_env, "FAKE_FAIL_FILES": "true"},
+    )
+    assert truncated.returncode != 0
+
     oversized = _run_workflow_script(
         scope_script,
         {
@@ -332,6 +338,22 @@ def test_full_ci_aggregate_rejects_missing_selection_output() -> None:
     result = _run_full_ci_aggregate(results, plan)
     assert result.returncode != 0
     assert "invalid selection outputs: collector_data=None" in result.stdout
+
+
+def test_full_ci_aggregate_rejects_missing_dependency() -> None:
+    plan = dict.fromkeys(COMPONENTS, "false")
+    results = {
+        "verify-target": "success",
+        "select-full-ci": "success",
+        "fast-ci": "success",
+        "stage-application-wheel": "skipped",
+        **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
+    }
+    del results["collector-data"]
+
+    result = _run_full_ci_aggregate(results, plan)
+    assert result.returncode != 0
+    assert "missing dependencies: collector-data" in result.stdout
 
 
 def test_full_ci_selector_skips_heavy_jobs_for_documentation() -> None:
@@ -430,10 +452,82 @@ def test_full_ci_selector_cli_decodes_paths_and_writes_outputs(tmp_path: Path) -
 
 
 def test_python_dependency_changes_run_the_complete_matrix() -> None:
-    plan = select_components(["python/aisimulate/pyproject.toml"])
+    for path in (
+        "python/aisimulate/pyproject.toml",
+        "python/aisimulate/uv.lock",
+        "python/aisimulate/pytest.ini",
+    ):
+        plan = select_components([path])
 
-    assert plan["run_all"] is True
-    assert all(plan["components"].values())
+        assert plan["run_all"] is True
+        assert all(plan["components"].values())
+
+
+@pytest.mark.parametrize(
+    ("path", "selected"),
+    [
+        (
+            "Cargo.lock",
+            {
+                "platform_wheels",
+                "prediction_regression",
+                "cargo_deny",
+                "rust",
+                "rust_feature_modes",
+                "public_api_rust",
+                "application_wheel",
+                "application_tests",
+                "python_compatibility",
+                "engine_golden_regression",
+                "release_artifact_contract",
+            },
+        ),
+        (
+            "crates/core/Cargo.toml",
+            {
+                "platform_wheels",
+                "prediction_regression",
+                "cargo_deny",
+                "rust",
+                "rust_feature_modes",
+                "public_api_rust",
+                "application_wheel",
+                "application_tests",
+                "python_compatibility",
+                "engine_golden_regression",
+                "release_artifact_contract",
+            },
+        ),
+        (
+            "THIRD_PARTY_NOTICES.md",
+            {
+                "platform_wheels",
+                "application_wheel",
+                "application_tests",
+                "python_compatibility",
+                "release_artifact_contract",
+            },
+        ),
+        (
+            "python/aisimulate/docker/Dockerfile",
+            {
+                "platform_wheels",
+                "application_wheel",
+                "application_tests",
+                "python_compatibility",
+                "release_artifact_contract",
+            },
+        ),
+        ("tests/test_runner.py", {"application_tests"}),
+        ("examples/sweeper/run_sweep.py", {"application_tests"}),
+    ],
+)
+def test_full_ci_selector_mapping_oracle(path: str, selected: set[str]) -> None:
+    plan = select_components([path])
+
+    actual = {component for component, is_selected in plan["components"].items() if is_selected}
+    assert plan["run_all"] is False
+    assert actual == selected
 
 
 def test_fast_ci_owns_static_and_workflow_contract_checks() -> None:

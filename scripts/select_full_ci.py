@@ -33,6 +33,10 @@ PYTHON_PACKAGE_COMPONENTS = {
     "python_compatibility",
     "release_artifact_contract",
 }
+# Rust is the implementation behind the Python package and prediction engine,
+# so Rust changes exercise every compiled and consumer boundary except the
+# collector-data validator. Cargo policy is added separately for manifest and
+# dependency changes.
 RUST_COMPONENTS = {
     "platform_wheels",
     "prediction_regression",
@@ -45,10 +49,14 @@ RUST_COMPONENTS = {
     "engine_golden_regression",
     "release_artifact_contract",
 }
+# Prediction inputs and implementations must exercise both before/after output
+# comparison and the lower-level engine parity goldens.
 PREDICTION_COMPONENTS = {
     "prediction_regression",
     "engine_golden_regression",
 }
+# Collector source and performance data affect the data validator as well as
+# the prediction and parity consumers that read the resulting records.
 COLLECTOR_COMPONENTS = {
     "collector_data",
     "prediction_regression",
@@ -186,6 +194,9 @@ def select_components(paths: Iterable[str], *, force_all: bool = False) -> dict[
 
         if path in PYTHON_DEPENDENCY_FILES:
             return _all(f"Python dependency contract changed: {path!r}", changed)
+
+        if path == "python/aisimulate/pytest.ini":
+            return _all(f"shared test configuration changed: {path!r}", changed)
 
         if path in PACKAGE_CONTENT_FILES or path.startswith("python/aisimulate/docker/"):
             selected.update(PYTHON_PACKAGE_COMPONENTS)
