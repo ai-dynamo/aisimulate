@@ -349,7 +349,7 @@ pub enum SessionPartitionSpec {
     RoundRobin { num_partitions: usize },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReplayRequestHashes {
     /// Token-only hashes for complete engine blocks.
     ///

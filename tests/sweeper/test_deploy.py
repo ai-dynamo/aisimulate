@@ -178,6 +178,92 @@ def test_optional_backend_runtime_values_are_forwarded():
     assert engine["aic_nextn"] == 2
 
 
+def test_fixed_host_offload_descriptor_lowers_into_aggregated_engine_args():
+    host_offload = {
+        "num_host_blocks": 4096,
+        "d2h_bandwidth_gbps": 7.0,
+        "h2d_bandwidth_gbps": 38.0,
+    }
+    dense = ReplicaParallelConfig(
+        ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1
+    )
+
+    engine = _agg_deployment(
+        space=_space(
+            agg_kv_bytes_per_token=131_072,
+            agg_native_host_offload=host_offload,
+        ),
+        selection=_agg_selection(backend="vllm"),
+        parallel_config=dense,
+    ).agg_engine_args
+
+    assert engine["kv_cache_bytes_per_token"] == 131_072
+    assert engine["native_host_offload"] == host_offload
+
+
+def test_disagg_auto_transfer_geometry_uses_prefill_source_shape(monkeypatch):
+    monkeypatch.setattr(
+        deploy_module,
+        "estimate_kv_bytes_per_token",
+        lambda _model, **shape: 10_000 * shape["tp_size"] + shape["pp_size"],
+    )
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), 1),
+        decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), 1),
+    )
+    selection = _agg_selection(
+        deployment_mode="disagg",
+        backend="vllm",
+        prefill_max_num_batched_tokens=8192,
+        prefill_max_num_seqs=1,
+        decode_max_num_batched_tokens=8192,
+        decode_max_num_seqs=256,
+    )
+    sample = unroll_sample(
+        search_space=_space(
+            kv_transfer_bytes_per_token="auto",
+            kv_transfer_bandwidth=400.0,
+        ),
+        selection=selection,
+        parallel_config=parallel,
+    )
+
+    deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+    assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 20_001
+    assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 20_001
+
+
+def test_serialized_search_space_transfer_geometry_enables_pd_transfer():
+    legacy = _space(
+        kv_transfer_bytes_per_token=333,
+        kv_transfer_bandwidth=400.0,
+    ).model_dump(mode="json")
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), 1),
+        decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), 1),
+    )
+    sample = unroll_sample(
+        search_space=SearchSpace.model_validate(legacy),
+        selection=_agg_selection(
+            deployment_mode="disagg",
+            backend="vllm",
+            prefill_max_num_batched_tokens=8192,
+            prefill_max_num_seqs=1,
+            decode_max_num_batched_tokens=8192,
+            decode_max_num_seqs=256,
+        ),
+        parallel_config=parallel,
+    )
+
+    deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+    assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 333
+    assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 333
+    assert deployment.prefill_engine_args["kv_transfer_bandwidth"] == 400.0
+    assert deployment.decode_engine_args["kv_transfer_bandwidth"] == 400.0
+
+
 def test_backend_deployment_contains_no_dynamo_policy_fields():
     deployment = _agg_deployment()
 
@@ -221,6 +307,66 @@ def test_fixed_timing_preserves_aic_identity_for_stack_adapters(monkeypatch):
                 "moe_tp_size": 1,
                 "moe_ep_size": 4,
                 "nextn": None,
+                "forward_model": "op_level",
             },
         }
     }
+
+
+def test_fpm_forward_model_lowers_onto_the_engine_payload():
+    deployment = _agg_deployment(space=_space(agg_forward_model="fpm"))
+    engine = deployment.agg_engine_args
+
+    assert engine["aic_forward_model"] == "fpm"
+    assert "timing_model" not in engine
+    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
+
+
+def test_op_level_forward_model_adds_no_engine_field():
+    deployment = _agg_deployment()
+
+    assert "aic_forward_model" not in deployment.agg_engine_args
+    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"
+
+
+def test_disagg_forward_model_is_lowered_per_role():
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(tp=8, dp=1, moe_tp=1, moe_ep=8), 1),
+        decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=8, moe_tp=1, moe_ep=8), 2),
+    )
+    selection = _agg_selection(
+        deployment_mode="disagg",
+        backend="vllm",
+        prefill_max_num_batched_tokens=32768,
+        prefill_max_num_seqs=4,
+        decode_max_num_batched_tokens=8192,
+        decode_max_num_seqs=1024,
+    )
+    sample = unroll_sample(
+        search_space=_space(decode_forward_model="fpm"), selection=selection, parallel_config=parallel
+    )
+
+    deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+    assert "aic_forward_model" not in deployment.prefill_engine_args
+    assert deployment.decode_engine_args["aic_forward_model"] == "fpm"
+    assert deployment.performance_model_metadata["prefill"]["config"]["forward_model"] == "op_level"
+    assert deployment.performance_model_metadata["decode"]["config"]["forward_model"] == "fpm"
+
+
+def test_fixed_timing_drops_the_forward_model_field(monkeypatch):
+    monkeypatch.setattr(
+        deploy_module,
+        "materialize_aic_num_gpu_blocks",
+        lambda payload: {**payload, "num_gpu_blocks": 321},
+    )
+    deployment = _agg_deployment(
+        space=_space(agg_forward_model="fpm"),
+        selection=_agg_selection(
+            agg_timing_model={"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+        ),
+    )
+
+    assert "aic_forward_model" not in deployment.agg_engine_args
+    assert deployment.agg_engine_args["timing_model"]["type"] == "fixed"
+    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"

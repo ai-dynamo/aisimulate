@@ -7,7 +7,8 @@
 //!
 //! * **Python → Rust (hot path).** [`AicEngine`] is a `#[pyclass]` wrapping the
 //!   [`Engine`]. Its `#[pymethods]` (`from_spec`, `run_static`,
-//!   `predict_prefill_latency`, `predict_decode_latency`, `mixed_step_latency`,
+//!   `predict_prefill_latency`, `predict_decode_latency`,
+//!   `predict_decode_latency_total`, `mixed_step_latency`,
 //!   `decode_step_latency`) are the surface the Python sweep / Mocker bridge
 //!   calls per point. The agg sweep is orchestrated in Python; there is no
 //!   Rust `run_agg`. Each method
@@ -36,8 +37,8 @@ use pyo3::types::PyType;
 use crate::common::error::AicError;
 use crate::perfmodel::EngineConfig;
 use crate::perfmodel::engine::runtime::{
-    DEFAULT_STATIC_STRIDE, Engine, PerOpSolValue, PerOpValue, RuntimeConfig, StaticMode,
-    StaticResult,
+    DEFAULT_STATIC_STRIDE, Engine, PerOpSolValue, PerOpValue, PerOpValueWithMetadata,
+    RuntimeConfig, StaticMode, StaticResult,
 };
 use crate::{BackendKind, DataType, ENGINE_CONFIG_SCHEMA_VERSION};
 
@@ -58,6 +59,7 @@ fn _build_smoke() -> u32 {
 static PERF_DATA_NOT_AVAILABLE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 static EMPIRICAL_NOT_IMPLEMENTED_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 static MISSING_SYSTEM_FLOPS_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
+static SOL_NOT_IMPLEMENTED_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 
 /// Resolve (and memoize) one sdk error class; `None` when the sdk is not
 /// importable, so the caller falls back to `PyValueError`.
@@ -92,6 +94,9 @@ fn sdk_error_type(
 /// * `AicError::MissingSystemFlops` raises
 ///   `aiconfigurator_core.sdk.errors.MissingSystemFlopsError` (strict per-dtype
 ///   `*_tc_flops` resolution — a `ValueError` subclass on the Python side);
+/// * `AicError::SolNotImplemented` raises
+///   `aiconfigurator_core.sdk.errors.SolNotImplementedError` (the analytic SOL
+///   path has no implementation for a required operator);
 /// * everything else stays `PyValueError`.
 ///
 /// The sdk import is lazy and failure-tolerant: in pure-Rust test contexts
@@ -107,6 +112,8 @@ fn aic_to_py(e: AicError) -> PyErr {
         ))
     } else if matches!(e, AicError::MissingSystemFlops(_)) {
         Some((&MISSING_SYSTEM_FLOPS_ERROR, "MissingSystemFlopsError"))
+    } else if matches!(e, AicError::SolNotImplemented(_)) {
+        Some((&SOL_NOT_IMPLEMENTED_ERROR, "SolNotImplementedError"))
     } else {
         None
     };
@@ -329,6 +336,29 @@ impl AicEngine {
             .map_err(aic_to_py)
     }
 
+    /// One FPM decode-step latency at the collector's exact
+    /// `(batch_size, total_past_kv_tokens)` coordinate.
+    fn predict_decode_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> PyResult<f64> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner
+                .predict_decode_latency_total(batch_size, total_past_kv_tokens)
+        })
+        .map_err(aic_to_py)
+    }
+
+    /// Highest collected decode KV-read total for an FPM engine, or `None`
+    /// for an op-level engine.
+    fn fpm_decode_kv_ceiling(&self, py: Python<'_>) -> PyResult<Option<u32>> {
+        py.allow_threads(|| self.inner.fpm_decode_kv_ceiling())
+            .map_err(aic_to_py)
+    }
+
     /// One mixed (chunked-prefill + decode) engine-step latency in ms. Binds
     /// [`Engine::mixed_step_latency`]; the Python agg orchestration
     /// (`base_backend._get_mix_step_latency`) calls this per mix step. The
@@ -462,6 +492,52 @@ impl AicEngine {
             .map_err(aic_to_py)
     }
 
+    /// Internal metadata-bearing counterpart of `run_static_per_op`; each
+    /// fifth field is `None` or `(first_record, additional_records)` in
+    /// deterministic encounter order.
+    #[pyo3(signature = (
+        batch_size,
+        beam_width,
+        isl,
+        osl,
+        prefix,
+        seq_imbalance_correction_scale,
+        gen_seq_imbalance_correction_scale,
+        mode="static",
+        stride=DEFAULT_STATIC_STRIDE,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn _run_static_per_op_with_metadata(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        beam_width: u32,
+        isl: u32,
+        osl: u32,
+        prefix: u32,
+        seq_imbalance_correction_scale: f64,
+        gen_seq_imbalance_correction_scale: f64,
+        mode: &str,
+        stride: u32,
+    ) -> PyResult<(Vec<PerOpValueWithMetadata>, Vec<PerOpValueWithMetadata>)> {
+        let rt = RuntimeConfig {
+            batch_size,
+            beam_width,
+            isl,
+            osl,
+            prefix,
+            seq_imbalance_correction_scale,
+            gen_seq_imbalance_correction_scale,
+        };
+        let mode = parse_mode(mode)?;
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner
+                .run_static_per_op_with_metadata(&rt, mode, stride)
+        })
+        .map_err(aic_to_py)
+    }
+
     /// `mixed_step_breakdown` with the per-op values kept: returns
     /// ``(shared_non_attention, context_attention, decode_attention)`` lists
     /// of ``(name, latency_ms, energy_wms, source)`` tuples. The
@@ -497,6 +573,43 @@ impl AicEngine {
         .map_err(aic_to_py)
     }
 
+    /// Internal metadata-bearing counterpart of `mixed_step_breakdown_per_op`;
+    /// each fifth field is `None` or `(first_record, additional_records)` in
+    /// deterministic encounter order.
+    #[pyo3(signature = (ctx_tokens, gen_tokens, isl, osl, prefix=0,
+                        seq_imbalance_correction_scale=1.0,
+                        gen_seq_imbalance_correction_scale=1.0))]
+    #[allow(clippy::too_many_arguments)]
+    fn _mixed_step_breakdown_per_op_with_metadata(
+        &self,
+        py: Python<'_>,
+        ctx_tokens: u32,
+        gen_tokens: u32,
+        isl: u32,
+        osl: u32,
+        prefix: u32,
+        seq_imbalance_correction_scale: f64,
+        gen_seq_imbalance_correction_scale: f64,
+    ) -> PyResult<(
+        Vec<PerOpValueWithMetadata>,
+        Vec<PerOpValueWithMetadata>,
+        Vec<PerOpValueWithMetadata>,
+    )> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner.mixed_step_breakdown_per_op_with_metadata(
+                ctx_tokens,
+                gen_tokens,
+                isl,
+                osl,
+                prefix,
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
+            )
+        })
+        .map_err(aic_to_py)
+    }
+
     /// `decode_step_latency` with the per-op values kept: returns a list of
     /// ``(name, latency_ms, energy_wms, source)`` tuples for one
     /// generation-only step.
@@ -513,6 +626,30 @@ impl AicEngine {
         py.allow_threads(|| {
             self.inner
                 .decode_step_per_op(gen_tokens, isl, osl, gen_seq_imbalance_correction_scale)
+        })
+        .map_err(aic_to_py)
+    }
+
+    /// Internal metadata-bearing counterpart of `decode_step_per_op`; each
+    /// fifth field is `None` or `(first_record, additional_records)` in
+    /// deterministic encounter order.
+    #[pyo3(signature = (gen_tokens, isl, osl, gen_seq_imbalance_correction_scale=1.0))]
+    fn _decode_step_per_op_with_metadata(
+        &self,
+        py: Python<'_>,
+        gen_tokens: u32,
+        isl: u32,
+        osl: u32,
+        gen_seq_imbalance_correction_scale: f64,
+    ) -> PyResult<Vec<PerOpValueWithMetadata>> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner.decode_step_per_op_with_metadata(
+                gen_tokens,
+                isl,
+                osl,
+                gen_seq_imbalance_correction_scale,
+            )
         })
         .map_err(aic_to_py)
     }
@@ -667,6 +804,38 @@ impl AicEngine {
             crate::perf_database::table_view::table_view_json(self.inner.database(), attribute)
         })
         .map_err(aic_to_py)
+    }
+
+    /// Per-lane `(lane, slice_count, row_count)` density for one attention
+    /// QUERY table (AIC-1715/1716 follow-up). `attribute` is
+    /// `"_context_attention_data"` or `"_generation_attention_data"`.
+    ///
+    /// Unlike `table_view_json` (which folds the lane-blind enumeration
+    /// view kept for charts/support-matrix), this reads
+    /// `AttentionTable::context_lanes`/`generation_lanes` directly off the
+    /// QUERY-path `by_lane` structure — the real collected `kernel_source`
+    /// lanes, with the measured coverage `operations/attention.py::
+    /// lane_walk_order`'s donor/leftover tiers rank by. Empty (never an
+    /// error) when the table has no data at all, matching the tolerant
+    /// `unwrap_or_default()` the XSHAPE reference-grid fallback uses for
+    /// the same underlying accessor.
+    fn attention_lane_density(
+        &self,
+        py: Python<'_>,
+        attribute: &str,
+    ) -> PyResult<Vec<(String, u32, u32)>> {
+        py.allow_threads(|| {
+            let db = self.inner.database();
+            match attribute {
+                "_context_attention_data" => Ok(db.attention.context_lanes().unwrap_or_default()),
+                "_generation_attention_data" => {
+                    Ok(db.attention.generation_lanes().unwrap_or_default())
+                }
+                other => Err(PyValueError::new_err(format!(
+                    "attention_lane_density: unknown attribute {other:?}"
+                ))),
+            }
+        })
     }
 }
 
@@ -827,6 +996,7 @@ struct EngineBuildRequest {
     kvcache_quant_mode: Option<String>,
     fmha_quant_mode: Option<String>,
     comm_quant_mode: Option<String>,
+    attention_backend: Option<String>,
     nextn: u32,
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
@@ -866,6 +1036,7 @@ impl AicEngineBuilder {
                 kvcache_quant_mode: None,
                 fmha_quant_mode: None,
                 comm_quant_mode: None,
+                attention_backend: None,
                 nextn: 0,
                 kv_block_size: None,
                 systems_path: None,
@@ -942,6 +1113,12 @@ impl AicEngineBuilder {
         self
     }
 
+    /// Override the attention kernel backend.
+    pub fn attention_backend(mut self, value: impl Into<String>) -> Self {
+        self.request.attention_backend = Some(value.into());
+        self
+    }
+
     /// Configure speculative decoding.
     pub fn speculative_decoding(mut self, nextn: u32) -> Self {
         self.request.nextn = nextn;
@@ -980,6 +1157,7 @@ mod builder_tests {
         assert!(builder.request.backend_version.is_none());
         assert!(builder.request.moe_tp_size.is_none());
         assert!(builder.request.moe_ep_size.is_none());
+        assert!(builder.request.attention_backend.is_none());
         assert!(builder.request.kv_block_size.is_none());
     }
 
@@ -991,6 +1169,7 @@ mod builder_tests {
             .pp_size(2)
             .attention_dp_size(4)
             .moe_parallelism(Some(1), Some(8))
+            .attention_backend("fa3")
             .speculative_decoding(2)
             .kv_block_size(16)
             .systems_path("/tmp/systems");
@@ -1002,6 +1181,7 @@ mod builder_tests {
             (builder.request.moe_tp_size, builder.request.moe_ep_size),
             (Some(1), Some(8))
         );
+        assert_eq!(builder.request.attention_backend.as_deref(), Some("fa3"));
         assert_eq!(builder.request.nextn, 2);
         assert_eq!(builder.request.kv_block_size, Some(16));
         assert_eq!(
@@ -1046,6 +1226,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("kvcache_quant_mode", request.kvcache_quant_mode.as_deref())?;
         kwargs.set_item("fmha_quant_mode", request.fmha_quant_mode.as_deref())?;
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
+        kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
         kwargs.set_item("nextn", request.nextn)?;
         kwargs.set_item("kv_block_size", request.kv_block_size)?;
@@ -1111,6 +1292,8 @@ pub(crate) fn compile_engine_to_engine(
             .map(str::to_owned),
         // Comm quant is not carried on EngineConfig; let Python default it.
         comm_quant_mode: None,
+        // Attention backend is not carried on EngineConfig; let Python resolve it.
+        attention_backend: None,
         nextn,
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
@@ -1183,9 +1366,9 @@ fn kvcache_quant_name(dtype: Option<&DataType>) -> Option<&'static str> {
 /// `with_gil`, which is re-entrant, so calling it from inside a `#[pymethod]`
 /// staticmethod is fine.
 ///
-/// Constructors take the engine config + options as JSON strings (the same
-/// marshalling the Python `RustForwardPassPerfModel` wrapper used to pass over
-/// ctypes), so the Python wrapper's public surface is unchanged.
+/// Constructors take the engine config + options as JSON strings. Regression
+/// construction additionally takes the engine-level worker type so every DP
+/// rank is evaluated with one fixed feature schema.
 #[pyclass(name = "RustForwardPassPerfModel")]
 pub struct PyForwardPassPerfModel {
     inner: crate::ForwardPassPerfModel,
@@ -1193,12 +1376,28 @@ pub struct PyForwardPassPerfModel {
 
 /// Parse the optional options JSON into [`ForwardPassPerfOptions`], defaulting
 /// when `None`/empty. Serde fills missing fields from the per-field defaults.
+/// Raw JSON callers represent nonfinite regression weights with the exact
+/// quoted sentinels `"NaN"`, `"Infinity"`, and `"-Infinity"`.
 fn parse_fpm_options(options_json: Option<&str>) -> PyResult<crate::ForwardPassPerfOptions> {
     match options_json {
         None => Ok(crate::ForwardPassPerfOptions::default()),
         Some(s) if s.trim().is_empty() => Ok(crate::ForwardPassPerfOptions::default()),
         Some(s) => serde_json::from_str(s)
             .map_err(|e| PyValueError::new_err(format!("invalid options JSON: {e}"))),
+    }
+}
+
+/// Parse the exact worker-type spellings shared with the Dynamo planner.
+/// Aliases are intentionally rejected so model identity cannot depend on which
+/// API surface constructed it.
+fn parse_fpm_worker_type(worker_type: &str) -> PyResult<crate::ForwardPassWorkerType> {
+    match worker_type {
+        "prefill" => Ok(crate::ForwardPassWorkerType::Prefill),
+        "decode" => Ok(crate::ForwardPassWorkerType::Decode),
+        "aggregated" => Ok(crate::ForwardPassWorkerType::Aggregated),
+        _ => Err(PyValueError::new_err(format!(
+            "invalid worker_type {worker_type:?}: expected 'prefill', 'decode', or 'aggregated'"
+        ))),
     }
 }
 
@@ -1232,27 +1431,36 @@ impl PyForwardPassPerfModel {
         Ok(Self { inner })
     }
 
-    /// `RustForwardPassPerfModel.best_available(config_json, options_json=None)`:
+    /// `RustForwardPassPerfModel.best_available(config_json, worker_type,
+    /// options_json=None)`:
     /// native when possible, else regression fallback (reason in
     /// `diagnostics()["last_warning"]`).
     #[staticmethod]
-    #[pyo3(signature = (config_json, options_json=None))]
-    fn best_available(config_json: &str, options_json: Option<&str>) -> PyResult<Self> {
+    #[pyo3(signature = (config_json, worker_type, options_json=None))]
+    fn best_available(
+        config_json: &str,
+        worker_type: &str,
+        options_json: Option<&str>,
+    ) -> PyResult<Self> {
         let config: EngineConfig = serde_json::from_str(config_json)
             .map_err(|e| PyValueError::new_err(format!("invalid engine config JSON: {e}")))?;
+        let worker_type = parse_fpm_worker_type(worker_type)?;
         let options = parse_fpm_options(options_json)?;
-        let inner =
-            crate::ForwardPassPerfModel::best_available(config, options).map_err(aic_to_py)?;
+        let inner = crate::ForwardPassPerfModel::best_available(config, worker_type, options)
+            .map_err(aic_to_py)?;
         Ok(Self { inner })
     }
 
-    /// `RustForwardPassPerfModel.from_regression(options_json=None)`:
+    /// `RustForwardPassPerfModel.from_regression(worker_type,
+    /// options_json=None)`:
     /// regression-only model (no native engine, no Python compile).
     #[staticmethod]
-    #[pyo3(signature = (options_json=None))]
-    fn from_regression(options_json: Option<&str>) -> PyResult<Self> {
+    #[pyo3(signature = (worker_type, options_json=None))]
+    fn from_regression(worker_type: &str, options_json: Option<&str>) -> PyResult<Self> {
+        let worker_type = parse_fpm_worker_type(worker_type)?;
         let options = parse_fpm_options(options_json)?;
-        let inner = crate::ForwardPassPerfModel::from_regression(options).map_err(aic_to_py)?;
+        let inner = crate::ForwardPassPerfModel::from_regression(worker_type, options)
+            .map_err(aic_to_py)?;
         Ok(Self { inner })
     }
 
@@ -1372,7 +1580,7 @@ mod tests {
 
     const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
 
-    /// Hand-built context op list against the b200_sxm/vllm/0.19.0 perf tables.
+    /// Hand-built context op list against the b200_sxm/vllm/0.24.0 perf tables.
     /// `Elementwise` is DB-free (pure mem-bandwidth SOL); `Gemm` and
     /// `ContextAttention` hit `gemm_perf` / `context_attention_perf`, both of
     /// which exist for this fixture. Mirrors a MiniMax-shaped context graph
@@ -1409,6 +1617,8 @@ mod tests {
                 fmha_quant_mode: FmhaQuantMode::Bfloat16,
                 use_qk_norm: false,
                 cp_size: 1,
+                lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
+                apply_rope: true,
             }),
         ]
     }
@@ -1432,6 +1642,8 @@ mod tests {
                 head_size: 128,
                 window_size: 0,
                 kv_cache_dtype: KvCacheQuantMode::Fp8,
+                lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
+                use_qk_norm: false,
             }),
         ]
     }
@@ -1443,7 +1655,7 @@ mod tests {
             system_name: "b200_sxm".to_string(),
             systems_path: None,
             backend: BackendKind::Vllm,
-            backend_version: Some("0.19.0".to_string()),
+            backend_version: Some("0.24.0".to_string()),
             forward_model: None,
             kv_block_size: None,
             parallel: ParallelMapping {
@@ -1463,6 +1675,7 @@ mod tests {
             speculative: None,
             enable_shared_layer: None,
             strict_provenance: false,
+            tolerate_dirless_version: false,
             database_mode: Default::default(),
             transfer_policy: None,
             extra: BTreeMap::new(),
@@ -1470,7 +1683,7 @@ mod tests {
     }
 
     /// Build bincoded `EngineSpec` bytes from hand-built op lists. The lists
-    /// query the real b200_sxm/vllm/0.19.0 perf tables so the binding
+    /// query the real b200_sxm/vllm/0.24.0 perf tables so the binding
     /// pass-through numbers are real, not synthetic.
     fn fixture_spec_bytes() -> Vec<u8> {
         let spec = EngineSpec::new(fixture_engine_config(), context_ops(), generation_ops());
@@ -1689,6 +1902,14 @@ mod tests {
             check(
                 AicError::EmpiricalNotImplemented("no basis".to_string()),
                 "EmpiricalNotImplementedError",
+            );
+            check(
+                AicError::MissingSystemFlops("no fp4 throughput".to_string()),
+                "MissingSystemFlopsError",
+            );
+            check(
+                AicError::SolNotImplemented("no SOL decomposition".to_string()),
+                "SolNotImplementedError",
             );
 
             // Non-typed variants stay ValueError regardless of the sdk.

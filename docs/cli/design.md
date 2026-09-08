@@ -27,7 +27,8 @@ The design does not cover:
 - How the `engine` and `dynamo` stacks execute a prediction.
 - AIConfigurator (AIC), Planner, router, optimizer, worker-pool, caching, or timeout internals.
 - Compatibility shims, migration code, or implementation sequencing.
-- Online replay. Both commands are offline-only in version 1.
+- Online replay runtime internals. `predict` can request online execution from a capable optional
+  stack; `recommend` remains offline-only.
 
 ## Commands
 
@@ -73,6 +74,7 @@ The `predict` verb is intentional: one pinned configuration predicts serving beh
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `--capture-per-request` | flag | `false` | Write per-request prediction records to `requests.jsonl`. |
+| `--online` | flag | `false` | Pace prediction against the real wall clock instead of virtual time. The selected stack must advertise online support. |
 
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
 `--num-workers`. YAML is the authoritative semantic configuration surface.
@@ -82,6 +84,11 @@ The CLI deliberately does not expose field-specific flags such as `--request-per
 The `engine` runner factory ships with AISimulate. Optional stacks are discovered through the
 `aisimulate.runner_factories` Python entry-point group; the `ai-dynamo` package registers `dynamo`.
 Entry-point names are the accepted `--stack` values and must be unique.
+
+Runner factories advertise their supported execution modes. The built-in `engine` stack supports
+offline prediction. Optional stacks may additionally support `predict --online`. A stack that does
+not advertise online execution fails before runner creation instead of silently falling back to
+offline execution. The selected runner validates finer stack-specific combinations.
 
 Optional component configuration is discovered separately through
 `aisimulate.config_adapters`. Adapter names are `<stack>.<section>`, such as `dynamo.router` and
@@ -571,14 +578,18 @@ engine:
       scheduler:
         max_batched_tokens: 8192
         max_sequences: 256
+        prefill_schedule_interval: 1
       kv_cache:
         block_size: 64
         prefix_caching: true
+        bytes_per_token: auto
         capacity:
           type: default
           memory_fraction: 0.9
+          cuda_graph_reserved_bytes: 0
       timing:
         type: default
+        forward_model: op_level
       startup_seconds: 0
 ```
 
@@ -604,16 +615,23 @@ engine:
 | `engine.workers.<role>.parallelism.moe_expert` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.scheduler.max_batched_tokens` | Aggregated/prefill/decode: `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
+| `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
 | `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. TODO: align with backend- and version-specific defaults. |
 | `engine.workers.<role>.kv_cache.prefix_caching` | `true` | `x` | `-` | Backend-supported. |
+| `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive and required for `fixed` capacity. |
+| `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
+| `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
+| `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
+| `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
+| `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.startup_seconds` | `0` | `x` | `-` | Nonnegative. |
-| `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete; disaggregated mode only. |
+| `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
 | `engine.kv_transfer.timing_mode` | `destination_missing` | `x` | `-` | `full_prompt` or `destination_missing`; disaggregated mode only. |
 
@@ -632,7 +650,6 @@ engine:
   backend: vllm
   context_length: max
   kv_transfer:
-    bytes_per_token: auto
     bandwidth_gb_per_second: 400
     timing_mode: destination_missing
   workers:
@@ -642,6 +659,7 @@ engine:
       kv_cache:
         block_size: 64
         prefix_caching: true
+        bytes_per_token: auto
         capacity: {type: default, memory_fraction: 0.9}
       timing: {type: default}
       startup_seconds: 0
@@ -651,6 +669,7 @@ engine:
       kv_cache:
         block_size: 64
         prefix_caching: true
+        bytes_per_token: auto
         capacity: {type: default, memory_fraction: 0.9}
       timing: {type: default}
       startup_seconds: 0
@@ -667,9 +686,20 @@ preserves current replay and Sweeper behavior, including the backend and role de
 Backend-version-specific defaults are deferred beyond version 1; adding them changes the registry, not
 the YAML shape.
 
+`timing.forward_model` selects the forward-pass model behind the default timing provider. `op_level`
+composes per-operator measurements; `fpm` replays whole-forward measurements from a collected FPM
+cell and requires an exact match on model, hardware, backend version, parallel shape and
+quantization. A candidate without a matching cell fails at replay and is recorded as a failed
+candidate (reason category `replay_runtime`) rather than silently falling back to `op_level`. In
+`fpm` mode with `capacity.type: default`, the KV capacity is also capped to the cell's collected
+decode-KV ceiling. The bundled FPM cells are collected at backend versions outside the queryable
+version slots; until FPM cells are slot-queryable, set the transitional escape hatch
+`AIC_ALLOW_UNLISTED_VERSIONS=1` to use them.
+
 `kv_cache.capacity.type: fixed` requires `blocks`, so users can directly provide cache size. It rejects
-`memory_fraction`. Conversely, `type: default` rejects `blocks` and derives block count from model,
-hardware, parallelism, block size, backend, and memory fraction.
+`memory_fraction` and nonzero `cuda_graph_reserved_bytes`. Conversely, `type: default` rejects `blocks`
+and derives block count from model, hardware, parallelism, block size, backend, memory fraction, and
+the caller-provided CUDA graph reservation.
 
 The physical GPU count of a worker role is:
 
@@ -684,7 +714,51 @@ candidate GPU count is the sum of the prefill and decode worker counts.
 `full_prompt` charges transfer for the complete prompt KV footprint. `destination_missing` charges
 only the prompt KV not already present at the selected decode worker. `kv_transfer` is rejected for
 aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range is `x`, and
-`recommend` rejects domains on them.
+`recommend` rejects domains on them. Transfer bytes per token describe the PD link payload and may
+differ from each worker role's physical `kv_cache.bytes_per_token`.
+
+### Native vLLM host-offload prediction
+
+The initial public host-offload surface is deliberately fail-closed: it supports one aggregated
+vLLM worker role with prefix caching enabled, attention DP equal to one, and no native speculative
+decoding. The descriptor is fixed in both `predict` and `recommend`; host capacity and bandwidths
+are not search dimensions. `bytes_per_token` belongs to `kv_cache`, not `host_offload`, and is
+resolved for the worker role before lowering to the native rank.
+
+```yaml
+# host-offload-prediction.yaml
+engine:
+  mode: aggregated
+  model: meta-llama/Llama-3.1-8B-Instruct
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  workers:
+    aggregated:
+      parallelism: {replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 16}
+      kv_cache:
+        block_size: 16
+        prefix_caching: true
+        bytes_per_token: auto
+        capacity: {type: fixed, blocks: 2499}
+        host_offload:
+          num_host_blocks: 4096
+          d2h_bandwidth_gbps: 32.0
+          h2d_bandwidth_gbps: 32.0
+      timing: {type: default}
+
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 4}
+  stop: {requests: 16}
+```
+
+Run it with:
+
+```bash
+aisimulate predict --stack engine --config host-offload-prediction.yaml
+```
 
 ## Router (Dynamo Adapter)
 

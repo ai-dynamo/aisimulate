@@ -33,6 +33,7 @@ mod runtime_utils;
 pub(crate) mod scaling;
 mod spec;
 pub(crate) mod state;
+mod telemetry;
 
 #[derive(Clone)]
 pub(crate) struct OfflineDisaggReplayConfig {
@@ -107,8 +108,9 @@ pub(crate) fn normalize_trace_requests(
 
 pub use crate::engine::{HandoffId, HandoffTransferTiming};
 pub use artifact::{
-    ReplayArtifactKvEvent, ReplayArtifactKvEventVisibility, ReplayArtifactOutput,
-    ReplayArtifactRequest, ReplayArtifacts,
+    ReplayArtifactHostOffloadEvent, ReplayArtifactHostOffloadEventData,
+    ReplayArtifactHostStoreBlockMapping, ReplayArtifactKvEvent, ReplayArtifactKvEventVisibility,
+    ReplayArtifactOutput, ReplayArtifactRequest, ReplayArtifacts,
 };
 pub use canonical::{
     CANONICAL_RESULT_EXCLUSIONS, CANONICAL_SCHEMA_VERSION, CanonicalReplayCoverage,
@@ -168,4 +170,8 @@ pub use scaling::{NoScaling, ReplayScalingDecision, ReplayScalingPolicy, ReplayS
 pub use spec::{
     CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayRequest,
     ReplayRoutingMetadata, ReplaySpec, ReplayTopology, WorkerPoolSpec, WorkerStage,
+};
+pub use telemetry::{
+    ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot, ReplayTelemetryObserver,
+    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
 };

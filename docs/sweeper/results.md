@@ -233,9 +233,9 @@ Failure row:
 ## Replay specification
 
 The result contract complements, rather than replaces, `ReplaySpec`. `ReplaySpec` version 1 contains
-the concrete backend deployment, workload, goal, concurrency, adapter configuration, and runtime
-hooks. `RunnerCapabilities.require_compatible` checks it before execution, and `canonical_json`
-creates deterministic strict JSON for the replay boundary.
+the concrete backend deployment, workload, goal, execution mode, concurrency, adapter configuration,
+and runtime hooks. `RunnerCapabilities.require_compatible` checks it before execution, and
+`canonical_json` creates deterministic strict JSON for the replay boundary.
 
 Exact repeated suggestions reuse a result from the current `run` call. The cache does not persist
 between calls, even when the same `Sweeper` instance is reused.

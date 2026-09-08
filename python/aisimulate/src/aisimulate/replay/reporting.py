@@ -25,17 +25,11 @@ def write_report_json(
     *,
     default_prefix: str = "aisimulate_replay_report",
 ) -> Path:
-    path = (
-        Path(output_path)
-        if output_path is not None
-        else default_report_path(default_prefix)
-    )
+    path = Path(output_path) if output_path is not None else default_report_path(default_prefix)
     if path.exists() and path.is_dir():
         path = path / default_report_path(default_prefix).name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
@@ -80,9 +74,7 @@ def format_report_table(report: dict[str, Any]) -> str:
             ],
             [
                 "Request Count (requests)",
-                _format_value(
-                    report.get("completed_requests", report.get("num_requests"))
-                ),
+                _format_value(report.get("completed_requests", report.get("num_requests"))),
                 *["N/A"] * (len(STAT_COLUMNS) - 1),
             ],
         ]
@@ -112,10 +104,7 @@ def format_report_table(report: dict[str, Any]) -> str:
         lines.append(f"Prefix Cache Reused Ratio: {_format_value(prefix_ratio)}")
     first_admission_ratio = report.get("first_admission_prefix_cache_reused_ratio")
     if isinstance(first_admission_ratio, int | float):
-        lines.append(
-            "First Admission Prefix Cache Reused Ratio: "
-            f"{_format_value(first_admission_ratio)}"
-        )
+        lines.append(f"First Admission Prefix Cache Reused Ratio: {_format_value(first_admission_ratio)}")
     return "\n".join(lines)
 
 

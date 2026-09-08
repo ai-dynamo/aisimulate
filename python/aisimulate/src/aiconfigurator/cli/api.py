@@ -23,9 +23,10 @@ from aiconfigurator.cli.main import (
     build_experiment_tasks,
 )
 from aiconfigurator.cli.report_and_save import save_results
-from aiconfigurator.sdk.config import ModelConfig
+from aiconfigurator.sdk.config import ModelConfig, has_video_input
 from aiconfigurator.sdk.config_builders import apply_nextn as _apply_nextn
 from aiconfigurator.sdk.config_builders import build_model_config as _build_model_config
+from aiconfigurator.sdk.config_builders import resolve_dspark_nextn as _resolve_dspark_nextn
 from aiconfigurator.sdk.config_builders import resolve_nextn_auto as _resolve_nextn_auto
 from aiconfigurator.sdk.errors import ExperimentOutcome, NoFeasibleConfigError, is_gpu_retriable
 from aiconfigurator.sdk.models import (
@@ -34,6 +35,8 @@ from aiconfigurator.sdk.models import (
     resolve_dsv4_moe_arch,
     resolve_nvfp4_for_system,
 )
+from aiconfigurator.sdk.moe_comm_resolver import resolve_model_config_moe_comm
+from aiconfigurator.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
 from aiconfigurator.sdk.rust_engine_step import validate_engine_step_backend
 from aiconfigurator.sdk.speculative import (
     SpeculativeDecodingProfile,
@@ -173,6 +176,11 @@ def cli_default(
     image_height: int = 0,
     image_width: int = 0,
     num_images: int = 1,
+    video_height: int = 0,
+    video_width: int = 0,
+    video_frames: int = 0,
+    num_videos: int = 0,
+    num_video_tokens: int = 0,
     enable_encoder_dp: bool = True,
     enable_epd: bool = False,
     encoder_tp: list[int] | None = None,
@@ -192,6 +200,7 @@ def cli_default(
     generator_set: list[str] | None = None,
     generator_config: str | None = None,
     generator_dynamo_version: str | None = None,
+    attention_backend: str | None = None,
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
 ) -> CLIResult:
@@ -216,6 +225,13 @@ def cli_default(
         enable_encoder_dp: Model the vision encoder data-parallel (default True;
             vLLM mm_encoder_tp_mode="data" / SGLang --mm-enable-dp-encoder semantics).
             False models the legacy TP-sharded encoder.
+        video_height: Video frame height for vision-language models.
+        video_width: Video frame width for vision-language models.
+        video_frames: Number of frames per video.
+        num_videos: Number of videos per request. Images and videos must be
+            estimated separately until mixed visual packing is modeled.
+        num_video_tokens: Explicit post-merge tokens per video. Requires
+            ``video_frames`` so temporal attention sequences can be modeled.
         ttft: Time to first token target in ms. Default is 2000.
         tpot: Time per output token target in ms. Default is 30.
         request_latency: Optional end-to-end request latency target (ms).
@@ -252,6 +268,9 @@ def cli_default(
             Equivalent to repeating ``--generator-set`` on the CLI.
         generator_config: Path to a unified generator YAML config file.
         generator_dynamo_version: Override Dynamo version used by the generator.
+        attention_backend: Attention kernel-lane override ('fa3', 'triton',
+            'trtllm_mha', 'flashinfer', 'fla', or 'default'). None uses the
+            framework default for the target system/backend version.
         engine_step_backend: Engine-step backend; "rust" (the compiled engine,
             default and only executor) is the only accepted value.
         forward_model: Forward-pass modeling mode ("op_level" or "fpm"). None keeps the default.
@@ -312,6 +331,11 @@ def cli_default(
         image_height=image_height,
         image_width=image_width,
         num_images=num_images,
+        video_height=video_height,
+        video_width=video_width,
+        video_frames=video_frames,
+        num_videos=num_videos,
+        num_video_tokens=num_video_tokens,
         enable_encoder_dp=enable_encoder_dp,
         enable_epd=enable_epd,
         encoder_tp=encoder_tp,
@@ -325,6 +349,7 @@ def cli_default(
         nextn_accepted=nextn_accepted,
         free_gpu_memory_fraction=free_gpu_memory_fraction,
         max_seq_len=max_seq_len,
+        attention_backend=attention_backend,
         engine_step_backend=engine_step_backend,
         forward_model=forward_model,
     )
@@ -350,6 +375,11 @@ def cli_default(
         mock_args.image_height = image_height
         mock_args.image_width = image_width
         mock_args.num_images = num_images
+        mock_args.video_height = video_height
+        mock_args.video_width = video_width
+        mock_args.video_frames = video_frames
+        mock_args.num_videos = num_videos
+        mock_args.num_video_tokens = num_video_tokens
         mock_args.ttft = ttft
         mock_args.tpot = tpot
         mock_args.request_latency = request_latency
@@ -411,11 +441,16 @@ def cli_recommend(
     image_height: int = 0,
     image_width: int = 0,
     num_images: int = 1,
+    video_height: int = 0,
+    video_width: int = 0,
+    video_frames: int = 0,
+    num_videos: int = 0,
+    num_video_tokens: int = 0,
     ttft: float = 2000.0,
     tpot: float = 30.0,
     request_latency: float | None = None,
     prefix: int = 0,
-    nextn: int | str = 0,
+    nextn: int | str | None = None,
     nextn_accepted: float | None = None,
     strict_sla: bool = False,
     enable_chunked_prefill: bool = False,
@@ -423,6 +458,7 @@ def cli_recommend(
     max_seq_len: int | None = None,
     enable_wideep: bool = False,
     moe_backend: str | None = None,
+    attention_backend: str | None = None,
     top_n: int = 5,
     save_dir: str | None = None,
     engine_step_backend: str | None = None,
@@ -459,12 +495,21 @@ def cli_recommend(
         image_height: Image height for vision-language models.
         image_width: Image width for vision-language models.
         num_images: Number of images per request.
+        video_height: Video frame height for vision-language models.
+        video_width: Video frame width for vision-language models.
+        video_frames: Number of frames per video.
+        num_videos: Number of videos per request. Images and videos must be
+            estimated separately until mixed visual packing is modeled.
+        num_video_tokens: Explicit post-merge tokens per video. Requires
+            ``video_frames`` so temporal attention sequences can be modeled.
         ttft: Time to first token SLA target in ms. Default is 2000.
         tpot: Time per output token SLA target in ms. Default is 30.
         request_latency: Optional end-to-end request latency target (ms).
         prefix: Prefix cache length.
-        nextn: MTP draft length, or 'auto' to use the checkpoint's
-            num_nextn_predict_layers. Default is 0 (disabled).
+        nextn: MTP draft length, or 'auto' to resolve the depth from the
+            checkpoint, falling back to DSPARK architecture metadata. Omitted
+            or 0 keeps speculative decoding disabled unless a DSPARK model is
+            paired with an explicit ``nextn_accepted`` workload measurement.
         nextn_accepted: Average accepted draft tokens per decode step
             (0 <= nextn_accepted <= nextn). Required when the draft depth
             resolves to > 0.
@@ -474,6 +519,12 @@ def cli_recommend(
         max_seq_len: TRT-LLM max_seq_len setting.
         enable_wideep: Enable Wide Expert Parallelism for MoE models.
         moe_backend: Explicit SGLang MoE backend override.
+        attention_backend: Attention kernel-lane override ('fa3', 'triton',
+            'trtllm_mha', 'flashinfer', 'fla', or 'default'). Supported values
+            depend on the backend's collected tables (e.g. vllm supports
+            'triton', 'flashinfer', and 'default'); an unsupported
+            (backend, value) pair raises. None (default) uses the framework
+            default for the target system/backend version.
         top_n: Number of top configurations to return per mode. Default is 5.
         save_dir: Directory to save results. If None, results are not saved.
         engine_step_backend: Engine-step backend; "rust" (the compiled engine,
@@ -511,9 +562,17 @@ def cli_recommend(
     gpus_per_node = spec["node"]["num_gpus_per_node"]
 
     # Fail fast on inconsistent MTP inputs (same early check as cli_default).
-    # nextn="auto" resolves the draft depth from the checkpoint first.
+    # Explicit "auto" resolves the checkpoint depth first and falls back to
+    # DSPARK's architectural block size. An omitted nextn may use that DSPARK
+    # depth only when the caller supplied an explicit workload acceptance
+    # measurement. Explicit nextn=0 always remains the opt-out.
     if nextn == "auto":
         nextn = _resolve_nextn_auto(model_path)
+        if nextn == 0:
+            nextn = _resolve_dspark_nextn(model_path) or 0
+    elif nextn is None:
+        nextn = _resolve_dspark_nextn(model_path) if nextn_accepted is not None else 0
+
     nextn, nextn_accepted = _normalize_nextn(nextn, nextn_accepted)
 
     base_tasks = build_default_tasks(
@@ -530,6 +589,11 @@ def cli_recommend(
         image_height=image_height,
         image_width=image_width,
         num_images=num_images,
+        video_height=video_height,
+        video_width=video_width,
+        video_frames=video_frames,
+        num_videos=num_videos,
+        num_video_tokens=num_video_tokens,
         ttft=ttft,
         tpot=tpot,
         request_latency=request_latency,
@@ -543,6 +607,7 @@ def cli_recommend(
         forward_model=forward_model,
         enable_wideep=enable_wideep,
         moe_backend=moe_backend,
+        attention_backend=attention_backend,
     )
 
     # Build escalation sequence: gpus_per_node, *2, *4, *8, capped at _MAX_GPUS_PER_WORKER.
@@ -597,6 +662,11 @@ def cli_recommend(
         mock_args.image_height = image_height
         mock_args.image_width = image_width
         mock_args.num_images = num_images
+        mock_args.video_height = video_height
+        mock_args.video_width = video_width
+        mock_args.video_frames = video_frames
+        mock_args.num_videos = num_videos
+        mock_args.num_video_tokens = num_video_tokens
         mock_args.ttft = ttft
         mock_args.tpot = tpot
         mock_args.request_latency = request_latency
@@ -622,6 +692,7 @@ def cli_exp(
     *,
     yaml_path: str | None = None,
     config: dict[str, dict] | None = None,
+    attention_backend: str | None = None,
     top_n: int = 5,
     save_dir: str | None = None,
 ) -> CLIResult:
@@ -637,6 +708,10 @@ def cli_exp(
         yaml_path: Path to a YAML file containing experiment definitions.
         config: Dict containing experiment definitions (alternative to yaml_path).
             Keys are experiment names, values are experiment configs.
+        attention_backend: Optional global attention kernel-lane override
+            ('fa3', 'triton', 'trtllm_mha', 'flashinfer', 'fla', or 'default'),
+            applied to every experiment. Per-experiment ``attention_backend``
+            entries in the YAML/config take precedence.
         top_n: Number of top configurations to return for each experiment. Default is 5.
         save_dir: Directory to save results. If None, results are not saved to disk.
 
@@ -698,6 +773,7 @@ def cli_exp(
     tasks = build_experiment_tasks(
         yaml_path=yaml_path,
         config=config,
+        attention_backend=attention_backend,
     )
 
     if not tasks:
@@ -821,6 +897,13 @@ class EstimateResult:
 
     kv_cache_warning: str | None = None
     """Warning message for non-fatal memory capacity issues."""
+
+    moe_comm_fallbacks: tuple[MoECommFallback, ...] = ()
+    """Executed MoE communication topology substitutions.
+
+    Populated only when the Rust operator successfully used a measured
+    topology in place of the requested topology.
+    """
 
     @property
     def request_latency(self) -> float:
@@ -970,6 +1053,11 @@ def cli_estimate(
     image_height: int = 0,
     image_width: int = 0,
     num_images: int = 1,
+    video_height: int = 0,
+    video_width: int = 0,
+    video_frames: int = 0,
+    num_videos: int = 0,
+    num_video_tokens: int = 0,
     enable_encoder_dp: bool = True,
     batch_size: int = 128,
     ctx_tokens: int | None = None,
@@ -1008,6 +1096,7 @@ def cli_estimate(
     decode_max_seq_len: int | None = None,
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
+    attention_backend: str | None = None,
     # Static-mode (and shared) extras
     prefix: int = 0,
     nextn: int | str = 0,
@@ -1052,6 +1141,12 @@ def cli_estimate(
         image_height: Image height in pixels for VL models. Default 0 disables encoder modeling.
         image_width: Image width in pixels for VL models. Default 0 disables encoder modeling.
         num_images: Number of images per request for VL models. Default 1.
+        video_height: Video frame height for VL models. Default 0.
+        video_width: Video frame width for VL models. Default 0.
+        video_frames: Frames per video. Default 0 disables video modeling.
+        num_videos: Number of videos per request. Default 0.
+        num_video_tokens: Explicit post-merge tokens per video. Requires
+            ``video_frames``. Default 0 derives tokens from video dimensions.
         enable_encoder_dp: Model the vision encoder data-parallel (default True;
             vLLM mm_encoder_tp_mode="data" / SGLang --mm-enable-dp-encoder semantics).
             False models the legacy TP-sharded encoder.
@@ -1107,6 +1202,13 @@ def cli_estimate(
             disagg. Overrides ``max_seq_len`` for the decode worker.
         engine_step_backend: Engine-step backend; "rust" (the compiled engine,
             default and only executor) is the only accepted value.
+        attention_backend: Attention kernel-lane override ('fa3', 'triton',
+            'trtllm_mha', 'flashinfer', 'fla', or 'default'). Supported values
+            depend on the backend's collected tables (e.g. vllm supports
+            'triton', 'flashinfer', and 'default'); an unsupported
+            (backend_name, value) pair raises. None (default) uses the
+            framework default for the target system/backend version. Applied
+            to agg, disagg, afd, and all static modes.
         prefix: (common) Prefix cache length (subset of ``isl`` already cached).
             Applied to agg, disagg, and all static modes. Default 0.
         nextn: (common) MTP draft length, or ``"auto"`` to use the checkpoint's
@@ -1246,6 +1348,11 @@ def cli_estimate(
             image_height=image_height,
             image_width=image_width,
             num_images=num_images,
+            video_height=video_height,
+            video_width=video_width,
+            video_frames=video_frames,
+            num_videos=num_videos,
+            num_video_tokens=num_video_tokens,
             enable_encoder_dp=enable_encoder_dp,
             batch_size=batch_size,
             prefix=prefix,
@@ -1267,6 +1374,7 @@ def cli_estimate(
             load_database=_load_database,
             get_backend=get_backend,
             get_model=get_model,
+            attention_backend=attention_backend,
         )
 
     if mode == "agg":
@@ -1281,9 +1389,14 @@ def cli_estimate(
             image_height=image_height,
             image_width=image_width,
             num_images=num_images,
+            video_height=video_height,
+            video_width=video_width,
+            video_frames=video_frames,
+            num_videos=num_videos,
+            num_video_tokens=num_video_tokens,
             enable_encoder_dp=enable_encoder_dp,
             batch_size=batch_size,
-            ctx_tokens=ctx_tokens if ctx_tokens is not None else isl,
+            ctx_tokens=ctx_tokens,
             tp_size=tp_size,
             pp_size=pp_size,
             attention_dp_size=attention_dp_size,
@@ -1301,6 +1414,7 @@ def cli_estimate(
             max_seq_len=max_seq_len,
             engine_step_backend=engine_step_backend,
             forward_model=forward_model,
+            attention_backend=attention_backend,
             prefix=prefix,
             nextn=nextn,
             nextn_accepted=nextn_accepted,
@@ -1341,6 +1455,11 @@ def cli_estimate(
             image_height=image_height,
             image_width=image_width,
             num_images=num_images,
+            video_height=video_height,
+            video_width=video_width,
+            video_frames=video_frames,
+            num_videos=num_videos,
+            num_video_tokens=num_video_tokens,
             enable_encoder_dp=enable_encoder_dp,
             # Prefill config (fall back to shared args)
             prefill_tp_size=prefill_tp_size if prefill_tp_size is not None else tp_size,
@@ -1373,6 +1492,7 @@ def cli_estimate(
             get_model=get_model,
             engine_step_backend=engine_step_backend,
             forward_model=forward_model,
+            attention_backend=attention_backend,
             prefix=prefix,
             nextn=nextn,
             nextn_accepted=nextn_accepted,
@@ -1382,6 +1502,18 @@ def cli_estimate(
             raise ValueError(
                 "forward_model='fpm' is not supported in afd mode: AFD splits attention and FFN "
                 "across workers, which is incompatible with whole-model forward-pass data."
+            )
+        has_image_workload = num_images > 0 and image_height > 0 and image_width > 0
+        has_video_workload = has_video_input(
+            num_videos=num_videos,
+            video_height=video_height,
+            video_width=video_width,
+            video_frames=video_frames,
+            num_video_tokens=num_video_tokens,
+        )
+        if has_image_workload or has_video_workload:
+            raise NotImplementedError(
+                "AFD does not support image/video encoder workloads; use agg, disagg, or static estimation."
             )
         for name, val in [
             ("n_a_nodes", n_a_nodes),
@@ -1434,6 +1566,7 @@ def cli_estimate(
             get_model=get_model,
             free_gpu_memory_fraction=free_gpu_memory_fraction,
             max_seq_len=max_seq_len,
+            attention_backend=attention_backend,
             prefix=prefix,
             nextn=nextn,
             nextn_accepted=nextn_accepted,
@@ -1459,6 +1592,11 @@ def cli_estimate(
             image_height=image_height,
             image_width=image_width,
             num_images=num_images,
+            video_height=video_height,
+            video_width=video_width,
+            video_frames=video_frames,
+            num_videos=num_videos,
+            num_video_tokens=num_video_tokens,
             enable_encoder_dp=enable_encoder_dp,
             batch_size=batch_size,
             prefix=prefix,
@@ -1479,6 +1617,7 @@ def cli_estimate(
             load_database=_load_database,
             get_backend=get_backend,
             get_model=get_model,
+            attention_backend=attention_backend,
         )
         if static_result.summary is not None and static_result.summary.check_oom():
             phase_label = "decode" if static_mode == "static_gen" else "prefill"
@@ -1508,6 +1647,11 @@ def _run_agg_estimate(
     image_height,
     image_width,
     num_images,
+    video_height,
+    video_width,
+    video_frames,
+    num_videos,
+    num_video_tokens,
     enable_encoder_dp,
     batch_size,
     ctx_tokens,
@@ -1528,12 +1672,14 @@ def _run_agg_estimate(
     max_seq_len=None,
     engine_step_backend=None,
     forward_model=None,
+    attention_backend: str | None = None,
     # Common (also accepted by disagg / static)
     prefix: int = 0,
     nextn: int = 0,
     nextn_accepted: float | None = None,
 ) -> EstimateResult:
     """Run aggregated (IFB) estimation."""
+    from aiconfigurator.sdk.backends.base_backend import BaseBackend
     from aiconfigurator.sdk.config import RuntimeConfig
     from aiconfigurator.sdk.inference_session import InferenceSession
 
@@ -1554,6 +1700,7 @@ def _run_agg_estimate(
         comm_quant_mode,
         forward_model=forward_model,
         enable_encoder_dp=enable_encoder_dp,
+        attention_backend=attention_backend,
     )
     _apply_nextn(model_config, nextn)
     # Agg workers run context attention → resolve fmha against the perf data
@@ -1562,7 +1709,7 @@ def _run_agg_estimate(
         model_config, model_path, load_database(system_name), backend_name, is_context_role=True
     )
     resolve_dsv4_moe_arch(model_config, model_path, system_name=system_name, backend_name=backend_name)
-    resolve_nvfp4_for_system(model_config, system_name, model_path)
+    resolve_nvfp4_for_system(model_config, system_name, model_path, backend_name=backend_name)
     runtime_config = RuntimeConfig(
         isl=isl,
         osl=osl,
@@ -1570,11 +1717,18 @@ def _run_agg_estimate(
         image_height=image_height,
         image_width=image_width,
         num_images_per_request=num_images,
+        video_height=video_height,
+        video_width=video_width,
+        video_frames=video_frames,
+        num_videos_per_request=num_videos,
+        num_video_tokens=num_video_tokens,
         prefix=prefix,
         engine_step_backend=engine_step_backend,
     )
 
     model = get_model(model_path, model_config, backend_name)
+    if ctx_tokens is None:
+        ctx_tokens = isl + BaseBackend._visual_context_tokens(model, runtime_config)
     database = load_database(system_name)
     backend = get_backend(backend_name)
     session = InferenceSession(model, database, backend)
@@ -1629,6 +1783,7 @@ def _run_agg_estimate(
         summary=summary,
         per_ops_data=summary.get_per_ops_data(),
         per_ops_source=summary.get_per_ops_source(),
+        moe_comm_fallbacks=summary.get_moe_comm_fallbacks(),
         kv_cache_warning=kv_warning,
     )
 
@@ -1645,6 +1800,11 @@ def _run_static_estimate(
     image_height,
     image_width,
     num_images,
+    video_height,
+    video_width,
+    video_frames,
+    num_videos,
+    num_video_tokens,
     enable_encoder_dp,
     batch_size,
     prefix,
@@ -1666,6 +1826,7 @@ def _run_static_estimate(
     get_backend,
     get_model,
     forward_model=None,
+    attention_backend: str | None = None,
 ) -> EstimateResult:
     """Run a single-pass static-batching estimation.
 
@@ -1697,19 +1858,38 @@ def _run_static_estimate(
         comm_quant_mode,
         forward_model=forward_model,
         enable_encoder_dp=enable_encoder_dp,
+        attention_backend=attention_backend,
     )
     _apply_nextn(model_config, nextn)
+    database = load_database(system_name)
+
+    if check_is_moe(model_path):
+        required_phases = ("context",) if static_mode == "static_ctx" else ("context", "generation")
+        resolve_model_config_moe_comm(
+            model_config,
+            model_path=model_path,
+            backend_name=backend_name,
+            database=database,
+            required_phases=required_phases,
+            fmha_quant_mode_explicit=fmha_quant_mode is not None,
+            kvcache_quant_mode_explicit=kvcache_quant_mode is not None,
+        )
+
     # static / static_ctx run context attention; static_gen is generation-only
-    # and legitimately keeps fp8 FMHA. Resolve fmha against the perf data accordingly.
-    resolve_context_fmha_by_data(
-        model_config,
-        model_path,
-        load_database(system_name),
-        backend_name,
-        is_context_role=static_mode != "static_gen",
-    )
+    # and legitimately keeps fp8 FMHA. A resolved large-EP tuple already owns
+    # its WideEP MLA quant labels; the generic narrow-attention guard must not
+    # reinterpret those labels as an explicit user request.
+    if model_config.moe_comm_backend is None:
+        resolve_context_fmha_by_data(
+            model_config,
+            model_path,
+            database,
+            backend_name,
+            is_context_role=static_mode != "static_gen",
+        )
+
     resolve_dsv4_moe_arch(model_config, model_path, system_name=system_name, backend_name=backend_name)
-    resolve_nvfp4_for_system(model_config, system_name, model_path)
+    resolve_nvfp4_for_system(model_config, system_name, model_path, backend_name=backend_name)
 
     runtime_config = RuntimeConfig(
         batch_size=batch_size,
@@ -1718,12 +1898,16 @@ def _run_static_estimate(
         image_height=image_height,
         image_width=image_width,
         num_images_per_request=num_images,
+        video_height=video_height,
+        video_width=video_width,
+        video_frames=video_frames,
+        num_videos_per_request=num_videos,
+        num_video_tokens=num_video_tokens,
         prefix=prefix,
         engine_step_backend=engine_step_backend,
     )
 
     model = get_model(model_path, model_config, backend_name)
-    database = load_database(system_name)
     backend = get_backend(backend_name)
     session = InferenceSession(model, database, backend)
     summary = session.run_static(
@@ -1771,6 +1955,7 @@ def _run_static_estimate(
         summary=summary,
         per_ops_data=None,
         per_ops_source=None,
+        moe_comm_fallbacks=summary.get_moe_comm_fallbacks(),
         kv_cache_warning=static_warning,
     )
 
@@ -1787,6 +1972,11 @@ def _run_disagg_estimate(
     image_height,
     image_width,
     num_images,
+    video_height,
+    video_width,
+    video_frames,
+    num_videos,
+    num_video_tokens,
     enable_encoder_dp,
     prefill_tp_size,
     prefill_pp_size,
@@ -1812,6 +2002,7 @@ def _run_disagg_estimate(
     get_model,
     engine_step_backend=None,
     forward_model=None,
+    attention_backend: str | None = None,
     # Common (also accepted by agg / static)
     prefix: int = 0,
     nextn: int = 0,
@@ -1856,6 +2047,7 @@ def _run_disagg_estimate(
         comm_quant_mode,
         forward_model=forward_model,
         enable_encoder_dp=enable_encoder_dp,
+        attention_backend=attention_backend,
     )
     decode_model_config = _build_model_config(
         decode_tp_size,
@@ -1870,25 +2062,57 @@ def _run_disagg_estimate(
         comm_quant_mode,
         forward_model=forward_model,
         enable_encoder_dp=enable_encoder_dp,
+        attention_backend=attention_backend,
     )
     # Apply common nextn/MTP overrides to *both* prefill and decode worker
     # configs so a single ``--nextn N`` reaches each side of the disagg pair.
     _apply_nextn(prefill_model_config, nextn)
     _apply_nextn(decode_model_config, nextn)
+
+    prefill_database = load_database(system_name)
+    decode_database = load_database(decode_system_name)
+    if check_is_moe(model_path):
+        resolve_model_config_moe_comm(
+            prefill_model_config,
+            model_path=model_path,
+            backend_name=backend_name,
+            database=prefill_database,
+            required_phases=("context",),
+            fmha_quant_mode_explicit=fmha_quant_mode is not None,
+            kvcache_quant_mode_explicit=kvcache_quant_mode is not None,
+        )
+        resolve_model_config_moe_comm(
+            decode_model_config,
+            model_path=model_path,
+            backend_name=backend_name,
+            database=decode_database,
+            required_phases=("generation",),
+            fmha_quant_mode_explicit=fmha_quant_mode is not None,
+            kvcache_quant_mode_explicit=kvcache_quant_mode is not None,
+        )
+
     # Prefill runs context attention → resolve fmha against the perf data. Decode
-    # is generation-only and keeps fp8, so it needs no adjustment.
-    resolve_context_fmha_by_data(
-        prefill_model_config, model_path, load_database(system_name), backend_name, is_context_role=True
-    )
+    # is generation-only and keeps fp8, so it needs no adjustment. A resolved
+    # large-EP tuple owns its WideEP attention labels and must not be rewritten
+    # by the generic narrow-attention fallback.
+    if prefill_model_config.moe_comm_backend is None:
+        resolve_context_fmha_by_data(
+            prefill_model_config, model_path, prefill_database, backend_name, is_context_role=True
+        )
     resolve_dsv4_moe_arch(prefill_model_config, model_path, system_name=system_name, backend_name=backend_name)
-    resolve_nvfp4_for_system(prefill_model_config, system_name, model_path)
+    resolve_nvfp4_for_system(prefill_model_config, system_name, model_path, backend_name=backend_name)
     resolve_dsv4_moe_arch(
         decode_model_config,
         model_path,
         system_name=decode_system_name or system_name,
         backend_name=backend_name,
     )
-    resolve_nvfp4_for_system(decode_model_config, decode_system_name or system_name, model_path)
+    resolve_nvfp4_for_system(
+        decode_model_config,
+        decode_system_name or system_name,
+        model_path,
+        backend_name=backend_name,
+    )
 
     runtime_config = RuntimeConfig(
         isl=isl,
@@ -1896,12 +2120,15 @@ def _run_disagg_estimate(
         image_height=image_height,
         image_width=image_width,
         num_images_per_request=num_images,
+        video_height=video_height,
+        video_width=video_width,
+        video_frames=video_frames,
+        num_videos_per_request=num_videos,
+        num_video_tokens=num_video_tokens,
         prefix=prefix,
         engine_step_backend=engine_step_backend,
     )
 
-    prefill_database = load_database(system_name)
-    decode_database = load_database(decode_system_name)
     prefill_backend = get_backend(backend_name)
     decode_backend = get_backend(backend_name)
 
@@ -1970,6 +2197,7 @@ def _run_disagg_estimate(
         mode="disagg",
         per_ops_data=summary.get_per_ops_data(),
         per_ops_source=summary.get_per_ops_source(),
+        moe_comm_fallbacks=summary.get_moe_comm_fallbacks(),
     )
 
 
@@ -2083,6 +2311,10 @@ def _combine_afd_static_estimate_results(
         mode="afd",
         per_ops_data=per_ops_data,
         per_ops_source=per_ops_source,
+        moe_comm_fallbacks=merge_moe_comm_fallbacks(
+            afd_result.moe_comm_fallbacks,
+            static_result.moe_comm_fallbacks,
+        ),
         kv_cache_warning=static_result.kv_cache_warning,
     )
 
@@ -2117,6 +2349,7 @@ def _run_afd_estimate(
     get_model,
     free_gpu_memory_fraction,
     max_seq_len,
+    attention_backend: str | None = None,
     prefix: int = 0,
     nextn: int = 0,
     nextn_accepted: float | None = None,
@@ -2172,6 +2405,7 @@ def _run_afd_estimate(
         fmha_quant_mode,
         moe_quant_mode,
         comm_quant_mode,
+        attention_backend=attention_backend,
     )
     f_model_config = _build_model_config(
         f_tp_size,
@@ -2184,6 +2418,7 @@ def _run_afd_estimate(
         fmha_quant_mode,
         moe_quant_mode,
         comm_quant_mode,
+        attention_backend=attention_backend,
     )
     # Pass speculative decode knobs through to A/F model configs. TODO:
     # AFDTransfer still models committed decode-token volume only; recalibrate
@@ -2198,9 +2433,9 @@ def _run_afd_estimate(
         a_model_config, model_path, database, backend_name, is_context_role=afd_phase in ("prefill", "both")
     )
     resolve_dsv4_moe_arch(a_model_config, model_path, system_name=system_name, backend_name=backend_name)
-    resolve_nvfp4_for_system(a_model_config, system_name, model_path)
+    resolve_nvfp4_for_system(a_model_config, system_name, model_path, backend_name=backend_name)
     resolve_dsv4_moe_arch(f_model_config, model_path, system_name=system_name, backend_name=backend_name)
-    resolve_nvfp4_for_system(f_model_config, system_name, model_path)
+    resolve_nvfp4_for_system(f_model_config, system_name, model_path, backend_name=backend_name)
 
     afd_config = AFDConfig(
         n_a_nodes=n_a_nodes,

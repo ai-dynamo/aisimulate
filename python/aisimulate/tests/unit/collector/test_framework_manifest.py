@@ -8,10 +8,17 @@ from pathlib import Path
 import pytest
 import yaml
 
-from collector.framework_manifest import get_collector_runtime, require_collector_runtime, resolve_op_runtime
+from collector.framework_manifest import (
+    get_collector_runtime,
+    require_collector_runtime,
+    resolve_op_runtime,
+    validate_resolution,
+)
 from collector.sglang.registry import REGISTRY as SGLANG_REGISTRY
 from collector.trtllm.registry import REGISTRY as TRTLLM_REGISTRY
+from collector.version_resolver import _check_compat
 from collector.vllm.registry import REGISTRY as VLLM_REGISTRY
+from collector.vllm.registry import REGISTRY_XPU as VLLM_XPU_REGISTRY
 from collector.wideep.sglang import dataset_version_label
 from collector.wideep.sglang.registry import REGISTRY as WIDEEP_SGLANG_REGISTRY
 from collector.wideep.trtllm.registry import REGISTRY as WIDEEP_TRTLLM_REGISTRY
@@ -39,19 +46,53 @@ def test_manifest_exposes_current_framework_versions_and_images():
     assert vllm.image("cu130") == vllm.image()
 
 
+def test_manifest_exposes_pinned_vllm_xpu_runtime_identity():
+    runtime = get_collector_runtime("vllm_xpu")
+
+    assert runtime.framework == "vllm_xpu"
+    assert runtime.data_backend == "vllm"
+    assert runtime.version == "0.26.0"
+    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.26.0@sha256:")
+
+
 def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
     assert all(not entry.versions for entry in VLLM_REGISTRY)
 
     # Each module pins the runtime that actually collects it: the manifest
     # default, or its family override (e.g. kda runs only on the vllm kimi-k3
-    # preview image, frameworks.vllm.families.kda).
+    # preview image, frameworks.vllm.families.kda). The Qwen3.8 target-lane
+    # collectors accept both the default 0.24.0 runtime and model-pinned
+    # 0.27.1, so compare the declaration semantically just as collect.py does.
     module_versions: dict[str, set[str]] = {}
     for entry in VLLM_REGISTRY:
         module_versions.setdefault(entry.module, set()).add(resolve_op_runtime("vllm", entry.op).version)
 
     for module, versions in sorted(module_versions.items()):
         assert len(versions) == 1, (module, versions)
-        expected = f'__compat__ = "vllm=={next(iter(versions))}"'
+        resolved_version = next(iter(versions))
+        source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
+        declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
+        assert len(declarations) == 1, module
+        declared = declarations[0].split("=", 1)[1].strip().strip('"')
+        assert _check_compat(declared, resolved_version), (module, declared, resolved_version)
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["collector.vllm.collect_moe", "collector.vllm.collect_gdn", "collector.vllm.collect_gemm"],
+)
+def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
+    expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"'
+    source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
+    declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
+    assert declarations == [expected], module
+
+
+def test_active_vllm_xpu_collectors_are_exactly_pinned_to_manifest_version():
+    expected = f'__compat__ = "vllm=={get_collector_runtime("vllm_xpu").version}"'
+    assert all(not entry.versions for entry in VLLM_XPU_REGISTRY)
+
+    for module in sorted({entry.module for entry in VLLM_XPU_REGISTRY}):
         source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
         declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
         assert declarations == [expected], module
@@ -65,11 +106,25 @@ def test_wideep_runtime_stays_independent_from_default_framework_runtime():
     assert "deepseek-v4" in wideep_sglang.image()
 
 
+def test_wideep_vllm_runtime_has_backend_specific_deepep_abis():
+    runtime = get_collector_runtime("vllm", workload="wideep")
+
+    assert runtime.images == {
+        "default": "vllm/vllm-openai:v0.24.0@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f"
+    }
+    assert runtime.abi_for_backend("deepep_ht")["deep_ep"] == "73b6ea4a439ba03a695563f9fd242c8e4b02b37c"
+    assert runtime.abi_for_backend("deepep_ht")["deep_ep_api"] == "Buffer"
+    assert runtime.abi_for_backend("deepep_ll")["deep_ep_api"] == "Buffer"
+    v2 = runtime.abi_for_backend("deepep_v2")
+    assert v2["deep_ep"] == "b306af06afd412c88e51e71802951606e40b7358"
+    assert v2["deep_ep_api"] == "ElasticBuffer"
+    assert v2["nccl"] == "2.30.4"
+
+
 def test_deepep_ops_resolve_to_the_comm_family_runtime(monkeypatch):
     # The `comm` family override retargets exactly the two DeepEP ops; moe_ep
-    # (the retired wideep_moe's successor) is family `moe` and stays on the
-    # DeepSeek-V4 runtime its 0.5.10 dataset was collected with, where DSv4
-    # module support is verified.
+    # is family `moe` and stays on the DeepSeek-V4 runtime its 0.5.10 dataset
+    # was collected with.
     moe = resolve_op_runtime("wideep_sglang", "moe_ep")
     assert (moe.family, moe.version) == ("moe", "0.5.10")
     assert "deepseek-v4" in moe.image()
@@ -125,6 +180,65 @@ frameworks:
     )
     with pytest.raises(ValueError, match="digest-pinned"):
         get_collector_runtime("sglang", path=manifest)
+
+
+def test_runtime_source_commit_and_abi_are_pinned_and_exposed(tmp_path):
+    digest = "@sha256:" + "0" * 64
+    source_commit = "1" * 40
+    manifest = tmp_path / "framework_manifest.yaml"
+    manifest.write_text(
+        f"""
+schema_version: 2
+frameworks:
+  vllm:
+    source_repo: "https://github.com/vllm-project/vllm.git"
+    default:
+      version: "0.26.1.dev587"
+      source_commit: "{source_commit}"
+      abi:
+        deep_ep: "d4f41e4e93"
+        nvshmem: "3.3.24"
+      images:
+        default: "vllm/vllm-openai:nightly{digest}"
+""",
+        encoding="utf-8",
+    )
+
+    runtime = get_collector_runtime("vllm", path=manifest)
+    assert runtime.source_commit == source_commit
+    assert runtime.abi == {"deep_ep": "d4f41e4e93", "nvshmem": "3.3.24"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("source_commit", "abc123", "full 40-character"),
+        ("abi", "not-a-map", "must map"),
+        ("abi", {}, "must map"),
+    ],
+)
+def test_runtime_source_and_abi_reject_unpinned_values(tmp_path, field, value, message):
+    digest = "@sha256:" + "0" * 64
+    runtime_extra = yaml.safe_dump({field: value}, default_flow_style=False).rstrip()
+    indented_extra = "\n".join(f"      {line}" for line in runtime_extra.splitlines())
+    manifest = tmp_path / "framework_manifest.yaml"
+    manifest.write_text(
+        f"""
+schema_version: 2
+frameworks:
+  vllm:
+    source_repo: "https://github.com/vllm-project/vllm.git"
+    default:
+{indented_extra}
+      version: "0.26.1.dev587"
+      images:
+        default: "vllm/vllm-openai:nightly{digest}"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        get_collector_runtime("vllm", path=manifest)
 
 
 def test_wideep_entry_missing_base_framework_is_rejected(tmp_path):
@@ -200,6 +314,19 @@ def test_runtime_selection_accepts_only_the_matching_pin(installed_version, requ
     assert (runtime.workload, runtime.version) == (workload, version)
 
 
+def test_vllm_xpu_runtime_selection_uses_xpu_registry_and_accepts_local_version_metadata():
+    runtime = require_collector_runtime("vllm_xpu", "0.26.0+xpu", requested_ops={"gemm"}, wideep_ops=set())
+
+    assert runtime.framework == "vllm_xpu"
+    assert runtime.version == "0.26.0"
+    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.26.0@sha256:")
+
+
+def test_vllm_xpu_runtime_selection_rejects_version_mismatch():
+    with pytest.raises(RuntimeError, match=r"vllm_xpu stock collector requires exactly 0\.26\.0"):
+        require_collector_runtime("vllm_xpu", "0.24.0", requested_ops={"gemm"}, wideep_ops=set())
+
+
 @pytest.mark.parametrize(
     ("installed_version", "requested_ops", "match"),
     [
@@ -218,9 +345,141 @@ def test_runtime_selection_rejects_mismatched_or_mixed_pins(installed_version, r
         require_collector_runtime("sglang", installed_version, requested_ops=requested_ops, wideep_ops=WIDEEP_OPS)
 
 
+# --- Task 4b: model-scoped runtime pins (frameworks.<key>.models) ---------
+
+
+@pytest.mark.parametrize(
+    ("installed_version", "requested_ops", "workload", "version"),
+    [
+        ("0.5.14+cu130", {"gemm"}, "default", "0.5.14"),
+        ("0.5.16", {"kda"}, "default", "0.5.16"),
+        ("0.5.10", {"moe_ep"}, "wideep", "0.5.10"),
+    ],
+)
+def test_no_model_identity_resolves_exactly_like_today(installed_version, requested_ops, workload, version):
+    # model_path is purely additive: omitting it, or passing None explicitly,
+    # must reproduce pre-4b resolution byte-for-byte across default, family,
+    # and wideep pins (CollectorRuntime is a frozen dataclass, so == is a
+    # full field comparison).
+    baseline = require_collector_runtime(
+        "sglang", installed_version, requested_ops=requested_ops, wideep_ops=WIDEEP_OPS
+    )
+    explicit_none = require_collector_runtime(
+        "sglang", installed_version, requested_ops=requested_ops, wideep_ops=WIDEEP_OPS, model_path=None
+    )
+    assert explicit_none == baseline
+    assert (explicit_none.workload, explicit_none.version) == (workload, version)
+
+
+def test_unknown_model_id_falls_back_to_default_resolution():
+    baseline = require_collector_runtime("sglang", "0.5.14", requested_ops={"gemm"}, wideep_ops=WIDEEP_OPS)
+    unmatched = require_collector_runtime(
+        "sglang",
+        "0.5.14",
+        requested_ops={"gemm"},
+        wideep_ops=WIDEEP_OPS,
+        model_path="some-org/not-a-pinned-model",
+    )
+    assert unmatched == baseline
+
+
+@pytest.mark.parametrize(
+    "model_path",
+    [
+        "Qwen/Qwen3.8-2.4T-A95B",
+        "Qwen/Qwen3.8-2.4T-A95B-FP8",
+        "RadixArk/Qwen3.8-2.4T-A95B-NVFP4",
+    ],
+)
+def test_model_pin_match_resolves_qwen38_max_to_sglang_0_5_17(model_path):
+    # Real manifest (no path= override): the checked-in frameworks.sglang.models
+    # entries added for Qwen3.8-Max day-0 support.
+    runtime = require_collector_runtime(
+        "sglang", "0.5.17", requested_ops={"gemm"}, wideep_ops=WIDEEP_OPS, model_path=model_path
+    )
+    assert runtime.version == "0.5.17"
+    assert runtime.image().startswith("lmsysorg/sglang:v0.5.17@sha256:")
+    assert runtime.image("cu130").startswith("lmsysorg/sglang:v0.5.17-cu130@sha256:")
+    # Not a family classification — see _model_pinned_runtime docstring.
+    assert runtime.family is None
+
+
+def test_model_pin_mismatch_error_names_the_model_scoped_image():
+    with pytest.raises(RuntimeError) as excinfo:
+        require_collector_runtime(
+            "sglang",
+            "0.5.14",
+            requested_ops={"gemm"},
+            wideep_ops=WIDEEP_OPS,
+            model_path="Qwen/Qwen3.8-2.4T-A95B",
+        )
+    message = str(excinfo.value)
+    # Same template as the pre-4b guard ("~:249"), but naming the
+    # model-scoped runtime/image instead of the framework default.
+    assert "sglang stock collector requires exactly 0.5.17, found 0.5.14" in message
+    assert "use lmsysorg/sglang:v0.5.17@sha256:" in message
+
+
+@pytest.mark.parametrize(
+    "model_path",
+    [
+        "Qwen/Qwen3.8-2.4T-A95B",
+        "Qwen/Qwen3.8-2.4T-A95B-FP8",
+        "RadixArk/Qwen3.8-2.4T-A95B-NVFP4",
+    ],
+)
+def test_model_pin_match_resolves_qwen38_max_to_vllm_0_27_1(model_path):
+    runtime = require_collector_runtime(
+        "vllm", "0.27.1", requested_ops={"gemm"}, wideep_ops=set(), model_path=model_path
+    )
+    assert runtime.version == "0.27.1"
+    assert runtime.image().startswith("vllm/vllm-openai:v0.27.1@sha256:")
+    assert runtime.image("cu129").startswith("vllm/vllm-openai:v0.27.1-cu129@sha256:")
+    assert runtime.family is None
+
+
+def test_vllm_model_pin_mismatch_error_names_the_model_scoped_image():
+    with pytest.raises(RuntimeError) as excinfo:
+        require_collector_runtime(
+            "vllm",
+            "0.24.0",
+            requested_ops={"gemm"},
+            wideep_ops=set(),
+            model_path="Qwen/Qwen3.8-2.4T-A95B",
+        )
+    message = str(excinfo.value)
+    assert "vllm stock collector requires exactly 0.27.1, found 0.24.0" in message
+    assert "use vllm/vllm-openai:v0.27.1@sha256:" in message
+
+
+def test_vllm_unknown_model_id_falls_back_to_default_resolution():
+    baseline = require_collector_runtime("vllm", "0.24.0", requested_ops={"gemm"}, wideep_ops=set())
+    unmatched = require_collector_runtime(
+        "vllm",
+        "0.24.0",
+        requested_ops={"gemm"},
+        wideep_ops=set(),
+        model_path="some-org/not-a-pinned-model",
+    )
+    assert unmatched == baseline
+
+
+def test_real_manifest_models_section_does_not_break_validate_resolution():
+    # Task 4b spec: model pins are additive to validate_resolution()'s
+    # contract ("every registry op resolves to a pinned runtime"); adding
+    # frameworks.sglang.models must not introduce a resolution error anywhere
+    # in the real manifest.
+    assert validate_resolution() == []
+
+
 def test_unknown_requested_op_fails_with_key_error():
     with pytest.raises(KeyError, match=r"has no op\(s\): \['not_a_real_op'\]"):
         require_collector_runtime("sglang", "0.5.14", requested_ops={"not_a_real_op"}, wideep_ops=set())
+
+
+def test_vllm_xpu_unknown_requested_op_fails_with_key_error():
+    with pytest.raises(KeyError, match=r"vllm_xpu registry has no op\(s\): \['not_a_real_op'\]"):
+        require_collector_runtime("vllm_xpu", "0.26.0+xpu", requested_ops={"not_a_real_op"}, wideep_ops=set())
 
 
 def test_typo_mixed_with_real_op_fails_closed():
@@ -430,3 +689,97 @@ frameworks:
     assert f"lmsysorg/sglang:v0.5.14{digest_a}" in message
     assert f"lmsysorg/sglang:v0.5.14-wideep{digest_b}" in message
     assert "separate containers" in message
+
+
+def test_model_pin_overrides_a_synthetic_family_pin_for_the_same_op(tmp_path):
+    # Task 4b precedence: a model pin wins over a family pin for every op in
+    # the run, even one the family pin would otherwise claim — mirrors "a
+    # hypothetical kda under a model pin" from the framework_manifest.yaml
+    # comment. Synthetic fixture; the real kda entry is untouched.
+    digest = "@sha256:" + "0" * 64
+    model_digest = "@sha256:" + "1" * 64
+    (tmp_path / "framework_manifest.yaml").write_text(
+        f"""
+schema_version: 2
+frameworks:
+  sglang:
+    source_repo: "https://github.com/sgl-project/sglang.git"
+    default:
+      version: "0.5.14"
+      images:
+        default: "lmsysorg/sglang:v0.5.14{digest}"
+    families:
+      gemm:
+        version: "0.5.15"
+        images:
+          default: "lmsysorg/sglang:v0.5.15{digest}"
+    models:
+      "some-org/pinned-model":
+        version: "0.5.17"
+        images:
+          default: "lmsysorg/sglang:v0.5.17{model_digest}"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "op_backend_catalog.yaml").write_text(
+        """
+schema_version: 1
+families:
+  - family: gemm
+    op_files: [gemm_perf]
+  - family: attention
+    op_files: [context_attention_perf, generation_attention_perf]
+""",
+        encoding="utf-8",
+    )
+    # Without a model pin: gemm (family override, 0.5.15) and
+    # attention_context (default, 0.5.14) split across two runtimes and fail
+    # closed, exactly as today.
+    with pytest.raises(RuntimeError, match="multiple runtime versions"):
+        require_collector_runtime(
+            "sglang",
+            "0.5.14",
+            requested_ops={"gemm", "attention_context"},
+            wideep_ops=set(),
+            path=tmp_path / "framework_manifest.yaml",
+            catalog_path=tmp_path / "op_backend_catalog.yaml",
+        )
+    # With the model pin active for this run: the gemm family override no
+    # longer applies — both ops resolve uniformly to the model-pinned runtime.
+    runtime = require_collector_runtime(
+        "sglang",
+        "0.5.17",
+        requested_ops={"gemm", "attention_context"},
+        wideep_ops=set(),
+        model_path="some-org/pinned-model",
+        path=tmp_path / "framework_manifest.yaml",
+        catalog_path=tmp_path / "op_backend_catalog.yaml",
+    )
+    assert runtime.version == "0.5.17"
+    assert runtime.image() == f"lmsysorg/sglang:v0.5.17{model_digest}"
+    assert runtime.family is None
+
+
+def test_model_pin_images_must_be_digest_pinned(tmp_path):
+    digest = "@sha256:" + "0" * 64
+    manifest = tmp_path / "framework_manifest.yaml"
+    manifest.write_text(
+        f"""
+schema_version: 2
+frameworks:
+  sglang:
+    source_repo: "https://github.com/sgl-project/sglang.git"
+    default:
+      version: "0.5.14"
+      images:
+        default: "lmsysorg/sglang:v0.5.14{digest}"
+    models:
+      "some-org/pinned-model":
+        version: "0.5.17"
+        images:
+          default: "lmsysorg/sglang:v0.5.17"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="digest-pinned"):
+        get_collector_runtime("sglang", path=manifest)

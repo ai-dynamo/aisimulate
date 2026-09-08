@@ -51,22 +51,17 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(backend, str) or backend not in DEFAULT_BACKEND_VERSIONS:
         supported = ", ".join(sorted(DEFAULT_BACKEND_VERSIONS))
         raise ValueError(
-            f"AIC KV cache capacity estimation does not support {backend!r}; "
-            f"supported backends: {supported}"
+            f"AIC KV cache capacity estimation does not support {backend!r}; supported backends: {supported}"
         )
     model = lowered.get("aic_model_path")
     if not model:
-        raise ValueError(
-            "AIC KV cache capacity estimation requires aic_model_path in engine args"
-        )
+        raise ValueError("AIC KV cache capacity estimation requires aic_model_path in engine args")
 
     lowered["num_gpu_blocks"] = estimate_num_gpu_blocks(
         backend_name=backend,
         system=lowered.get("aic_system") or _DEFAULT_AIC_SYSTEM,
         model_path=model,
-        tp_size=(
-            lowered.get("aic_tp_size") if lowered.get("aic_tp_size") is not None else 1
-        ),
+        tp_size=(lowered.get("aic_tp_size") if lowered.get("aic_tp_size") is not None else 1),
         block_size=_resolve_block_size(lowered, backend),
         max_num_batched_tokens=(
             lowered.get("max_num_batched_tokens")
@@ -74,17 +69,13 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
             else _DEFAULT_MAX_NUM_BATCHED_TOKENS
         ),
         max_num_sequences=(
-            lowered.get("max_num_seqs")
-            if lowered.get("max_num_seqs") is not None
-            else _DEFAULT_MAX_NUM_SEQUENCES
+            lowered.get("max_num_seqs") if lowered.get("max_num_seqs") is not None else _DEFAULT_MAX_NUM_SEQUENCES
         ),
         gpu_memory_utilization=lowered.get("gpu_memory_utilization"),
         mem_fraction_static=lowered.get("mem_fraction_static"),
         free_gpu_memory_fraction=lowered.get("free_gpu_memory_fraction"),
         backend_version=lowered.get("aic_backend_version"),
-        pp_size=(
-            lowered.get("aic_pp_size") if lowered.get("aic_pp_size") is not None else 1
-        ),
+        pp_size=(lowered.get("aic_pp_size") if lowered.get("aic_pp_size") is not None else 1),
         moe_tp_size=lowered.get("aic_moe_tp_size"),
         moe_ep_size=lowered.get("aic_moe_ep_size"),
         attention_dp_size=attention_dp,
@@ -94,6 +85,7 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
         kv_cache_dtype=lowered.get("aic_kv_cache_dtype"),
         comm_dtype=lowered.get("aic_comm_dtype"),
         systems_path=lowered.get("systems_path"),
+        cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
     )
     return lowered
 
@@ -121,6 +113,7 @@ def estimate_num_gpu_blocks(
     kv_cache_dtype: str | None = None,
     comm_dtype: str | None = None,
     systems_path: str | None = None,
+    cuda_graph_reserved_bytes: int = 0,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -132,8 +125,7 @@ def estimate_num_gpu_blocks(
     if backend_name not in DEFAULT_BACKEND_VERSIONS:
         supported = ", ".join(sorted(DEFAULT_BACKEND_VERSIONS))
         raise ValueError(
-            f"AIC KV cache capacity estimation does not support {backend_name!r}; "
-            f"supported backends: {supported}"
+            f"AIC KV cache capacity estimation does not support {backend_name!r}; supported backends: {supported}"
         )
     from aiconfigurator_core.sdk.memory import (
         estimate_num_gpu_blocks as aic_estimate_num_gpu_blocks,
@@ -142,23 +134,15 @@ def estimate_num_gpu_blocks(
     if backend_name == "trtllm":
         memory_fraction_kind = "of_free"
         memory_fraction_value = (
-            free_gpu_memory_fraction
-            if free_gpu_memory_fraction is not None
-            else DEFAULT_FREE_GPU_MEMORY_FRACTION
+            free_gpu_memory_fraction if free_gpu_memory_fraction is not None else DEFAULT_FREE_GPU_MEMORY_FRACTION
         )
     elif backend_name == "sglang":
         memory_fraction_kind = "of_total"
-        memory_fraction_value = (
-            mem_fraction_static
-            if mem_fraction_static is not None
-            else DEFAULT_MEM_FRACTION_STATIC
-        )
+        memory_fraction_value = mem_fraction_static if mem_fraction_static is not None else DEFAULT_MEM_FRACTION_STATIC
     else:
         memory_fraction_kind = "of_total"
         memory_fraction_value = (
-            gpu_memory_utilization
-            if gpu_memory_utilization is not None
-            else DEFAULT_GPU_MEMORY_UTILIZATION
+            gpu_memory_utilization if gpu_memory_utilization is not None else DEFAULT_GPU_MEMORY_UTILIZATION
         )
 
     return int(
@@ -167,9 +151,7 @@ def estimate_num_gpu_blocks(
             system,
             backend_name,
             backend_version=(
-                backend_version
-                if backend_version is not None
-                else DEFAULT_BACKEND_VERSIONS[backend_name]
+                backend_version if backend_version is not None else DEFAULT_BACKEND_VERSIONS[backend_name]
             ),
             scheduler_block_size=block_size,
             max_num_tokens=max_num_batched_tokens,
@@ -178,9 +160,7 @@ def estimate_num_gpu_blocks(
             memory_fraction_value=memory_fraction_value,
             tp_size=tp_size,
             pp_size=pp_size,
-            attention_dp_size=(
-                attention_dp_size if attention_dp_size is not None else 1
-            ),
+            attention_dp_size=(attention_dp_size if attention_dp_size is not None else 1),
             moe_tp_size=moe_tp_size,
             moe_ep_size=moe_ep_size,
             gemm_quant_mode=_quant_mode_name("gemm", gemm_dtype),
@@ -189,6 +169,7 @@ def estimate_num_gpu_blocks(
             kvcache_quant_mode=_quant_mode_name("kvcache", kv_cache_dtype),
             comm_quant_mode=_quant_mode_name("comm", comm_dtype),
             systems_path=systems_path,
+            cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
         )
     )
 
@@ -215,9 +196,7 @@ def estimate_kv_bytes_per_token(
     )
     value = estimator.kv_bytes_per_token()
     if value is None or value <= 0:
-        raise ValueError(
-            f"could not derive KV bytes per token for model {model_name!r}"
-        )
+        raise ValueError(f"could not derive KV bytes per token for model {model_name!r}")
     return int(value)
 
 
@@ -228,9 +207,7 @@ def resolve_model_context_length(model_name: str) -> int:
     from aiconfigurator_core.sdk.memory import NaiveKVCacheEstimator
 
     # Both modules ship in the same distribution; reuse the canonical loader.
-    config = NaiveKVCacheEstimator._load_config(
-        model_name, allow_hf_config_download=True
-    )
+    config = NaiveKVCacheEstimator._load_config(model_name, allow_hf_config_download=True)
     if not isinstance(config, dict):
         raise ValueError(f"could not load Hugging Face config for {model_name!r}")
     text_config = config.get("text_config")
@@ -248,9 +225,7 @@ def resolve_model_context_length(model_name: str) -> int:
             value = mapping.get(name)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return value
-    raise ValueError(
-        f"Hugging Face config for {model_name!r} does not declare a maximum context length"
-    )
+    raise ValueError(f"Hugging Face config for {model_name!r} does not declare a maximum context length")
 
 
 def _resolve_block_size(raw: dict[str, Any], backend: str) -> int:
@@ -288,6 +263,4 @@ def _quant_mode_name(field: str, value: str | None) -> str | None:
         return enum_cls[normalized].name
     except KeyError:
         allowed = ", ".join(member.name for member in enum_cls)
-        raise ValueError(
-            f"unsupported AIC {field} quant mode {value!r}; supported values: {allowed}"
-        ) from None
+        raise ValueError(f"unsupported AIC {field} quant mode {value!r}; supported values: {allowed}") from None

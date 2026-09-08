@@ -372,6 +372,8 @@ SEARCH_CHOICES: dict[str, tuple] = {
     "backend": ("vllm", "sglang", "trtllm"),
 }
 
+FORWARD_MODEL_CHOICES: tuple[str, ...] = ("op_level", "fpm")
+
 
 class SearchSpace(BaseModel):
     """Dynamo-independent backend inputs to one search run.
@@ -411,8 +413,11 @@ class SearchSpace(BaseModel):
     prefill_block_size: int | list[int] | None = 64
     prefill_gpu_memory_utilization: float | list[float] | None = 0.9
     prefill_enable_prefix_caching: bool = True
+    prefill_kv_bytes_per_token: int | str = "auto"
+    prefill_native_host_offload: dict[str, Any] | None = None
     prefill_num_gpu_blocks: int | None = None
     prefill_timing_model: dict[str, Any] | None = None
+    prefill_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
     prefill_startup_time: float | None = None
 
     # decode engine (disagg branch): scheduler batching capacity
@@ -422,8 +427,11 @@ class SearchSpace(BaseModel):
     decode_block_size: int | list[int] | None = 64
     decode_gpu_memory_utilization: float | list[float] | None = 0.9
     decode_enable_prefix_caching: bool = False  # forced off for decode workers
+    decode_kv_bytes_per_token: int | str = "auto"
+    decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
     decode_timing_model: dict[str, Any] | None = None
+    decode_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
     decode_startup_time: float | None = None
 
     # agg engine (agg branch): scheduler batching capacity
@@ -433,8 +441,11 @@ class SearchSpace(BaseModel):
     agg_block_size: int | list[int] | None = 64
     agg_gpu_memory_utilization: float | list[float] | None = 0.9
     agg_enable_prefix_caching: bool = True
+    agg_kv_bytes_per_token: int | str = "auto"
+    agg_native_host_offload: dict[str, Any] | None = None
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
+    agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
     agg_startup_time: float | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
@@ -467,6 +478,10 @@ class SearchSpace(BaseModel):
                 isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values
             ):
                 raise ValueError(f"{field_name} must contain positive integers")
+        for field_name in ("prefill_forward_model", "decode_forward_model", "agg_forward_model"):
+            value = getattr(self, field_name)
+            if value not in FORWARD_MODEL_CHOICES:
+                raise ValueError(f"{field_name} has invalid choice {value!r}; allowed: {list(FORWARD_MODEL_CHOICES)}")
         return self
 
     @model_validator(mode="after")

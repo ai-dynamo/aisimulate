@@ -1,0 +1,111 @@
+name: FPE Support Matrix
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily at 14:00 UTC (07:00 PT during daylight time).
+    - cron: "0 14 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpe-support-matrix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  discover-shards:
+    name: Discover matrix shards
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.shards.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: shards
+        name: Read system/backend identities from the curated matrix
+        run: |
+          value=$(python - <<'PY'
+          import csv
+          import json
+          from pathlib import Path
+
+          root = Path("python/aisimulate/src/aiconfigurator_core/systems/support_matrix")
+          index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+          shards = set()
+          for filename in index["files"]:
+              with (root / filename).open(newline="", encoding="utf-8") as handle:
+                  for row in csv.DictReader(handle):
+                      shards.add((row["System"], row["Backend"]))
+          print(
+              json.dumps(
+                  [{"system": system, "backend": backend} for system, backend in sorted(shards)],
+                  separators=(",", ":"),
+              )
+          )
+          PY
+          )
+          echo "value=${value}" >> "${GITHUB_OUTPUT}"
+
+  generate:
+    name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
+    needs: discover-shards
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: ${{ fromJSON(needs.discover-shards.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          lfs: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install stable Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - name: Install AISimulate from this source SHA
+        run: |
+          python -m pip install 'maturin>=1.12,<2'
+          python -m pip install './python/aisimulate'
+      - name: Generate strict-native op-level coverage through the FPE SDK
+        run: |
+          python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
+            --system "${{ matrix.shard.system }}" \
+            --backend "${{ matrix.shard.backend }}" \
+            --output-dir "fpe-support-matrix/${{ matrix.shard.system }}/${{ matrix.shard.backend }}" \
+            --forward-model op_level \
+            --sdk-log-level ERROR \
+            --max-workers 8
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fpe-support-matrix-${{ matrix.shard.system }}-${{ matrix.shard.backend }}
+          path: fpe-support-matrix/${{ matrix.shard.system }}/${{ matrix.shard.backend }}
+          if-no-files-found: error
+          retention-days: 7
+
+  build-web-matrix:
+    name: Build FPE support-matrix CSVs
+    needs: generate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: fpe-support-matrix-*
+          path: fpe-support-matrix
+      - name: Build the deterministic split web matrix
+        run: |
+          python python/aisimulate/tools/support_matrix/build_fpe_support_matrix.py \
+            fpe-support-matrix \
+            --output-dir python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fpe-support-matrix-web
+          path: |
+            python/aisimulate/docs/fpe-support-matrix/index.html
+            python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix
+          if-no-files-found: error

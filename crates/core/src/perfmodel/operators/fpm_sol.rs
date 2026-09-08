@@ -119,7 +119,7 @@ pub(crate) fn op_sol_latency_ms(
             }
             Err(other) => Err(other),
         },
-        other => Err(AicError::UnsupportedModel(format!(
+        other => Err(AicError::SolNotImplemented(format!(
             "forward_model='fpm' SOL roofline has no Rust implementation for op {}",
             other.name()
         ))),
@@ -215,7 +215,7 @@ fn context_sol_one(op: &ContextAttentionOp, spec: &SystemSpec, b: f64, s: f64, p
 }
 
 /// ContextAttention.query under SOL (attention.py:507-558): CP zigzag chunks
-/// + the fused rope/kv-write/(qk-norm) extras × 1.1, each a SOL mem-op.
+/// + the enabled fused rope/kv-write/(qk-norm) extras × 1.1, each a SOL mem-op.
 fn context_attention_sol(
     op: &ContextAttentionOp,
     spec: &SystemSpec,
@@ -238,14 +238,16 @@ fn context_attention_sol(
             2.0 * mem_op_sol_ms(spec, q_num * 2.0) + 2.0 * mem_op_sol_ms(spec, k_num * 2.0);
         extra += qk_norm * 2.0;
     }
-    extra += 2.0 * mem_op_sol_ms(spec, q_num * 2.0 + k_num * 2.0); // rope
+    if op.apply_rope {
+        extra += 2.0 * mem_op_sol_ms(spec, q_num * 2.0 + k_num * 2.0);
+    }
     let fq_mem = op.fmha_quant_mode.mapping().memory;
     extra += mem_op_sol_ms(spec, k_num * fq_mem) + mem_op_sol_ms(spec, k_num * fq_mem); // kv write (k_num == v_num)
     (fmha + extra * 1.1) * op.scale_factor
 }
 
-/// attention.py:710-733: generation SOL. No extras, no 5-sample smoothing
-/// (both are silicon-only), no prefix.
+/// Generation-attention SOL plus the optional Q/K RMSNorm fused extra. There
+/// is no 5-sample smoothing and no prefix in SOL mode.
 fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f64, s: f64) -> f64 {
     let (n, n_kv, h, w) = (
         op.n as f64,
@@ -270,7 +272,15 @@ fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f6
     let flops = spec.gpu.bfloat16_tc_flops.unwrap_or(0.0);
     let sol_math = ops / flops * 1000.0 / compute;
     let sol_mem = mem / spec.gpu.mem_bw * 1000.0;
-    sol_math.max(sol_mem) * op.scale_factor
+    let mut latency = sol_math.max(sol_mem);
+    if op.use_qk_norm {
+        let q_num = n * h;
+        let k_num = n_kv * h;
+        let qk_norm =
+            2.0 * mem_op_sol_ms(spec, q_num * 2.0) + 2.0 * mem_op_sol_ms(spec, k_num * 2.0);
+        latency += qk_norm * 2.0 * 1.1;
+    }
+    latency * op.scale_factor
 }
 
 /// moe.py:297-325: MoE SOL with the activated-expert clamp. The `//` sites
@@ -609,6 +619,8 @@ mod tests {
             fmha_quant_mode: FmhaQuantMode::Bfloat16,
             use_qk_norm: false,
             cp_size: 1,
+            lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
+            apply_rope: true,
         };
         let (b, sq, p) = (4.0, 682.6666666666666_f64, 128.5_f64);
         let (n, n_kv, h) = (48.0, 8.0, 128.0);
@@ -626,6 +638,14 @@ mod tests {
             context_attention_sol(&op, &s, b, sq, p),
             fmha + extras * 1.1,
         );
+
+        let mut no_rope = op;
+        no_rope.apply_rope = false;
+        let rope = 2.0 * mem_op_sol_ms(&s, q_num * 2.0 + k_num * 2.0);
+        approx(
+            context_attention_sol(&no_rope, &s, b, sq, p),
+            fmha + (extras - rope) * 1.1,
+        );
     }
 
     #[test]
@@ -639,6 +659,8 @@ mod tests {
             head_size: 128,
             window_size: 0,
             kv_cache_dtype: KvCacheQuantMode::Fp8,
+            lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
+            use_qk_norm: false,
         };
         let (b, sq) = (256.0, 8441.75_f64);
         let kv_len = sq - 1.0;
@@ -647,6 +669,19 @@ mod tests {
         let expected = (ops / s.gpu.bfloat16_tc_flops.unwrap() * 1000.0 / 2.0)
             .max(mem / s.gpu.mem_bw * 1000.0);
         approx(generation_attention_sol(&op, &s, b, sq), expected);
+
+        let mut normalized = op;
+        normalized.use_qk_norm = true;
+        let q_num = 48.0 * 128.0;
+        let k_num = 8.0 * 128.0;
+        let expected_extra = (2.0 * mem_op_sol_ms(&s, q_num * 2.0)
+            + 2.0 * mem_op_sol_ms(&s, k_num * 2.0))
+            * 2.0
+            * 1.1;
+        approx(
+            generation_attention_sol(&normalized, &s, b, sq),
+            expected + expected_extra,
+        );
     }
 
     /// Mirrors moe.py:297-325 with the float-floor association order.
@@ -796,6 +831,31 @@ mod tests {
         approx(
             op_sol_latency_ms(&fb, &d, 64.0, 1.0, 1.0, 0.0).unwrap(),
             super::mem_op_sol_ms(&d.system_spec, 3000.0 * 64.0),
+        );
+    }
+
+    #[test]
+    fn unsupported_fpm_sol_op_has_typed_error() {
+        let d = db();
+        let op = Op::Mamba2(crate::operators::Mamba2Op {
+            name: "mamba2".into(),
+            scale_factor: 1.0,
+            kernel_source: "causal_conv1d_fn".into(),
+            phase: "context".into(),
+            d_model: 4096,
+            d_state: 128,
+            d_conv: 4,
+            nheads: 128,
+            head_dim: 64,
+            n_groups: 8,
+            chunk_size: 256,
+        });
+
+        let err = op_sol_latency_ms(&op, &d, 64.0, 1.0, 1.0, 0.0).unwrap_err();
+        assert!(matches!(&err, AicError::SolNotImplemented(_)));
+        assert!(
+            err.to_string()
+                .contains("no Rust implementation for op mamba2")
         );
     }
 }

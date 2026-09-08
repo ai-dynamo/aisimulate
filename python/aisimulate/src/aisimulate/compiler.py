@@ -23,6 +23,7 @@ def prediction_to_replay_spec(
     config: CorePredictionConfig,
     *,
     adapter_specs: dict[str, AdapterReplaySpec] | None = None,
+    execution_mode: str = "offline",
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
@@ -36,6 +37,7 @@ def prediction_to_replay_spec(
         backend_deployment=deployment,
         workload=workload,
         goal=goal,
+        execution_mode=execution_mode,
         concurrency=concurrency,
         adapters=dict(adapter_specs or {}),
     )
@@ -55,13 +57,20 @@ def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
         return BackendDeploymentSpec(
             parallel_config=parallel,
             performance_model_metadata={"aggregated": _worker_performance_model_metadata(engine, worker)},
-            agg_engine_args=_worker_engine_args(engine, worker, "aggregated"),
+            agg_engine_args=_worker_engine_args(engine, worker, "aggregated", transfer_bytes_per_token=None),
             num_workers=worker.parallelism.replicas,
             **common,
         )
     assert engine.workers.prefill is not None and engine.workers.decode is not None
     prefill = engine.workers.prefill
     decode = engine.workers.decode
+    transfer_bytes_per_token = None
+    if engine.kv_transfer is not None:
+        transfer_bytes_per_token = _resolve_kv_bytes_per_token(
+            engine,
+            prefill,
+            engine.kv_transfer.bytes_per_token,
+        )
     parallel = {
         **_parallel_mapping(prefill, prefix="prefill_"),
         **_parallel_mapping(decode, prefix="decode_"),
@@ -72,8 +81,12 @@ def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
             "prefill": _worker_performance_model_metadata(engine, prefill),
             "decode": _worker_performance_model_metadata(engine, decode),
         },
-        prefill_engine_args=_worker_engine_args(engine, prefill, "prefill"),
-        decode_engine_args=_worker_engine_args(engine, decode, "decode"),
+        prefill_engine_args=_worker_engine_args(
+            engine, prefill, "prefill", transfer_bytes_per_token=transfer_bytes_per_token
+        ),
+        decode_engine_args=_worker_engine_args(
+            engine, decode, "decode", transfer_bytes_per_token=transfer_bytes_per_token
+        ),
         num_prefill_workers=prefill.parallelism.replicas,
         num_decode_workers=decode.parallelism.replicas,
         **common,
@@ -109,12 +122,17 @@ def _worker_performance_model_metadata(
             "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
             "nextn": None,
+            "forward_model": worker.timing.forward_model,
         },
     }
 
 
 def _worker_engine_args(
-    engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str
+    engine: EnginePredictionConfig,
+    worker: WorkerPredictionConfig,
+    role: str,
+    *,
+    transfer_bytes_per_token: int | None,
 ) -> dict[str, JSONValue]:
     backend = engine.backend
     parallel = worker.parallelism
@@ -136,6 +154,7 @@ def _worker_engine_args(
         "aic_attention_dp_size": parallel.attention_data,
         "max_num_batched_tokens": worker.scheduler.max_batched_tokens,
         "max_num_seqs": worker.scheduler.max_sequences,
+        "prefill_schedule_interval": worker.scheduler.prefill_schedule_interval,
         "block_size": block_size,
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
@@ -147,6 +166,9 @@ def _worker_engine_args(
     if parallel.moe_tensor * parallel.moe_expert > 1:
         payload["aic_moe_tp_size"] = parallel.moe_tensor
         payload["aic_moe_ep_size"] = parallel.moe_expert
+    if worker.timing.type == "default" and worker.timing.forward_model != "op_level":
+        # Only the non-default forward model is spelled out, so op_level specs stay byte-identical.
+        payload["aic_forward_model"] = worker.timing.forward_model
     if backend == "vllm":
         payload["max_model_len"] = (
             engine.context_length
@@ -158,6 +180,7 @@ def _worker_engine_args(
         payload["num_gpu_blocks"] = capacity.blocks
     else:
         assert memory_fraction is not None
+        payload["cuda_graph_reserved_bytes"] = capacity.cuda_graph_reserved_bytes
         payload[
             {
                 "vllm": "gpu_memory_utilization",
@@ -184,23 +207,40 @@ def _worker_engine_args(
             "aic_moe_ep_size",
         ):
             payload.pop(name, None)
+    host_offload = cache.host_offload
+    if host_offload is not None:
+        payload["kv_cache_bytes_per_token"] = _resolve_kv_bytes_per_token(
+            engine,
+            worker,
+            cache.bytes_per_token,
+        )
+    if transfer_bytes_per_token is not None:
+        payload["kv_transfer_bytes_per_token"] = transfer_bytes_per_token
+    if host_offload is not None:
+        payload["native_host_offload"] = host_offload.model_dump(mode="json")
     if engine.kv_transfer is not None:
         transfer = engine.kv_transfer
-        payload["kv_bytes_per_token"] = (
-            estimate_kv_bytes_per_token(
-                engine.model,
-                tp_size=parallel.tensor,
-                pp_size=parallel.pipeline,
-                moe_tp_size=parallel.moe_tensor,
-                moe_ep_size=parallel.moe_expert,
-            )
-            if transfer.bytes_per_token == "auto"
-            else transfer.bytes_per_token
-        )
         if transfer.bandwidth_gb_per_second is not None:
             payload["kv_transfer_bandwidth"] = transfer.bandwidth_gb_per_second
         payload["kv_transfer_timing_mode"] = transfer.timing_mode
     return payload
+
+
+def _resolve_kv_bytes_per_token(
+    engine: EnginePredictionConfig,
+    worker: WorkerPredictionConfig,
+    configured: int | str,
+) -> int:
+    if configured != "auto":
+        return configured
+    parallel = worker.parallelism
+    return estimate_kv_bytes_per_token(
+        engine.model,
+        tp_size=parallel.tensor,
+        pp_size=parallel.pipeline,
+        moe_tp_size=parallel.moe_tensor,
+        moe_ep_size=parallel.moe_expert,
+    )
 
 
 def _traffic(

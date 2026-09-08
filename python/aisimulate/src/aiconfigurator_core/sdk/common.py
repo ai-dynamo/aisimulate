@@ -6,7 +6,7 @@ import json
 import math
 from collections import namedtuple
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from functools import cache
 from importlib import resources as pkg_resources
 
@@ -183,6 +183,8 @@ class VisionEncoderConfig:
             rotated fraction — the 2-axis vision RoPE always rotates the full
             head_dim (vLLM ApplyRotaryEmb / SGLang cat([cos, cos])). Only gates
             the encoder_rope_apply op; 0.0 means no RoPE.
+        in_channels (int): Number of image/video input channels consumed by the
+            patch embedding projection.
     """
 
     depth: int
@@ -197,6 +199,7 @@ class VisionEncoderConfig:
     projector_dims: tuple[tuple[int, int], ...] = ()
     projector_n_instances: int = 1
     partial_rotary_factor: float = 0.0
+    in_channels: int = 3
 
 
 @dataclass(frozen=True)
@@ -225,13 +228,28 @@ class Gemma4MixConfig:
 
 
 @dataclass(frozen=True)
+class MuseGlimmerConfig:
+    """Muse Glimmer hybrid-attention layout (dense model, uniform head geometry).
+
+    Per-layer kind comes from ``layer_types`` ("sliding_attention" or
+    "full_attention"); only the window layout differs between layer kinds.
+    """
+
+    layer_types: tuple[str, ...]
+    sliding_window_size: int
+
+
+@dataclass(frozen=True)
 class Qwen35Config:
-    """Config for Qwen3.5 hybrid GDN + full-attention model (dense and MoE).
+    """Config for Qwen3.5's multimodal hybrid model (dense and MoE).
 
     layer_types: per-layer tuple of "linear_attention" (GDN) or "full_attention" (standard GQA)
     linear_*: GDN layer dimensions (linear_key_head_dim=128, linear_value_head_dim=128,
               linear_conv_kernel_dim=4, linear_num_key_heads=16 across all current models)
     MoE fields default to 0 for the dense 27B; populated for 35B-A3B and 397B-A17B.
+    vision_config: the separate Qwen3-VL-derived ViT + single patch-merger contract.
+    image_token_id/video_token_id: top-level multimodal token identities retained
+        when the nested text_config is unwrapped.
     """
 
     layer_types: tuple[str, ...]  # per-layer: "linear_attention" (GDN) or "full_attention"
@@ -245,6 +263,9 @@ class Qwen35Config:
     num_experts: int = 0
     moe_inter_size: int = 0
     shared_expert_inter_size: int = 0
+    vision_config: VisionEncoderConfig | None = None
+    image_token_id: int = 0
+    video_token_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -437,10 +458,22 @@ def check_support(
     """
     matrix = get_support_matrix()
 
+    @cache
+    def _version_for_row_backend(row_backend: str, requested: str) -> str:
+        # Matrix rows carry resolved LITERALS; a slot alias in the request
+        # must resolve per (system, row backend) before comparison. Raw
+        # versions and unresolvable aliases compare as given.
+        try:
+            from aiconfigurator_core.sdk.perf_database import resolve_query_version
+
+            return resolve_query_version(system, row_backend, requested, allow_unlisted=True)
+        except (ValueError, KeyError):
+            return requested
+
     def _matches_filters(row: dict, backend: str | None, version: str | None) -> bool:
         if backend and row["Backend"].lower() != backend.lower():
             return False
-        return not (version and row["Version"] != version)
+        return not (version and row["Version"] != _version_for_row_backend(row["Backend"], version))
 
     # 1. Check for exact model+system matches
     exact_matches = [
@@ -558,6 +591,9 @@ DefaultHFModels = {
     "zai-org/GLM-5.2",
     "zai-org/GLM-5.2-FP8",
     "nvidia/GLM-5.2-NVFP4",
+    "zai-org/GLM-5.3",
+    "zai-org/GLM-5.3-FP8",
+    "nvidia/GLM-5.3-NVFP4",
     # DeepSeek V4
     *DEEPSEEK_V4_HF_MODELS,
     # Qwen 3 Models
@@ -602,11 +638,15 @@ DefaultHFModels = {
     # Qwen 3.6 Models
     "nvidia/Qwen3.6-27B-NVFP4",
     "nvidia/Qwen3.6-35B-A3B-NVFP4",
+    # Qwen3.8-Max Models
+    "Qwen/Qwen3.8-2.4T-A95B",
+    "Qwen/Qwen3.8-2.4T-A95B-FP8",
     # MiMo Models
     "XiaomiMiMo/MiMo-V2-Flash",
     "XiaomiMiMo/MiMo-7B-Base",
     # NVIDIA Nemotron
     "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
@@ -617,6 +657,8 @@ DefaultHFModels = {
     "nvidia/Nemotron-H-56B-Base-8K",
     # Google Gemma 4 Models
     "google/gemma-4-26B-A4B",
+    # Meta Muse Glimmer
+    "meta-models/Muse-Glimmer-30B",
     # StepFun Step-3.7 Models
     "stepfun-ai/Step-3.7-Flash",
     "stepfun-ai/Step-3.7-Flash-FP8",
@@ -686,6 +728,7 @@ ModelFamily = {
     "QWEN3VL_MOE",
     "GEMMA4MIX",
     "MINIMAXM3",
+    "MUSEGLIMMER",
     "STEP3P7",
 }
 ARCHITECTURE_TO_MODEL_FAMILY = {
@@ -724,7 +767,11 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "Llama4ForConditionalGeneration": "HYBRIDMOE",
     "Qwen3_5ForConditionalGeneration": "QWEN35",
     "Qwen3_5MoeForConditionalGeneration": "QWEN35",
+    # Qwen3.8-Max: FLAT config (no text_config nesting) -- do NOT add to
+    # MULTIMODAL_TEXT_CONFIG_KEY below, unlike the two VLM classes above.
+    "Qwen3_5MoeForCausalLM": "QWEN35",
     "Gemma4ForConditionalGeneration": "GEMMA4MIX",
+    "MuseGlimmerForConditionalGeneration": "MUSEGLIMMER",
 }
 
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
@@ -741,6 +788,7 @@ MULTIMODAL_TEXT_CONFIG_KEY = {
     "Qwen3_5ForConditionalGeneration": "text_config",
     "Qwen3_5MoeForConditionalGeneration": "text_config",
     "Gemma4ForConditionalGeneration": "text_config",
+    "MuseGlimmerForConditionalGeneration": "text_config",
     "Qwen3VLForConditionalGeneration": "text_config",
     "Qwen3VLMoeForConditionalGeneration": "text_config",
     "MiniMaxM3SparseForConditionalGeneration": "text_config",
@@ -753,6 +801,15 @@ MULTIMODAL_TEXT_CONFIG_KEY = {
 # nextn="auto" cannot enable speculation and the MTP mismatch warning does
 # not apply (see Task._resolve_model_identity).
 DSPARK_ARCHITECTURES = frozenset({"KimiK3ForConditionalGeneration"})
+
+# Block size (draft tokens proposed per step) for each DSPARK architecture.
+# This is a fixed constant of the draft model's design — not user-configurable
+# and not present in the main checkpoint (the draft is a separate artifact).
+# Maps architecture name → nextn block size passed to the backend as
+# speculative_config.num_speculative_tokens.
+DSPARK_NEXTN: dict[str, int] = {
+    "KimiK3ForConditionalGeneration": 7,
+}
 
 """
 All reduce strategy for trtllm custom allreduce
@@ -1122,11 +1179,33 @@ def _transfer_kind_from_token(token: str) -> TransferKind:
 class BackendName(Enum):
     """
     Backend name for inference.
+
+    Adding a backend here does not automatically enable communication-data
+    reuse. Validate its version namespace separately, then update
+    ``FRAMEWORK_VERSIONED_COMM_BACKENDS`` in the Rust source resolver.
     """
 
     trtllm = "trtllm"
     sglang = "sglang"
     vllm = "vllm"
+
+
+class AttentionBackend(StrEnum):
+    """Supported attention performance-model backends."""
+
+    fa3 = "fa3"
+    triton = "triton"
+    trtllm_mha = "trtllm_mha"
+    flashinfer = "flashinfer"
+    fla = "fla"
+    default = "default"
+
+
+class MoEBackend(StrEnum):
+    """Supported MoE performance-model backend overrides."""
+
+    deepep_moe = "deepep_moe"
+    megamoe = "megamoe"
 
 
 class PerfDataFilename(Enum):

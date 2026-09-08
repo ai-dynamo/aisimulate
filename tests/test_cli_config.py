@@ -13,7 +13,11 @@ from aisimulate.config.engine import (
     WorkerPredictionConfig,
     WorkersPredictionConfig,
 )
-from aisimulate.recommend import recommendation_to_sweeper
+from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisimulate.sweeper.deploy import build_backend_deployment
+from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.replay import ReplaySpec
+from aisimulate.sweeper.sample import unroll_sample
 
 
 def _engine() -> dict:
@@ -39,6 +43,7 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert aggregated.engine.workers.aggregated is not None
     assert aggregated.engine.workers.aggregated.scheduler.max_batched_tokens == 8192
     assert aggregated.engine.workers.aggregated.scheduler.max_sequences == 256
+    assert aggregated.engine.workers.aggregated.scheduler.prefill_schedule_interval == 1
 
     disaggregated = CorePredictionConfig.model_validate(
         {
@@ -53,8 +58,10 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert disaggregated.engine.workers.decode is not None
     assert disaggregated.engine.workers.prefill.scheduler.max_batched_tokens == 8192
     assert disaggregated.engine.workers.prefill.scheduler.max_sequences == 1
+    assert disaggregated.engine.workers.prefill.scheduler.prefill_schedule_interval == 1
     assert disaggregated.engine.workers.decode.scheduler.max_batched_tokens == 8192
     assert disaggregated.engine.workers.decode.scheduler.max_sequences == 256
+    assert disaggregated.engine.workers.decode.scheduler.prefill_schedule_interval == 1
 
     programmatic = WorkersPredictionConfig(
         prefill=WorkerPredictionConfig(), decode=WorkerPredictionConfig()
@@ -63,6 +70,69 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert programmatic.decode is not None
     assert programmatic.prefill.scheduler.max_sequences == 1
     assert programmatic.decode.scheduler.max_sequences == 256
+
+
+def test_prediction_rejects_nonpositive_prefill_schedule_interval() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"scheduler": {"prefill_schedule_interval": 0}}
+
+    with pytest.raises(ValidationError, match="prefill_schedule_interval"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_prediction_accepts_trtllm_disaggregated_dp1() -> None:
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "backend": "trtllm",
+                "workers": {
+                    "prefill": {"parallelism": {"attention_data": 1}},
+                    "decode": {"parallelism": {"attention_data": 1}},
+                },
+            }
+        }
+    )
+
+    assert config.engine.backend == "trtllm"
+    assert config.engine.mode == "disaggregated"
+    assert config.engine.workers.prefill is not None
+    assert config.engine.workers.decode is not None
+
+
+@pytest.mark.parametrize("value", [-1, (1 << 53) + 1])
+def test_prediction_rejects_invalid_cuda_graph_reservation(value: int) -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {
+        "kv_cache": {
+            "capacity": {
+                "type": "default",
+                "cuda_graph_reserved_bytes": value,
+            }
+        }
+    }
+
+    with pytest.raises(ValidationError, match="cuda_graph_reserved_bytes"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_prediction_rejects_cuda_graph_reservation_with_fixed_capacity() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {
+        "kv_cache": {
+            "capacity": {
+                "type": "fixed",
+                "blocks": 128,
+                "cuda_graph_reserved_bytes": 1 << 30,
+            }
+        }
+    }
+
+    with pytest.raises(
+        ValidationError, match="fixed KV capacity rejects cuda_graph_reserved_bytes"
+    ):
+        CorePredictionConfig.model_validate({"engine": engine})
 
 
 def test_prediction_rejects_recommendation_domain() -> None:
@@ -614,3 +684,173 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
                 "optimizer": {"candidate_timeout_seconds": float("inf")},
             }
         )
+
+
+def test_prediction_timing_forward_model_defaults_to_op_level() -> None:
+    config = CorePredictionConfig.model_validate({"engine": _engine()})
+
+    assert config.engine.workers.aggregated is not None
+    assert config.engine.workers.aggregated.timing.type == "default"
+    assert config.engine.workers.aggregated.timing.forward_model == "op_level"
+
+
+def test_prediction_timing_accepts_fpm_forward_model_with_default_timing() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"timing": {"type": "default", "forward_model": "fpm"}}
+
+    config = CorePredictionConfig.model_validate({"engine": engine})
+
+    assert config.engine.workers.aggregated is not None
+    assert config.engine.workers.aggregated.timing.forward_model == "fpm"
+
+
+@pytest.mark.parametrize(
+    "timing",
+    [
+        {"type": "fixed", "prefill_ms": 1, "decode_ms": 1, "forward_model": "fpm"},
+        {"type": "polynomial", "forward_model": "fpm"},
+    ],
+)
+def test_prediction_timing_rejects_fpm_forward_model_without_default_timing(timing: dict) -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"timing": timing}
+
+    with pytest.raises(ValidationError, match="forward_model applies to default timing only"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_prediction_timing_rejects_unknown_forward_model() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"timing": {"forward_model": "layerwise"}}
+
+    with pytest.raises(ValidationError, match="forward_model"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_recommendation_timing_accepts_forward_model_per_role() -> None:
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "mode": "disaggregated",
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "workers": {
+                    "prefill": {"timing": {"type": "default"}},
+                    "decode": {"timing": {"type": "default", "forward_model": "fpm"}},
+                },
+            },
+            "optimization": {"constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+
+    assert config.engine.workers.prefill is not None
+    assert config.engine.workers.decode is not None
+    assert config.engine.workers.prefill.timing.forward_model == "op_level"
+    assert config.engine.workers.decode.timing.forward_model == "fpm"
+
+
+def _fpm_recommendation() -> CoreRecommendationConfig:
+    return CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "mode": "aggregated",
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 2048,
+                "workers": {
+                    "aggregated": {
+                        "parallelism": {"preset": False, "tensor": 1, "moe_tensor": 1, "moe_expert": 1},
+                        "kv_cache": {"capacity": {"type": "fixed", "blocks": 256}},
+                        "timing": {"type": "default", "forward_model": "fpm"},
+                    }
+                },
+            },
+            "optimization": {"constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+
+
+def test_recommendation_lowers_forward_model_per_role() -> None:
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "mode": "disaggregated",
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 4096,
+                "workers": {
+                    "prefill": {"timing": {"type": "default"}},
+                    "decode": {"timing": {"type": "default", "forward_model": "fpm"}},
+                },
+            },
+            "optimization": {"constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+
+    space = recommendation_to_sweeper(config).search_space
+
+    assert space.prefill_forward_model == "op_level"
+    assert space.decode_forward_model == "fpm"
+    assert space.agg_forward_model == "op_level"
+
+
+def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
+    config = _fpm_recommendation()
+    smart = recommendation_to_sweeper(config)
+    assert smart.search_space.agg_forward_model == "fpm"
+
+    sample = unroll_sample(
+        search_space=smart.search_space,
+        selection={
+            "deployment_mode": "agg",
+            "backend": "vllm",
+            "agg_max_num_batched_tokens": 8192,
+            "agg_max_num_seqs": 256,
+        },
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+    )
+    assert sample["agg_forward_model"] == "fpm"
+    deployment = build_backend_deployment(sample, backend_version="test")
+    assert deployment.agg_engine_args["aic_forward_model"] == "fpm"
+
+    prediction = _candidate_prediction(
+        config,
+        sample,
+        ReplaySpec(backend_deployment=deployment, workload={}, goal={}),
+        adapter_sections={},
+    )
+
+    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "fpm"}
+    CorePredictionConfig.model_validate(prediction)
+
+
+def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults() -> None:
+    config = _fpm_recommendation()
+    raw = config.model_dump(mode="python", exclude_none=True)
+    raw["engine"]["workers"]["aggregated"]["timing"] = {"type": "default"}
+    config = CoreRecommendationConfig.model_validate(raw)
+    smart = recommendation_to_sweeper(config)
+    sample = unroll_sample(
+        search_space=smart.search_space,
+        selection={
+            "deployment_mode": "agg",
+            "backend": "vllm",
+            "agg_max_num_batched_tokens": 8192,
+            "agg_max_num_seqs": 256,
+        },
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+    )
+    deployment = build_backend_deployment(sample, backend_version="test")
+
+    prediction = _candidate_prediction(
+        config,
+        sample,
+        ReplaySpec(backend_deployment=deployment, workload={}, goal={}),
+        adapter_sections={},
+    )
+
+    # Normalization materializes every schema default into the candidate; forward_model is no exception.
+    assert prediction["engine"]["workers"]["aggregated"]["timing"] == {"type": "default", "forward_model": "op_level"}

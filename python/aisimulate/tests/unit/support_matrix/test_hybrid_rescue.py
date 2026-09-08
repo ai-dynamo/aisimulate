@@ -8,6 +8,7 @@ AIC_SM_ALLOW_HYBRID=0 disables the rescue (pure-silicon matrix)."""
 import pandas as pd
 import pytest
 
+from aiconfigurator.sdk.errors import InsufficientMemoryError, NoFeasibleConfigError
 from aiconfigurator.sdk.operations.util_empirical import note_provenance
 from aiconfigurator.sdk.perf_database import PerfDataNotAvailableError
 from tools.support_matrix import support_matrix as support_matrix_module
@@ -20,6 +21,16 @@ from tools.support_matrix.support_matrix import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _wrapped_perf_miss() -> NoFeasibleConfigError:
+    try:
+        raise PerfDataNotAvailableError("No silicon data for any valid candidate")
+    except PerfDataNotAvailableError as cause:
+        try:
+            raise NoFeasibleConfigError("No candidate produced a result") from cause
+        except NoFeasibleConfigError as error:
+            return error
 
 
 def _run_rescue(
@@ -113,6 +124,21 @@ def _run_rescue(
             {"silicon_ok": False, "silicon_error": TypeError("unexpected schema")},
             (STATUS_FAIL, "", ["SILICON"], "SILICON", "TypeError: unexpected schema"),
             id="programming-error",
+        ),
+        pytest.param(
+            {"silicon_ok": False, "silicon_error": NoFeasibleConfigError("SLA impossible")},
+            (STATUS_FAIL, "", ["SILICON"], "SILICON", "NoFeasibleConfigError: SLA impossible"),
+            id="sla-failure",
+        ),
+        pytest.param(
+            {"silicon_ok": False, "silicon_error": InsufficientMemoryError("model does not fit")},
+            (STATUS_FAIL, "", ["SILICON"], "SILICON", "InsufficientMemoryError: model does not fit"),
+            id="oom-failure",
+        ),
+        pytest.param(
+            {"silicon_ok": False, "silicon_error": _wrapped_perf_miss()},
+            (STATUS_HYBRID_PASS, "empirical", ["SILICON", "HYBRID"], "HYBRID", None),
+            id="wrapped-perf-miss",
         ),
     ],
 )

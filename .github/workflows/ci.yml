@@ -1,9 +1,16 @@
-name: CI
+name: Full CI
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed commit required for this run
+        required: true
+        type: string
   push:
-    # Velonix admits canonical pushes, not untrusted pull_request events.
+    # Keep trusted copy-pr-bot branches as an automatic coverage backstop until
+    # the main ruleset requires the exact-SHA Full CI checks. Reviewed PR
+    # validation may also be admitted explicitly through workflow_dispatch.
     branches:
       - main
       - "pull-request/*"
@@ -13,8 +20,31 @@ permissions:
   contents: read
 
 jobs:
+  verify-target:
+    name: Verify Exact Target
+    runs-on: ubuntu-latest
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      RUN_SHA: ${{ github.sha }}
+    steps:
+      - name: Reject a mismatched requested commit
+        shell: bash
+        run: |
+          if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
+            echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
+            exit 1
+          fi
+
+  fast-ci:
+    name: Fast CI
+    needs: verify-target
+    uses: ./.github/workflows/fast-ci.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +91,7 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -90,6 +121,7 @@ jobs:
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -116,6 +148,13 @@ jobs:
 
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
+    needs:
+      - fast-ci
+      - cargo-deny
+      - rust
+      - public-api-rust
+      - application-tests
+      - release-artifact-contract
     strategy:
       fail-fast: false
       matrix:
@@ -139,15 +178,167 @@ jobs:
           sudo apt-get install --yes --no-install-recommends build-essential
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: python -m pip install 'maturin>=1.12,<2'
-      - run: python -m maturin build --release --out ../../dist
+      - name: Build application wheel
+        run: python -m maturin build --release --out ../../dist
         working-directory: python/aisimulate
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Verify exact staged wheel
+        run: python python/aisimulate/tools/verify_release_wheels.py dist
+      - name: Smoke-test exact staged wheel
+        run: |
+          python -m venv staged-wheel-smoke
+          staged-wheel-smoke/bin/python -m pip install --no-deps dist/aisimulate-*.whl
+          staged-wheel-smoke/bin/python -c \
+            "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
+            assert aisimulate_core._build_smoke() > 0"
+      - name: Preserve wheel for trusted staging
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: aisimulate-wheel-${{ matrix.arch }}
+          name: application-wheel-${{ matrix.arch }}
           path: dist/*.whl
+
+  stage-application-wheel:
+    name: Stage Application Wheel (${{ matrix.arch }})
+    needs: application-wheel
+    # Manual PR validation builds and verifies wheels without acquiring release
+    # credentials. Only post-merge and release lifecycle pushes may stage them.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/heads/release/'))
+    environment: automated-release
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-wheel-${{ matrix.arch }}
+          path: dist
+      - name: Stage wheel in Artifactory
+        shell: bash
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          for name in ARTIFACTORY_URL ARTIFACTORY_PYPI_REPO ARTIFACTORY_TOKEN; do
+            [ -n "${!name}" ] || {
+              echo "::error::environment secret ${name} is not configured"
+              exit 1
+            }
+          done
+          case "${ARTIFACTORY_URL}" in
+            https://*) ;;
+            *)
+              echo "::error::ARTIFACTORY_URL must use HTTPS"
+              exit 1
+              ;;
+          esac
+          case "${ARTIFACTORY_PYPI_REPO}" in
+            ""|*/*|*..*)
+              echo "::error::invalid ARTIFACTORY_PYPI_REPO_NAME"
+              exit 1
+              ;;
+          esac
+
+          case "${GITHUB_REF}" in
+            refs/heads/main|refs/heads/release/*)
+              subpath="post-merge/${GITHUB_SHA}/${GITHUB_RUN_ID}"
+              ;;
+            *)
+              echo "::error::ref is not permitted to stage wheels: ${GITHUB_REF}"
+              exit 1
+              ;;
+          esac
+
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || {
+            echo "::error::expected exactly one wheel, found ${#wheels[@]}"
+            exit 1
+          }
+          wheel="${wheels[0]}"
+          wheel_name="$(basename "${wheel}")"
+          sha="$(sha256sum "${wheel}" | cut -d' ' -f1)"
+          url="${ARTIFACTORY_URL%/}/${ARTIFACTORY_PYPI_REPO}/${subpath}/${wheel_name}"
+          headers="$(mktemp "${RUNNER_TEMP}/artifactory-head.XXXXXX")"
+          trap 'rm -f "${headers}"' EXIT
+
+          probe() {
+            curl -q --silent --show-error \
+              --head \
+              --output /dev/null \
+              --dump-header "${headers}" \
+              --write-out '%{http_code}' \
+              -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
+              "${url}"
+          }
+
+          status="$(probe)"
+          case "${status}" in
+            200)
+              existing="$(
+                awk 'tolower($1) == "x-checksum-sha256:" {gsub("\\r", "", $2); print tolower($2)}' \
+                  "${headers}" | tail -n 1
+              )"
+              [ -n "${existing}" ] || {
+                echo "::error::existing wheel did not return an X-Checksum-Sha256 header"
+                exit 1
+              }
+              [ "${existing}" = "${sha}" ] || {
+                echo "::error::wheel already exists with a different checksum: ${wheel_name}"
+                exit 1
+              }
+              echo "already staged: ${wheel_name}"
+              ;;
+            404)
+              curl -q --fail --silent --show-error --retry 3 \
+                --output /dev/null \
+                -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
+                -H "X-Checksum-Sha256: ${sha}" \
+                --upload-file "${wheel}" \
+                "${url}"
+              status="$(probe)"
+              [ "${status}" = 200 ] || {
+                echo "::error::wheel upload could not be read back (HTTP ${status})"
+                exit 1
+              }
+              uploaded="$(
+                awk 'tolower($1) == "x-checksum-sha256:" {gsub("\\r", "", $2); print tolower($2)}' \
+                  "${headers}" | tail -n 1
+              )"
+              [ "${uploaded}" = "${sha}" ] || {
+                echo "::error::uploaded wheel checksum does not match: ${wheel_name}"
+                exit 1
+              }
+              echo "staged: ${wheel_name}"
+              ;;
+            *)
+              echo "::error::Artifactory probe failed with HTTP ${status}"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "### Wheel staged to Artifactory"
+            echo "Path: \`${subpath}/${wheel_name}\`"
+            echo "SHA256: \`${sha}\`"
+            echo "Run attempt: \`${GITHUB_RUN_ATTEMPT}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   application-tests:
     name: Application Tests (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:
@@ -189,33 +380,9 @@ jobs:
           --timeout=180
         working-directory: python/aisimulate
 
-  lint:
-    name: Lint (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
-    container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
-      env:
-        HOME: /__w/aisimulate/aisimulate
-        USER: runner
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - run: python -m pip install ruff==0.14.1
-      - run: >-
-          ruff check
-          --config python/aisimulate/pyproject.toml
-          python/aisimulate/src/aisimulate
-          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
-          tests
-
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
+    needs: fast-ci
     strategy:
       fail-fast: false
       matrix:

@@ -66,11 +66,11 @@ be merge-blocking.
 
 ## Migrated AIConfigurator Snapshot
 
-The full AIC source import preserves `python/aisimulate/CODEOWNERS` and
-`python/aisimulate/.github/codeowners/` as inactive provenance. GitHub only
-discovers CODEOWNERS at the repository root, `.github/`, or `docs/`, so the
-generated root file in this PR is the only active repository policy. The root
-policy routes changes to those preserved ownership artifacts to AISimulate
-Infra plus maintainers to keep the active and historical policies from being
+The full AIC source import preserves `python/aisimulate/.github/codeowners/` as
+inactive provenance, but its generated `CODEOWNERS` file is not retained.
+GitHub only discovers CODEOWNERS at the repository root, `.github/`, or `docs/`,
+so the generated root file is the only active repository policy. The root
+policy routes changes to the preserved ownership tooling to AISimulate Infra
+plus maintainers to keep the active and historical policies from being
 confused. The DevOps team is not listed in the active policy and is never a
 required code-owner approver.

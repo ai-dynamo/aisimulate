@@ -102,8 +102,10 @@ def _verify_payload() -> None:
     required_resources = (
         resources / "model_configs" / "meta-llama--Meta-Llama-3.1-8B_config.json",
         resources / "systems" / "h100_sxm.yaml",
-        resources / "systems" / "data" / "b200_sxm" / "gemm" / "vllm" / "0.19.0" / "gemm_perf.parquet",
-        resources / "systems" / "data" / "l40s" / "gemm" / "vllm" / "0.22.0" / "reuse.yaml",
+        resources / "systems" / "data" / "b200_sxm" / "gemm" / "vllm" / "0.24.0" / "gemm_perf.parquet",
+        # Live reuse declaration and provenance sidecar from the post-prune tree.
+        resources / "systems" / "data" / "b200_sxm" / "gemm" / "trtllm" / "1.3.0rc23" / "reuse.yaml",
+        resources / "systems" / "data" / "b200_sxm" / "gemm" / "vllm" / "0.24.0" / "collection_meta.yaml",
     )
     missing = [str(path) for path in required_resources if not path.is_file()]
     if missing:
@@ -146,7 +148,7 @@ def _exercise_engine() -> None:
         "MiniMaxAI/MiniMax-M2.5",
         "b200_sxm",
         "vllm",
-        backend_version="0.19.0",
+        backend_version="0.24.0",
         tp_size=8,
         moe_tp_size=1,
         moe_ep_size=8,

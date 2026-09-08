@@ -16,6 +16,7 @@ pytestmark = pytest.mark.unit
 
 CORE_SDK_LEAF_MODULES = [
     "afd_partition",
+    "attention_lanes",
     "backends.base_backend",
     "backends.factory",
     "backends.sglang_backend",
@@ -43,6 +44,7 @@ CORE_SDK_LEAF_MODULES = [
     "models.llama",
     "models.minimax_m3",
     "models.moe",
+    "models.muse_glimmer",
     "models.nemotron_h",
     "models.nemotron_nas",
     "models.qwen35",
@@ -74,6 +76,9 @@ CORE_SDK_LEAF_MODULES = [
     "step_estimate",
     "system_spec",
     "utils",
+    "work_delta.field",
+    "work_delta.planner",
+    "work_delta.solver",
 ]
 
 

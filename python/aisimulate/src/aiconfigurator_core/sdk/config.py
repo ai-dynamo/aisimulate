@@ -2,9 +2,53 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass, field
-from typing import Union
+from enum import StrEnum
+from typing import TypeVar, Union
 
 from aiconfigurator_core.sdk import common
+
+KernelBackendT = TypeVar("KernelBackendT", bound=StrEnum)
+
+
+def normalize_kernel_backend(
+    value: str | KernelBackendT | None,
+    enum_type: type[KernelBackendT],
+    field_name: str,
+) -> KernelBackendT | None:
+    """Normalize a public string or enum value to its kernel-backend enum."""
+    if value is None or isinstance(value, enum_type):
+        return value
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError) as exc:
+        choices = ", ".join(repr(item.value) for item in enum_type)
+        raise ValueError(f"{field_name} must be one of {choices}, got {value!r}.") from exc
+
+
+def has_video_input(
+    *,
+    num_videos: int = 0,
+    video_height: int = 0,
+    video_width: int = 0,
+    video_frames: int = 0,
+    num_video_tokens: int = 0,
+) -> bool:
+    """Return whether any video workload field was configured.
+
+    Unsupported boundaries use this partial-input-aware predicate so an
+    incomplete video request cannot silently degrade to a text-only request.
+    """
+    fields = {
+        "num_videos": num_videos,
+        "video_height": video_height,
+        "video_width": video_width,
+        "video_frames": video_frames,
+        "num_video_tokens": num_video_tokens,
+    }
+    for name, value in fields.items():
+        if value is not None and value < 0:
+            raise ValueError(f"{name} must be nonnegative, got {value}.")
+    return any((value or 0) > 0 for value in fields.values())
 
 
 @dataclass
@@ -47,8 +91,17 @@ class ModelConfig:
     overwrite_num_layers: int = 0
     # model builder falvors
     sms: int = 20
-    moe_backend: str = None  # SGLang MoE backend: deepep_moe, megamoe, or None
-    attention_backend: str = "flashinfer"  # 'flashinfer' or 'fa3', for sglang wideep only
+    moe_backend: common.MoEBackend | None = None
+    # Attention kernel selection. Two consumers, one knob:
+    #   * sglang WideEP MLA picks its kernel-source table ('flashinfer' | 'fa3';
+    #     the ops apply the 'flashinfer' default themselves when unset).
+    #   * dense attention (AIC-1715) uses it as the kernel-LANE override that
+    #     heads the precedence order resolved by
+    #     ``attention_lanes.resolve_attention_lane_order``.
+    # ``None`` means "no override": the framework default for the database's
+    # (backend, version, sm_version) wins. Do NOT default this to a lane name —
+    # that would silently pin every model to that lane.
+    attention_backend: common.AttentionBackend | None = None
     # DEPRECATED and ignored (large-EP is selected per tuple via
     # moe_comm_backend); kept for a compatibility window because ModelConfig
     # is exported through the supported core SDK facade and removal breaks
@@ -68,6 +121,17 @@ class ModelConfig:
     # No default: a wrong node width silently mis-prices cross-node all-to-all, so
     # large-EP construction raises when it is missing (models.helpers.large_ep_gpus_per_node).
     num_gpus_per_node: int | None = None
+    # Internal system identity used by phase/quantization-specific communication
+    # dtype selection.  It travels with ModelConfig through sweep replacements.
+    system: str | None = None
+
+    def __post_init__(self) -> None:
+        self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
+        self.attention_backend = normalize_kernel_backend(
+            self.attention_backend,
+            common.AttentionBackend,
+            "attention_backend",
+        )
 
     def resolve_moe_parallelism(self) -> tuple[int, int]:
         """Resolve and validate MoE parallelism dimensions in-place.
@@ -176,6 +240,11 @@ class RuntimeConfig:
     image_width: int = 0
     num_images_per_request: int = 1
     num_image_tokens: int = 0  # override: ViT output tokens per image; ignored when image_height/width are set
+    video_height: int = 0
+    video_width: int = 0
+    video_frames: int = 0
+    num_videos_per_request: int = 0
+    num_video_tokens: int = 0  # override: ViT output tokens per video; ignored when video dimensions are set
 
 
 @dataclass

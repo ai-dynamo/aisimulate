@@ -136,6 +136,27 @@ def test_canonical_json_is_stable_and_strict():
         canonical_json(object())
 
 
+def test_replay_output_requirements_validate_enabled_telemetry_interval():
+    assert ReplayOutputRequirements().capture_telemetry is False
+    assert (
+        ReplayOutputRequirements(
+            capture_telemetry=True,
+            telemetry_sample_interval_ms=250.0,
+        ).telemetry_sample_interval_ms
+        == 250.0
+    )
+
+    for invalid in (0.0, -1.0, math.inf, math.nan, True, "one second"):
+        with pytest.raises(
+            ValueError,
+            match="telemetry_sample_interval_ms must be finite and positive",
+        ):
+            ReplayOutputRequirements(
+                capture_telemetry=True,
+                telemetry_sample_interval_ms=invalid,  # type: ignore[arg-type]
+            )
+
+
 def test_adapter_payload_json_validation_does_not_normalize_python_objects():
     @dataclass
     class PythonObject:
@@ -179,6 +200,29 @@ def test_runner_capabilities_accept_supported_spec_and_wildcards():
     assert not capabilities.supports_backend_topology("sglang", "agg")
     assert capabilities.supports_hook(hook)
     capabilities.require_compatible(_replay_spec(hook=hook))
+
+
+def test_runner_capabilities_require_explicit_online_support():
+    spec = _replay_spec()
+    spec = ReplaySpec(
+        backend_deployment=spec.backend_deployment,
+        workload=spec.workload,
+        goal=spec.goal,
+        execution_mode="online",
+        concurrency=spec.concurrency,
+        adapters=spec.adapters,
+    )
+    offline = RunnerCapabilities(
+        supported_backend_topologies=(("vllm", "agg"),),
+    )
+    with pytest.raises(ValueError, match="execution mode 'online'"):
+        offline.require_compatible(spec)
+
+    online = RunnerCapabilities(
+        supported_execution_modes=("offline", "online"),
+        supported_backend_topologies=(("vllm", "agg"),),
+    )
+    online.require_compatible(spec)
 
 
 def test_runner_capabilities_reject_spec_version_backend_and_hook():

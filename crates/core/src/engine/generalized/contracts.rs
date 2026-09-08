@@ -290,6 +290,12 @@ pub trait RankEngine: Sized {
         false
     }
 
+    /// Prepare this rank for the next shared attention-DP group pass.
+    ///
+    /// `wave_step` starts at zero and resets after every rank drains. The
+    /// default is a no-op for rank engines without group-step scheduling.
+    fn prepare_group_pass(&mut self, _wave_step: u64, _dp_size: NonZeroU32) {}
+
     /// Eagerly commit one non-preemptive pass.
     fn execute_pass(
         &mut self,
@@ -320,9 +326,16 @@ pub trait RankEngine: Sized {
     }
 
     /// Earliest deadline for independently modeled internal work.
+    ///
+    /// The generalized engine masks this deadline while a grouped pass is in
+    /// flight. A physical deadline that falls inside a model step becomes
+    /// scheduler-visible only when that shared pass completes.
     fn next_internal_deadline_ms(&self) -> Option<f64>;
 
     /// Process internal work due at `now_ms`.
+    ///
+    /// Callers may invoke this method defensively with `pass_in_flight=true`;
+    /// implementations must return without mutating rank state in that case.
     fn process_internal_work(
         &mut self,
         now_ms: f64,
