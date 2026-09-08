@@ -40,12 +40,12 @@ pub struct AgenticTerminalFeedback {
     pub status: ReplayTerminalStatus,
 }
 
-/// Runtime feedback that becomes visible at one logical timestamp.
+/// Agentic workload feedback produced by the runtime at one logical timestamp.
 ///
 /// The runtime owns `at_ms`. The driver canonicalizes request order by graph
 /// ordinal and applies output progress, causal terminals, then quiescence.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct AgenticFeedbackBatch {
+pub struct AgenticRuntimeFeedback {
     pub at_ms: f64,
     pub output_tokens: Vec<AgenticOutputFeedback>,
     pub causal_terminals: Vec<AgenticTerminalFeedback>,
@@ -1444,78 +1444,81 @@ impl WorkloadDriver {
     /// makes that order unobservable by sorting requests by immutable graph
     /// ordinal, then applying output progress, causal terminals, and finally
     /// resource quiescence.
-    pub fn apply_agentic_feedback_batch(&mut self, mut batch: AgenticFeedbackBatch) -> Result<()> {
-        if !batch.at_ms.is_finite() || batch.at_ms < 0.0 {
+    pub fn apply_agentic_runtime_feedback(
+        &mut self,
+        mut feedback: AgenticRuntimeFeedback,
+    ) -> Result<()> {
+        if !feedback.at_ms.is_finite() || feedback.at_ms < 0.0 {
             bail!(
-                "agentic feedback timestamp must be finite and non-negative; got {}",
-                batch.at_ms
+                "agentic runtime feedback timestamp must be finite and non-negative; got {}",
+                feedback.at_ms
             );
         }
         if !matches!(self.policy, SchedulingPolicy::Agentic(_)) {
-            bail!("agentic feedback batch requires an agentic workload driver");
+            bail!("agentic runtime feedback requires an agentic workload driver");
         }
 
-        let ordinal_by_uuid = batch
+        let ordinal_by_uuid = feedback
             .output_tokens
             .iter()
-            .map(|feedback| feedback.request_uuid)
+            .map(|output| output.request_uuid)
             .chain(
-                batch
+                feedback
                     .causal_terminals
                     .iter()
-                    .map(|feedback| feedback.request_uuid),
+                    .map(|terminal| terminal.request_uuid),
             )
-            .chain(batch.quiescent_requests.iter().copied())
+            .chain(feedback.quiescent_requests.iter().copied())
             .map(|uuid| Ok((uuid, self.agentic_node_ordinal(uuid)?)))
             .collect::<Result<FxHashMap<_, _>>>()?;
-        batch
+        feedback
             .output_tokens
-            .sort_by_key(|feedback| ordinal_by_uuid[&feedback.request_uuid]);
-        batch
+            .sort_by_key(|output| ordinal_by_uuid[&output.request_uuid]);
+        feedback
             .causal_terminals
-            .sort_by_key(|feedback| ordinal_by_uuid[&feedback.request_uuid]);
-        batch
+            .sort_by_key(|terminal| ordinal_by_uuid[&terminal.request_uuid]);
+        feedback
             .quiescent_requests
             .sort_by_key(|uuid| ordinal_by_uuid[uuid]);
 
-        for pair in batch.output_tokens.windows(2) {
+        for pair in feedback.output_tokens.windows(2) {
             if pair[0].request_uuid == pair[1].request_uuid {
                 bail!(
                     "agentic request {} has duplicate output groups at {} ms",
                     pair[0].request_uuid,
-                    batch.at_ms
+                    feedback.at_ms
                 );
             }
         }
-        for pair in batch.causal_terminals.windows(2) {
+        for pair in feedback.causal_terminals.windows(2) {
             if pair[0].request_uuid == pair[1].request_uuid {
                 bail!(
                     "agentic request {} has duplicate causal terminals at {} ms",
                     pair[0].request_uuid,
-                    batch.at_ms
+                    feedback.at_ms
                 );
             }
         }
-        for pair in batch.quiescent_requests.windows(2) {
+        for pair in feedback.quiescent_requests.windows(2) {
             if pair[0] == pair[1] {
                 bail!(
                     "agentic request {} has duplicate quiescence at {} ms",
                     pair[0],
-                    batch.at_ms
+                    feedback.at_ms
                 );
             }
         }
 
-        for feedback in batch.output_tokens {
-            for token_id in feedback.token_ids {
-                self.on_output_token(feedback.request_uuid, token_id)?;
+        for output in feedback.output_tokens {
+            for token_id in output.token_ids {
+                self.on_output_token(output.request_uuid, token_id)?;
             }
         }
-        for feedback in batch.causal_terminals {
-            self.on_causal_terminal(feedback.request_uuid, batch.at_ms, feedback.status)?;
+        for terminal in feedback.causal_terminals {
+            self.on_causal_terminal(terminal.request_uuid, feedback.at_ms, terminal.status)?;
         }
-        for request_uuid in batch.quiescent_requests {
-            self.on_quiescent(request_uuid, batch.at_ms)?;
+        for request_uuid in feedback.quiescent_requests {
+            self.on_quiescent(request_uuid, feedback.at_ms)?;
         }
         Ok(())
     }
@@ -2673,7 +2676,7 @@ mod tests {
                 quiescent.reverse();
             }
             driver
-                .apply_agentic_feedback_batch(AgenticFeedbackBatch {
+                .apply_agentic_runtime_feedback(AgenticRuntimeFeedback {
                     at_ms: 10.0,
                     output_tokens: Vec::new(),
                     causal_terminals: terminals,

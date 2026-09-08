@@ -11,7 +11,7 @@ use super::ReplayMode;
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::core::{AdmissionSource as CoreAdmissionSource, ReadyArrival};
 use crate::replay::loadgen::{
-    AgenticFeedbackBatch, AgenticOutputFeedback, AgenticTerminalFeedback, GeneratedRequests,
+    AgenticOutputFeedback, AgenticRuntimeFeedback, AgenticTerminalFeedback, GeneratedRequests,
     ReplayRequestHashes, ReplayRequestPayload, WorkloadDriver,
 };
 use crate::replay::protocol::DirectRequest;
@@ -81,28 +81,28 @@ enum AdmissionSource {
     GeneratedRequests(GeneratedRequests),
     Workload {
         driver: WorkloadDriver,
-        pending_agentic_feedback: PendingAgenticFeedback,
+        pending_agentic_runtime_feedback: PendingAgenticRuntimeFeedback,
     },
 }
 
 /// Runtime feedback collected beside the workload driver until the current
 /// logical timestamp is flushed as one deterministic batch.
 #[derive(Default)]
-struct PendingAgenticFeedback {
+struct PendingAgenticRuntimeFeedback {
     output_tokens: Vec<AgenticOutputFeedback>,
     causal_terminals: Vec<AgenticTerminalFeedback>,
     quiescent_requests: Vec<Uuid>,
 }
 
-impl PendingAgenticFeedback {
+impl PendingAgenticRuntimeFeedback {
     fn is_empty(&self) -> bool {
         self.output_tokens.is_empty()
             && self.causal_terminals.is_empty()
             && self.quiescent_requests.is_empty()
     }
 
-    fn take_batch(&mut self, at_ms: f64) -> AgenticFeedbackBatch {
-        AgenticFeedbackBatch {
+    fn take(&mut self, at_ms: f64) -> AgenticRuntimeFeedback {
+        AgenticRuntimeFeedback {
             at_ms,
             output_tokens: std::mem::take(&mut self.output_tokens),
             causal_terminals: std::mem::take(&mut self.causal_terminals),
@@ -138,7 +138,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         Self {
             source: AdmissionSource::Workload {
                 driver,
-                pending_agentic_feedback: PendingAgenticFeedback::default(),
+                pending_agentic_runtime_feedback: PendingAgenticRuntimeFeedback::default(),
             },
             mode,
             metadata: PhantomData,
@@ -387,20 +387,20 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             return CoreAdmissionSource::on_output_token(self, uuid, token_id);
         }
         let AdmissionSource::Workload {
-            pending_agentic_feedback,
+            pending_agentic_runtime_feedback,
             ..
         } = &mut self.source
         else {
             unreachable!("only an agentic workload can buffer agentic feedback");
         };
-        if let Some(existing) = pending_agentic_feedback
+        if let Some(existing) = pending_agentic_runtime_feedback
             .output_tokens
             .iter_mut()
             .find(|feedback| feedback.request_uuid == uuid)
         {
             existing.token_ids.push(token_id);
         } else {
-            pending_agentic_feedback
+            pending_agentic_runtime_feedback
                 .output_tokens
                 .push(AgenticOutputFeedback {
                     request_uuid: uuid,
@@ -420,13 +420,13 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             return self.on_request_causal_terminal(uuid, now_ms, status);
         }
         let AdmissionSource::Workload {
-            pending_agentic_feedback,
+            pending_agentic_runtime_feedback,
             ..
         } = &mut self.source
         else {
             unreachable!("only an agentic workload can buffer agentic feedback");
         };
-        pending_agentic_feedback
+        pending_agentic_runtime_feedback
             .causal_terminals
             .push(AgenticTerminalFeedback {
                 request_uuid: uuid,
@@ -440,13 +440,15 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             return self.on_request_quiescent(uuid, now_ms);
         }
         let AdmissionSource::Workload {
-            pending_agentic_feedback,
+            pending_agentic_runtime_feedback,
             ..
         } = &mut self.source
         else {
             unreachable!("only an agentic workload can buffer agentic feedback");
         };
-        pending_agentic_feedback.quiescent_requests.push(uuid);
+        pending_agentic_runtime_feedback
+            .quiescent_requests
+            .push(uuid);
         Ok(())
     }
 
@@ -460,34 +462,36 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             return CoreAdmissionSource::on_terminal(self, uuid, now_ms, status);
         }
         let AdmissionSource::Workload {
-            pending_agentic_feedback,
+            pending_agentic_runtime_feedback,
             ..
         } = &mut self.source
         else {
             unreachable!("only an agentic workload can buffer agentic feedback");
         };
-        pending_agentic_feedback
+        pending_agentic_runtime_feedback
             .causal_terminals
             .push(AgenticTerminalFeedback {
                 request_uuid: uuid,
                 status,
             });
-        pending_agentic_feedback.quiescent_requests.push(uuid);
+        pending_agentic_runtime_feedback
+            .quiescent_requests
+            .push(uuid);
         Ok(())
     }
 
-    pub(crate) fn flush_agentic_feedback(&mut self, now_ms: f64) -> Result<bool> {
+    pub(crate) fn flush_agentic_runtime_feedback(&mut self, now_ms: f64) -> Result<bool> {
         let AdmissionSource::Workload {
             driver,
-            pending_agentic_feedback,
+            pending_agentic_runtime_feedback,
         } = &mut self.source
         else {
             return Ok(false);
         };
-        if pending_agentic_feedback.is_empty() {
+        if pending_agentic_runtime_feedback.is_empty() {
             return Ok(false);
         }
-        driver.apply_agentic_feedback_batch(pending_agentic_feedback.take_batch(now_ms))?;
+        driver.apply_agentic_runtime_feedback(pending_agentic_runtime_feedback.take(now_ms))?;
         Ok(true)
     }
 
