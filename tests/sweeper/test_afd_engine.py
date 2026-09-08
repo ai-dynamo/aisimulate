@@ -5,8 +5,9 @@
 
 import pytest
 
-from aisimulate.sweeper.afd import AFDLayerTimes, AFDPipelineModel, AFDTopology
-from aisimulate.sweeper.afd_engine import AFDForegroundEngine, AFDStage
+from aisimulate.sweeper.afd_engine import AFDForegroundEngine, AFDStage, evaluate_afd_phase
+from aisimulate.sweeper.afd_parallel import AFDPipelineModel, AFDTopology
+from aisimulate.sweeper.afd_perfmodel import AFDLayerTimes
 
 
 def _topology(**overrides) -> AFDTopology:
@@ -37,6 +38,54 @@ def _times(phase: str = "decode", **overrides) -> AFDLayerTimes:
     return AFDLayerTimes(**values)
 
 
+def test_pipeline_evaluator_matches_legacy_optimistic_formula():
+    topology = _topology()
+    result = evaluate_afd_phase(
+        topology,
+        _times(attention_ms=1.0, ffn_ms=2.0, a_to_f_ms=0.25, f_to_a_ms=0.25),
+        input_length=128,
+        output_length=16,
+    )
+
+    # fill=3.5; cycle=max(1,2,.5)=2; global step=3.5+2*(3*2-1)
+    assert result.pipeline_fill_ms == pytest.approx(3.5)
+    assert result.cycle_ms == pytest.approx(2.0)
+    assert result.step_latency_ms == pytest.approx(13.5)
+    assert result.communication_hidden is True
+    assert result.effective_pipeline_model.value == "optimistic"
+    assert result.balance_ratio == pytest.approx(0.5)
+    assert result.tokens_per_second == pytest.approx(topology.total_batch_size / 0.0135)
+    assert result.sequence_rate == pytest.approx((topology.total_batch_size / 0.0135) / 16)
+
+
+def test_optimistic_pipeline_falls_back_when_microbatch_count_is_too_small():
+    topology = _topology(num_microbatches=2)
+    result = evaluate_afd_phase(
+        topology,
+        _times(attention_ms=1, ffn_ms=1, a_to_f_ms=1, f_to_a_ms=1),
+        input_length=128,
+        output_length=16,
+    )
+
+    assert result.requested_pipeline_model.value == "optimistic"
+    assert result.effective_pipeline_model.value == "conservative"
+    assert result.communication_hidden is False
+    assert result.cycle_ms == pytest.approx(2.0)
+    assert result.step_latency_ms == pytest.approx(10.0)
+
+
+def test_communication_overhead_is_applied_and_provenanced():
+    result = evaluate_afd_phase(
+        _topology(comm_overhead_factor=2.0),
+        _times(attention_ms=1.0, ffn_ms=2.0, a_to_f_ms=0.25, f_to_a_ms=0.25),
+        input_length=128,
+        output_length=16,
+    )
+
+    assert result.provenance["layer_times"]["a_to_f_ms"] == pytest.approx(0.5)
+    assert result.provenance["layer_times"]["f_to_a_ms"] == pytest.approx(0.5)
+
+
 def test_foreground_pass_expands_every_stage_and_matches_formula_boundary():
     engine = AFDForegroundEngine(_topology(), (_times(),))
 
@@ -54,13 +103,9 @@ def test_foreground_pass_expands_every_stage_and_matches_formula_boundary():
         AFDStage.FFN,
         AFDStage.F_TO_A,
     ]
-    assert planned.intervals[4].start_ms - planned.intervals[
-        0
-    ].start_ms == pytest.approx(planned.evaluation.cycle_ms)
+    assert planned.intervals[4].start_ms - planned.intervals[0].start_ms == pytest.approx(planned.evaluation.cycle_ms)
     assert planned.intervals[-1].end_ms == pytest.approx(planned.end_ms)
-    assert planned.end_ms - planned.started_at_ms == pytest.approx(
-        planned.evaluation.step_latency_ms
-    )
+    assert planned.end_ms - planned.started_at_ms == pytest.approx(planned.evaluation.step_latency_ms)
 
     completed = engine.complete_pass(planned.pass_id, now_ms=planned.end_ms + 5.0)
     assert completed.completed_at_ms == planned.end_ms
