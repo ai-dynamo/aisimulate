@@ -12,6 +12,7 @@ from typing import Any
 
 TITLE = "NVIDIA AIPerf | LLM Metrics"
 STAT_COLUMNS = ("avg", "min", "max", "p99", "p90", "p75", "std")
+POWER_DIAGNOSTICS_TITLE = "AISimulate active forward-pass energy diagnostics (per GPU)"
 
 
 def default_report_path(prefix: str = "aisimulate_replay_report") -> Path:
@@ -105,6 +106,173 @@ def format_report_table(report: dict[str, Any]) -> str:
     if isinstance(first_admission_ratio, int | float):
         lines.append(f"First Admission Prefix Cache Reused Ratio: {_format_value(first_admission_ratio)}")
     return "\n".join(lines)
+
+
+def format_power_diagnostics(
+    diagnostics: dict[str, Any],
+    *,
+    top_n: int = 12,
+) -> str:
+    """Render a bounded view of the complete power-diagnostics JSON export."""
+
+    if top_n < 1:
+        raise ValueError("power diagnostics top_n must be at least 1")
+
+    status = str(diagnostics.get("publication_status", "unsupported"))
+    coverage = diagnostics.get("power_coverage")
+    gate = diagnostics.get("coverage_gate")
+    lines = [POWER_DIAGNOSTICS_TITLE]
+    lines.append(
+        "Aggregate: "
+        f"power={_format_power(diagnostics.get('power_w'))} "
+        f"coverage={_format_percent(coverage)} "
+        f"gate={_format_percent(gate)} status={status}"
+    )
+    reason = diagnostics.get("unavailable_reason")
+    if isinstance(reason, str) and reason:
+        lines.append(f"Reason: {reason}")
+    lines.append(
+        "Energy is modeled active forward-pass evidence in W-ms per GPU; "
+        "it is not wall-clock or provisioned-fleet energy."
+    )
+
+    raw_phases = diagnostics.get("phases")
+    phases = raw_phases if isinstance(raw_phases, list) else []
+    phase_rows: list[list[str]] = []
+    operation_rows: list[list[str]] = []
+    for phase in phases:
+        if not isinstance(phase, dict):
+            continue
+        phase_name = str(phase.get("name", "unknown"))
+        phase_rows.append(
+            [
+                phase_name,
+                _format_energy(phase.get("energy_wms")),
+                _format_latency(phase.get("latency_ms")),
+                _format_latency(phase.get("covered_latency_ms")),
+                _format_percent(phase.get("power_coverage")),
+                _format_power(phase.get("power_w")),
+                str(phase.get("source_kind", "missing")),
+            ]
+        )
+        raw_operations = phase.get("operations")
+        operations = raw_operations if isinstance(raw_operations, list) else []
+        ordered = sorted(
+            (operation for operation in operations if isinstance(operation, dict)),
+            key=_operation_sort_key,
+        )
+        for operation in ordered[:top_n]:
+            source = str(operation.get("source", "missing"))
+            source_kind = str(operation.get("source_kind", "missing"))
+            operation_rows.append(
+                [
+                    phase_name,
+                    str(operation.get("name", "unknown")),
+                    _format_energy(operation.get("energy_wms")),
+                    _format_latency(operation.get("latency_ms")),
+                    _format_percent(operation.get("power_coverage")),
+                    _format_percent(operation.get("energy_contribution")),
+                    f"{source_kind}:{source}",
+                ]
+            )
+        if len(ordered) > top_n:
+            operation_rows.append(
+                [
+                    phase_name,
+                    f"... {len(ordered) - top_n} more in prediction.json",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ]
+            )
+
+    if phase_rows:
+        lines.extend(
+            [
+                "",
+                "Phase totals",
+                _render_diagnostics_table(
+                    [
+                        "phase",
+                        "energy",
+                        "latency",
+                        "covered",
+                        "coverage",
+                        "power",
+                        "source",
+                    ],
+                    phase_rows,
+                ),
+            ]
+        )
+    if operation_rows:
+        lines.extend(
+            [
+                "",
+                f"Operations (top {top_n} per phase)",
+                _render_diagnostics_table(
+                    [
+                        "phase",
+                        "operation",
+                        "energy",
+                        "latency",
+                        "coverage",
+                        "share",
+                        "source",
+                    ],
+                    operation_rows,
+                ),
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _operation_sort_key(operation: dict[str, Any]) -> tuple[bool, float, str, str]:
+    energy = operation.get("energy_wms")
+    has_energy = isinstance(energy, int | float)
+    return (
+        not has_energy,
+        -float(energy) if has_energy else 0.0,
+        str(operation.get("name", "")),
+        str(operation.get("source", "")),
+    )
+
+
+def _render_diagnostics_table(headers: list[str], rows: list[list[str]]) -> str:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+    rendered = ["  ".join(header.ljust(widths[index]) for index, header in enumerate(headers))]
+    rendered.append("  ".join("-" * width for width in widths))
+    rendered.extend("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)) for row in rows)
+    return "\n".join(rendered)
+
+
+def _format_power(value: object) -> str:
+    if not isinstance(value, int | float):
+        return "N/A"
+    return f"{float(value):,.2f} W"
+
+
+def _format_energy(value: object) -> str:
+    if not isinstance(value, int | float):
+        return "N/A"
+    return f"{float(value):,.2f} W-ms"
+
+
+def _format_latency(value: object) -> str:
+    if not isinstance(value, int | float):
+        return "N/A"
+    return f"{float(value):,.2f} ms"
+
+
+def _format_percent(value: object) -> str:
+    if not isinstance(value, int | float):
+        return "N/A"
+    return f"{float(value):.2%}"
 
 
 def _append_stat_row(

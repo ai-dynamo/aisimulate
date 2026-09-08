@@ -97,6 +97,32 @@ class _Runner:
                         "power_w": 487.5,
                         "power_coverage": 0.95,
                     },
+                    "power_diagnostics": {
+                        "schema_version": "1.0",
+                        "scope": "active_forward_pass_per_gpu",
+                        "publication_status": "available",
+                        "coverage_gate": 0.9,
+                        "power_w": 487.5,
+                        "power_coverage": 0.95,
+                        "phases": [
+                            {
+                                "name": "prefill",
+                                "operations": [
+                                    {
+                                        "name": "gemm",
+                                        "energy_wms": 120.0,
+                                        "latency_ms": 0.25,
+                                        "covered_latency_ms": 0.25,
+                                        "power_coverage": 1.0,
+                                        "energy_contribution": 1.0,
+                                        "source": "silicon",
+                                        "source_kind": "measured",
+                                        "status": "available",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
                     "per_request": [{"request_id": "synthetic-0"}],
                 }
             },
@@ -242,6 +268,93 @@ def test_predict_online_is_forwarded_through_replay_spec(
 
     assert runner.spec.execution_mode == "online"
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
+def test_predict_power_diagnostics_json_preserves_complete_export(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+    monkeypatch.setattr(
+        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
+    )
+
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output),
+                "--diagnostics",
+                "power",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    stdout = json.loads(capsys.readouterr().out)
+    assert stdout["summary"]["power_w"] == 487.5
+    assert stdout["power_diagnostics"]["phases"][0]["operations"][0]["name"] == "gemm"
+    saved = json.loads((output / "prediction.json").read_text())
+    assert saved["power_diagnostics"] == stdout["power_diagnostics"]
+
+
+def test_predict_power_diagnostics_table_applies_top_n(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(
+        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
+    )
+
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--diagnostics",
+                "power",
+                "--diagnostics-top-n",
+                "1",
+            ]
+        )
+        == 0
+    )
+
+    stdout = capsys.readouterr().out
+    assert "active forward-pass energy diagnostics (per GPU)" in stdout
+    assert "gemm" in stdout
 
 
 def test_predict_online_rejects_runner_without_online_capability(
