@@ -1,0 +1,132 @@
+name: Fast CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact commit that the caller expects Fast CI to validate
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Repository Policy
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'review-ready'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+      - run: python -m pip install pyyaml==6.0.3 pytest==8.4.2
+      - name: Check source and packaged legal files
+        run: |
+          python scripts/check_copyright.py
+          python scripts/check_packaged_legal_files.py
+      - name: Check CODEOWNERS policy and generated artifacts
+        run: |
+          python -m pytest -c /dev/null .github/codeowners/test_*.py -q \
+            -p no:cacheprovider \
+            --override-ini="addopts=" \
+            --override-ini="filterwarnings="
+          python .github/codeowners/build_codeowners.py \
+            --areas .github/codeowners/areas.yaml \
+            --repo . \
+            --strict
+          python .github/codeowners/emit_codeowners.py \
+            --areas .github/codeowners/areas.yaml \
+            --out CODEOWNERS \
+            --external .github/codeowners/external_contributors.yaml \
+            --contributors-out CONTRIBUTORS.md
+          if [[ -n "$(git status --porcelain --untracked-files=all -- \
+              CODEOWNERS CONTRIBUTORS.md)" ]]; then
+            git diff -- CODEOWNERS CONTRIBUTORS.md || true
+            git status --short --untracked-files=all -- CODEOWNERS CONTRIBUTORS.md
+            echo "::error::Generated CODEOWNERS artifacts are out of date."
+            exit 1
+          fi
+
+  python-static:
+    name: Python Static Checks
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'review-ready'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+      - run: python -m pip install ruff==0.14.1
+      - name: Ruff
+        run: >-
+          ruff check
+          --config python/aisimulate/pyproject.toml
+          python/aisimulate/src/aisimulate
+          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
+          tests
+      - name: Compile Python sources
+        run: python -m compileall -q python/aisimulate/src tests
+      - name: Check changed-line whitespace
+        shell: bash
+        run: |
+          if [[ -n "${BASE_SHA}" && ! "${BASE_SHA}" =~ ^0+$ ]]; then
+            git diff --check "${BASE_SHA}...${TARGET_SHA}"
+          else
+            git diff --check "${TARGET_SHA}^" "${TARGET_SHA}"
+          fi
+
+  rust-format:
+    name: Rust Format
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'review-ready'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+      - run: cargo fmt --all -- --check

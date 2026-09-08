@@ -510,3 +510,17 @@ def test_valid_min_gpu_budget_is_accepted():
     )
 
     assert space.min_gpu_budget == 8
+
+
+def test_forward_model_defaults_to_op_level_for_every_role():
+    space = SearchSpace(**_search_space())
+
+    assert space.agg_forward_model == "op_level"
+    assert space.prefill_forward_model == "op_level"
+    assert space.decode_forward_model == "op_level"
+
+
+@pytest.mark.parametrize("field", ["agg_forward_model", "prefill_forward_model", "decode_forward_model"])
+def test_unknown_forward_model_is_rejected(field):
+    with pytest.raises(ValidationError, match=f"{field} has invalid choice 'layerwise'"):
+        SearchSpace(**_search_space(**{field: "layerwise"}))

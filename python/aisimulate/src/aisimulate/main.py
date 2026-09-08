@@ -54,7 +54,7 @@ class _CliExecutionError(RuntimeError):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aisimulate",
-        description="Predict or recommend an offline LLM serving configuration.",
+        description="Predict or recommend an LLM serving configuration.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in ("predict", "recommend"):
@@ -72,6 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
+    subparsers.choices["predict"].add_argument(
+        "--online",
+        action="store_true",
+        help="pace prediction against the real wall clock instead of virtual time",
+    )
     return parser
 
 
@@ -160,6 +165,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     spec = prediction_to_replay_spec(
         config,
         adapter_specs=adapter_specs,
+        execution_mode="online" if args.online else "offline",
     )
     factory.capabilities().require_compatible(spec)
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)

@@ -41,19 +41,73 @@ Output:
     gdn_perf.txt - Performance data for GDN Conv1D + scan operations
 """
 
-__compat__ = "sglang==0.5.14"
+# Verified 2026-08-18 against sglang v0.5.14 and v0.5.17 tags (source clones,
+# no runtime GPU available in this environment) for AIC-1762 Task 4c/4d.
+# Compatible unchanged: chunk_gated_delta_rule and
+# fused_recurrent_gated_delta_rule_packed_decode signatures/bodies
+# byte-identical; causal_conv1d_fn path and dispatch unchanged;
+# causal_conv1d_update signature byte-identical; the #1533 lane's serving
+# call site (FlashInferGDNKernel.decode's use_state_pool=True branch,
+# gdn_flashinfer.py:180-193 @0.5.14 -> :236-249 @0.5.17) is 100% identical
+# text, same argument list this collector mirrors; server_args.py's SM100+
+# auto-flip to flashinfer + bf16 hard-requirement moved :4884 -> :6027
+# (function grew from unrelated features) but is unchanged in content, now
+# at :6034-6047/:6071-6081; SM90 no-auto-flip follows unchanged; the
+# causal_conv1d int32 offset-overflow guard is at the same line, 375, both
+# versions; qwen3_5.py's dt_bias construction moved :237-239 -> :320-322
+# (file grew above it) but is unchanged, and the load-and-upcast site
+# (fused_sigmoid_gating_recurrent.py, itself relocated the same way as the
+# fla imports below) is unchanged content, now at :176-182; gdn_backend.py's
+# import/rebind pattern (actual path srt/layers/attention/linear/
+# gdn_backend.py, not .../mamba/ as this file's own comment below implies --
+# pre-existing, not introduced here) is unchanged, now at :6-8/:38-43 (was
+# :13-16/:34-39). Residual gap, pre-existing at 0.5.14 too: flashinfer's own
+# gated_delta_rule_decode_pretranspose signature is verified only indirectly
+# (sglang's dependency pin moved flashinfer_python 0.6.12->0.6.15.post1, but
+# its call site above is unchanged) -- flashinfer itself isn't installed in
+# this venv to check directly. THREE incompatible import paths found and
+# fixed below: chunk_gated_delta_rule, fused_recurrent_gated_delta_rule_
+# packed_decode, and causal_conv1d_update all relocated from
+# sglang.srt.layers.attention.* to the new top-level sglang.kernels.ops.*
+# package as part of a 0.5.17 kernel reorg (causal_conv1d_fn's path is
+# unaffected) -- cosmetic relocations (signatures independently re-diffed
+# byte-identical at both locations), fixed with version-conditional imports
+# mirroring collect_gemm.py's established try/except-import pattern (this
+# file had none of its own before this bump). 0.5.15/0.5.16 stay excluded:
+# never verified, and version_resolver's __compat__ grammar (AND-of-
+# comparators only, no OR) has no way to express a true two-point set either
+# -- this bounded range with the two untested base releases carved out via
+# != is the closest expressible approximation, NOT an exact {0.5.14, 0.5.17}
+# gate (CORRECTED 2026-08-18, code review): `_check_compat`'s `!=` only
+# excludes the literal point version, so 0.5.15.post1/0.5.15rc1/
+# 0.5.16.post2-style variants of the excluded releases still satisfy this
+# specifier (see tests/unit/collector/test_version_resolver.py's
+# TestExactVersionSet for the honest, probed semantics). This is an
+# accepted, narrow gap: the framework_manifest digest-pinned gate is the
+# true version enforcement upstream and only ever supplies exactly 0.5.14
+# or 0.5.17 in a sanctioned run, so the leak is unreachable there.
+__compat__ = "sglang>=0.5.14,<=0.5.17,!=0.5.15,!=0.5.16"
 
 import gc
 import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sglang.srt.layers.attention.fla.chunk import chunk_gated_delta_rule
-    from sglang.srt.layers.attention.fla.fused_recurrent import (
+    # These names are otherwise only bound dynamically (globals().update(...)
+    # in run_gdn_torch() below) after a version-conditional import, so a
+    # static type checker needs its own declaration to resolve the call
+    # sites elsewhere in this file. Pointed at the >=0.5.17 paths (MINOR 4,
+    # code review 2026-08-18): the old sglang.srt.layers.attention.fla.*/
+    # sglang.srt.layers.attention.mamba.causal_conv1d_triton paths this block
+    # used before this bump no longer exist at 0.5.17, which would leave
+    # type-checking broken on a 0.5.17-only environment. causal_conv1d_fn's
+    # path is unaffected by the reorg (same at both versions).
+    from sglang.kernels.ops.attention.fla.chunk import chunk_gated_delta_rule
+    from sglang.kernels.ops.attention.fla.fused_recurrent import (
         fused_recurrent_gated_delta_rule_packed_decode,
     )
+    from sglang.kernels.ops.mamba.causal_conv1d_triton import causal_conv1d_update
     from sglang.srt.layers.attention.mamba.causal_conv1d import causal_conv1d_fn
-    from sglang.srt.layers.attention.mamba.causal_conv1d_triton import causal_conv1d_update
 
 import torch
 
@@ -380,7 +434,7 @@ def _resolve_flashinfer_gdn_decode(mamba_ssm_dtype: str = "float32"):
         return None, None
     try:
         from flashinfer.gdn_decode import gated_delta_rule_decode_pretranspose
-    except (ImportError, RuntimeError) as e:
+    except (ImportError, OSError, RuntimeError) as e:
         message = (
             f"SM{sm_version}: FlashInfer bf16 GDN decode lane required but unavailable "
             f"(flashinfer.gdn_decode import failed: {type(e).__name__}: {e}); SM100 "
@@ -704,16 +758,40 @@ def run_gdn_torch(
         contextlib.redirect_stdout(_devnull_file),
         contextlib.redirect_stderr(_devnull_file),
     ):
-        from sglang.srt.layers.attention.fla.chunk import chunk_gated_delta_rule
-        from sglang.srt.layers.attention.fla.fused_recurrent import (
-            fused_recurrent_gated_delta_rule_packed_decode,
-        )
+        # sglang 0.5.17 relocated these two from
+        # sglang.srt.layers.attention.fla.* to the new top-level
+        # sglang.kernels.ops.attention.fla.* package; both function bodies
+        # are byte-identical at the new location (verified 2026-08-18
+        # against the v0.5.14/v0.5.17 tags directly). Try the new
+        # (>=0.5.17) location first since that's where sglang's own code
+        # now imports them from.
+        try:
+            from sglang.kernels.ops.attention.fla.chunk import chunk_gated_delta_rule
+            from sglang.kernels.ops.attention.fla.fused_recurrent import (
+                fused_recurrent_gated_delta_rule_packed_decode,
+            )
+        except ImportError:
+            from sglang.srt.layers.attention.fla.chunk import chunk_gated_delta_rule
+            from sglang.srt.layers.attention.fla.fused_recurrent import (
+                fused_recurrent_gated_delta_rule_packed_decode,
+            )
 
         # gdn_backend.py:13-16 @0.5.14 imports both conv entry points from
         # causal_conv1d_triton and rebinds only causal_conv1d_fn to the CUDA
         # wrapper (:34-39) — GDN decode keeps the Triton update kernel.
+        # Re-verified 2026-08-18 at v0.5.17: same pattern, now at
+        # gdn_backend.py:6-8 (import) / :38-43 (rebind). causal_conv1d_fn's
+        # own module path is unaffected by the 0.5.17 kernel reorg;
+        # causal_conv1d_update moved the same way as the two fla imports
+        # above (sglang.srt.layers.attention.mamba.causal_conv1d_triton ->
+        # sglang.kernels.ops.mamba.causal_conv1d_triton), byte-identical
+        # signature (independently re-diffed).
         from sglang.srt.layers.attention.mamba.causal_conv1d import causal_conv1d_fn
-        from sglang.srt.layers.attention.mamba.causal_conv1d_triton import causal_conv1d_update
+
+        try:
+            from sglang.kernels.ops.mamba.causal_conv1d_triton import causal_conv1d_update
+        except ImportError:
+            from sglang.srt.layers.attention.mamba.causal_conv1d_triton import causal_conv1d_update
 
     from importlib.metadata import version as _get_version
 

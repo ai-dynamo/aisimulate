@@ -34,6 +34,10 @@ fn default_max_num_batched_tokens() -> usize {
     8_192
 }
 
+fn default_prefill_schedule_interval() -> usize {
+    1
+}
+
 fn default_true() -> bool {
     true
 }
@@ -281,6 +285,9 @@ pub struct EngineConfig {
     /// Per-pass token budget.
     #[serde(default = "default_max_num_batched_tokens")]
     pub max_num_batched_tokens: usize,
+    /// Admit vLLM prefills only once every N attention-DP group passes.
+    #[serde(default = "default_prefill_schedule_interval")]
+    pub prefill_schedule_interval: usize,
     /// Whether complete blocks remain reusable after request release.
     #[serde(default = "default_true")]
     pub enable_prefix_caching: bool,
@@ -347,6 +354,8 @@ struct EngineConfigWire {
     max_num_seqs: usize,
     #[serde(default = "default_max_num_batched_tokens")]
     max_num_batched_tokens: usize,
+    #[serde(default = "default_prefill_schedule_interval")]
+    prefill_schedule_interval: usize,
     #[serde(default = "default_true")]
     enable_prefix_caching: bool,
     #[serde(default = "default_true")]
@@ -402,6 +411,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             max_model_len: wire.max_model_len,
             max_num_seqs: wire.max_num_seqs,
             max_num_batched_tokens: wire.max_num_batched_tokens,
+            prefill_schedule_interval: wire.prefill_schedule_interval,
             enable_prefix_caching: wire.enable_prefix_caching,
             enable_chunked_prefill: wire.enable_chunked_prefill,
             speedup_ratio: wire.speedup_ratio,
@@ -434,6 +444,7 @@ impl Default for EngineConfig {
             max_model_len: None,
             max_num_seqs: default_max_num_seqs(),
             max_num_batched_tokens: default_max_num_batched_tokens(),
+            prefill_schedule_interval: default_prefill_schedule_interval(),
             enable_prefix_caching: true,
             enable_chunked_prefill: true,
             speedup_ratio: 1.0,
@@ -483,6 +494,10 @@ impl EngineConfig {
         ensure!(
             self.max_num_batched_tokens > 0,
             "max_num_batched_tokens must be positive"
+        );
+        ensure!(
+            self.prefill_schedule_interval > 0,
+            "prefill_schedule_interval must be positive"
         );
         ensure!(
             self.max_model_len.is_none_or(|limit| limit > 0),
@@ -860,6 +875,7 @@ mod tests {
             num_gpu_blocks: 123,
             max_num_seqs: 7,
             max_num_batched_tokens: 456,
+            prefill_schedule_interval: 4,
             worker_type: WorkerType::Decode,
             preemption_mode: PreemptionMode::Fifo,
             emit_kv_events: true,
@@ -911,6 +927,18 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("max_model_len")
+        );
+
+        let config = EngineConfig {
+            prefill_schedule_interval: 0,
+            ..EngineConfig::default()
+        };
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("prefill_schedule_interval")
         );
     }
 

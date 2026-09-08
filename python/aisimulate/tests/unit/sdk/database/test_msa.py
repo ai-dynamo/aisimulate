@@ -121,8 +121,20 @@ def test_rejected_msa_cells_raise_typed_errors(system, backend, version):
         (ContextMSAModule, {"batch_size": 2, "s": 512, "prefix": 0}),
         (GenerationMSAModule, {"batch_size": 2, "s": 512}),
     ]
-    silicon = get_database_view(system, backend, version, database_mode="SILICON")
-    hybrid = get_database_view(system, backend, version, database_mode="HYBRID")
+    silicon = get_database_view(
+        system,
+        backend,
+        version,
+        database_mode="SILICON",
+        allow_unlisted_version=True,
+    )
+    hybrid = get_database_view(
+        system,
+        backend,
+        version,
+        database_mode="HYBRID",
+        allow_unlisted_version=True,
+    )
     for cls, kwargs in cases:
         with pytest.raises(PerfDataNotAvailableError):
             op(cls)._engine_query(silicon, **kwargs)
@@ -164,11 +176,23 @@ def test_nvfp4_checkpoint_lane_resolution_per_backend():
         latency = float(op()._engine_query(db, batch_size=2, s=512, prefix=0))
         assert latency > 0, f"{backend} fp8_block gemm lane must resolve in SILICON"
 
-    sg_silicon = get_database_view("b200_sxm", "sglang", "0.5.16", database_mode="SILICON")
+    sg_silicon = get_database_view(
+        "b200_sxm",
+        "sglang",
+        "0.5.16",
+        database_mode="SILICON",
+        allow_unlisted_version=True,
+    )
     assert sg_silicon is not None
     with pytest.raises(Exception, match=r"(?i)silicon|missing|not supported"):
         op()._engine_query(sg_silicon, batch_size=2, s=512, prefix=0)
 
-    sg_hybrid = get_database_view("b200_sxm", "sglang", "0.5.16", database_mode="HYBRID")
+    sg_hybrid = get_database_view(
+        "b200_sxm",
+        "sglang",
+        "0.5.16",
+        database_mode="HYBRID",
+        allow_unlisted_version=True,
+    )
     latency = float(op()._engine_query(sg_hybrid, batch_size=2, s=512, prefix=0))
     assert latency > 0, "sglang HYBRID must fall back to the empirical transfer for the fp8_block lane"

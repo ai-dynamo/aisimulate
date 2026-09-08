@@ -308,6 +308,12 @@ pub(crate) enum EngineCore {
 }
 
 impl EngineCore {
+    pub(crate) fn prepare_group_pass(&mut self, wave_step: u64, dp_size: u32) {
+        if let Self::Vllm(core) = self {
+            core.prepare_group_pass(wave_step, dp_size);
+        }
+    }
+
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
         if let Self::Vllm(core) = self {
             core.set_host_offload_observer(observer);

@@ -171,6 +171,7 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
 
     assert runner.spec.workload["concurrency"] == 10
     assert runner.spec.workload["request_count"] == 100
+    assert runner.spec.execution_mode == "offline"
     assert runner.closed is True
     assert (
         json.loads((output / "prediction.json").read_text())["summary"][
@@ -183,6 +184,82 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
         == "synthetic-0"
     )
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
+def test_predict_online_is_forwarded_through_replay_spec(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+    runner = _Runner()
+
+    class OnlineFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_execution_modes=("offline", "online"),
+                supported_backend_topologies=(("vllm", "agg"),),
+            )
+
+    monkeypatch.setattr(
+        cli, "resolve_runner_factory", lambda stack: OnlineFactory(runner)
+    )
+
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--online",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    assert runner.spec.execution_mode == "online"
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
+def test_predict_online_rejects_runner_without_online_capability(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(
+        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(["predict", "--online", "--config", str(config_path)])
+
+    assert "runner does not support execution mode 'online'" in capsys.readouterr().err
 
 
 def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
