@@ -99,6 +99,24 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
     QUALIFICATION.validate_document(document)
 
 
+def test_planned_command_cannot_be_presented_as_passing() -> None:
+    document = _document()
+    gate = _gate(document, "modeled-power-matrix")
+    gate["execution"]["status"] = "passed"
+    gate["execution"]["evidence"] = [
+        {
+            "result": "pass",
+            "artifact": "artifacts/power-matrix.json",
+            "sha256": "1" * 64,
+            "source_revision": "2" * 40,
+            "recorded_at": "2026-09-08T12:00:00Z",
+        }
+    ]
+
+    with pytest.raises(QUALIFICATION.QualificationError, match="command is only planned"):
+        QUALIFICATION.validate_document(document)
+
+
 def test_silicon_gate_and_policy_thresholds_cannot_drift() -> None:
     document = _document()
     policy = document["policy"]["silicon_accuracy"]

@@ -48,6 +48,7 @@
         "kind": "automated",
         "status": "pending",
         "command": "python -m pytest -q tests/qualification/test_power_prediction_matrix.py",
+        "command_status": "planned",
         "evidence": [],
         "blocked_by": []
       },
@@ -77,6 +78,7 @@
         "kind": "automated",
         "status": "pending",
         "command": "python -m pytest -q tests/qualification/test_power_prediction_matrix.py -k no_fabrication",
+        "command_status": "planned",
         "evidence": [],
         "blocked_by": []
       },
@@ -109,6 +111,7 @@
         "kind": "automated",
         "status": "pending",
         "command": "python -m pytest -q tests/qualification/test_power_diagnostics.py",
+        "command_status": "planned",
         "evidence": [],
         "blocked_by": []
       },
@@ -138,6 +141,7 @@
         "kind": "automated",
         "status": "pending",
         "command": "python -m pytest -q python/aisimulate/tests/unit/sdk/database/test_power_data_invariants.py",
+        "command_status": "available",
         "evidence": [],
         "blocked_by": []
       },
@@ -167,6 +171,7 @@
         "kind": "automated",
         "status": "pending",
         "command": "python -m pytest -q crates/core/parity_tests/perfmodel/test_engine_step_parity.py -k power",
+        "command_status": "available",
         "evidence": [],
         "blocked_by": []
       },
@@ -201,6 +206,7 @@
         "kind": "manual",
         "status": "pending",
         "command": null,
+        "command_status": "not_applicable",
         "evidence": [],
         "blocked_by": []
       },
@@ -230,6 +236,7 @@
         "kind": "automated",
         "status": "pending",
         "command": "python scripts/build_release_artifacts.py --check-only",
+        "command_status": "available",
         "evidence": [],
         "blocked_by": []
       },
@@ -255,6 +262,7 @@
         "kind": "manual",
         "status": "blocked",
         "command": null,
+        "command_status": "not_applicable",
         "evidence": [],
         "blocked_by": ["AFD runner integration is not available on main"]
       },
@@ -280,6 +288,7 @@
         "kind": "manual",
         "status": "blocked",
         "command": null,
+        "command_status": "not_applicable",
         "evidence": [],
         "blocked_by": ["EPD runner integration is not available on main"]
       },

@@ -117,11 +117,12 @@
     "execution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "status", "command", "evidence", "blocked_by"],
+      "required": ["kind", "status", "command", "command_status", "evidence", "blocked_by"],
       "properties": {
         "kind": {"enum": ["automated", "manual"]},
         "status": {"enum": ["pending", "blocked", "passed", "failed"]},
         "command": {"type": ["string", "null"]},
+        "command_status": {"enum": ["available", "planned", "not_applicable"]},
         "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
         "blocked_by": {"type": "array", "items": {"type": "string", "minLength": 1}}
       }

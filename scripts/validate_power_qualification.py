@@ -222,26 +222,48 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
             _validate_assertion(assertion, matrix, f"{context}.assertions[{assertion_index}]", errors)
 
     execution = gate.get("execution")
-    _expect_keys(execution, {"kind", "status", "command", "evidence", "blocked_by"}, f"{context}.execution", errors)
+    _expect_keys(
+        execution,
+        {"kind", "status", "command", "command_status", "evidence", "blocked_by"},
+        f"{context}.execution",
+        errors,
+    )
     if not isinstance(execution, dict):
         return
     kind = execution.get("kind")
     status = execution.get("status")
     command = execution.get("command")
+    command_status = execution.get("command_status")
     evidence = execution.get("evidence")
     blocked_by = execution.get("blocked_by")
     _expect(kind in {"automated", "manual"}, f"{context}.execution.kind is unsupported", errors)
     _expect(status in STATUSES, f"{context}.execution.status is unsupported", errors)
     if kind == "automated":
         _expect(isinstance(command, str) and bool(command.strip()), f"{context}.execution.command is required", errors)
+        _expect(
+            command_status in {"available", "planned"},
+            f"{context}.execution.command_status must be available or planned",
+            errors,
+        )
     elif kind == "manual":
         _expect(command is None, f"{context}.execution.command must be null for manual evidence", errors)
+        _expect(
+            command_status == "not_applicable",
+            f"{context}.execution.command_status must be not_applicable for manual evidence",
+            errors,
+        )
     _expect(isinstance(evidence, list), f"{context}.execution.evidence must be an array", errors)
     if isinstance(evidence, list):
         for evidence_index, item in enumerate(evidence):
             _validate_evidence(item, f"{context}.execution.evidence[{evidence_index}]", errors)
         if status in {"passed", "failed"}:
             _expect(bool(evidence), f"{context} cannot be {status} without evidence", errors)
+        if status == "passed":
+            _expect(
+                command_status != "planned",
+                f"{context} cannot pass while its command is only planned",
+                errors,
+            )
         if status in {"pending", "blocked"}:
             _expect(not evidence, f"{context} cannot retain evidence while {status}", errors)
         if status == "passed":

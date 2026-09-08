@@ -44,6 +44,12 @@ packaging contract. AFD and EPD appear as non-blocking, blocked integration
 records so their absence remains visible without pretending they belong to the
 0.13 support boundary.
 
+Every automated entry labels its command as `available` or `planned`. Planned
+commands name the deterministic suites that their dependency issue must add;
+they are not executable evidence today and the validator will not allow such a
+gate to pass. Manual gates use `not_applicable` rather than a placeholder
+command.
+
 ## Validate the ledger
 
 Run the deterministic structural check in normal CI:
