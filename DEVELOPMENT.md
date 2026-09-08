@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 -->
 
@@ -23,30 +23,28 @@ needed when developing against retained legacy `*.txt` perf assets or running
 their compatibility tests; for that work, install Git LFS and run
 `git lfs pull`.
 
-### 2. Set Up Python Virtual Environment
+### 2. Install Development Dependencies
 
 ```bash
-# Create virtual environment
-python3 -m venv .venv
-
-# Activate virtual environment
-source .venv/bin/activate
+uv sync --project python/aisimulate --extra dev
 ```
 
-### 3. Install Development Dependencies
+This creates `python/aisimulate/.venv`, builds the unified native extension,
+and installs the sole Python distribution together with its development tools.
+
+To activate the environment:
 
 ```bash
-# Build the unified native extension and install the sole Python distribution
-pip install -e "./python/aisimulate[dev]"
+source python/aisimulate/.venv/bin/activate
 ```
 
-### 4. Install Pre-Commit Hooks
+### 3. Install Pre-Commit Hooks
 
 ```bash
-pre-commit install
+pre-commit install --config python/aisimulate/.pre-commit-config.yaml
 ```
 
-This installs:
+The development environment includes:
 - The `aisimulate` package and its `aiconfigurator`, `aiconfigurator_core`, and
   `aisimulate_core` compatibility namespaces in editable mode
 - All runtime dependencies
@@ -54,12 +52,14 @@ This installs:
 
 ## AIConfigurator mirror boundaries
 
-Keep upstream AIC Python code/data in `src/aiconfigurator/` and
-`src/aiconfigurator_core/`. AISimulate-specific compatibility glue belongs in
-`src/aisimulate_core/`, not in those mirrors. The corresponding Rust mirror is
-`../../crates/core/src/perfmodel/`. See the repository's
-[AIC synchronization guide](../../docs/aic-sync.md) before applying an upstream
-AIC commit; packaging and CI changes are adapted manually rather than mirrored.
+Keep upstream AIC Python code/data in
+`python/aisimulate/src/aiconfigurator/` and
+`python/aisimulate/src/aiconfigurator_core/`. AISimulate-specific compatibility
+glue belongs in `python/aisimulate/src/aisimulate_core/`, not in those mirrors.
+The corresponding Rust mirror is `crates/core/src/perfmodel/`. See the
+repository's [AIC synchronization guide](docs/aic-sync.md) before applying an
+upstream AIC commit; packaging and CI changes are adapted manually rather than
+mirrored.
 
 ### Optional: Install Ruff Extension
 
@@ -75,20 +75,20 @@ This project uses [Ruff](https://github.com/astral-sh/ruff) for linting and form
 
 ```bash
 # Check for linting issues
-ruff check .
+ruff check --config python/aisimulate/pyproject.toml python/aisimulate tests
 
 # Auto-fix linting issues
-ruff check --fix .
+ruff check --fix --config python/aisimulate/pyproject.toml python/aisimulate tests
 ```
 
 #### Run Formatting
 
 ```bash
 # Check formatting
-ruff format --check .
+ruff format --check --config python/aisimulate/pyproject.toml python/aisimulate tests
 
 # Apply formatting
-ruff format .
+ruff format --config python/aisimulate/pyproject.toml python/aisimulate tests
 ```
 
 ### Pre-commit Hooks
@@ -98,7 +98,7 @@ Pre-commit hooks automatically run checks before each commit.
 #### Run Pre-commit Manually
 
 ```bash
-pre-commit run --all-files
+pre-commit run --all-files --config python/aisimulate/.pre-commit-config.yaml
 ```
 
 ### Running Tests
@@ -106,22 +106,23 @@ pre-commit run --all-files
 This project uses [pytest](https://docs.pytest.org/en/stable/) for testing.
 
 ```bash
-# Run all tests
-pytest tests
+# Run repository-level tests
+python -m pytest -c pytest.ini tests
 
-# Run tests for a specific component
-pytest tests/unit
-pytest tests/e2e
+# Run Python package tests
+python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests
 
 # GitHub PR / build subset (unit + a small stable E2E subset)
-pytest -m "unit or build"
+python -m pytest -c python/aisimulate/pytest.ini \
+  python/aisimulate/tests -m "unit or build"
 ```
 
 ## Data Collection (Advanced)
 
 Data collection is typically not required for development. The repository includes pre-collected performance databases for supported systems.
 
-If you need to collect new data for a new GPU type or framework version, refer to the [Collector README](collector/README.md).
+If you need to collect new data for a new GPU type or framework version, refer
+to the [Collector README](python/aisimulate/collector/README.md).
 
 ## Contributing
 
@@ -133,17 +134,20 @@ Before contributing, please read:
 
 ### Adding a New Model
 
-Refer to [How to Add a New Model](docs/add_a_new_model.md).
+Refer to [How to Add a New Model](python/aisimulate/docs/add_a_new_model.md).
 
 ### Running Automation Scripts
 
-Refer to the [Automation README](tools/automation/README.md).
+Explore the automation helpers under `python/aisimulate/tools/automation/`.
 
 ## Getting Help
 
-- **Documentation**: Check the `docs/` directory
-- **Issues**: Open an issue on [GitHub](https://github.com/ai-dynamo/aiconfigurator/issues)
-- **Examples**: Explore `tools/simple_sdk_demo/` for SDK usage examples
+- **Documentation**: Check the root `docs/` directory and
+  `python/aisimulate/docs/`
+- **Issues**: Open an issue on
+  [GitHub](https://github.com/ai-dynamo/aisimulate/issues)
+- **Examples**: Explore `python/aisimulate/tools/simple_sdk_demo/` for SDK usage
+  examples
 
 ## License
 

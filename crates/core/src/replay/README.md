@@ -230,10 +230,18 @@ vLLM and TensorRT-LLM use source-first handoff; SGLang uses destination-first ha
 TensorRT-LLM path applies `GUARANTEED_NO_EVICT` to reserve decode completion headroom while the
 destination owns transferred prompt KV.
 
-Attention-DP is currently supported only by aggregated offline replay. Disaggregated replay
-requires both prefill and decode `dp_size` to be `1`; ranked prefill/decode routing and handoff
-semantics are not yet modeled, so larger values are rejected explicitly instead of using the old
-aggregate approximation.
+Attention-DP is supported independently in the prefill and decode pools. Each request is routed
+from one concrete prefill `(worker, dp_rank)` to one concrete decode `(worker, dp_rank)`, while KV
+transfer remains one aggregate request-level event. Rank-wise KV layout conversion and network
+contention are not modeled. Native host offload remains unsupported for disaggregated replay.
+
+Authored rank hints match Dynamo's request contract: `dp_rank` selects the aggregated or decode
+rank, while `prefill_dp_rank` optionally overrides the prefill rank. In disaggregated replay an
+omitted `prefill_dp_rank` falls back to `dp_rank`; each hint is validated against its role's
+independent DP size.
+
+SGLang attention-DP roles mirror its launch-time per-rank normalization: chunked-prefill size is
+divided by DP size and schedule conservativeness is scaled by `0.3` before scheduler construction.
 
 It keeps one logical clock and one completion-event heap, but request ownership moves through a
 two-stage state machine instead of the aggregated single-pool lifecycle.

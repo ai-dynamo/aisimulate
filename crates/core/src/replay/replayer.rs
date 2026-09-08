@@ -30,8 +30,8 @@ use crate::replay::protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequ
 use crate::replay::scaling::ReplayScalingPolicy;
 use crate::replay::telemetry::{ReplayTelemetryObserver, ReplayTelemetrySnapshot};
 use crate::replay::{
-    ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayResult, ReplaySpec,
-    ReplayTopology, SlaThresholds, WorkerStage,
+    ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayRequest,
+    ReplayResult, ReplaySpec, ReplayTopology, SlaThresholds, WorkerStage,
 };
 
 /// Runtime composition supplied by the built-in engine stack or a Dynamo
@@ -364,6 +364,7 @@ impl<C: ReplayComposition> Replayer<C> {
         self.composition.set_determinism(self.capture.determinism)?;
         let engine_config = ReplayEngineConfig::parse(&self.spec.engine)?;
         engine_config.validate_topology(&self.spec.topology)?;
+        validate_request_dp_ranks(&self.spec, &engine_config)?;
         let runtime_input = match self.runtime_input.take() {
             Some(mut input) => {
                 apply_runtime_determinism(&mut input, self.capture.determinism);
@@ -519,6 +520,50 @@ impl<C: ReplayComposition> Replayer<C> {
     }
 }
 
+fn validate_request_dp_ranks(
+    spec: &ReplaySpec,
+    engine_config: &ReplayEngineConfig,
+) -> ReplayResult<()> {
+    let validate = |request: &ReplayRequest,
+                    stage: WorkerStage,
+                    rank: Option<u32>|
+     -> ReplayResult<()> {
+        let Some(rank) = rank else {
+            return Ok(());
+        };
+        let dp_size = engine_config.role(stage).dp_size;
+        if rank >= dp_size {
+            let stage = match stage {
+                WorkerStage::Aggregated => "aggregated",
+                WorkerStage::Prefill => "prefill",
+                WorkerStage::Decode => "decode",
+            };
+            return Err(ReplayError::InvalidSpec(format!(
+                "request {:?} {stage} placement: preferred attention-DP rank {rank} is out of range for dp_size {dp_size}",
+                request.id
+            )));
+        }
+        Ok(())
+    };
+
+    for request in &spec.requests {
+        match spec.topology {
+            ReplayTopology::Aggregated { .. } => {
+                validate(request, WorkerStage::Aggregated, request.dp_rank)?;
+            }
+            ReplayTopology::Disaggregated { .. } => {
+                validate(
+                    request,
+                    WorkerStage::Prefill,
+                    request.prefill_dp_rank.or(request.dp_rank),
+                )?;
+                validate(request, WorkerStage::Decode, request.dp_rank)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn admission_queue<Metadata: ReplayAdmissionMetadata>(
     input: ReplayRuntimeInput,
     mode: ReplayMode,
@@ -575,6 +620,7 @@ fn lower_requests(
                 uuid: Some(request_id),
                 dp_rank: 0,
                 preferred_dp_rank: request.dp_rank,
+                preferred_prefill_dp_rank: request.prefill_dp_rank,
                 arrival_timestamp_ms: Some(request.arrival_time_ms),
                 priority: routing.priority,
                 strict_priority: routing.strict_priority,
@@ -659,6 +705,7 @@ mod tests {
                     output_tokens: 2,
                     output_token_ids: None,
                     dp_rank: Some(2),
+                    prefill_dp_rank: Some(1),
                     session_id: Some("session-a".into()),
                     turn_index: Some(4),
                     metadata: serde_json::json!({
@@ -676,6 +723,7 @@ mod tests {
                     output_tokens: 1,
                     output_token_ids: None,
                     dp_rank: None,
+                    prefill_dp_rank: None,
                     session_id: None,
                     turn_index: None,
                     metadata: serde_json::Value::Null,
@@ -693,6 +741,7 @@ mod tests {
         assert_eq!(first.strict_priority, 9);
         assert_eq!(first.policy_class.as_deref(), Some("latency"));
         assert_eq!(first.preferred_dp_rank, Some(2));
+        assert_eq!(first.preferred_prefill_dp_rank, Some(1));
         assert!(!first.prompt_tokens_are_placement_safe());
         let context = first.replay_context.as_ref().unwrap();
         assert_eq!(context.authored_id, "length-only");
@@ -723,6 +772,7 @@ mod tests {
                 output_tokens: 1,
                 output_token_ids: None,
                 dp_rank: None,
+                prefill_dp_rank: None,
                 session_id: None,
                 turn_index: None,
                 metadata: serde_json::Value::Null,

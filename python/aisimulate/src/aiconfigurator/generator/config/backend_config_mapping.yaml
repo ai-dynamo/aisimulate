@@ -69,6 +69,11 @@ parameters:
   sglang: mem-fraction-static
   trtllm: kv_cache_free_gpu_memory_fraction
 
+- param_key: num_gpu_blocks
+  vllm: num-gpu-blocks-override
+  sglang: null
+  trtllm: null
+
 - param_key: kv_cache_max_tokens
   vllm: null
   sglang: max-total-tokens

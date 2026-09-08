@@ -187,15 +187,19 @@ Run the frozen long corpus for this authoritative engine-only matrix:
 | --- | --- | --- | --- | --- |
 | vLLM | Aggregated | Native engine KV | Round-robin | None |
 | vLLM | Disaggregated, role DP=1 | Native engine KV | Round-robin per pool | None |
+| vLLM | Disaggregated, prefill DP=2 / decode DP=4 | Native engine KV | Round-robin per pool | None |
 | SGLang | Aggregated | Native engine KV | Round-robin | None |
 | SGLang | Disaggregated, role DP=1 | Native engine KV | Round-robin per pool | None |
+| SGLang | Disaggregated, prefill DP=2 / decode DP=4 | Native engine KV | Round-robin per pool | None |
 | TRT-LLM guaranteed-no-evict | Aggregated | Native engine KV | Round-robin | None |
+| TRT-LLM guaranteed-no-evict | Disaggregated, prefill DP=2 / decode DP=4 | Native engine KV | Round-robin per pool | None |
 
 Use multiple logical workers in the aggregated and disaggregated rows so round-robin
 distribution is observable. Add focused aggregated attention-DP rows whenever a change
 touches grouped ranks, barriers, DP placement, per-rank FPM, or completion visibility.
-Disaggregated attention-DP and TRT-LLM disaggregated replay are `UNSUPPORTED`; do not
-silently reduce or substitute those rows, and do not count them as passing coverage.
+When a pinned baseline predates disaggregated attention-DP or TRT-LLM disaggregated support,
+record the new row as an intentional semantic exception and qualify it deterministically on the
+candidate. Do not silently reduce its DP sizes or substitute an aggregated row.
 
 For each row:
 
