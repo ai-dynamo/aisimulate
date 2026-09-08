@@ -11,11 +11,21 @@ from types import SimpleNamespace
 
 import pytest
 
+from aiconfigurator.sdk.errors import (
+    EmpiricalNotImplementedError,
+    MissingSystemFlopsError,
+    PerfDataNotAvailableError,
+    SolNotImplementedError,
+)
 from tools.forward_perf_gate import PROTOCOL_VERSION, cases, measurement, worker
 from tools.forward_perf_gate import run as gate_run
 from tools.prediction_regression_gate import grid
 
 pytestmark = pytest.mark.unit
+
+
+class SyntheticPanic(BaseException):
+    pass
 
 
 def _request() -> dict:
@@ -78,6 +88,53 @@ def test_batch_request_validation_requires_unique_cases() -> None:
         worker.validate_batch_request({**request, "case": expanded[0]})
 
 
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        PerfDataNotAvailableError,
+        EmpiricalNotImplementedError,
+        MissingSystemFlopsError,
+        SolNotImplementedError,
+    ],
+)
+def test_worker_classifies_coverage_errors_as_data_miss(error_type: type[BaseException]) -> None:
+    response = {}
+    worker._record_error(response, error_type("missing data"))
+    assert response["status"] == "DATA_MISS"
+    assert response["error"]["type"] == error_type.__name__
+
+
+def test_worker_classifies_chained_coverage_error_as_data_miss() -> None:
+    response = {}
+    wrapped = RuntimeError("wrapped")
+    wrapped.__cause__ = PerfDataNotAvailableError("missing data")
+    worker._record_error(response, wrapped)
+    assert response["status"] == "DATA_MISS"
+
+
+def test_worker_handles_empty_exception_message() -> None:
+    response = {}
+    worker._record_error(response, MemoryError())
+    assert response["status"] == "INVALID"
+    assert response["error"]["message"] == ""
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt(), SystemExit()])
+def test_worker_reraises_control_flow(error: BaseException) -> None:
+    with pytest.raises(type(error)):
+        worker._reraise_control_flow(error)
+
+
+def test_missing_database_is_a_data_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(measurement.perf_database, "get_database_view", lambda *args, **kwargs: None)
+    with pytest.raises(PerfDataNotAvailableError, match="failed to load perf database"):
+        measurement.build_session(
+            measurement.BenchmarkCase(model_path="model"),
+            suppress_loader_output=True,
+            database_mode="SILICON",
+        )
+
+
 def test_batch_request_groups_setup_work_and_preserves_result_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -132,7 +189,7 @@ def test_case_group_resets_and_builds_once_and_continues_after_case_failure(
         nonlocal measure_calls
         measure_calls += 1
         if measure_calls == 2:
-            raise RuntimeError("case failed")
+            raise SyntheticPanic("case failed")
         return 1.0, 10.0, [5.0], {"call_median_us": 5.0}
 
     monkeypatch.setattr(worker, "measure_session_setup_ms", fake_setup)
@@ -147,6 +204,69 @@ def test_case_group_resets_and_builds_once_and_continues_after_case_failure(
     assert len(phase_calls) == len(selected) + 2
     assert [result["case_id"] for result in results] == [case["case_id"] for case in selected]
     assert [result["status"] for result in results[:3]] == ["OK", "INVALID", "OK"]
+
+
+def test_case_group_isolates_base_exception_during_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    selected = cases.expand_cases()[:9]
+    monkeypatch.setattr(worker, "clear_caches", lambda case: None)
+    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
+    monkeypatch.setattr(
+        worker,
+        "measure_session_setup_ms",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SyntheticPanic("setup failed")),
+    )
+
+    results = worker._run_case_group(selected, warmup=0, iterations=1, revision="abc123")
+    assert {result["status"] for result in results} == {"INVALID"}
+    assert {result["error"]["type"] for result in results} == {"SyntheticPanic"}
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_status"),
+    [
+        (PerfDataNotAvailableError("prime is missing"), "DATA_MISS"),
+        (SyntheticPanic("prime panicked"), "INVALID"),
+    ],
+)
+def test_priming_failure_is_limited_to_one_phase(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    expected_status: str,
+) -> None:
+    selected = cases.expand_cases()[:9]
+    runtime = measurement.config.RuntimeConfig(batch_size=1, isl=1024, osl=grid.CTX_OSL)
+
+    monkeypatch.setattr(worker, "clear_caches", lambda case: None)
+    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
+    monkeypatch.setattr(
+        worker,
+        "measure_session_setup_ms",
+        lambda *args, **kwargs: (1.0, object(), runtime),
+    )
+
+    def fake_phase_call(session: object, runtime_config: object, *, phase: str, stride: int):
+        def call() -> float:
+            if phase == "context" and runtime_config.batch_size == 2 and runtime_config.isl == 2048:
+                raise failure
+            return 1.0
+
+        return call
+
+    monkeypatch.setattr(worker, "phase_call", fake_phase_call)
+    monkeypatch.setattr(
+        worker,
+        "measure_cold_and_warm",
+        lambda *args, **kwargs: (1.0, 10.0, [5.0], {"call_median_us": 5.0}),
+    )
+
+    results = worker._run_case_group(selected, warmup=0, iterations=1, revision="abc123")
+    context = [result for result in results if result["case"]["phase"] == "context"]
+    generation = [result for result in results if result["case"]["phase"] == "generation"]
+    assert {result["status"] for result in context} == {expected_status}
+    assert {result["error"]["type"] for result in context} == {"PRIMING_FAILED"}
+    assert all(type(failure).__name__ in result["error"]["message"] for result in context)
+    assert {result["status"] for result in generation} == {"OK"}
+    assert {result["steady_state_setup_queries"] for result in generation} == {1}
 
 
 def test_cold_is_unseen_query_after_steady_state_setup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -325,6 +445,84 @@ def test_full_controller_uses_twelve_batch_processes_and_alternates_case_order(
     assert len(calls) == 12
     assert calls[2:4] == [("base", forward), ("head", forward)]
     assert calls[4:6] == [("head", list(reversed(forward))), ("base", list(reversed(forward)))]
+
+
+@pytest.mark.parametrize(
+    ("smoke", "values", "expected"),
+    [
+        (False, (None, None, None), (5, 10, 100)),
+        (True, (None, None, None), (1, 1, 3)),
+        (True, (3, 2, 7), (3, 2, 7)),
+        (True, (3, None, None), (3, 1, 3)),
+    ],
+)
+def test_effective_counts_preserve_explicit_smoke_values(
+    smoke: bool,
+    values: tuple[int | None, int | None, int | None],
+    expected: tuple[int, int, int],
+) -> None:
+    args = SimpleNamespace(smoke=smoke, rounds=values[0], warmup=values[1], iterations=values[2])
+    assert gate_run._effective_counts(args) == expected
+
+
+def test_smoke_writes_explicit_counts_to_raw_results(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    selected = cases.expand_cases()[:1]
+    executable = tmp_path / "python"
+    worker_path = tmp_path / "worker.py"
+    executable.touch()
+    worker_path.touch()
+    output_dir = tmp_path / "results"
+
+    def fake_batch(*, revision: str, cases: list[dict], **kwargs: object) -> tuple[list[dict], None]:
+        return (
+            [
+                {
+                    "protocol_version": PROTOCOL_VERSION,
+                    "revision": revision,
+                    "case_id": case["case_id"],
+                    "case_hash": worker.canonical_case_hash(case),
+                    "status": "OK",
+                    "cold_us": 100_000.0,
+                    "warm": {"call_median_us": 100.0},
+                }
+                for case in cases
+            ],
+            None,
+        )
+
+    monkeypatch.setattr(
+        gate_run,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            base_python=executable,
+            base_worker=worker_path,
+            base_revision="base",
+            head_python=executable,
+            head_worker=worker_path,
+            head_revision="head",
+            output_dir=output_dir,
+            rounds=3,
+            warmup=2,
+            iterations=7,
+            worker_timeout=120.0,
+            skip_prewarm=False,
+            smoke=True,
+        ),
+    )
+    monkeypatch.setattr(gate_run.shutil, "which", lambda command: "/usr/bin/taskset")
+    monkeypatch.setattr(gate_run.case_matrix, "expand_cases", lambda: selected)
+    monkeypatch.setattr(gate_run, "run_worker_batch", fake_batch)
+    monkeypatch.setattr(gate_run, "_command_version", lambda command: "test")
+
+    assert gate_run.main() == 0
+    raw = json.loads((output_dir / "raw_results.json").read_text())
+    assert raw["configuration"]["mode"] == "smoke"
+    assert raw["configuration"]["rounds"] == 3
+    assert raw["configuration"]["warmup"] == 2
+    assert raw["configuration"]["iterations"] == 7
 
 
 def test_raw_checkpoint_is_atomic(tmp_path: Path) -> None:

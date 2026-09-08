@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 
 from aiconfigurator.sdk import config, perf_database
 from aiconfigurator.sdk.backends.factory import get_backend
+from aiconfigurator.sdk.errors import PerfDataNotAvailableError
 from aiconfigurator.sdk.inference_session import InferenceSession
 from aiconfigurator.sdk.models import get_model
 from tools.prediction_regression_gate import grid
@@ -65,7 +66,7 @@ def build_session(
                 shared_layer=shared_layer,
             )
         if database is None:
-            raise RuntimeError(
+            raise PerfDataNotAvailableError(
                 f"failed to load perf database for {case.system_name}/{case.backend_name}/{case.backend_version}"
             )
         backend = get_backend(case.backend_name)

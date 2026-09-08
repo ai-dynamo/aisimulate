@@ -18,7 +18,12 @@ from pathlib import Path
 PYTHON_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PYTHON_ROOT))
 
-from aiconfigurator.sdk.errors import PerfDataNotAvailableError
+from aiconfigurator.sdk.errors import (
+    EmpiricalNotImplementedError,
+    MissingSystemFlopsError,
+    PerfDataNotAvailableError,
+    SolNotImplementedError,
+)
 from tools.forward_perf_gate import PROTOCOL_VERSION
 from tools.forward_perf_gate.measurement import (
     BenchmarkCase,
@@ -182,12 +187,45 @@ def _benchmark_case(case: dict) -> BenchmarkCase:
     )
 
 
-def _record_error(response: dict, exc: Exception) -> None:
-    if isinstance(exc, PerfDataNotAvailableError):
+DATA_MISS_ERRORS = (
+    EmpiricalNotImplementedError,
+    MissingSystemFlopsError,
+    PerfDataNotAvailableError,
+    SolNotImplementedError,
+)
+
+
+def _has_data_miss_cause(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, DATA_MISS_ERRORS):
+            return True
+        seen.add(id(current))
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif not current.__suppress_context__:
+            current = current.__context__
+        else:
+            current = None
+    return False
+
+
+def _reraise_control_flow(exc: BaseException) -> None:
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        raise exc
+
+
+def _record_error(response: dict, exc: BaseException, *, error_type: str | None = None) -> None:
+    message = str(exc).split("\n", 1)[0][:500]
+    if error_type is not None:
+        cause = type(exc).__name__
+        message = f"{cause}: {message}" if message else cause
+    if _has_data_miss_cause(exc):
         response.update(
             {
                 "status": "DATA_MISS",
-                "error": {"type": type(exc).__name__, "message": str(exc).splitlines()[0][:500]},
+                "error": {"type": error_type or type(exc).__name__, "message": message},
             }
         )
         return
@@ -195,8 +233,8 @@ def _record_error(response: dict, exc: Exception) -> None:
         {
             "status": "INVALID",
             "error": {
-                "type": type(exc).__name__,
-                "message": str(exc).splitlines()[0][:500],
+                "type": error_type or type(exc).__name__,
+                "message": message,
                 "traceback": traceback.format_exc(),
             },
         }
@@ -219,9 +257,17 @@ def _run_case_group(cases: list[dict], *, warmup: int, iterations: int, revision
             database_mode=cases[0]["database_mode"],
             shared_layer=False,
         )
-        phases = list(dict.fromkeys(case["phase"] for case in cases))
-        with redirect_output(True):
-            for phase in phases:
+    except BaseException as exc:
+        _reraise_control_flow(exc)
+        for response in responses:
+            _record_error(response, exc)
+        return responses
+
+    phases = list(dict.fromkeys(case["phase"] for case in cases))
+    failed_phases = set()
+    with redirect_output(True):
+        for phase in phases:
+            try:
                 phase_case = next(case for case in cases if case["phase"] == phase)
                 phase_call(
                     session,
@@ -229,12 +275,16 @@ def _run_case_group(cases: list[dict], *, warmup: int, iterations: int, revision
                     phase=phase,
                     stride=phase_case["stride"],
                 )()
-    except Exception as exc:
-        for response in responses:
-            _record_error(response, exc)
-        return responses
+            except BaseException as exc:
+                _reraise_control_flow(exc)
+                failed_phases.add(phase)
+                for case, response in zip(cases, responses, strict=True):
+                    if case["phase"] == phase:
+                        _record_error(response, exc, error_type="PRIMING_FAILED")
 
     for case, response in zip(cases, responses, strict=True):
+        if case["phase"] in failed_phases:
+            continue
         try:
             runtime_config = replace(
                 group_runtime_config,
@@ -261,14 +311,15 @@ def _run_case_group(cases: list[dict], *, warmup: int, iterations: int, revision
                     "predicted_value_ms": predicted_value,
                     "session_setup_ms": session_setup_ms,
                     "cold_definition": "steady_state_unseen_query",
-                    "steady_state_setup_queries": len(phases),
+                    "steady_state_setup_queries": len(phases) - len(failed_phases),
                     "group_case_count": len(cases),
                     "cold_us": cold_us,
                     "warm_samples_us": warm_samples,
                     "warm": warm_stats,
                 }
             )
-        except Exception as exc:
+        except BaseException as exc:
+            _reraise_control_flow(exc)
             _record_error(response, exc)
     return responses
 

@@ -154,6 +154,33 @@ def test_data_miss_status_semantics(
     assert result["blocking"] is blocking
 
 
+def test_data_miss_skip_reason_includes_priming_failure() -> None:
+    case = cases.expand_cases()[0]
+    base = _response(case, status="DATA_MISS")
+    head = _response(case, status="DATA_MISS")
+    base["error"] = {"type": "PRIMING_FAILED", "message": "base prime missing"}
+    head["error"] = {"type": "PRIMING_FAILED", "message": "head prime missing"}
+    disposition, reason = compare.pair_disposition(case["case_id"], base, head)
+    assert disposition == "SKIP"
+    assert "PRIMING_FAILED base prime missing" in reason
+    assert "PRIMING_FAILED head prime missing" in reason
+
+
+def test_changed_skip_reason_is_reported_once() -> None:
+    raw = _raw([1.0, 1.0])
+    case = raw["cases"][0]["case"]
+    for index, paired in enumerate(raw["cases"][0]["rounds"]):
+        paired["base"] = _response(case, status="DATA_MISS")
+        paired["head"] = _response(case, status="DATA_MISS")
+        paired["base"]["error"]["message"] = f"reason {index}"
+        paired["head"]["error"]["message"] = f"reason {index}"
+    result = compare.compare_raw(raw)
+    for metric in ("cold", "warm"):
+        point = _point(result, metric)
+        assert point["classification"] == "INVALID_COMPARISON"
+        assert point["invalid_reasons"] == ["response status changed between measured rounds"]
+
+
 def test_missing_metric_is_invalid_instead_of_crashing() -> None:
     raw = _raw([1.0] * 5)
     del raw["cases"][0]["rounds"][0]["head"]["warm"]

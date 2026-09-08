@@ -19,6 +19,11 @@ session. The existing
 `benchmark_engine_step.py --cache-mode cold` has a different boundary because
 it clears the engine-handle cache before each call.
 
+If the off-matrix priming query fails, the worker records `PRIMING_FAILED` for
+only that phase and continues with other phases and groups. A missing-data
+priming failure is skipped under the normal data-miss rules. Other priming
+failures remain invalid and block the comparison.
+
 The harness treats `clear_caches()` as the complete cache-isolation contract.
 It calls the public database eviction interface once per model/database-mode
 group and does not know about or manage individual SDK caches.
@@ -41,6 +46,8 @@ The default comparison requires four of five paired rounds to exceed both a
 an 80% quorum. A data miss on the base side has no timing baseline and is
 reported as skipped. A working base case that stops working, a malformed
 worker response, or an incomplete run remains an invalid, blocking comparison.
+The worker treats missing silicon data, unavailable empirical data, missing
+system FLOPS, and unavailable SOL models as data misses.
 The controller alternates which revision runs first and reverses the case order
 on alternating rounds. Raw results are checkpointed after the paired
 availability pass and after each paired measured round.
@@ -59,6 +66,10 @@ python tools/forward_perf_gate/run.py \
   --output-dir forward-perf-results \
   --smoke
 ```
+
+Smoke mode selects one case and defaults to one round, one warmup call, and
+three measured calls. Explicit `--rounds`, `--warmup`, or `--iterations`
+values override their individual smoke defaults.
 
 Land the worker and protocol before enabling the workflow. This ensures the
 merge-base and head revisions both have a revision-local adapter.

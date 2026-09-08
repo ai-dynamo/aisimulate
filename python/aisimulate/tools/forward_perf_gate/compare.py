@@ -62,9 +62,13 @@ def pair_disposition(case_id: str, base: object, head: object) -> tuple[str, str
     if base_status == "OK" and head_status == "OK":
         return "COMPARE", None
     if base_status == "DATA_MISS" and head_status == "DATA_MISS":
-        return "SKIP", "DATA_MISS on base and head"
+        details = list(dict.fromkeys(filter(None, (_error_text(base), _error_text(head)))))
+        suffix = f": {'; '.join(details)}" if details else ""
+        return "SKIP", f"DATA_MISS on base and head{suffix}"
     if base_status == "DATA_MISS" and head_status == "OK":
-        return "SKIP", "base DATA_MISS; head has no timing baseline"
+        detail = _error_text(base)
+        suffix = f": {detail}" if detail else ""
+        return "SKIP", f"base DATA_MISS{suffix}; head has no timing baseline"
 
     details = []
     for side, response in (("base", base), ("head", head)):
@@ -185,7 +189,7 @@ def compare_point(case: dict, rounds: list[dict], metric: str, *, skip_reason: s
             )
             return result
 
-    if skipped_reasons:
+    elif skipped_reasons:
         invalid_reasons.append("response status changed between measured rounds")
     if not rounds:
         invalid_reasons.append("no paired rounds")

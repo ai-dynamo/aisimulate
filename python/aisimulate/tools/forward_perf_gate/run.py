@@ -203,13 +203,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--head-worker", type=Path, required=True)
     parser.add_argument("--head-revision", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--rounds", type=int, default=5)
-    parser.add_argument("--warmup", type=int, default=10)
-    parser.add_argument("--iterations", type=int, default=100)
+    parser.add_argument("--rounds", type=int)
+    parser.add_argument("--warmup", type=int)
+    parser.add_argument("--iterations", type=int)
     parser.add_argument("--worker-timeout", type=float, default=120.0)
     parser.add_argument("--skip-prewarm", action="store_true")
     parser.add_argument("--smoke", action="store_true", help="Run one short case.")
     return parser.parse_args()
+
+
+def _effective_counts(args: argparse.Namespace) -> tuple[int, int, int]:
+    defaults = (1, 1, 3) if args.smoke else (5, 10, 100)
+    return tuple(
+        value if value is not None else default
+        for value, default in zip((args.rounds, args.warmup, args.iterations), defaults, strict=True)
+    )
 
 
 def _checkpoint(raw: dict, output_dir: Path) -> None:
@@ -237,16 +245,14 @@ def main() -> int:
         if not path.exists():
             print(f"error: required path does not exist: {path}", file=sys.stderr)
             return 2
-    if args.rounds <= 0 or args.warmup < 0 or args.iterations <= 0:
+    rounds, warmup, iterations = _effective_counts(args)
+    if rounds <= 0 or warmup < 0 or iterations <= 0:
         print("error: invalid round, warmup, or iteration count", file=sys.stderr)
         return 2
 
     cpu = min(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else 0
     matrix_cases = case_matrix.expand_cases()
     selected_cases = matrix_cases[:1] if args.smoke else matrix_cases
-    rounds, warmup, iterations = args.rounds, args.warmup, args.iterations
-    if args.smoke:
-        rounds, warmup, iterations = 1, 1, 3
 
     raw = {
         "schema_version": 1,
