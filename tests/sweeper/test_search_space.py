@@ -197,6 +197,47 @@ def test_explicit_parallel_config_preserves_runner_incompatibility(
         )
 
 
+@pytest.mark.parametrize(
+    "explicit_parallel_override",
+    [
+        {"parallel_configs": [{"tp": 1}]},
+        {"parallel_custom_configs_by_mode": {"agg": {"agg": [{"tp": 1}]}}},
+    ],
+)
+def test_explicit_parallel_config_preserves_mixed_runner_details(
+    monkeypatch,
+    explicit_parallel_override,
+):
+    looked_up = []
+
+    def no_perf_database(*args, backend, **kwargs):
+        looked_up.append(backend)
+        raise NoPerfDatabase(f"no performance data for {backend}")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        no_perf_database,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm", "trtllm"],
+        gpu_budget=1,
+        **explicit_parallel_override,
+    )
+
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"runner-incompatible backends=\['vllm'\]",
+    ) as error:
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    assert not isinstance(error.value, RunnerIncompatibleError)
+    assert looked_up == ["trtllm"]
+
+
 def test_runner_prunes_disaggregated_attention_dp_before_sampling(monkeypatch):
     monkeypatch.setattr(
         "aisimulate.sweeper.search_space.parallel_configs_for",

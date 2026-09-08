@@ -287,6 +287,7 @@ def enumerate_branches(
                 raise NoViableParallelConfig(
                     f"deployment_mode={deployment_mode!r}: no configured backend can run the pinned "
                     f"parallel_configs (illegal shape, replay-incompatible backend, or no perf DB)"
+                    + (f"; runner-incompatible backends={runner_incompatible}" if runner_incompatible else "")
                 )
             # natural infeasibility for this mode -> skip it, keep any viable modes
             warnings.warn(
