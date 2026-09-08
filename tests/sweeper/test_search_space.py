@@ -209,6 +209,32 @@ def test_duplicate_runner_incompatible_backends_are_reported_once(monkeypatch):
     assert str(error.value).count("'vllm'") == 1
 
 
+def test_duplicate_runner_compatible_backends_are_looked_up_once(monkeypatch):
+    calls = []
+
+    def fake_parallel_configs(*args, backend, **kwargs):
+        calls.append(backend)
+        return [_AGG_CFG]
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        fake_parallel_configs,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm", "vllm"],
+        gpu_budget=1,
+    )
+
+    (branch,) = enumerate_branches(
+        config,
+        runner_capabilities=_capabilities(("vllm", "agg")),
+    )
+
+    assert calls == ["vllm"]
+    assert branch.knob_choices["backend"] == ["vllm"]
+
+
 @pytest.mark.filterwarnings("error")
 def test_mixed_terminal_failure_preserves_runner_details(monkeypatch):
     looked_up = []
@@ -280,6 +306,55 @@ def test_explicit_mode_runner_incompatibility_is_not_global(
 
     assert not isinstance(error.value, RunnerIncompatibleError)
     assert calls == [("disagg", "vllm")]
+
+
+@pytest.mark.parametrize(
+    "explicit_parallel_override",
+    [
+        {
+            "parallel_configs_by_mode": {
+                "agg": [{"tp": 1}],
+                "disagg": [{"prefill": {"tp": 1}, "decode": {"tp": 1}}],
+            }
+        },
+        {
+            "parallel_custom_configs_by_mode": {
+                "agg": {"agg": [{"tp": 1}]},
+                "disagg": {
+                    "prefill": [{"tp": 1}],
+                    "decode": [{"tp": 1}],
+                },
+            }
+        },
+    ],
+)
+def test_explicit_all_modes_runner_incompatible_reports_each_mode(
+    monkeypatch,
+    explicit_parallel_override,
+):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["agg", "disagg"],
+        backend=["vllm"],
+        gpu_budget=2,
+        **explicit_parallel_override,
+    )
+
+    with pytest.raises(RunnerIncompatibleError) as error:
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    message = str(error.value)
+    assert "deployment_mode='agg': runner-incompatible backends=['vllm']" in message
+    assert "deployment_mode='disagg': runner-incompatible backends=['vllm']" in message
 
 
 @pytest.mark.parametrize(

@@ -208,6 +208,11 @@ def enumerate_branches(
     all_runner_incompatible = runner_capabilities is not None and all(
         runner_incompatibilities[mode] == unique_backends for mode in deployment_modes
     )
+    runner_incompatibility_details = "; ".join(
+        f"deployment_mode={mode!r}: runner-incompatible backends={list(backends)}"
+        for mode, backends in runner_incompatibilities.items()
+        if backends
+    )
 
     def role_runtime(backend: str, mode: str) -> dict[str, tuple[int, int, float, int | None]]:
         roles = ("agg",) if mode == "agg" else ("prefill", "decode")
@@ -251,7 +256,7 @@ def enumerate_branches(
 
         support: dict[_ParallelConfig, set[str]] = {}
         runner_incompatible = list(runner_incompatibilities[deployment_mode])
-        for backend in ss.backend:
+        for backend in unique_backends:
             if runner_capabilities is not None and not runner_capabilities.supports_backend_topology(
                 backend, deployment_mode
             ):
@@ -284,8 +289,7 @@ def enumerate_branches(
             if (pinned is not None or custom_by_role) and all_runner_incompatible:
                 raise RunnerIncompatibleError(
                     "no configured backend/topology is supported by the Replay runner; "
-                    f"deployment_mode={deployment_mode!r}: "
-                    f"runner-incompatible backends={runner_incompatible}"
+                    f"{runner_incompatibility_details}"
                 )
             if pinned is not None or custom_by_role:
                 # an explicit pin that no backend can run is a user error -> fail fast
@@ -388,22 +392,13 @@ def enumerate_branches(
 
     if not branches:
         if skipped and all_runner_incompatible:
-            details = "; ".join(
-                f"deployment_mode={mode!r}: runner-incompatible backends={list(runner_incompatibilities[mode])}"
-                for mode in skipped
-            )
             raise RunnerIncompatibleError(
-                f"no configured backend/topology is supported by the Replay runner; {details}"
+                f"no configured backend/topology is supported by the Replay runner; {runner_incompatibility_details}"
             )
-        runner_details = "; ".join(
-            f"deployment_mode={mode!r}: runner-incompatible backends={list(backends)}"
-            for mode, backends in runner_incompatibilities.items()
-            if backends
-        )
         raise NoViableParallelConfig(
             f"no deployment_mode has a viable parallel config (skipped {skipped}); check "
             f"backends / model / hardware / gpu_budget={ss.gpu_budget}"
-            + (f"; {runner_details}" if runner_details else "")
+            + (f"; {runner_incompatibility_details}" if runner_incompatibility_details else "")
         )
     for message in skip_warnings:
         warnings.warn(message, stacklevel=2)
