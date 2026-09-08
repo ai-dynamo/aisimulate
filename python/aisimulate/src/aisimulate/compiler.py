@@ -15,7 +15,7 @@ from .aic import (
 from .config.cli import CorePredictionConfig
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
-from .sweeper.afd import AFDParallelConfig, AFDTopology
+from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
 from .sweeper.afd_perfmodel import (
     AFDPerformanceModel,
     AICAFDPerformanceModel,
