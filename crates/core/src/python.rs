@@ -1077,6 +1077,19 @@ fn operation_power_diagnostics(
     } else {
         0.0
     };
+    let (status, uncovered_reason) = if energy_wms.is_none() {
+        (
+            "missing",
+            Some("timing provider returned latency without positive energy evidence"),
+        )
+    } else if power_coverage < 1.0 {
+        (
+            "partial",
+            Some("some accumulated operation latency lacks positive energy evidence"),
+        )
+    } else {
+        ("available", None)
+    };
     ReplayOperationPowerDiagnostics {
         name: operation.name.clone(),
         energy_wms,
@@ -1088,14 +1101,8 @@ fn operation_power_diagnostics(
             .map(|(energy, total)| energy / total),
         source: operation.source.as_str().to_string(),
         source_kind: evidence_source_kind(Some(&operation.source), energy_wms.is_some()),
-        status: if energy_wms.is_some() {
-            "available"
-        } else {
-            "missing"
-        },
-        uncovered_reason: energy_wms
-            .is_none()
-            .then_some("timing provider returned latency without positive energy evidence"),
+        status,
+        uncovered_reason,
     }
 }
 
@@ -1710,6 +1717,26 @@ mod tests {
         assert_eq!(operations[0]["status"], "missing");
         assert_eq!(operations[0]["source"], "empirical");
         assert_eq!(operations[1]["energy_contribution"], 1.0);
+
+        let partial = operation_power_diagnostics(
+            &TimingOperationEvidence {
+                name: "partial".into(),
+                energy_wms: Some(400.0),
+                latency_ms: 2.0,
+                covered_latency_ms: 1.0,
+                source: TimingEvidenceSource::Mixed,
+            },
+            Some(400.0),
+        );
+        let partial = serde_json::to_value(partial).unwrap();
+        assert_eq!(partial["status"], "partial");
+        assert_eq!(partial["power_coverage"], 0.5);
+        assert!(
+            partial["uncovered_reason"]
+                .as_str()
+                .unwrap()
+                .contains("some")
+        );
     }
 
     #[test]
