@@ -286,6 +286,7 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
             result[f"{legacy_role}_timing_model"] = {"type": "polynomial"}
         else:
             result[f"{legacy_role}_timing_model"] = None
+        result[f"{legacy_role}_forward_model"] = timing.get("forward_model", "op_level")
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
     # Remove empty internal maps so legacy serialization remains concise.
     if not result["engine_float_ranges"]:
@@ -639,7 +640,7 @@ def _candidate_prediction(
         if isinstance(timing_model, dict):
             timing = deepcopy(timing_model)
         else:
-            timing = {"type": "default"}
+            timing = {"type": "default", "forward_model": sample.get(f"{role}_forward_model") or "op_level"}
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],

@@ -67,7 +67,8 @@ configuration for each candidate.
 | `aic_nextn` | `None` | optional speculative-decoding depth |
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
-size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
+size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
+or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pins a searched field.
 
 ## Attention-FFN Disaggregation
 

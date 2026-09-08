@@ -1675,6 +1675,7 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
     from aiconfigurator.sdk.models import get_model
     from aiconfigurator.sdk.perf_database import get_database
 
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     rust_engine_step._engine_handle_cache_clear()
     try:
         captured_results = []

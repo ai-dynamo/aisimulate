@@ -152,6 +152,25 @@ class TestResolveFlashinferGdnDecode:
         assert "SM103" in error_message
         assert "collection environment gap" in error_message
 
+    @pytest.mark.parametrize("error_type", [ImportError, OSError, RuntimeError])
+    def test_classifies_all_runtime_import_failures(self, monkeypatch, error_type):
+        original_import = __import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "flashinfer.gdn_decode":
+                raise error_type("synthetic loader failure")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", failing_import)
+        resolve = self._resolve(103)
+
+        kernel_fn, error_message = resolve("bfloat16")
+
+        assert kernel_fn is None
+        assert error_message is not None
+        assert error_type.__name__ in error_message
+        assert "collection environment gap" in error_message
+
     def test_fp32_state_never_resolves_flashinfer_on_sm100(self, monkeypatch):
         # Serving never selects the FlashInfer backend for an fp32-state
         # model (every bundled Qwen3.5/3.6 config), even when the package is
@@ -196,7 +215,7 @@ class TestResolveFlashinferGdnDecode:
 
         generation_cases = [case for case in get_common_gdn_test_cases() if case.phase == "generation"]
 
-        assert len(generation_cases) == 37
+        assert len(generation_cases) == 42
         assert {case.mamba_ssm_dtype for case in generation_cases} == {"float32"}
         assert [case for case in generation_cases if resolve(case.mamba_ssm_dtype)[0] is not None] == []
 

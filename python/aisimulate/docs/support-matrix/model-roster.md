@@ -30,6 +30,34 @@ MiniMax M3. Their bundled Hugging Face configs and quantization metadata remain
 the source of truth for architecture and precision selection, including
 mixed-precision checkpoints.
 
+## Multimodal encoder coverage
+
+The support matrix automatically exercises a checkpoint's vision encoder when
+the checkpoint declares one through a non-empty `vision_config` or AIC's
+multimodal architecture registry, and AIC implements that encoder. The
+canonical workload is **one 1024 x 1024 image per request**. The same
+image-bearing run covers the language backbone; multimodal checkpoints do not
+receive a second, redundant text-only run.
+
+An encoder-supported PASS means that the agg or disagg run used the canonical
+image workload and produced strictly positive encoder latency and encoder
+memory for every result row. `ImageHeight`, `ImageWidth`, and `NumImages` in the
+generated CSV, plus the matching replay-command arguments, record that workload.
+
+If a checkpoint declares `vision_config` but AIC cannot normalize its encoder
+configuration, the row fails with an `ENCODER_UNSUPPORTED` reason. If
+normalization succeeds but execution emits no positive encoder evidence, the
+row fails with `ENCODER_NOT_EXERCISED`. It must not inherit PASS from a
+successful text-backbone-only estimate. Text-only checkpoints keep their
+existing workload and leave the image metadata empty.
+
+If AIC implements the encoder but the system/backend/version database has no
+`encoder_attention` perf data, the image workload cannot be answered there. The
+row is classified `FRAMEWORK_INCOMPATIBLE` with an `ENCODER_DATA_UNAVAILABLE`
+reason and a replayable preflight command; the text backbone is not run, the
+row is not retried, and the image metadata records the canonical workload that
+could not be exercised.
+
 ## Retired from default generation
 
 The following bundled configs remain usable explicitly but are superseded in
