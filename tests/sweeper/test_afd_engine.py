@@ -5,7 +5,11 @@
 
 import pytest
 
-from aisimulate.sweeper.afd_engine import AFDForegroundEngine, AFDStage, evaluate_afd_phase
+from aisimulate.sweeper.afd_engine import (
+    AFDForegroundEngine,
+    AFDStage,
+    evaluate_afd_phase,
+)
 from aisimulate.sweeper.afd_parallel import AFDPipelineModel, AFDTopology
 from aisimulate.sweeper.afd_perfmodel import AFDLayerTimes
 
@@ -55,7 +59,9 @@ def test_pipeline_evaluator_matches_legacy_optimistic_formula():
     assert result.effective_pipeline_model.value == "optimistic"
     assert result.balance_ratio == pytest.approx(0.5)
     assert result.tokens_per_second == pytest.approx(topology.total_batch_size / 0.0135)
-    assert result.sequence_rate == pytest.approx((topology.total_batch_size / 0.0135) / 16)
+    assert result.sequence_rate == pytest.approx(
+        (topology.total_batch_size / 0.0135) / 16
+    )
 
 
 def test_optimistic_pipeline_falls_back_when_microbatch_count_is_too_small():
@@ -103,9 +109,13 @@ def test_foreground_pass_expands_every_stage_and_matches_formula_boundary():
         AFDStage.FFN,
         AFDStage.F_TO_A,
     ]
-    assert planned.intervals[4].start_ms - planned.intervals[0].start_ms == pytest.approx(planned.evaluation.cycle_ms)
+    assert planned.intervals[4].start_ms - planned.intervals[
+        0
+    ].start_ms == pytest.approx(planned.evaluation.cycle_ms)
     assert planned.intervals[-1].end_ms == pytest.approx(planned.end_ms)
-    assert planned.end_ms - planned.started_at_ms == pytest.approx(planned.evaluation.step_latency_ms)
+    assert planned.end_ms - planned.started_at_ms == pytest.approx(
+        planned.evaluation.step_latency_ms
+    )
 
     completed = engine.complete_pass(planned.pass_id, now_ms=planned.end_ms + 5.0)
     assert completed.completed_at_ms == planned.end_ms

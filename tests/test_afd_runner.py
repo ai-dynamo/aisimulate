@@ -43,7 +43,11 @@ def _metadata(*phases: str) -> dict:
 def _spec(topology: AFDTopology, *, companion_role: str | None = None) -> ReplaySpec:
     parallel_config = {
         "afd": topology.provenance()["topology"],
-        "afd_provenance": {"gpu_accounting": {"total_gpus": topology.total_gpus + (2 if companion_role else 0)}},
+        "afd_provenance": {
+            "gpu_accounting": {
+                "total_gpus": topology.total_gpus + (2 if companion_role else 0)
+            }
+        },
     }
     kwargs = {}
     if companion_role is not None:
@@ -75,7 +79,9 @@ def _spec(topology: AFDTopology, *, companion_role: str | None = None) -> Replay
             backend_version="test",
             parallel_config=parallel_config,
             performance_model_metadata=_metadata(
-                *("prefill", "decode") if topology.phase.value == "both" else (topology.phase.value,)
+                *("prefill", "decode")
+                if topology.phase.value == "both"
+                else (topology.phase.value,)
             ),
             **kwargs,
         ),
@@ -134,7 +140,10 @@ def test_pure_both_phase_afd_runs_without_native_aggregate_fallback():
     assert report.metadata["afd_replay"]["afd_passes"] == 6
     assert len(report.metadata["per_request"]) == 4
     assert report.metadata["native_report"]["summary"] == report.metrics
-    assert report.metadata["native_report"]["per_request"] == report.metadata["per_request"]
+    assert (
+        report.metadata["native_report"]["per_request"]
+        == report.metadata["per_request"]
+    )
     assert "afd_report" in report.metadata
 
 
@@ -183,7 +192,9 @@ def test_default_companion_model_consumes_fixed_timing_without_aic_lookup():
 
 def test_afd_runner_rejects_unresolved_measurement_before_execution():
     spec = _spec(_topology())
-    spec.backend_deployment.performance_model_metadata["afd"]["measurement_required"] = True
+    spec.backend_deployment.performance_model_metadata["afd"][
+        "measurement_required"
+    ] = True
 
     with pytest.raises(ValueError, match="measurement is unresolved"):
         EngineReplayRunnerFactory().create(0).run(spec)
@@ -200,12 +211,17 @@ def test_afd_runner_applies_sla_to_goodput():
 
     report = EngineReplayRunnerFactory().create(0).run(spec)
 
-    assert report.metrics["goodput_output_throughput_tok_s"] < report.metrics["output_throughput_tok_s"]
+    assert (
+        report.metrics["goodput_output_throughput_tok_s"]
+        < report.metrics["output_throughput_tok_s"]
+    )
 
 
 def test_afd_runner_rejects_conflicting_gpu_accounting():
     spec = _spec(_topology())
-    spec.backend_deployment.parallel_config["afd_provenance"]["gpu_accounting"]["total_gpus"] = 99
+    spec.backend_deployment.parallel_config["afd_provenance"]["gpu_accounting"][
+        "total_gpus"
+    ] = 99
 
     with pytest.raises(ValueError, match="conflicts with topology accounting"):
         EngineReplayRunnerFactory().create(0).run(spec)
