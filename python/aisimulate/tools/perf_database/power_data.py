@@ -114,6 +114,20 @@ def _path_matches_dataset(relative: str, backend: str, version: str) -> bool:
     return family_layout or legacy_layout
 
 
+def _packaged_power_paths(root: Path, *, context: str, issues: list[str]) -> set[str]:
+    paths: set[str] = set()
+    for path in root.rglob("*_perf.parquet"):
+        relative = path.relative_to(root).as_posix()
+        try:
+            schema = pq.read_schema(path)
+        except Exception as exc:
+            issues.append(f"{context}: cannot inspect packaged table {relative}: {exc}")
+            continue
+        if any(column in schema.names for column in POWER_COLUMNS):
+            paths.add(relative)
+    return paths
+
+
 def validate_manifest(manifest_path: Path) -> list[str]:
     """Validate one adjacent power provenance manifest and its parquet files."""
     try:
@@ -210,10 +224,7 @@ def validate_manifest(manifest_path: Path) -> list[str]:
         elif mode == "exact-copy" and upstream_sha != packaged_sha:
             issues.append(f"{context}: exact-copy hashes differ for {relative}")
 
-        expected = {
-            name: _integer(raw_entry, name, context=context, issues=issues)
-            for name in actual_totals
-        }
+        expected = {name: _integer(raw_entry, name, context=context, issues=issues) for name in actual_totals}
         try:
             table = pq.read_table(path)
         except Exception as exc:
@@ -238,8 +249,7 @@ def validate_manifest(manifest_path: Path) -> list[str]:
         power = table.column("power").to_pylist()
         power_limit = table.column("power_limit").to_pylist()
         measured_rows = sum(
-            a is not None and b is not None and a > 0.0 and b > 0.0
-            for a, b in zip(power, power_limit, strict=True)
+            a is not None and b is not None and a > 0.0 and b > 0.0 for a, b in zip(power, power_limit, strict=True)
         )
         zero_rows = sum(a == 0.0 and b == 0.0 for a, b in zip(power, power_limit, strict=True))
         actual = {
@@ -262,19 +272,29 @@ def validate_manifest(manifest_path: Path) -> list[str]:
             if expected[name] is not None:
                 actual_totals[name] += expected[name]
 
-    if backend is not None and version is not None:
-        packaged_paths = {
-            path.relative_to(root).as_posix()
-            for path in root.glob(f"*/{backend}/{version}/*_perf.parquet")
-        }
-        packaged_paths.update(
-            path.relative_to(root).as_posix()
-            for path in root.glob(f"{backend}/{version}/*_perf.parquet")
-        )
-        if missing := sorted(packaged_paths - seen_paths):
-            issues.append(f"{manifest_path}: manifest omits packaged tables: {', '.join(missing)}")
-        if extra := sorted(seen_paths - packaged_paths):
-            issues.append(f"{manifest_path}: manifest lists tables outside the dataset: {', '.join(extra)}")
+    legacy_power_entries = manifest.get("legacy_power_tables", [])
+    legacy_power_paths: set[str] = set()
+    if not isinstance(legacy_power_entries, list):
+        issues.append(f"{manifest_path}: legacy_power_tables must be an array")
+    else:
+        for index, relative in enumerate(legacy_power_entries):
+            context = f"{manifest_path}: legacy_power_tables[{index}]"
+            if not isinstance(relative, str) or not relative.endswith("_perf.parquet"):
+                issues.append(f"{context} must name a *_perf.parquet file")
+                continue
+            if relative in legacy_power_paths:
+                issues.append(f"{context}: duplicate path {relative}")
+            legacy_power_paths.add(relative)
+
+    overlap = seen_paths & legacy_power_paths
+    if overlap:
+        issues.append(f"{manifest_path}: tables cannot be both imported and legacy: {', '.join(sorted(overlap))}")
+    packaged_paths = _packaged_power_paths(root, context=str(manifest_path), issues=issues)
+    declared_paths = seen_paths | legacy_power_paths
+    if missing := sorted(packaged_paths - declared_paths):
+        issues.append(f"{manifest_path}: manifest omits packaged power tables: {', '.join(missing)}")
+    if extra := sorted(declared_paths - packaged_paths):
+        issues.append(f"{manifest_path}: manifest lists non-power or missing tables: {', '.join(extra)}")
 
     totals = manifest.get("totals")
     if not isinstance(totals, dict):

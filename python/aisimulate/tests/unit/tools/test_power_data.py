@@ -16,13 +16,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 POWER_DATA = Path(__file__).resolve().parents[3] / "tools" / "perf_database" / "power_data.py"
-SHIPPED_DATA_ROOT = (
-    Path(__file__).resolve().parents[3]
-    / "src"
-    / "aiconfigurator_core"
-    / "systems"
-    / "data"
-)
+SHIPPED_DATA_ROOT = Path(__file__).resolve().parents[3] / "src" / "aiconfigurator_core" / "systems" / "data"
 
 
 @pytest.fixture
@@ -157,6 +151,32 @@ def test_manifest_accepts_legacy_table_layout(power_data_module, tmp_path):
     assert power_data_module.validate_manifest(manifest) == []
 
 
+def test_manifest_accepts_explicit_legacy_power_table(power_data_module, tmp_path):
+    table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
+    legacy_path = tmp_path / "attention" / "vllm" / "0.22.0" / "context_attention_perf.parquet"
+    _write_power_table(table_path)
+    _write_power_table(legacy_path)
+    manifest = _write_manifest(tmp_path, table_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["legacy_power_tables"] = [legacy_path.relative_to(tmp_path).as_posix()]
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert power_data_module.validate_manifest(manifest) == []
+
+
+def test_manifest_rejects_undeclared_power_table_in_another_version(power_data_module, tmp_path):
+    table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
+    second_version = tmp_path / "gemm" / "trtllm" / "2.0.0" / "gemm_perf.parquet"
+    _write_power_table(table_path)
+    _write_power_table(second_version)
+    manifest = _write_manifest(tmp_path, table_path)
+
+    assert any(
+        "manifest omits packaged power tables" in issue and "trtllm/2.0.0" in issue
+        for issue in power_data_module.validate_manifest(manifest)
+    )
+
+
 def test_manifest_rejects_non_object_root(power_data_module, tmp_path):
     manifest = tmp_path / "power_data_provenance.json"
     manifest.write_text("[]", encoding="utf-8")
@@ -197,8 +217,8 @@ def test_manifest_rejects_omitted_and_outside_dataset_tables(power_data_module, 
     manifest.write_text(json.dumps(payload), encoding="utf-8")
 
     issues = power_data_module.validate_manifest(manifest)
-    assert any("manifest omits packaged tables" in issue for issue in issues)
-    assert any("manifest lists tables outside the dataset" in issue for issue in issues)
+    assert any("manifest omits packaged power tables" in issue for issue in issues)
+    assert any("path does not match the declared backend/version" in issue for issue in issues)
 
 
 def test_manifest_rejects_identity_merge_that_drops_upstream_rows(power_data_module, tmp_path):
@@ -211,8 +231,7 @@ def test_manifest_rejects_identity_merge_that_drops_upstream_rows(power_data_mod
     manifest.write_text(json.dumps(payload), encoding="utf-8")
 
     assert any(
-        "identity-merge dropped upstream rows" in issue
-        for issue in power_data_module.validate_manifest(manifest)
+        "identity-merge dropped upstream rows" in issue for issue in power_data_module.validate_manifest(manifest)
     )
 
 
@@ -239,8 +258,7 @@ def test_manifest_rejects_incomplete_totals(power_data_module, tmp_path):
     manifest.write_text(json.dumps(payload), encoding="utf-8")
 
     assert any(
-        "totals do not cover every packaged row" in issue
-        for issue in power_data_module.validate_manifest(manifest)
+        "totals do not cover every packaged row" in issue for issue in power_data_module.validate_manifest(manifest)
     )
 
 
