@@ -13,7 +13,7 @@ from __future__ import annotations
 import copy
 import math
 from collections.abc import Mapping
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
 from .schema import (
@@ -277,6 +277,19 @@ def from_sweeper_candidate(
         roles[role] = sizing
         workers[role] = count
         expected_gpus += count * int(sizing.extra["gpus_per_worker"])
+
+    if backend == "sglang":
+        # Sweeper's backend-neutral scheduler limit is the SGLang prefill
+        # ceiling. Keep max_num_tokens for the evaluated candidate contract,
+        # and also lower it to the generator field that renders the SGLang
+        # --max-prefill-tokens flag without mutating frozen RoleSizing values.
+        roles = {
+            role: replace(
+                sizing,
+                extra={**sizing.extra, "max_prefill_tokens": sizing.extra["max_num_tokens"]},
+            )
+            for role, sizing in roles.items()
+        }
 
     used_gpus = candidate_payload.get("used_gpus", config.get("used_gpus"))
     if used_gpus is not None:
