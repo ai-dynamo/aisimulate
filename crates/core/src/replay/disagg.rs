@@ -2456,7 +2456,7 @@ where
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
             changed |= self.drive_pending_actions()?;
-            changed |= self.admission.flush_agentic_feedback(self.now_ms)?;
+            changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;

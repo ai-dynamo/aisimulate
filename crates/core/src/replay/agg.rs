@@ -841,7 +841,7 @@ where
                 changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
             }
             changed |= self.apply_worker_ready_events()?;
-            changed |= self.admission.flush_agentic_feedback(self.now_ms)?;
+            changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
             changed |= self.release_ready_arrivals()?;
             if self.defer_drive && self.step_freed_slot {
                 self.drive_pending = true;

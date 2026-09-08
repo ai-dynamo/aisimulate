@@ -51,7 +51,7 @@ M1 execution consumes one completely preloaded, immutable
 `ValidatedAgenticGraph`; neither the runtime nor an engine adapter polls a
 client or extends the graph dynamically. The replay runtime is the sole owner
 of logical time. At each timestamp it collects engine feedback and applies it
-as one `AgenticFeedbackBatch`, ordered by immutable graph ordinal: output
+as one `AgenticRuntimeFeedback`, ordered by immutable graph ordinal: output
 progress first, causal terminals second, and resource quiescence last.
 
 A causal terminal releases completion-triggered graph edges. Quiescence means
