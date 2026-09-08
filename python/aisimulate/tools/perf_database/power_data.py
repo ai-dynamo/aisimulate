@@ -107,12 +107,21 @@ def table_identity_evidence(table: pa.Table) -> tuple[list[str], dict[str, dict[
     return identity_columns, shape_bounds
 
 
+def _path_matches_dataset(relative: str, backend: str, version: str) -> bool:
+    parts = Path(relative).parts
+    family_layout = len(parts) == 4 and parts[1:3] == (backend, version)
+    legacy_layout = len(parts) == 3 and parts[:2] == (backend, version)
+    return family_layout or legacy_layout
+
+
 def validate_manifest(manifest_path: Path) -> list[str]:
     """Validate one adjacent power provenance manifest and its parquet files."""
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return [f"{manifest_path}: cannot read manifest: {exc}"]
+    if not isinstance(manifest, dict):
+        return [f"{manifest_path}: manifest root must be an object"]
 
     issues: list[str] = []
     if manifest.get("schema_version") != 1:
@@ -180,13 +189,7 @@ def validate_manifest(manifest_path: Path) -> list[str]:
         if not path.is_file():
             issues.append(f"{context}: missing file {relative}")
             continue
-        relative_parts = Path(relative).parts
-        if (
-            len(relative_parts) != 4
-            or backend is None
-            or version is None
-            or relative_parts[1:3] != (backend, version)
-        ):
+        if backend is None or version is None or not _path_matches_dataset(relative, backend, version):
             issues.append(f"{context}: path does not match the declared backend/version: {relative}")
 
         packaged_sha = raw_entry.get("packaged_sha256")
@@ -264,6 +267,10 @@ def validate_manifest(manifest_path: Path) -> list[str]:
             path.relative_to(root).as_posix()
             for path in root.glob(f"*/{backend}/{version}/*_perf.parquet")
         }
+        packaged_paths.update(
+            path.relative_to(root).as_posix()
+            for path in root.glob(f"{backend}/{version}/*_perf.parquet")
+        )
         if missing := sorted(packaged_paths - seen_paths):
             issues.append(f"{manifest_path}: manifest omits packaged tables: {', '.join(missing)}")
         if extra := sorted(seen_paths - packaged_paths):
@@ -314,20 +321,23 @@ def validate_manifest(manifest_path: Path) -> list[str]:
                         issues.append(f"{table_context} must be an object")
                         continue
                     path = affected_table.get("path")
-                    if path not in seen_paths:
-                        issues.append(f"{table_context}: path must identify a manifested table")
                     value = _integer(affected_table, "rows", context=table_context, issues=issues)
                     if value is not None:
                         affected_rows += value
+                    if not isinstance(path, str):
+                        issues.append(f"{table_context}: path must be a string")
+                        continue
+                    if path not in seen_paths:
+                        issues.append(f"{table_context}: path must identify a manifested table")
+                    if value is not None:
                         expected_retained = retained_rows_by_path.get(path)
                         if expected_retained is not None and value != expected_retained:
                             issues.append(
                                 f"{table_context}: rows is {value}, expected {expected_retained} retained identities"
                             )
-                    if isinstance(path, str):
-                        if path in affected_paths:
-                            issues.append(f"{table_context}: duplicate anomaly table path")
-                        affected_paths.add(path)
+                    if path in affected_paths:
+                        issues.append(f"{table_context}: duplicate anomaly table path")
+                    affected_paths.add(path)
                 if rows is not None and affected_rows != rows:
                     issues.append(f"{context}: rows does not match the affected-table sum")
         retained_rows = actual_totals["packaged_rows"] - actual_totals["upstream_rows"]

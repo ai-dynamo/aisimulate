@@ -17,7 +17,7 @@
       "power": 0.0,
       "power_limit": 0.0
     },
-    "notes": "Sixteen tables are byte-identical imports. The two attention tables preserve 2762 newer AISimulate identities and assign only those rows the unavailable sentinel.",
+    "notes": "Sixteen tables are byte-identical imports. The two attention tables preserve 2762 newer AISimulate identities and assign those rows the unavailable sentinel. Another 43 upstream attention rows already use the sentinel: 15 context and 28 generation rows.",
     "units": {
       "latency": "ms",
       "power": "W",

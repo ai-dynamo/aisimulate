@@ -15,9 +15,9 @@ those models consume. If no power-carrying parquet is shipped at all, the
 suite records that state explicitly instead of passing vacuously.
 """
 
+import importlib.util
 from pathlib import Path
 
-import numpy as np
 import pyarrow.parquet as pq
 import pytest
 
@@ -26,7 +26,13 @@ import aiconfigurator_core
 pytestmark = pytest.mark.unit
 
 _DATA_ROOT = Path(aiconfigurator_core.__file__).parent / "systems" / "data"
-_POWER_COLUMNS = ("power", "power_limit")
+_POWER_DATA = Path(__file__).resolve().parents[4] / "tools" / "perf_database" / "power_data.py"
+_SPEC = importlib.util.spec_from_file_location("power_data_invariants", _POWER_DATA)
+assert _SPEC is not None and _SPEC.loader is not None
+_POWER_DATA_MODULE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_POWER_DATA_MODULE)
+_POWER_COLUMNS = _POWER_DATA_MODULE.POWER_COLUMNS
+_power_metric_issues = _POWER_DATA_MODULE.power_metric_issues
 
 
 def _power_carrying_files() -> list[Path]:
@@ -47,27 +53,6 @@ def test_power_columns_satisfy_energy_model_input_contract():
         rel = path.relative_to(_DATA_ROOT)
         schema = pq.read_schema(path)
         present = [column for column in _POWER_COLUMNS if column in schema.names]
-        if len(present) != len(_POWER_COLUMNS):
-            problems.append(f"{rel}: power and power_limit must be present together")
-            continue
-        if any(str(schema.field(column).type) != "double" for column in _POWER_COLUMNS):
-            problems.append(f"{rel}: power and power_limit must be float64")
-            continue
-        table = pq.read_table(path, columns=list(_POWER_COLUMNS))
-        frame = table.to_pandas()
-        power = frame["power"]
-        power_limit = frame["power_limit"]
-        bad_values = power.isna() | power_limit.isna() | ~np.isfinite(power) | ~np.isfinite(power_limit)
-        bad_values |= (power < 0) | (power_limit < 0)
-        if bad_values.any():
-            problems.append(f"{rel}: {int(bad_values.sum())} rows with null/non-finite/negative power metrics")
-            continue
-        sentinel = (power == 0.0) & (power_limit == 0.0)
-        measured = (power > 0.0) & (power_limit > 0.0)
-        bad_pairs = ~(sentinel | measured)
-        if bad_pairs.any():
-            problems.append(f"{rel}: {int(bad_pairs.sum())} invalid power/power_limit pairs")
-        over_limit = measured & (power > 1.05 * power_limit)
-        if over_limit.any():
-            problems.append(f"{rel}: {int(over_limit.sum())} rows above 1.05x power_limit")
+        table = pq.read_table(path, columns=present)
+        problems.extend(f"{rel}: {issue}" for issue in _power_metric_issues(table))
     assert not problems, "power data violates the energy-model input contract:\n" + "\n".join(problems)
