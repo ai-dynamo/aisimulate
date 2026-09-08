@@ -277,7 +277,7 @@ Continue using the compatibility command for:
 - multimodal image-input and EPD modeling;
 - exact single-point FPM, static, AFD, per-op, detail, or power estimation;
 - heterogeneous P/D systems, backends, or versions;
-- AIC-specific database modes, forward-model selection, and expert estimator flags.
+- AIC-specific database modes and expert estimator flags.
 
 The compatibility command remains available in AISimulate 0.12.0 and is targeted for removal in
 AISimulate 0.13.0. Removal is gated on verified unified CLI replacements for every remaining workflow

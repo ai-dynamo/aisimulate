@@ -589,6 +589,7 @@ engine:
           cuda_graph_reserved_bytes: 0
       timing:
         type: default
+        forward_model: op_level
       startup_seconds: 0
 ```
 
@@ -686,11 +687,14 @@ Backend-version-specific defaults are deferred beyond version 1; adding them cha
 the YAML shape.
 
 `timing.forward_model` selects the forward-pass model behind the default timing provider. `op_level`
-composes per-operator measurements; `fpm` replays whole-forward measurements from a collected FPM cell
-and requires an exact match on model, hardware, backend version, parallel shape and quantization. A
-candidate without a matching cell fails at replay and is reported as infeasible rather than silently
-falling back to `op_level`. The bundled FPM cells are collected at backend versions outside the
-queryable version slots; set `AIC_ALLOW_UNLISTED_VERSIONS=1` to use them.
+composes per-operator measurements; `fpm` replays whole-forward measurements from a collected FPM
+cell and requires an exact match on model, hardware, backend version, parallel shape and
+quantization. A candidate without a matching cell fails at replay and is recorded as a failed
+candidate (reason category `replay_runtime`) rather than silently falling back to `op_level`. In
+`fpm` mode with `capacity.type: default`, the KV capacity is also capped to the cell's collected
+decode-KV ceiling. The bundled FPM cells are collected at backend versions outside the queryable
+version slots; until FPM cells are slot-queryable, set the transitional escape hatch
+`AIC_ALLOW_UNLISTED_VERSIONS=1` to use them.
 
 `kv_cache.capacity.type: fixed` requires `blocks`, so users can directly provide cache size. It rejects
 `memory_fraction` and nonzero `cuda_graph_reserved_bytes`. Conversely, `type: default` rejects `blocks`
