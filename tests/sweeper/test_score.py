@@ -77,6 +77,13 @@ def test_candidate_omits_unavailable_power_instead_of_defaulting_to_zero():
     assert "power_w" not in candidate.metrics
     assert "power_coverage" not in candidate.metrics
 
+    withheld_report = dict(report, power_coverage=0.42)
+    withheld = make_candidate(
+        {"used_gpus": 4}, withheld_report, OptimizationTarget.THROUGHPUT
+    )
+    assert withheld.metrics["power_coverage"] == 0.42
+    assert "power_w" not in withheld.metrics
+
 
 def test_throughput_per_gpu_zero_when_avg_gpu_unavailable():
     # avg_gpu needs both gpu_hours>0 and duration_ms>0; either missing -> 0.0 (no divide-by-zero).

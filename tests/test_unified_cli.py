@@ -68,68 +68,81 @@ class _RecommendationResult:
 
 
 class _Runner:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, power_w: float | None = 487.5, power_coverage: float = 0.95
+    ) -> None:
         self.spec = None
         self.output_requirements = None
         self.closed = False
+        self.power_w = power_w
+        self.power_coverage = power_coverage
 
     def run(self, spec, *, output_requirements=None):
         self.spec = spec
         self.output_requirements = output_requirements
+        metrics = {
+            "completed_requests": 1.0,
+            "num_ttft_samples": 1.0,
+            "num_tpot_samples": 1.0,
+            "num_e2e_latency_samples": 1.0,
+            "output_throughput_tok_s": 8.0,
+            "mean_ttft_ms": 2.0,
+            "mean_tpot_ms": 1.0,
+            "mean_e2e_latency_ms": 4.0,
+            "power_coverage": self.power_coverage,
+        }
+        summary = {
+            "completed_requests": 1,
+            "output_throughput_tok_s": 8.0,
+            "power_coverage": self.power_coverage,
+        }
+        if self.power_w is not None:
+            metrics["power_w"] = self.power_w
+            summary["power_w"] = self.power_w
+        power_diagnostics = {
+            "schema_version": "1.0",
+            "scope": "active_forward_pass_per_gpu",
+            "publication_status": (
+                "available" if self.power_w is not None else "withheld"
+            ),
+            "coverage_gate": 0.9,
+            "power_coverage": self.power_coverage,
+            "phases": [
+                {
+                    "name": "prefill",
+                    "operations": [
+                        {
+                            "name": "gemm",
+                            "energy_wms": 120.0,
+                            "latency_ms": 0.25,
+                            "covered_latency_ms": 0.25,
+                            "power_coverage": 1.0,
+                            "energy_contribution": 1.0,
+                            "source": "silicon",
+                            "source_kind": "measured",
+                            "status": "available",
+                        }
+                    ],
+                }
+            ],
+        }
+        if self.power_w is not None:
+            power_diagnostics["power_w"] = self.power_w
         return ReplayReport(
-            metrics={
-                "completed_requests": 1.0,
-                "num_ttft_samples": 1.0,
-                "num_tpot_samples": 1.0,
-                "num_e2e_latency_samples": 1.0,
-                "output_throughput_tok_s": 8.0,
-                "mean_ttft_ms": 2.0,
-                "mean_tpot_ms": 1.0,
-                "mean_e2e_latency_ms": 4.0,
-                "power_w": 487.5,
-                "power_coverage": 0.95,
-            },
+            metrics=metrics,
             metadata={
                 "power": {
                     "source": "modeled",
                     "scope": "active_forward_pass_per_gpu",
                     "power_w_unit": "W",
                     "coverage_gate": 0.9,
-                    "publication_status": "available",
+                    "publication_status": (
+                        "available" if self.power_w is not None else "withheld"
+                    ),
                 },
                 "native_report": {
-                    "summary": {
-                        "completed_requests": 1,
-                        "output_throughput_tok_s": 8.0,
-                        "power_w": 487.5,
-                        "power_coverage": 0.95,
-                    },
-                    "power_diagnostics": {
-                        "schema_version": "1.0",
-                        "scope": "active_forward_pass_per_gpu",
-                        "publication_status": "available",
-                        "coverage_gate": 0.9,
-                        "power_w": 487.5,
-                        "power_coverage": 0.95,
-                        "phases": [
-                            {
-                                "name": "prefill",
-                                "operations": [
-                                    {
-                                        "name": "gemm",
-                                        "energy_wms": 120.0,
-                                        "latency_ms": 0.25,
-                                        "covered_latency_ms": 0.25,
-                                        "power_coverage": 1.0,
-                                        "energy_contribution": 1.0,
-                                        "source": "silicon",
-                                        "source_kind": "measured",
-                                        "status": "available",
-                                    }
-                                ],
-                            }
-                        ],
-                    },
+                    "summary": summary,
+                    "power_diagnostics": power_diagnostics,
                     "per_request": [{"request_id": "synthetic-0"}],
                 },
             },
@@ -617,6 +630,39 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     )
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
     assert runner.spec.goal["sla"] == {sla_field: bound}
+
+    withheld_output = tmp_path / "withheld-recommend-output"
+    withheld_runner = _Runner(power_w=None, power_coverage=0.42)
+    monkeypatch.setattr(
+        cli, "resolve_runner_factory", lambda stack: _Factory(withheld_runner)
+    )
+    assert (
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(withheld_output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    withheld_rows = json.loads(capsys.readouterr().out)
+    assert "power_w" not in withheld_rows[0]
+    assert withheld_rows[0]["power_coverage"] == 0.42
+    withheld_result = json.loads((withheld_output / "recommendation.json").read_text())
+    withheld_candidate = withheld_result["candidates"][0]
+    assert "power_w" not in withheld_candidate["metrics"]
+    assert withheld_candidate["metrics"]["power_coverage"] == 0.42
+    assert withheld_candidate["provenance"]["power"]["publication_status"] == "withheld"
+    with (withheld_output / "recommendation.csv").open() as csv_file:
+        withheld_csv = list(csv.DictReader(csv_file))[0]
+    assert withheld_csv["power_w"] == ""
+    assert withheld_csv["power_coverage"] == "0.42"
+    assert withheld_csv["power_source"] == "modeled"
 
 
 def test_recommendation_outputs_each_concrete_prediction_once(

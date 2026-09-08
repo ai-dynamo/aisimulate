@@ -170,9 +170,12 @@ def test_power_report_table_surfaces_available_power_and_coverage() -> None:
 
 def test_power_report_table_surfaces_withheld_power_as_unavailable() -> None:
     table = format_report_table({"power_coverage": 0.42})
+    active_power_row = next(
+        line for line in table.splitlines() if "Active Power per GPU (W)" in line
+    )
 
     assert "Active Power per GPU (W)" in table
-    assert "N/A" in table
+    assert "N/A" in active_power_row
     assert "Power Data Coverage (%)" in table
     assert "42.00" in table
 
@@ -400,7 +403,10 @@ def test_prediction_spec_lowers_fpm_forward_model_onto_the_rank() -> None:
 
     assert deployment.agg_engine_args["aic_forward_model"] == "fpm"
     assert "timing_model" not in deployment.agg_engine_args
-    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
+    assert (
+        deployment.performance_model_metadata["aggregated"]["config"]["forward_model"]
+        == "fpm"
+    )
 
 
 def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level() -> None:
@@ -410,7 +416,10 @@ def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level() -> No
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
     assert "aic_forward_model" not in deployment.agg_engine_args
-    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"
+    assert (
+        deployment.performance_model_metadata["aggregated"]["config"]["forward_model"]
+        == "op_level"
+    )
 
 
 def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -> None:
@@ -426,8 +435,14 @@ def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -
 
     assert "aic_forward_model" not in deployment.prefill_engine_args
     assert deployment.decode_engine_args["aic_forward_model"] == "fpm"
-    assert deployment.performance_model_metadata["prefill"]["config"]["forward_model"] == "op_level"
-    assert deployment.performance_model_metadata["decode"]["config"]["forward_model"] == "fpm"
+    assert (
+        deployment.performance_model_metadata["prefill"]["config"]["forward_model"]
+        == "op_level"
+    )
+    assert (
+        deployment.performance_model_metadata["decode"]["config"]["forward_model"]
+        == "fpm"
+    )
 
 
 _SMALL_TRAFFIC = {
@@ -446,16 +461,27 @@ def test_engine_stack_replays_fpm_timing_from_the_bundled_cell(monkeypatch) -> N
     assert report.metrics["completed_requests"] == 8
 
 
-def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(monkeypatch) -> None:
+def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(
+    monkeypatch,
+) -> None:
     # tp2 has no FPM cell for this model on h200_sxm. The FPM path must refuse rather than fall
     # back to op_level; the same shape still replays under op_level timing. This is a wiring
     # check for the data path, not an accuracy statement about either model.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
-    engine["workers"]["aggregated"]["parallelism"] = {"tensor": 2, "moe_tensor": 2, "moe_expert": 1}
+    engine["workers"]["aggregated"]["parallelism"] = {
+        "tensor": 2,
+        "moe_tensor": 2,
+        "moe_expert": 1,
+    }
 
     with pytest.raises(RuntimeError, match="FPM"):
         _run({"engine": engine, "traffic": _SMALL_TRAFFIC})
 
     engine["workers"]["aggregated"]["timing"] = {"type": "default"}
-    assert _run({"engine": engine, "traffic": _SMALL_TRAFFIC}).metrics["completed_requests"] == 8
+    assert (
+        _run({"engine": engine, "traffic": _SMALL_TRAFFIC}).metrics[
+            "completed_requests"
+        ]
+        == 8
+    )
