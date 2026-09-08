@@ -527,14 +527,12 @@ def make_candidate_provenance(
                     )
                 )
     power = {key: value for key, value in (metrics or {}).items() if "power" in key or "energy" in key}
-    if "power_w" in power or "power_coverage" in power:
+    if power:
         power.update(
             {
-                "source": "modeled",
-                "scope": "active_forward_pass_per_gpu",
-                "power_w_unit": "W",
-                "coverage_gate": 0.9,
-                "publication_status": "available" if "power_w" in power else "withheld",
+                "source": "runner_reported",
+                "scope": "unspecified",
+                "publication_status": "reported",
             }
         )
     raw_power = runner_metadata.get("power")

@@ -75,7 +75,9 @@ For candidates replayed with the AIC timing provider, `power_coverage` is retain
 `0.9` publication gate withholds `power_w`. Available power is active forward-pass average watts per
 GPU. Candidate JSON, the flattened `recommendation.csv`, provenance, and CLI output preserve these
 fields; absent estimates remain absent rather than becoming zero. Provenance labels runtime-derived
-values as `source: modeled` and records their scope, unit, gate, and publication status.
+values from the built-in engine runner as `source: modeled` and records their scope, unit, gate, and
+publication status. Other runners must provide `ReplayReport.metadata.power` to declare equivalent
+semantics; otherwise their power and energy metrics remain `runner_reported` with unspecified scope.
 
 ### Counts
 

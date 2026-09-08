@@ -90,6 +90,13 @@ class _Runner:
                 "power_coverage": 0.95,
             },
             metadata={
+                "power": {
+                    "source": "modeled",
+                    "scope": "active_forward_pass_per_gpu",
+                    "power_w_unit": "W",
+                    "coverage_gate": 0.9,
+                    "publication_status": "available",
+                },
                 "native_report": {
                     "summary": {
                         "completed_requests": 1,
@@ -124,7 +131,7 @@ class _Runner:
                         ],
                     },
                     "per_request": [{"request_id": "synthetic-0"}],
-                }
+                },
             },
         )
 

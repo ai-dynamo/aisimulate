@@ -295,13 +295,37 @@ def test_candidate_provenance_preserves_withheld_power_evidence():
     provenance = make_candidate_provenance(
         candidate,
         metrics={"power_coverage": 0.42},
-        runner_metadata={"power": {"publication_status": "withheld"}},
+        runner_metadata={
+            "power": {
+                "source": "modeled",
+                "scope": "active_forward_pass_per_gpu",
+                "power_w_unit": "W",
+                "coverage_gate": 0.9,
+                "publication_status": "withheld",
+            }
+        },
     )
 
     assert provenance.power["source"] == "modeled"
     assert provenance.power["publication_status"] == "withheld"
     assert provenance.power["power_coverage"] == 0.42
     assert "power_w" not in provenance.power
+
+
+def test_candidate_provenance_does_not_invent_runner_power_semantics():
+    provenance = make_candidate_provenance(
+        {"model_name": "example/model", "hardware_sku": "h200_sxm"},
+        metrics={"power_w": 321.0, "power_coverage": 1.0},
+        runner_metadata={},
+    )
+
+    assert provenance.power == {
+        "power_w": 321.0,
+        "power_coverage": 1.0,
+        "source": "runner_reported",
+        "scope": "unspecified",
+        "publication_status": "reported",
+    }
 
 
 class _Sampler:
