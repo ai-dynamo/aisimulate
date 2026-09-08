@@ -680,3 +680,67 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
                 "optimizer": {"candidate_timeout_seconds": float("inf")},
             }
         )
+
+
+def test_prediction_timing_forward_model_defaults_to_op_level() -> None:
+    config = CorePredictionConfig.model_validate({"engine": _engine()})
+
+    assert config.engine.workers.aggregated is not None
+    assert config.engine.workers.aggregated.timing.type == "default"
+    assert config.engine.workers.aggregated.timing.forward_model == "op_level"
+
+
+def test_prediction_timing_accepts_fpm_forward_model_with_default_timing() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"timing": {"type": "default", "forward_model": "fpm"}}
+
+    config = CorePredictionConfig.model_validate({"engine": engine})
+
+    assert config.engine.workers.aggregated is not None
+    assert config.engine.workers.aggregated.timing.forward_model == "fpm"
+
+
+@pytest.mark.parametrize(
+    "timing",
+    [
+        {"type": "fixed", "prefill_ms": 1, "decode_ms": 1, "forward_model": "fpm"},
+        {"type": "polynomial", "forward_model": "fpm"},
+    ],
+)
+def test_prediction_timing_rejects_fpm_forward_model_without_default_timing(timing: dict) -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"timing": timing}
+
+    with pytest.raises(ValidationError, match="forward_model applies to default timing only"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_prediction_timing_rejects_unknown_forward_model() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"timing": {"forward_model": "layerwise"}}
+
+    with pytest.raises(ValidationError, match="forward_model"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_recommendation_timing_accepts_forward_model_per_role() -> None:
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "mode": "disaggregated",
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "workers": {
+                    "prefill": {"timing": {"type": "default"}},
+                    "decode": {"timing": {"type": "default", "forward_model": "fpm"}},
+                },
+            },
+            "optimization": {"constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+
+    assert config.engine.workers.prefill is not None
+    assert config.engine.workers.decode is not None
+    assert config.engine.workers.prefill.timing.forward_model == "op_level"
+    assert config.engine.workers.decode.timing.forward_model == "fpm"
