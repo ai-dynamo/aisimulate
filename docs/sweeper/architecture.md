@@ -61,6 +61,14 @@ backend/topology pair, and every runtime hook. Unsupported coarse capabilities f
 optimizer spends trials on them. Runner implementations validate finer stack-specific combinations
 when they execute a replay.
 
+When all configured backend/topology pairs are rejected during this preflight,
+`aisimulate.sweeper.RunnerIncompatibleError` is raised with the deployment modes and rejected
+backends. It subclasses `NoViableParallelConfig`, so callers that already handle that base error
+remain compatible. Mixed runner incompatibility and model, KV-capacity, or performance-data failure
+continues to raise `NoViableParallelConfig`, with the known runner-incompatible backends appended to
+the diagnostic. These preflight failures happen before candidate execution and therefore produce no
+serialized `SweepResult`; the unified CLI reports them as configuration errors with exit status 2.
+
 Optimizer ask/tell stays in the main process. Exact repeated suggestions use a run-local result
 cache. Candidate build failures, replay failures, GPU-budget violations, and timeouts become
 infeasible trials. Parallel evaluation uses spawned worker processes and worker-sized waves; a

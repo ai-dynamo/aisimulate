@@ -276,6 +276,61 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
     assert "stack unavailable" in capsys.readouterr().err
 
 
+def test_recommend_runner_incompatibility_is_cli_config_error(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    config_path = tmp_path / "recommendation.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "mode": "aggregated",
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "backend": "vllm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                },
+                "optimization": {
+                    "target": "throughput",
+                    "constraints": {"max_candidate_gpus": 1},
+                },
+                "optimizer": {"max_trials": 1, "parallelism": 1},
+            }
+        )
+    )
+
+    class IncompatibleFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(supported_backend_topologies=(("trtllm", "agg"),))
+
+    monkeypatch.setattr(
+        cli,
+        "resolve_runner_factory",
+        lambda stack: IncompatibleFactory(_Runner()),
+    )
+
+    with (
+        pytest.warns(UserWarning, match="runner-incompatible.*vllm"),
+        pytest.raises(SystemExit, match="2"),
+    ):
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+
+    error = capsys.readouterr().err
+    assert "no configured backend/topology is supported by the Replay runner" in error
+    assert "deployment_mode='agg'" in error
+    assert "runner-incompatible backends=['vllm']" in error
+    assert not (tmp_path / "out").exists()
+
+
 def test_set_adapter_path_is_validated_and_materialized_by_adapter(
     tmp_path, monkeypatch, capsys
 ) -> None:

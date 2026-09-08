@@ -57,6 +57,7 @@ def _capabilities(*pairs):
 def test_runner_incompatible_error_is_public():
     assert sweeper_api.RunnerIncompatibleError is RunnerIncompatibleError
     assert "RunnerIncompatibleError" in sweeper_api.__all__
+    assert issubclass(RunnerIncompatibleError, NoViableParallelConfig)
 
 
 def test_branch_knobs_are_backend_only_and_mode_specific():
@@ -160,6 +161,93 @@ def test_all_backends_runner_incompatible_raises_typed_terminal_error(monkeypatc
             config,
             runner_capabilities=_capabilities(("trtllm", "agg")),
         )
+
+
+def test_all_modes_runner_incompatible_reports_each_mode(monkeypatch):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["agg", "disagg"],
+        backend=["vllm"],
+        gpu_budget=2,
+    )
+
+    with (
+        pytest.warns(UserWarning, match="runner-incompatible.*vllm"),
+        pytest.raises(RunnerIncompatibleError) as error,
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    message = str(error.value)
+    assert "deployment_mode='agg': runner-incompatible backends=['vllm']" in message
+    assert "deployment_mode='disagg': runner-incompatible backends=['vllm']" in message
+
+
+def test_duplicate_runner_incompatible_backends_are_reported_once(monkeypatch):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm", "vllm"],
+        gpu_budget=1,
+    )
+
+    with (
+        pytest.warns(UserWarning, match="runner-incompatible.*vllm"),
+        pytest.raises(RunnerIncompatibleError) as error,
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    assert str(error.value).count("'vllm'") == 1
+
+
+def test_mixed_terminal_failure_preserves_runner_details(monkeypatch):
+    looked_up = []
+
+    def no_perf_database(*args, backend, **kwargs):
+        looked_up.append(backend)
+        raise NoPerfDatabase(f"no performance data for {backend}")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        no_perf_database,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm", "trtllm"],
+        gpu_budget=1,
+    )
+
+    with (
+        pytest.warns(UserWarning, match="runner-incompatible.*vllm"),
+        pytest.raises(
+            NoViableParallelConfig,
+            match=r"deployment_mode='agg': runner-incompatible backends=\['vllm'\]",
+        ) as error,
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    assert not isinstance(error.value, RunnerIncompatibleError)
+    assert looked_up == ["trtllm"]
 
 
 @pytest.mark.parametrize(
