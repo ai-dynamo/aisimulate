@@ -10,11 +10,13 @@ while keeping heavy computation mocked out.
 
 import argparse
 import logging
+from dataclasses import fields
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 
+from aiconfigurator.cli.api import EstimateResult
 from aiconfigurator.cli.main import (
     _execute_tasks,
     _resolve_cli_log_level,
@@ -28,6 +30,31 @@ from aiconfigurator.cli.report_and_save import _apply_inclusive_tpot
 from aiconfigurator.sdk.errors import NoFeasibleConfigError
 
 pytestmark = pytest.mark.unit
+
+
+def test_estimate_result_preserves_existing_positional_field_order() -> None:
+    assert [field.name for field in fields(EstimateResult)][:-1] == [
+        "ttft",
+        "tpot",
+        "power_w",
+        "isl",
+        "osl",
+        "batch_size",
+        "ctx_tokens",
+        "tp_size",
+        "pp_size",
+        "model_path",
+        "system_name",
+        "backend_name",
+        "backend_version",
+        "raw",
+        "mode",
+        "summary",
+        "per_ops_data",
+        "per_ops_source",
+        "kv_cache_warning",
+    ]
+    assert fields(EstimateResult)[-1].name == "moe_comm_fallbacks"
 
 
 class TestCLILogLevelResolution:
@@ -71,8 +98,7 @@ class TestCLIIntegration:
     """Workflow tests for the CLI orchestration layer (builders/executor/save)."""
 
     @patch("aiconfigurator.cli.main._run_recommend")
-    def test_cli_recommend_resolves_nextn_before_dispatch(self, mock_run_recommend, cli_parser, monkeypatch):
-        monkeypatch.setattr("aiconfigurator.cli.main.resolve_nextn_auto", lambda _model_path: 2)
+    def test_cli_recommend_preserves_auto_until_api_dispatch(self, mock_run_recommend, cli_parser):
         args = cli_parser.parse_args(
             [
                 "recommend",
@@ -91,9 +117,28 @@ class TestCLIIntegration:
 
         cli_main(args)
 
-        assert args.nextn == 2
+        assert args.nextn == "auto"
         assert args.nextn_accepted == 0.7
         mock_run_recommend.assert_called_once_with(args)
+
+    @patch("aiconfigurator.cli.main._run_recommend", side_effect=ValueError("nextn=7 requires acceptance"))
+    def test_cli_recommend_reports_acceptance_error_without_traceback(self, _mock_run_recommend, cli_parser):
+        args = cli_parser.parse_args(
+            [
+                "recommend",
+                "--model-path",
+                "moonshotai/Kimi-K3",
+                "--system",
+                "h200_sxm",
+                "--target-request-rate",
+                "10",
+                "--nextn",
+                "auto",
+            ]
+        )
+
+        with pytest.raises(SystemExit, match="Error: nextn=7 requires acceptance"):
+            cli_main(args)
 
     @patch("aiconfigurator.cli.main._execute_tasks")
     @patch("aiconfigurator.cli.main.build_default_tasks")
@@ -666,7 +711,7 @@ class TestBuildDefaultTaskConfigs:
             total_gpus=8,
             system="h100_sxm",
             backend="sglang",
-            backend_version="0.5.6.post2",
+            backend_version="0.5.14",
         )
 
         assert set(result) == {"agg", "disagg"}
@@ -704,7 +749,7 @@ class TestDeprecatedWideepCliFlags:
             total_gpus=8,
             system="h100_sxm",
             backend="sglang",
-            backend_version="0.5.6.post2",
+            backend_version="0.5.14",
             **kwargs,
         )
 

@@ -33,6 +33,7 @@ the surviving legacy query methods) is covered by
 
 from __future__ import annotations
 
+import json
 from typing import ClassVar
 
 import pytest
@@ -209,6 +210,16 @@ class TestDeepSeekSglangLargeEP:
         assert model.context_ops[0]._scale_num_tokens == 1
         assert model.generation_ops[0]._scale_num_tokens == 1
 
+    @pytest.mark.parametrize("override", [None, "default"], ids=["unset", "default"])
+    def test_framework_default_attention_backend_resolves_to_flashinfer(self, override):
+        """``default`` and unset share WideEP's established framework default."""
+        model = _deepseek_sglang(attention_backend=override)
+        context = json.loads(model.context_ops[4]._spec_json())["WideEpContextMla"]
+        generation = json.loads(model.generation_ops[4]._spec_json())["WideEpGenerationMla"]
+
+        assert context["attn_backend"] == "flashinfer"
+        assert generation["attn_backend"] == "flashinfer"
+
     def test_moe_block_ops_and_scales(self):
         model = _deepseek_sglang()
         dispatch, moe, combine = model.context_ops[-3:]
@@ -224,7 +235,10 @@ class TestDeepSeekSglangLargeEP:
 
         gen_dispatch, gen_moe, gen_combine = model.generation_ops[-3:]
         assert gen_dispatch._comm_backend == gen_combine._comm_backend == "deepep_ll"
+        assert gen_dispatch._comm_dtype == "fp8"
+        assert gen_combine._comm_dtype == "bfloat16"
         assert gen_dispatch._attention_tp_size == 1  # generation never divides
+        assert isinstance(gen_moe, ops.MoEExpertCompute)
         assert gen_moe._workload_distribution == "power_law_1.01"
         assert [op._scale_factor for op in model.generation_ops[-3:]] == [float(DS_LAYERS)] * 3
 
@@ -686,6 +700,7 @@ class TestMOEModelLargeEP:
         assert model.context_ops[7]._comm_backend == "deepep_ht"
         assert model.generation_ops[7]._comm_backend == "deepep_ll"
         assert isinstance(model.context_ops[8], ops.MoEExpertCompute)
+        assert isinstance(model.generation_ops[8], ops.MoEExpertCompute)
         assert model.context_ops[8]._scale_factor == QWEN3_LAYERS
         assert model.generation_ops[8]._scale_factor == float(QWEN3_LAYERS)
 

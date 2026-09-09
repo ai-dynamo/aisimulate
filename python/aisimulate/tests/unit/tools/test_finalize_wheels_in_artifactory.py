@@ -91,6 +91,4 @@ def test_manifest_accepts_one_unified_wheel_per_platform() -> None:
         run_attempt=1,
     )
 
-    assert [wheel["filename"] for wheel in manifest["wheels"]] == sorted(
-        wheel["filename"] for wheel in wheels
-    )
+    assert [wheel["filename"] for wheel in manifest["wheels"]] == sorted(wheel["filename"] for wheel in wheels)

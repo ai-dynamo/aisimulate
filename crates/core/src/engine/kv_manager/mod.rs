@@ -9,6 +9,14 @@ pub(crate) enum G1Acquire<T> {
     CapacityExhausted,
 }
 
+/// Generic destination prompt-reservation behavior selected by scheduler
+/// policy before entering the backend-neutral G1 manager.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DestinationReservationMode {
+    ReuseResidentPrefix,
+    FreshOnly,
+}
+
 impl<T> G1Acquire<T> {
     pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> G1Acquire<U> {
         match self {
@@ -24,7 +32,8 @@ mod vllm_backend;
 #[cfg(test)]
 mod vllm_firewall_tests;
 
-pub(crate) use g1_manager::DestinationReservation;
-pub(crate) use g1_manager::G1Manager;
+pub(crate) use g1_manager::{
+    DestinationReservation, G1Manager, NativeAllocation, SourceReuseDependency,
+};
 pub(crate) use sglang_backend::SglangKvManager;
 pub(crate) use vllm_backend::BlockRequestLease;

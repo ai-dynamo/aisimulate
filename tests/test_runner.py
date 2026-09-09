@@ -10,6 +10,8 @@ import pytest
 
 import aisimulate
 from aisimulate import aic
+from aisimulate.compiler import prediction_to_replay_spec
+from aisimulate.config.cli import CorePredictionConfig
 from aisimulate.runner import (
     EngineReplayRunner,
     EngineReplayRunnerFactory,
@@ -55,11 +57,11 @@ class RecordingRuntime:
         )
 
 
-def _engine_args(*, role="aggregated", timing=None):
+def _engine_args(*, role="aggregated", backend="vllm", timing=None):
     return {
         "worker_type": role,
-        "engine_type": "vllm",
-        "aic_backend": "vllm",
+        "engine_type": backend,
+        "aic_backend": backend,
         "aic_model_path": "test-model",
         "aic_system": "test-system",
         "aic_tp_size": 2,
@@ -102,8 +104,8 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
 
     assert capabilities.supports_backend_topology("vllm", "agg")
     assert capabilities.supports_backend_topology("sglang", "disagg")
-    assert not capabilities.supports_backend_topology("trtllm", "disagg")
-    assert not capabilities.supports_disaggregated_attention_dp
+    assert capabilities.supports_backend_topology("trtllm", "disagg")
+    assert capabilities.supports_disaggregated_attention_dp
     assert capabilities.supported_hooks == ()
 
 
@@ -126,6 +128,7 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
         "workers": {"initial_workers": 2, "startup_delay_ms": 0.0},
     }
     assert execution["engine"]["tensor_parallel_size"] == 2
+    assert execution["engine"]["num_gpu_blocks_is_explicit"] is True
     assert execution["engine"]["rank"]["backend"] == "vllm"
     assert execution["requests"][0]["input_tokens"] == 8
     assert execution["record_per_request"] is False
@@ -177,6 +180,93 @@ def test_runner_lowers_sglang_with_prefix_caching_disabled():
     assert runtime.execution_spec["engine"]["rank"]["enable_prefix_caching"] is False
 
 
+def test_runner_preserves_native_host_offload_rank_config():
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args["kv_transfer_bytes_per_token"] = 333
+    engine_args["kv_cache_bytes_per_token"] = 131_072
+    engine_args["native_host_offload"] = {
+        "num_host_blocks": 4096,
+        "d2h_bandwidth_gbps": 7.0,
+        "h2d_bandwidth_gbps": 38.0,
+    }
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert rank["kv_transfer_bytes_per_token"] == 333
+    assert rank["kv_cache_bytes_per_token"] == 131_072
+    assert rank["native_host_offload"] == engine_args["native_host_offload"]
+
+
+def test_public_host_offload_config_reaches_native_execution_rank():
+    runtime = RecordingRuntime()
+    public = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "mode": "aggregated",
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 4096,
+                "workers": {
+                    "aggregated": {
+                        "parallelism": {
+                            "replicas": 1,
+                            "tensor": 1,
+                            "pipeline": 1,
+                            "attention_data": 1,
+                            "moe_tensor": 1,
+                            "moe_expert": 1,
+                        },
+                        "scheduler": {
+                            "max_batched_tokens": 8192,
+                            "max_sequences": 4,
+                        },
+                        "kv_cache": {
+                            "block_size": 16,
+                            "prefix_caching": True,
+                            "bytes_per_token": 131_072,
+                            "capacity": {"type": "fixed", "blocks": 128},
+                            "host_offload": {
+                                "num_host_blocks": 4096,
+                                "d2h_bandwidth_gbps": 7.0,
+                                "h2d_bandwidth_gbps": 38.0,
+                            },
+                        },
+                        "timing": {
+                            "type": "fixed",
+                            "prefill_ms": 1.0,
+                            "decode_ms": 1.0,
+                        },
+                    }
+                },
+            }
+        }
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        prediction_to_replay_spec(public)
+    )
+
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["kv_cache_bytes_per_token"] == 131_072
+    assert rank["native_host_offload"] == {
+        "num_host_blocks": 4096,
+        "d2h_bandwidth_gbps": 7.0,
+        "h2d_bandwidth_gbps": 38.0,
+    }
+
+
 def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     runtime = RecordingRuntime()
     engine_args = _engine_args()
@@ -206,6 +296,7 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     )
 
     assert runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 321
+    assert runtime.execution_spec["engine"]["num_gpu_blocks_is_explicit"] is False
     timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
     assert timing_config["pp"] == 2
     assert timing_config["systems_path"] == "/tmp/custom-systems.yaml"
@@ -260,6 +351,22 @@ def test_runner_captures_requested_raw_and_per_request_report():
 
     assert runtime.execution_spec["record_per_request"] is True
     assert report.metadata["native_report"]["completed_requests"] == 1
+
+
+def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation():
+    runtime = RecordingRuntime()
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=7)
+
+    with pytest.raises(
+        InvalidRunnerError,
+        match="JSON runtime does not yet expose replay telemetry",
+    ):
+        runner.run(
+            _spec(),
+            output_requirements=ReplayOutputRequirements(capture_telemetry=True),
+        )
+
+    assert runtime.execution_spec_json is None
 
 
 @pytest.mark.parametrize(
@@ -400,14 +507,15 @@ def test_runner_rejects_random_length_options_for_trace_replay():
         )
 
 
-def test_runner_lowers_disaggregated_grouped_engines():
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+def test_runner_lowers_disaggregated_grouped_engines(backend):
     runtime = RecordingRuntime()
     deployment = BackendDeploymentSpec(
         deployment_mode="disagg",
-        backend="vllm",
+        backend=backend,
         backend_version="test",
-        prefill_engine_args=_engine_args(role="prefill"),
-        decode_engine_args=_engine_args(role="decode"),
+        prefill_engine_args=_engine_args(role="prefill", backend=backend),
+        decode_engine_args=_engine_args(role="decode", backend=backend),
         num_prefill_workers=2,
         num_decode_workers=3,
     )
@@ -420,30 +528,45 @@ def test_runner_lowers_disaggregated_grouped_engines():
     assert runtime.execution_spec["topology"]["prefill"]["initial_workers"] == 2
     assert runtime.execution_spec["topology"]["decode"]["initial_workers"] == 3
     assert set(runtime.execution_spec["engine"]) == {"prefill", "decode"}
+    assert runtime.execution_spec["engine"]["prefill"]["rank"]["backend"] == backend
+    assert runtime.execution_spec["engine"]["decode"]["rank"]["backend"] == backend
 
 
-@pytest.mark.parametrize("role", ["prefill", "decode"])
-def test_runner_rejects_disaggregated_attention_dp_before_runtime(role):
+@pytest.mark.parametrize(
+    ("prefill_dp", "decode_dp"),
+    [(2, 1), (1, 2), (2, 4), (2, 2)],
+)
+def test_runner_lowers_disaggregated_attention_dp(prefill_dp, decode_dp):
     runtime = RecordingRuntime()
     prefill_args = _engine_args(role="prefill")
     decode_args = _engine_args(role="decode")
-    selected = prefill_args if role == "prefill" else decode_args
-    selected["aic_attention_dp_size"] = 2
+    prefill_args["aic_attention_dp_size"] = prefill_dp
+    decode_args["aic_attention_dp_size"] = decode_dp
     deployment = BackendDeploymentSpec(
         deployment_mode="disagg",
         backend="vllm",
         backend_version="test",
+        parallel_config={
+            "prefill_tp": 2,
+            "prefill_attention_dp": prefill_dp,
+            "prefill_replicas": 1,
+            "decode_tp": 2,
+            "decode_attention_dp": decode_dp,
+            "decode_replicas": 1,
+        },
         prefill_engine_args=prefill_args,
         decode_engine_args=decode_args,
         num_prefill_workers=1,
         num_decode_workers=1,
     )
 
-    with pytest.raises(ValueError, match=rf"{role} dp_size=1"):
-        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-            _spec(deployment=deployment)
-        )
-    assert runtime.execution_spec is None
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment)
+    )
+
+    engine = runtime.execution_spec["engine"]
+    assert engine["prefill"]["dp_size"] == prefill_dp
+    assert engine["decode"]["dp_size"] == decode_dp
 
 
 def test_runner_threads_canonical_backend_version_into_aic_timing():

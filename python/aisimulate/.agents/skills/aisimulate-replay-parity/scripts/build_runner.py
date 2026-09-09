@@ -14,7 +14,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-
 SKILL_DIR = Path(__file__).resolve().parent
 RUNNER_SOURCE = SKILL_DIR / "replay-parity-runner"
 DEPENDENCY_LINE = 'aisimulate-core = { path = "../../../../../../../crates/core" }'
@@ -85,15 +84,11 @@ def _materialize_runner(checkout: Path, output: Path) -> Path:
     if manifest.count(DEPENDENCY_LINE) != 1:
         raise ValueError("runner Cargo.toml has an unexpected aisimulate-core dependency")
     dependency = f"aisimulate-core = {{ path = {json.dumps(str(core_manifest.parent.resolve()))} }}"
-    (output / "Cargo.toml").write_text(
-        manifest.replace(DEPENDENCY_LINE, dependency), encoding="utf-8"
-    )
+    (output / "Cargo.toml").write_text(manifest.replace(DEPENDENCY_LINE, dependency), encoding="utf-8")
     return output / "Cargo.toml"
 
 
-def _cargo_build_command(
-    *, cargo: str, rustup: str, toolchain: str | None, manifest: Path
-) -> list[str]:
+def _cargo_build_command(*, cargo: str, rustup: str, toolchain: str | None, manifest: Path) -> list[str]:
     cargo_args = [
         "build",
         "--release",

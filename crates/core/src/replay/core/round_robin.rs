@@ -79,6 +79,7 @@ where
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                placement_replica_id: None,
             }),
             released: Vec::new(),
         })
@@ -149,6 +150,13 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
             events: PhantomData,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_starting_at(workers: Vec<WorkerTopology>, next: usize) -> Self {
+        let mut placement = Self::new(workers);
+        placement.next = next;
+        placement
+    }
 }
 
 impl<Request, Events> PlacementPolicy<Request> for PoolRoundRobinPlacement<Events>
@@ -169,17 +177,37 @@ where
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
-        let active_count = self.workers.values().map(Vec::len).sum::<usize>();
+        let preferred_dp_rank = request.preferred_dp_rank().map(|rank| rank as usize);
+        let active_count = match preferred_dp_rank {
+            Some(rank) => self
+                .workers
+                .values()
+                .filter(|scheduler_ids| scheduler_ids.get(rank).is_some())
+                .count(),
+            None => self.workers.values().map(Vec::len).sum::<usize>(),
+        };
         if active_count == 0 {
+            if let Some(rank) = preferred_dp_rank {
+                return Err(anyhow!(
+                    "preferred attention-DP rank {rank} is out of range for the active worker pool"
+                ));
+            }
             return Err(anyhow!("no active workers for round-robin placement"));
         }
         let index = self.next % active_count;
-        let scheduler_id = self
-            .workers
-            .values()
-            .flat_map(|ranks| ranks.iter().copied())
-            .nth(index)
-            .expect("active round-robin pool must contain a scheduler");
+        let scheduler_id = match preferred_dp_rank {
+            Some(rank) => self
+                .workers
+                .values()
+                .filter_map(|scheduler_ids| scheduler_ids.get(rank).copied())
+                .nth(index),
+            None => self
+                .workers
+                .values()
+                .flat_map(|scheduler_ids| scheduler_ids.iter().copied())
+                .nth(index),
+        }
+        .expect("active round-robin pool must contain a scheduler");
         self.next = index + 1;
         Ok(PlacementEffects {
             decision: PlacementDecision::Immediate(Placement {
@@ -187,6 +215,7 @@ where
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                placement_replica_id: None,
             }),
             released: Vec::new(),
         })
@@ -377,6 +406,45 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("no active workers"));
+    }
+
+    #[test]
+    fn pool_round_robin_honors_authored_dp_rank_across_workers() {
+        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![
+            WorkerTopology {
+                worker_id: 0,
+                scheduler_ids: vec![10, 11],
+            },
+            WorkerTopology {
+                worker_id: 1,
+                scheduler_ids: vec![20, 21],
+            },
+        ]);
+        let place = |policy: &mut PoolRoundRobinPlacement<()>, ordinal, rank| {
+            let effects = PlacementPolicy::<RankedTestRequest>::place(
+                policy,
+                &RankedTestRequest {
+                    id: Uuid::from_u128(ordinal),
+                    preferred_dp_rank: rank,
+                },
+                (),
+                None,
+                0.0,
+            )?;
+            let PlacementDecision::Immediate(placement) = effects.decision else {
+                panic!("round-robin placement must be immediate");
+            };
+            Ok::<_, anyhow::Error>(placement.scheduler_id)
+        };
+
+        assert_eq!(place(&mut policy, 1, 1).unwrap(), 11);
+        assert_eq!(place(&mut policy, 2, 1).unwrap(), 21);
+        assert!(
+            place(&mut policy, 3, 2)
+                .unwrap_err()
+                .to_string()
+                .contains("out of range")
+        );
     }
 
     #[test]

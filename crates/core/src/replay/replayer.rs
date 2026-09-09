@@ -21,14 +21,17 @@ use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundR
 use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
 use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
-use crate::replay::error::{placement_boundary, runtime_error, scaling_boundary};
+use crate::replay::error::{
+    placement_boundary, runtime_error, scaling_boundary, telemetry_boundary,
+};
 use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::loadgen::WorkloadDriver;
 use crate::replay::protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
 use crate::replay::scaling::ReplayScalingPolicy;
+use crate::replay::telemetry::{ReplayTelemetryObserver, ReplayTelemetrySnapshot};
 use crate::replay::{
-    ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayResult, ReplaySpec,
-    ReplayTopology, SlaThresholds, WorkerStage,
+    ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayRequest,
+    ReplayResult, ReplaySpec, ReplayTopology, SlaThresholds, WorkerStage,
 };
 
 /// Runtime composition supplied by the built-in engine stack or a Dynamo
@@ -196,6 +199,16 @@ impl ReplayScalingPolicy for ScalingPolicyBoundary {
     }
 }
 
+/// Classifies observer failures without exposing adapter-specific types to the
+/// topology runtimes.
+struct TelemetryObserverBoundary(Box<dyn ReplayTelemetryObserver>);
+
+impl ReplayTelemetryObserver for TelemetryObserverBoundary {
+    fn on_sample(&mut self, snapshot: ReplayTelemetrySnapshot) -> AnyResult<()> {
+        self.0.on_sample(snapshot).map_err(telemetry_boundary)
+    }
+}
+
 /// Replay-owned runtime input used by compatibility runners that already
 /// lowered a trace into the shared workload driver.
 ///
@@ -265,6 +278,7 @@ pub struct Replayer<C = RoundRobinComposition> {
     composition: C,
     runtime_input: Option<ReplayRuntimeInput>,
     capture: ReplayCaptureOptions,
+    telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
 }
 
 impl Replayer<RoundRobinComposition> {
@@ -304,6 +318,7 @@ impl<C: ReplayComposition> Replayer<C> {
             composition,
             runtime_input: None,
             capture: ReplayCaptureOptions::default(),
+            telemetry: None,
         })
     }
 
@@ -321,6 +336,22 @@ impl<C: ReplayComposition> Replayer<C> {
         self
     }
 
+    /// Attach a policy-neutral observer sampled at a fixed virtual-time
+    /// interval. Telemetry remains disabled unless this method is called.
+    pub fn with_telemetry_observer(
+        mut self,
+        sample_interval_ms: f64,
+        observer: Box<dyn ReplayTelemetryObserver>,
+    ) -> ReplayResult<Self> {
+        if !sample_interval_ms.is_finite() || sample_interval_ms <= 0.0 {
+            return Err(ReplayError::InvalidSpec(format!(
+                "telemetry sample interval must be finite and positive, got {sample_interval_ms}"
+            )));
+        }
+        self.telemetry = Some((sample_interval_ms, observer));
+        Ok(self)
+    }
+
     pub fn run(self) -> ReplayResult<ReplayReport> {
         self.run_inner(None)
     }
@@ -333,6 +364,7 @@ impl<C: ReplayComposition> Replayer<C> {
         self.composition.set_determinism(self.capture.determinism)?;
         let engine_config = ReplayEngineConfig::parse(&self.spec.engine)?;
         engine_config.validate_topology(&self.spec.topology)?;
+        validate_request_dp_ranks(&self.spec, &engine_config)?;
         let runtime_input = match self.runtime_input.take() {
             Some(mut input) => {
                 apply_runtime_determinism(&mut input, self.capture.determinism);
@@ -352,6 +384,7 @@ impl<C: ReplayComposition> Replayer<C> {
             .composition
             .take_scaling_policy()
             .map_err(|error| ReplayError::Scaling(format!("{error:#}")))?;
+        let telemetry = self.telemetry.take();
 
         let collector = match &self.spec.topology {
             ReplayTopology::Aggregated { workers } => {
@@ -400,6 +433,12 @@ impl<C: ReplayComposition> Replayer<C> {
                 }
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
+                }
+                if let Some((sample_interval_ms, observer)) = telemetry {
+                    runtime = runtime.with_telemetry_observer(
+                        sample_interval_ms,
+                        Box::new(TelemetryObserverBoundary(observer)),
+                    );
                 }
                 runtime.run().map_err(runtime_error)?.0
             }
@@ -466,6 +505,12 @@ impl<C: ReplayComposition> Replayer<C> {
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
                 }
+                if let Some((sample_interval_ms, observer)) = telemetry {
+                    runtime = runtime.with_telemetry_observer(
+                        sample_interval_ms,
+                        Box::new(TelemetryObserverBoundary(observer)),
+                    );
+                }
                 runtime.run().map_err(runtime_error)?.0
             }
         };
@@ -473,6 +518,50 @@ impl<C: ReplayComposition> Replayer<C> {
         Ok(finish_report(collector, self.spec.sla)
             .with_wall_time_ms(wall_start.elapsed().as_secs_f64() * 1_000.0))
     }
+}
+
+fn validate_request_dp_ranks(
+    spec: &ReplaySpec,
+    engine_config: &ReplayEngineConfig,
+) -> ReplayResult<()> {
+    let validate = |request: &ReplayRequest,
+                    stage: WorkerStage,
+                    rank: Option<u32>|
+     -> ReplayResult<()> {
+        let Some(rank) = rank else {
+            return Ok(());
+        };
+        let dp_size = engine_config.role(stage).dp_size;
+        if rank >= dp_size {
+            let stage = match stage {
+                WorkerStage::Aggregated => "aggregated",
+                WorkerStage::Prefill => "prefill",
+                WorkerStage::Decode => "decode",
+            };
+            return Err(ReplayError::InvalidSpec(format!(
+                "request {:?} {stage} placement: preferred attention-DP rank {rank} is out of range for dp_size {dp_size}",
+                request.id
+            )));
+        }
+        Ok(())
+    };
+
+    for request in &spec.requests {
+        match spec.topology {
+            ReplayTopology::Aggregated { .. } => {
+                validate(request, WorkerStage::Aggregated, request.dp_rank)?;
+            }
+            ReplayTopology::Disaggregated { .. } => {
+                validate(
+                    request,
+                    WorkerStage::Prefill,
+                    request.prefill_dp_rank.or(request.dp_rank),
+                )?;
+                validate(request, WorkerStage::Decode, request.dp_rank)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn admission_queue<Metadata: ReplayAdmissionMetadata>(
@@ -531,6 +620,7 @@ fn lower_requests(
                 uuid: Some(request_id),
                 dp_rank: 0,
                 preferred_dp_rank: request.dp_rank,
+                preferred_prefill_dp_rank: request.prefill_dp_rank,
                 arrival_timestamp_ms: Some(request.arrival_time_ms),
                 priority: routing.priority,
                 strict_priority: routing.strict_priority,
@@ -615,6 +705,7 @@ mod tests {
                     output_tokens: 2,
                     output_token_ids: None,
                     dp_rank: Some(2),
+                    prefill_dp_rank: Some(1),
                     session_id: Some("session-a".into()),
                     turn_index: Some(4),
                     metadata: serde_json::json!({
@@ -632,6 +723,7 @@ mod tests {
                     output_tokens: 1,
                     output_token_ids: None,
                     dp_rank: None,
+                    prefill_dp_rank: None,
                     session_id: None,
                     turn_index: None,
                     metadata: serde_json::Value::Null,
@@ -649,6 +741,7 @@ mod tests {
         assert_eq!(first.strict_priority, 9);
         assert_eq!(first.policy_class.as_deref(), Some("latency"));
         assert_eq!(first.preferred_dp_rank, Some(2));
+        assert_eq!(first.preferred_prefill_dp_rank, Some(1));
         assert!(!first.prompt_tokens_are_placement_safe());
         let context = first.replay_context.as_ref().unwrap();
         assert_eq!(context.authored_id, "length-only");
@@ -679,6 +772,7 @@ mod tests {
                 output_tokens: 1,
                 output_token_ids: None,
                 dp_rank: None,
+                prefill_dp_rank: None,
                 session_id: None,
                 turn_index: None,
                 metadata: serde_json::Value::Null,

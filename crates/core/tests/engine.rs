@@ -6,14 +6,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use aisimulate_core::engine::{
-    Backend, EngineConfig, SglangConfig, TimingModel, TimingModelConfig,
+    Backend, EngineConfig, NativeHostOffloadConfig, SglangConfig, TimingModel, TimingModelConfig,
 };
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
     ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition, ReplayDeterminism,
-    ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest, ReplayRoleConfig,
-    ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot, ReplaySpec, ReplayTopology,
-    Replayer, WorkerPoolSpec, WorkerStage, WorkerTopology, run_engine_replay,
+    ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest, ReplayRequestPool,
+    ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot,
+    ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec, WorkerTopology, run_engine_replay,
     run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
 };
 use anyhow::Result;
@@ -58,10 +58,40 @@ fn request(
         output_tokens,
         output_token_ids: None,
         dp_rank: None,
+        prefill_dp_rank: None,
         session_id: None,
         turn_index: None,
         metadata: serde_json::Value::Null,
     }
+}
+
+fn request_with_tokens(
+    id: &str,
+    arrival_time_ms: f64,
+    input_token_ids: Vec<u32>,
+    output_tokens: usize,
+) -> ReplayRequest {
+    let mut request = request(id, arrival_time_ms, input_token_ids.len(), output_tokens);
+    request.input_token_ids = Some(input_token_ids);
+    request
+}
+
+fn native_host_offload_config(
+    host_capacity_blocks: usize,
+    prefill_ms: f64,
+    decode_ms: f64,
+) -> ReplayEngineConfig {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms,
+        decode_ms,
+    });
+    config.rank.num_gpu_blocks = 2;
+    config.rank.max_num_seqs = 2;
+    config.rank.max_num_batched_tokens = 8;
+    config.rank.kv_cache_bytes_per_token = Some(250_000);
+    config.rank.native_host_offload =
+        Some(NativeHostOffloadConfig::new(host_capacity_blocks).with_bandwidths(1.0, 1.0));
+    config
 }
 
 fn engine_config(timing_model: TimingModelConfig) -> ReplayEngineConfig {
@@ -113,6 +143,7 @@ fn role_config(backend: Backend, timing_model: TimingModelConfig) -> ReplayRoleC
             timing_model,
             ..EngineConfig::for_backend(backend)
         },
+        ..ReplayRoleConfig::default()
     }
 }
 
@@ -135,9 +166,152 @@ fn disaggregated_spec(
 }
 
 #[test]
-fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
-    for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
-        let mut spec = disaggregated_spec(
+fn disaggregated_replay_supports_attention_dp_for_each_backend() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for (prefill_dp, decode_dp) in [(2, 1), (1, 2), (2, 4), (2, 2)] {
+            let mut spec = disaggregated_spec(
+                backend,
+                TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+                TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+            );
+            let mut config: ReplayEngineConfig =
+                serde_json::from_value(spec.engine.clone()).unwrap();
+            config.prefill.as_mut().unwrap().dp_size = prefill_dp;
+            config.decode.as_mut().unwrap().dp_size = decode_dp;
+            spec.engine = serde_json::to_value(config).unwrap();
+            spec.requests = (0..8)
+                .map(|index| request(&format!("request-{index}"), 0.0, 4, 2))
+                .collect();
+
+            let report = run_engine_replay(spec).unwrap();
+            assert_eq!(report.request_counts.completed_requests, 8);
+            assert_eq!(report.per_request.len(), 8);
+            for record in &report.per_request {
+                let prefill = record
+                    .routing_history
+                    .iter()
+                    .find(|route| route.pool == ReplayRequestPool::Prefill)
+                    .unwrap();
+                let decode = record
+                    .routing_history
+                    .iter()
+                    .find(|route| route.pool == ReplayRequestPool::Decode)
+                    .unwrap();
+                assert!(prefill.dp_rank.unwrap() < prefill_dp);
+                assert!(decode.dp_rank.unwrap() < decode_dp);
+                assert_eq!(prefill.logical_worker_id, Some(0));
+                assert_eq!(decode.logical_worker_id, Some(0));
+            }
+        }
+    }
+}
+
+#[test]
+fn disaggregated_replay_honors_authored_prefill_and_decode_dp_ranks() {
+    let mut replay = disaggregated_spec(
+        Backend::Vllm,
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+    );
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+    config.prefill.as_mut().unwrap().dp_size = 2;
+    config.decode.as_mut().unwrap().dp_size = 4;
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![ReplayRequest {
+        dp_rank: Some(3),
+        prefill_dp_rank: Some(1),
+        ..request("p1-to-d3", 0.0, 4, 2)
+    }];
+
+    let report = run_engine_replay(replay).unwrap();
+    let record = &report.per_request[0];
+    let prefill = record
+        .routing_history
+        .iter()
+        .find(|route| route.pool == ReplayRequestPool::Prefill)
+        .unwrap();
+    let decode = record
+        .routing_history
+        .iter()
+        .find(|route| route.pool == ReplayRequestPool::Decode)
+        .unwrap();
+    assert_eq!(prefill.dp_rank, Some(1));
+    assert_eq!(decode.dp_rank, Some(3));
+}
+
+#[test]
+fn disaggregated_replay_uses_decode_dp_rank_as_prefill_fallback() {
+    let mut replay = disaggregated_spec(
+        Backend::Vllm,
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+    );
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+    config.prefill.as_mut().unwrap().dp_size = 2;
+    config.decode.as_mut().unwrap().dp_size = 2;
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![ReplayRequest {
+        dp_rank: Some(1),
+        ..request("legacy-rank-fallback", 0.0, 4, 2)
+    }];
+
+    let report = run_engine_replay(replay).unwrap();
+    let routes = &report.per_request[0].routing_history;
+    assert_eq!(
+        routes
+            .iter()
+            .find(|route| route.pool == ReplayRequestPool::Prefill)
+            .unwrap()
+            .dp_rank,
+        Some(1)
+    );
+    assert_eq!(
+        routes
+            .iter()
+            .find(|route| route.pool == ReplayRequestPool::Decode)
+            .unwrap()
+            .dp_rank,
+        Some(1)
+    );
+}
+
+#[test]
+fn aggregated_replay_rejects_prefill_dp_rank() {
+    let mut replay = spec(engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+    }));
+    replay.requests[0].prefill_dp_rank = Some(0);
+
+    let error = run_engine_replay(replay).unwrap_err();
+    assert!(error.to_string().contains("cannot specify prefill_dp_rank"));
+}
+
+#[test]
+fn disaggregated_replay_validates_authored_rank_per_role() {
+    for (prefill_dp_rank, decode_dp_rank, expected) in [
+        (Some(2), Some(0), "prefill placement"),
+        (Some(0), Some(4), "decode placement"),
+    ] {
+        let mut replay = disaggregated_spec(
             Backend::Vllm,
             TimingModelConfig::Fixed {
                 prefill_ms: 1.0,
@@ -148,30 +322,52 @@ fn disaggregated_replay_rejects_attention_dp_before_engine_materialization() {
                 decode_ms: 1.0,
             },
         );
-        let mut config: ReplayEngineConfig = serde_json::from_value(spec.engine.clone()).unwrap();
-        match stage {
-            WorkerStage::Prefill => config.prefill.as_mut().unwrap().dp_size = 2,
-            WorkerStage::Decode => config.decode.as_mut().unwrap().dp_size = 2,
-            WorkerStage::Aggregated => unreachable!(),
-        }
-        spec.engine = serde_json::to_value(config).unwrap();
+        let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+        config.prefill.as_mut().unwrap().dp_size = 2;
+        config.decode.as_mut().unwrap().dp_size = 4;
+        replay.engine = serde_json::to_value(config).unwrap();
+        replay.requests = vec![ReplayRequest {
+            dp_rank: decode_dp_rank,
+            prefill_dp_rank,
+            ..request("out-of-range", 0.0, 4, 2)
+        }];
 
-        let error = run_engine_replay(spec).unwrap_err();
-        assert!(matches!(
-            error,
-            aisimulate_core::replay::ReplayError::InvalidSpec(_)
-        ));
-        let role_name = match stage {
-            WorkerStage::Prefill => "prefill",
-            WorkerStage::Decode => "decode",
-            WorkerStage::Aggregated => unreachable!(),
-        };
-        assert!(
-            error
-                .to_string()
-                .contains(&format!("{role_name} dp_size=1"))
-        );
+        let error = run_engine_replay(replay).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:#}");
     }
+}
+
+#[test]
+fn sglang_disaggregated_attention_dp_uses_per_rank_prefill_chunks() {
+    let run = |prefill_dp| {
+        let mut replay = disaggregated_spec(
+            Backend::Sglang,
+            TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+        );
+        let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+        let prefill = config.prefill.as_mut().unwrap();
+        prefill.dp_size = prefill_dp;
+        prefill.rank.sglang.chunked_prefill_size = 16;
+        replay.engine = serde_json::to_value(config).unwrap();
+        replay.requests = vec![request("long-prompt", 0.0, 16, 1)];
+        run_engine_replay(replay).unwrap()
+    };
+
+    let dp1 = run(1);
+    let dp4 = run(4);
+    let dp1_source_held_ms = dp1.per_request[0].source_held_ms.unwrap();
+    let dp4_source_held_ms = dp4.per_request[0].source_held_ms.unwrap();
+    assert!(
+        dp4_source_held_ms >= dp1_source_held_ms + 3.0,
+        "DP4 should execute four 4-token prefill chunks: dp1={dp1_source_held_ms}, dp4={dp4_source_held_ms}"
+    );
 }
 
 #[test]
@@ -208,6 +404,180 @@ fn built_in_aggregated_replay_produces_a_deterministic_report() {
     assert_eq!(first.throughput.decode_gpus_per_worker, 1);
     assert_eq!(first.per_request[0].first_token_ms, Some(12.0));
     assert_eq!(first.per_request[0].terminal_time_ms, 14.0);
+}
+
+#[test]
+fn vllm_native_host_offload_restores_an_evicted_prefix_through_internal_work() {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 0.0,
+        decode_ms: 0.0,
+    });
+    config.rank.num_gpu_blocks = 1;
+    config.rank.max_num_seqs = 1;
+    config.rank.max_num_batched_tokens = 4;
+    config.rank.kv_cache_bytes_per_token = Some(250_000);
+    config.rank.native_host_offload =
+        Some(NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0));
+
+    let mut replay = spec(config);
+    replay.requests = vec![
+        request("seed", 0.0, 4, 0),
+        request("evict", 5.0, 4, 0),
+        request("restore", 10.0, 4, 0),
+    ];
+    replay.requests[0].input_token_ids = Some(vec![1, 2, 3, 4]);
+    replay.requests[1].input_token_ids = Some(vec![5, 6, 7, 8]);
+    replay.requests[2].input_token_ids = Some(vec![1, 2, 3, 4]);
+
+    let report = run_canonical_engine_replay(replay);
+    assert_eq!(report.request_counts.completed_requests, 3);
+    let restore = report
+        .per_request
+        .iter()
+        .find(|record| record.request_id.as_deref() == Some("restore"))
+        .unwrap();
+    assert_eq!(restore.reused_input_tokens, 4);
+    assert_eq!(restore.first_admission_g1_reused_input_tokens, Some(0));
+    assert_eq!(restore.first_admission_host_reused_input_tokens, Some(4));
+    assert!(restore.first_admit_ms.is_some_and(|at_ms| at_ms >= 11.0));
+    assert_eq!(restore.admission_history.len(), 1);
+    assert_eq!(restore.admission_history[0].g1_reused_input_tokens, Some(0));
+    assert_eq!(
+        restore.admission_history[0].host_reused_input_tokens,
+        Some(4)
+    );
+}
+
+#[test]
+fn host_load_due_during_a_forward_pass_waits_for_the_pass_boundary() {
+    let mut replay = spec(native_host_offload_config(4, 5.0, 0.0));
+    replay.requests = vec![
+        request_with_tokens("seed", 0.0, vec![1, 2, 3, 4], 0),
+        // Fill both G1 slots so `seed` survives only in the host tier.
+        request_with_tokens("evict", 10.0, vec![5, 6, 7, 8, 9, 10, 11, 12], 0),
+        // This queues a one-block H2D at 20ms, due at 21ms.
+        request_with_tokens("restore", 20.0, vec![1, 2, 3, 4], 0),
+        // Keep the engine in a nonzero forward pass through 25ms.
+        request_with_tokens("busy", 20.0, vec![13, 14, 15, 16], 0),
+    ];
+
+    let report = run_canonical_engine_replay(replay);
+    let restore = report
+        .per_request
+        .iter()
+        .find(|record| record.request_id.as_deref() == Some("restore"))
+        .unwrap();
+    let busy = report
+        .per_request
+        .iter()
+        .find(|record| record.request_id.as_deref() == Some("busy"))
+        .unwrap();
+
+    assert_eq!(busy.first_admit_ms, Some(20.0));
+    assert_eq!(busy.terminal_time_ms, 25.0);
+    assert_eq!(restore.first_admit_ms, Some(25.0));
+    assert_eq!(restore.first_admission_g1_reused_input_tokens, Some(0));
+    assert_eq!(restore.first_admission_host_reused_input_tokens, Some(4));
+}
+
+#[test]
+fn activated_host_request_precedes_a_newly_preempted_normal_request() {
+    let mut replay = spec(native_host_offload_config(1, 5.0, 1.0));
+    replay.requests = vec![
+        request_with_tokens("seed", 0.0, vec![1, 2, 3, 4], 0),
+        // Evict `seed` from G1 while its one-block host copy remains resident.
+        request_with_tokens("evict-seed", 10.0, vec![5, 6, 7, 8, 9, 10, 11, 12], 0),
+        // H2D reserves one of two G1 blocks. `source` initially fits in the
+        // other block, but its first decode growth requires another block and
+        // preempts it after the host load has activated.
+        request_with_tokens("load-seed", 20.0, vec![1, 2, 3, 4], 0),
+        request_with_tokens("source", 20.0, vec![21, 22, 23, 24], 3),
+    ];
+
+    let report = run_engine_replay(replay).expect(
+        "the activated host request must run before the newly preempted normal request so its G1 reservation can be released",
+    );
+    assert_eq!(report.request_counts.completed_requests, 4);
+    let loaded = report
+        .per_request
+        .iter()
+        .find(|record| record.request_id.as_deref() == Some("load-seed"))
+        .unwrap();
+    assert_eq!(loaded.first_admission_g1_reused_input_tokens, Some(0));
+    assert_eq!(loaded.first_admission_host_reused_input_tokens, Some(4));
+}
+
+#[test]
+fn host_store_capacity_retry_preserves_the_request_cursor() {
+    let mut config = native_host_offload_config(1, 5.0, 1.0);
+    // H2D owns one block while `source` owns one complete prompt block plus a
+    // partial tail. Three G1 slots isolate host-store retry from decode OOM.
+    config.rank.num_gpu_blocks = 3;
+    let mut replay = spec(config);
+    replay.requests = vec![
+        request_with_tokens("seed", 0.0, vec![1, 2, 3, 4], 0),
+        // Evict `seed` from G1. This three-block cohort cannot replace it in the
+        // one-block host tier, so the host still contains only `seed`.
+        request_with_tokens(
+            "evict-seed",
+            10.0,
+            vec![5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            0,
+        ),
+        // The H2D pins the only host block while `source` first completes its
+        // prompt block, forcing that store attempt to retry without advancing.
+        request_with_tokens("load-seed", 20.0, vec![1, 2, 3, 4], 0),
+        request_with_tokens("source", 20.0, vec![21, 22, 23, 24, 25], 3),
+        // After `source` finishes, evict its G1 block. This cohort is also too
+        // large for G2 and therefore cannot hide a missing cursor retry.
+        request_with_tokens(
+            "evict-source",
+            40.0,
+            vec![31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42],
+            0,
+        ),
+        request_with_tokens("restore-source", 50.0, vec![21, 22, 23, 24], 0),
+    ];
+
+    let report = run_canonical_engine_replay(replay);
+    let restored = report
+        .per_request
+        .iter()
+        .find(|record| record.request_id.as_deref() == Some("restore-source"))
+        .unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 6);
+    assert_eq!(restored.reused_input_tokens, 4);
+    assert_eq!(restored.first_admission_g1_reused_input_tokens, Some(0));
+    assert_eq!(restored.first_admission_host_reused_input_tokens, Some(4));
+    assert!(restored.first_admit_ms.is_some_and(|at_ms| at_ms >= 51.0));
+}
+
+#[test]
+fn native_host_offload_rejects_attention_dp_and_disaggregated_roles() {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 0.0,
+        decode_ms: 0.0,
+    });
+    config.rank.kv_cache_bytes_per_token = Some(1);
+    config.rank.native_host_offload =
+        Some(NativeHostOffloadConfig::new(1).with_bandwidths(1.0, 1.0));
+
+    let mut attention_dp = config.clone();
+    attention_dp.dp_size = 2;
+    let error = run_engine_replay(spec(attention_dp)).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("dp_size=1"), "{message}");
+
+    let mut disaggregated = spec(config);
+    disaggregated.topology = ReplayTopology::Disaggregated {
+        prefill: WorkerPoolSpec::default(),
+        decode: WorkerPoolSpec::default(),
+        handoff_latency_ms: 0.0,
+    };
+    let error = run_engine_replay(disaggregated).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("only aggregated replay"), "{message}");
 }
 
 #[test]
@@ -760,17 +1130,14 @@ fn role_specific_timing_models_support_external_and_builtin_mixes() {
 }
 
 #[test]
-fn native_trtllm_disaggregated_replay_is_an_explicit_error() {
+fn native_trtllm_disaggregated_replay_completes() {
     let spec = disaggregated_spec(
         Backend::Trtllm,
         TimingModelConfig::Polynomial,
         TimingModelConfig::Polynomial,
     );
-    let error = run_engine_replay(spec).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("offline disaggregated replay does not support TRT-LLM"),
-        "{error}"
-    );
+    let report = run_engine_replay(spec).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.request_counts.total_input_tokens, 4);
+    assert_eq!(report.request_counts.total_output_tokens, 2);
 }

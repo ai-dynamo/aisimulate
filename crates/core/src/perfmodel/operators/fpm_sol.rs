@@ -119,7 +119,7 @@ pub(crate) fn op_sol_latency_ms(
             }
             Err(other) => Err(other),
         },
-        other => Err(AicError::UnsupportedModel(format!(
+        other => Err(AicError::SolNotImplemented(format!(
             "forward_model='fpm' SOL roofline has no Rust implementation for op {}",
             other.name()
         ))),
@@ -609,6 +609,7 @@ mod tests {
             fmha_quant_mode: FmhaQuantMode::Bfloat16,
             use_qk_norm: false,
             cp_size: 1,
+            lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
         };
         let (b, sq, p) = (4.0, 682.6666666666666_f64, 128.5_f64);
         let (n, n_kv, h) = (48.0, 8.0, 128.0);
@@ -639,6 +640,7 @@ mod tests {
             head_size: 128,
             window_size: 0,
             kv_cache_dtype: KvCacheQuantMode::Fp8,
+            lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
         };
         let (b, sq) = (256.0, 8441.75_f64);
         let kv_len = sq - 1.0;
@@ -796,6 +798,31 @@ mod tests {
         approx(
             op_sol_latency_ms(&fb, &d, 64.0, 1.0, 1.0, 0.0).unwrap(),
             super::mem_op_sol_ms(&d.system_spec, 3000.0 * 64.0),
+        );
+    }
+
+    #[test]
+    fn unsupported_fpm_sol_op_has_typed_error() {
+        let d = db();
+        let op = Op::Mamba2(crate::operators::Mamba2Op {
+            name: "mamba2".into(),
+            scale_factor: 1.0,
+            kernel_source: "causal_conv1d_fn".into(),
+            phase: "context".into(),
+            d_model: 4096,
+            d_state: 128,
+            d_conv: 4,
+            nheads: 128,
+            head_dim: 64,
+            n_groups: 8,
+            chunk_size: 256,
+        });
+
+        let err = op_sol_latency_ms(&op, &d, 64.0, 1.0, 1.0, 0.0).unwrap_err();
+        assert!(matches!(&err, AicError::SolNotImplemented(_)));
+        assert!(
+            err.to_string()
+                .contains("no Rust implementation for op mamba2")
         );
     }
 }

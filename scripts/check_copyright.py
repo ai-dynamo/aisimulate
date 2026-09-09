@@ -1,49 +1,91 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Fail if any tracked source file is missing its SPDX license header.
+"""Check NVIDIA SPDX headers on every tracked source-like file.
 
-Checks every non-empty git-tracked *.py, *.rs, and *.sh file for an
-`SPDX-License-Identifier` line within its first 15 lines. The whole tree is
-checked (not just a diff): the repository is fully compliant today, so any
-regression is introduced by the change under review.
+The check is intentionally full-tree rather than diff-only. In addition to
+Python, Rust, and shell sources, it covers the template and support-file types
+called out in the OSRB review so a future change cannot reintroduce the same
+gap.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-PATTERNS = ["*.py", "*.rs", "*.sh"]
 HEADER_LINES = 15
-MARKER = "SPDX-License-Identifier"
+SOURCE_SUFFIXES = {
+    ".env",
+    ".j2",
+    ".js",
+    ".ps1",
+    ".py",
+    ".pyi",
+    ".rs",
+    ".rule",
+    ".sh",
+}
+LICENSE_MARKER = "SPDX-License-Identifier: Apache-2.0"
+COPYRIGHT_MARKER = re.compile(
+    r"SPDX-FileCopyrightText: (?:Modifications )?Copyright \(c\) "
+    r"\d{4}(?:-\d{4})? NVIDIA CORPORATION & AFFILIATES\. All rights reserved\."
+)
+
+
+def is_source(path: Path) -> bool:
+    """Return whether the tracked path is subject to the header policy."""
+
+    if path.suffix == ".patch":
+        # Third-party patch files are byte-addressed provenance inputs. Their
+        # attribution belongs in THIRD_PARTY_NOTICES.md; changing the patch
+        # preamble invalidates recorded collection and overlay hashes.
+        return False
+    if path.suffix in SOURCE_SUFFIXES or path.name.startswith("Dockerfile"):
+        return True
+    try:
+        with path.open("rb") as handle:
+            return handle.read(2) == b"#!"
+    except OSError:
+        return False
 
 
 def main() -> int:
-    tracked = subprocess.run(
-        ["git", "ls-files", "--", *PATTERNS],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.splitlines()
+    tracked = (
+        subprocess.run(
+            ["git", "ls-files", "-z"],
+            capture_output=True,
+            check=True,
+        )
+        .stdout.decode(errors="surrogateescape")
+        .split("\0")
+    )
+    sources = [Path(name) for name in tracked if name and is_source(Path(name))]
 
-    missing = []
-    for name in tracked:
-        path = Path(name)
+    missing: list[str] = []
+    for path in sources:
         if not path.is_file() or path.stat().st_size == 0:
             continue
         with path.open(encoding="utf-8", errors="replace") as handle:
             head = "".join(handle.readline() for _ in range(HEADER_LINES))
-        if MARKER not in head:
-            missing.append(name)
+        if LICENSE_MARKER not in head or COPYRIGHT_MARKER.search(head) is None:
+            missing.append(str(path))
 
     if missing:
-        print(f"{len(missing)} file(s) missing an {MARKER} header:")
+        print(
+            f"{len(missing)} file(s) missing the required "
+            "NVIDIA/Apache-2.0 SPDX header:"
+        )
         for name in missing:
             print(f"  {name}")
         return 1
-    print(f"all {len(tracked)} tracked source files carry an {MARKER} header")
+
+    print(
+        f"all {len(sources)} tracked source files carry the required "
+        "NVIDIA/Apache-2.0 SPDX header"
+    )
     return 0
 
 
