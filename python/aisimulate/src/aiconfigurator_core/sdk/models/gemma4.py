@@ -179,13 +179,16 @@ class Gemma4MixModel(BaseModel):
         self.encoder_ops = []
         self.encoder_config = cfg.vision_config
         if cfg.vision_config is not None:
-            self.encoder_ops.extend(
-                build_gemma4_vision_encoder_ops(
-                    cfg.vision_config,
-                    self.config.tp_size,
-                    self.config.enable_encoder_dp,
+            # A language-only worker still attends to visual embeddings, but
+            # the vision tower itself is hosted on the encoder worker.
+            if not self.config.language_only:
+                self.encoder_ops.extend(
+                    build_gemma4_vision_encoder_ops(
+                        cfg.vision_config,
+                        self.config.tp_size,
+                        self.config.enable_encoder_dp,
+                    )
                 )
-            )
             if cfg.use_bidirectional_vision_attention:
                 # The ordinary SWA ContextAttention already accounts for the
                 # causal half of each visual block. Gemma's blockwise overlay

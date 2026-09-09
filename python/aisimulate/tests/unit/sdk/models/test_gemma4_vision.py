@@ -27,6 +27,28 @@ def _op(model, name: str):
     return next(op for op in model.encoder_ops if op._name == name)
 
 
+@pytest.mark.parametrize("language_only", [False, True])
+def test_language_only_worker_retains_visual_attention_without_hosting_encoder(language_only):
+    model_config = _model_config()
+    model_config.language_only = language_only
+    model = get_model(MODEL, model_config, "sglang")
+    runtime = config.RuntimeConfig(isl=128, osl=1, image_height=448, image_width=448)
+    backend = BaseBackend()
+
+    assert isinstance(model.encoder_config, common.Gemma4VisionEncoderConfig)
+    assert backend._visual_context_tokens(model, runtime) == 256
+    assert bool(model.encoder_ops) is (not language_only)
+    assert model.context_ops and model.generation_ops
+    # Bidirectional attention over image embeddings belongs to the language
+    # worker even when a separate worker runs the vision tower.
+    assert backend._has_visual_context_work(model, runtime)
+    assert [op._name for op in model.visual_context_ops] == ["context_swa_visual_block_attention"]
+    if language_only:
+        assert backend._get_encoder_component_memory_for_runtime(model, runtime, 1) == {}
+        latency, energy, sources, _ = backend._run_encoder_phase(model, object(), runtime, 1)
+        assert not latency and not energy and not sources
+
+
 def test_gemma4_model_builds_checkpoint_accurate_vision_graph():
     model = get_model(MODEL, _model_config(), "trtllm")
 
