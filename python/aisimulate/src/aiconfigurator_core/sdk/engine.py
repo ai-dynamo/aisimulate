@@ -771,7 +771,7 @@ def _maybe_load_database(
         from aiconfigurator_core.sdk import perf_database
 
         formula_only = database_mode is not None and database_mode.upper() in {"EMPIRICAL", "SOL"}
-        return perf_database.get_database_view(
+        database = perf_database.get_database_view(
             system,
             backend,
             backend_version,
@@ -782,6 +782,9 @@ def _maybe_load_database(
             transfer_policy=transfer_policy,
             strict_provenance=strict_provenance,
         )
+        if database is None and explicit_policy:
+            raise ValueError("performance database unavailable for explicit database policy")
+        return database
     except Exception:
         if explicit_policy:
             raise

@@ -325,6 +325,8 @@ impl Engine {
     /// caller (`AicEngineBuilder` / `from_spec_bytes`) is responsible for
     /// having loaded the matching `PerfDatabase` from `spec.engine`'s identity.
     pub fn build(spec: EngineSpec, db: Arc<PerfDatabase>) -> Result<Engine, AicError> {
+        Self::validate_engine_database_mode(spec.engine.database_mode)?;
+        Self::validate_engine_database_mode(db.database_mode)?;
         let nextn = spec
             .engine
             .speculative
@@ -403,12 +405,7 @@ impl Engine {
         systems_root: &std::path::Path,
     ) -> Result<Engine, AicError> {
         let spec = EngineSpec::from_bincode(bytes)?;
-        if spec.engine.database_mode == DatabaseMode::SolFull {
-            return Err(AicError::InvalidEngineConfig(
-                "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
-                    .to_string(),
-            ));
-        }
+        Self::validate_engine_database_mode(spec.engine.database_mode)?;
         let version = spec.engine.backend_version.as_deref().ok_or_else(|| {
             AicError::InvalidEngineConfig(
                 "backend_version is required to load the perf database".to_string(),
@@ -453,6 +450,16 @@ impl Engine {
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
         Engine::build(spec, Arc::new(db))
+    }
+
+    fn validate_engine_database_mode(database_mode: DatabaseMode) -> Result<(), AicError> {
+        if database_mode == DatabaseMode::SolFull {
+            return Err(AicError::InvalidEngineConfig(
+                "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Shared perf database handle.
@@ -1945,6 +1952,22 @@ mod tests {
         let spec = EngineSpec::new(config, Vec::new(), Vec::new());
 
         let result = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), &systems_root());
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
+        ));
+    }
+
+    #[test]
+    fn build_rejects_sol_full_as_database_default() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        let mut config = fixture_engine_config(None);
+        config.database_mode = DatabaseMode::SolFull;
+        let spec = EngineSpec::new(config, context_ops(), generation_ops());
+
+        let result = Engine::build(spec, Arc::new(db));
 
         assert!(matches!(
             result,

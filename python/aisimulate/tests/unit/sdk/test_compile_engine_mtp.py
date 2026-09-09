@@ -176,3 +176,12 @@ def test_maybe_load_database_keeps_default_load_tolerant(monkeypatch):
     monkeypatch.setattr(perf_database, "get_database_view", _fail_view)
 
     assert engine._maybe_load_database("h200_sxm", "vllm", "0.25.1", None, None, None, None, None) is None
+
+
+def test_maybe_load_database_rejects_empty_view_for_explicit_policy(monkeypatch):
+    from aiconfigurator_core.sdk import perf_database
+
+    monkeypatch.setattr(perf_database, "get_database_view", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ValueError, match="unavailable for explicit database policy"):
+        engine._maybe_load_database("h200_sxm", "vllm", "0.25.1", None, None, None, None, True)
