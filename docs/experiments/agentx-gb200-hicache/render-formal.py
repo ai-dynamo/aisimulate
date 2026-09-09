@@ -23,6 +23,14 @@ for component in dgd['spec']['components']:
         'nvidia.com/gpu.clique': '9b7e5103-edf7-455e-975a-70622c68dd26.2',
     }
     pod.pop('affinity', None)
+    if component['type'] in {'prefill', 'decode'}:
+        # The HTTP startup probe still verifies model readiness. Once started,
+        # use process-liveness probes: long AgentX prefill can delay canaries.
+        for probe in ['livenessProbe', 'readinessProbe']:
+            pod['containers'][0][probe] = {
+                'tcpSocket': {'port': 9090}, 'periodSeconds': 10,
+                'timeoutSeconds': 5, 'failureThreshold': 3,
+            }
 frontend = dgd['spec']['components'][0]['podTemplate']['spec']
 frontend['serviceAccountName'] = 'agentx-formal-runner'
 frontend['containers'][0]['resources']['limits']['cpu'] = '4'
@@ -49,7 +57,7 @@ resources = [
     {'apiVersion': 'v1', 'kind': 'ServiceAccount', 'metadata': meta('agentx-formal-runner')},
     {'apiVersion': 'rbac.authorization.k8s.io/v1', 'kind': 'Role', 'metadata': meta('agentx-formal-runner'),
      'rules': [
-         {'apiGroups': [''], 'resources': ['pods', 'pods/log'], 'verbs': ['get', 'list', 'watch']},
+         {'apiGroups': [''], 'resources': ['pods', 'pods/log', 'events'], 'verbs': ['get', 'list', 'watch']},
          {'apiGroups': ['discovery.k8s.io'], 'resources': ['endpointslices'], 'verbs': ['get', 'list', 'watch']},
          {'apiGroups': ['nvidia.com'], 'resources': ['dynamoworkermetadatas'], 'verbs': ['get', 'list', 'watch', 'create', 'patch', 'update']},
          {'apiGroups': ['nvidia.com'], 'resources': ['dynamographdeployments'], 'resourceNames': ['agentx-glm52-hicache'], 'verbs': ['get', 'delete']},

@@ -10,7 +10,7 @@ import subprocess
 import time
 import urllib.request
 
-ROOT = Path('/results/agentx-gb200-20260908-c48-attempt3')
+ROOT = Path('/results/agentx-gb200-20260908-c48-attempt4')
 ROOT.mkdir(parents=True, exist_ok=True)
 MODEL = 'nvidia/GLM-5.2-NVFP4'
 REVISION = '53e0691e21895a3863a606dfd12910c69eba94ab'
@@ -39,10 +39,13 @@ def collect():
     try:
         pods = json.loads(api('/api/v1/namespaces/hzhou/pods?labelSelector=nvidia.com%2Fdynamo-graph-deployment-name%3D' + DGD))
         (ROOT / 'pods.json').write_text(json.dumps(pods, indent=2))
+        (ROOT / 'events.json').write_bytes(api('/api/v1/namespaces/hzhou/events'))
         for pod in pods['items']:
             name = pod['metadata']['name']
             try:
                 (ROOT / (name + '.log')).write_bytes(api('/api/v1/namespaces/hzhou/pods/' + name + '/log?container=main'))
+                if any(status.get('restartCount', 0) > 0 for status in pod['status'].get('containerStatuses', []) if status['name'] == 'main'):
+                    (ROOT / (name + '.previous.log')).write_bytes(api('/api/v1/namespaces/hzhou/pods/' + name + '/log?container=main&previous=true'))
             except Exception as exc:
                 print('log collection failed', name, repr(exc), flush=True)
     except Exception as exc:

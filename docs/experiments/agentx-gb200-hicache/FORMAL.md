@@ -55,12 +55,13 @@ provisioned using the existing `jegu-hyperdisk-balanced-rwo` StorageClass.
 The GB200 GCP `a4x-highgpu-4g` instance cannot attach `standard-rwo`'s pd-balanced
 disk; do not substitute that default class. No static cluster PV is authored.
 
-Current attempt data lives at `/results/agentx-gb200-20260908-c48-attempt3/`, containing:
+Current attempt data lives at `/results/agentx-gb200-20260908-c48-attempt4/`, containing:
 
 - `STARTED.json`, followed by `COMPLETE.json`, `FAILED.json` or `INTERRUPTED.json`;
 - `command.json`, `client-config.yaml`, `aiperf-console.log`;
 - `aiperf/` raw records, summaries and server metrics;
-- worker logs and `pods.json` snapshots.
+- worker logs (including previous-container logs after restarts), `pods.json`
+  snapshots and namespace events.
 
 `STARTED.json` is created with exclusive creation on persistent storage. A pod
 restart after that marker exists **does not start another replay or overwrite
@@ -135,3 +136,26 @@ was scheduled at 19:55 PDT. The formal command remains c48 and 3600 seconds.
 
 The frontend's HTTP container is capped at 4 CPUs; the client container requests
 4 CPUs/24 GiB and is capped at 8 CPUs/48 GiB, to bound CPU use on its shared node.
+
+Attempt 3 passed dataset configuration and entered real warmup at **20:05:35 PDT**
+with 531 expanded warmup requests; 51 were sent. Kubelet then killed decode at
+20:05:50 and prefill shortly afterward: the operator's default `/live` liveness
+probe had `failureThreshold: 1` and a five-second period. Long prefill delayed
+the inference canary, producing HTTP 503 and a liveness-triggered SIGTERM. Events
+explicitly report `Container main failed liveness probe, will be restarted`.
+There was no CUDA/FPM exception preceding that termination. The client aborted
+warmup after request failures; **the one-hour profiling phase did not start**.
+
+The formal variant now retains the HTTP `/live` **startup** probe as its real
+model-readiness gate, then uses TCP9090 liveness/readiness checks with three
+failures tolerated. This avoids treating a delayed canary under load as a dead
+process. The sidecar still requires both HTTP worker checks and the visible
+frontend model before its first request. Only this DGD's probes change; the
+cluster operator, engine source and c48 load remain unchanged.
+
+Attempt 4 was submitted at 20:09 PDT with those probes; the actual generated Pod
+specs were checked. By 20:12, other workloads occupied the ordinary w0e pool:
+only three fragmented GPUs remained and no whole node was free. The four pods
+therefore remain gang-queued rather than preempting another workload. Once
+capacity is available, initialization, warmup and one-hour profiling start
+automatically. Earlier attempt directories remain intact on the result PVC.
