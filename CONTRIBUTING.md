@@ -89,5 +89,11 @@ You may type this line yourself when writing your commit messages. If your
 `-s` or `--signoff` to add the `Signed-off-by` line to the end of the commit
 message.
 
+For example:
+
+```bash
+git commit -s -m "Describe your change"
+```
+
 By contributing, you agree that your contributions will be licensed under the
 [Apache 2.0 License](https://github.com/ai-dynamo/aisimulate/blob/main/LICENSE).
