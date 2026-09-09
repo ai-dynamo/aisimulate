@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from aiconfigurator.sdk import engine
@@ -78,7 +80,11 @@ def test_compile_engine_propagates_database_mode_to_database_view(monkeypatch):
         captured["database_args"] = args
         return None
 
-    monkeypatch.setattr(engine, "build_engine_spec_json", lambda *a, **k: "{}")
+    def _capture_spec(*_args, **kwargs):
+        captured["spec_kwargs"] = kwargs
+        return "{}"
+
+    monkeypatch.setattr(engine, "build_engine_spec_json", _capture_spec)
     monkeypatch.setattr(engine, "_maybe_load_database", _capture_database)
     monkeypatch.setattr(engine.aiconfigurator_core, "engine_spec_bincode_from_json", lambda s: b"")
 
@@ -96,6 +102,10 @@ def test_compile_engine_propagates_database_mode_to_database_view(monkeypatch):
     assert captured["database_args"][5] is True
     assert captured["database_args"][6] == ["xshape", "xquant"]
     assert captured["database_args"][7] is True
+    assert captured["spec_kwargs"]["database_mode"] == "EMPIRICAL"
+    assert captured["spec_kwargs"]["shared_layer"] is True
+    assert captured["spec_kwargs"]["transfer_policy"] == ["xshape", "xquant"]
+    assert captured["spec_kwargs"]["strict_provenance"] is True
 
 
 def test_maybe_load_database_builds_formula_only_empirical_view(monkeypatch):
@@ -178,10 +188,35 @@ def test_maybe_load_database_keeps_default_load_tolerant(monkeypatch):
     assert engine._maybe_load_database("h200_sxm", "vllm", "0.25.1", None, None, None, None, None) is None
 
 
-def test_maybe_load_database_rejects_empty_view_for_explicit_policy(monkeypatch):
+def test_maybe_load_database_leaves_empty_view_for_native_reload(monkeypatch):
     from aiconfigurator_core.sdk import perf_database
 
     monkeypatch.setattr(perf_database, "get_database_view", lambda *_args, **_kwargs: None)
 
-    with pytest.raises(ValueError, match="unavailable for explicit database policy"):
-        engine._maybe_load_database("h200_sxm", "vllm", "0.25.1", None, None, None, None, True)
+    assert engine._maybe_load_database("h200_sxm", "vllm", "0.25.1", None, None, None, None, True) is None
+
+
+def test_engine_config_preserves_explicit_database_policy_without_view(monkeypatch):
+    model = SimpleNamespace(config=SimpleNamespace(tp_size=1, pp_size=1), _nextn=0)
+    monkeypatch.setattr(engine, "_literal_backend_version", lambda *_args: "0.25.1")
+
+    config = engine._engine_config_dict(
+        model=model,
+        model_path="Qwen/Qwen3-32B",
+        system="h200_sxm",
+        backend="vllm",
+        backend_version="0.25.1",
+        kv_block_size=None,
+        systems_path=None,
+        nextn=0,
+        database=None,
+        database_mode="EMPIRICAL",
+        shared_layer=False,
+        transfer_policy="balanced",
+        strict_provenance=True,
+    )
+
+    assert config["database_mode"] == "EMPIRICAL"
+    assert config["enable_shared_layer"] is False
+    assert config["transfer_policy"] == ["xquant", "xshape"]
+    assert config["strict_provenance"] is True
