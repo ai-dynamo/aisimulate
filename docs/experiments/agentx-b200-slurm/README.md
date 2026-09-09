@@ -8,8 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 This is a hardware measurement runbook for later AISimulate validation, not an
 AISimulate simulation command. It records the September 8, 2026 experiment against
 [AgentX point 440958](https://inferencex.semianalysis.com/inference/agentic/440958).
-The measured phase was still running when this document was written; no final
-performance or successful allocation cleanup is claimed here.
+The one-hour run is complete. See [results and comparison](results-2026-09-08.md)
+for measured metrics, comparability limits and verified allocation cleanup.
 
 ## Pinned configuration
 
