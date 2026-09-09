@@ -22,11 +22,10 @@ name: Nightly CI
 # nightly/<run_id>/ — the ai-dynamo staging path convention (the future
 # release workflow will use a release/ prefix). Uploads are server-side
 # checksum-verified and idempotent across re-runs. Scheduled runs deploy
-# unattended through `automated-release`; any other trigger routes to
-# `manual-release-approver`, whose required reviewers gate it. Both
-# environments hold the ARTIFACTORY_* and GITLAB_* secrets. Approve or
-# reject gated runs promptly — a waiting run holds the nightly-ci
-# concurrency group.
+# unattended; any other trigger must first pass the manual-approval job,
+# gated by the `manual-release-approver` environment's required reviewers
+# (that environment holds no secrets — all deploy jobs run in
+# `automated-release`).
 #
 # Runs on the repository-specific self-hosted runners (OPS-8249). Jobs run
 # in pinned manylinux_2_28 containers: the default runner image has no C
@@ -46,9 +45,12 @@ on:
 permissions:
   contents: read
 
+# Scheduled runs get their own group so a manual run parked at the approval
+# gate can never block the cron; staging paths are keyed by run_id, so
+# concurrent runs cannot collide. Superseded manual runs are cancelled.
 concurrency:
-  group: nightly-ci
-  cancel-in-progress: false
+  group: nightly-ci-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
   changes-guard:
@@ -102,10 +104,31 @@ jobs:
             }
             core.setOutput('should-build', 'true');
 
+  # Skipped on schedule so the cron nightly runs unattended; any other
+  # trigger stops here until a manual-release-approver required reviewer
+  # approves. The environment holds no secrets — it exists only as a gate.
+  manual-approval:
+    name: Approve manual trigger
+    needs: changes-guard
+    if: >-
+      needs.changes-guard.outputs.should-build == 'true' &&
+      github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: manual-release-approver
+    steps:
+      - name: Record approval
+        run: echo "manual trigger approved"
+
   build-artifacts:
     name: Build artifacts (${{ matrix.arch }})
-    needs: changes-guard
-    if: needs.changes-guard.outputs.should-build == 'true'
+    needs: [changes-guard, manual-approval]
+    # skipped manual-approval == scheduled run (unattended path).
+    if: >-
+      !cancelled() &&
+      needs.changes-guard.outputs.should-build == 'true' &&
+      (needs.manual-approval.result == 'success' ||
+      needs.manual-approval.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -128,10 +151,7 @@ jobs:
             container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
-    # Scheduled runs deploy unattended via automated-release (no required
-    # reviewers); any other trigger routes to manual-release-approver, whose
-    # reviewer list gates it. Both environments hold the same secrets.
-    environment: ${{ github.event_name == 'schedule' && 'automated-release' || 'manual-release-approver' }}
+    environment: automated-release
     outputs:
       wheel-version: ${{ steps.verify.outputs.wheel-version }}
     container:
@@ -436,10 +456,7 @@ jobs:
     # AWS-hosted repo runners; these on-prem runners are the sanctioned path.
     runs-on: gitlab_ci_runners
     timeout-minutes: 10
-    # Scheduled runs deploy unattended via automated-release (no required
-    # reviewers); any other trigger routes to manual-release-approver, whose
-    # reviewer list gates it. Both environments hold the same secrets.
-    environment: ${{ github.event_name == 'schedule' && 'automated-release' || 'manual-release-approver' }}
+    environment: automated-release
     steps:
       - name: Trigger internal security scan
         env:
