@@ -299,6 +299,16 @@ The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
 consume AISimulate through optional adapters.
 
+### Packaged legal-file copies
+
+The root [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+are the canonical repository legal files. Because the Python wheel build is
+rooted at `python/aisimulate/`, byte-identical copies are retained there so the
+wheel can declare and distribute them. These copies do not create a separate
+licensing boundary, and CI fails if either copy differs from its root original.
+See the [artifact contract](docs/artifact-contract.md#packaged-license-files) for
+the complete packaging contract.
+
 ## Develop from source
 
 ```bash
