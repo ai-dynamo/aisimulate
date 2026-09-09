@@ -20,6 +20,8 @@ FPM-off workaround; prefill retains FPM and HiCache 135 GB per DP rank.
 ## Files and submission
 
 - [formal-runner.py](formal-runner.py): independent frontend-sidecar runner.
+- [prepare-client.py](prepare-client.py): uses the pinned AIPerf CLI resolver to
+  generate and validate a complete configuration envelope before executing it.
 - [render-formal.py](render-formal.py): derives the formal manifest from the
   validated `deploy.yaml` and embeds the runner in a namespaced ConfigMap.
 - [formal-deploy.yaml](formal-deploy.yaml): generated manifest to apply.
@@ -51,7 +53,7 @@ provisioned using the existing `jegu-hyperdisk-balanced-rwo` StorageClass.
 The GB200 GCP `a4x-highgpu-4g` instance cannot attach `standard-rwo`'s pd-balanced
 disk; do not substitute that default class. No static cluster PV is authored.
 
-Data lives at `/results/agentx-gb200-20260908-c48/`, containing:
+Current attempt data lives at `/results/agentx-gb200-20260908-c48-attempt2/`, containing:
 
 - `STARTED.json`, followed by `COMPLETE.json`, `FAILED.json` or `INTERRUPTED.json`;
 - `command.json`, `client-config.yaml`, `aiperf-console.log`;
@@ -70,8 +72,10 @@ copied**. HF dataset download is enabled with its cache on this private result
 PVC. The full Weka dataset is distinct from model weights. Client server-metric
 discovery is disabled; only explicit endpoints in `hzhou` are scraped.
 
-The sidecar has a namespace-scoped Role: read pods/logs and discovery objects,
-and delete only the exact named DGD and ComputeDomain. It has no node, PV,
+The frontend/sidecar ServiceAccount has a namespace-scoped Role: read pods/logs
+and discovery objects, create/patch/update DynamoWorkerMetadata for frontend
+router registration, and delete only the exact named DGD and ComputeDomain.
+It has no node, PV,
 StorageClass, other-namespace or cluster-operator write permission. After benchmark
 success/failure (hard run-process ceiling three hours), it captures logs, flushes
 results, then requests deletion of those two resources to release GPUs. Namespace,
@@ -84,12 +88,27 @@ Submitted September 8 around 18:40 PDT. GPU pods scheduled without preemption:
 prefill on `lv8c`/`ss59`, decode on `5rzq`; frontend on `24wk`.
 The initial result PVC used `standard-rwo`, was provisioned but never attached,
 and frontend could not start because GCP rejected pd-balanced on a4x.
-The manifest is corrected to Hyperdisk; applying that correction and replacing
-the unstarted frontend requires renewal of the expired Teleport session.
-At this checkpoint **the benchmark has not started**. No success claim is made.
+After login renewal at 19:29 PDT, Hyperdisk was successfully attached and the
+old unstarted frontend and empty `agentx-gb200-results` PVC were removed. No
+model or experiment-result data was deleted. Frontend router registration also
+required namespace-local DynamoWorkerMetadata patch permission, now included.
 
-After login renewal, apply the current manifest, replace the old unstarted
-frontend pod, and delete only the failed, empty initial `agentx-gb200-results`
-PVC after its old consumer has gone. Preserve `agentx-gb200-results-hyperdisk`.
-Check the sidecar logs and confirm all 393 trajectories are loaded before
-interpreting the measurement.
+The first client attempt failed at 19:32 before sending any requests: passing a
+partial `server_metrics` YAML switched this AIPerf fork into envelope mode, where
+`benchmark.datasets` and `benchmark.phases` are required. Its `FAILED.json`,
+command and logs remain under `/results/agentx-gb200-20260908-c48/`. Automatic
+cleanup released the GPU workload after this setup failure.
+
+The corrected helper resolves the full CLI into a complete envelope, disables
+cluster-wide server-metric discovery, validates it, and then executes that file.
+Both `aiperf config validate` and the actual profile config loader/plan builder
+passed in a no-GPU preflight pod using the exact runtime image. Attempt 2 was
+submitted at 19:38, preserving the failed attempt rather than removing its marker.
+The public dataset was prefetched onto the private result PVC while engines
+loaded: all **393 trajectories** are cached. This is dataset staging, not replay
+or model-weight download.
+
+The runner resolves the prefill **leader** pod for readiness and metrics. The
+generic prefill Service can also select the nonleader multinode pod, whose system
+metrics endpoint did not respond in this test. Explicit leader selection avoids
+that ambiguity without changing engine parallelism or routing.

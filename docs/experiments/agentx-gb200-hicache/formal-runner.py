@@ -11,7 +11,7 @@ import subprocess
 import time
 import urllib.request
 
-ROOT = Path('/results/agentx-gb200-20260908-c48')
+ROOT = Path('/results/agentx-gb200-20260908-c48-attempt2')
 ROOT.mkdir(parents=True, exist_ok=True)
 MODEL = 'nvidia/GLM-5.2-NVFP4'
 REVISION = '53e0691e21895a3863a606dfd12910c69eba94ab'
@@ -75,10 +75,14 @@ if (ROOT / 'STARTED.json').exists():
         time.sleep(60)
 
 print('Waiting for P and D readiness and frontend model availability', flush=True)
+prefill_url = None
 while True:
     try:
-        for service in ['prefill', 'decode']:
-            with urllib.request.urlopen('http://' + DGD + '-' + service + ':9090/live', timeout=10) as response:
+        pods = json.loads(api('/api/v1/namespaces/hzhou/pods?labelSelector=nvidia.com%2Fdynamo-graph-deployment-name%3D' + DGD))
+        leader = next(pod for pod in pods['items'] if '-prefill-ldr-' in pod['metadata']['name'] and pod['status'].get('podIP'))
+        prefill_url = 'http://' + leader['status']['podIP'] + ':9090'
+        for base_url in [prefill_url, 'http://' + DGD + '-decode:9090']:
+            with urllib.request.urlopen(base_url + '/live', timeout=10) as response:
                 if response.status != 200:
                     raise RuntimeError('worker not ready')
         with urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=10) as response:
@@ -107,10 +111,8 @@ for source in snapshot.iterdir():
         shutil.copy2(source, tokenizer / source.name)
 
 client_config = ROOT / 'client-config.yaml'
-client_config.write_text('server_metrics:\n  discovery:\n    mode: disabled\n')
 command = [
     '/opt/agentx-aiperf/bin/aiperf', 'profile',
-    '--config', str(client_config),
     '--scenario', 'inferencex-agentx-mvp', '--url', 'http://127.0.0.1:8000',
     '--endpoint', '/v1/chat/completions', '--endpoint-type', 'chat',
     '--model', MODEL, '--tokenizer', str(tokenizer),
@@ -122,7 +124,7 @@ command = [
     '--trace-idle-gap-cap-seconds', '300', '--system-idle-gap-cap-seconds', '10',
     '--cache-bust', 'first_turn_prefix', '--streaming', '--extra-inputs', 'ignore_eos:true',
     '--use-server-token-count', '--no-gpu-telemetry', '--slice-duration', '1', '--stats-interval', '30',
-    '--server-metrics', 'http://' + DGD + '-prefill:9090/metrics',
+    '--server-metrics', prefill_url + '/metrics',
     'http://' + DGD + '-decode:9090/metrics',
     '--artifact-dir', str(ROOT / 'aiperf'),
 ]
@@ -142,7 +144,11 @@ Path('/results/tmp').mkdir(exist_ok=True)
 collect()
 try:
     with (ROOT / 'aiperf-console.log').open('w') as output:
-        result = subprocess.run(command, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=10800)
+        subprocess.run(['/opt/agentx-aiperf/bin/python', '/runner/prepare-client.py',
+                        str(ROOT / 'command.json'), str(client_config)],
+                       env=environment, stdout=output, stderr=subprocess.STDOUT, check=True, timeout=120)
+        result = subprocess.run(['/opt/agentx-aiperf/bin/aiperf', 'profile', '--config', str(client_config)],
+                                env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=10800)
     marker('COMPLETE.json' if result.returncode == 0 else 'FAILED.json', returncode=result.returncode)
 except BaseException as exc:
     marker('FAILED.json', error=repr(exc))
