@@ -19,7 +19,7 @@ EXPECTED_IDS = (
     "002001296e8a8c38ad9d7cc436d691afc602",
     "006c98de37d819e95b0840e25426bb7ca99d",
 )
-EXPECTED_SOURCE_DIGEST = "fc88c786e1dab775b550f9387d9c53358123df78b2af7cb344235bcfafe33ea6"
+EXPECTED_SOURCE_DIGEST = "c602efa3abcb3ad29811d916de54a0bc1e62b8ce30c4b8d2f9a20b8628df9bf2"
 EXPECTED_GRAPH_DIGEST = "44c30a0d65d647a4abd3fd06fe0a843d599b064849053801d9a4b4be46924c3d"
 
 
@@ -111,6 +111,7 @@ def qualify(root: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
         "files": 1,
         "plays": 2,
         "requests": sum(model_request_count(row) for row in rows),
+        "weka_nested_timestamp_basis": "absolute",
         "source_digest": EXPECTED_SOURCE_DIGEST,
         "graph_digest": EXPECTED_GRAPH_DIGEST,
     }

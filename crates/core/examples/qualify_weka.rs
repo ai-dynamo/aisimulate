@@ -38,6 +38,7 @@ fn main() -> Result<()> {
             "plays": summary.plays,
             "requests": summary.requests,
             "raw_zero_outputs": summary.raw_zero_outputs,
+            "weka_nested_timestamp_basis": summary.nested_timestamp_basis,
             "graph_digest": graph.graph_digest(),
         }))?
     );
