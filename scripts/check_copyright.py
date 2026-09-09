@@ -35,7 +35,7 @@ LICENSE_MARKER = re.compile(
     rf"|/\*+\s*{APACHE_LICENSE_IDENTIFIER}\s*\*/"
     rf"|<!--\s*{APACHE_LICENSE_IDENTIFIER}\s*-->"
     rf"|\*\s*{APACHE_LICENSE_IDENTIFIER}(?:\s*\*/)?"
-    rf"|{APACHE_LICENSE_IDENTIFIER}(?:\s*(?:\*/|-->))?"
+    rf"|{APACHE_LICENSE_IDENTIFIER}"
     rf")\s*$",
     re.MULTILINE,
 )
