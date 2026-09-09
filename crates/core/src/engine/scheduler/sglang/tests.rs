@@ -242,7 +242,6 @@ fn zero_output_completion_survives_decode_reservation_failure() {
         None,
         0.0,
         false,
-        true,
     )
     .unwrap();
 
@@ -262,12 +261,54 @@ fn zero_output_completion_survives_decode_reservation_failure() {
 }
 
 #[test]
+fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
+    // Two full pages, both requests need one more page for this step: r2 (no output yet) is
+    // retracted, r1 takes its page, produces its last token and completes in the same step.
+    // SGLang's `retract_decode` estimate is taken from the survivors before the forward
+    // (decoded 1 + 20 over max_new 2 + 1, clamped to 1.0); computing it after the forward would
+    // see an empty batch and reset the ratio to 0.
+    let config = SglangConfig::from_args(&test_args(2, 4, 16));
+    let mut kv_manager = SglangKvManager::new(8, 4, KvEventPublishers::default(), 0);
+    let r1_alloc = kv_manager.allocate_for_request(&[1, 2, 3, 10]).unwrap();
+    let r2_alloc = kv_manager.allocate_for_request(&[5, 6, 7, 8]).unwrap();
+    let mut running = vec![
+        SglangRequest {
+            uuid: Uuid::from_u128(90_010),
+            sequence_tokens: vec![1, 2, 3, 10],
+            prompt_len: 3,
+            max_output_tokens: 2,
+            planned_output_ids: None,
+            kv_lease: r1_alloc.lease,
+            materialized_tokens: 4,
+            allocated_tokens: 4,
+        },
+        SglangRequest {
+            uuid: Uuid::from_u128(90_011),
+            sequence_tokens: vec![5, 6, 7, 8],
+            prompt_len: 4,
+            max_output_tokens: 5,
+            planned_output_ids: None,
+            kv_lease: r2_alloc.lease,
+            materialized_tokens: 4,
+            allocated_tokens: 4,
+        },
+    ];
+    let result = simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
+    assert_eq!(result.requests.len(), 1, "r2 is retracted");
+    assert_eq!(result.requests[0].uuid, Uuid::from_u128(90_011));
+    assert!(running.is_empty(), "r1 completes in this step");
+    assert_eq!(result.new_token_ratio_estimate, Some(1.0));
+}
+
+#[test]
 fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     let args = test_args(8, 4, 16);
     let config = SglangConfig::from_args(&args);
     let (buffer, sink) = capture_kv_event_sink();
-    let mut kv_manager = SglangKvManager::new(11, 4, KvEventPublishers::new(Some(sink)), 0);
-    let prompt = vec![1, 2, 3, 4];
+    // Three pages. The cached prompt spans two; SGLang's `input_len - 1` match cap means the
+    // admitted request reuses only the first cached page and owns a fresh page for the rest.
+    let mut kv_manager = SglangKvManager::new(15, 4, KvEventPublishers::new(Some(sink)), 0);
+    let prompt = vec![1, 2, 3, 4, 5, 6, 7, 8];
 
     let cached = kv_manager.allocate_for_request(&prompt).unwrap();
     let cached_pages = cached.lease.pages().to_vec();
@@ -287,12 +328,13 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         .pop()
         .unwrap();
 
-    assert_eq!(req.cached_tokens(), prompt.len());
-    assert_eq!(req.kv_pages(), cached_pages);
+    assert_eq!(req.cached_tokens(), 4);
+    assert_eq!(req.kv_pages()[..1], cached_pages[..1]);
+    assert_eq!(req.kv_pages().len(), 2);
 
-    // The three-token blocker owns a complete physical page. With two pages
-    // total there is no free capacity, so the cache-hit request is retracted
-    // while the blocker can fill the remainder of its existing page.
+    // The three-token blocker owns a complete physical page (it evicts the second, no longer
+    // referenced cached page to get it). With three pages total there is no free capacity, so the
+    // cache-hit request is retracted while the blocker can fill the remainder of its own page.
     let blocker_tokens = vec![9, 10, 11];
     let blocker_alloc = kv_manager.allocate_for_request(&blocker_tokens).unwrap();
     let blocker = SglangRequest {
@@ -331,9 +373,12 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     assert_eq!(pressure.logical_available_blocks_before, Some(0));
     assert_eq!(pressure.required_blocks_before, Some(1));
     assert!(pressure.state_after.active_blocks <= pressure.state_before.active_blocks);
-    assert_eq!(removed_event_count(&buffer.drain()), 0);
-    assert_eq!(kv_manager.cache().page_pool.available(), 0);
-    assert_eq!(kv_manager.cache_mut().match_prefix(&prompt).0, prompt.len());
+    // The retracted request frees the page it owned beyond the cached prefix (one stored block
+    // removed); the cached first page survives, the second cached page had already been evicted
+    // for the blocker.
+    assert_eq!(removed_event_count(&buffer.drain()), 1);
+    assert_eq!(kv_manager.cache().page_pool.available(), 4);
+    assert_eq!(kv_manager.cache_mut().match_prefix(&prompt).0, 4);
 }
 
 mod source_holds {
@@ -1410,8 +1455,20 @@ mod core_behavior {
         }
 
         let mut collector = crate::engine::trace::TraceCollector::default();
+        // The prefill forward yields exactly one token per request; speculative bursts only
+        // apply to decode forwards.
         let first = core.execute_pass(&mut collector, 0.0);
-        assert_eq!(first.output_signals.len(), 9);
+        assert_eq!(
+            first
+                .output_signals
+                .iter()
+                .map(|signal| signal.uuid)
+                .collect::<Vec<_>>(),
+            vec![short, long, longer]
+        );
+        assert!(core.running.iter().all(|req| req.output_len() == 1));
+
+        // First decode pass: every request accepts the full three-token burst.
         let second = core.execute_pass(&mut collector, first.end_ms);
         let ordered = second
             .output_signals
@@ -1422,6 +1479,28 @@ mod core_behavior {
             ordered,
             vec![
                 (short, false),
+                (short, false),
+                (short, false),
+                (long, false),
+                (long, false),
+                (long, false),
+                (longer, false),
+                (longer, false),
+                (longer, false),
+            ]
+        );
+        assert!(core.running.iter().all(|req| req.output_len() == 4));
+        assert_eq!(second.fpm.unwrap().num_decode_requests, 3);
+
+        // Second decode pass: `short` has one token left and completes; the others burst again.
+        let third = core.execute_pass(&mut collector, second.end_ms);
+        assert_eq!(
+            third
+                .output_signals
+                .iter()
+                .map(|signal| (signal.uuid, signal.completed))
+                .collect::<Vec<_>>(),
+            vec![
                 (short, true),
                 (long, false),
                 (long, false),
@@ -1433,19 +1512,18 @@ mod core_behavior {
         );
         assert_eq!(core.running.len(), 2);
         assert_eq!(core.running[0].uuid, long);
-        assert_eq!(core.running[0].output_len(), 6);
+        assert_eq!(core.running[0].output_len(), 7);
         assert_eq!(core.running[1].uuid, longer);
-        assert_eq!(core.running[1].output_len(), 6);
-        assert_eq!(second.fpm.unwrap().num_decode_requests, 3);
+        assert_eq!(core.running[1].output_len(), 7);
 
-        let third = core.execute_pass(&mut collector, second.end_ms);
+        let fourth = core.execute_pass(&mut collector, third.end_ms);
         assert_eq!(
-            third
+            fourth
                 .output_signals
                 .iter()
-                .map(|signal| signal.uuid)
+                .map(|signal| (signal.uuid, signal.completed))
                 .collect::<Vec<_>>(),
-            vec![long, long, longer, longer],
+            vec![(long, true), (longer, true)],
         );
     }
 }
@@ -2089,17 +2167,27 @@ mod forward_pass_metrics {
         finish_and_cache(&mut core, 1, (0..5).collect(), &mut now);
         core.receive(DirectRequest {
             tokens: (0..5).collect(),
-            max_output_tokens: 1,
+            max_output_tokens: 2,
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
         });
+        let available_before = core.kv_manager.cache().available_tokens();
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass = core.execute_pass(&mut collector, now);
         let fpm = pass.fpm.expect("FPM should be present");
         assert_eq!(fpm.num_prefill_requests, 1);
         assert_eq!(fpm.sum_prefill_tokens, 1);
         assert!(pass.end_ms > now);
+        // The allocator honours the same cap (see `allocation_match_is_capped_like_sglang` for the
+        // lease-level state): the fifth prompt token got its own slot at admission and the first
+        // output token took another; once the in-flight prefix was cached, the fifth token's slot
+        // was deduplicated against the identical cached page, so the pool is one token smaller.
+        assert_eq!(core.running.len(), 1);
+        assert_eq!(
+            available_before - core.kv_manager.cache().available_tokens(),
+            1
+        );
     }
 
     #[test]

@@ -63,11 +63,6 @@ impl SglangRequest {
         self.sequence_tokens.len()
     }
 
-    pub(super) fn extend_input_len(&self) -> usize {
-        self.current_sequence_len()
-            .saturating_sub(self.materialized_tokens)
-    }
-
     pub(super) fn remaining_output_tokens(&self) -> usize {
         self.max_output_tokens.saturating_sub(self.output_len())
     }

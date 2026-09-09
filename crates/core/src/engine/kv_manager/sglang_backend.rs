@@ -223,16 +223,32 @@ impl SglangKvManager {
     /// then allocate KV pages for a new request.
     ///
     /// Returns `None` if protected and free capacity cannot satisfy the request.
+    #[cfg(test)]
     pub(crate) fn allocate_for_request_lease(
         &mut self,
         token_ids: &[u32],
         lease: &mut RadixRequestLease,
     ) -> Option<usize> {
+        self.allocate_for_request_lease_capped(token_ids, lease, token_ids.len())
+    }
+
+    /// Like [`Self::allocate_for_request_lease`], but the prefix match never extends past
+    /// `max_prefix_tokens`. SGLang matches at most `input_len - 1` tokens
+    /// (`Req.init_next_round_input`), so the last token of a fully cached prompt is still
+    /// computed and owns its own KV slot.
+    pub(crate) fn allocate_for_request_lease_capped(
+        &mut self,
+        token_ids: &[u32],
+        lease: &mut RadixRequestLease,
+        max_prefix_tokens: usize,
+    ) -> Option<usize> {
         assert!(!lease.is_active(), "request KV lease is already active");
         let page_size = self.cache.page_size();
         lease.ensure_page_hashes(token_ids, page_size);
         let materialized_hashes = lease.page_hashes_through(token_ids.len(), page_size);
-        let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(materialized_hashes);
+        let matchable_hashes =
+            &materialized_hashes[..(max_prefix_tokens.min(token_ids.len()) / page_size)];
+        let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(matchable_hashes);
         let required_pages = token_ids.len().div_ceil(page_size) - prefix_len / page_size;
         let required_tokens = required_pages * page_size;
 
@@ -1565,6 +1581,29 @@ mod tests {
         // Pool is full
         let result = mgr.allocate_for_request(&[4, 5, 6]);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn allocation_match_is_capped_like_sglang() {
+        // A fully cached five-token prompt admitted with SGLang's `input_len - 1` cap reuses four
+        // tokens and owns a fresh slot for the fifth: physical ownership and `cached_tokens`
+        // honour the same cap, not just the prefill accounting.
+        let mut mgr = SglangKvManager::new(64, 1, KvEventPublishers::default(), 0);
+        let prompt: Vec<u32> = (1..=5).collect();
+        let cached = mgr.allocate_for_request(&prompt).unwrap();
+        mgr.finish(&prompt, cached.lease);
+        let available_before = mgr.cache().available_tokens();
+
+        let mut lease = RadixRequestLease::default();
+        let prefix_len = mgr
+            .allocate_for_request_lease_capped(&prompt, &mut lease, prompt.len() - 1)
+            .unwrap();
+        assert_eq!(prefix_len, 4);
+        assert_eq!(lease.cached_tokens(), 4);
+        assert_eq!(lease.len(), 5);
+        assert_eq!(lease.pages().len(), 5);
+        assert_eq!(available_before - mgr.cache().available_tokens(), 1);
+        assert!(mgr.abort(lease));
     }
 
     #[test]

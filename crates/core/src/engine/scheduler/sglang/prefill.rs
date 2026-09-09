@@ -21,11 +21,14 @@ pub(super) struct AdmitResult {
     pub(super) admissions: Vec<AdmissionEvent>,
     pub(super) total_isl: usize,
     pub(super) total_prefix: usize,
-    pub(super) oom: bool,
     /// Per-request prefill info for building FPM snapshots.
     pub(super) prefill_fpm: Vec<PrefillFpmItem>,
 }
 
+/// Behavioral model of SGLang's prefill admission (`Scheduler.get_new_batch_prefill`,
+/// `PrefillAdder.add_one_req` / `add_chunked_req`, `Req.init_next_round_input`) as of
+/// sgl-project/sglang v0.5.6.post2 (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`,
+/// `schedule_batch.py`, `schedule_policy.py`). Re-implemented; no SGLang source is copied.
 pub(super) fn get_new_batch_prefill(
     waiting: &mut VecDeque<SglangRequest>,
     kv_manager: &mut SglangKvManager,
@@ -55,7 +58,6 @@ pub(super) fn get_new_batch_prefill(
     let mut admissions = Vec::new();
     let mut prefill_fpm = Vec::new();
     let mut rejected = VecDeque::new();
-    let mut oom = false;
     let mut total_isl = 0usize;
     let mut total_prefix = 0usize;
 
@@ -70,6 +72,8 @@ pub(super) fn get_new_batch_prefill(
         // it already owns. Zero-output (prefix-only) replay requests keep the full match: they
         // have no first token to sample, so a fully cached prompt is no forward-pass work.
         let cached_prefix = if req.materialized_tokens == 0 && config.enable_prefix_caching {
+            req.kv_lease
+                .ensure_page_hashes(&req.sequence_tokens, config.block_size);
             let match_len = if req.max_output_tokens == 0 {
                 req.current_sequence_len()
             } else {
@@ -134,18 +138,15 @@ pub(super) fn get_new_batch_prefill(
             // Continuation: extend the request's own pages; no re-match.
             kv_manager.extend_allocation(alloc_tokens, &mut lease)
         } else {
-            // Locks the same path the read-only match above saw (same thread, eviction inside
-            // happens after locking), so the locked prefix is at least `cached_prefix`. Clamp to
-            // the SGLang cap so a fully cached prompt still computes its last token.
-            kv_manager
-                .allocate_for_request_lease(alloc_tokens, &mut lease)
-                .map(|matched| matched.min(start))
+            // Locks the path the read-only match above saw, matching no further than that cap so
+            // physical ownership and `cached_tokens` also stop at `input_len - 1`: the last token
+            // of a fully cached prompt is computed and gets its own KV slot.
+            kv_manager.allocate_for_request_lease_capped(alloc_tokens, &mut lease, start)
         };
 
         let Some(prefix_len) = prefix_len else {
             req.kv_lease = lease;
             rejected.push_back(req);
-            oom = true;
             break;
         };
         let tokens_computed = chunk_end.saturating_sub(prefix_len);
@@ -187,7 +188,6 @@ pub(super) fn get_new_batch_prefill(
         admissions,
         total_isl,
         total_prefix,
-        oom,
         prefill_fpm,
     }
 }

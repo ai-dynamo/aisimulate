@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+//! Behavioral model of the SGLang scheduler loop (`Scheduler.get_next_batch_to_run`,
+//! `update_running_batch`, `ScheduleBatch.retract_decode`) as of sgl-project/sglang v0.5.6.post2
+//! (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`, `schedule_batch.py`). Re-implemented in
+//! Rust from the observed semantics; no SGLang source is copied.
+
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -23,6 +28,7 @@ use crate::engine::{HandoffId, modeled_duration_ms};
 use super::config::SglangConfig;
 use super::decode::{
     cache_materialized_prefix, cleanup_completed_request, simulate_decode_step_with_sampler,
+    simulate_prefill_first_tokens,
 };
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
@@ -36,10 +42,6 @@ use crate::engine::scheduler::{
     SchedulerLifecycleEvent, SourceCompletion, SourceHolds, build_fpm_snapshot,
     capture_kv_event_sink,
 };
-
-/// SGLang `SGLANG_RETRACT_DECODE_STEPS`: decode steps worth of KV reserved per remaining request
-/// when re-estimating `new_token_ratio` after a retraction.
-const RETRACT_DECODE_STEPS: usize = 20;
 
 pub(crate) struct SglangCore {
     pub(super) config: SglangConfig,
@@ -695,10 +697,6 @@ impl SglangCore {
             ),
         };
 
-        // SGLang's `get_new_batch_prefill` only marks the running batch full on
-        // `AddReqResult.NO_TOKEN`; it does not reset `new_token_ratio` there.
-        let _ = admit.oom;
-
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
             if let Some(collector) = collector.as_deref_mut() {
@@ -750,15 +748,23 @@ impl SglangCore {
         };
 
         let decode_start_ms = now_ms + prefill_time.as_secs_f64() * 1000.0;
-        let mut decode = simulate_decode_step_with_sampler(
-            &mut self.running,
-            &mut self.kv_manager,
-            &self.config,
-            self.speculative_sampler.as_mut(),
-            decode_start_ms,
-            true,
-            !prefill_pass,
-        )?;
+        let mut decode = if prefill_pass {
+            simulate_prefill_first_tokens(
+                &mut self.running,
+                &mut self.kv_manager,
+                &self.config,
+                decode_start_ms,
+            )?
+        } else {
+            simulate_decode_step_with_sampler(
+                &mut self.running,
+                &mut self.kv_manager,
+                &self.config,
+                self.speculative_sampler.as_mut(),
+                decode_start_ms,
+                true,
+            )?
+        };
         if !stalled.is_empty() {
             // Keep FIFO order: older requests stay ahead of the ones admitted in this pass.
             stalled.append(&mut self.running);
@@ -783,15 +789,10 @@ impl SglangCore {
             self.waiting.push_back(req);
         }
 
-        if decode.retracted_any {
-            // `ScheduleBatch.retract_decode` re-estimates the output reservation ratio from the
-            // remaining batch: min(1, (decoded + RETRACT_DECODE_STEPS * n) / (max_new + 1)).
-            let remaining = self.running.len();
-            let total_decoded: usize = self.running.iter().map(|req| req.output_len()).sum();
-            let total_max_new: usize = self.running.iter().map(|req| req.max_output_tokens).sum();
-            let estimate = (total_decoded as f64 + RETRACT_DECODE_STEPS as f64 * remaining as f64)
-                / (total_max_new as f64 + 1.0);
-            self.new_token_ratio = estimate.min(1.0);
+        if let Some(estimate) = decode.new_token_ratio_estimate {
+            // `ScheduleBatch.retract_decode`: re-estimated from the survivors at the retraction
+            // point, before the forward.
+            self.new_token_ratio = estimate;
             self.bump_capacity_generation();
         } else if !prefill_pass {
             // The ratio decays in `update_running_batch`, i.e. only on decode passes.
