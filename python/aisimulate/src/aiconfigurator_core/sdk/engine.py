@@ -764,6 +764,9 @@ def _maybe_load_database(
     transfer_policy: str | list[str] | None,
     strict_provenance: bool | None,
 ) -> Any:
+    explicit_policy = any(
+        value is not None for value in (database_mode, shared_layer, transfer_policy, strict_provenance)
+    )
     try:
         from aiconfigurator_core.sdk import perf_database
 
@@ -780,7 +783,7 @@ def _maybe_load_database(
             strict_provenance=strict_provenance,
         )
     except Exception:
-        if database_mode is not None:
+        if explicit_policy:
             raise
         return None
 

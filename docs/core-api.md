@@ -202,7 +202,7 @@ The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
   `KvCacheEstimateOptions`, `KvCacheMemoryFraction`, and estimate/result/error
   types;
 - wire identity: `EngineConfig`, `ParallelMapping`, `QuantizationConfig`,
-  `SpeculativeConfig`, `BackendKind`, and `DataType`;
+  `SpeculativeConfig`, `BackendKind`, `DatabaseMode`, and `DataType`;
 - schema gates: `ENGINE_CONFIG_SCHEMA_VERSION`,
   `ENGINE_SPEC_SCHEMA_VERSION`, and `FPM_VERSION`.
 

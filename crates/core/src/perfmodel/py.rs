@@ -1271,6 +1271,19 @@ mod builder_tests {
         );
         assert_eq!(request.strict_provenance, Some(true));
     }
+
+    #[test]
+    fn builder_rejects_sol_full_as_database_default() {
+        let result = AicEngineBuilder::new("model", "system", BackendKind::Vllm)
+            .database_mode(DatabaseMode::SolFull)
+            .build();
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
+        ));
+    }
 }
 
 /// Construct the public handle from the one canonical build request.
@@ -1286,6 +1299,12 @@ fn build_engine_from_request(request: EngineBuildRequest) -> Result<AicEngine, A
 /// The public builder and [`compile_engine_to_engine`] both use this function,
 /// so Python argument names and defaults cannot drift.
 fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, AicError> {
+    if request.database_mode.as_deref() == Some(DatabaseMode::SolFull.as_str()) {
+        return Err(AicError::InvalidEngineConfig(
+            "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
+                .to_string(),
+        ));
+    }
     let systems_root = resolve_systems_root(request.systems_path.as_deref())
         .map_err(|e| AicError::DataRoot(format!("resolve systems path: {e}")))?;
     let systems_root_str = systems_root.to_str().ok_or_else(|| {

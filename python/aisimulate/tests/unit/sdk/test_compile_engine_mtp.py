@@ -131,7 +131,22 @@ def test_maybe_load_database_builds_formula_only_empirical_view(monkeypatch):
     assert captured["kwargs"]["strict_provenance"] is False
 
 
-def test_maybe_load_database_does_not_silently_downgrade_explicit_mode(monkeypatch):
+@pytest.mark.parametrize(
+    ("database_mode", "shared_layer", "transfer_policy", "strict_provenance"),
+    [
+        ("EMPIRICAL", None, None, None),
+        (None, False, None, None),
+        (None, None, [], None),
+        (None, None, None, True),
+    ],
+)
+def test_maybe_load_database_does_not_silently_downgrade_explicit_policy(
+    monkeypatch,
+    database_mode,
+    shared_layer,
+    transfer_policy,
+    strict_provenance,
+):
     from aiconfigurator_core.sdk import perf_database
 
     def _fail_view(*_args, **_kwargs):
@@ -140,4 +155,24 @@ def test_maybe_load_database_does_not_silently_downgrade_explicit_mode(monkeypat
     monkeypatch.setattr(perf_database, "get_database_view", _fail_view)
 
     with pytest.raises(ValueError, match="unsupported database mode"):
-        engine._maybe_load_database("h200_sxm", "vllm", "0.25.1", None, "EMPIRICAL", None, None, None)
+        engine._maybe_load_database(
+            "h200_sxm",
+            "vllm",
+            "0.25.1",
+            None,
+            database_mode,
+            shared_layer,
+            transfer_policy,
+            strict_provenance,
+        )
+
+
+def test_maybe_load_database_keeps_default_load_tolerant(monkeypatch):
+    from aiconfigurator_core.sdk import perf_database
+
+    def _fail_view(*_args, **_kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(perf_database, "get_database_view", _fail_view)
+
+    assert engine._maybe_load_database("h200_sxm", "vllm", "0.25.1", None, None, None, None, None) is None

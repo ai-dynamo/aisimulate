@@ -57,6 +57,8 @@ pub enum DatabaseMode {
     Hybrid,
     Empirical,
     Sol,
+    /// Python-only per-call diagnostic retained on the wire for compatibility.
+    /// Engine builders reject this as a database's default mode.
     SolFull,
 }
 
