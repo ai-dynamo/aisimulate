@@ -77,7 +77,9 @@ No B300 allocation was submitted for checkpoint preparation.
 ## Reproduction checks still open
 
 - Verify checkpoint completion and release the CPU preparation allocation.
-- Resolve the reference runtime image digest and exact AIPerf revision/settings.
+- Use the same FPM-fixed linux/amd64 image as B200 GLM job `4207957`, as pinned
+  in the [runtime plan](README.md#planned-local-runtime-shared-fpm-fixed-x86-image).
+  Validate DSv4 GPU compatibility and align exact AIPerf revision/settings.
 - Obtain a complete B300 node and validate interconnect and actual GPU identity.
 - Validate DSv4 HiCache memory sizing on a 2 TB node. The reference's 2849 GB
   CPU DRAM metric is not an exact host-cache size setting: the launcher uses

@@ -52,11 +52,38 @@ this does not prove the exact revision of its weight files. Preserve this distin
 when reporting reproduction fidelity. The client dependency revision and full replay
 arguments still need to be pinned from the reference workflow before execution.
 
-The API image includes `cu13`, while the server's `SGLANG_IMAGE_TAG` omits it.
-Resolve and record the actual image digest before launch. This experiment must not
-silently inherit the GLM-5.2 Dynamo image or its no-HiCache, c4, TP8/EP1 settings.
-Synthetic speculative acceptance makes this a performance experiment, not a model
-quality evaluation.
+## Planned local runtime: shared FPM-fixed x86 image
+
+Use the **same linux/amd64 FPM-fixed image as the B200 GLM AgentX job
+`4207957`**, with FPM enabled explicitly for recording. Its submission pins this
+multi-architecture index:
+
+```text
+nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:9fb6f18c1b224a5651f4482cdc20efc27b2916cd14f92173da3c349b8412f308
+```
+
+The linux/amd64 child is:
+
+```text
+nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:f856a45537f82e1900ea7607edcbaa7f77fbb2e70220eae522d1d50d0046727e
+```
+
+See the [shared FPM image build record](../agentx-glm-5.2-440082-gb200-hicache/fpm-image-2026-09-09.md).
+It backports SGLang PR #38711 at `ed18d64951b93ac252d921ee037ce0d3327eda1f`,
+including timing fixes and immutable decode-length statistics, onto engine base
+`71de97b264b04dcd514cf904003028aefe9775c8`. It also includes the FPM disk recorder
+and isolated AIPerf environment. The production backport adds no D2H or timing
+synchronization; performance overhead remains to be measured.
+
+The reference image in the table above describes the published AgentX run,
+not our planned runtime. Its API tag includes `cu13`, while its server log tag
+omits it. Our shared FPM image is an intentional runtime difference from that
+reference. Preserve DSv4's c32, TP8/EP8, attention DP8 and HiCache settings;
+do not inherit the GLM baseline's model-specific launch arguments.
+
+DSv4/MegaMoE/HiCache GPU compatibility still needs smoke validation with this
+image. Record any required image change explicitly. Synthetic speculative
+acceptance makes this a performance experiment, not a model quality evaluation.
 
 ## Published comparison targets
 
@@ -97,7 +124,8 @@ room for the engine, client, router and page cache. Measure the actual allocatio
 any reduced host cache is a documented variant, not exact memory-capacity parity.
 
 1. Finish the pinned checkpoint download and verify all index-referenced shards.
-2. Pin the runtime digest, client revision, chat template and complete replay settings.
+2. Validate the pinned shared FPM runtime for DSv4 and pin the client revision,
+   chat template and complete replay settings.
 3. Obtain one complete B300 allocation and record hardware, driver, power limits,
    topology, host memory and effective Slurm resources.
 4. Validate weight loading, host cache sizing, DP-aware routing and a short replay.
