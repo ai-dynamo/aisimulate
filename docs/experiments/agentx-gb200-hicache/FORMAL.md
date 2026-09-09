@@ -203,3 +203,28 @@ instead of carrying the large KV payload. `transport-check.json` on the result
 PVC records this evidence. The first-request 9.94-second latency is a cold
 transport/setup diagnostic, not a steady-state performance number. The formal
 warmup and profiling data remain separate from this check.
+
+### Latest observed state (21:26 PDT)
+
+Attempt 5 entered warmup at 21:14:44. It completed 43 of the 531-request warmup
+budget with zero reported errors; eight of the 51 initial primers remained
+in flight, with no new completion for several minutes. The one-hour profiling
+phase **had not started**. Pods remained Ready with zero restarts.
+
+Prefill DP0 reported 235,776 occupied host-cache tokens (capacity 2,966,784/rank),
+so G2 storage was actually being used; this alone does not prove G2 reload hits.
+Decode's usable KV capacity was 997,184 tokens versus the model's 1,048,576
+architectural context limit. The remaining requests need further admission/
+transfer investigation rather than a silent concurrency reduction.
+
+Read-only stack samples are preserved in the attempt5 directory:
+`decode-scheduler-stack.txt` and `decode-other-ranks-stack.txt`. TP0 was sampled
+in metadata-gated Gloo `all_reduce`, TP1/TP3 in request broadcast, and TP2 in
+decode preallocation code. These are diagnostic observations, not a proven
+root cause; the samples were not an atomic all-rank capture.
+
+Teleport access expired at 21:29, preventing further live observation until
+renewed. The in-pod runner continues independently. Its 10,800-second AIPerf
+process timeout is a hard bound; the 1800-second warmup **grace** must not be
+interpreted as a confirmed total warmup deadline. Completion, failure and GPU
+release still require verification from the retained PVC/current cluster state.
