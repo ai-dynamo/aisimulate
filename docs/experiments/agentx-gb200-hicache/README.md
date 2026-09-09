@@ -8,9 +8,10 @@ SPDX-License-Identifier: Apache-2.0
 Status: built and published on September 8, 2026; single-GPU ARM64/H100 smoke test
 passed. The three-node GB200 Kubernetes variant is documented in
 [KUBERNETES.md](KUBERNETES.md), with [DGD](deploy.yaml) and
-[short AIPerf Job](aiperf-smoke.yaml). Cache-pressure offload/reload is not
-validated by the short smoke workload; consult the run status there before
-interpreting any results.
+[short AIPerf Job](aiperf-smoke.yaml): 32/32 requests passed with decode FPM
+disabled to work around a nightly engine crash, and all 12 GPUs were released.
+Cache-pressure offload/reload is not validated by this short smoke workload;
+consult the run details before interpreting any results.
 
 Published image:
 

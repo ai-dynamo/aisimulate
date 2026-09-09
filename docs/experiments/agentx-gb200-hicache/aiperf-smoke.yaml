@@ -27,7 +27,8 @@ spec:
                 --url http://agentx-glm52-hicache-frontend:8000 \
                 --endpoint-type chat \
                 --model nvidia/GLM-5.2-NVFP4 \
-                --tokenizer /model-cache/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab \
+                --tokenizer nvidia/GLM-5.2-NVFP4 \
+                --tokenizer-revision 53e0691e21895a3863a606dfd12910c69eba94ab \
                 --synthetic-input-tokens-mean 1024 \
                 --synthetic-input-tokens-stddev 0 \
                 --output-tokens-mean 128 \
@@ -41,6 +42,7 @@ spec:
               sleep 300
           env:
             - {name: HF_HUB_OFFLINE, value: '1'}
+            - {name: HF_HUB_CACHE, value: /model-cache}
             - {name: XDG_CACHE_HOME, value: /tmp/agentx-cache}
           securityContext: {runAsUser: 0}
           resources:

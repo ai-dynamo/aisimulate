@@ -12,6 +12,57 @@ engines, with 48 replay lanes. This variant keeps the prefill engine and reduces
 decode to **one** replica. The short synthetic AIPerf test below checks serving;
 it does not reproduce the AgentX trace distribution, lane timing or cache pressure.
 
+## Completed run: September 8, 2026
+
+With the decode FPM workaround below, DGD readiness and chat passed, followed by
+**32/32 AIPerf requests, zero errors, in 30.0945 seconds**. This is an un-warmed
+synthetic smoke, not an AgentX throughput measurement. The first request burst
+had much higher TTFT than subsequent requests; do not use its aggregate metrics
+as a steady-state performance result.
+
+| Smoke metric | Value |
+| --- | --- |
+| Maintained HTTP concurrency | 4 |
+| Actual input / output tokens per request | 1036 / 128 |
+| TTFT p50 / p90 | 1.481 / 12.591 seconds |
+| Request latency p50 | 2.013 seconds |
+| ITL p50 | 4.192 ms |
+| Aggregate output throughput, all 12 GPUs | 136.09 tokens/s |
+
+The 1024-token synthetic prompt becomes 1036 input tokens after chat formatting.
+Structured results are in [smoke-result-20260908.json](smoke-result-20260908.json).
+Original AIPerf artifacts, full worker logs, startup arguments, resource snapshot
+and metrics are preserved on the operator workstation under
+`/tmp/hzhou-gb200-debug-20260908/`; the result JSON records the archive SHA-256.
+
+HiCache actually initialized on all eight prefill DP ranks. In this newer nightly,
+the 135 GB pool packs 78 target KV layers plus one MTP layer, giving **2,966,784
+host tokens per rank**, plus 30.94 GB/rank for the packed DSA indexer. This differs
+from the older reference's separately allocated draft cache. Prefill GPU capacity
+was 1,100,608 tokens/rank; decode capacity was 997,312 tokens for its TP4 engine.
+The prefill leader's exported DP0–3 `hicache_host_used_tokens` gauges were all
+zero after this workload. **G2 eviction/reload was not exercised or validated.**
+
+NIXL initialized its UCX backend and end-to-end P-to-D requests completed.
+ComputeDomain was Ready on all three nodes, IMEX `channel0` was visible and
+intra-node topology showed NV18. No standalone pairwise NIXL benchmark ran, and
+the precise data-plane choice was not instrumented: this does not independently
+prove that every transfer used NVLink rather than an available fallback. The
+generic interconnect probe also flagged absent pod RDMA/GDRCopy devices; this
+manifest targets MNNVL rather than provisioning RDMA interfaces.
+
+The AIPerf fork's offline resolver requires a **repo ID plus revision**, not a
+local snapshot directory: use `--tokenizer nvidia/GLM-5.2-NVFP4`,
+`--tokenizer-revision 53e0691e21895a3863a606dfd12910c69eba94ab` and
+`HF_HUB_CACHE=/model-cache`. The first client attempt failed before sending any
+requests when a local directory was passed in offline mode; the corrected Job
+loads the tokenizer entirely from the existing read-only cache.
+
+Cleanup was verified at **18:16 PDT**: no pods, DGD, ComputeDomain or ResourceClaims
+remained in `hzhou`; all three selected nodes again had zero scheduled GPU
+requests, releasing the test's **12 GPUs**. The namespace, image-pull secret and
+auto-generated shared PVC were retained. No model/cache data was deleted.
+
 ## Scope and fixed inputs
 
 - Context: `nv-prd-dgxc.teleport.sh-dynamo-gcp-dev-02`.
