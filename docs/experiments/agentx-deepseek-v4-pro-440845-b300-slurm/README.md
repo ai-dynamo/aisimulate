@@ -8,7 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 This experiment targets [AgentX point 440845](https://inferencex.semianalysis.com/inference/agentic/440845):
 DeepSeek-V4-Pro FP4 with MTP, attention DP8 and DRAM HiCache at concurrency 32.
 It is a hardware reproduction for subsequent AISimulate validation.
-**Preparation only: no local B300 measurement or parity result exists yet.**
+**Execution authorized: FPM-off, then FPM-on with raw capture; both runs disable
+HiCache. No local B300 measurement or parity result exists yet.**
 See [preparation log](preparation-2026-09-09.md) for checkpoint download status,
 Computelab resource discovery and remaining work.
 
@@ -55,7 +56,8 @@ arguments still need to be pinned from the reference workflow before execution.
 ## Planned local runtime: shared FPM-fixed x86 image
 
 Use the **same linux/amd64 FPM-fixed image as the B200 GLM AgentX job
-`4207957`**, with FPM enabled explicitly for recording. Its submission pins this
+`4207957`**, with FPM disabled for the first run and enabled explicitly with recording for
+the second run. Its submission pins this
 multi-architecture index:
 
 ```text
@@ -78,7 +80,7 @@ synchronization; performance overhead remains to be measured.
 The reference image in the table above describes the published AgentX run,
 not our planned runtime. Its API tag includes `cu13`, while its server log tag
 omits it. Our shared FPM image is an intentional runtime difference from that
-reference. Preserve DSv4's c32, TP8/EP8, attention DP8 and HiCache settings;
+reference. Preserve DSv4's c32, TP8/EP8 and attention DP8 settings;
 do not inherit the GLM baseline's model-specific launch arguments.
 
 DSv4/MegaMoE/HiCache GPU compatibility still needs smoke validation with this
@@ -115,22 +117,52 @@ SC-01 exposes both DGX B300 (8 GPUs, 256 logical CPUs) and B300 NVL8
 (8 GPUs, 224 logical CPUs), each with approximately 2 TB host RAM. The September 9
 query found no unreserved idle eight-GPU node for `hongkuanz`.
 
-Host memory needs explicit validation. The reference reports 2849 GB CPU DRAM,
-and its launcher describes ratio 3 at static fraction 0.93 as a host tier near
-2 TB on a roughly 3 TB node. For DSv4 this launcher uses the host/device ratio,
-not `TOTAL_CPU_DRAM_GB`, to determine cache capacity; it states that `--hicache-size`
-is unsupported. A 2 TB Computelab node may therefore need a smaller ratio to leave
-room for the engine, client, router and page cache. Measure the actual allocation;
-any reduced host cache is a documented variant, not exact memory-capacity parity.
+The user selected **HiCache disabled in both cases**, given no CPU cache hits
+in the reference point. This also removes the reference host-tier memory burden
+from the approximately 2 TB Computelab nodes. Preserve GPU radix caching and
+measure GPU hit rate and cache capacity; absence of reference CPU hits alone
+does not prove that disabling HiCache is performance-neutral.
 
-1. Finish the pinned checkpoint download and verify all index-referenced shards.
-2. Validate the pinned shared FPM runtime for DSv4 and pin the client revision,
-   chat template and complete replay settings.
-3. Obtain one complete B300 allocation and record hardware, driver, power limits,
-   topology, host memory and effective Slurm resources.
-4. Validate weight loading, host cache sizing, DP-aware routing and a short replay.
-5. Run the measured c32 experiment with separate warmup and complete raw artifacts;
-   compare against the targets above and record every configuration difference.
+## Execution protocol
+
+[campaign.py](campaign.py) runs two cases in order in one exclusive B300 node
+allocation, using one immutable image and the same model, client and settings:
+
+1. **off**: FPM disabled, no recorder; 3600 seconds of measured AgentX c32.
+2. Stop the engine and router, then launch fresh instances and repeat the same
+   smoke/warmup procedure. GPU KV starts fresh; compilation caches can be reused.
+3. **on**: FPM enabled, [record_fpm.py](record_fpm.py) subscribes to all eight
+   native SGLang DP-rank IPC endpoints; another 3600-second measurement.
+4. Validate rank coverage, finite timing/length statistics, and counter gaps;
+   [compare.py](compare.py) compares throughput, TTFT, ITL, request latency,
+   request counts, cache hits and validity evidence.
+
+Both cases use native SGLang serving and the DP-aware SGLang router inside the
+shared image. This preserves the reference routing path while collecting native
+SGLang FPM directly; no Dynamo frontend is added to this pair. The runtime-only
+thinking chat template comes from the pinned reference commit, with its license
+and provenance retained on scratch; it is not vendored in this directory.
+
+The recorder writes buffered JSONL on node-local disk throughout startup, smoke,
+warmup and measurement. At shutdown it flushes and copies the complete capture
+and SHA256 to scratch. Keep AIPerf phase timestamps to select the measured window.
+Counter gaps remain visible diagnostics; the recorder does not invent missing
+samples. The GPU time comes from the repaired engine instrumentation.
+
+[submit.sh](submit.sh) requests eight GPUs, one exclusive node and a four-hour
+limit, covering both measurements plus loading, compilation and warmup. Submission
+is gated on the pinned checkpoint's successful shard verification and the CPU
+image/CLI preflight. Hardware identity is checked before model loading.
+
+Artifacts live at `/home/scratch.hongkuanz_gpu/agentx-dsv4-results/job-<job-id>/`:
+`off/` and `on/` each retain commands, environment, server/router/client logs,
+AIPerf raw exports and lifecycle timestamps. `on/fpm.jsonl`, `on/fpm.sha256` and
+`on/fpm-validation.json` retain the FPM capture and diagnostics. The root contains
+hardware/topology, pinned model/image identity and `comparison.json`/`.md`.
+
+This is one ordered off/on pair. Startup effects and different closed-loop
+request sets limit causal overhead claims. Compare this pair first, then compare
+against point 440845 separately with the no-HiCache and runtime differences clear.
 
 The existing [GLM-5.2 B200 baseline](../agentx-glm-5.2-440958-b200-slurm/README.md)
 and [GLM-5.2 GB200 HiCache experiment](../agentx-glm-5.2-440082-gb200-hicache/README.md)

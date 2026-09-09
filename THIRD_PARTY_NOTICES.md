@@ -32,6 +32,27 @@ https://github.com/ai-dynamo/dynamo/blob/f7612301f01bc3ef557cc8f38687d559b0d54b3
 Modifications include GB200 three-node topology, namespace isolation, pinned
 image/checkpoint, read-only shared storage and AgentX reference cache settings.
 
+
+## InferenceX DSv4 experiment configuration
+
+`docs/experiments/agentx-deepseek-v4-pro-440845-b300-slurm/campaign.py` contains
+locally authored orchestration with serving and replay configuration adapted from
+SemiAnalysisAI/InferenceX contributors, commit
+`fb85931b1edec09f9498509835a8c814bebe3c65`:
+
+- `benchmarks/single_node/agentic/dsv4_fp4_b300_sglang_mtp.sh`
+- `benchmarks/benchmark_lib.sh`
+
+Source: https://github.com/SemiAnalysisAI/InferenceX/tree/fb85931b1edec09f9498509835a8c814bebe3c65
+
+Licensed under Apache-2.0:
+https://github.com/SemiAnalysisAI/InferenceX/blob/fb85931b1edec09f9498509835a8c814bebe3c65/LICENSE
+
+Modified configuration disables HiCache and adds a paired FPM off/on campaign,
+independent recording, cleanup and evidence capture. The upstream thinking chat
+template is fetched unchanged into the runtime bundle with its license; it is
+not included in this repository.
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from

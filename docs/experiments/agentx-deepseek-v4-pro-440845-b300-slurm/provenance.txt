@@ -1,0 +1,8 @@
+Locally authored orchestration and native FPM subscriber; no engine source changes.
+Image amd64: nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:f856a45537f82e1900ea7607edcbaa7f77fbb2e70220eae522d1d50d0046727e
+SGLang base: 71de97b264b04dcd514cf904003028aefe9775c8; FPM backport: ed18d64951b93ac252d921ee037ce0d3327eda1f.
+Client: SemiAnalysisAI/aiperf 754356e9a39acc6cc6afb242d123bb57c3fb6f75, installed /opt/agentx-aiperf.
+Reference: https://inferencex.semianalysis.com/inference/agentic/440845
+Configuration evidence: InferenceX fb85931b1edec09f9498509835a8c814bebe3c65, benchmarks/single_node/agentic/dsv4_fp4_b300_sglang_mtp.sh and benchmarks/benchmark_lib.sh; reference server log corroborated configuration.
+Runtime-only external template: deepseek_v4_thinking.jinja, unmodified from https://github.com/SemiAnalysisAI/InferenceX/blob/fb85931b1edec09f9498509835a8c814bebe3c65/benchmarks/single_node/chat_templates/deepseek_v4_thinking.jinja . Apache-2.0, accompanying INFERENCEX_LICENSE preserved. Not vendored into AISimulate.
+Protocol: fresh-server FPM-off 3600s, fresh-server FPM-on+recording 3600s, both c32 and HiCache DISABLED per user instruction. Native SGLang plus DP-aware consistent-hash SGLang router in both cases. Record all 8 DP ranks via native ZMQ IPC, buffered node-local JSONL then copy to scratch. FPM includes setup/smoke/warmup/measurement; keep AIPerf phase timestamps for measured filtering. Counter gaps are diagnostics, not repaired samples.

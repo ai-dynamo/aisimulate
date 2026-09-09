@@ -9,7 +9,8 @@ SPDX-License-Identifier: Apache-2.0
 
 Prepare the checkpoint on `/home/scratch.hongkuanz_gpu` and establish a separate
 B300 experiment record for [AgentX 440845](https://inferencex.semianalysis.com/inference/agentic/440845).
-The requested preparation does not yet include a measured B300 run.
+The user subsequently authorized one FPM-off run followed by one FPM-on run,
+with FPM raw data retained and results compared. Both cases disable HiCache.
 
 ## Checkpoint
 
@@ -81,10 +82,8 @@ No B300 allocation was submitted for checkpoint preparation.
   in the [runtime plan](README.md#planned-local-runtime-shared-fpm-fixed-x86-image).
   Validate DSv4 GPU compatibility and align exact AIPerf revision/settings.
 - Obtain a complete B300 node and validate interconnect and actual GPU identity.
-- Validate DSv4 HiCache memory sizing on a 2 TB node. The reference's 2849 GB
-  CPU DRAM metric is not an exact host-cache size setting: the launcher uses
-  ratio 3, whose capacity also depends on device KV memory. Preserve measured
-  host/device pool sizes and document any reduced ratio.
+- Disable HiCache in both runs per user instruction; retain GPU radix caching
+  and record measured GPU capacity and hit rates. This differs from the reference.
 - Preserve the reference's DP-aware SGLang router and thinking chat template;
   record any later Dynamo substitution as a separate configuration difference.
 - Run smoke/warmup and the c32 measured phase; no local performance result exists.
@@ -100,3 +99,15 @@ All 28 existing experiment files were checked against the preceding commit.
 Only Markdown path references changed; launcher/configuration/result contents
 were preserved. The root README, cross-links and both third-party notice copies
 were updated to the new paths. See the [experiment index](../README.md).
+
+## Automatic execution handoff
+
+The local controller bundle is
+`/home/hongkuanz/Experiments/agentx-dsv4-440845-ab-20260909/`.
+Its dispatcher waits for the exact checkpoint revision, 91 verified files,
+64 shards and no verification errors, plus successful image preflight, before
+submitting the pair. State, submission ID and controller logs are retained there.
+A failed preparation blocks submission. The controller collects the terminal
+Slurm state and small result artifacts, then publishes a scoped GitHub result
+record; the large raw client and FPM files remain on scratch. Scheduling still
+depends on an available B300 node.
