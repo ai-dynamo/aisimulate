@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,6 +14,8 @@ from tools.support_matrix.support_matrix import (
     STATUS_PASS,
     SupportMatrix,
     TestConstraints,
+    _get_encoder_coverage,
+    _support_matrix_row_command,
 )
 
 pytestmark = pytest.mark.unit
@@ -146,18 +147,7 @@ def test_task_uses_silicon_database_mode(monkeypatch):
     assert captured_kwargs["engine_step_backend"] == "rust"
 
 
-@pytest.mark.parametrize(
-    ("model", "expected_visual"),
-    [
-        (
-            "moonshotai/Kimi-K3",
-            {"image_height": 448, "image_width": 448, "num_images_per_request": 1},
-        ),
-        ("moonshotai/Kimi-K2.5", {}),
-    ],
-)
-@pytest.mark.parametrize("mode", ["agg", "disagg"])
-def test_support_matrix_runs_real_kimi_k3_encoder_but_not_k25_semantics(monkeypatch, model, expected_visual, mode):
+def test_qwen35_support_matrix_runs_and_replays_with_image_workload(monkeypatch):
     captured_kwargs = {}
 
     class FakeTask:
@@ -165,36 +155,57 @@ def test_support_matrix_runs_real_kimi_k3_encoder_but_not_k25_semantics(monkeypa
             captured_kwargs.update(kwargs)
 
     monkeypatch.setattr(support_matrix_module, "Task", FakeTask)
+    constraints = TestConstraints(total_gpus=32, isl=256, osl=256, prefix=128, ttft=2000.0, tpot=50.0)
+    coverage = _get_encoder_coverage("Qwen/Qwen3.5-27B")
+    assert coverage.aic_encoder_implemented
+
     SupportMatrix._create_task(
-        mode=mode,
-        model=model,
+        mode="agg",
+        model="Qwen/Qwen3.5-27B",
         system="b200_sxm",
-        backend="sglang",
-        version="0.5.16",
-        constraints=TestConstraints(
-            total_gpus=128,
-            isl=256,
-            osl=256,
-            prefix=128,
-            ttft=2_000_000.0,
-            tpot=50_000.0,
-        ),
+        backend="vllm",
+        version="0.24.0",
+        constraints=constraints,
+        image_workload=coverage.workload,
+    )
+    command = _support_matrix_row_command(
+        model="Qwen/Qwen3.5-27B",
+        system="b200_sxm",
+        backend="vllm",
+        version="0.24.0",
+        constraints=constraints,
+        image_workload=coverage.workload,
     )
 
-    for key in ("image_height", "image_width", "num_images_per_request"):
-        if key in expected_visual:
-            assert captured_kwargs[key] == expected_visual[key]
-        else:
-            assert key not in captured_kwargs
+    assert captured_kwargs["image_height"] == 1024
+    assert captured_kwargs["image_width"] == 1024
+    assert captured_kwargs["num_images_per_request"] == 1
+    assert "--image-height 1024 --image-width 1024 --num-images 1" in command
 
 
-def test_representative_visual_workload_fails_fast_for_curated_model_load_error(monkeypatch):
-    monkeypatch.setattr(support_matrix_module.common, "DefaultHFModels", {"test/curated-model"})
+def test_run_single_test_keeps_encoder_metadata_failures_fail_fast(monkeypatch):
     monkeypatch.setattr(
         support_matrix_module,
-        "_get_model_info",
-        MagicMock(side_effect=RuntimeError("model metadata unavailable")),
+        "_get_test_constraints",
+        lambda _model: TestConstraints(total_gpus=32, isl=256, osl=256, prefix=128, ttft=2000.0, tpot=50.0),
+    )
+    monkeypatch.setattr(
+        support_matrix_module,
+        "_get_encoder_coverage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("broken encoder metadata")),
+    )
+    monkeypatch.setattr(
+        SupportMatrix,
+        "_run_mode",
+        lambda **_kwargs: pytest.fail("metadata failure must abort before support attempts"),
     )
 
-    with pytest.raises(RuntimeError, match="model metadata unavailable"):
-        support_matrix_module._representative_visual_workload("test/curated-model")
+    with pytest.raises(RuntimeError, match="broken encoder metadata"):
+        SupportMatrix.run_single_test(
+            "Qwen/Qwen3.5-27B",
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            system_spec={},
+            modes_to_test=("agg",),
+        )

@@ -119,6 +119,8 @@ struct AicTimingConfig {
     #[serde(default)]
     free_gpu_memory_fraction: Option<f64>,
     #[serde(default)]
+    cuda_graph_reserved_bytes: u64,
+    #[serde(default)]
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
@@ -355,6 +357,10 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
         kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
+        kwargs.set_item(
+            "cuda_graph_reserved_bytes",
+            config.cuda_graph_reserved_bytes,
+        )?;
         // Capacity intentionally omits NextN until AIC's Eagle memory model no
         // longer returns negative KV capacity. Timing compilation still uses it.
         kwargs.set_item("systems_path", config.systems_path.as_deref())?;
@@ -990,6 +996,7 @@ mod tests {
             gpu_memory_utilization: None,
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
+            cuda_graph_reserved_bytes: 0,
             systems_path: None,
             forward_model: None,
         }
@@ -1016,6 +1023,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(role.rank.num_gpu_blocks, 17);
+    }
+
+    #[test]
+    fn cuda_graph_reservation_reaches_capacity_rematerialization() {
+        let mut config = aic_config();
+        config.cuda_graph_reserved_bytes = 14_559_939_133;
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+
+        materialize_aic_capacity(&config, &mut role, false, |config, _role| {
+            assert_eq!(config.cuda_graph_reserved_bytes, 14_559_939_133);
+            Ok(321)
+        })
+        .unwrap();
+
+        assert_eq!(role.rank.num_gpu_blocks, 321);
     }
 
     #[test]
@@ -1167,6 +1189,7 @@ mod tests {
                 output_tokens: 1,
                 output_token_ids: None,
                 dp_rank: None,
+                prefill_dp_rank: None,
                 session_id: Some("session-a".into()),
                 turn_index: Some(2),
                 metadata: serde_json::json!({"caller_tag": "binding"}),

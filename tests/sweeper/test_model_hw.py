@@ -14,9 +14,11 @@ from aisimulate.sweeper.model_hw import (
     parallel_configs_for,
     resolve_model_hardware,
 )
+from aisimulate.sweeper.parallel_enum import ParallelShape
 
 DEEPSEEK = "deepseek-ai/DeepSeek-V3"
 QWEN = "Qwen/Qwen3-32B"
+QWEN3_VL_MOE = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
 
 
 @pytest.mark.model(DEEPSEEK)
@@ -113,6 +115,38 @@ def test_role_runtime_preserves_legacy_three_tuple_contract(monkeypatch):
     assert seen["max_num_tokens"] == 4096
     assert seen["max_batch_size"] == 32
     assert seen["memory_fraction"] == 0.75
+
+
+@pytest.mark.model(QWEN3_VL_MOE)
+def test_single_gpu_moe_shape_passes_real_kv_feasibility():
+    configs = parallel_configs_for(
+        QWEN3_VL_MOE,
+        "gb200",
+        gpu_budget=1,
+        deployment_mode="agg",
+        backend="vllm",
+    )
+
+    expected = ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1, pp=1)
+    assert len(configs) == 1
+    assert configs[0].shape == expected
+    assert configs[0].replicas == 1
+
+
+@pytest.mark.model(QWEN3_VL_MOE)
+def test_single_gpu_moe_shape_still_fails_real_kv_infeasibility():
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"no parallel config holds a 1000000000-token sequence",
+    ):
+        parallel_configs_for(
+            QWEN3_VL_MOE,
+            "gb200",
+            gpu_budget=1,
+            deployment_mode="agg",
+            backend="vllm",
+            max_seq_len=1_000_000_000,
+        )
 
 
 @pytest.mark.model(DEEPSEEK)

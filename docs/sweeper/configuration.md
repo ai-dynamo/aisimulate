@@ -67,7 +67,8 @@ configuration for each candidate.
 | `aic_nextn` | `None` | optional speculative-decoding depth |
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
-size, GPU-memory-utilization, and prefix-caching fields. A one-item list pins a searched field.
+size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
+or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pins a searched field.
 
 ## Pinned Parallel Configurations
 
@@ -83,7 +84,9 @@ search_space:
 ```
 
 A disaggregated entry contains `prefill` and `decode` shapes. Every pinned shape must be legal,
-KV-feasible, and supported by at least one selected backend.
+KV-feasible, supported by at least one selected backend, and accepted by the configured Replay
+runner. If every selected backend/topology pair is runner-incompatible, preflight raises
+`aisimulate.sweeper.RunnerIncompatibleError` with the rejected mode and backend names.
 
 ## Provider Selection
 

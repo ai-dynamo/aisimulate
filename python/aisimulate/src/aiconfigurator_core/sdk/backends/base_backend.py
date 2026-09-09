@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from aiconfigurator_core.sdk import common
-from aiconfigurator_core.sdk.config import RuntimeConfig
+from aiconfigurator_core.sdk.config import RuntimeConfig, has_video_input
 from aiconfigurator_core.sdk.inference_summary import InferenceSummary
 from aiconfigurator_core.sdk.models import BaseModel
 from aiconfigurator_core.sdk.perf_database import PerfDatabase
@@ -27,16 +27,6 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 from aiconfigurator_core.sdk.step_estimate import MixedStepInput, StepEstimate
 
 logger = logging.getLogger(__name__)
-
-
-@dataclasses.dataclass(frozen=True)
-class _EncoderVisualWorkload:
-    """One homogeneous image/video sequence group entering a vision encoder."""
-
-    kind: str
-    count_per_request: int
-    post_merge_tokens: int
-    pre_merge_tokens: int
 
 
 class BaseBackend:
@@ -254,11 +244,17 @@ class BaseBackend:
     @staticmethod
     def _visual_context_tokens_from_encoder_config(enc_cfg, runtime_config: RuntimeConfig) -> int:
         if not isinstance(enc_cfg, common.VisionEncoderConfig):
+            if has_video_input(
+                num_videos=runtime_config.num_videos_per_request,
+                video_height=runtime_config.video_height,
+                video_width=runtime_config.video_width,
+                video_frames=runtime_config.video_frames,
+                num_video_tokens=runtime_config.num_video_tokens,
+            ):
+                raise ValueError("Video workloads require a model with a supported vision encoder configuration.")
             return 0
-        return sum(
-            workload.post_merge_tokens * workload.count_per_request
-            for workload in BaseBackend._encoder_visual_workloads(runtime_config, enc_cfg)
-        )
+        post_merge, _, num_visuals = BaseBackend._encoder_pre_merge_per_visual(runtime_config, enc_cfg)
+        return post_merge * num_visuals
 
     @staticmethod
     def effective_prefill_isl(model_path: str, runtime_config: RuntimeConfig) -> int:
@@ -267,14 +263,14 @@ class BaseBackend:
         Single source for the effective prefill ISL: every token/batch budget
         derived from it must divide by this same value, never a recomputed one.
         """
-        from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
+        from aiconfigurator_core.sdk.utils import (
+            get_model_config_from_model_path,
+            get_vision_encoder_config_from_model_info,
+        )
 
         try:
             model_info = get_model_config_from_model_path(model_path)
-            enc_cfg = model_info.get("encoder_config")
-            if not isinstance(enc_cfg, common.VisionEncoderConfig):
-                extra = model_info.get("extra_params")
-                enc_cfg = getattr(extra, "vision_config", extra)
+            enc_cfg = get_vision_encoder_config_from_model_info(model_info)
         except Exception:
             logger.debug("Could not resolve model config for the effective ISL; using text ISL", exc_info=True)
             enc_cfg = None
@@ -290,101 +286,128 @@ class BaseBackend:
     def _encoder_pre_merge_per_visual(
         runtime_config: RuntimeConfig,
         enc_cfg,
-    ) -> tuple[int, int]:
-        """Resolve the per-image pre-merge / post-merge token counts from
+    ) -> tuple[int, int, int]:
+        """Resolve one homogeneous image or video workload.
+
+        Images and videos use different temporal semantics and may have
+        different attention sequence lengths. Until mixed-shape packing is
+        modeled explicitly, fail loudly when both are requested rather than
+        collapse them into one dishonest encoder query.
+
+        Resolve the per-visual pre-merge / post-merge token counts from
         RuntimeConfig + VisionEncoderConfig.
 
-        Resolution order:
+        Image resolution order:
             1. image_height + image_width (smart-resized, then patch/merge sizes)
             2. num_image_tokens (explicit per-image override)
+        Video resolution order:
+            1. video_frames + video_height + video_width
+            2. num_video_tokens (explicit per-video override)
 
-        Returns ``(tokens_post_merge_per_image, pre_merge_per_image)``.
-        Returns ``(0, 0)`` when neither is set (text-only path).
+        Returns ``(tokens_post_merge_per_visual, pre_merge_per_visual,
+        num_visuals_per_request)``. Returns zeros for the text-only path.
         """
-        has_image_dims = runtime_config.image_height > 0 and runtime_config.image_width > 0
-        if has_image_dims:
-            # Upstream VL processors (Qwen smart_resize) round each raw
-            # dimension to the *nearest* multiple of patch_size * merge_size
-            # before patchify; plain floor under-counts tokens for
-            # non-aligned inputs.  The processor's min/max_pixels rescaling
-            # is a preprocessor knob AIC does not model.
-            img_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
-            h_bar = max(img_stride, round(runtime_config.image_height / img_stride) * img_stride)
-            w_bar = max(img_stride, round(runtime_config.image_width / img_stride) * img_stride)
-            tokens_per_image = (h_bar // img_stride) * (w_bar // img_stride)
-            pre_merge_per_image = (h_bar // enc_cfg.patch_size) * (w_bar // enc_cfg.patch_size)
-        elif runtime_config.num_image_tokens > 0:
-            tokens_per_image = runtime_config.num_image_tokens
-            pre_merge_per_image = tokens_per_image * (enc_cfg.spatial_merge_size**2)
-        else:
-            return 0, 0
-        if tokens_per_image <= 0 or pre_merge_per_image <= 0:
-            return 0, 0
-        return tokens_per_image, pre_merge_per_image
+        image_count = runtime_config.num_images_per_request
+        image_height = runtime_config.image_height
+        image_width = runtime_config.image_width
+        image_token_override = runtime_config.num_image_tokens
+        has_any_image_dims = image_height > 0 or image_width > 0
+        has_image_dims = image_height > 0 and image_width > 0
+        has_image_override = image_token_override > 0
+        if image_count > 0 and has_any_image_dims and not has_image_dims:
+            raise ValueError("Image height and width must either both be provided or both be omitted.")
+        has_images = image_count > 0 and (has_image_dims or has_image_override)
 
-    @staticmethod
-    def _encoder_video_tokens_per_visual(
-        runtime_config: RuntimeConfig,
-        enc_cfg: common.VisionEncoderConfig,
-    ) -> tuple[int, int]:
-        """Return post-/pre-merge tokens for one representative video.
-
-        Frames are first grouped by ``temporal_patch_size``. Kimi K3 uses a
-        Conv2d per frame (temporal_patch_size=1), attends jointly over the full
-        t*h*w sequence, then ``sd2_tpool`` collapses all temporal positions; its
-        LLM-visible token count therefore depends only on spatial resolution.
-        Other ViTs retain one output time step per temporal patch group.
-        """
-        if runtime_config.video_height <= 0 or runtime_config.video_width <= 0 or runtime_config.video_num_frames <= 0:
-            return 0, 0
-        temporal_patch = max(1, enc_cfg.temporal_patch_size)
-        temporal_tokens = -(-runtime_config.video_num_frames // temporal_patch)
-        if enc_cfg.max_temporal_patches > 0 and temporal_tokens > enc_cfg.max_temporal_patches:
-            raise ValueError(
-                f"{enc_cfg.encoder_type} supports at most {enc_cfg.max_temporal_patches} temporal patches; "
-                f"got {temporal_tokens} from video_num_frames={runtime_config.video_num_frames} "
-                f"and temporal_patch_size={temporal_patch}"
-            )
-        spatial_pre = (runtime_config.video_height // enc_cfg.patch_size) * (
-            runtime_config.video_width // enc_cfg.patch_size
+        video_count = runtime_config.num_videos_per_request
+        video_frames = runtime_config.video_frames
+        video_height = runtime_config.video_height
+        video_width = runtime_config.video_width
+        video_token_override = runtime_config.num_video_tokens
+        has_any_video_input = has_video_input(
+            num_videos=video_count,
+            video_height=video_height,
+            video_width=video_width,
+            video_frames=video_frames,
+            num_video_tokens=video_token_override,
         )
-        spatial_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
-        spatial_post = (runtime_config.video_height // spatial_stride) * (runtime_config.video_width // spatial_stride)
-        pre_merge = temporal_tokens * spatial_pre
-        post_merge = spatial_post if enc_cfg.temporal_pool_all else temporal_tokens * spatial_post
-        if pre_merge <= 0 or post_merge <= 0:
-            return 0, 0
-        return post_merge, pre_merge
+        has_video_dims = video_frames > 0 and video_height > 0 and video_width > 0
+        has_video_override = video_token_override > 0
+        if has_any_video_input:
+            if video_count <= 0:
+                raise ValueError("Video workloads require num_videos_per_request > 0.")
+            if not has_video_dims and not has_video_override:
+                raise ValueError(
+                    "Video workloads require video_frames + video_height + video_width, "
+                    "or num_video_tokens + video_frames."
+                )
+            if has_video_override and video_frames <= 0:
+                raise ValueError(
+                    "num_video_tokens requires video_frames so temporal attention sequences can be modeled."
+                )
+            if has_video_override and (video_height > 0) != (video_width > 0):
+                raise ValueError("Video height and width must either both be provided or both be omitted.")
+        has_videos = has_any_video_input
+        if has_images and has_videos:
+            raise ValueError(
+                "Mixed image/video encoder workloads are not modeled yet; estimate images and videos separately."
+            )
 
-    @staticmethod
-    def _encoder_visual_workloads(
-        runtime_config: RuntimeConfig,
-        enc_cfg: common.VisionEncoderConfig,
-    ) -> list[_EncoderVisualWorkload]:
-        workloads = []
-        if runtime_config.num_images_per_request > 0:
-            post_merge, pre_merge = BaseBackend._encoder_pre_merge_per_visual(runtime_config, enc_cfg)
-            if pre_merge > 0:
-                workloads.append(
-                    _EncoderVisualWorkload(
-                        kind="image",
-                        count_per_request=runtime_config.num_images_per_request,
-                        post_merge_tokens=post_merge,
-                        pre_merge_tokens=pre_merge,
-                    )
+        def _smart_resized_spatial_tokens(height: int, width: int) -> tuple[int, int]:
+            # Upstream VL processors (Qwen smart_resize) round each raw
+            # dimension to the nearest patch-and-merge stride before
+            # patchify. The processor's min/max_pixels rescaling is a
+            # preprocessor knob AIC does not model.
+            spatial_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
+            h_bar = max(spatial_stride, round(height / spatial_stride) * spatial_stride)
+            w_bar = max(spatial_stride, round(width / spatial_stride) * spatial_stride)
+            post_merge = (h_bar // spatial_stride) * (w_bar // spatial_stride)
+            pre_merge = (h_bar // enc_cfg.patch_size) * (w_bar // enc_cfg.patch_size)
+            return post_merge, pre_merge
+
+        if has_videos:
+            temporal_patches = -(-video_frames // enc_cfg.temporal_patch_size)
+            if enc_cfg.max_temporal_patches and temporal_patches > enc_cfg.max_temporal_patches:
+                raise ValueError(
+                    f"{enc_cfg.encoder_type or 'vision encoder'} supports at most "
+                    f"{enc_cfg.max_temporal_patches} temporal patches; got {temporal_patches}."
                 )
-        if runtime_config.num_videos_per_request > 0:
-            post_merge, pre_merge = BaseBackend._encoder_video_tokens_per_visual(runtime_config, enc_cfg)
-            if pre_merge > 0:
-                workloads.append(
-                    _EncoderVisualWorkload(
-                        kind="video",
-                        count_per_request=runtime_config.num_videos_per_request,
-                        post_merge_tokens=post_merge,
-                        pre_merge_tokens=pre_merge,
-                    )
+            if has_video_dims:
+                # Qwen pads a short final temporal group by repeating its last
+                # frame, so a partial group still produces one temporal patch.
+                spatial_post_merge, spatial_pre_merge = _smart_resized_spatial_tokens(video_height, video_width)
+                tokens_per_visual = (
+                    spatial_post_merge if enc_cfg.pool_temporal else temporal_patches * spatial_post_merge
                 )
-        return workloads
+                pre_merge_per_visual = temporal_patches * spatial_pre_merge
+            else:
+                tokens_per_visual = video_token_override
+                if not enc_cfg.pool_temporal and tokens_per_visual % temporal_patches != 0:
+                    raise ValueError(
+                        "num_video_tokens must divide evenly across temporal attention sequences: "
+                        f"num_video_tokens={tokens_per_visual}, temporal_sequences={temporal_patches}."
+                    )
+                pre_merge_per_visual = tokens_per_visual * (enc_cfg.spatial_merge_size**2)
+                if enc_cfg.pool_temporal:
+                    pre_merge_per_visual *= temporal_patches
+            num_visuals = video_count
+        else:
+            num_visuals = image_count
+            if has_image_dims:
+                tokens_per_visual, pre_merge_per_visual = _smart_resized_spatial_tokens(image_height, image_width)
+            elif has_image_override:
+                tokens_per_visual = image_token_override
+                pre_merge_per_visual = tokens_per_visual * (enc_cfg.spatial_merge_size**2)
+            else:
+                return 0, 0, 0
+        if has_videos and (tokens_per_visual <= 0 or pre_merge_per_visual <= 0):
+            spatial_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
+            raise ValueError(
+                "Video dimensions resolve to zero encoder tokens; "
+                f"height and width must each be at least {spatial_stride} pixels."
+            )
+        if tokens_per_visual <= 0 or pre_merge_per_visual <= 0 or num_visuals <= 0:
+            return 0, 0, 0
+        return tokens_per_visual, pre_merge_per_visual, num_visuals
 
     def _run_encoder_phase(
         self,
@@ -400,64 +423,75 @@ class BaseBackend:
         encoder_energy_wms_dict = defaultdict(float)
         encoder_source_dict = {}
 
-        if not model.encoder_ops:
-            return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, 0
-
         enc_cfg = getattr(model, "encoder_config", None)
-        if not isinstance(enc_cfg, common.VisionEncoderConfig):
+        if not model.encoder_ops or not isinstance(enc_cfg, common.VisionEncoderConfig):
+            # Reuse the visual-input guard so a configured video can never
+            # degrade silently to a text-only estimate on an unsupported model.
+            self._visual_context_tokens_from_encoder_config(enc_cfg, runtime_config)
             return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, 0
 
-        workloads = self._encoder_visual_workloads(runtime_config, enc_cfg)
-        if not workloads:
-            # No image/video dimensions specified; skip encoder modeling.
+        tokens_per_visual, pre_merge_per_visual, num_visuals = self._encoder_pre_merge_per_visual(
+            runtime_config, enc_cfg
+        )
+        if tokens_per_visual == 0:
+            # No visual dimensions specified; skip encoder modeling.
             return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, 0
 
-        visual_context_tokens = sum(w.post_merge_tokens * w.count_per_request for w in workloads)
+        visual_context_tokens = tokens_per_visual * num_visuals  # post-merge: injected into LLM context
 
         # Encoder DP: whole visuals are sharded across the tp_size ranks and the
         # busiest rank (ceil share) gates the phase.
         encoder_dp_size = model.config.tp_size if model.config.enable_encoder_dp else 1
-        self._require_rust_engine_step(runtime_config, database, surface="encoder")
+        visuals_local = -(-batch_size * num_visuals // encoder_dp_size)
 
-        def _record_encoder_source(name: str, source: str) -> None:
-            existing = encoder_source_dict.get(name)
-            encoder_source_dict[name] = source if existing is None or existing == source else "mixed"
-
-        for workload in workloads:
-            visuals_local = -(-batch_size * workload.count_per_request // encoder_dp_size)
-
-            # Per-op shape rules (the encoder orchestration — this token math
-            # — stays Python-side; only per-op values may come from the
-            # compiled engine). Projector ops and the DP exit AllGather run on
-            # post-merge tokens. Attention sees each image/video as an
-            # independent varlen sequence of pre-merge patches; for Kimi K3 a
-            # video's sequence length is frames*h*w before temporal pooling.
-            def _encoder_eff_s(op) -> int:
-                use_post = "encoder_projector" in op._name or "all_gather" in op._name
-                return workload.post_merge_tokens if use_post else workload.pre_merge_tokens
-
-            latency, energy, sources = self._run_encoder_phase_with_rust(
-                model,
-                database,
-                visuals_local,
-                _encoder_eff_s,
-                include_energy=include_energy,
+        # Per-op shape rules (the encoder orchestration — this token math —
+        # stays Python-side; only the per-op values may come from the
+        # compiled engine below). Projector ops and the DP exit AllGather run
+        # on post-merge tokens. ViT attention uses cu_seqlens: each image is an
+        # independent sequence, and each temporal patch of a video is an
+        # independent spatial sequence.
+        has_video_workload = (
+            runtime_config.num_videos_per_request > 0
+            and runtime_config.video_frames > 0
+            and (
+                runtime_config.num_video_tokens > 0
+                or (runtime_config.video_height > 0 and runtime_config.video_width > 0)
             )
-            for name, value in latency.items():
-                encoder_latency_dict[name] += value
-            for name, value in energy.items():
-                encoder_energy_wms_dict[name] += value
-            for name, source in sources.items():
-                _record_encoder_source(name, source)
+        )
+        temporal_sequences_per_visual = 1
+        if has_video_workload and not enc_cfg.pool_temporal:
+            temporal_sequences_per_visual = -(-runtime_config.video_frames // enc_cfg.temporal_patch_size)
+        if tokens_per_visual % temporal_sequences_per_visual != 0:
+            raise ValueError(
+                "Video post-merge tokens must divide evenly across temporal attention sequences: "
+                f"post_merge_tokens={tokens_per_visual}, "
+                f"temporal_sequences={temporal_sequences_per_visual}."
+            )
 
+        def _encoder_shape(op) -> tuple[int, int]:
+            use_post = "encoder_projector" in op._name or "all_gather" in op._name
+            use_varlen = "encoder_attention" in op._name
+            if use_varlen:
+                return (
+                    visuals_local * temporal_sequences_per_visual,
+                    pre_merge_per_visual // temporal_sequences_per_visual,
+                )
+            return visuals_local, tokens_per_visual if use_post else pre_merge_per_visual
+
+        self._require_rust_engine_step(runtime_config, database, surface="encoder")
+        encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict = self._run_encoder_phase_with_rust(
+            model,
+            database,
+            _encoder_shape,
+            include_energy=include_energy,
+        )
         return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, visual_context_tokens
 
     def _run_encoder_phase_with_rust(
         self,
         model: BaseModel,
         database: PerfDatabase,
-        images_local: int,
-        eff_s_of,
+        shape_of,
         *,
         include_energy: bool,
     ) -> tuple[dict[str, float], dict[str, float], dict[str, str]]:
@@ -466,8 +500,8 @@ class BaseBackend:
         Encoder ops are deliberately NOT in the compiled ``EngineSpec`` (the
         compile path threads no image configuration), so they travel through
         the ad-hoc op-list evaluation FFI: ops are grouped by their resolved
-        ``eff_s`` (the shape math above), each group serialized to OpSpec
-        JSON and evaluated at ``batch=images_local, s=eff_s, x=batch*s``.
+        ``(batch, eff_s)`` (the shape math above), each group serialized to
+        OpSpec JSON and evaluated at ``x=batch*s``.
         Latency/energy fold with ``+=``; sources are last-wins ACROSS shape
         groups, while duplicate names WITHIN one group would merge to
         ``"mixed"`` inside the engine (``build_encoder_ops`` never emits
@@ -478,24 +512,25 @@ class BaseBackend:
         from aiconfigurator_core.sdk.engine import build_ops_json
         from aiconfigurator_core.sdk.rust_engine_step import evaluate_ops_json_with_rust
 
-        groups: dict[int, list] = {}
+        groups: dict[tuple[int, int], list] = {}
         for op in model.encoder_ops:
-            groups.setdefault(int(eff_s_of(op)), []).append(op)
+            eff_batch, eff_s = shape_of(op)
+            groups.setdefault((int(eff_batch), int(eff_s)), []).append(op)
 
         latency_dict: dict[str, float] = defaultdict(float)
         energy_dict: dict[str, float] = defaultdict(float)
         source_dict: dict[str, str] = {}
-        for eff_s, ops in groups.items():
+        for (eff_batch, eff_s), ops in groups.items():
             ops_json = build_ops_json(ops)
             entries = evaluate_ops_json_with_rust(
                 model,
                 database,
                 ops_json=ops_json,
                 is_context=True,
-                batch_size=images_local,
+                batch_size=eff_batch,
                 s=eff_s,
                 prefix=0,
-                x=images_local * eff_s,
+                x=eff_batch * eff_s,
             )
             for name, latency_ms, energy_wms, source in entries:
                 latency_dict[name] += float(latency_ms)
@@ -1257,19 +1292,18 @@ class BaseBackend:
         enc_cfg = getattr(model, "encoder_config", None)
         if not model.encoder_ops or not isinstance(enc_cfg, common.VisionEncoderConfig):
             return {}
-        workloads = self._encoder_visual_workloads(runtime_config, enc_cfg)
-        if not workloads:
+        tokens_per_visual, pre_merge_per_visual, num_visuals = self._encoder_pre_merge_per_visual(
+            runtime_config, enc_cfg
+        )
+        if pre_merge_per_visual <= 0:
             return {}
-        # ViT activations follow the busiest rank's visual share; embeddings
+        # ViT activations follow the busiest rank's image share; the embeddings
         # buffer covers the full batch on every rank.
+        total_visuals = batch_size * num_visuals
         encoder_dp_size = model.config.tp_size if model.config.enable_encoder_dp else 1
-        num_tokens = sum(
-            -(-batch_size * workload.count_per_request // encoder_dp_size) * workload.pre_merge_tokens
-            for workload in workloads
-        )
-        embed_tokens = batch_size * sum(
-            workload.count_per_request * workload.post_merge_tokens for workload in workloads
-        )
+        visuals_local = -(-total_visuals // encoder_dp_size)
+        num_tokens = visuals_local * pre_merge_per_visual
+        embed_tokens = total_visuals * tokens_per_visual
         return self._get_encoder_component_memory(model, num_tokens, embed_tokens)
 
     def run_agg(
@@ -1313,8 +1347,9 @@ class BaseBackend:
             runtime_config.num_image_tokens,
             runtime_config.video_height,
             runtime_config.video_width,
-            runtime_config.video_num_frames,
+            runtime_config.video_frames,
             runtime_config.num_videos_per_request,
+            runtime_config.num_video_tokens,
         )
         cache_key = (
             self._make_agg_cache_key(isl, osl, b, ctx_tokens, agg_extra),

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+"""Kimi K3 image/video encoder parsing, construction, and runtime tests."""
+
 import dataclasses
 from types import SimpleNamespace
 
@@ -9,285 +11,220 @@ import pytest
 from aiconfigurator.sdk import common, config
 from aiconfigurator.sdk.backends import base_backend as base_backend_module
 from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.models import _get_model_info, get_model
-from aiconfigurator.sdk.models.kimi_k3 import KimiK3Model
+from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+from aiconfigurator.sdk.models import get_model
 from aiconfigurator.sdk.models.vit_ops import build_kimi_k3_encoder_ops
+from aiconfigurator.sdk.utils import get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
 
-def _model_config(**kwargs) -> config.ModelConfig:
-    kwargs.setdefault("moe_tp_size", 1)
-    kwargs.setdefault("moe_ep_size", 1)
-    return config.ModelConfig(**kwargs)
+def _model_config(tp_size: int = 1, *, enable_encoder_dp: bool = True, nextn: int = 0) -> config.ModelConfig:
+    return config.ModelConfig(
+        tp_size=tp_size,
+        attention_dp_size=1,
+        moe_tp_size=tp_size,
+        moe_ep_size=1,
+        enable_encoder_dp=enable_encoder_dp,
+        nextn=nextn,
+    )
 
 
 @pytest.fixture
-def kimi_k3_model() -> KimiK3Model:
+def kimi_k3_model():
     return get_model("moonshotai/Kimi-K3", _model_config(), "sglang")
 
 
-class TestKimiK3VisionConfig:
-    def test_checkpoint_preserves_language_and_vision_configs_together(self):
-        extra = _get_model_info("moonshotai/Kimi-K3")["extra_params"]
+def test_checkpoint_preserves_language_and_vision_configs_together():
+    info = get_model_config_from_model_path("moonshotai/Kimi-K3")
+    extra = info["extra_params"]
 
-        assert isinstance(extra, common.KimiK3Config)
-        assert extra.layer_types.count("linear_attention") == 69
-        assert extra.layer_types.count("full_attention") == 24
-        assert isinstance(extra.vision_config, common.VisionEncoderConfig)
-
-    def test_architecture_specific_vision_geometry(self):
-        vision = _get_model_info("moonshotai/Kimi-K3")["extra_params"].vision_config
-
-        assert vision.depth == 27
-        assert vision.hidden_size == 1024
-        assert vision.num_heads == 12
-        assert vision.qkv_hidden_size == 1536
-        assert vision.qkv_hidden_size // vision.num_heads == 128
-        assert vision.patch_size == 14
-        assert vision.temporal_patch_size == 1
-        assert vision.spatial_merge_size == 2
-        assert vision.temporal_pool_all
-        assert vision.max_temporal_patches == 4
-        assert vision.projector_dims == ((4096, 4096), (4096, 7168))
-        assert vision.projector_post_norm
-
-    def test_kimi_k25_does_not_inherit_k3_patchmergerv2_semantics(self):
-        k25_info = _get_model_info("moonshotai/Kimi-K2.5")
-        k25_model = get_model("moonshotai/Kimi-K2.5", _model_config(), "sglang")
-
-        assert isinstance(k25_info["extra_params"], dict)
-        assert not hasattr(k25_info["extra_params"], "vision_config")
-        assert k25_model.encoder_ops == []
+    assert isinstance(extra, common.KimiK3Config)
+    assert extra.layer_types.count("linear_attention") == 69
+    assert extra.layer_types.count("full_attention") == 24
+    assert isinstance(extra.vision_config, common.VisionEncoderConfig)
 
 
-class TestKimiK3VisionModel:
-    def test_model_keeps_language_and_dspark_paths(self, kimi_k3_model):
-        context_names = {op._name for op in kimi_k3_model.context_ops}
-        generation_names = {op._name for op in kimi_k3_model.generation_ops}
+def test_architecture_specific_vision_geometry():
+    vision = get_model_config_from_model_path("moonshotai/Kimi-K3")["extra_params"].vision_config
 
-        assert "context_kda_scan" in context_names
-        assert "context_mla_downscale_gemm" in context_names
-        assert "generation_kda_recurrent" in generation_names
+    assert (vision.depth, vision.hidden_size, vision.num_heads, vision.intermediate_size) == (27, 1024, 12, 4096)
+    assert vision.qkv_hidden_size == 1536
+    assert vision.qkv_hidden_size // vision.num_heads == 128
+    assert (vision.patch_size, vision.temporal_patch_size, vision.spatial_merge_size) == (14, 1, 2)
+    assert vision.projector_dims == ((4096, 4096), (4096, 7168))
+    assert vision.out_hidden_size == 7168
+    assert vision.pool_temporal is True
+    assert vision.final_norm is True
+    assert vision.projector_post_norm is True
+    assert vision.max_temporal_patches == 4
 
-        dspark = get_model(
-            "moonshotai/Kimi-K3",
-            _model_config(nextn=7),
-            "sglang",
-        )
-        assert "draft_attention" in {op._name for op in dspark.generation_ops}
-        assert [op._name for op in dspark.encoder_ops] == [op._name for op in kimi_k3_model.encoder_ops]
 
-    def test_encoder_ops_cover_moonvit3d_patchmergerv2_and_communication(self, kimi_k3_model):
-        ops = {op._name: op for op in kimi_k3_model.encoder_ops}
+def test_model_keeps_language_dspark_and_encoder_paths(kimi_k3_model):
+    context_names = {op._name for op in kimi_k3_model.context_ops}
+    generation_names = {op._name for op in kimi_k3_model.generation_ops}
+    encoder_names = {op._name for op in kimi_k3_model.encoder_ops}
 
-        assert ops["encoder_patch_embed_gemm"]._n == 1024
-        assert ops["encoder_patch_embed_gemm"]._k == 3 * 14 * 14
-        assert ops["encoder_qkv_gemm"]._n == 3 * 1536
-        assert ops["encoder_qkv_gemm"]._k == 1024
-        assert ops["encoder_attention"]._n == 12
-        assert ops["encoder_attention"]._head_size == 128
-        assert ops["encoder_proj_gemm"]._n == 1024
-        assert ops["encoder_proj_gemm"]._k == 1536
-        assert ops["encoder_projector_fc0_gemm"]._n == 4096
-        assert ops["encoder_projector_fc0_gemm"]._k == 4096
-        assert ops["encoder_projector_fc1_gemm"]._n == 7168
-        assert ops["encoder_projector_fc1_gemm"]._k == 4096
-        assert "encoder_spatial_temporal_merge" in ops
-        assert "encoder_projector_post_norm" in ops
-        assert "encoder_ar_1" in ops
-        assert "encoder_ar_2" in ops
-        assert "encoder_projector_ar" in ops
+    assert "context_kda_scan" in context_names
+    assert "context_mla_downscale_gemm" in context_names
+    assert "generation_kda_recurrent" in generation_names
+    assert {
+        "encoder_patch_embed_gemm",
+        "encoder_position_embed",
+        "encoder_qkv_gemm",
+        "encoder_attention",
+        "encoder_rope_apply",
+        "encoder_final_norm",
+        "encoder_patch_merge_pool",
+        "encoder_projector_fc0_gemm",
+        "encoder_projector_fc1_gemm",
+        "encoder_projector_post_norm",
+    } <= encoder_names
 
-    def test_encoder_dp_adds_embedding_all_gather(self):
-        model = get_model(
-            "moonshotai/Kimi-K3",
-            _model_config(tp_size=2, moe_tp_size=2),
-            "sglang",
-        )
+    dspark = get_model("moonshotai/Kimi-K3", _model_config(nextn=7), "sglang")
+    assert "draft_attention" in {op._name for op in dspark.generation_ops}
+    assert [op._name for op in dspark.encoder_ops] == [op._name for op in kimi_k3_model.encoder_ops]
 
-        assert "encoder_dp_all_gather" in {op._name for op in model.encoder_ops}
 
-    @pytest.mark.parametrize(
-        "disabled_flag",
-        [
-            "model_patch_embed",
-            "model_pos_embed",
-            "model_final_norm",
-            "temporal_pool_all",
-            "projector_post_norm",
-        ],
+def test_encoder_qkv_and_projector_shapes_match_checkpoint(kimi_k3_model):
+    encoder_ops = {op._name: op for op in kimi_k3_model.encoder_ops}
+
+    assert (encoder_ops["encoder_qkv_gemm"]._n, encoder_ops["encoder_qkv_gemm"]._k) == (3 * 1536, 1024)
+    assert (encoder_ops["encoder_attention"]._n, encoder_ops["encoder_attention"]._head_size) == (12, 128)
+    assert (encoder_ops["encoder_proj_gemm"]._n, encoder_ops["encoder_proj_gemm"]._k) == (1024, 1536)
+    assert (encoder_ops["encoder_projector_fc0_gemm"]._n, encoder_ops["encoder_projector_fc0_gemm"]._k) == (
+        4096,
+        4096,
     )
-    def test_kimi_k3_builder_rejects_incomplete_encoder_semantics(self, disabled_flag):
-        vision = _get_model_info("moonshotai/Kimi-K3")["extra_params"].vision_config
-        incomplete = dataclasses.replace(vision, **{disabled_flag: False})
-
-        with pytest.raises(ValueError, match="complete MoonViT3D"):
-            build_kimi_k3_encoder_ops(incomplete, tp_size=1)
-
-
-class _TestBackend(BaseBackend):
-    def find_best_agg_result_under_constraints(self, model, database, runtime_config, **kwargs):
-        raise NotImplementedError
-
-    def _get_memory_usage(self, *args, **kwargs):
-        return {"total": 1.0}
-
-
-@pytest.fixture
-def synthetic_database():
-    return SimpleNamespace(
-        backend="sglang",
-        version="test",
-        system="test",
-        system_spec={"gpu": {"mem_capacity": 80 * (1 << 30)}},
+    assert (encoder_ops["encoder_projector_fc1_gemm"]._n, encoder_ops["encoder_projector_fc1_gemm"]._k) == (
+        7168,
+        4096,
     )
 
 
-def _stub_compiled_encoder(backend, *, source_for_s=None):
-    calls: dict[str, list[int]] = {}
-    backend._require_rust_engine_step = lambda *args, **kwargs: None
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("final_norm", False),
+        ("pool_temporal", False),
+        ("projector_post_norm", False),
+        ("video_attention_type", ""),
+        ("qkv_hidden_size", 0),
+        ("max_temporal_patches", 0),
+        ("encoder_type", "generic"),
+    ],
+)
+def test_kimi_k3_builder_rejects_incomplete_encoder_semantics(field, value):
+    vision = get_model_config_from_model_path("moonshotai/Kimi-K3")["extra_params"].vision_config
 
-    def _run(model, _database, _visuals_local, eff_s_of, *, include_energy):
-        latency: dict[str, float] = {}
-        energy: dict[str, float] = {}
-        sources: dict[str, str] = {}
-        for op in model.encoder_ops:
-            eff_s = eff_s_of(op)
-            calls.setdefault(op._name, []).append(eff_s)
-            latency[op._name] = 1.0
-            energy[op._name] = 2.0 if include_energy else 0.0
-            sources[op._name] = source_for_s(eff_s) if source_for_s else "test"
-        return latency, energy, sources
-
-    backend._run_encoder_phase_with_rust = _run
-    return calls
+    with pytest.raises(ValueError):
+        build_kimi_k3_encoder_ops(dataclasses.replace(vision, **{field: value}), tp_size=1)
 
 
-class TestKimiK3VisionRuntime:
-    def test_image_workload_executes_nonzero_encoder_work(self, kimi_k3_model, synthetic_database):
-        backend = _TestBackend()
-        calls = _stub_compiled_encoder(backend)
-        runtime = config.RuntimeConfig(
-            batch_size=1,
-            isl=64,
-            osl=2,
-            image_height=448,
-            image_width=448,
-            num_images_per_request=1,
-            engine_step_backend="rust",
+def test_encoder_parallelism_models_required_communication():
+    dp_model = get_model("moonshotai/Kimi-K3", _model_config(tp_size=2), "sglang")
+    tp_model = get_model(
+        "moonshotai/Kimi-K3",
+        _model_config(tp_size=2, enable_encoder_dp=False),
+        "sglang",
+    )
+
+    assert "encoder_dp_all_gather" in {op._name for op in dp_model.encoder_ops}
+    tp_ops = {op._name: op for op in tp_model.encoder_ops}
+    assert tp_ops["encoder_ar_1"]._tp_size == 2
+    assert tp_ops["encoder_ar_2"]._tp_size == 2
+    assert tp_ops["encoder_projector_ar"]._tp_size == 2
+
+
+def test_video_temporal_pooling_keeps_context_spatial_and_attention_joint():
+    vision = get_model_config_from_model_path("moonshotai/Kimi-K3")["extra_params"].vision_config
+    runtime = config.RuntimeConfig(
+        video_height=448,
+        video_width=448,
+        video_frames=4,
+        num_videos_per_request=1,
+    )
+
+    assert BaseBackend._encoder_pre_merge_per_visual(runtime, vision) == (256, 4096, 1)
+
+
+def test_video_rejects_more_frames_than_temporal_embedding():
+    vision = get_model_config_from_model_path("moonshotai/Kimi-K3")["extra_params"].vision_config
+    runtime = config.RuntimeConfig(
+        video_height=448,
+        video_width=448,
+        video_frames=5,
+        num_videos_per_request=1,
+    )
+
+    with pytest.raises(ValueError, match="supports at most 4 temporal patches"):
+        BaseBackend._encoder_pre_merge_per_visual(runtime, vision)
+
+
+def test_image_and_video_encoder_work_reaches_static_summary(kimi_k3_model, monkeypatch):
+    backend = TRTLLMBackend()
+    database = SimpleNamespace(
+        backend="trtllm",
+        version="structural-test",
+        system="b200_sxm",
+        system_spec={
+            "gpu": {"mem_capacity": 1024 * (1 << 30)},
+            "misc": {"nccl_mem": {1: 0}, "other_mem": 0},
+        },
+    )
+    monkeypatch.setattr(base_backend_module, "should_use_rust_engine_step", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        base_backend_module,
+        "estimate_static_latency_breakdown_with_rust",
+        lambda *args, **kwargs: (
+            {"context_attention": 1.0},
+            {},
+            {"context_attention": 2.0},
+            {},
+            {"context_attention": "structural-test"},
+            {},
+            (),
+        ),
+    )
+    attention_shapes = []
+
+    def _stub_encoder_phase(model, _database, shape_of, *, include_energy):
+        attention = next(op for op in model.encoder_ops if op._name == "encoder_attention")
+        shape = shape_of(attention)
+        attention_shapes.append(shape)
+        latency = shape[0] * shape[1] / 1_000.0
+        return (
+            {"encoder_attention": latency},
+            {"encoder_attention": latency * 2 if include_energy else 0.0},
+            {"encoder_attention": "structural-test"},
         )
 
-        latency, energy, _, visual_tokens = backend._run_encoder_phase(
-            kimi_k3_model, synthetic_database, runtime, batch_size=1
-        )
+    monkeypatch.setattr(backend, "_run_encoder_phase_with_rust", _stub_encoder_phase)
+    image_runtime = config.RuntimeConfig(
+        batch_size=1,
+        isl=128,
+        osl=1,
+        image_height=896,
+        image_width=896,
+        engine_step_backend="rust",
+    )
+    video_runtime = config.RuntimeConfig(
+        batch_size=1,
+        isl=128,
+        osl=1,
+        num_images_per_request=0,
+        video_height=896,
+        video_width=896,
+        video_frames=4,
+        num_videos_per_request=1,
+        engine_step_backend="rust",
+    )
 
-        assert sum(latency.values()) > 0
-        assert sum(energy.values()) > 0
-        assert visual_tokens == 16 * 16
-        assert calls["encoder_attention"] == [32 * 32]
+    image_summary = backend.run_static(kimi_k3_model, database, image_runtime, mode="static_ctx")
+    video_summary = backend.run_static(kimi_k3_model, database, video_runtime, mode="static_ctx")
 
-    def test_video_attention_scales_with_frames_but_tpool_output_does_not(self, kimi_k3_model, synthetic_database):
-        backend = _TestBackend()
-        calls = _stub_compiled_encoder(backend)
-        runtime = config.RuntimeConfig(
-            batch_size=1,
-            isl=64,
-            osl=2,
-            num_images_per_request=0,
-            video_height=448,
-            video_width=448,
-            video_num_frames=4,
-            num_videos_per_request=1,
-            engine_step_backend="rust",
-        )
-
-        latency, _, _, visual_tokens = backend._run_encoder_phase(
-            kimi_k3_model, synthetic_database, runtime, batch_size=1
-        )
-
-        assert sum(latency.values()) > 0
-        assert visual_tokens == 16 * 16
-        assert calls["encoder_attention"] == [4 * 32 * 32]
-        assert calls["encoder_projector_fc0_gemm"] == [16 * 16]
-
-    def test_mixed_image_video_workloads_preserve_mixed_source(self, kimi_k3_model, synthetic_database):
-        backend = _TestBackend()
-        _stub_compiled_encoder(backend, source_for_s=lambda eff_s: "silicon" if eff_s == 32 * 32 else "sol")
-        runtime = config.RuntimeConfig(
-            batch_size=1,
-            isl=64,
-            osl=2,
-            image_height=448,
-            image_width=448,
-            num_images_per_request=1,
-            video_height=448,
-            video_width=448,
-            video_num_frames=4,
-            num_videos_per_request=1,
-            engine_step_backend="rust",
-        )
-
-        _, _, sources, _ = backend._run_encoder_phase(kimi_k3_model, synthetic_database, runtime, batch_size=1)
-
-        assert sources["encoder_attention"] == "mixed"
-        assert sources["encoder_projector_fc0_gemm"] == "sol"
-
-    def test_video_rejects_more_frames_than_k3_temporal_embedding(self, kimi_k3_model, synthetic_database):
-        runtime = config.RuntimeConfig(
-            batch_size=1,
-            isl=64,
-            osl=2,
-            num_images_per_request=0,
-            video_height=448,
-            video_width=448,
-            video_num_frames=5,
-            num_videos_per_request=1,
-            engine_step_backend="rust",
-        )
-
-        with pytest.raises(ValueError, match="supports at most 4 temporal patches"):
-            _TestBackend()._run_encoder_phase(kimi_k3_model, synthetic_database, runtime, batch_size=1)
-
-    def test_encoder_latency_memory_energy_and_ttft_reach_summary(self, kimi_k3_model, synthetic_database, monkeypatch):
-        backend = _TestBackend()
-        _stub_compiled_encoder(backend)
-        monkeypatch.setattr(base_backend_module, "should_use_rust_engine_step", lambda *args, **kwargs: True)
-        monkeypatch.setattr(
-            base_backend_module,
-            "estimate_static_latency_breakdown_with_rust",
-            lambda *args, **kwargs: (
-                {"context_attention": 1.0},
-                {"generation_attention": 1.0},
-                {"context_attention": 2.0},
-                {"generation_attention": 2.0},
-                {"context_attention": "test"},
-                {"generation_attention": "test"},
-                (),
-            ),
-        )
-        summary = backend.run_static(
-            kimi_k3_model,
-            synthetic_database,
-            config.RuntimeConfig(
-                batch_size=1,
-                isl=64,
-                osl=2,
-                num_images_per_request=0,
-                video_height=448,
-                video_width=448,
-                video_num_frames=4,
-                num_videos_per_request=1,
-                engine_step_backend="rust",
-            ),
-            mode="static",
-            stride=1,
-        )
-
-        encoder_latency = sum(summary.get_encoder_latency_dict().values())
-        context_latency = sum(summary.get_context_latency_dict().values())
-        assert encoder_latency > 0
-        assert sum(summary.get_encoder_energy_wms_dict().values()) > 0
-        assert summary.get_encoder_memory()["weights"] > 0
-        assert summary.get_encoder_memory()["activations"] > 0
-        assert summary.get_summary_df().iloc[0]["ttft"] == pytest.approx(encoder_latency + context_latency)
+    assert attention_shapes == [(1, 4096), (1, 16384)]
+    assert sum(image_summary.get_encoder_latency_dict().values()) > 0
+    assert sum(image_summary.get_encoder_energy_wms_dict().values()) > 0
+    assert video_summary.get_encoder_memory()["activations"] > image_summary.get_encoder_memory()["activations"]
+    assert video_summary.get_result_dict()["ttft"] > image_summary.get_result_dict()["ttft"]

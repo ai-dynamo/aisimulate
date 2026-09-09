@@ -21,6 +21,16 @@ Both artifacts use version `0.12.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
 
+## Packaged license files
+
+The root `LICENSE` and `THIRD_PARTY_NOTICES.md` are the canonical repository
+legal files. The wheel build is rooted at `python/aisimulate/`, so exact copies
+are retained there and declared as wheel license files by `pyproject.toml`.
+Both are installed under the wheel's distribution metadata; the nested copies
+do not create a separate licensing boundary. `scripts/check_packaged_legal_files.py`
+fails CI if either packaging copy differs byte-for-byte from its root original,
+and the release-artifact validator checks the bytes installed in the wheel.
+
 Nightly builds stamp a dev suffix with `scripts/apply_dev_version.py` before
 building: the wheel becomes `0.12.0.devYYYYMMDD` (PEP 440) and the crate
 `0.12.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the

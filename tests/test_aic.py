@@ -34,6 +34,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
             "aic_attention_dp_size": 2,
             "aic_pp_size": 3,
             "aic_nextn": 3,
+            "cuda_graph_reserved_bytes": 14559947612,
             "systems_path": "/tmp/custom-systems.yaml",
             "block_size": 64,
             "max_num_seqs": 37,
@@ -46,6 +47,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
     assert calls[0]["pp_size"] == 3
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
     assert calls[0]["max_num_sequences"] == 37
+    assert calls[0]["cuda_graph_reserved_bytes"] == 14559947612
     assert "nextn" not in calls[0]
 
 
@@ -73,6 +75,7 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
         gemm_dtype="int4",
         fmha_dtype="auto",
         systems_path="/tmp/custom-systems.yaml",
+        cuda_graph_reserved_bytes=14559947612,
     )
 
     assert blocks == 123
@@ -84,6 +87,7 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
     assert kwargs["pp_size"] == 3
     assert kwargs["max_batch_size"] == 17
     assert kwargs["systems_path"] == "/tmp/custom-systems.yaml"
+    assert kwargs["cuda_graph_reserved_bytes"] == 14559947612
     assert kwargs["gemm_quant_mode"] == "int4_wo"
     assert kwargs["fmha_quant_mode"] is None
     assert "nextn" not in kwargs
