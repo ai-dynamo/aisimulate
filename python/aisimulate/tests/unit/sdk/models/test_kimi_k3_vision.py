@@ -35,6 +35,30 @@ def kimi_k3_model():
     return get_model("moonshotai/Kimi-K3", _model_config(), "sglang")
 
 
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("video", [False, True])
+def test_language_only_worker_retains_visual_tokens_without_hosting_encoder(language_only, video):
+    model_config = _model_config()
+    model_config.language_only = language_only
+    model = get_model("moonshotai/Kimi-K3", model_config, "sglang")
+    visual_fields = (
+        dict(num_images_per_request=0, video_height=448, video_width=448, video_frames=4, num_videos_per_request=1)
+        if video
+        else dict(image_height=448, image_width=448)
+    )
+    runtime = config.RuntimeConfig(isl=128, osl=1, **visual_fields)
+    backend = BaseBackend()
+
+    assert isinstance(model.encoder_config, common.VisionEncoderConfig)
+    assert backend._visual_context_tokens(model, runtime) == 256
+    assert bool(model.encoder_ops) is (not language_only)
+    assert model.context_ops and model.generation_ops
+    if language_only:
+        assert backend._get_encoder_component_memory_for_runtime(model, runtime, 1) == {}
+        latency, energy, sources, _ = backend._run_encoder_phase(model, object(), runtime, 1)
+        assert not latency and not energy and not sources
+
+
 def test_checkpoint_preserves_language_and_vision_configs_together():
     info = get_model_config_from_model_path("moonshotai/Kimi-K3")
     extra = info["extra_params"]
