@@ -16,7 +16,9 @@ to `python/aisimulate/` in the repository source tree.
 ## Dynamo Kubernetes experiment manifest
 
 Repository-root `docs/experiments/agentx-gb200-hicache/deploy.yaml` and its generated
-variant `docs/experiments/agentx-gb200-hicache/formal-deploy.yaml` are adapted and
+variants `docs/experiments/agentx-gb200-hicache/formal-deploy.yaml`,
+`docs/experiments/agentx-gb200-hicache/stage1-deploy.yaml`, and
+`docs/experiments/agentx-gb200-hicache/stage2-deploy.yaml` are adapted and
 modified from the Dynamo GLM-5.2 SGLang disaggregated recipe at commit
 `f7612301f01bc3ef557cc8f38687d559b0d54b39`, original path
 `recipes/glm-5.2/sglang/disagg-b200-agentic/deploy.yaml`.

@@ -10,7 +10,7 @@ import subprocess
 import time
 import urllib.request
 
-ROOT = Path('/results/agentx-gb200-20260908-c48-attempt5')
+ROOT = Path(os.environ.get('AGENTX_RUN_DIR', '/results/agentx-gb200-20260908-c48-attempt5'))
 ROOT.mkdir(parents=True, exist_ok=True)
 MODEL = 'nvidia/GLM-5.2-NVFP4'
 REVISION = '53e0691e21895a3863a606dfd12910c69eba94ab'
