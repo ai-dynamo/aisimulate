@@ -111,3 +111,31 @@ A failed preparation blocks submission. The controller collects the terminal
 Slurm state and small result artifacts, then publishes a scoped GitHub result
 record; the large raw client and FPM files remain on scratch. Scheduling still
 depends on an available B300 node.
+
+## Preflight and dispatch update
+
+- CPU-only x86 checks on `2u1g-b650-1035` completed: job `4208710` verified
+  image FPM invariants and engine/router/client CLI startup; job `4208757`
+  parsed the exact engine flags and exercised the native recorder against all
+  eight SGLang publisher endpoints. Both exited 0:0 and released allocations.
+- The newer image does not accept the reference `--prefill-decode-interval 20`.
+  Both cases omit that removed setting and retain prefill delayer. This is an
+  explicit scheduling difference from the published reference, shared by the pair.
+- Native FPM validation passed rank coverage and decode/timing checks. Synthetic
+  negative checks reject missing ranks and invalid timings; counter gaps are
+  counted. Comparing identical historical AIPerf exports produced zero deltas.
+- The pinned amd64 squashfs cache is
+  `/home/scratch.hongkuanz_gpu/images/sglang-agentx-fpm-f856a455-amd64.sqsh`,
+  SHA256 `2a75f79d921933731c2220845e8680ae25c50af2a52addd31ac07bd3e3048987`.
+  Image preparation on ARM CPU job `4208645` produced the cache but could not
+  execute its NVIDIA hook there; execution checks therefore used the native
+  x86 jobs above. Failed image-authentication attempts were not GPU runs.
+- The dispatcher is running locally with `dispatch-state.json`, `dispatch.log`
+  and `dispatch.pid` in the controller bundle. At startup it is waiting for
+  verified checkpoint completion; it has not submitted a B300 GPU job yet.
+- Slurm `sbatch --test-only` accepted the resource request. Its September 9
+  estimate was September 10 at approximately 04:10 PDT; this is only a scheduling
+  estimate, not a reservation or an actual submitted job ID.
+- Both cases use UTC for saved timestamps. A Slurm termination signal three
+  minutes before the allocation limit gives cleanup time; FPM is flushed and
+  copied before slow engine teardown.

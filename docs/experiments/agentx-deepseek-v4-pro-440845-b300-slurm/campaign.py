@@ -73,11 +73,11 @@ def main():
         subprocess.run([sys.executable, '-m', 'pip', 'freeze'], stdout=out, check=True)
     shutil.copy('/opt/agentx-aiperf/freeze.txt', ROOT / 'client-freeze.txt')
     save(ROOT / 'protocol.json', dict(image=IMAGE, cases=['off', 'on'], model=MODEL, checkpoint_revision=CKPT.name,
-        concurrency=32, duration_seconds=3600, hicache=False, fpm_rank_count=8, seed=42,
+        concurrency=32, duration_seconds=3600, hicache=False, fpm_rank_count=8, seed=42, timezone='UTC',
         reference_id=440845, engine_entrypoint='sglang.launch_server', router='sglang-router consistent_hashing dp-aware'))
     # Warm the same compilation cache for both cases; each case has a new engine/KV cache.
     env = os.environ.copy()
-    env.update(PYTHONUNBUFFERED='1', HF_HOME='/scratch/models', HF_HUB_DISABLE_IMPLICIT_TOKEN='1',
+    env.update(TZ='UTC', PYTHONUNBUFFERED='1', HF_HOME='/scratch/models', HF_HUB_DISABLE_IMPLICIT_TOKEN='1',
         SGLANG_CACHE_DIR=f'/tmp/dsv4-cache-{JOB}', XDG_CACHE_HOME=f'/tmp/dsv4-xdg-{JOB}',
         TORCH_CUDA_ARCH_LIST='10.0', SGLANG_TIMEOUT_KEEP_ALIVE='900',
         SGLANG_ENABLE_UNIFIED_RADIX_TREE='1', SGLANG_OPT_UNIFIED_CACHE_FREE_OUT_OF_WINDOW_SLOTS='1',
@@ -135,7 +135,7 @@ def run_case(case, env):
             '--served-model-name', MODEL, '--trust-remote-code', '--host', '0.0.0.0', '--port', '8889',
             '--tp', '8', '--dp', '8', '--ep-size', '8', '--enable-dp-attention',
             '--tokenizer-worker-num', '8', '--enable-dp-attention-local-control-broadcast',
-            '--enable-prefill-delayer', '--prefill-decode-interval', '20',
+            '--enable-prefill-delayer',
             '--incremental-streaming-output', '--stream-interval', '20', '--dist-init-addr', '127.0.0.1:10888',
             '--moe-a2a-backend', 'megamoe', '--enable-deepseek-v4-fp4-indexer', '--disable-flashinfer-autotune',
             '--attention-backend', 'dsv4', '--page-size', '256', '--disable-shared-experts-fusion',
@@ -192,19 +192,19 @@ def run_case(case, env):
         timeline['client_finished_at_ns'] = time.time_ns()
         success = True
     finally:
-        stop(processes.get('client'))
-        stop(processes.get('router'))
-        # Stop publishers first, then drain and close recorder before copying raw evidence.
-        stop(processes.get('server'))
+        # Preserve recorded evidence before potentially slow engine/process cleanup.
         if 'recorder' in processes:
             stop(processes['recorder'])
-        for f in files:
-            f.close()
         fpm = local / 'fpm.jsonl'
         if fpm.exists():
             shutil.copyfile(fpm, out / 'fpm.jsonl')
             digest = hashlib.file_digest((out / 'fpm.jsonl').open('rb'), 'sha256').hexdigest()
             (out / 'fpm.sha256').write_text(digest + '  fpm.jsonl\n')
+        stop(processes.get('client'))
+        stop(processes.get('router'))
+        stop(processes.get('server'))
+        for f in files:
+            f.close()
         timeline.update(finished_at_ns=time.time_ns(), client_succeeded=success)
         save(out / 'timeline.json', timeline)
         shutil.rmtree(local)

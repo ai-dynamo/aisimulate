@@ -84,7 +84,10 @@ reference. Preserve DSv4's c32, TP8/EP8 and attention DP8 settings;
 do not inherit the GLM baseline's model-specific launch arguments.
 
 DSv4/MegaMoE/HiCache GPU compatibility still needs smoke validation with this
-image. Record any required image change explicitly. Synthetic speculative
+image. CPU CLI preflight found that this newer engine removed the reference
+`--prefill-decode-interval 20` option. Both local runs omit it and retain
+`--enable-prefill-delayer`; no equivalence between the removed interval and the
+current scheduling policy is assumed. Record any required image change explicitly. Synthetic speculative
 acceptance makes this a performance experiment, not a model quality evaluation.
 
 ## Published comparison targets

@@ -11,6 +11,7 @@
 #SBATCH --mem=0
 #SBATCH --gpus=8
 #SBATCH --time=04:00:00
+#SBATCH --signal=TERM@180
 #SBATCH --job-name=hk-dsv4-440845-fpm-pair
 #SBATCH --output=/home/scratch.hongkuanz_gpu/dsv4-pair-%j.log
 set -euo pipefail
