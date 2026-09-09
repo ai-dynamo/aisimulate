@@ -801,13 +801,15 @@ impl SglangCore {
         }
 
         // Build FPM snapshot now that all state has settled.
+        // Radix-cache reuse: admission matches over prompt tokens processed this pass. A chunked
+        // request's own earlier chunks are KV context for the forward but not cache hits.
         let sglang_cache_hit_tokens = prefill_fpm
             .iter()
-            .map(|item| item.prefix_tokens as u64)
+            .map(|item| item.cache_reused_tokens as u64)
             .sum::<u64>();
         let sglang_cache_total_tokens = prefill_fpm
             .iter()
-            .map(|item| (item.prefix_tokens + item.tokens_computed) as u64)
+            .map(|item| (item.cache_reused_tokens + item.tokens_computed) as u64)
             .sum::<u64>();
         let queued_prefills = self
             .waiting

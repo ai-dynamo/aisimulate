@@ -24,6 +24,9 @@ pub(crate) struct RadixRequestLease {
     pages: Vec<KvPageId>,
     materialized_tokens: usize,
     cached_tokens: usize,
+    /// Radix-cache prefix matched when the request was admitted from the waiting queue. Unlike
+    /// `cached_tokens`, this never grows with the request's own chunks or outputs.
+    admission_reused_tokens: usize,
     page_hashes: Vec<LocalBlockHash>,
     last_node: Option<NodeId>,
 }
@@ -45,6 +48,11 @@ impl RadixRequestLease {
 
     pub(crate) fn cached_tokens(&self) -> usize {
         self.cached_tokens
+    }
+
+    /// Prefix reused from the radix cache at admission (excludes the request's own chunks).
+    pub(crate) fn admission_reused_tokens(&self) -> usize {
+        self.admission_reused_tokens
     }
 
     pub(crate) fn page_hashes(&self) -> &[LocalBlockHash] {
@@ -97,6 +105,7 @@ impl RadixRequestLease {
             pages,
             materialized_tokens,
             cached_tokens,
+            admission_reused_tokens: cached_tokens,
             page_hashes: Vec::new(),
             last_node: Some(last_node),
         }
@@ -282,6 +291,7 @@ impl SglangKvManager {
         lease.pages = pages;
         lease.materialized_tokens = token_ids.len();
         lease.cached_tokens = prefix_len;
+        lease.admission_reused_tokens = prefix_len;
         lease.last_node = Some(last_node);
         Some(prefix_len)
     }

@@ -12,7 +12,12 @@ use crate::engine::kv_manager::SglangKvManager;
 pub(super) struct PrefillFpmItem {
     pub(super) prompt_len: usize,
     pub(super) tokens_computed: usize,
+    /// KV context already present when this chunk runs (cached prefix or the request's own
+    /// earlier chunks); drives the forward-pass model.
     pub(super) prefix_tokens: usize,
+    /// Radix-cache reuse credited to this pass: the admission match on a request's first chunk,
+    /// zero for continuations, which only extend their own tokens.
+    pub(super) cache_reused_tokens: usize,
 }
 
 #[derive(Default)]
@@ -125,6 +130,7 @@ pub(super) fn get_new_batch_prefill(
         }
 
         let chunk_end = start + chunk_tokens;
+        let first_admission = req.materialized_tokens == 0;
         let mut lease = std::mem::take(&mut req.kv_lease);
         let alloc_tokens = req.sequence_prefix(chunk_end);
 
@@ -150,6 +156,10 @@ pub(super) fn get_new_batch_prefill(
             break;
         };
         let tokens_computed = chunk_end.saturating_sub(prefix_len);
+        // Cache reuse is what the radix tree supplied at admission; a continuation's `prefix_len`
+        // is the request's own earlier chunks and must not be reported as a cache hit.
+        let admission_reused_tokens = lease.admission_reused_tokens();
+        let cache_reused_tokens = if first_admission { prefix_len } else { 0 };
 
         req.kv_lease = lease;
         req.materialized_tokens = chunk_end;
@@ -158,13 +168,14 @@ pub(super) fn get_new_batch_prefill(
 
         admissions.push(AdmissionEvent {
             uuid: req.uuid,
-            reused_input_tokens: prefix_len,
+            reused_input_tokens: admission_reused_tokens,
             cache_tier_attribution: None,
         });
         prefill_fpm.push(PrefillFpmItem {
             prompt_len: req.prompt_len(),
             tokens_computed,
             prefix_tokens: prefix_len,
+            cache_reused_tokens,
         });
 
         total_isl += chunk_end;

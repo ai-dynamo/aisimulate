@@ -356,18 +356,35 @@ fn simulate_step(
         sampler = None;
     }
     let mut pressure_events = Vec::new();
-    let retracted = check_decode_mem_for_burst(
-        running,
-        kv_manager,
-        config,
-        max_burst,
-        current_time_ms,
-        &mut pressure_events,
-    );
-    // SGLang re-estimates the ratio in `retract_decode`, i.e. from the survivors before the
-    // forward that follows, not from their state after this pass's tokens were appended.
-    let new_token_ratio_estimate =
-        (!retracted.is_empty()).then(|| retraction_ratio_estimate(running));
+    let (retracted, new_token_ratio_estimate) = match kind {
+        StepKind::Decode => {
+            let retracted = check_decode_mem_for_burst(
+                running,
+                kv_manager,
+                config,
+                max_burst,
+                current_time_ms,
+                &mut pressure_events,
+            );
+            // SGLang re-estimates the ratio in `retract_decode`, i.e. from the survivors before
+            // the forward that follows, not from their state after this pass's tokens were
+            // appended.
+            let estimate = (!retracted.is_empty()).then(|| retraction_ratio_estimate(running));
+            (retracted, estimate)
+        }
+        StepKind::PrefillFirstToken => {
+            // A prefill pass is a pure prefill forward: SGLang's decode memory check and
+            // retraction (`update_running_batch`) run on the next decode pass over the whole
+            // running batch. Only make room for the first-output slots by evicting cached pages;
+            // if that is not enough the slots are simply taken at the next decode step.
+            let available = kv_manager.cache().available_tokens();
+            let needed = decode_page_growth_needed(running, config.block_size, 1);
+            if available < needed {
+                kv_manager.evict(needed - available);
+            }
+            (Vec::new(), None)
+        }
+    };
     if running.is_empty() {
         return Ok(DecodeResult {
             completed_requests,
@@ -406,10 +423,12 @@ fn simulate_step(
     let reserved_page_tokens = decode_page_growth_needed(running, config.block_size, max_burst);
     let reserved_pages = reserved_page_tokens / config.block_size;
     let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
-        tracing::warn!(
-            reserved_pages,
-            "Failed to reserve speculative decode pages after capacity preflight"
-        );
+        if kind == StepKind::Decode {
+            tracing::warn!(
+                reserved_pages,
+                "Failed to reserve speculative decode pages after capacity preflight"
+            );
+        }
         return Ok(DecodeResult {
             completed_requests,
             output_signals,
