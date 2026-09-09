@@ -3,15 +3,26 @@
 
 """Architecture tests for the Gemma 4 vision tower and language adapter."""
 
+from copy import deepcopy
+
 import pytest
 
 from aiconfigurator.sdk import common, config
 from aiconfigurator.sdk.backends.base_backend import BaseBackend
 from aiconfigurator.sdk.models import get_model
+from aiconfigurator.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
 MODEL = "google/gemma-4-26B-A4B"
+
+
+@pytest.mark.parametrize("heads", [0, -1, False, None, 1.5, "16"])
+def test_gemma4_parser_rejects_invalid_vision_head_count(heads):
+    raw = deepcopy(get_model_config_from_model_path(MODEL)["raw_config"])
+    raw["vision_config"]["num_attention_heads"] = heads
+    with pytest.raises(ValueError, match="Gemma 4 vision num_attention_heads must be a positive integer"):
+        _parse_hf_config_json(raw)
 
 
 def _model_config(*, tp_size: int = 1, enable_encoder_dp: bool = True) -> config.ModelConfig:

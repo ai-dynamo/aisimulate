@@ -889,7 +889,9 @@ def _parse_hf_config_json(config: dict) -> dict:
                 )
 
             vision_hidden_size = int(vision_cfg["hidden_size"])
-            vision_num_heads = int(vision_cfg["num_attention_heads"])
+            vision_num_heads = vision_cfg["num_attention_heads"]
+            if not isinstance(vision_num_heads, int) or isinstance(vision_num_heads, bool) or vision_num_heads <= 0:
+                raise ValueError("Gemma 4 vision num_attention_heads must be a positive integer")
             vision_num_kv_heads = int(vision_cfg.get("num_key_value_heads", vision_num_heads))
             vision_head_dim = int(vision_cfg.get("head_dim", vision_hidden_size // vision_num_heads))
             if vision_num_heads * vision_head_dim != vision_hidden_size:
