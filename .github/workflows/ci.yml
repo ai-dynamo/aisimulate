@@ -35,8 +35,32 @@ jobs:
       - name: Reject a mismatched requested commit
         shell: bash
         run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -z "${EXPECTED_SHA}" ]]; then
+            echo "::error::manual Full CI requires a nonempty expected_sha"
+            exit 1
+          fi
           if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
             echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
+            exit 1
+          fi
+      - name: Verify trusted PR copy matches originating head
+        if: startsWith(github.ref, 'refs/heads/pull-request/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr_number="${GITHUB_REF#refs/heads/pull-request/}"
+          if [[ ! "${pr_number}" =~ ^[0-9]+$ ]]; then
+            echo "::error::invalid trusted PR copy ref: ${GITHUB_REF}"
+            exit 1
+          fi
+          pr_head="$(
+            gh api -X GET "repos/${REPOSITORY}/pulls/${pr_number}" --jq '.head.sha'
+          )"
+          if [[ "${pr_head}" != "${RUN_SHA}" ]]; then
+            echo "::error::trusted copy ${RUN_SHA} does not match PR #${pr_number} head ${pr_head}"
             exit 1
           fi
 
@@ -504,9 +528,9 @@ jobs:
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
 
-  full-ci-success:
+  readiness:
     name: Full CI Success
-    if: always()
+    if: ${{ always() }}
     needs:
       - verify-target
       - fast-ci
@@ -524,7 +548,7 @@ jobs:
       - engine-golden-regression
       - release-artifact-contract
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     steps:
       - name: Report and require every Full CI job
         env:
@@ -542,12 +566,22 @@ jobs:
           expected = {name: "success" for name in needs}
           expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]
           failures = []
+          summary = [
+              f"### Full CI evidence for `{os.environ['GITHUB_SHA']}`",
+              "",
+              "| Required job | Result |",
+              "| --- | --- |",
+          ]
           for name, payload in sorted(needs.items()):
               result = payload["result"]
               wanted = expected[name]
               print(f"{name}: {result} (expected {wanted})")
+              outcome = "PASS" if result == wanted else "FAIL"
+              summary.append(f"| {name} | {outcome} (`{result}`, expected `{wanted}`) |")
               if result != wanted:
                   failures.append(f"{name}={result}, expected {wanted}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("\n".join(summary) + "\n")
           if failures:
               print("::error::Full CI did not pass: " + "; ".join(failures))
               raise SystemExit(1)

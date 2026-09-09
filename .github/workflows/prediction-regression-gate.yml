@@ -44,17 +44,12 @@ jobs:
     steps:
       - name: Resolve comparison base
         id: resolve
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        shell: bash
         env:
           OLD_REF_INPUT: ${{ inputs.old-ref }}
-        with:
-          script: |
-            if (context.eventName === "workflow_dispatch" || context.eventName === "workflow_call") {
-              core.setOutput("old", process.env.OLD_REF_INPUT || "main");
-              return;
-            }
-
-            core.setFailed(`unsupported event: ${context.eventName}`);
+        run: |
+          set -euo pipefail
+          printf 'old=%s\n' "${OLD_REF_INPUT:-main}" >> "${GITHUB_OUTPUT}"
 
   collect:
     name: Collect prediction snapshot (${{ matrix.side }})

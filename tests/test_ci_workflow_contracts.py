@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -22,6 +23,25 @@ def _workflow(name: str) -> dict:
 
 def _run_commands(job: dict) -> str:
     return "\n".join(step.get("run", "") for step in job["steps"])
+
+
+def _run_resolve_step(script: str, event_name: str, old_ref: str, tmp_path: Path) -> dict[str, str]:
+    output_path = tmp_path / f"{event_name}.out"
+    output_path.unlink(missing_ok=True)
+    subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPOSITORY_ROOT,
+        env={
+            **os.environ,
+            "GITHUB_EVENT_NAME": event_name,
+            "GITHUB_OUTPUT": str(output_path),
+            "OLD_REF_INPUT": old_ref,
+        },
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return dict(line.split("=", 1) for line in output_path.read_text().splitlines())
 
 
 def test_restored_workflows_are_active_at_repository_root() -> None:
@@ -45,7 +65,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
         "platform-wheels",
         "collector-data",
         "prediction-regression",
-        "full-ci-success",
+        "readiness",
     }.issubset(jobs)
 
     assert jobs["platform-wheels"]["uses"] == "./.github/workflows/validate-platform-wheels.yml"
@@ -80,7 +100,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "--no-default-features" not in feature_mode_commands
     assert "PYTHONPATH" not in feature_mode_commands
 
-    required_by_aggregate = set(jobs["full-ci-success"]["needs"])
+    required_by_aggregate = set(jobs["readiness"]["needs"])
     assert {
         "rust-feature-modes",
         "python-compatibility",
@@ -89,7 +109,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
         "collector-data",
         "prediction-regression",
     }.issubset(required_by_aggregate)
-    aggregate = jobs["full-ci-success"]
+    aggregate = jobs["readiness"]
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
 
     required_before_wheel_staging = set(jobs["application-wheel"]["needs"])
@@ -101,10 +121,12 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
 
 
 def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
-    aggregate = _workflow("ci.yml")["jobs"]["full-ci-success"]
+    jobs = _workflow("ci.yml")["jobs"]
+    aggregate = jobs["readiness"]
     commands = _run_commands(aggregate)
 
     assert "stage-application-wheel" in aggregate["needs"]
+    assert set(aggregate["needs"]) == set(jobs) - {"readiness"}
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
     assert 'expected = {name: "success" for name in needs}' in commands
     assert 'expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]' in commands
@@ -121,12 +143,12 @@ def test_fast_ci_owns_static_and_workflow_contract_checks() -> None:
     assert "test_cli_recommend.py" in static_commands
     assert "ruff format --check" in static_commands
     assert "python -m compileall" in static_commands
-    assert set(jobs["fast-ci-success"]["needs"]) == {
+    assert set(jobs["readiness"]["needs"]) == {
         "policy",
         "python-static",
         "rust-format",
     }
-    assert jobs["fast-ci-success"]["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
+    assert jobs["readiness"]["if"] == "${{ always() }}"
 
 
 def test_expensive_workflows_are_reusable_full_ci_components() -> None:
@@ -198,6 +220,15 @@ def test_prediction_gate_owns_report_dependencies_and_pre_harness_fallback() -> 
     assert "python -m pip install pyyaml==6.0.3" in report_commands
     assert "NO_HARNESS.txt" in collect_commands
     assert "predates the prediction-regression harness" in collect_commands
+
+
+def test_prediction_gate_resolves_base_for_push_and_manual_callers(tmp_path: Path) -> None:
+    resolve_step = _workflow("prediction-regression-gate.yml")["jobs"]["refs"]["steps"][0]
+    script = resolve_step["run"]
+
+    assert _run_resolve_step(script, "push", "main", tmp_path) == {"old": "main"}
+    assert _run_resolve_step(script, "push", "", tmp_path) == {"old": "main"}
+    assert _run_resolve_step(script, "workflow_dispatch", "release/0.12", tmp_path) == {"old": "release/0.12"}
 
 
 def test_collector_comparison_fetch_preserves_full_history() -> None:
