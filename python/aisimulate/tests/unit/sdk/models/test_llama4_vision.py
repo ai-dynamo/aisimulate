@@ -54,6 +54,23 @@ def _stub_compiled_encoder(backend):
     return shapes
 
 
+@pytest.mark.parametrize("model_id", LLAMA4_MODEL_IDS)
+@pytest.mark.parametrize("language_only", [False, True])
+def test_language_only_worker_retains_visual_tokens_without_hosting_encoder(model_id, language_only):
+    model = get_model(model_id, _model_config(language_only=language_only), "sglang")
+    runtime = RuntimeConfig(isl=128, osl=1, image_height=336, image_width=336)
+    backend = BaseBackend()
+
+    assert isinstance(model.encoder_config, common.VisionEncoderConfig)
+    assert backend._visual_context_tokens(model, runtime) == 147
+    assert bool(model.encoder_ops) is (not language_only)
+    assert model.context_ops and model.generation_ops
+    if language_only:
+        assert backend._get_encoder_component_memory_for_runtime(model, runtime, 1) == {}
+        latency, energy, sources, _ = backend._run_encoder_phase(model, object(), runtime, 1)
+        assert not latency and not energy and not sources
+
+
 @pytest.mark.parametrize("model_id,num_experts,moe_layers,dense_layers", LLAMA4_CHECKPOINTS)
 def test_checkpoint_configs_preserve_text_and_exact_vision_shapes(model_id, num_experts, moe_layers, dense_layers):
     info = get_model_config_from_model_path(model_id)

@@ -56,13 +56,15 @@ class HybridMoEModel(BaseModel):
         model.set_hybrid_config(hybrid_config)
         if model_info["architecture"] == "Llama4ForConditionalGeneration" and hybrid_config.vision_config:
             model.encoder_config = hybrid_config.vision_config
-            model.encoder_ops.extend(
-                build_llama4_encoder_ops(
-                    hybrid_config.vision_config,
-                    model.config.tp_size,
-                    model.config.enable_encoder_dp,
+            # EPD language workers keep visual context sizing but host no ViT.
+            if not model.config.language_only:
+                model.encoder_ops.extend(
+                    build_llama4_encoder_ops(
+                        hybrid_config.vision_config,
+                        model.config.tp_size,
+                        model.config.enable_encoder_dp,
+                    )
                 )
-            )
         return model
 
     def __init__(self, topk: int, num_experts: int, moe_inter_size: int, *args, backend_name: str = "") -> None:
