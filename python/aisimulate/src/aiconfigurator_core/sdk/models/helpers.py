@@ -942,6 +942,8 @@ def resolve_context_fmha_by_data(
     in ``task_v2.Task._resolve_quant_modes``, driven by the perf DB's
     fmha-keyed context table instead of a hand-written architecture list:
 
+    * Whole-model FPM: preserve explicit FMHA or promote checkpoint inference;
+      its complete cell identity owns validation.
     * Generation-only roles: no-op (no generation table keys on fmha).
     * fp8 slice present, or no DB information for the op: no-op.
     * fmha explicitly set to fp8 with no fp8 slice: raise a concise
@@ -960,6 +962,16 @@ def resolve_context_fmha_by_data(
         is_context_role: True for context-attention roles (agg, prefill,
             static, static_ctx, AFD prefill); False for generation-only roles.
     """
+    if model_config.forward_model == "fpm":
+        if model_config.fmha_quant_mode is None:
+            info = _get_model_info(model_path)
+            inferred = _infer_quant_modes_from_raw_config(
+                info.get("raw_config", {}),
+                info.get("architecture"),
+            )
+            model_config.fmha_quant_mode = inferred.get("fmha_quant_mode")
+        return
+
     if not is_context_role:
         return
 
