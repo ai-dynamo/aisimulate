@@ -669,7 +669,40 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
         }
     )
     assert weka.traffic.source.block_size is None
+    assert weka.traffic.source.nested_timestamp_basis is None
     assert weka.traffic.load.agentic_lanes == 2
+
+    configured_weka = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {
+                    "type": "trace",
+                    "paths": ["weka-corpus"],
+                    "format": "weka",
+                    "nested_timestamp_basis": "relative",
+                },
+                "load": {"type": "trace_timestamps"},
+            },
+            "engine": _engine(),
+        }
+    )
+    assert configured_weka.traffic.source.nested_timestamp_basis == "relative"
+
+    with pytest.raises(ValidationError, match="only valid for trace format 'weka'"):
+        CorePredictionConfig.model_validate(
+            {
+                "traffic": {
+                    "source": {
+                        "type": "trace",
+                        "paths": ["trace.jsonl"],
+                        "format": "mooncake",
+                        "nested_timestamp_basis": "absolute",
+                    },
+                    "load": {"type": "trace_timestamps"},
+                },
+                "engine": _engine(),
+            }
+        )
 
 
 @pytest.mark.parametrize(

@@ -174,6 +174,12 @@ class RunnerCapabilities:
         trace_format = spec.workload.get("trace_format")
         if isinstance(trace_format, str) and not self.supports_trace_format(trace_format):
             raise ValueError(f"runner does not support trace format {trace_format!r}")
+        weka_basis = spec.workload.get("weka_nested_timestamp_basis")
+        if weka_basis is not None:
+            if trace_format != "weka":
+                raise ValueError("weka_nested_timestamp_basis requires Weka input")
+            if weka_basis not in {"auto", "absolute", "relative"}:
+                raise ValueError("weka_nested_timestamp_basis must be 'auto', 'absolute', or 'relative'")
         agentic_lanes = spec.workload.get("agentic_lanes")
         if agentic_lanes is not None:
             if type(agentic_lanes) is not int or agentic_lanes <= 0:

@@ -12,7 +12,8 @@ use crate::replay::{
     ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
     loadgen::{
         ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
-        WorkloadDriver, load_agentic_mooncake, load_weka_agentic_graph,
+        WekaImportOptions, WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
+        load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
 };
 use anyhow::{Context, Result, anyhow, ensure};
@@ -50,6 +51,8 @@ struct RuntimeTraffic {
     #[serde(default)]
     trace_block_size: Option<usize>,
     #[serde(default)]
+    weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
+    #[serde(default)]
     arrival_speedup_ratio: Option<f64>,
     #[serde(default)]
     replay_concurrency: Option<usize>,
@@ -84,6 +87,20 @@ struct RuntimeTraffic {
     kv_load_ratio: Option<serde_json::Value>,
     #[serde(default)]
     max_sim_time_ms: Option<f64>,
+}
+
+struct BuiltRuntimeInput {
+    input: ReplayRuntimeInput,
+    weka_nested_timestamp_basis: Option<WekaResolvedTimestampBasis>,
+}
+
+impl BuiltRuntimeInput {
+    fn without_weka_basis(input: ReplayRuntimeInput) -> Self {
+        Self {
+            input,
+            weka_nested_timestamp_basis: None,
+        }
+    }
 }
 
 const AGENTIC_MODEL_PROJECTION_POLICY: &str = "project_to_configured_target";
@@ -645,13 +662,21 @@ fn build_runtime_input(
     traffic: RuntimeTraffic,
     engine_block_size: usize,
     allow_agentic: bool,
-) -> Result<ReplayRuntimeInput> {
+) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
+    ensure!(
+        traffic.source_type == "trace" || traffic.weka_nested_timestamp_basis.is_none(),
+        "weka_nested_timestamp_basis requires Weka trace input"
+    );
     if traffic.source_type == "trace" {
         let paths = runtime_paths(&traffic)?;
         let trace_block_size = traffic.trace_block_size.unwrap_or(512);
         let format = traffic.trace_format.as_deref().unwrap_or("mooncake");
         let speedup = traffic.arrival_speedup_ratio.unwrap_or(1.0);
+        ensure!(
+            format == "weka" || traffic.weka_nested_timestamp_basis.is_none(),
+            "weka_nested_timestamp_basis requires Weka input"
+        );
         ensure!(
             traffic.agentic_lanes != Some(0),
             "agentic_lanes must be greater than 0"
@@ -684,13 +709,13 @@ fn build_runtime_input(
             let trace = load_agentic_mooncake(&paths[0], trace_block_size)?
                 .normalize_starts()
                 .speed_up_timing(speedup)?;
-            return Ok(ReplayRuntimeInput::Workload(
-                WorkloadDriver::new_agentic_trace_with_options(
+            return Ok(BuiltRuntimeInput::without_weka_basis(
+                ReplayRuntimeInput::Workload(WorkloadDriver::new_agentic_trace_with_options(
                     trace,
                     engine_block_size,
                     true,
                     traffic.agentic_lanes,
-                )?,
+                )?),
             ));
         }
         if format == "weka" {
@@ -712,17 +737,26 @@ fn build_runtime_input(
                 traffic.replay_concurrency.is_none(),
                 "Weka agentic trace does not support concurrency load"
             );
-            let trace = load_weka_agentic_graph(&paths[0], traffic.trace_block_size)?
-                .normalize_starts()
-                .speed_up_timing(speedup)?;
-            return Ok(ReplayRuntimeInput::Workload(
-                WorkloadDriver::new_agentic_trace_with_options(
-                    trace,
-                    engine_block_size,
-                    true,
-                    traffic.agentic_lanes,
-                )?,
-            ));
+            let requested_basis = traffic.weka_nested_timestamp_basis.unwrap_or_default();
+            let (trace, resolved_basis) = load_weka_agentic_graph_with_options(
+                &paths[0],
+                traffic.trace_block_size,
+                WekaImportOptions {
+                    nested_timestamp_basis: requested_basis,
+                },
+            )?;
+            let trace = trace.normalize_starts().speed_up_timing(speedup)?;
+            return Ok(BuiltRuntimeInput {
+                input: ReplayRuntimeInput::Workload(
+                    WorkloadDriver::new_agentic_trace_with_options(
+                        trace,
+                        engine_block_size,
+                        true,
+                        traffic.agentic_lanes,
+                    )?,
+                ),
+                weka_nested_timestamp_basis: Some(resolved_basis),
+            });
         }
         if format == "dynamo" {
             let loaded =
@@ -765,7 +799,9 @@ fn build_runtime_input(
                     )?
                 }
             };
-            return Ok(ReplayRuntimeInput::Workload(driver));
+            return Ok(BuiltRuntimeInput::without_weka_basis(
+                ReplayRuntimeInput::Workload(driver),
+            ));
         }
         ensure!(
             paths.len() == 1,
@@ -791,7 +827,9 @@ fn build_runtime_input(
             }
             (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
         };
-        return Ok(ReplayRuntimeInput::Workload(driver));
+        return Ok(BuiltRuntimeInput::without_weka_basis(
+            ReplayRuntimeInput::Workload(driver),
+        ));
     }
 
     ensure!(
@@ -840,7 +878,9 @@ fn build_runtime_input(
         (None, true) => WorkloadDriver::new_trace_accumulating_deltas(trace, engine_block_size)?,
         (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
     };
-    Ok(ReplayRuntimeInput::Workload(driver))
+    Ok(BuiltRuntimeInput::without_weka_basis(
+        ReplayRuntimeInput::Workload(driver),
+    ))
 }
 
 fn run_with_input(
@@ -895,7 +935,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
 
-    let (report, artifacts) = match spec.topology.clone() {
+    let (report, artifacts, resolved_weka_timestamp_basis) = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
             let mut role = aggregated_role(&engine_config);
             let capacity_is_explicit = role
@@ -923,14 +963,19 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            let input = traffic
+            let built_input = traffic
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size, true))
                 .transpose()?;
+            let resolved_basis = built_input
+                .as_ref()
+                .and_then(|built| built.weka_nested_timestamp_basis);
+            let input = built_input.map(|built| built.input);
             let factory = timing.map_or_else(
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
             run_with_input(spec, factory, input, capture_artifacts)
+                .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
             let mut prefill = engine_config
@@ -966,7 +1011,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            let input = traffic
+            let built_input = traffic
                 .map(|traffic| {
                     build_runtime_input(
                         traffic,
@@ -980,6 +1025,10 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                     )
                 })
                 .transpose()?;
+            let resolved_basis = built_input
+                .as_ref()
+                .and_then(|built| built.weka_nested_timestamp_basis);
+            let input = built_input.map(|built| built.input);
             run_with_input(
                 spec,
                 ReplayEngineFactory::with_optional_role_timing_models(
@@ -989,6 +1038,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 input,
                 capture_artifacts,
             )
+            .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
     }
     .context("AISimulate replay failed")?;
@@ -1024,6 +1074,12 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             serde_json::to_value(agentic_lanes)
                 .context("serializing configured agentic lane count")?,
         );
+        if let Some(resolved_basis) = resolved_weka_timestamp_basis {
+            object.insert(
+                "weka_nested_timestamp_basis".to_string(),
+                serde_json::Value::String(resolved_basis.as_str().to_string()),
+            );
+        }
         object.insert(
             "agentic_model_projection".to_string(),
             serde_json::json!({

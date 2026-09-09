@@ -190,7 +190,12 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
     config = CorePredictionConfig.model_validate(
         {
             "traffic": {
-                "source": {"type": "trace", "paths": ["weka-corpus"], "format": "weka"},
+                "source": {
+                    "type": "trace",
+                    "paths": ["weka-corpus"],
+                    "format": "weka",
+                    "nested_timestamp_basis": "relative",
+                },
                 "load": {
                     "type": "trace_timestamps",
                     "speedup": 2.0,
@@ -211,6 +216,7 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
     assert workload["trace_block_size"] is None
     assert workload["arrival_speedup_ratio"] == 2.0
     assert workload["agentic_lanes"] == 3
+    assert workload["weka_nested_timestamp_basis"] == "relative"
 
 
 def test_engine_capability_rejects_disaggregated_weka_before_runtime() -> None:
@@ -246,6 +252,22 @@ def test_engine_capability_rejects_disaggregated_weka_before_runtime() -> None:
         (
             {"source_type": "trace", "trace_format": "weka", "agentic_lanes": True},
             "positive integer",
+        ),
+        (
+            {
+                "source_type": "trace",
+                "trace_format": "mooncake",
+                "weka_nested_timestamp_basis": "absolute",
+            },
+            "requires Weka input",
+        ),
+        (
+            {
+                "source_type": "trace",
+                "trace_format": "weka",
+                "weka_nested_timestamp_basis": "guess",
+            },
+            "must be 'auto', 'absolute', or 'relative'",
         ),
     ],
 )

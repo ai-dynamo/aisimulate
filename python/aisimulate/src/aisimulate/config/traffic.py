@@ -52,6 +52,7 @@ TraceFormat = Literal[
     "dynamo",
     "weka",
 ]
+WekaNestedTimestampBasis = Literal["auto", "absolute", "relative"]
 
 
 class TraceSource(StrictModel):
@@ -59,6 +60,7 @@ class TraceSource(StrictModel):
     paths: list[str]
     format: TraceFormat = "mooncake"
     block_size: PositiveInt | None = None
+    nested_timestamp_basis: WekaNestedTimestampBasis | None = None
 
     @field_validator("paths")
     @classmethod
@@ -73,6 +75,8 @@ class TraceSource(StrictModel):
             raise ValueError(f"trace format {self.format!r} requires exactly one path")
         if self.format not in {"dynamo", "weka"} and self.block_size is None:
             self.block_size = 512
+        if self.nested_timestamp_basis is not None and self.format != "weka":
+            raise ValueError("nested_timestamp_basis is only valid for trace format 'weka'")
         return self
 
 

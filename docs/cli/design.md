@@ -365,6 +365,7 @@ the current SA convention.
 | `traffic.source.paths` | Required for trace | `x` | `-` | One path except `dynamo`, which permits multiple. |
 | `traffic.source.format` | `mooncake` | `x` | `-` | See [Trace Format Compatibility](#trace-format-compatibility). |
 | `traffic.source.block_size` | `512`; embedded for `dynamo` and `weka` | `x` | `-` | Positive. For embedded formats, an explicit value is an equality assertion. |
+| `traffic.source.nested_timestamp_basis` | `auto` | `x` | `-` | `auto`, `absolute`, or `relative`; Weka only. |
 | `traffic.load.type` | `concurrency` | `x` | `-` | Synthetic: `concurrency`, `poisson`, `constant_rate`, or `kv_capacity_fraction`; trace: `trace_timestamps` or `concurrency`. |
 | `traffic.load.concurrency` | `10` | `-` | `-` | Positive integer; explicit domains are allowed in `recommend`. |
 | `traffic.load.requests_per_second` | `null` | `-` | `-` | Positive; synthetic request open-loop load only. |
@@ -490,7 +491,7 @@ first-arrival pacing, and inter-turn or dependency delays remain unscaled.
 | `mooncake` | One request or session turn with a full prompt | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | None specific to the format. |
 | `mooncake-delta` | One session turn; follow-up input is only the new input delta | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | Aggregated deployment only; `planner.policy` must be `disabled`. |
 | `agentic_mooncake` | One request node in a dependency graph | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; `planner.policy` must be `disabled`. |
-| `weka` | A published AgentX JSON object or JSONL corpus; directories are traversed recursively and JSONL files may contain multiple plays | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; source block size is embedded and the result is functionally qualified. |
+| `weka` | A raw kv-cache-tester or published AgentX JSON/JSONL corpus; directories are traversed recursively and JSONL files may contain multiple plays | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; source block size is embedded and the result is functionally qualified. |
 | `applied_compute_agentic` | One complete session, expanded into `num_turns + 1` requests | `concurrency` | Not supported; omit it | Supported | Source rows have no first-turn timestamps. |
 | `dynamo` standard trace | Native request-trace records, possibly across multiple files | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | The embedded trace block size is authoritative. |
 | `dynamo` agentic trace | Native agentic request-trace records, possibly across multiple files | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; `planner.policy` must be `disabled`. |
@@ -504,6 +505,13 @@ Weka is the public AgentX source format and AISimulate is its prediction entry p
 deterministically lowers Weka into Agentic Mooncake v2, the versioned producer-neutral interchange
 format, and then validates that lower IR as a `ValidatedAgenticGraph`, the runtime representation.
 Dynamo is an optional integration and is not required to parse, convert, or predict a Weka corpus.
+Two producer timestamp conventions exist: raw kv-cache-tester nested request timestamps are relative
+to their subagent marker, while SemiAnalysis-published AgentX timestamps are root-trace absolute.
+`nested_timestamp_basis` may select either convention explicitly. When omitted (or set to `auto`),
+AISimulate scans every JSON/JSONL row before lowering, resolves one convention from decisive first-inner
+anchors, and rejects mixed or inconclusive non-equivalent corpora. It never guesses per request. Both
+conventions lower to root-absolute canonical timestamps. The selected basis is logged, reported as
+`weka_nested_timestamp_basis`, and included in source identity.
 The neutral importer accepts mixed source models and preserves each request's model label in graph
 provenance and identity. Version 1 execution is intentionally single-target: before the graph enters
 the model-neutral `WorkloadDriver`, AISimulate projects every request onto the one model configured by

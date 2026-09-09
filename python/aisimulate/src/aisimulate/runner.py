@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import math
 import random
 from collections.abc import Mapping
@@ -25,6 +26,8 @@ from .sweeper.replay import (
 )
 from .traffic import materialize_configured_traffic
 
+logger = logging.getLogger(__name__)
+
 _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("vllm", "agg"),
     ("vllm", "disagg"),
@@ -42,6 +45,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "trace_paths",
         "trace_format",
         "trace_block_size",
+        "weka_nested_timestamp_basis",
         "arrival_speedup_ratio",
         "replay_concurrency",
         "isl",
@@ -196,6 +200,13 @@ class EngineReplayRunner:
             raise InvalidRunnerError("AISimulate engine replay runtime returned invalid report JSON") from exc
         if not isinstance(report, Mapping):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
+        resolved_basis = report.get("weka_nested_timestamp_basis")
+        if isinstance(resolved_basis, str):
+            logger.info(
+                "Interpreting the complete Weka corpus with nested timestamp basis %r; "
+                "the resolved basis is included in source identity",
+                resolved_basis,
+            )
         return _normalize_engine_replay_report(
             report,
             include_native_report=(output_requirements.include_raw_report or output_requirements.capture_per_request),

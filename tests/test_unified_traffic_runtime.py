@@ -313,6 +313,7 @@ def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
     assert native["agentic_input_format"] == "weka"
     assert native["agentic_lanes"] == 1
     assert native["agentic_qualification"] == "functional_only"
+    assert native["weka_nested_timestamp_basis"] == "absolute"
     assert native["agentic_model_projection"] == {
         "policy": "project_to_configured_target",
         "source_models": ["model", "other-model"],
@@ -338,3 +339,24 @@ def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
     assert prefill_only["requested_output_length"] == 0
     assert prefill_only["output_length"] == 0
     assert prefill_only["first_token_ms"] is None
+
+
+def test_engine_stack_auto_infers_raw_weka_relative_timestamps() -> None:
+    report = _run(
+        {
+            "traffic": {
+                "source": {
+                    "type": "trace",
+                    "paths": [str(_TRACE_FIXTURES / "weka-relative.json")],
+                    "format": "weka",
+                },
+                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+            },
+            "engine": _engine(),
+        }
+    )
+
+    native = report.metadata["native_report"]
+    assert native["weka_nested_timestamp_basis"] == "relative"
+    assert native["agentic_input_format"] == "weka"
+    assert report.metrics["completed_requests"] == 4

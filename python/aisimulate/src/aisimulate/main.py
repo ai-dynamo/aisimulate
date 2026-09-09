@@ -190,6 +190,14 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     summary = native.get("summary", native)
     if not isinstance(summary, dict):
         raise RuntimeError("prediction report summary must be a JSON mapping")
+    resolved_basis = native.get("weka_nested_timestamp_basis")
+    if isinstance(resolved_basis, str):
+        source = config.traffic.source
+        requested_basis = getattr(source, "nested_timestamp_basis", None) or "auto"
+        sys.stderr.write(
+            "INFO: validated the complete Weka corpus with "
+            f"nested_timestamp_basis requested={requested_basis!r}, resolved={resolved_basis!r}\n"
+        )
     report_path = write_prediction_report(root, native)
     if args.capture_per_request:
         records = native.get("per_request")

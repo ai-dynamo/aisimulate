@@ -482,6 +482,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             trace_format=source.get("format", "mooncake"),
             trace_block_size=source.get("block_size"),
         )
+        if source.get("nested_timestamp_basis") is not None:
+            result["weka_nested_timestamp_basis"] = source["nested_timestamp_basis"]
         if load_type == "concurrency":
             _configure_load_domain(
                 result,

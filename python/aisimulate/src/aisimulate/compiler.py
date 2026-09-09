@@ -262,6 +262,8 @@ def _traffic(
             trace_format=source.format,
             trace_block_size=source.block_size,
         )
+        if source.nested_timestamp_basis is not None:
+            workload["weka_nested_timestamp_basis"] = source.nested_timestamp_basis
         if load.type == "concurrency":
             workload["replay_concurrency"] = load.concurrency
         else:
