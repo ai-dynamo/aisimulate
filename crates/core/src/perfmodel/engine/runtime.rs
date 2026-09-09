@@ -325,6 +325,14 @@ impl Engine {
     /// caller (`AicEngineBuilder` / `from_spec_bytes`) is responsible for
     /// having loaded the matching `PerfDatabase` from `spec.engine`'s identity.
     pub fn build(spec: EngineSpec, db: Arc<PerfDatabase>) -> Result<Engine, AicError> {
+        Self::validate_engine_database_mode(spec.engine.database_mode)?;
+        Self::validate_engine_database_mode(db.database_mode)?;
+        if spec.engine.database_mode != db.database_mode {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "engine spec database mode {:?} does not match loaded database mode {:?}",
+                spec.engine.database_mode, db.database_mode
+            )));
+        }
         let nextn = spec
             .engine
             .speculative
@@ -403,6 +411,7 @@ impl Engine {
         systems_root: &std::path::Path,
     ) -> Result<Engine, AicError> {
         let spec = EngineSpec::from_bincode(bytes)?;
+        Self::validate_engine_database_mode(spec.engine.database_mode)?;
         let version = spec.engine.backend_version.as_deref().ok_or_else(|| {
             AicError::InvalidEngineConfig(
                 "backend_version is required to load the perf database".to_string(),
@@ -434,17 +443,29 @@ impl Engine {
             )),
             spec.engine.strict_provenance,
             // Estimate-only systems (a spec yaml with no collected data) may
-            // back a SOL view: every SOL answer is analytic from the system
-            // spec, so tolerate a missing perf-data directory under SOL and
-            // let table-backed lookups miss lazily. A directory-less
-            // fleet-`next` spec (validated by the Python slot resolver, which
-            // loaded the same identity through backward fill) also skips the
-            // gate — the source resolver serves every table from sibling
-            // versions. All other loads keep the loud gate.
-            spec.engine.database_mode == DatabaseMode::Sol || spec.engine.tolerate_dirless_version,
+            // back formula-only SOL/EMPIRICAL views, so tolerate a missing
+            // perf-data directory and let table-backed lookups miss lazily. A
+            // directory-less fleet-`next` spec (validated by the Python slot
+            // resolver, which loaded the same identity through backward fill)
+            // also skips the gate — the source resolver serves every table
+            // from sibling versions. All other loads keep the loud gate.
+            matches!(
+                spec.engine.database_mode,
+                DatabaseMode::Empirical | DatabaseMode::Sol
+            ) || spec.engine.tolerate_dirless_version,
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
         Engine::build(spec, Arc::new(db))
+    }
+
+    fn validate_engine_database_mode(database_mode: DatabaseMode) -> Result<(), AicError> {
+        if database_mode == DatabaseMode::SolFull {
+            return Err(AicError::InvalidEngineConfig(
+                "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Shared perf database handle.
@@ -1912,6 +1933,71 @@ mod tests {
         // one engine's database must not appear on the other's accumulator.
         e1.database().note_provenance(ProvenanceTier::Empirical);
         assert_eq!(e2.database().worst_provenance(), ProvenanceTier::Silicon);
+    }
+
+    #[test]
+    fn from_spec_bytes_supports_estimate_only_empirical_database() {
+        let mut config = fixture_engine_config(None);
+        config.system_name = "h100_pcie".to_string();
+        config.backend = BackendKind::Trtllm;
+        config.backend_version = Some("estimate".to_string());
+        config.database_mode = DatabaseMode::Empirical;
+        config.enable_shared_layer = Some(false);
+        let spec = EngineSpec::new(config, Vec::new(), Vec::new());
+
+        let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), &systems_root())
+            .expect("formula-only empirical mode must not require a perf-data directory");
+
+        assert_eq!(engine.database().database_mode, DatabaseMode::Empirical);
+    }
+
+    #[test]
+    fn from_spec_bytes_rejects_sol_full_as_database_default() {
+        let mut config = fixture_engine_config(None);
+        config.database_mode = DatabaseMode::SolFull;
+        let spec = EngineSpec::new(config, Vec::new(), Vec::new());
+
+        let result = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), &systems_root());
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
+        ));
+    }
+
+    #[test]
+    fn build_rejects_sol_full_database_view() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .unwrap()
+            .sol_full_view();
+        let spec = EngineSpec::new(fixture_engine_config(None), context_ops(), generation_ops());
+
+        let result = Engine::build(spec, Arc::new(db));
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
+        ));
+    }
+
+    #[test]
+    fn build_rejects_database_mode_mismatch() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .unwrap()
+            .with_mode(DatabaseMode::Empirical, TransferPolicy::default());
+        let spec = EngineSpec::new(fixture_engine_config(None), context_ops(), generation_ops());
+
+        let result = Engine::build(spec, Arc::new(db));
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("does not match")
+                    && message.contains("Silicon")
+                    && message.contains("Empirical")
+        ));
     }
 
     #[test]
