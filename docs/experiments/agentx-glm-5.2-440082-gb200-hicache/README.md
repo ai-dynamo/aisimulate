@@ -30,7 +30,7 @@ nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:a0199d04c53a54dfa6ea3d37eb7d559a
 ```
 
 The [Dockerfile](Dockerfile) extends the exact multi-architecture nightly index
-used in the [B200 Slurm experiment](../agentx-b200-slurm/README.md), installing the
+used in the [B200 Slurm experiment](../agentx-glm-5.2-440958-b200-slurm/README.md), installing the
 same pinned SemiAnalysis AIPerf fork in an isolated venv. Client dependency
 resolution cannot upgrade SGLang's Torch, Transformers or other engine packages.
 Transitive client versions are resolved at build time and recorded in

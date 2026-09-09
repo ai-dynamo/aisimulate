@@ -319,7 +319,9 @@ compatibility tests.
 
 Hardware measurement runbooks (separate from validated accuracy results):
 
-- [AgentX GLM-5.2: single-node B200 Slurm experiment](docs/experiments/agentx-b200-slurm/README.md)
+- [AgentX GLM-5.2: single-node B200 Slurm experiment](docs/experiments/agentx-glm-5.2-440958-b200-slurm/README.md)
+- [AgentX GLM-5.2 #440082: GB200 HiCache experiment](docs/experiments/agentx-glm-5.2-440082-gb200-hicache/README.md)
+- [AgentX DeepSeek-V4-Pro #440845: B300 Slurm preparation](docs/experiments/agentx-deepseek-v4-pro-440845-b300-slurm/README.md)
 
 The public-ready [E2E Accuracy Overview](python/aisimulate/docs/e2e-accuracy/)
 reports matched client-observed TTFT and TPOT accuracy against measured silicon
