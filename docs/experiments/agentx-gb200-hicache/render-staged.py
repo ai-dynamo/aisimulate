@@ -12,15 +12,18 @@ import yaml
 parser = argparse.ArgumentParser()
 parser.add_argument('--stage', choices=['validate', 'formal'], required=True)
 parser.add_argument('--part', choices=['support', 'workload', 'all'], default='all')
+parser.add_argument('--attempt', type=int, default=1)
 args = parser.parse_args()
+if args.attempt < 1:
+    parser.error('--attempt must be positive')
 here = Path(__file__).resolve().parent
 docs = list(yaml.safe_load_all(subprocess.check_output([sys.executable, str(here / 'render-formal.py')], text=True)))
 dgd = next(d for d in docs if d['kind'] == 'DynamoGraphDeployment')
 cd = next(d for d in docs if d['kind'] == 'ComputeDomain')
 stage_number = 1 if args.stage == 'validate' else 2
-run_id = f'agentx-gb200-20260909-stage{stage_number}-rdma-v1'
-status_name = f'agentx-stage{stage_number}-guard-status'
-guard_name = f'agentx-stage{stage_number}-guard-0909-v2'
+run_id = f'agentx-gb200-20260909-stage{stage_number}-rdma-v{args.attempt}'
+status_name = f'agentx-stage{stage_number}-guard-status' + (f'-v{args.attempt}' if args.attempt > 1 else '')
+guard_name = f'agentx-stage{stage_number}-guard-0909-v{args.attempt + 1}'
 env = {item['name']: item for item in dgd['spec']['env']}
 for name, value in {
     'UCX_TLS': 'cuda_ipc,cuda_copy,rc',

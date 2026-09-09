@@ -78,7 +78,7 @@ rules:
   resources:
   - configmaps
   resourceNames:
-  - agentx-stage1-guard-status
+  - agentx-stage1-guard-status-v3
   verbs:
   - get
   - patch
@@ -485,12 +485,15 @@ data:
                 save(ROOT, label + '.' + name + '.metrics-error.json', {'error': repr(exc)})
 
 
-    def request(label, length, rank, marker, output=1):
+    def request(label, length, rank, marker, output=1, prefill_worker_id=None):
         tokens = [14978, marker] + [14978] * (length - 2)
         body = {'model': MODEL, 'prompt': tokens, 'max_tokens': output,
                 'stream': False, 'ignore_eos': True,
-                'nvext': {'prefill_dp_rank': rank,
-                          'extra_fields': ['worker_id', 'timing', 'engine_data']}}
+                'nvext': {'extra_fields': ['worker_id', 'timing', 'engine_data']}}
+        if rank is not None:
+            if prefill_worker_id is None:
+                raise ValueError('A fixed DP rank requires a current prefill worker ID')
+            body['nvext'].update(prefill_worker_id=prefill_worker_id, prefill_dp_rank=rank)
         started = time.monotonic()
         req = urllib.request.Request(BASE + '/v1/completions',
                                      data=json.dumps(body, separators=(',', ':')).encode(),
@@ -505,7 +508,9 @@ data:
         assert payload.get('usage', {}).get('prompt_tokens') == length, payload.get('usage')
         assert 1 <= payload.get('usage', {}).get('completion_tokens', 0) <= output, payload.get('usage')
         actual_rank = payload.get('nvext', {}).get('worker_id', {}).get('prefill_dp_rank')
-        assert actual_rank == rank, ('routing rank mismatch', rank, actual_rank, payload.get('nvext'))
+        if rank is not None:
+            assert actual_rank == rank, ('routing rank mismatch', rank, actual_rank, payload.get('nvext'))
+            assert payload['nvext']['worker_id']['prefill_worker_id'] == prefill_worker_id
         print(json.dumps({k: v for k, v in result.items() if k != 'response'}), flush=True)
         return result
 
@@ -543,22 +548,38 @@ data:
         capacities = [float(value) for value in re.findall(r'^sglang:max_total_num_tokens\{[^\n]*\}\s+([0-9.e+]+)', decode_metrics, re.M)]
         assert capacities, 'Missing real decode KV capacity metric'
         capacity = min(capacities)
-        required = math.ceil(996579 / 64) * 64 + 512
+        # Attempt5's 51 actual snapshot primers maxed at 688430 input tokens.
+        # 996579 was the dataset-wide input+output context peak, NOT a primer ISL.
+        # Exercise a separate, explicitly synthetic near-capacity input as well.
+        primer_max_input = 688430
+        lengths = [32768, 131072, 262144, 524288, primer_max_input, 786432, 983040]
+        required = math.ceil(max(lengths) / 64) * 64 + 512
         save(ROOT, 'capacity.json', {'decode_kv_tokens': capacity,
-                                   'largest_test_input': 996579, 'required_with_reserve': required})
-        assert capacity >= required, ('Long primer cannot fit; do not silently clip', capacity, required)
+                                   'observed_primer_max_input': primer_max_input,
+                                   'largest_synthetic_test_input': max(lengths),
+                                   'required_with_reserve': required})
+        if capacity < required:
+            raise ValueError(('Synthetic acceptance bound cannot fit', capacity, required))
+        # A rank-only hint is not a pin in this Dynamo revision: discover the
+        # currently registered worker before setting the (worker, rank) pair.
+        discovered = request('discover-worker', 64, None, 999)
+        results.append(discovered)
+        prefill_worker_id = discovered['response']['nvext']['worker_id']['prefill_worker_id']
         for rank in range(8):
-            results.append(request('rank-' + str(rank), 4096, rank, 1000 + rank, output=8))
-        lengths = [32768, 131072, 262144, 524288, 786432, 996579]
+            results.append(request('rank-' + str(rank), 4096, rank, 1000 + rank, output=8,
+                                   prefill_worker_id=prefill_worker_id))
         for index, length in enumerate(lengths):
-            results.append(request('long-' + str(length), length, 0, 2000 + index))
+            results.append(request('long-' + str(length), length, 0, 2000 + index,
+                                   prefill_worker_id=prefill_worker_id))
         metrics('before-reload')
-        results.append(request('repeat-524288', 524288, 0, 2003))
+        results.append(request('repeat-524288', 524288, 0, 2003,
+                               prefill_worker_id=prefill_worker_id))
         metrics('after-reload')
         for concurrency in [2, 4, 8]:
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 pending = [executor.submit(request, 'c' + str(concurrency) + '-' + str(i),
-                                           131072, i % 8, 3000 + concurrency * 10 + i, 16)
+                                           131072, i % 8, 3000 + concurrency * 10 + i, 16,
+                                           prefill_worker_id)
                            for i in range(concurrency)]
                 results.extend(f.result() for f in pending)
             metrics('after-c' + str(concurrency))
@@ -585,14 +606,14 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: agentx-stage1-guard-status
+  name: agentx-stage1-guard-status-v3
   namespace: hzhou
 data: {}
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: agentx-stage1-guard-0909-v2
+  name: agentx-stage1-guard-0909-v4
   namespace: hzhou
 spec:
   backoffLimit: 0
@@ -612,7 +633,7 @@ spec:
         - /runner/stage_watchdog.py
         env:
         - name: GUARD_STATUS
-          value: agentx-stage1-guard-status
+          value: agentx-stage1-guard-status-v3
         - name: GPU_DEADLINE_SECONDS
           value: '5400'
         resources:
@@ -795,7 +816,7 @@ spec:
             readOnly: true
           env:
           - name: AGENTX_RUN_DIR
-            value: /results/agentx-gb200-20260909-stage1-rdma-v1
+            value: /results/agentx-gb200-20260909-stage1-rdma-v3
         volumes:
         - &id003
           name: model-cache

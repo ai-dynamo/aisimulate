@@ -18,7 +18,13 @@ not calibrated bandwidth measurements. NIXL per-transfer telemetry was unavailab
 in this image, and Linux RDMA netdev counters did not account for verbs traffic.
 At 10:31:26 PDT, after both engines became ready, the capacity guard stopped the
 suite **before its first HTTP request**. Decode reported 996352 KV token slots,
-below the 996579-token longest primer and the suite's 997120-token requirement.
+below the suite's originally configured 996579-token synthetic input and
+997120-token requirement. **Correction:** 996579 was the dataset-wide maximum
+input-plus-output context, not the longest selected primer input. The 51 actual
+attempt5 snapshot primers (dispatched at the warmup start, before the subsequent
+cache-pressure phase) had maximum input 688430 tokens; that request succeeded.
+There were 43 successful and 8 failed primers. Thus this guard rejection did not
+prove that the real primers could not fit.
 This is a capacity rejection, not evidence of a transport hang. The runner saved
 `FAILED.json`, `capacity.json`, metrics and logs, then deleted the GPU workload.
 All 12 GPUs were released; stage 2 was not started. No prompt was clipped, no
@@ -50,11 +56,14 @@ The bounded suite sends exact token-ID prompts, verifies returned token counts
 and actual `prefill_dp_rank`, and saves individual JSON responses:
 
 - A 4096-token request to each of eight Prefill DP ranks.
-- DP0 prompts of 32768, 131072, 262144, 524288, 786432, and 996579 tokens.
+- DP0 synthetic prompts of 32768, 131072, 262144, 524288, 688430, 786432,
+  and 983040 tokens. The 688430 length matches the largest observed primer input,
+  but the repeated-token content is synthetic, not the original trace prompt.
 - Revisit the earlier 524288-token prefix after eviction pressure.
 - Concurrency 2, 4, and 8 with separate 131072-token prefixes.
 
-There are 29 requests. The longest input requires at least 997120 GPU KV token
+The corrected suite has 31 requests including a 64-token discovery request.
+The longest synthetic input requires at least 983552 GPU KV token
 slots with the suite's 512-token safety allowance; insufficient reported capacity
 fails explicitly rather than clipping prompts or increasing model context.
 Each request has a 300-second client deadline. `HTTP_SUITE_PASS.json` is necessary,
@@ -99,7 +108,15 @@ tracks resource UIDs and deletes only this DGD and ComputeDomain, never PVCs.
 The runner also saves snapshots and cleans up after success or failure. A
 cluster/API outage can still delay cleanup; monitor the guard status ConfigMap.
 
-Stage 1 results: `/results/agentx-gb200-20260909-stage1-rdma-v1`.
+Original stage 1 results: `/results/agentx-gb200-20260909-stage1-rdma-v1`.
+Main-process capacity-correction retry used `--attempt 2`, with results in
+`/results/agentx-gb200-20260909-stage1-rdma-v2`. Its two 4096-token requests both
+returned eight tokens successfully, but the second hit DP7 instead of requested
+DP1 and the harness stopped. In the pinned Dynamo revision, rank-only hints are
+not pins: `prefill_worker_id` must be supplied as well. The suite now discovers
+the current worker ID and pins the `(worker ID, DP rank)` pair. Attempt3 uses a
+fresh directory/guard; this is a harness correction, not an engine change.
+Decode `mem_fraction_static` remains **0.9**; no model/engine parameters change.
 Stage 2 results: `/results/agentx-gb200-20260909-stage2-rdma-v1`.
 Exclusive start markers reject accidental reruns after pod restarts.
 
