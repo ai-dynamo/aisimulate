@@ -180,6 +180,15 @@ def test_full_ci_propagates_the_exact_sha_to_reusable_gates() -> None:
         assert "expected_sha" in inputs
 
 
+def test_full_ci_checkouts_do_not_persist_credentials() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+
+    for job in jobs.values():
+        for step in job.get("steps", []):
+            if step.get("uses", "").startswith("actions/checkout@"):
+                assert step.get("with", {}).get("persist-credentials") == "false"
+
+
 def test_migrated_workflows_keep_reviewed_safety_fixes() -> None:
     collector = _workflow("collector-check.yml")
     prediction = _workflow("prediction-regression-gate.yml")

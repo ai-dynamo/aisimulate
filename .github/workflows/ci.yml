@@ -118,6 +118,8 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install cargo-deny 0.19.0
         env:
@@ -156,6 +158,8 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
@@ -173,6 +177,8 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
@@ -199,6 +205,8 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
@@ -228,6 +236,8 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
@@ -407,6 +417,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
@@ -447,6 +458,8 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: ${{ matrix.python-version }}
@@ -475,6 +488,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
@@ -506,6 +520,8 @@ jobs:
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
