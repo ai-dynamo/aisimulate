@@ -454,7 +454,8 @@ jobs:
       vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
     # gitlab-master is on-prem and unreachable (even for DNS) from the
     # AWS-hosted repo runners; these on-prem runners are the sanctioned path.
-    runs-on: gitlab_ci_runners
+    runs-on:
+      group: gitlab_ci_runners
     timeout-minutes: 10
     environment: automated-release
     steps:

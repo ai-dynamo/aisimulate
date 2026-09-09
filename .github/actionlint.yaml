@@ -8,4 +8,3 @@ self-hosted-runner:
   labels:
     - prod-aisimulate-default-amd64-v1
     - prod-aisimulate-default-arm64-v1
-    - gitlab_ci_runners
