@@ -340,8 +340,15 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, f
             p["role"] == "encoder" and p["backend_version"] == "0.5.14" for p in candidate.provenance.performance_data
         )
     assert SweepResult.from_json(result.to_json()).to_json() == result.to_json()
-    with pytest.raises(ValueError, match="prediction-ready"):
-        Sweeper(runner_factory=Factory(), prediction_config_factory=lambda *args: {}).run(config)
+    if failure is None and gpu_budget == 8:
+        invalid = Sweeper(
+            runner_factory=Factory(),
+            sampler_factory=Sampler,
+            show_progress=False,
+            prediction_config_factory=lambda *args: {},
+        ).run(config)
+        assert not invalid.selected_candidates
+        assert all("prediction-ready" in candidate.reason for candidate in invalid.candidates)
 
 
 def test_unresolved_parallel_snapshot_keeps_encoder_without_inventing_gpu_total():

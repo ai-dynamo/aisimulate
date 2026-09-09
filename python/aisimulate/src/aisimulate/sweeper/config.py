@@ -264,7 +264,8 @@ class Workload(BaseModel):
         if (
             self.trace_path is not None
             or self.trace_paths is not None
-            or self.source_type is not None
+            or self.source_type not in (None, "synthetic")
+            or (self.source_type is None) != (self.load_type is None)
             or self.kv_load_ratio is not None
             or self.load_search_field is not None
             or self.load_choices is not None
@@ -275,7 +276,7 @@ class Workload(BaseModel):
             or self.num_prefix_groups != 0
             or self.inter_turn_delay_ms != 0.0
             or self.max_sim_time_ms is not None
-            or self.load_type is not None
+            or self.load_type not in (None, "concurrency")
             or self.replay_concurrency is not None
         ):
             raise ValueError("analytical EPD requires fixed synthetic traffic without traces, sessions or load search")

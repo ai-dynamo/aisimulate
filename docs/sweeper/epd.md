@@ -17,7 +17,46 @@ The integration calls the current in-tree `_get_encoder_worker_candidates` and
 It replaces the integration approach of closed AISimulate PR #63 without its
 historical estimator, heterogeneous-P/D, or parallel-search dependency stack.
 
-## Run
+## Unified CLI
+
+`aisimulate predict` and `recommend` support this same analytical model on the
+offline `engine` stack. The public input pairs `traffic.source.images` (positive
+height, width, count) with `engine.workers.encoder`. Text `input_tokens` excludes
+visual tokens; preprocessing adds them exactly once before language replay.
+
+```bash
+aisimulate predict -c examples/cli/epd-predict-aggregated.yaml --output-dir /tmp/epd-agg
+aisimulate predict -c examples/cli/epd-predict-disaggregated.yaml --output-dir /tmp/epd-disagg
+aisimulate recommend -c examples/cli/epd-recommend.yaml --output-dir /tmp/epd-search
+aisimulate predict -c /tmp/epd-search/recommendations/0001.yaml --output-dir /tmp/epd-selected
+```
+
+Use a fresh output directory, or deliberately pass `--overwrite` for known outputs.
+Encoder `tensor`, `replicas`, and `batch_size` are positive scalars for prediction,
+and scalars or `{choices: [...]}` for recommendation. Defaults are 1; batch size
+is at most 8. Encoder `hardware` defaults to language hardware. Optional
+`backend_version` selects encoder data independently; the backend follows the
+language backend. `latency_correction` defaults to 1.0 and `rate_degradation`
+defaults to 0.9. Saved YAML pins the resolved encoder hardware/data version,
+shape and both factors, rather than storing editable timing estimates.
+
+CLI EPD requires `source.type: synthetic`, a fixed integer concurrency, and an
+absolute request count or `requests_per_load_unit`. Traces, sessions, arrival-rate
+loads, concurrency search, adapters, online execution and per-request capture
+are rejected. Language timing must be default `op_level`, with static workers.
+Recommendation GPU budgets include all encoder and language GPUs; minimum-GPU
+constraints and goodput objectives remain unsupported. Recommendation SLA bounds
+require `strict_sla: true`; prediction preserves these as aggregate-mean bounds,
+never per-request goodput.
+
+`prediction.json` contains aggregate `summary` metrics and `metadata` identifying
+`analytical_epd_overlay`, the complete resolved encoder, GPU totals and SLA
+semantics. JSON stdout also identifies the approximation. It contains no raw
+native report, percentiles, per-request records or total-deployment power claims.
+The recommendation ledger retains the same provenance. Lossless prediction YAML
+is not a deployment manifest; deployment generation still rejects EPD.
+
+## Sweeper SDK
 
 Use [the SDK example](../../examples/sweeper/epd.yaml):
 
@@ -67,7 +106,8 @@ Aggregate SLA bounds require `strict_sla: true`. Encoder queueing, CPU overhead,
 embedding transfer, variable-image traces and deployment generation remain out
 of scope. Estimation support does not establish silicon accuracy.
 
-This input is **SDK-only**, not public `aisimulate predict/recommend` YAML.
-Prediction-config callbacks and deployment generation explicitly reject EPD
-candidates so they cannot silently lower them into language-only configurations.
+The SDK example uses its own schema, distinct from public CLI YAML above.
+Prediction-config callbacks must preserve the resolved encoder identity, fixed
+image/text workload and GPU topology or the candidate is rejected. Deployment
+generation still rejects EPD candidates rather than dropping the encoder pool.
 The compatibility `aiconfigurator` CLI remains available for AIC EPD workflows.

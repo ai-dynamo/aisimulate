@@ -47,14 +47,13 @@ The following limits apply to `aisimulate predict`, `aisimulate recommend`, and 
 implementation and lower-level estimator, collector, and result-schema primitives. Their presence
 does not make a capability available through the unified path.
 
-The [Sweeper SDK's analytical EPD integration](../sweeper/epd.md) is an explicit
-exception to the SDK portion of this table: it supports fixed-image E+agg/E+P+D
-search, but does not yet provide public `predict`/`recommend` YAML or lossless
-prediction/deployment outputs. The unified CLI's EPD gap below remains open.
+The [analytical EPD integration](../sweeper/epd.md) supports bounded fixed-image
+E+agg/E+P+D prediction and search through both the unified CLI and Sweeper SDK.
+This does not imply event-level encoder simulation or deployment generation.
 
 | Capability | Current unified status | Migration action |
 |---|---|---|
-| Multimodal image inputs and EPD | **Unified CLI not supported.** The public traffic schema has no image dimensions or image count, and the engine schema has no encoder worker. The [Sweeper SDK](../sweeper/epd.md) separately supports analytical fixed-image E+agg/E+P+D search, without public prediction or deployment outputs. | Use the SDK for that bounded search, or continue using AIC `--enable-epd` workflows. |
+| Multimodal image inputs and EPD | **Analytical fixed-image support.** Unified `predict` and `recommend` accept `traffic.source.images` and `engine.workers.encoder` for E+agg/E+P+D, using fixed synthetic concurrency. Saved recommendation YAML preserves the encoder and can be reloaded by `predict`. No image traces, per-request EPD metrics, event-level encoder queueing, or deployment generation. | Use the [CLI examples and semantics](../sweeper/epd.md#unified-cli); retain AIC workflows when their additional semantics are needed. |
 | Attention/FFN disaggregation (AFD) | **Not supported.** There is no unified A/F worker topology or AFD prediction/search mode. | Continue using AIC `--estimate-mode afd` or AIC AFD experiments. |
 | Power and energy analysis | **Not AIC-equivalent.** Sweeper results can preserve optional runner-supplied power or energy metadata, but the unified engine path does not currently provide AIC's predicted `power_w`, coverage gate, or `--detail energy` report. | Continue using AIC estimate/reporting, and confirm that the selected model/system data has sufficient energy coverage. |
 | Static, per-operation, and source breakdowns | **Not supported.** Unified prediction simulates serving traffic; it does not expose AIC's `static`, `static_ctx`, or `static_gen` single-pass modes or `--detail` memory/time/source reports. | Continue using `aiconfigurator cli estimate`. |

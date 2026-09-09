@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from .aic import (
@@ -29,10 +30,16 @@ def prediction_to_replay_spec(
 
     deployment = _deployment(config.engine)
     workload, concurrency = _traffic(config)
+    if config.engine.workers.encoder is not None:
+        if adapter_specs or execution_mode != "offline":
+            raise ValueError("analytical EPD requires the offline engine stack without adapters")
+        deployment = replace(deployment, encoder=_prediction_encoder(config, workload))
     evaluation = config.evaluation.model_dump(mode="json", exclude_none=True)
     goal: dict[str, JSONValue] = {
         "sla": evaluation.get("sla") if evaluation else None,
     }
+    if deployment.encoder is not None and goal["sla"] is not None:
+        goal["strict_sla"] = True
     return ReplaySpec(
         backend_deployment=deployment,
         workload=workload,
@@ -41,6 +48,38 @@ def prediction_to_replay_spec(
         concurrency=concurrency,
         adapters=dict(adapter_specs or {}),
     )
+
+
+def _prediction_encoder(config: CorePredictionConfig, workload):
+    from .sweeper.config import EncoderSearch, Workload
+    from .sweeper.epd import resolve_encoder_pools
+
+    engine = config.engine
+    encoder = engine.workers.encoder
+    assert encoder is not None
+    shape = EncoderSearch(
+        hardware_sku=encoder.hardware,
+        backend_version=encoder.backend_version,
+        tp=[encoder.tensor],
+        batch_size=[encoder.batch_size],
+        workers=[encoder.replicas],
+        latency_correction=encoder.latency_correction,
+        rate_degradation=encoder.rate_degradation,
+    )
+    pools = resolve_encoder_pools(
+        model_name=engine.model,
+        hardware_sku=engine.hardware,
+        backends=[engine.backend],
+        backend_version=engine.backend_version,
+        context_length=(
+            resolve_model_context_length(engine.model) if engine.context_length == "max" else engine.context_length
+        ),
+        encoder=shape,
+        workload=Workload.model_validate(workload),
+    )
+    if len(pools) != 1:
+        raise ValueError("prediction requires exactly one feasible encoder pool")
+    return next(iter(pools.values()))
 
 
 def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
@@ -272,6 +311,8 @@ def _traffic(
 
     if isinstance(source, SyntheticSource):
         workload.update(isl=source.input_tokens, osl=source.output_tokens)
+        if source.images is not None:
+            workload["images"] = source.images.model_dump(mode="json")
         stop_count = stop.requests if stop is not None else None
         relative = stop.requests_per_load_unit if stop is not None else None
     else:

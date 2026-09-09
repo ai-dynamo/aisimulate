@@ -41,6 +41,7 @@ class EncoderPoolSpec:
     image_count: int
     power_w: float | None = None
     power_coverage: float = 0.0
+    latency_correction: float = 1.0
 
     def __post_init__(self):
         for name in ("model", "system", "backend", "backend_version"):
@@ -49,7 +50,7 @@ class EncoderPoolSpec:
         for name in ("tp", "batch_size", "workers", "visual_tokens", "image_height", "image_width", "image_count"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"encoder {name} must be a positive integer")
-        for name in ("latency_ms", "throughput_rps", "memory_gib", "rate_degradation"):
+        for name in ("latency_ms", "throughput_rps", "memory_gib", "rate_degradation", "latency_correction"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"encoder {name} must be positive and finite")

@@ -680,6 +680,11 @@ def _materialize_one(
             if prediction_config_factory is not None
             else None
         )
+        if encoder is not None and prediction_config_factory is not None:
+            from ..config.epd import validate_epd_prediction_mapping
+
+            validate_epd_prediction_mapping(prediction_config, replay_spec)
+            sample["prediction_config_supported"] = True
     except InfeasibleKVCapacity as exc:
         return None, _EvalResult(
             candidate=None,
@@ -1050,8 +1055,6 @@ class Sweeper:
         if config.search_space.encoder is not None:
             if not capabilities.supports_analytical_epd:
                 raise ValueError("runner does not support analytical EPD")
-            if prediction_config_factory is not None:
-                raise ValueError("EPD prediction-ready output is unsupported; cannot drop the encoder pool")
             encoder_catalog = resolve_encoder_catalog(config)
 
         # Preserve the legacy preflight order: reject an impossible backend/topology
