@@ -194,22 +194,26 @@ def _ops_json(ops: Any) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _shared_layer_flag(database: Any) -> bool | None:
+def _shared_layer_flag(database: Any, override: bool | None = None) -> bool | None:
     """The database view's shared-layer flag for the wire, ``None`` when no
     database is bound (the engine then derives it from ``database_mode``,
     mirroring ``_shared_layer_enabled``). The engine resolves per-op sources
     ITSELF (schema v13, ``perf_database/source_resolution.rs``); Python only
     ships the policy bit — including explicit ``shared_layer=`` overrides
     regression harnesses use to pin per-version behavior."""
+    if override is not None:
+        return bool(override)
     if database is None:
         return None
     flag = getattr(database, "enable_shared_layer", None)
     return None if flag is None else bool(flag)
 
 
-def _strict_provenance_flag(database: Any) -> bool:
+def _strict_provenance_flag(database: Any, override: bool | None = None) -> bool:
     """The database view's fail-closed provenance mode for the wire (absent
     database -> False, matching a bare load)."""
+    if override is not None:
+        return bool(override)
     return bool(getattr(database, "strict_provenance", False)) if database is not None else False
 
 
@@ -257,6 +261,10 @@ def _engine_config_dict(
     systems_path: str | None,
     nextn: int,
     database: Any = None,
+    database_mode: str | None = None,
+    shared_layer: bool | None = None,
+    transfer_policy: str | list[str] | None = None,
+    strict_provenance: bool | None = None,
 ) -> dict:
     """Build the ``EngineConfig`` JSON (matches the Rust modularised struct).
 
@@ -300,15 +308,15 @@ def _engine_config_dict(
         # Shared-layer policy bits only (schema v13): the engine resolves
         # per-op sources itself (`perf_database/source_resolution.rs`), so the
         # wire carries the flag, not the resolved map.
-        "enable_shared_layer": _shared_layer_flag(database),
-        "strict_provenance": _strict_provenance_flag(database),
-        # Perf-database query mode + enabled empirical transfer kinds, read off
-        # the live database view so the compiled engine answers HYBRID/EMPIRICAL
-        # queries the same way the Python step does. Presets are resolved here
-        # (single source of truth in ``common.TRANSFER_PRESETS``); the wire form
-        # is always explicit kind tokens, ``None`` = the default ALL policy.
-        "database_mode": _database_mode_name(database),
-        "transfer_policy": _transfer_policy_tokens(database),
+        "enable_shared_layer": _shared_layer_flag(database, shared_layer),
+        "strict_provenance": _strict_provenance_flag(database, strict_provenance),
+        # Perf-database query mode + enabled empirical transfer kinds. Explicit
+        # compile arguments win so policy survives even when discovery returns
+        # no Python view; otherwise read the configured live view. Presets are
+        # resolved here (single source of truth in ``common.TRANSFER_PRESETS``);
+        # the wire form is always explicit kind tokens, ``None`` = default ALL.
+        "database_mode": _database_mode_name(database, database_mode),
+        "transfer_policy": _transfer_policy_tokens(database, transfer_policy),
         # Directory-less fleet-`next` marker (design §14): set only when the
         # loaded database rode backward fill without a local version
         # directory, so the Rust reload skips its missing-directory gate for
@@ -328,27 +336,33 @@ def _opt_int(value: Any) -> int | None:
     return None if value is None else int(value)
 
 
-def _database_mode_name(database: Any) -> str:
+def _database_mode_name(database: Any, override: str | None = None) -> str:
     """The database view's query mode as the wire token (default SILICON)."""
+    if override is not None:
+        return getattr(override, "name", str(override)).upper()
     if database is None:
         return "SILICON"
     mode = getattr(database, "get_default_database_mode", lambda: None)()
     return getattr(mode, "name", str(mode)) if mode is not None else "SILICON"
 
 
-def _transfer_policy_tokens(database: Any) -> list[str] | None:
+def _transfer_policy_tokens(database: Any, override: str | list[str] | None = None) -> list[str] | None:
     """The view's enabled transfer kinds as explicit wire tokens.
 
     ``None`` = the default ALL-transfers policy (backward-compatible absent
     key). A non-default policy serialises as a sorted list of kind values so
     the Rust side never needs the preset vocabulary.
     """
-    if database is None:
-        return None
-    policy = getattr(database, "transfer_policy", None)
-    if policy is None:
-        return None
-    from aiconfigurator_core.sdk.common import ALL_TRANSFERS
+    from aiconfigurator_core.sdk.common import ALL_TRANSFERS, resolve_transfer_policy
+
+    if override is not None:
+        policy = resolve_transfer_policy(override)
+    else:
+        if database is None:
+            return None
+        policy = getattr(database, "transfer_policy", None)
+        if policy is None:
+            return None
 
     if frozenset(policy) == ALL_TRANSFERS:
         return None
@@ -381,6 +395,10 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    database_mode: str | None = None,
+    shared_layer: bool | None = None,
+    transfer_policy: str | list[str] | None = None,
+    strict_provenance: bool | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -415,10 +433,19 @@ def compile_engine(
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the
-    # tolerant database load — `_maybe_load_database` forgives LOAD failures
-    # (the Rust core falls back to its own defaults), never policy violations.
+    # tolerant database load. Explicit policy is also serialized independently
+    # below, so a missing Python view cannot silently downgrade the Rust reload.
     literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
-    database = _maybe_load_database(system, backend, literal_version, systems_path)
+    database = _maybe_load_database(
+        system,
+        backend,
+        literal_version,
+        systems_path,
+        database_mode,
+        shared_layer,
+        transfer_policy,
+        strict_provenance,
+    )
 
     spec_json = build_engine_spec_json(
         model,
@@ -430,6 +457,10 @@ def compile_engine(
         systems_path=systems_path,
         nextn=model_config.nextn,
         database=database,
+        database_mode=database_mode,
+        shared_layer=shared_layer,
+        transfer_policy=transfer_policy,
+        strict_provenance=strict_provenance,
     )
 
     return bytes(aiconfigurator_core.engine_spec_bincode_from_json(spec_json))
@@ -503,6 +534,10 @@ def build_engine_spec_json(
     systems_path: str | None,
     nextn: int,
     database: Any = None,
+    database_mode: str | None = None,
+    shared_layer: bool | None = None,
+    transfer_policy: str | list[str] | None = None,
+    strict_provenance: bool | None = None,
 ) -> str:
     """Walk a built model's op lists into an ``EngineSpec`` JSON string.
 
@@ -546,6 +581,10 @@ def build_engine_spec_json(
             systems_path=systems_path,
             nextn=nextn,
             database=database,
+            database_mode=database_mode,
+            shared_layer=shared_layer,
+            transfer_policy=transfer_policy,
+            strict_provenance=strict_provenance,
         ),
         "context_ops": context_ops,
         "generation_ops": generation_ops,
@@ -741,12 +780,41 @@ def _evaluate_single_op(
             op._lane_order = original_lane_order
 
 
-def _maybe_load_database(system: str, backend: str, backend_version: str | None, systems_path: str | None) -> Any:
+def _maybe_load_database(
+    system: str,
+    backend: str,
+    backend_version: str | None,
+    systems_path: str | None,
+    database_mode: str | None,
+    shared_layer: bool | None,
+    transfer_policy: str | list[str] | None,
+    strict_provenance: bool | None,
+) -> Any:
+    explicit_policy = any(
+        value is not None for value in (database_mode, shared_layer, transfer_policy, strict_provenance)
+    )
     try:
         from aiconfigurator_core.sdk import perf_database
 
-        return perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
+        formula_only = database_mode is not None and database_mode.upper() in {"EMPIRICAL", "SOL"}
+        database = perf_database.get_database_view(
+            system,
+            backend,
+            backend_version,
+            systems_paths=systems_path,
+            allow_missing_data=formula_only,
+            database_mode=database_mode,
+            shared_layer=shared_layer,
+            transfer_policy=transfer_policy,
+            strict_provenance=strict_provenance,
+        )
+        # Discovery may deliberately return no view after logging malformed or
+        # missing system data. Keep that absence so the serialized policy below
+        # reaches Rust, whose reload produces the authoritative input error.
+        return database
     except Exception:
+        if explicit_policy:
+            raise
         return None
 
 

@@ -112,6 +112,23 @@ Use `from_native(...)` instead when native AIC support is required and an
 unsupported configuration or native data failure should surface rather than
 fall back. This strict-native constructor does not take `worker_type`.
 
+`EngineConfig.database_mode` selects `SILICON`, `HYBRID`, `EMPIRICAL`, or
+`SOL` for native forward-pass construction. The Python dictionary form uses
+those uppercase strings; Rust uses `DatabaseMode`. `EMPIRICAL` always uses the
+SOL/util path and is intended for research estimates when matching silicon
+data is unavailable. Set `enable_shared_layer=true` when empirical estimation
+may reuse sibling or cross-version calibration data; `transfer_policy` can
+limit the allowed transfer kinds. `strict_provenance=true` makes missing,
+malformed, or incomplete collection and reuse metadata fail the database load.
+`SOL_FULL` remains a per-call diagnostic and is rejected as an engine default.
+Version-slot validation is unchanged; raw versions outside the maintained slots
+still require the existing explicit SDK or environment escape hatch.
+
+`AicEngineBuilder` exposes `.database_mode(...)`, `.shared_layer(...)`,
+`.transfer_policy(...)`, and `.strict_provenance(...)`. Python `compile_engine`
+accepts the corresponding keyword names; `shared_layer` is serialized as
+`EngineConfig.enable_shared_layer`.
+
 Use `RustForwardPassPerfModel.from_regression(worker_type, options=None)` or
 `ForwardPassPerfModel::from_regression(worker_type, options)` for a
 regression-only model. It owns one two-dimensional retained sample set and one
@@ -192,7 +209,7 @@ The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
   `KvCacheEstimateOptions`, `KvCacheMemoryFraction`, and estimate/result/error
   types;
 - wire identity: `EngineConfig`, `ParallelMapping`, `QuantizationConfig`,
-  `SpeculativeConfig`, `BackendKind`, and `DataType`;
+  `SpeculativeConfig`, `BackendKind`, `DatabaseMode`, and `DataType`;
 - schema gates: `ENGINE_CONFIG_SCHEMA_VERSION`,
   `ENGINE_SPEC_SCHEMA_VERSION`, and `FPM_VERSION`.
 
