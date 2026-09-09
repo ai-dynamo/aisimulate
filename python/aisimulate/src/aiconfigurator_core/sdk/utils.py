@@ -775,7 +775,9 @@ def _parse_hf_config_json(config: dict) -> dict:
                 )
 
             vision_hidden = int(vision_cfg["vt_hidden_size"])
-            vision_heads = int(vision_cfg["vt_num_attention_heads"])
+            vision_heads = vision_cfg["vt_num_attention_heads"]
+            if not isinstance(vision_heads, int) or isinstance(vision_heads, bool) or vision_heads <= 0:
+                raise ValueError("Kimi K3 vision vt_num_attention_heads must be a positive integer")
             qkv_hidden = int(vision_cfg.get("qkv_hidden_size") or vision_hidden)
             if qkv_hidden % vision_heads != 0:
                 raise ValueError(
@@ -790,6 +792,13 @@ def _parse_hf_config_json(config: dict) -> dict:
                     f"Kimi K3 vision text_hidden_size ({out_hidden}) must match "
                     f"the language hidden_size ({hidden_size})"
                 )
+            max_temporal_patches = vision_cfg.get("init_pos_emb_time")
+            if (
+                not isinstance(max_temporal_patches, int)
+                or isinstance(max_temporal_patches, bool)
+                or max_temporal_patches <= 0
+            ):
+                raise ValueError("Kimi K3 vision_config.init_pos_emb_time must be a positive integer")
             merger_dim = vision_hidden * merge_kernel[0] * merge_kernel[1]
             kimi_vision_config = VisionEncoderConfig(
                 depth=int(vision_cfg["vt_num_hidden_layers"]),
@@ -807,7 +816,7 @@ def _parse_hf_config_json(config: dict) -> dict:
                 final_norm=True,
                 pool_temporal=True,
                 video_attention_type="spatial_temporal",
-                max_temporal_patches=int(vision_cfg.get("init_pos_emb_time") or 0),
+                max_temporal_patches=max_temporal_patches,
                 projector_post_norm=True,
                 encoder_type="kimi_k3_moonvit3d_patchmergerv2",
             )

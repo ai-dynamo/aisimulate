@@ -4,6 +4,7 @@
 """Kimi K3 image/video encoder parsing, construction, and runtime tests."""
 
 import dataclasses
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -14,9 +15,26 @@ from aiconfigurator.sdk.backends.base_backend import BaseBackend
 from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
 from aiconfigurator.sdk.models import get_model
 from aiconfigurator.sdk.models.vit_ops import build_kimi_k3_encoder_ops
-from aiconfigurator.sdk.utils import get_model_config_from_model_path
+from aiconfigurator.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("value", ["missing", None, 0, -1, False, 1.5, "4"])
+def test_kimi_k3_rejects_invalid_temporal_limit_before_building_encoder(monkeypatch, language_only, value):
+    from aiconfigurator_core.sdk import models as models_module
+
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    if value == "missing":
+        raw["vision_config"].pop("init_pos_emb_time")
+    else:
+        raw["vision_config"]["init_pos_emb_time"] = value
+    monkeypatch.setattr(models_module, "_get_model_info", lambda path: _parse_hf_config_json(raw))
+    model_config = _model_config()
+    model_config.language_only = language_only
+    with pytest.raises(ValueError, match="init_pos_emb_time must be a positive integer"):
+        get_model("moonshotai/Kimi-K3", model_config, "sglang")
 
 
 def _model_config(tp_size: int = 1, *, enable_encoder_dp: bool = True, nextn: int = 0) -> config.ModelConfig:
@@ -28,6 +46,14 @@ def _model_config(tp_size: int = 1, *, enable_encoder_dp: bool = True, nextn: in
         enable_encoder_dp=enable_encoder_dp,
         nextn=nextn,
     )
+
+
+@pytest.mark.parametrize("heads", [0, -1, False, None, 1.5, "12"])
+def test_kimi_k3_parser_rejects_invalid_vision_head_count(heads):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["vision_config"]["vt_num_attention_heads"] = heads
+    with pytest.raises(ValueError, match="vt_num_attention_heads must be a positive integer"):
+        _parse_hf_config_json(raw)
 
 
 @pytest.fixture
