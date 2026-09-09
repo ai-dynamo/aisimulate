@@ -39,8 +39,8 @@ def fake_model_info(monkeypatch):
     return _install
 
 
-def _mc(fmha=None):
-    return config.ModelConfig(fmha_quant_mode=fmha)
+def _mc(fmha=None, *, forward_model="op_level"):
+    return config.ModelConfig(fmha_quant_mode=fmha, forward_model=forward_model)
 
 
 def _db(**supported):
@@ -130,3 +130,26 @@ def test_generic_arch_consults_context_attention(fake_model_info, caplog):
         resolve_context_fmha_by_data(mc, "Qwen/Qwen3-235B", db, "sglang", is_context_role=True)
     assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
     assert any("context_attention" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("fmha", "expected"),
+    [
+        (None, common.FMHAQuantMode.fp8),
+        (common.FMHAQuantMode.fp8, common.FMHAQuantMode.fp8),
+    ],
+)
+def test_fpm_does_not_apply_op_level_context_fmha_guard(fake_model_info, fmha, expected):
+    """Whole-model FPM identity must not be rewritten from op-level table coverage."""
+    fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)
+    mc = _mc(fmha=fmha, forward_model="fpm")
+
+    resolve_context_fmha_by_data(
+        mc,
+        "deepseek-ai/DeepSeek-V3",
+        _BF16_ONLY_DB,
+        "trtllm",
+        is_context_role=True,
+    )
+
+    assert mc.fmha_quant_mode == expected

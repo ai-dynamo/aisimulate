@@ -281,6 +281,36 @@ def test_static_estimate_source_tag_empirical_in_empirical_mode():
     )
 
 
+@pytest.mark.build
+@pytest.mark.parametrize("mode", ["static", "agg"])
+@pytest.mark.parametrize("fmha_quant_mode", [None, "fp8"])
+def test_glm52_fpm_estimate_uses_whole_model_fmha_identity(monkeypatch, mode, fmha_quant_mode):
+    """Public FPM estimates must not be gated by unrelated op-level FMHA data."""
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+
+    result = cli_estimate(
+        model_path="nvidia/GLM-5.2-NVFP4",
+        system_name="b200_sxm",
+        backend_name="vllm",
+        backend_version="0.25.1",
+        forward_model="fpm",
+        tp_size=8,
+        pp_size=1,
+        moe_tp_size=1,
+        moe_ep_size=8,
+        batch_size=1,
+        isl=1024,
+        osl=4,
+        mode=mode,
+        fmha_quant_mode=fmha_quant_mode,
+    )
+
+    assert result.ttft > 0
+    assert result.tpot > 0
+
+
 def test_agg_estimate_responds_to_common_prefix():
     """Regression: ``--prefix`` is now a common param. With prefix > 0 the
     effective TTFT should differ from prefix=0 because the context phase
