@@ -13,6 +13,7 @@ from aiconfigurator.sdk.sweep import _overlay_encoder_stage
 from aisimulate.sweeper.config import SmartSearchConfig, Workload
 from aisimulate.sweeper.engine_request import EngineControlTemplate
 from aisimulate.sweeper.epd import (
+    EpdResolutionError,
     apply_epd_metrics,
     resolve_epd_catalog,
     visual_context_tokens,
@@ -261,6 +262,70 @@ def test_encoder_catalog_resolves_system_timing_memory_and_worker_counts(monkeyp
     assert selected.total_gpus == 4
     assert selected.memory_gib_per_worker == 3.5
     assert selected.power_coverage == 0.75
+
+
+@pytest.mark.parametrize(
+    "power_fields",
+    [
+        {},
+        {"power_w": 0.0, "power_coverage": 1.0},
+        {"power_w": 250.0, "power_coverage": 0.0},
+    ],
+)
+def test_encoder_catalog_rejects_missing_power(monkeypatch, power_fields):
+    base = _estimator()
+    monkeypatch.setattr(
+        epd_module,
+        "resolve_estimator_specs",
+        lambda _space: {"vllm": base},
+    )
+    monkeypatch.setattr(
+        epd_module.perf_database,
+        "get_database_view",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        epd_module,
+        "_get_encoder_worker_candidates",
+        lambda **kwargs: [
+            {
+                "encoder_latency": 12.5,
+                "seq/s": 40.0,
+                "num_total_gpus": 2,
+                "tp": 2,
+                "bs": 4,
+                "memory": 3.5,
+                **power_fields,
+            }
+        ],
+    )
+    config = SmartSearchConfig.model_validate(
+        {
+            "search_space": {
+                "model_name": base.model_path,
+                "hardware_sku": "h200_sxm",
+                "backend": ["vllm"],
+                "gpu_budget": 8,
+                "enable_epd": True,
+                "encoder_num_workers_candidates": [1],
+            },
+            "workload": {
+                "isl": 128,
+                "osl": 16,
+                "concurrency": 1,
+                "num_request_ratio": 1,
+                "num_image_tokens": 256,
+                "num_images_per_request": 1,
+            },
+        }
+    )
+
+    with pytest.raises(EpdResolutionError, match="power"):
+        resolve_epd_catalog(
+            config,
+            estimator_specs={"vllm": base},
+            role_estimator_specs={},
+        )
 
 
 def test_candidate_materialization_accounts_for_encoder_pool_and_fails_artifacts_closed():

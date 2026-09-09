@@ -164,8 +164,8 @@ class EncoderWorkerSpec:
     throughput_rps_per_worker: float
     memory_gib_per_worker: float
     rate_degradation: float
-    power_w_per_worker: float = 0.0
-    power_coverage: float = 0.0
+    power_w_per_worker: float
+    power_coverage: float
 
     def __post_init__(self) -> None:
         for name in ("candidate_id", "backend_key"):
@@ -189,11 +189,7 @@ class EncoderWorkerSpec:
                 or float(value) <= 0.0
             ):
                 raise ValueError(f"encoder {name} must be positive and finite")
-        for name in (
-            "memory_gib_per_worker",
-            "power_w_per_worker",
-            "power_coverage",
-        ):
+        for name in ("memory_gib_per_worker",):
             value = getattr(self, name)
             if (
                 isinstance(value, bool)
@@ -202,6 +198,15 @@ class EncoderWorkerSpec:
                 or float(value) < 0.0
             ):
                 raise ValueError(f"encoder {name} must be non-negative and finite")
+        for name in ("power_w_per_worker", "power_coverage"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) <= 0.0
+            ):
+                raise ValueError(f"encoder {name} must be positive and finite")
         if self.power_coverage > 1.0:
             raise ValueError("encoder power_coverage must be within [0, 1]")
 

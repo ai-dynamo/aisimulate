@@ -41,6 +41,28 @@ class EpdResolutionError(ValueError):
     """An encoder estimator or worker catalog cannot be resolved exactly."""
 
 
+def _required_encoder_power(row: Mapping[str, Any]) -> tuple[float, float]:
+    """Return proven encoder power fields, rejecting missing-data sentinels."""
+
+    try:
+        power_w = float(row["power_w"])
+        coverage = float(row["power_coverage"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise EpdResolutionError(
+            "EPD encoder candidates require measured power_w and power_coverage"
+        ) from exc
+    if not math.isfinite(power_w) or power_w <= 0.0:
+        raise EpdResolutionError(
+            f"EPD encoder power_w must be positive and finite, got {power_w!r}"
+        )
+    if not math.isfinite(coverage) or not 0.0 < coverage <= 1.0:
+        raise EpdResolutionError(
+            "EPD encoder power_coverage must be positive, finite, and at most 1, "
+            f"got {coverage!r}"
+        )
+    return power_w, coverage
+
+
 def image_runtime_config(workload: Workload) -> RuntimeConfig:
     """Translate the fixed image profile to AIC's encoder runtime contract."""
 
@@ -142,6 +164,7 @@ def resolve_epd_catalog(
             range(1, search_space.max_encoder_workers + 1)
         )
         for row in rows:
+            power_w, power_coverage = _required_encoder_power(row)
             for num_workers in worker_counts:
                 total_gpus = int(row["num_total_gpus"]) * int(num_workers)
                 if total_gpus >= search_space.gpu_budget:
@@ -162,8 +185,8 @@ def resolve_epd_catalog(
                     throughput_rps_per_worker=float(row["seq/s"]),
                     memory_gib_per_worker=float(row["memory"]),
                     rate_degradation=search_space.encoder_rate_degradation,
-                    power_w_per_worker=float(row.get("power_w", 0.0) or 0.0),
-                    power_coverage=float(row.get("power_coverage", 0.0) or 0.0),
+                    power_w_per_worker=power_w,
+                    power_coverage=power_coverage,
                 )
     if not catalog:
         raise EpdResolutionError("no EPD encoder candidate leaves at least one GPU for the language pool")
