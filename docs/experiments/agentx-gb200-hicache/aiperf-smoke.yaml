@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentx-glm52-aiperf-smoke
+  namespace: hzhou
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets: [{name: nvcr-secret}]
+      nodeSelector:
+        kubernetes.io/hostname: gke-brugdizq-dgxc-k8-customer-gpu-w0e-32ae6790-tqtb
+      tolerations:
+        - {key: kubernetes.io/arch, operator: Equal, value: arm64, effect: NoSchedule}
+      containers:
+        - name: main
+          image: nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:a0199d04c53a54dfa6ea3d37eb7d559afb55047a1b290bb783c441b63fb72688
+          command: [bash, -lc]
+          args:
+            - |
+              set -euo pipefail
+              /opt/agentx-aiperf/bin/aiperf profile \
+                --url http://agentx-glm52-hicache-frontend:8000 \
+                --endpoint-type chat \
+                --model nvidia/GLM-5.2-NVFP4 \
+                --tokenizer /model-cache/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab \
+                --synthetic-input-tokens-mean 1024 \
+                --synthetic-input-tokens-stddev 0 \
+                --output-tokens-mean 128 \
+                --output-tokens-stddev 0 \
+                --concurrency 4 --request-count 32 \
+                --streaming --extra-inputs ignore_eos:true \
+                --use-server-token-count --no-gpu-telemetry \
+                --artifact-dir /artifacts/aiperf
+              tar -czf /artifacts/aiperf.tar.gz -C /artifacts aiperf
+              echo 'AIPERF_COMPLETE: retrieve /artifacts/aiperf.tar.gz then delete this Job'
+              sleep 300
+          env:
+            - {name: HF_HUB_OFFLINE, value: '1'}
+            - {name: XDG_CACHE_HOME, value: /tmp/agentx-cache}
+          resources:
+            requests: {cpu: '4', memory: 8Gi}
+            limits: {memory: 16Gi}
+          volumeMounts:
+            - {name: model-cache, mountPath: /model-cache, readOnly: true}
+            - {name: artifacts, mountPath: /artifacts}
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim: {claimName: shared-model-cache, readOnly: true}
+        - name: artifacts
+          emptyDir: {}

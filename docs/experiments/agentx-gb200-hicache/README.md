@@ -6,8 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 # GB200 AgentX image and HiCache preparation
 
 Status: built and published on September 8, 2026; single-GPU ARM64/H100 smoke test
-passed. GB200/GLM FP4, cache-pressure offload/reload and multi-node transport are
-not yet validated. No GB200 deployment was started.
+passed. The three-node GB200 Kubernetes variant is documented in
+[KUBERNETES.md](KUBERNETES.md), with [DGD](deploy.yaml) and
+[short AIPerf Job](aiperf-smoke.yaml). Cache-pressure offload/reload is not
+validated by the short smoke workload; consult the run status there before
+interpreting any results.
 
 Published image:
 
