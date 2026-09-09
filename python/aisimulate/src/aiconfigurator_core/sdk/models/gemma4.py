@@ -10,40 +10,6 @@ from aiconfigurator_core.sdk.models.blocks.vit import build_gemma4_vision_encode
 from aiconfigurator_core.sdk.models.helpers import mtp_scale_factor, quant_exclude_patterns
 
 
-class _Gemma4VisualBlockAttention(ops.ContextAttention):
-    """Incremental SWA work from Gemma's bidirectional visual-block mask.
-
-    The ordinary language ``ContextAttention`` already models projections,
-    RoPE, KV writes, and causal attention over the combined sequence. This op
-    reuses only its collected kernel curve and scales that latency/energy to the
-    additional strict-upper-triangle pairs unmasked within each image block.
-
-    Source: Hugging Face Transformers Gemma 4 attention-mask behavior at commit
-    cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55.
-    """
-
-    def query(self, database, **kwargs):
-        batch_size = kwargs["batch_size"]
-        tokens = kwargs["s"]
-        result = database.query_context_attention(
-            batch_size,
-            tokens,
-            0,
-            self._n,
-            self._n_kv,
-            self._kvcache_quant_mode,
-            self._fmha_quant_mode,
-            window_size=self._window_size,
-            head_size=self._head_size,
-        )
-        modeled_causal_pairs = (
-            tokens**2 / 2 if self._window_size <= 0 or tokens <= self._window_size else tokens * self._window_size
-        )
-        upper_triangle_pairs = tokens * (tokens - 1) / 2
-        seq_scale = float(kwargs.get("seq_imbalance_correction_scale", 1.0))
-        return result * (self._scale_factor * upper_triangle_pairs / modeled_causal_pairs * seq_scale)
-
-
 @register_model("GEMMA4MIX")
 class Gemma4MixModel(BaseModel):
     """
@@ -197,9 +163,13 @@ class Gemma4MixModel(BaseModel):
                 # scales Gemma's collected causal curve to the added pairs.
                 # Independent image blocks use an average layer split under CP;
                 # unlike the language path they do not use zigzag representative-rank sizing.
+                # The compiled kernel-only evaluator omits fused RoPE and KV
+                # writes already charged by the ordinary language graph.
+                # Mask source: Transformers commit
+                # cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55.
                 d = self._resolve_dims(self.config.tp_size)
                 self.visual_context_ops.append(
-                    _Gemma4VisualBlockAttention(
+                    ops.ContextAttention(
                         "context_swa_visual_block_attention",
                         self._count_layer_types()["swa"] / self.config.cp_size,
                         self._num_heads // self.config.tp_size,

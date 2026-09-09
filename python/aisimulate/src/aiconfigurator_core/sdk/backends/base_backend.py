@@ -615,19 +615,16 @@ class BaseBackend:
             return {}, {}, {}
 
         from aiconfigurator_core.sdk.engine import build_ops_json
-        from aiconfigurator_core.sdk.rust_engine_step import evaluate_ops_json_with_rust
+        from aiconfigurator_core.sdk.rust_engine_step import evaluate_context_attention_kernels_with_rust
 
         image_batch = batch_size * runtime_config.num_images_per_request
-        entries = evaluate_ops_json_with_rust(
+        entries = evaluate_context_attention_kernels_with_rust(
             model,
             database,
             ops_json=build_ops_json(visual_ops),
-            is_context=True,
             batch_size=image_batch,
             s=tokens_per_image,
-            prefix=0,
             imbalance_correction_scale=runtime_config.seq_imbalance_correction_scale,
-            x=image_batch * tokens_per_image,
         )
         ops_by_name = {op._name: op for op in visual_ops}
         latency_dict: dict[str, float] = {}

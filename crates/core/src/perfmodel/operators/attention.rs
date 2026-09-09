@@ -231,13 +231,12 @@ impl ContextAttentionOp {
         }
     }
 
-    pub fn query(
+    fn query_kernel_unscaled(
         &self,
         db: &PerfDatabase,
         batch_size: u32,
         isl: u32,
         prefix: u32,
-        seq_imbalance_correction_scale: f64,
     ) -> Result<PerformanceResult, AicError> {
         // Mirror Python's `ContextAttention._ctx(s, pfx)`: each chunk
         // dispatches through the database mode — the silicon table at the
@@ -264,12 +263,41 @@ impl ContextAttentionOp {
         // unchanged) and chunk 2cp-1 (attends almost the full sequence). Only
         // the FMHA table term is split; the fused extras below are added once.
         // Latency and energy both sum across the chunks (Python `__add__`).
-        let mut result = if self.cp_size > 1 {
+        if self.cp_size > 1 {
             let c = isl.div_ceil(2 * self.cp_size).max(1);
-            ctx(c, prefix)?.plus(ctx(c, prefix + isl - c)?)
+            Ok(ctx(c, prefix)?.plus(ctx(c, prefix + isl - c)?))
         } else {
-            ctx(isl, prefix)?
-        };
+            ctx(isl, prefix)
+        }
+    }
+
+    /// Attention kernel only, for visual-mask overlays whose ordinary language
+    /// graph already charges Q/K normalization, RoPE, and KV writes. Retains the
+    /// same database policy, lane order, CP geometry, energy, and provenance.
+    pub fn query_kernel(
+        &self,
+        db: &PerfDatabase,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+        seq_imbalance_correction_scale: f64,
+    ) -> Result<PerformanceResult, AicError> {
+        Ok(self
+            .query_kernel_unscaled(db, batch_size, isl, prefix)?
+            .scaled(seq_imbalance_correction_scale)
+            .clamp_non_negative()
+            .scaled(self.scale_factor))
+    }
+
+    pub fn query(
+        &self,
+        db: &PerfDatabase,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+        seq_imbalance_correction_scale: f64,
+    ) -> Result<PerformanceResult, AicError> {
+        let mut result = self.query_kernel_unscaled(db, batch_size, isl, prefix)?;
 
         // Fused-op extras (qk_norm / rope optional, kv_write mandatory).
         // Python evaluates them through the mode-aware `query_mem_op` and
@@ -1282,6 +1310,61 @@ mod tests {
         // Measured table leaf + empirical rope/kv_write extras -> "mixed"
         // (Python `ContextAttention.query` PerformanceResult composition).
         assert_eq!(result.source, Source::Mixed);
+    }
+
+    #[test]
+    fn context_attention_kernel_omits_fused_extras_and_preserves_table_policy() {
+        let mut db = b200_vllm_db();
+        let mut op = with_vllm_lanes_ctx(ContextAttentionOp::new(
+            "visual",
+            64,
+            8,
+            128,
+            KvCacheQuantMode::Fp8,
+            FmhaQuantMode::Bfloat16,
+        ));
+        op.scale_factor = 25.0;
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+            DatabaseMode::Sol,
+        ] {
+            db.database_mode = mode;
+            for cp in [1, 2] {
+                op.cp_size = cp;
+                let table = |s, prefix| {
+                    query_context_attention_table(
+                        &db,
+                        &op.lane_order,
+                        4,
+                        s,
+                        prefix,
+                        op.n,
+                        op.n_kv,
+                        op.head_size,
+                        op.window_size,
+                        op.kv_cache_dtype,
+                        op.fmha_quant_mode,
+                    )
+                    .unwrap()
+                };
+                let expected = if cp == 1 {
+                    table(2048, 256)
+                } else {
+                    table(512, 256).plus(table(512, 1792))
+                }
+                .scaled(1.25)
+                .scaled(25.0);
+                let kernel = op.query_kernel(&db, 4, 2048, 256, 1.25).unwrap();
+                let full = op.query(&db, 4, 2048, 256, 1.25).unwrap();
+                assert_eq!(kernel.latency_ms, expected.latency_ms);
+                assert_eq!(kernel.energy_wms, expected.energy_wms);
+                assert_eq!(kernel.source, expected.source);
+                assert!(full.latency_ms > kernel.latency_ms);
+                assert_eq!(full.energy_wms, kernel.energy_wms);
+            }
+        }
     }
 
     #[test]

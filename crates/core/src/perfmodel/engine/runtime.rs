@@ -1408,6 +1408,41 @@ impl Engine {
         Ok(strip_per_op_metadata(out.into_values()))
     }
 
+    /// Evaluate only context-attention kernels for an ad-hoc visual-mask
+    /// overlay. Other operator families are rejected. This is a runtime query
+    /// option; the serialized op and EngineSpec formats remain unchanged.
+    pub fn evaluate_context_attention_kernels_json(
+        &self,
+        ops_json: &str,
+        batch_size: u32,
+        s: u32,
+        prefix: u32,
+        imbalance_correction_scale: f64,
+    ) -> Result<Vec<PerOpValue>, AicError> {
+        let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
+            AicError::InvalidEngineConfig(format!("invalid attention kernel op list JSON: {e}"))
+        })?;
+        let mut out = PerOpFold::new("context");
+        for op in &ops {
+            let Op::ContextAttention(attention) = op else {
+                return Err(AicError::InvalidEngineConfig(
+                    "attention kernel evaluation requires ContextAttention ops".into(),
+                ));
+            };
+            out.add(
+                op,
+                attention.query_kernel(
+                    &self.db,
+                    batch_size,
+                    s,
+                    prefix,
+                    imbalance_correction_scale,
+                )?,
+            );
+        }
+        Ok(strip_per_op_metadata(out.into_values()))
+    }
+
     /// [`Self::evaluate_ops_json`] under the SOL_FULL view: evaluate an
     /// ad-hoc op list (JSON array of `OpSpec` objects) with every operator
     /// forced onto its analytic SOL branch, and keep the roofline
@@ -2582,6 +2617,37 @@ mod tests {
             "nextn=1 gen ({}) must equal the gen-step at 2*batch ({})",
             generation.generation_ms,
             doubled
+        );
+    }
+
+    /// The kernel-only overlay preserves name folding and rejects non-attention ops.
+    #[test]
+    fn evaluate_context_attention_kernels_json_folds_names_and_rejects_other_ops() {
+        let engine = build_engine(None);
+        let op = context_ops().pop().unwrap();
+        let Op::ContextAttention(attention) = &op else {
+            unreachable!()
+        };
+        let expected = attention
+            .query_kernel(engine.database(), 4, 512, 0, 1.25)
+            .unwrap();
+        let ops_json = serde_json::to_string(&vec![op.clone(), op]).unwrap();
+        let values = engine
+            .evaluate_context_attention_kernels_json(&ops_json, 4, 512, 0, 1.25)
+            .unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].1, expected.latency_ms * 2.0);
+        assert_eq!(values[0].2, expected.energy_wms * 2.0);
+        let invalid = serde_json::to_string(&context_ops()).unwrap();
+        assert!(
+            engine
+                .evaluate_context_attention_kernels_json(&invalid, 4, 512, 0, 1.0)
+                .is_err()
+        );
+        assert!(
+            engine
+                .evaluate_context_attention_kernels_json("not-json", 4, 512, 0, 1.0)
+                .is_err()
         );
     }
 

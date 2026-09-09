@@ -116,36 +116,6 @@ def test_gemma4_encoder_weights_include_patch_position_vit_and_adapter():
     assert sum(op.get_weights() for op in model.encoder_ops) == expected_bf16_weights * 2
 
 
-def test_gemma4_visual_block_attention_scales_only_the_collected_attention_kernel():
-    from types import SimpleNamespace
-    from unittest.mock import MagicMock
-
-    from aiconfigurator.sdk.performance_result import PerformanceResult
-
-    model = get_model(MODEL, _model_config(), "trtllm")
-    op = model.visual_context_ops[0]
-    database = SimpleNamespace(
-        query_context_attention=MagicMock(return_value=PerformanceResult(10.0, energy=20.0, source="silicon"))
-    )
-
-    result = op.query(database, batch_size=2, s=280, seq_imbalance_correction_scale=1.0)
-
-    expected_scale = 25 * 279 / 280
-    assert float(result) == pytest.approx(10.0 * expected_scale)
-    assert result.energy == pytest.approx(20.0 * expected_scale)
-    database.query_context_attention.assert_called_once_with(
-        2,
-        280,
-        0,
-        16,
-        8,
-        common.KVCacheQuantMode.bfloat16,
-        common.FMHAQuantMode.bfloat16,
-        window_size=1024,
-        head_size=256,
-    )
-
-
 def test_gemma4_encoder_dp_replicates_compute_and_gathers_soft_tokens():
     model = get_model(MODEL, _model_config(tp_size=4, enable_encoder_dp=True), "trtllm")
 
@@ -270,7 +240,42 @@ class TestGemma4VisionRuntime:
         assert expected_bytes > 32 * 1024 * 1024
         assert memory["activations"] == pytest.approx(expected_bytes / (1 << 30))
 
-    def test_visual_attention_overlay_uses_compiled_op_evaluation(self, monkeypatch):
+    @pytest.mark.parametrize("include_energy", [True, False])
+    def test_visual_attention_overlay_uses_native_kernel_without_fused_extras(self, include_energy):
+        from aiconfigurator_core.sdk.engine import build_ops_json
+        from aiconfigurator_core.sdk.perf_database import get_database
+        from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+
+        model = get_model(MODEL, _model_config(), "vllm")
+        database = get_database("b200_sxm", "vllm", "0.24.0", database_mode="SOL")
+        runtime = config.RuntimeConfig(
+            batch_size=2,
+            isl=512,
+            osl=2,
+            image_height=672,
+            image_width=960,
+            num_images_per_request=2,
+            seq_imbalance_correction_scale=1.25,
+        )
+        handle = _cached_engine_handle(model, database)
+        ops_json = build_ops_json(model.visual_context_ops)
+        kernel = handle.evaluate_context_attention_kernels_json(
+            ops_json, batch_size=4, s=280, imbalance_correction_scale=1.25
+        )
+        full = handle.evaluate_ops_json(ops_json, is_context=True, batch_size=4, s=280, imbalance_correction_scale=1.25)
+        assert len(kernel) == len(full) == 1
+        name, kernel_latency, kernel_energy, kernel_source = kernel[0]
+        assert full[0][1] > kernel_latency
+
+        latency, energy, source = BaseBackend()._run_visual_context_phase(
+            model, database, runtime, batch_size=2, include_energy=include_energy
+        )
+
+        assert latency == {name: pytest.approx(kernel_latency * 279 / 280)}
+        assert energy == {name: pytest.approx(kernel_energy * 279 / 280) if include_energy else 0.0}
+        assert source == {name: kernel_source}
+
+    def test_visual_attention_overlay_uses_compiled_kernel_evaluation(self, monkeypatch):
         from aiconfigurator_core.sdk import engine as engine_module
         from aiconfigurator_core.sdk import rust_engine_step as rust_engine_module
 
@@ -291,7 +296,7 @@ class TestGemma4VisionRuntime:
             captured.update(kwargs)
             return [("context_swa_visual_block_attention", 10.0, 20.0, "silicon")]
 
-        monkeypatch.setattr(rust_engine_module, "evaluate_ops_json_with_rust", _evaluate)
+        monkeypatch.setattr(rust_engine_module, "evaluate_context_attention_kernels_with_rust", _evaluate)
 
         latency, energy, source = BaseBackend()._run_visual_context_phase(model, object(), runtime, batch_size=2)
 
