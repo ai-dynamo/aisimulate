@@ -152,6 +152,42 @@ class OptimizationGoal(BaseModel):
         return self
 
 
+class ImageWorkload(BaseModel):
+    """One fixed image profile shared by every request (AIC encoder semantics)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    height: int = Field(strict=True, gt=0)
+    width: int = Field(strict=True, gt=0)
+    count: int = Field(default=1, strict=True, gt=0)
+
+
+class EncoderSearch(BaseModel):
+    """Dedicated encoder pool; its backend follows the language backend."""
+
+    model_config = ConfigDict(extra="forbid")
+    hardware_sku: str | None = Field(default=None, min_length=1)
+    backend_version: str | None = Field(default=None, min_length=1)
+    tp: list[int] = [1, 2, 4, 8]
+    batch_size: list[int] = [1, 2, 4, 8]
+    workers: list[int] = [1, 2, 4, 8]
+    latency_correction: float = Field(default=1.0, strict=True, gt=0, allow_inf_nan=False)
+    rate_degradation: float = Field(default=0.9, strict=True, gt=0, le=1, allow_inf_nan=False)
+
+    @field_validator("tp", "batch_size", "workers", mode="before")
+    @classmethod
+    def _positive_choices(cls, value):
+        if not isinstance(value, list) or not value or any(type(v) is not int or v <= 0 for v in value):
+            raise ValueError("encoder choices must be nonempty lists of positive integers")
+        return list(dict.fromkeys(value))
+
+    @field_validator("batch_size")
+    @classmethod
+    def _batch_limit(cls, value):
+        if max(value) > 8:
+            raise ValueError("encoder batch_size must be <= 8, matching AIC EPD")
+        return value
+
+
 class Workload(BaseModel):
     """Traffic every candidate is evaluated against (KV load may be searched for Pareto).
 
@@ -185,6 +221,7 @@ class Workload(BaseModel):
     # synthetic workload (used when trace_path is unset): exactly one of
     # request_rate (open-loop QPS), concurrency (fixed closed-loop in-flight cap), or
     # kv_load_ratio (candidate-relative closed-loop load).
+    images: ImageWorkload | None = None
     isl: int | None = None
     osl: int | None = None
     concurrency: int | None = None
@@ -405,6 +442,7 @@ class SearchSpace(BaseModel):
     context_length: int | None = None
     startup_time: float | None = None
     aic_nextn: int | None = None  # speculative-decode (MTP) depth, 1..5
+    encoder: EncoderSearch | None = None
 
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
@@ -680,6 +718,46 @@ class SmartSearchConfig(BaseModel):
     workload: Workload
     goal: OptimizationGoal = Field(default_factory=OptimizationGoal)
     sweep: SweepConfig = Field(default_factory=SweepConfig)
+
+    @model_validator(mode="after")
+    def _validate_epd(self) -> SmartSearchConfig:
+        encoder, workload = self.search_space.encoder, self.workload
+        if (encoder is None) != (workload.images is None):
+            raise ValueError("EPD requires both search_space.encoder and workload.images")
+        if encoder is None:
+            return self
+        if self.adapters:
+            raise ValueError("analytical EPD does not support adapters")
+        if self.search_space.min_gpu_budget is not None:
+            raise ValueError("EPD currently supports gpu_budget only, not min_gpu_budget")
+        if encoder.backend_version is not None and len(set(self.search_space.backend)) != 1:
+            raise ValueError("encoder.backend_version requires a single backend")
+        targets = self.goal.resolved_pareto_objectives if self.goal.is_pareto else [self.goal.target]
+        if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.strict_sla):
+            raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
+        if (
+            workload.trace_path is not None
+            or workload.source_type is not None
+            or workload.kv_load_ratio is not None
+            or workload.load_search_field is not None
+            or workload.random_range_ratio != 1.0
+            or workload.turns_per_session != 1
+            or workload.shared_prefix_ratio != 0.0
+            or workload.max_sim_time_ms is not None
+        ):
+            raise ValueError(
+                "analytical EPD requires a fixed synthetic workload without traces, sessions or KV-load search"
+            )
+        for role in ("agg", "prefill", "decode"):
+            if getattr(self.search_space, f"{role}_forward_model") != "op_level":
+                raise ValueError("EPD requires op_level forward models")
+            if getattr(self.search_space, f"{role}_timing_model") is not None:
+                raise ValueError("EPD does not support custom language timing")
+            if getattr(self.search_space, f"{role}_startup_time") not in (None, 0.0):
+                raise ValueError("analytical EPD requires static worker pools")
+        if self.search_space.startup_time not in (None, 0.0):
+            raise ValueError("analytical EPD requires static worker pools")
+        return self
 
     @model_validator(mode="before")
     @classmethod

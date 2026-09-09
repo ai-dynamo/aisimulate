@@ -44,6 +44,7 @@ from tqdm import tqdm
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
+from .epd import add_encoder_choices, resolve_encoder_catalog
 from .kv_estimate import resolve_backend_version
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
@@ -548,6 +549,7 @@ def _materialize_one(
     provider_plans: Mapping[str, AdapterSearchPlan],
     runner_factory: RunnerFactory,
     prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
+    encoder_catalog: Mapping[str, Any] | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
     try:
@@ -602,7 +604,31 @@ def _materialize_one(
             # Preserve the concrete load on every candidate, including a fixed absolute
             # concurrency and one derived from kv_load_ratio.
             sample["concurrency"] = concurrency
-        backend_deployment = build_backend_deployment(sample, backend_version=backend_version)
+        encoder = None
+        if config.search_space.encoder is not None:
+            from dataclasses import asdict
+
+            key = selection.get("encoder_candidate")
+            if key not in (encoder_catalog or {}):
+                raise ValueError("unknown encoder_candidate")
+            encoder = encoder_catalog[key]
+            if encoder.backend != sample["backend"] or encoder.model != sample["model_name"]:
+                raise ValueError("encoder candidate does not match language model/backend")
+            sample["encoder"] = asdict(encoder)
+            sample["language_gpus"] = sample["used_gpus"]
+            sample["used_gpus"] += encoder.total_gpus
+            sample["deployment_artifact_generation_supported"] = False
+            sample["prediction_config_supported"] = False
+            if sample["used_gpus"] > config.search_space.gpu_budget:
+                return None, _EvalResult(
+                    candidate=None,
+                    observe_metrics=None,
+                    outcome="infeasible",
+                    reason="language plus encoder pool exceeds gpu_budget",
+                    reason_category=ReasonCategory.GPU_BUDGET,
+                    runner_metadata={},
+                )
+        backend_deployment = build_backend_deployment(sample, backend_version=backend_version, encoder=encoder)
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
             candidate_context = CandidateContext(
@@ -999,6 +1025,13 @@ class Sweeper:
         goal = config.goal
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
+        encoder_catalog = None
+        if config.search_space.encoder is not None:
+            if not capabilities.supports_analytical_epd:
+                raise ValueError("runner does not support analytical EPD")
+            if prediction_config_factory is not None:
+                raise ValueError("EPD prediction-ready output is unsupported; cannot drop the encoder pool")
+            encoder_catalog = resolve_encoder_catalog(config)
 
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
@@ -1007,6 +1040,8 @@ class Sweeper:
             max_seq_len=config.search_space.context_length,
             runner_capabilities=capabilities,
         )
+        if encoder_catalog is not None:
+            branches = add_encoder_choices(branches, encoder_catalog)
         resolved_providers, provider_plans = _prepare_providers(config, injected=providers, show_progress=show_progress)
         for name, plan in provider_plans.items():
             unsupported = [hook for hook in plan.potential_runtime_hooks if not capabilities.supports_hook(hook)]
@@ -1394,6 +1429,7 @@ class Sweeper:
                             provider_plans=provider_plans,
                             runner_factory=runner_factory,
                             prediction_config_factory=prediction_config_factory,
+                            encoder_catalog=encoder_catalog,
                         )
                         if build_result is not None:
                             candidate = build_result.candidate

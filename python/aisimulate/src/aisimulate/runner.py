@@ -10,7 +10,7 @@ import json
 import math
 import random
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Protocol, runtime_checkable
 
@@ -110,6 +110,7 @@ class EngineReplayRunnerFactory:
             replay_spec_api_version=1,
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
+            supports_analytical_epd=True,
         )
 
     def create(self, worker_id: int) -> EngineReplayRunner:
@@ -164,6 +165,28 @@ class EngineReplayRunner:
         if output_requirements.capture_telemetry:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
         self.capabilities.require_compatible(spec)
+        encoder = spec.backend_deployment.encoder
+        if encoder is not None:
+            from .sweeper.config import ImageWorkload, OptimizationGoal
+            from .sweeper.epd import apply_encoder_overlay
+
+            if output_requirements.capture_per_request or output_requirements.include_raw_report:
+                raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
+            if spec.adapters or spec.execution_mode != "offline":
+                raise InvalidRunnerError("analytical EPD requires offline static pools without adapters")
+            goal = OptimizationGoal.model_validate(spec.goal)
+            if (goal.sla is not None and not goal.strict_sla) or any(
+                target.value.startswith("goodput")
+                for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+            ):
+                raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
+            ImageWorkload.model_validate(spec.workload.get("images"))
+            if spec.workload.get("source_type") is not None or spec.workload.get("trace_path") is not None:
+                raise InvalidRunnerError("analytical EPD requires fixed synthetic requests")
+            if encoder.backend != spec.backend_deployment.backend:
+                raise InvalidRunnerError("encoder and language backend must match")
+            original_spec = spec
+            spec = replace(spec, workload={**spec.workload, "isl": spec.workload["isl"] + encoder.visual_tokens})
         execution_spec = _materialize_engine_execution_spec(
             spec,
             trace_block_size=self.trace_block_size,
@@ -183,10 +206,11 @@ class EngineReplayRunner:
             raise InvalidRunnerError("AISimulate engine replay runtime returned invalid report JSON") from exc
         if not isinstance(report, Mapping):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
-        return _normalize_engine_replay_report(
+        normalized = _normalize_engine_replay_report(
             report,
             include_native_report=(output_requirements.include_raw_report or output_requirements.capture_per_request),
         )
+        return apply_encoder_overlay(normalized, original_spec) if encoder is not None else normalized
 
     def close(self) -> None:
         """Release worker-local resources.

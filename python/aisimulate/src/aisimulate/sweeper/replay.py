@@ -21,6 +21,50 @@ REPLAY_SPEC_API_VERSION = 1
 
 
 @dataclass(frozen=True)
+class EncoderPoolSpec:
+    """Resolved analytical EPD pool. Missing power is unavailable, never zero watts."""
+
+    model: str
+    system: str
+    backend: str
+    backend_version: str
+    tp: int
+    batch_size: int
+    workers: int
+    latency_ms: float
+    throughput_rps: float
+    memory_gib: float
+    rate_degradation: float
+    visual_tokens: int
+    power_w: float | None = None
+    power_coverage: float = 0.0
+
+    def __post_init__(self):
+        for name in ("model", "system", "backend", "backend_version"):
+            if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
+                raise ValueError(f"encoder {name} must be nonempty")
+        for name in ("tp", "batch_size", "workers", "visual_tokens"):
+            if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
+                raise ValueError(f"encoder {name} must be a positive integer")
+        for name in ("latency_ms", "throughput_rps", "memory_gib", "rate_degradation"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"encoder {name} must be positive and finite")
+        if self.batch_size > 8 or self.rate_degradation > 1:
+            raise ValueError("encoder batch_size must be <= 8 and rate_degradation <= 1")
+        if not math.isfinite(self.power_coverage) or not 0 <= self.power_coverage <= 1:
+            raise ValueError("encoder power_coverage must be within [0, 1]")
+        if self.power_w is not None and (
+            not math.isfinite(self.power_w) or self.power_w <= 0 or self.power_coverage <= 0
+        ):
+            raise ValueError("encoder power requires positive finite watts and coverage")
+
+    @property
+    def total_gpus(self) -> int:
+        return self.tp * self.workers
+
+
+@dataclass(frozen=True)
 class BackendDeploymentSpec:
     """Concrete backend engines and fleet shape for one candidate."""
 
@@ -35,6 +79,7 @@ class BackendDeploymentSpec:
     num_prefill_workers: int = 0
     num_decode_workers: int = 0
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
+    encoder: EncoderPoolSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +158,7 @@ class RunnerCapabilities:
     supported_hooks: tuple[HookCapability, ...] = ()
     supports_disaggregated_attention_dp: bool = False
     supported_execution_modes: tuple[str, ...] = ("offline",)
+    supports_analytical_epd: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -160,6 +206,8 @@ class RunnerCapabilities:
         if not self.supports_execution_mode(spec.execution_mode):
             raise ValueError(f"runner does not support execution mode {spec.execution_mode!r}")
         deployment = spec.backend_deployment
+        if deployment.encoder is not None and not self.supports_analytical_epd:
+            raise ValueError("runner does not support analytical EPD")
         if not self.supports_backend_topology(deployment.backend, deployment.deployment_mode):
             raise ValueError(
                 f"runner does not support backend/topology {deployment.backend!r}/{deployment.deployment_mode!r}"

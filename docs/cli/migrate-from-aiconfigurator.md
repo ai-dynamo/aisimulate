@@ -47,6 +47,11 @@ The following limits apply to `aisimulate predict`, `aisimulate recommend`, and 
 implementation and lower-level estimator, collector, and result-schema primitives. Their presence
 does not make a capability available through the unified path.
 
+The [Sweeper SDK's analytical EPD integration](../sweeper/epd.md) is an explicit
+exception to the SDK portion of this table: it supports fixed-image E+agg/E+P+D
+search, but does not yet provide public `predict`/`recommend` YAML or lossless
+prediction/deployment outputs. The unified CLI's EPD gap below remains open.
+
 | Capability | Current unified status | Migration action |
 |---|---|---|
 | Multimodal image inputs and EPD | **Not supported.** The public traffic schema has no image dimensions or image count, and the engine schema has only aggregated, prefill, and decode workers. It cannot represent AIC's E+agg or E+P+D topology. | Continue using AIC `--enable-epd` workflows. |
