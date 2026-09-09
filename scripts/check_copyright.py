@@ -28,10 +28,15 @@ SOURCE_SUFFIXES = {
     ".rule",
     ".sh",
 }
+APACHE_LICENSE_IDENTIFIER = r"SPDX-License-Identifier:\s*Apache-2\.0"
 LICENSE_MARKER = re.compile(
-    r"^\s*(?:(?:\#|//|/\*+|\*|<!--)\s*)?"
-    r"SPDX-License-Identifier:\s*Apache-2\.0\s*"
-    r"(?:\*/|-->)?\s*$",
+    rf"^\s*(?:"
+    rf"(?:\#|//)\s*{APACHE_LICENSE_IDENTIFIER}"
+    rf"|/\*+\s*{APACHE_LICENSE_IDENTIFIER}\s*\*/"
+    rf"|<!--\s*{APACHE_LICENSE_IDENTIFIER}\s*-->"
+    rf"|\*\s*{APACHE_LICENSE_IDENTIFIER}(?:\s*\*/)?"
+    rf"|{APACHE_LICENSE_IDENTIFIER}(?:\s*(?:\*/|-->))?"
+    rf")\s*$",
     re.MULTILINE,
 )
 COPYRIGHT_MARKER = re.compile(

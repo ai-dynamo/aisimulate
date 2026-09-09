@@ -67,7 +67,12 @@ def test_hash_stamped_patch_is_not_rewritten_as_owned_source(checker, tmp_path):
         "# SPDX-License-Identifier: Apache-2.0",
         "// SPDX-License-Identifier: Apache-2.0",
         "/* SPDX-License-Identifier: Apache-2.0 */",
+        "/** SPDX-License-Identifier: Apache-2.0 */",
+        "* SPDX-License-Identifier: Apache-2.0",
+        "* SPDX-License-Identifier: Apache-2.0 */",
         "SPDX-License-Identifier: Apache-2.0",
+        "SPDX-License-Identifier: Apache-2.0 */",
+        "SPDX-License-Identifier: Apache-2.0 -->",
         "<!-- SPDX-License-Identifier: Apache-2.0 -->",
     ],
 )
@@ -82,6 +87,11 @@ def test_apache_spdx_identifier_accepts_complete_tag_lines(checker, line):
         "{# SPDX-License-Identifier: Apache-2.0 #}",
         "SPDX-License-Identifier: Apache-2.0 -#}",
         "SPDX-License-Identifier: MIT",
+        "/* SPDX-License-Identifier: Apache-2.0",
+        "/** SPDX-License-Identifier: Apache-2.0",
+        "<!-- SPDX-License-Identifier: Apache-2.0",
+        "/* SPDX-License-Identifier: Apache-2.0 -->",
+        "<!-- SPDX-License-Identifier: Apache-2.0 */",
     ],
 )
 def test_apache_spdx_identifier_rejects_malformed_or_wrong_expressions(checker, line):
