@@ -519,11 +519,27 @@ def _suggestion_cache_key(suggestion: Suggestion, context: Any) -> Any:
     return (context, _freeze(suggestion.selection), _freeze(suggestion.parallel_config))
 
 
-def _suggestion_snapshot(suggestion: Suggestion, config: SmartSearchConfig) -> dict[str, Any]:
+def _with_encoder_snapshot(sample, selection, encoder_catalog):
+    """Retain selected encoder evidence, without inventing an unresolved language shape."""
+    sample = deepcopy(sample)
+    key = selection.get("encoder_candidate")
+    sample["encoder_candidate"] = deepcopy(key)
+    sample["deployment_artifact_generation_supported"] = False
+    sample["prediction_config_supported"] = False
+    encoder = (encoder_catalog or {}).get(key) if isinstance(key, str) else None
+    if encoder is not None:
+        sample["encoder"] = asdict(encoder)
+        language_gpus = sample.get("language_gpus", sample.get("used_gpus"))
+        sample["language_gpus"] = language_gpus
+        sample["used_gpus"] = language_gpus + encoder.total_gpus if type(language_gpus) is int else None
+    return sample
+
+
+def _suggestion_snapshot(suggestion: Suggestion, config: SmartSearchConfig, *, encoder_catalog=None) -> dict[str, Any]:
     """Best-effort JSON snapshot for a candidate rejected before replay."""
 
     try:
-        return unroll_sample(
+        sample = unroll_sample(
             search_space=config.search_space,
             selection=suggestion.selection,
             parallel_config=suggestion.parallel_config,
@@ -534,10 +550,13 @@ def _suggestion_snapshot(suggestion: Suggestion, config: SmartSearchConfig) -> d
             parallel_payload: Any = asdict(parallel_config)
         else:
             parallel_payload = repr(parallel_config)
-        return {
+        sample = {
             **deepcopy(suggestion.selection),
             "parallel_config": parallel_payload,
         }
+    if config.search_space.encoder is not None:
+        sample = _with_encoder_snapshot(sample, suggestion.selection, encoder_catalog)
+    return sample
 
 
 def _materialize_one(
@@ -560,6 +579,25 @@ def _materialize_one(
             selection=selection,
             parallel_config=parallel_config,
         )
+        encoder = None
+        if config.search_space.encoder is not None:
+            sample = _with_encoder_snapshot(sample, selection, encoder_catalog)
+            epd_snapshot = deepcopy(sample)
+            if "encoder" not in sample:
+                raise ValueError("unknown encoder_candidate")
+            encoder = encoder_catalog[selection["encoder_candidate"]]
+            if encoder.backend != sample["backend"] or encoder.model != sample["model_name"]:
+                raise ValueError("encoder candidate does not match language model/backend")
+            if sample["used_gpus"] > config.search_space.gpu_budget:
+                return None, _EvalResult(
+                    candidate=None,
+                    observe_metrics=None,
+                    outcome="infeasible",
+                    reason="language plus encoder pool exceeds gpu_budget",
+                    reason_category=ReasonCategory.GPU_BUDGET,
+                    runner_metadata={},
+                    config_snapshot=epd_snapshot,
+                )
         backend_version = config.search_space.backend_version or resolve_backend_version(
             config.search_space.hardware_sku, selection["backend"]
         )
@@ -606,30 +644,8 @@ def _materialize_one(
             # Preserve the concrete load on every candidate, including a fixed absolute
             # concurrency and one derived from kv_load_ratio.
             sample["concurrency"] = concurrency
-        encoder = None
-        if config.search_space.encoder is not None:
-            key = selection.get("encoder_candidate")
-            if key not in (encoder_catalog or {}):
-                raise ValueError("unknown encoder_candidate")
-            encoder = encoder_catalog[key]
-            if encoder.backend != sample["backend"] or encoder.model != sample["model_name"]:
-                raise ValueError("encoder candidate does not match language model/backend")
-            sample["encoder"] = asdict(encoder)
-            sample["language_gpus"] = sample["used_gpus"]
-            sample["used_gpus"] += encoder.total_gpus
-            sample["deployment_artifact_generation_supported"] = False
-            sample["prediction_config_supported"] = False
+        if encoder is not None:
             epd_snapshot = deepcopy(sample)
-            if sample["used_gpus"] > config.search_space.gpu_budget:
-                return None, _EvalResult(
-                    candidate=None,
-                    observe_metrics=None,
-                    outcome="infeasible",
-                    reason="language plus encoder pool exceeds gpu_budget",
-                    reason_category=ReasonCategory.GPU_BUDGET,
-                    runner_metadata={},
-                    config_snapshot=epd_snapshot,
-                )
         backend_deployment = build_backend_deployment(sample, backend_version=backend_version, encoder=encoder)
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
@@ -672,7 +688,7 @@ def _materialize_one(
             reason=f"candidate KV capacity infeasible: {exc}",
             reason_category=ReasonCategory.KV_CAPACITY,
             runner_metadata={},
-            config_snapshot=epd_snapshot,
+            config_snapshot=deepcopy(sample) if epd_snapshot is not None else None,
         )
     except InfeasibleCandidate as exc:
         return None, _EvalResult(
@@ -682,7 +698,7 @@ def _materialize_one(
             reason=f"candidate adapter selection infeasible: {exc}",
             reason_category=ReasonCategory.ADAPTER_CONSTRAINT,
             runner_metadata={},
-            config_snapshot=epd_snapshot,
+            config_snapshot=deepcopy(sample) if epd_snapshot is not None else None,
         )
     except Exception as exc:
         logger.exception("Sweeper candidate build failed")
@@ -693,7 +709,7 @@ def _materialize_one(
             reason=f"candidate build failed: {type(exc).__name__}: {exc}",
             reason_category=ReasonCategory.CANDIDATE_MATERIALIZATION,
             runner_metadata={},
-            config_snapshot=epd_snapshot,
+            config_snapshot=deepcopy(sample) if epd_snapshot is not None else None,
         )
     return _PreparedCandidate(
         sample=sample,
@@ -1389,7 +1405,9 @@ class Sweeper:
                             _record(
                                 "infeasible",
                                 None,
-                                candidate_config=_suggestion_snapshot(suggestion, config),
+                                candidate_config=_suggestion_snapshot(
+                                    suggestion, config, encoder_catalog=encoder_catalog
+                                ),
                                 reason=reason,
                                 reason_category=ReasonCategory.PARALLEL_PROJECTION,
                             )
@@ -1404,7 +1422,9 @@ class Sweeper:
                             _record(
                                 "unsupported",
                                 None,
-                                candidate_config=_suggestion_snapshot(suggestion, config),
+                                candidate_config=_suggestion_snapshot(
+                                    suggestion, config, encoder_catalog=encoder_catalog
+                                ),
                                 reason=reason,
                                 reason_category=ReasonCategory.BACKEND_TOPOLOGY,
                             )
@@ -1452,7 +1472,7 @@ class Sweeper:
                                 outcome,
                                 None,
                                 candidate_config=build_result.config_snapshot
-                                or _suggestion_snapshot(suggestion, config),
+                                or _suggestion_snapshot(suggestion, config, encoder_catalog=encoder_catalog),
                                 reason=reason,
                                 reason_category=build_result.reason_category,
                                 runner_metadata=build_result.runner_metadata,

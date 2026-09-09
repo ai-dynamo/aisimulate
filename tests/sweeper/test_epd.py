@@ -244,26 +244,34 @@ def test_runner_and_export_guards():
         from_sweeper_candidate({"config": {"encoder": asdict(_encoder())}}, workload={})
 
 
-@pytest.mark.parametrize("gpu_budget,build_error", [(2, False), (8, False), (8, True)])
-def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, build_error):
+@pytest.mark.parametrize(
+    "gpu_budget,failure",
+    [(2, None), (8, None), (8, "build"), (8, "version"), (8, "kv"), (8, "backend"), (8, "projection")],
+)
+def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, failure):
     config = _config(search_space=_config().search_space.model_dump() | {"gpu_budget": gpu_budget})
     parallel = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel,),
-        supported_backends={parallel: frozenset({"sglang"})},
+        supported_backends={parallel: frozenset({"vllm" if failure == "backend" else "sglang"})},
         knob_choices={"backend": ["sglang"]},
     )
     catalog = {"one": _encoder(), "two": _encoder(workers=2)}
     monkeypatch.setattr(search_mod, "enumerate_branches", lambda *a, **kw: [branch])
     monkeypatch.setattr(search_mod, "resolve_encoder_catalog", lambda c: catalog)
     monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a: "0.5.14")
-    if build_error:
+    if failure in {"build", "version", "kv"}:
 
         def fail_build(*args, **kwargs):
+            if failure == "kv":
+                raise search_mod.InfeasibleKVCapacity("test capacity failure")
             raise ValueError("missing language performance data")
 
-        monkeypatch.setattr(search_mod, "build_backend_deployment", fail_build)
+        function = {"build": "build_backend_deployment", "version": "resolve_backend_version", "kv": "resolve_kv_load"}[
+            failure
+        ]
+        monkeypatch.setattr(search_mod, function, fail_build)
 
     class Sampler:
         def __init__(self, branch, **kwargs):
@@ -282,7 +290,16 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, b
                     agg_max_num_seqs=256,
                     encoder_candidate=key,
                 )
-                suggestions.append(Suggestion(selection=selection, parallel_config=parallel, handle=key))
+                if failure == "kv":
+                    selection["kv_load_ratio"] = 0.5
+                suggestions.append(
+                    Suggestion(
+                        selection=selection,
+                        parallel_config=parallel,
+                        handle=key,
+                        infeasible_reason="test projection failure" if failure == "projection" else None,
+                    )
+                )
             return suggestions
 
         def observe(self, *args):
@@ -309,10 +326,12 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, b
 
     sweeper = Sweeper(runner_factory=Factory(), sampler_factory=Sampler, show_progress=False)
     result = sweeper.run(config)
-    assert len(result.selected_candidates) == (2 if gpu_budget == 8 and not build_error else 0)
+    assert len(result.selected_candidates) == (2 if gpu_budget == 8 and failure is None else 0)
     assert {c.used_gpus for c in result.candidates} == {3, 4}
     for candidate in result.candidates:
         assert candidate.config["encoder"]["backend_version"] == "0.5.14"
+        if failure in {"build", "kv"} or (failure is None and gpu_budget == 8):
+            assert candidate.config["backend_version"] == "0.5.14"
         assert candidate.prediction_config is None
         assert candidate.config["deployment_artifact_generation_supported"] is False
         assert candidate.provenance.topology["encoder"]["image_height"] == 448
@@ -323,6 +342,18 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, b
     assert SweepResult.from_json(result.to_json()).to_json() == result.to_json()
     with pytest.raises(ValueError, match="prediction-ready"):
         Sweeper(runner_factory=Factory(), prediction_config_factory=lambda *args: {}).run(config)
+
+
+def test_unresolved_parallel_snapshot_keeps_encoder_without_inventing_gpu_total():
+    suggestion = Suggestion(
+        selection={"deployment_mode": "agg", "encoder_candidate": "one"}, parallel_config=None, handle=None
+    )
+    snapshot = search_mod._suggestion_snapshot(suggestion, _config(), encoder_catalog={"one": _encoder()})
+    assert snapshot["encoder"] == asdict(_encoder())
+    assert snapshot["encoder_candidate"] == "one"
+    assert snapshot["used_gpus"] is None
+    assert snapshot["language_gpus"] is None
+    assert snapshot["deployment_artifact_generation_supported"] is False
 
 
 def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
