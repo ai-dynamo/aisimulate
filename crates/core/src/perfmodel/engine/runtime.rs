@@ -327,6 +327,12 @@ impl Engine {
     pub fn build(spec: EngineSpec, db: Arc<PerfDatabase>) -> Result<Engine, AicError> {
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         Self::validate_engine_database_mode(db.database_mode)?;
+        if spec.engine.database_mode != db.database_mode {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "engine spec database mode {:?} does not match loaded database mode {:?}",
+                spec.engine.database_mode, db.database_mode
+            )));
+        }
         let nextn = spec
             .engine
             .speculative
@@ -1973,6 +1979,24 @@ mod tests {
             result,
             Err(AicError::InvalidEngineConfig(message))
                 if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
+        ));
+    }
+
+    #[test]
+    fn build_rejects_database_mode_mismatch() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .unwrap()
+            .with_mode(DatabaseMode::Empirical, TransferPolicy::default());
+        let spec = EngineSpec::new(fixture_engine_config(None), context_ops(), generation_ops());
+
+        let result = Engine::build(spec, Arc::new(db));
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("does not match")
+                    && message.contains("Silicon")
+                    && message.contains("Empirical")
         ));
     }
 
