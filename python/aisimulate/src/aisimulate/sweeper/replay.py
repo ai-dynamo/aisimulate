@@ -36,6 +36,9 @@ class EncoderPoolSpec:
     memory_gib: float
     rate_degradation: float
     visual_tokens: int
+    image_height: int
+    image_width: int
+    image_count: int
     power_w: float | None = None
     power_coverage: float = 0.0
 
@@ -43,7 +46,7 @@ class EncoderPoolSpec:
         for name in ("model", "system", "backend", "backend_version"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f"encoder {name} must be nonempty")
-        for name in ("tp", "batch_size", "workers", "visual_tokens"):
+        for name in ("tp", "batch_size", "workers", "visual_tokens", "image_height", "image_width", "image_count"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"encoder {name} must be a positive integer")
         for name in ("latency_ms", "throughput_rps", "memory_gib", "rate_degradation"):
@@ -52,12 +55,23 @@ class EncoderPoolSpec:
                 raise ValueError(f"encoder {name} must be positive and finite")
         if self.batch_size > 8 or self.rate_degradation > 1:
             raise ValueError("encoder batch_size must be <= 8 and rate_degradation <= 1")
-        if not math.isfinite(self.power_coverage) or not 0 <= self.power_coverage <= 1:
+        if (
+            isinstance(self.power_coverage, bool)
+            or not isinstance(self.power_coverage, Real)
+            or not math.isfinite(self.power_coverage)
+            or not 0 <= self.power_coverage <= 1
+        ):
             raise ValueError("encoder power_coverage must be within [0, 1]")
         if self.power_w is not None and (
-            not math.isfinite(self.power_w) or self.power_w <= 0 or self.power_coverage <= 0
+            isinstance(self.power_w, bool)
+            or not isinstance(self.power_w, Real)
+            or not math.isfinite(self.power_w)
+            or self.power_w <= 0
+            or self.power_coverage <= 0
         ):
             raise ValueError("encoder power requires positive finite watts and coverage")
+        if self.power_w is None and self.power_coverage != 0:
+            raise ValueError("unavailable encoder power must have zero coverage")
 
     @property
     def total_gpus(self) -> int:

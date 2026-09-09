@@ -101,6 +101,7 @@ class _EvalResult:
     reason_category: ReasonCategory | None
     runner_metadata: dict[str, Any]
     report_metrics: dict[str, float] | None = None
+    config_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -606,8 +607,6 @@ def _materialize_one(
             sample["concurrency"] = concurrency
         encoder = None
         if config.search_space.encoder is not None:
-            from dataclasses import asdict
-
             key = selection.get("encoder_candidate")
             if key not in (encoder_catalog or {}):
                 raise ValueError("unknown encoder_candidate")
@@ -627,6 +626,7 @@ def _materialize_one(
                     reason="language plus encoder pool exceeds gpu_budget",
                     reason_category=ReasonCategory.GPU_BUDGET,
                     runner_metadata={},
+                    config_snapshot=deepcopy(sample),
                 )
         backend_deployment = build_backend_deployment(sample, backend_version=backend_version, encoder=encoder)
         adapter_specs: dict[str, AdapterReplaySpec] = {}
@@ -1446,7 +1446,8 @@ class Sweeper:
                             _record(
                                 outcome,
                                 None,
-                                candidate_config=_suggestion_snapshot(suggestion, config),
+                                candidate_config=build_result.config_snapshot
+                                or _suggestion_snapshot(suggestion, config),
                                 reason=reason,
                                 reason_category=build_result.reason_category,
                                 runner_metadata=build_result.runner_metadata,

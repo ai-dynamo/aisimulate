@@ -51,6 +51,7 @@ def resolve_encoder_catalog(config: SmartSearchConfig) -> dict[str, EncoderPoolS
         database = get_database_view(system, backend, version, database_mode="SILICON")
         if database is None:
             raise ValueError(f"no encoder database for {system}/{backend}/{version}")
+        version = database.version
         rows = _get_encoder_worker_candidates(
             model_path=search.model_name,
             tp_list=encoder.tp,
@@ -79,6 +80,9 @@ def resolve_encoder_catalog(config: SmartSearchConfig) -> dict[str, EncoderPoolS
                     memory_gib=float(row["memory"]),
                     rate_degradation=encoder.rate_degradation,
                     visual_tokens=visual_tokens,
+                    image_height=images.height,
+                    image_width=images.width,
+                    image_count=images.count,
                     power_w=power if power > 0 and coverage > 0 else None,
                     power_coverage=coverage if power > 0 else 0.0,
                 )

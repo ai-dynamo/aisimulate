@@ -257,6 +257,27 @@ class Workload(BaseModel):
     replay_concurrency: int | None = None
     max_sim_time_ms: float | None = None
 
+    def require_fixed_epd(self) -> None:
+        """Validate the analytical approximation at both search and replay boundaries."""
+        if self.images is None or self.isl is None or self.osl is None or self.isl <= 0 or self.osl <= 0:
+            raise ValueError("EPD requires positive text lengths and an image profile")
+        if (
+            self.trace_path is not None
+            or self.trace_paths is not None
+            or self.source_type is not None
+            or self.kv_load_ratio is not None
+            or self.load_search_field is not None
+            or self.load_choices is not None
+            or self.load_range is not None
+            or self.random_range_ratio != 1.0
+            or self.turns_per_session != 1
+            or self.shared_prefix_ratio != 0.0
+            or self.max_sim_time_ms is not None
+            or self.load_type is not None
+            or self.replay_concurrency is not None
+        ):
+            raise ValueError("analytical EPD requires fixed synthetic traffic without traces, sessions or load search")
+
     @field_validator("random_range_ratio", mode="before")
     @classmethod
     def _validate_random_range_ratio_type(cls, value: Any) -> Any:
@@ -735,19 +756,7 @@ class SmartSearchConfig(BaseModel):
         targets = self.goal.resolved_pareto_objectives if self.goal.is_pareto else [self.goal.target]
         if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.strict_sla):
             raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
-        if (
-            workload.trace_path is not None
-            or workload.source_type is not None
-            or workload.kv_load_ratio is not None
-            or workload.load_search_field is not None
-            or workload.random_range_ratio != 1.0
-            or workload.turns_per_session != 1
-            or workload.shared_prefix_ratio != 0.0
-            or workload.max_sim_time_ms is not None
-        ):
-            raise ValueError(
-                "analytical EPD requires a fixed synthetic workload without traces, sessions or KV-load search"
-            )
+        workload.require_fixed_epd()
         for role in ("agg", "prefill", "decode"):
             if getattr(self.search_space, f"{role}_forward_model") != "op_level":
                 raise ValueError("EPD requires op_level forward models")

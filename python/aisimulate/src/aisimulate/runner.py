@@ -166,8 +166,10 @@ class EngineReplayRunner:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
         self.capabilities.require_compatible(spec)
         encoder = spec.backend_deployment.encoder
+        if encoder is None and spec.workload.get("images") is not None:
+            raise InvalidRunnerError("image workloads require an encoder pool")
         if encoder is not None:
-            from .sweeper.config import ImageWorkload, OptimizationGoal
+            from .sweeper.config import OptimizationGoal, Workload
             from .sweeper.epd import apply_encoder_overlay
 
             if output_requirements.capture_per_request or output_requirements.include_raw_report:
@@ -180,11 +182,30 @@ class EngineReplayRunner:
                 for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
             ):
                 raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
-            ImageWorkload.model_validate(spec.workload.get("images"))
-            if spec.workload.get("source_type") is not None or spec.workload.get("trace_path") is not None:
-                raise InvalidRunnerError("analytical EPD requires fixed synthetic requests")
+            workload = Workload.model_validate(spec.workload)
+            workload.require_fixed_epd()
+            images = workload.images
+            if (images.height, images.width, images.count) != (
+                encoder.image_height,
+                encoder.image_width,
+                encoder.image_count,
+            ):
+                raise InvalidRunnerError("encoder estimate does not match the image workload")
             if encoder.backend != spec.backend_deployment.backend:
                 raise InvalidRunnerError("encoder and language backend must match")
+            deployment = spec.backend_deployment
+            role_args = (
+                [deployment.agg_engine_args]
+                if deployment.deployment_mode == "agg"
+                else [deployment.prefill_engine_args, deployment.decode_engine_args]
+            )
+            for args in role_args:
+                if not args or args.get("aic_model_path") != encoder.model:
+                    raise InvalidRunnerError("encoder and language model must match")
+                if args.get("timing_model") is not None or args.get("aic_forward_model", "op_level") != "op_level":
+                    raise InvalidRunnerError("analytical EPD requires op_level language timing")
+                if args.get("startup_time") not in (None, 0.0):
+                    raise InvalidRunnerError("analytical EPD requires static worker pools")
             original_spec = spec
             spec = replace(spec, workload={**spec.workload, "isl": spec.workload["isl"] + encoder.visual_tokens})
         execution_spec = _materialize_engine_execution_spec(
