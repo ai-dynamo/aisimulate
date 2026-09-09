@@ -48,7 +48,7 @@ def _model_config(tp_size: int = 1, *, enable_encoder_dp: bool = True, nextn: in
     )
 
 
-@pytest.mark.parametrize("heads", [0, -1, False, None, 1.5, "12"])
+@pytest.mark.parametrize("heads", [0, -1, False, True, None, 1.5, "12"])
 def test_kimi_k3_parser_rejects_invalid_vision_head_count(heads):
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
     raw["vision_config"]["vt_num_attention_heads"] = heads
