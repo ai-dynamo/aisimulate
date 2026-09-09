@@ -55,7 +55,7 @@ provisioned using the existing `jegu-hyperdisk-balanced-rwo` StorageClass.
 The GB200 GCP `a4x-highgpu-4g` instance cannot attach `standard-rwo`'s pd-balanced
 disk; do not substitute that default class. No static cluster PV is authored.
 
-Current attempt data lives at `/results/agentx-gb200-20260908-c48-attempt4/`, containing:
+Current attempt data lives at `/results/agentx-gb200-20260908-c48-attempt5/`, containing:
 
 - `STARTED.json`, followed by `COMPLETE.json`, `FAILED.json` or `INTERRUPTED.json`;
 - `command.json`, `client-config.yaml`, `aiperf-console.log`;
@@ -179,3 +179,27 @@ import and actual model/draft loading passed. There is no engine-source patch or
 new checkpoint: the same shared, read-only snapshot, quantization and serving
 parallelism remain. This is an initialization-path difference from the reference
 and must be recorded when reproducing the run.
+
+### NVLink KV allocation
+
+The initial manifest omitted two settings from the reference launcher:
+`SGLANG_MOONCAKE_CUSTOM_MEM_POOL=True` and `MC_FORCE_MNNVL=1`. They are now
+restored, along with the reference's `MC_TE_METRIC`, `NVSHMEM_REMOTE_TRANSPORT`
+and thinking/reasoning environment. Despite its name, the custom-pool setting
+controls the KV allocator independently of selecting NIXL/UCX as the transfer
+backend. It allocates NVLink-compatible buffers; enabling UCX MNNVL support alone
+does not make the default allocations suitable for that path.
+
+Attempt 4 reached warmup but its one-token snapshot primers took 125–200 seconds
+and decode's pod Ethernet received hundreds of GB. This strongly indicated bulk
+KV network fallback. It was manually interrupted before profiling and has an
+explicit `INVALID.json` plus network evidence; **do not treat it as a valid
+NVLink performance result**.
+
+With the reference allocator settings restored, a separate pre-warmup transport
+check on attempt 5 completed a cross-node 7181-input-token / 1-output-token
+request. Decode eth0 RX increased by only **153,534 bytes** (332,770 → 486,304),
+instead of carrying the large KV payload. `transport-check.json` on the result
+PVC records this evidence. The first-request 9.94-second latency is a cold
+transport/setup diagnostic, not a steady-state performance number. The formal
+warmup and profiling data remain separate from this check.

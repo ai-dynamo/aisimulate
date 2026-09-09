@@ -13,6 +13,15 @@ def represent_string(dumper, value):
 yaml.SafeDumper.add_representer(str, represent_string)
 documents = list(yaml.safe_load_all((HERE / 'deploy.yaml').read_text()))
 dgd = documents[1]
+dgd['spec']['env'].extend([
+    {'name': 'SGLANG_MOONCAKE_CUSTOM_MEM_POOL', 'value': 'True'},
+    {'name': 'MC_FORCE_MNNVL', 'value': '1'},
+    {'name': 'MC_TE_METRIC', 'value': 'true'},
+    {'name': 'NVSHMEM_REMOTE_TRANSPORT', 'value': 'none'},
+    {'name': 'SGLANG_ENABLE_THINKING', 'value': '1'},
+    {'name': 'SGLANG_REASONING_EFFORT', 'value': 'max'},
+    {'name': 'UCX_LOG_LEVEL', 'value': 'info'},
+])
 for component in dgd['spec']['components']:
     pod = component['podTemplate']['spec']
     pod['preemptionPolicy'] = 'Never'

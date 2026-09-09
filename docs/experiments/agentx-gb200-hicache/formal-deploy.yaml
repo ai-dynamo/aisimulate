@@ -107,7 +107,7 @@ data:
     import time
     import urllib.request
 
-    ROOT = Path('/results/agentx-gb200-20260908-c48-attempt4')
+    ROOT = Path('/results/agentx-gb200-20260908-c48-attempt5')
     ROOT.mkdir(parents=True, exist_ok=True)
     MODEL = 'nvidia/GLM-5.2-NVFP4'
     REVISION = '53e0691e21895a3863a606dfd12910c69eba94ab'
@@ -356,6 +356,20 @@ spec:
     value: '0'
   - name: SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK
     value: '1'
+  - name: SGLANG_MOONCAKE_CUSTOM_MEM_POOL
+    value: 'True'
+  - name: MC_FORCE_MNNVL
+    value: '1'
+  - name: MC_TE_METRIC
+    value: 'true'
+  - name: NVSHMEM_REMOTE_TRANSPORT
+    value: none
+  - name: SGLANG_ENABLE_THINKING
+    value: '1'
+  - name: SGLANG_REASONING_EFFORT
+    value: max
+  - name: UCX_LOG_LEVEL
+    value: info
   components:
   - name: Frontend
     type: frontend
