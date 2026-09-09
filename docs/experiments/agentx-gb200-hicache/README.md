@@ -5,6 +5,11 @@ SPDX-License-Identifier: Apache-2.0
 
 # GB200 AgentX image and HiCache preparation
 
+September 9 update: a shared amd64/arm64 image with the FPM fixes is now
+published. See the [FPM image build log](fpm-image-2026-09-09.md) for immutable
+digests, validation and pending performance work. The results below refer to
+the earlier image; deployments were not changed by the new build.
+
 Status: built and published on September 8, 2026; single-GPU ARM64/H100 smoke test
 passed. The three-node GB200 Kubernetes variant is documented in
 [KUBERNETES.md](KUBERNETES.md), with [DGD](deploy.yaml) and
