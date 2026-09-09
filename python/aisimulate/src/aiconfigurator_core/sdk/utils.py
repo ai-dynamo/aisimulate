@@ -605,7 +605,10 @@ def _parse_kimi_k25_vision_encoder_config(
     # model-level NVFP4 config explicitly excludes both vision components.
     quant_is_text_only = root_quant_cfg is not None and root_quant_cfg == nested_text_quant_cfg
     if root_quant_cfg and not quant_is_text_only:
-        ignore = tuple(str(pattern).lower() for pattern in root_quant_cfg.get("ignore", []))
+        exclusions = root_quant_cfg.get("ignore", [])
+        if not isinstance(exclusions, (list, tuple)) or any(not isinstance(pattern, str) for pattern in exclusions):
+            raise ValueError("Kimi K2.5 quantization_config.ignore must be a list or tuple of strings")
+        ignore = tuple(pattern.lower() for pattern in exclusions)
         vision_ignored = any("vision_tower" in pattern for pattern in ignore)
         projector_ignored = any("mm_projector" in pattern for pattern in ignore)
         if not (vision_ignored and projector_ignored):
@@ -615,6 +618,9 @@ def _parse_kimi_k25_vision_encoder_config(
             )
 
     hidden_vit = int(vision_cfg["vt_hidden_size"])
+    vision_heads = vision_cfg["vt_num_attention_heads"]
+    if not isinstance(vision_heads, int) or isinstance(vision_heads, bool) or vision_heads <= 0:
+        raise ValueError("Kimi K2.5 vision vt_num_attention_heads must be a positive integer")
     spatial_merge_size = int(merge_kernel[0])
     merger_dim = hidden_vit * spatial_merge_size**2
     out_hidden_size = int(vision_cfg["text_hidden_size"])
@@ -626,7 +632,7 @@ def _parse_kimi_k25_vision_encoder_config(
     return VisionEncoderConfig(
         depth=int(vision_cfg["vt_num_hidden_layers"]),
         hidden_size=hidden_vit,
-        num_heads=int(vision_cfg["vt_num_attention_heads"]),
+        num_heads=vision_heads,
         intermediate_size=int(vision_cfg["vt_intermediate_size"]),
         patch_size=int(vision_cfg["patch_size"]),
         temporal_patch_size=1,

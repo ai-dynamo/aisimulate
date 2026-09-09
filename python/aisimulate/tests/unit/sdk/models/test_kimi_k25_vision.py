@@ -124,6 +124,45 @@ def test_model_level_quantization_must_explicitly_exclude_kimi_vision_components
         _parse_hf_config_json(raw)
 
 
+@pytest.mark.parametrize("ignore", [None, "vision_tower mm_projector", 1, {}, ["vision_tower", "mm_projector", None]])
+def test_kimi_quantization_rejects_invalid_ignore_container(ignore):
+    raw = deepcopy(get_model_config_from_model_path("nvidia/Kimi-K2.5-NVFP4")["raw_config"])
+    raw["quantization_config"]["ignore"] = ignore
+    with pytest.raises(ValueError, match="quantization_config.ignore must be a list or tuple of strings"):
+        _parse_hf_config_json(raw)
+
+
+@pytest.mark.parametrize("container", [list, tuple])
+def test_kimi_quantization_accepts_valid_ignore_container(container):
+    raw = deepcopy(get_model_config_from_model_path("nvidia/Kimi-K2.5-NVFP4")["raw_config"])
+    raw["quantization_config"]["ignore"] = container(["vision_tower.*", "mm_projector.*"])
+    assert _parse_hf_config_json(raw)["encoder_config"].hidden_size == 1152
+
+
+@pytest.mark.parametrize("heads", [0, -1, False, None, 1.5, "16"])
+def test_kimi_k25_parser_rejects_invalid_vision_head_count(heads):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K2.5")["raw_config"])
+    raw["vision_config"]["vt_num_attention_heads"] = heads
+    with pytest.raises(ValueError, match="vt_num_attention_heads must be a positive integer"):
+        _parse_hf_config_json(raw)
+
+
+@pytest.mark.parametrize(
+    "field,value,match",
+    [
+        ("merge_kernel_size", [2, 3], "square merge_kernel_size"),
+        ("mm_projector_type", "mlp", "mm_projector_type='patchmerger'"),
+        ("merge_type", "sd2", "merge_type='sd2_tpool'"),
+        ("video_attn_type", "spatial", "video_attn_type='spatial_temporal'"),
+    ],
+)
+def test_kimi_vision_rejects_unsupported_encoder_topology(field, value, match):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K2.5")["raw_config"])
+    raw["vision_config"][field] = value
+    with pytest.raises(ValueError, match=match):
+        _parse_hf_config_json(raw)
+
+
 def test_encoder_parallelism_models_required_communication():
     dp_model = get_model("moonshotai/Kimi-K2.5", _model_config(tp_size=2), "trtllm")
     tp_model = get_model(
@@ -150,6 +189,36 @@ def test_kimi_video_temporal_pooling_keeps_context_tokens_spatial():
     )
 
     assert BaseBackend._encoder_pre_merge_per_visual(runtime, enc) == (256, 8192, 1)
+
+
+def test_pooled_video_token_override_reaches_encoder_shapes(monkeypatch):
+    model = get_model("moonshotai/Kimi-K2.5", _model_config(tp_size=2), "trtllm")
+    runtime = config.RuntimeConfig(
+        batch_size=3,
+        isl=128,
+        osl=1,
+        num_images_per_request=0,
+        num_video_tokens=100,
+        video_frames=8,
+        num_videos_per_request=1,
+    )
+    backend = BaseBackend()
+    assert BaseBackend._encoder_pre_merge_per_visual(runtime, model.encoder_config) == (100, 3200, 1)
+    assert BaseBackend._visual_context_tokens(model, runtime) == 100
+    captured = {}
+
+    def evaluate(model_arg, database, shape_of, *, include_energy):
+        captured.update({op._name: shape_of(op) for op in model_arg.encoder_ops})
+        return {"encoder_attention": 1.0}, {"encoder_attention": 2.0}, {"encoder_attention": "silicon"}
+
+    monkeypatch.setattr(backend, "_require_rust_engine_step", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend, "_run_encoder_phase_with_rust", evaluate)
+    latency, energy, source, tokens = backend._run_encoder_phase(model, object(), runtime, batch_size=3)
+    assert captured["encoder_attention"] == (2, 3200)
+    # Projector keeps two independent pooled videos; GEMM later flattens b*s.
+    assert captured["encoder_projector_fc1_gemm"] == (2, 100)
+    assert tokens == 100
+    assert latency and energy and source
 
 
 @pytest.mark.parametrize("model_id", _KIMI_MODELS)
