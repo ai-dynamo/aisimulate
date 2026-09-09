@@ -17,7 +17,7 @@ pytestmark = pytest.mark.unit
 MODEL = "google/gemma-4-26B-A4B"
 
 
-@pytest.mark.parametrize("heads", [0, -1, False, None, 1.5, "16"])
+@pytest.mark.parametrize("heads", [0, -1, False, True, None, 1.5, "16"])
 def test_gemma4_parser_rejects_invalid_vision_head_count(heads):
     raw = deepcopy(get_model_config_from_model_path(MODEL)["raw_config"])
     raw["vision_config"]["num_attention_heads"] = heads
