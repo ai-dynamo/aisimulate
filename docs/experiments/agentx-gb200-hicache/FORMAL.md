@@ -22,6 +22,8 @@ FPM-off workaround; prefill retains FPM and HiCache 135 GB per DP rank.
 - [formal-runner.py](formal-runner.py): independent frontend-sidecar runner.
 - [prepare-client.py](prepare-client.py): uses the pinned AIPerf CLI resolver to
   generate and validate a complete configuration envelope before executing it.
+- [stage-client-data.py](stage-client-data.py): stages tokenizer assets in a
+  canonical private HF cache plus the public dataset; never copies model weights.
 - [render-formal.py](render-formal.py): derives the formal manifest from the
   validated `deploy.yaml` and embeds the runner in a namespaced ConfigMap.
 - [formal-deploy.yaml](formal-deploy.yaml): generated manifest to apply.
@@ -53,7 +55,7 @@ provisioned using the existing `jegu-hyperdisk-balanced-rwo` StorageClass.
 The GB200 GCP `a4x-highgpu-4g` instance cannot attach `standard-rwo`'s pd-balanced
 disk; do not substitute that default class. No static cluster PV is authored.
 
-Current attempt data lives at `/results/agentx-gb200-20260908-c48-attempt2/`, containing:
+Current attempt data lives at `/results/agentx-gb200-20260908-c48-attempt3/`, containing:
 
 - `STARTED.json`, followed by `COMPLETE.json`, `FAILED.json` or `INTERRUPTED.json`;
 - `command.json`, `client-config.yaml`, `aiperf-console.log`;
@@ -67,9 +69,12 @@ workload. An operator must inspect the artifacts and choose a new run ID before
 retrying. Do not remove a marker simply to force a rerun over old results.
 
 The shared `shared-model-cache` PVC remains read-only. Only small tokenizer/config
-files are copied into the result directory; **no GLM weights are downloaded or
-copied**. HF dataset download is enabled with its cache on this private result
-PVC. The full Weka dataset is distinct from model weights. Client server-metric
+files are copied into `/results/hf/hub` using the canonical model/revision layout;
+**no GLM weights are downloaded or copied**. A separate staging subprocess runs
+with offline environment variables **removed**, caches the public Weka dataset,
+and exits. The actual AIPerf process then uses offline mode with model repo ID
+and revision, not a local tokenizer path. The full Weka dataset is distinct from
+model weights. Client server-metric
 discovery is disabled; only explicit endpoints in `hzhou` are scraped.
 
 The frontend/sidecar ServiceAccount has a namespace-scoped Role: read pods/logs
@@ -112,3 +117,21 @@ The runner resolves the prefill **leader** pod for readiness and metrics. The
 generic prefill Service can also select the nonleader multinode pod, whose system
 metrics endpoint did not respond in this test. Explicit leader selection avoids
 that ambiguity without changing engine parallelism or routing.
+
+Attempt 2 also failed before any inference requests, at tokenizer configuration:
+this fork's `_is_offline_mode()` calls `bool(os.environ.get(...))`, so the string
+`"0"` is treated as enabled. It therefore tried to resolve a local tokenizer
+directory as a Hub repo ID. Its failed attempt directory is retained. Attempt 3
+uses the canonical private HF cache, repo ID and pinned revision in true offline
+mode; staging removes those variables rather than setting `"0"`.
+
+Before rescheduling attempt 3, a no-GPU AIPerf preflight completed actual tokenizer
+configuration, loaded all 393 traces with zero context exclusions, reconstructed
+9843 conversations / 98827 turns, finalized the 6.368 GB mmap and reached timing
+setup. It then failed at the deliberately closed `localhost:9` diagnostic target,
+as expected; it never called a GPU server and is not a performance result. Those
+diagnostic artifacts are separately named `client-preflight-attempt3`. Attempt 3
+was scheduled at 19:55 PDT. The formal command remains c48 and 3600 seconds.
+
+The frontend's HTTP container is capped at 4 CPUs; the client container requests
+4 CPUs/24 GiB and is capped at 8 CPUs/48 GiB, to bound CPU use on its shared node.

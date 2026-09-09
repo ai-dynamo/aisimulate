@@ -102,12 +102,11 @@ data:
     import os
     from pathlib import Path
     import ssl
-    import shutil
     import subprocess
     import time
     import urllib.request
 
-    ROOT = Path('/results/agentx-gb200-20260908-c48-attempt2')
+    ROOT = Path('/results/agentx-gb200-20260908-c48-attempt3')
     ROOT.mkdir(parents=True, exist_ok=True)
     MODEL = 'nvidia/GLM-5.2-NVFP4'
     REVISION = '53e0691e21895a3863a606dfd12910c69eba94ab'
@@ -196,22 +195,12 @@ data:
     with os.fdopen(fd, 'w') as file:
         json.dump({'utc': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'concurrency': 48, 'duration': 3600}, file)
 
-    # Copy only small tokenizer/config assets, never model weights, onto our private
-    # results disk. Dataset download needs online HF mode; a local tokenizer path
-    # avoids fetching the model or attempting writes to the read-only shared cache.
-    tokenizer = ROOT / 'tokenizer'
-    tokenizer.mkdir(exist_ok=True)
-    snapshot = Path('/model-cache/models--nvidia--GLM-5.2-NVFP4/snapshots') / REVISION
-    for source in snapshot.iterdir():
-        if source.is_file() and source.suffix != '.safetensors' and source.name != 'model.safetensors.index.json':
-            shutil.copy2(source, tokenizer / source.name)
-
     client_config = ROOT / 'client-config.yaml'
     command = [
         '/opt/agentx-aiperf/bin/aiperf', 'profile',
         '--scenario', 'inferencex-agentx-mvp', '--url', 'http://127.0.0.1:8000',
         '--endpoint', '/v1/chat/completions', '--endpoint-type', 'chat',
-        '--model', MODEL, '--tokenizer', str(tokenizer),
+        '--model', MODEL, '--tokenizer', MODEL, '--tokenizer-revision', REVISION,
         '--tokenizer-trust-remote-code',
         '--public-dataset', 'semianalysis_cc_traces_weka_062126', '--num-dataset-entries', '393',
         '--concurrency', '48', '--benchmark-duration', '3600', '--random-seed', '42',
@@ -227,7 +216,7 @@ data:
     (ROOT / 'command.json').write_text(json.dumps(command, indent=2))
     environment = os.environ.copy()
     environment.update({
-        'HF_HUB_OFFLINE': '0', 'TRANSFORMERS_OFFLINE': '0',
+        'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1',
         'HF_HOME': '/results/hf', 'HF_HUB_CACHE': '/results/hf/hub',
         'HF_DATASETS_CACHE': '/results/hf/datasets',
         'XDG_CACHE_HOME': '/results/cache', 'TMPDIR': '/results/tmp',
@@ -240,6 +229,11 @@ data:
     collect()
     try:
         with (ROOT / 'aiperf-console.log').open('w') as output:
+            stage_env = environment.copy()
+            stage_env.pop('HF_HUB_OFFLINE', None)
+            stage_env.pop('TRANSFORMERS_OFFLINE', None)
+            subprocess.run(['/opt/agentx-aiperf/bin/python', '/runner/stage-client-data.py'],
+                           env=stage_env, stdout=output, stderr=subprocess.STDOUT, check=True, timeout=1800)
             subprocess.run(['/opt/agentx-aiperf/bin/python', '/runner/prepare-client.py',
                             str(ROOT / 'command.json'), str(client_config)],
                            env=environment, stdout=output, stderr=subprocess.STDOUT, check=True, timeout=120)
@@ -277,6 +271,33 @@ data:
     build_benchmark_plan(AIPerfConfig.model_validate(payload))
     Path(sys.argv[2]).write_text(yaml.safe_dump(payload, sort_keys=False))
     print('Validated complete AgentX configuration envelope', flush=True)
+  stage-client-data.py: |
+    # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+    # SPDX-License-Identifier: Apache-2.0
+    """Stage only tokenizer assets and the public dataset on the private result PVC."""
+    import os
+    from pathlib import Path
+    import shutil
+
+    for key in ['HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE']:
+        os.environ.pop(key, None)
+
+    revision = '53e0691e21895a3863a606dfd12910c69eba94ab'
+    source = Path('/model-cache/models--nvidia--GLM-5.2-NVFP4/snapshots') / revision
+    target = Path('/results/hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots') / revision
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ['config.json', 'tokenizer.json', 'tokenizer_config.json',
+                 'special_tokens_map.json', 'added_tokens.json', 'vocab.json',
+                 'merges.txt', 'tokenizer.model', 'chat_template.jinja',
+                 'generation_config.json']:
+        if (source / name).is_file():
+            shutil.copy2(source / name, target / name)
+    print('Tokenizer assets staged in private canonical HF cache; no weights copied', flush=True)
+
+    from datasets import load_dataset
+    dataset = load_dataset('semianalysisai/cc-traces-weka-062126', split='train')
+    assert len(dataset) == 393, len(dataset)
+    print('Public Weka dataset ready: 393 trajectories', flush=True)
 ---
 apiVersion: resource.nvidia.com/v1beta1
 kind: ComputeDomain
@@ -371,6 +392,7 @@ spec:
               memory: 8Gi
             limits:
               memory: 16Gi
+              cpu: '4'
           volumeMounts: &id002
           - name: model-cache
             mountPath: /model-cache
@@ -386,6 +408,7 @@ spec:
               cpu: '4'
               memory: 24Gi
             limits:
+              cpu: '8'
               memory: 48Gi
           securityContext:
             runAsUser: 0

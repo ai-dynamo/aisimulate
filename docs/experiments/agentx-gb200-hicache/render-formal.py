@@ -25,11 +25,12 @@ for component in dgd['spec']['components']:
     pod.pop('affinity', None)
 frontend = dgd['spec']['components'][0]['podTemplate']['spec']
 frontend['serviceAccountName'] = 'agentx-formal-runner'
+frontend['containers'][0]['resources']['limits']['cpu'] = '4'
 frontend['containers'].append({
     'name': 'aiperf',
     'image': frontend['containers'][0]['image'],
     'command': ['python3', '-u', '/runner/formal-runner.py'],
-    'resources': {'requests': {'cpu': '4', 'memory': '24Gi'}, 'limits': {'memory': '48Gi'}},
+    'resources': {'requests': {'cpu': '4', 'memory': '24Gi'}, 'limits': {'cpu': '8', 'memory': '48Gi'}},
     'securityContext': {'runAsUser': 0},
     'volumeMounts': [
         {'name': 'model-cache', 'mountPath': '/model-cache', 'readOnly': True},
@@ -60,6 +61,7 @@ resources = [
     {'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': meta('agentx-formal-runner'), 'data': {
         'formal-runner.py': (HERE / 'formal-runner.py').read_text(),
         'prepare-client.py': (HERE / 'prepare-client.py').read_text(),
+        'stage-client-data.py': (HERE / 'stage-client-data.py').read_text(),
     }},
 ] + documents
 sys.stdout.write('# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n')

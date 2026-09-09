@@ -6,12 +6,11 @@ import json
 import os
 from pathlib import Path
 import ssl
-import shutil
 import subprocess
 import time
 import urllib.request
 
-ROOT = Path('/results/agentx-gb200-20260908-c48-attempt2')
+ROOT = Path('/results/agentx-gb200-20260908-c48-attempt3')
 ROOT.mkdir(parents=True, exist_ok=True)
 MODEL = 'nvidia/GLM-5.2-NVFP4'
 REVISION = '53e0691e21895a3863a606dfd12910c69eba94ab'
@@ -100,22 +99,12 @@ except FileExistsError:
 with os.fdopen(fd, 'w') as file:
     json.dump({'utc': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'concurrency': 48, 'duration': 3600}, file)
 
-# Copy only small tokenizer/config assets, never model weights, onto our private
-# results disk. Dataset download needs online HF mode; a local tokenizer path
-# avoids fetching the model or attempting writes to the read-only shared cache.
-tokenizer = ROOT / 'tokenizer'
-tokenizer.mkdir(exist_ok=True)
-snapshot = Path('/model-cache/models--nvidia--GLM-5.2-NVFP4/snapshots') / REVISION
-for source in snapshot.iterdir():
-    if source.is_file() and source.suffix != '.safetensors' and source.name != 'model.safetensors.index.json':
-        shutil.copy2(source, tokenizer / source.name)
-
 client_config = ROOT / 'client-config.yaml'
 command = [
     '/opt/agentx-aiperf/bin/aiperf', 'profile',
     '--scenario', 'inferencex-agentx-mvp', '--url', 'http://127.0.0.1:8000',
     '--endpoint', '/v1/chat/completions', '--endpoint-type', 'chat',
-    '--model', MODEL, '--tokenizer', str(tokenizer),
+    '--model', MODEL, '--tokenizer', MODEL, '--tokenizer-revision', REVISION,
     '--tokenizer-trust-remote-code',
     '--public-dataset', 'semianalysis_cc_traces_weka_062126', '--num-dataset-entries', '393',
     '--concurrency', '48', '--benchmark-duration', '3600', '--random-seed', '42',
@@ -131,7 +120,7 @@ command = [
 (ROOT / 'command.json').write_text(json.dumps(command, indent=2))
 environment = os.environ.copy()
 environment.update({
-    'HF_HUB_OFFLINE': '0', 'TRANSFORMERS_OFFLINE': '0',
+    'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1',
     'HF_HOME': '/results/hf', 'HF_HUB_CACHE': '/results/hf/hub',
     'HF_DATASETS_CACHE': '/results/hf/datasets',
     'XDG_CACHE_HOME': '/results/cache', 'TMPDIR': '/results/tmp',
@@ -144,6 +133,11 @@ Path('/results/tmp').mkdir(exist_ok=True)
 collect()
 try:
     with (ROOT / 'aiperf-console.log').open('w') as output:
+        stage_env = environment.copy()
+        stage_env.pop('HF_HUB_OFFLINE', None)
+        stage_env.pop('TRANSFORMERS_OFFLINE', None)
+        subprocess.run(['/opt/agentx-aiperf/bin/python', '/runner/stage-client-data.py'],
+                       env=stage_env, stdout=output, stderr=subprocess.STDOUT, check=True, timeout=1800)
         subprocess.run(['/opt/agentx-aiperf/bin/python', '/runner/prepare-client.py',
                         str(ROOT / 'command.json'), str(client_config)],
                        env=environment, stdout=output, stderr=subprocess.STDOUT, check=True, timeout=120)
