@@ -3,10 +3,28 @@
 
 # Staged GB200 validation, September 9
 
+## Latest outcome
+
+Main-process stage1-v3 passed **31/31 requests with zero errors**, including all
+eight fixed Prefill DP ranks, 983040-token synthetic input and c2/c4/c8 batches.
+Decode remained at `mem_fraction_static=0.9` (996352 KV slots). The repeated
+524288-token request increased Prefill DP0 `prefill_effective_tokens_total`
+with `mode="host_hit"` from 0 to **524224**, confirming G2 reload rather than
+inferring it from latency alone. The suite completed at 11:23:57 PDT, was
+manually accepted after login renewal, and its 12 GPUs were verified released.
+See [the accepted result](stage1-main-result-20260909.json).
+
+Stage2-v1 (1P +3D, 20 GPUs) was then submitted at approximately 11:36 PDT and
+obtained five nodes. It waits for all workers before automatically running
+AgentX c48/393 trajectories/3600 seconds. Its result directory is
+`/results/agentx-gb200-20260909-stage2-rdma-v1`. **No formal result yet.**
+
+## Earlier attempts and corrections
+
 Stage 1 was submitted at 10:12:57 PDT on September 9, 2026. The initial live state
 was gang Pending, with no GPUs allocated. This is a deployment record, **not a
-successful transport or benchmark result**. Stage 2 has not been authorized by
-the validation gate yet.
+successful transport or benchmark result** at that point; later acceptance is
+recorded above.
 
 At 10:20 PDT stage 1 obtained all 12 GPUs: Prefill leader `grdk`, Prefill follower
 `tqtb`, and Decode/frontend `gjn2`. The ComputeDomain reported all three nodes

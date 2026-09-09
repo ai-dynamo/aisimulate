@@ -1,0 +1,22 @@
+{
+  "stage": "1P8GPU + 1D4GPU validation",
+  "run_directory": "/results/agentx-gb200-20260909-stage1-rdma-v3",
+  "status": "accepted",
+  "requests": 31,
+  "errors": 0,
+  "decode_mem_fraction_static": 0.9,
+  "decode_kv_capacity_tokens": 996352,
+  "verified_prefill_dp_ranks": [0, 1, 2, 3, 4, 5, 6, 7],
+  "maximum_synthetic_input_tokens": 983040,
+  "observed_attempt5_max_primer_input_tokens": 688430,
+  "concurrency_max_request_seconds": {"2": 10.510, "4": 13.138, "8": 23.835},
+  "prefill_dp0_host_hit_tokens_before_repeat": 0,
+  "prefill_dp0_host_hit_tokens_after_repeat": 524224,
+  "repeat_input_tokens": 524288,
+  "first_524288_request_seconds": 47.236,
+  "repeat_524288_request_seconds": 4.335,
+  "http_suite_completed_utc": "2026-09-09T18:23:57.727322+00:00",
+  "gpu_cleanup_verified": true,
+  "archive_sha256": "e3cde1252f1354bb72986e4caab1fb55682d4d4f89c7679dd6dbcd5691326da3",
+  "notes": ["Synthetic functional/pressure suite, not an AgentX performance result", "All fixed-rank requests pin both live worker ID and DP rank", "Same model and engine configuration; no memory fraction increase or engine source patch"]
+}
