@@ -40,9 +40,10 @@ def _stub_compiled_encoder(backend):
     shapes: dict[str, int] = {}
     backend._require_rust_engine_step = lambda *args, **kwargs: None
 
-    def _run(model, _database, _sequences_local, eff_s_of, *, include_energy):
+    def _run(model, _database, shape_of, *, include_energy):
         for op in model.encoder_ops:
-            shapes[op._name] = eff_s_of(op)
+            _batch, eff_s = shape_of(op)
+            shapes[op._name] = eff_s
         return (
             {"encoder_attention": 1.0},
             {"encoder_attention": 2.0 if include_energy else 0.0},
@@ -81,7 +82,7 @@ def test_checkpoint_configs_preserve_text_and_exact_vision_shapes(model_id, num_
     assert vision.spatial_merge_size == 2
     assert vision.out_hidden_size == 5120
     assert vision.projector_dims == ((5632, 4096), (4096, 4096), (4096, 5120))
-    assert vision.num_channels == 3
+    assert vision.in_channels == 3
     assert vision.has_cls_token
     assert vision.max_num_tiles == 16
     assert vision.add_global_tile

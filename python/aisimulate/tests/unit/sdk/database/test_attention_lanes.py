@@ -243,11 +243,11 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_fifteen():
-    """The lane_order field is an always-serialized positional payload change."""
+def test_engine_spec_schema_version_is_seventeen():
+    """Context RoPE policy is an always-serialized positional payload change."""
     from aiconfigurator.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 15
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 17
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():
@@ -729,12 +729,135 @@ def test_vllm_0240_primary_lanes_precede_shared_donors(table_attr, override):
 
 
 # ---------------------------------------------------------------------------
+# Qwen3.8-Max per-architecture defaults through the production lane-resolution
+# choke point.
+# ---------------------------------------------------------------------------
+
+_ARCH_LANE_DEFAULTS_YAML = """\
+sglang:
+  "0.5.14":
+    90: fa3
+    100: triton
+    103: triton
+    120: flashinfer
+architectures:
+  Qwen3_5MoeForCausalLM:
+    sglang:
+      "0.5.17":
+        90: fa3
+        100: trtllm_mha
+        103: trtllm_mha
+        120: flashinfer
+"""
+
+_MAX_ARCHITECTURE = "Qwen3_5MoeForCausalLM"
+_CONDGEN_ARCHITECTURE = "Qwen3_5MoeForConditionalGeneration"
+
+
+@pytest.fixture
+def arch_lane_systems_root(tmp_path):
+    root = tmp_path / "systems"
+    root.mkdir()
+    (root / "attention_lane_defaults.yaml").write_text(_ARCH_LANE_DEFAULTS_YAML, encoding="utf-8")
+    return str(root)
+
+
+def _max_db(systems_root, **kwargs):
+    db = _StubDatabase(systems_root, sm_version=103, **kwargs)
+    db.version = "0.5.17"
+    return db
+
+
+def test_resolved_lane_order_for_op_selects_architecture_default_without_override(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+
+    db = _max_db(
+        arch_lane_systems_root,
+        context_lanes={"triton": _ctx_lane(_SLOW_LATENCY), "trtllm_mha": _ctx_lane(_FAST_LATENCY)},
+    )
+
+    no_architecture = resolved_lane_order_for_op(db, "_context_attention_data", None, None)
+    max_architecture = resolved_lane_order_for_op(db, "_context_attention_data", None, _MAX_ARCHITECTURE)
+
+    assert no_architecture[0] == "triton"
+    assert max_architecture[0] == "trtllm_mha"
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_lane"),
+    [(None, "trtllm_mha"), ("default", "trtllm_mha"), ("triton", "triton")],
+    ids=["unset", "default", "named-override"],
+)
+def test_resolver_honors_architecture_default_and_named_override_on_sm100(
+    arch_lane_systems_root, override, expected_lane
+):
+    from aiconfigurator_core.sdk.attention_lanes import resolve_attention_lane_order
+
+    order = resolve_attention_lane_order(
+        backend="sglang",
+        version="0.5.17",
+        sm_version=100,
+        override=override,
+        systems_root=arch_lane_systems_root,
+        architecture=_MAX_ARCHITECTURE,
+    )
+
+    assert order[0] == expected_lane
+
+
+def test_resolved_lane_order_for_op_architecture_default_generation_twin(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+
+    db = _max_db(
+        arch_lane_systems_root,
+        generation_lanes={"triton": _gen_lane(_SLOW_LATENCY), "trtllm_mha": _gen_lane(_FAST_LATENCY)},
+    )
+
+    assert resolved_lane_order_for_op(db, "_generation_attention_data", None, None)[0] == "triton"
+    assert resolved_lane_order_for_op(db, "_generation_attention_data", None, _MAX_ARCHITECTURE)[0] == "trtllm_mha"
+
+
+def test_resolved_lane_order_for_op_override_wins_over_architecture_default(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+
+    db = _max_db(
+        arch_lane_systems_root,
+        context_lanes={"triton": _ctx_lane(_SLOW_LATENCY), "trtllm_mha": _ctx_lane(_FAST_LATENCY)},
+    )
+    order = resolved_lane_order_for_op(db, "_context_attention_data", "triton", _MAX_ARCHITECTURE)
+
+    assert order[0] == "triton"
+    assert order.count("triton") == 1
+
+
+def test_resolved_lane_order_for_op_unlisted_architecture_is_unaffected(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+
+    db = _max_db(
+        arch_lane_systems_root,
+        context_lanes={"triton": _ctx_lane(_SLOW_LATENCY), "trtllm_mha": _ctx_lane(_FAST_LATENCY)},
+    )
+    no_architecture = resolved_lane_order_for_op(db, "_context_attention_data", None, None)
+    condgen = resolved_lane_order_for_op(db, "_context_attention_data", None, _CONDGEN_ARCHITECTURE)
+
+    assert no_architecture == condgen
+    assert no_architecture[0] == "triton"
+
+
+def test_lane_order_cache_distinguishes_architectures(arch_lane_systems_root):
+    from aiconfigurator_core.sdk.operations.attention import resolve_lane_order
+
+    db = _max_db(arch_lane_systems_root)
+    assert resolve_lane_order(db, None, _MAX_ARCHITECTURE)[0] == "trtllm_mha"
+    assert resolve_lane_order(db, None, _CONDGEN_ARCHITECTURE)[0] == "triton"
+
+
+# ---------------------------------------------------------------------------
 # _lane_order pickle/deepcopy round-trip (rebase-4 review, minor 4): the two
 # ops encode it asymmetrically in __getnewargs_ex__ (py_ops.rs) --
 # ContextAttention rides it as the 11th POSITIONAL __new__ arg (after
-# cp_size), GenerationAttention rides it in the KWARGS dict instead (position
-# 8 there is use_qk_norm, a different, never-round-tripped parameter, so a
-# positional 8th slot would bind to the wrong thing). Both encodings must
+# cp_size), followed by apply_rope, while GenerationAttention carries the
+# resolved lane list in the KWARGS dict. Both encodings must
 # still round-trip the resolved order through pickle and deepcopy, which
 # construct a fresh instance via __new__(*args, **kwargs) rather than
 # copying attributes directly.
@@ -746,7 +869,17 @@ def _context_op_with_lane_order(order):
     from aiconfigurator_core.sdk.operations.attention import ContextAttention
 
     op = ContextAttention(
-        "ctx_attn", 1.0, 32, 8, common.KVCacheQuantMode.fp8, common.FMHAQuantMode.fp8, 0, 128, False, 1
+        "ctx_attn",
+        1.0,
+        32,
+        8,
+        common.KVCacheQuantMode.fp8,
+        common.FMHAQuantMode.fp8,
+        0,
+        128,
+        False,
+        1,
+        apply_rope=False,
     )
     op._lane_order = list(order)
     return op
@@ -756,7 +889,7 @@ def _generation_op_with_lane_order(order):
     from aiconfigurator.sdk import common
     from aiconfigurator_core.sdk.operations.attention import GenerationAttention
 
-    op = GenerationAttention("gen_attn", 1.0, 32, 8, common.KVCacheQuantMode.fp8, 0, 128, False)
+    op = GenerationAttention("gen_attn", 1.0, 32, 8, common.KVCacheQuantMode.fp8, 0, 128, True)
     op._lane_order = list(order)
     return op
 
@@ -782,3 +915,45 @@ def test_lane_order_survives_pickle_and_deepcopy_round_trip(build_op, order):
     assert copied._lane_order == order, (
         f"__getnewargs_ex__ dropped _lane_order across deepcopy; got {copied._lane_order}"
     )
+    if build_op is _generation_op_with_lane_order:
+        assert op._use_qk_norm is True
+        assert pickled._use_qk_norm is True
+        assert copied._use_qk_norm is True
+    else:
+        assert op._apply_rope is False
+        assert pickled._apply_rope is False
+        assert copied._apply_rope is False
+
+
+def test_context_rope_policy_is_present_in_rust_wire_spec():
+    import json
+
+    op = _context_op_with_lane_order(["triton", "default"])
+    spec = json.loads(op._spec_json())["ContextAttention"]
+
+    assert spec["apply_rope"] is False
+
+
+def test_generation_qk_norm_is_present_in_rust_wire_spec():
+    import json
+
+    op = _generation_op_with_lane_order(["triton", "default"])
+    spec = json.loads(op._spec_json())["GenerationAttention"]
+
+    assert spec["use_qk_norm"] is True
+
+
+def test_generation_qk_norm_contributes_latency_through_python_query():
+    from aiconfigurator.sdk import common
+    from aiconfigurator_core.sdk.operations.attention import GenerationAttention
+    from aiconfigurator_core.sdk.perf_database import get_database
+
+    database = get_database("b200_sxm", "vllm", "0.24.0")
+    plain = GenerationAttention("gen", 1.0, 64, 4, common.KVCacheQuantMode.fp8, 0, 128, False)
+    normalized = GenerationAttention("gen", 1.0, 64, 4, common.KVCacheQuantMode.fp8, 0, 128, True)
+
+    plain_result = plain._engine_query(database, batch_size=32, s=2048, beam_width=1)
+    normalized_result = normalized._engine_query(database, batch_size=32, s=2048, beam_width=1)
+
+    assert float(normalized_result) > float(plain_result)
+    assert normalized_result.energy == pytest.approx(plain_result.energy)

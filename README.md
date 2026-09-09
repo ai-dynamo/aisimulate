@@ -225,6 +225,16 @@ Support coverage and accuracy are separate evidence. A supported cell means a
 specific path can execute with the required data; it does not establish that
 the resulting end-to-end prediction is accurate.
 
+### Explicit CUDA graph reservation
+
+KV-cache estimation and engine replay accept an optional rank-local
+`cuda_graph_reserved_bytes` value. AISimulate subtracts this fixed runtime
+reservation before allocating KV cache and preserves it when the native replay
+runtime rematerializes capacity. For SGLang, the value is additional to the
+graph/runtime headroom already encoded by `mem_fraction_static`. The default is
+zero, so existing serialized callers do not change. See the
+[core API contract](docs/core-api.md#kv-cache-capacity-reservation).
+
 ### FPE support matrix — in development
 
 The new strict-native Forward Pass Engine (FPE) matrix measures estimator
@@ -289,6 +299,16 @@ The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
 consume AISimulate through optional adapters.
 
+### Packaged legal-file copies
+
+The root [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+are the canonical repository legal files. Because the Python wheel build is
+rooted at `python/aisimulate/`, byte-identical copies are retained there so the
+wheel can declare and distribute them. These copies do not create a separate
+licensing boundary, and CI fails if either copy differs from its root original.
+See the [artifact contract](docs/artifact-contract.md#packaged-license-files) for
+the complete packaging contract.
+
 ## Develop from source
 
 ```bash
@@ -326,5 +346,5 @@ python -m pytest -c pytest.ini tests
 python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"
 ```
 
-See [DEVELOPMENT.md](python/aisimulate/DEVELOPMENT.md) for environment and test details and
+See [DEVELOPMENT.md](DEVELOPMENT.md) for environment and test details and
 [CONTRIBUTING.md](CONTRIBUTING.md) before sending a change.

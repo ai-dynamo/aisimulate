@@ -2,7 +2,7 @@
 
 <!--
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-SPDX-License-Identifier: CC-BY-4.0
+SPDX-License-Identifier: Apache-2.0
 -->
 
 Use these configurations as preflight and qualification seeds for AI Simulate's built-in
@@ -25,7 +25,8 @@ These are the currently committed preflight expectations:
 | Aggregated attention-DP identity | One logical worker exposes rank identities `(0, 0)` and `(0, 1)` |
 | Disaggregated vLLM | Request completes on prefill/decode worker 0 with every handoff lifecycle timestamp present and zero route-overlap tokens |
 | Disaggregated SGLang | Same lifecycle completeness and zero route-overlap requirement under SGLang timing |
-| Disaggregated TRT-LLM | Explicit `UNSUPPORTED` error; an aggregated substitute does not pass this row |
+| Disaggregated asymmetric attention-DP | vLLM, SGLang, and TRT-LLM each complete request-level handoffs from prefill DP=2 to decode DP=4 |
+| Disaggregated TRT-LLM | Request completes with source-first handoff and guaranteed-no-evict decode reservation |
 
 The authoritative long-corpus status is different:
 
@@ -153,8 +154,10 @@ OUTPUT_ROOT=/tmp/aisimulate-engine-golden
 mkdir -p "$OUTPUT_ROOT"
 for ROW in \
   vllm-aggregated vllm-disaggregated \
+  vllm-disaggregated-adp2-4 \
   sglang-aggregated sglang-disaggregated \
-  trtllm-aggregated
+  sglang-disaggregated-adp2-4 \
+  trtllm-aggregated trtllm-disaggregated-adp2-4
 do
   "$RUNNER" "$CONFIG_DIR/$ROW.json" "$OUTPUT_ROOT/$ROW-run1"
   "$RUNNER" "$CONFIG_DIR/$ROW.json" "$OUTPUT_ROOT/$ROW-run2"
@@ -263,11 +266,12 @@ capacity shape, request, and handoff delay with:
 It requires the same handoff lifecycle fields and zero route-overlap observations. Use it
 to catch backend-specific handoff-order and completion-visibility drift.
 
-### Explicit unsupported seed
+### TRT-LLM disaggregated seed
 
-`native_trtllm_disaggregated_replay_is_an_explicit_error` requires TRT-LLM disaggregated
-replay to fail with an explicit unsupported error. Do not replace this with an aggregated
-run and claim disaggregated coverage.
+`native_trtllm_disaggregated_replay_completes` uses one prefill and one decode worker with
+source-first handoff and `GUARANTEED_NO_EVICT` decode capacity reservation. It requires the same
+complete handoff lifecycle as the vLLM seed. The asymmetric long-corpus row below extends this to
+prefill DP=2 and decode DP=4; do not replace it with an aggregated run.
 
 ## Committed trace preflight fixtures
 
@@ -364,6 +368,58 @@ Use these points as drift detectors, not as permission to retune the candidate:
 
 The TRT-LLM boundary is why completed-request count alone is insufficient: qualification
 must also require exact authored output-token completion.
+
+## Qualified asymmetric attention-DP golden points
+
+These additional disaggregated rows were qualified on 2026-09-03 against AI Simulate
+`0bae79b6c2b61dc4803484fcfbe2211f1987d692`, the first revision in this campaign that
+supports request-level asymmetric attention-DP handoff. The pre-support baseline
+`d25f25de87c5e6512fd4b8b35e145109589e4395` rejects these rows by design, so they are a
+reviewed semantic expansion rather than byte-parity rows against that baseline.
+
+Qualification used Rust/Cargo 1.93.1 in release mode on an Apple M3 Pro host with 12 physical
+cores and 36 GiB RAM. The runner used `aisimulate-core` default features (`default = []`), the
+same pinned 5,000-row trace and slice described above, round-robin placement, no scaling, and two
+fresh unpinned processes per row. Both repetitions produced byte-identical canonical output.
+Performance was not measured.
+
+The runner-source SHA-256 was
+`37e1fda3c2e20da25a3f448684adef84e86c4298f1a3e1ae652d987fff4d8459`.
+The release binary SHA-256 was
+`6860571087cfbf2476d1778175315e1934340d726b7eaa2005adbcf368bab5b6`, its size was
+2,830,432 bytes, and its Mach-O `__TEXT` size was 2,097,152 bytes.
+
+### Frozen asymmetric configurations
+
+Every row uses two prefill and two decode logical workers, prefill DP=2, decode DP=4, TP=1,
+full-prompt transfer timing, and round-robin placement independently in each pool.
+
+| Row | Prefill blocks / block size | Decode blocks / block size | Max seqs / batch tokens | Config SHA-256 |
+| --- | --- | --- | --- | --- |
+| vLLM disaggregated ADP2→4 | 4,500 / 64 | 6,000 / 64 | 16 / 8,192 | `b503a408cb80b59a6c1c306113419b02891112a42e7155c4aa9e559f21e5b510` |
+| SGLang disaggregated ADP2→4 | 6,250 / 512 | 1,900 / 512 | 256 / 32,768 | `3b6b5286af3b22fb9dca31cc6420b33537401aadb7c6a85b1c8ba21bf250de92` |
+| TRT-LLM disaggregated ADP2→4 | 3,867 / 32 | 3,867 / 32 | 16 / 8,192 | `81e51eb41975be06611dcb1df127a88d8ebc6bcc9249b8f99cf0abd33c7200a0` |
+
+All rows completed 5,000 requests and 5,000 handoffs with 46,542,297 input tokens, 922,544
+requested and emitted output tokens, no short outputs, prefill schedulers 0–3, decode schedulers
+0–7, and immediate prefill/decode placement for every request.
+
+| Row | Pressure / readmissions | Requests with reuse | Virtual duration (ms) | Canonical SHA-256 |
+| --- | --- | ---: | ---: | --- |
+| vLLM disaggregated ADP2→4 | 3 preemptions / 3 | 4,975 | 265,348.2959060637 | `5ff3cd516402fa6a78d8ff765a711908cc91a283278ac83a1d95c5e1c130a0a0` |
+| SGLang disaggregated ADP2→4 | 1 retraction / 10,503 total chunk/readmissions | 4,992 | 276,829.4446945608 | `6d914ba63acab04eeeda96350a7164d2fe91e30b889ff18425cf14c2f8a78d5e` |
+| TRT-LLM disaggregated ADP2→4 | 0, by guaranteed-no-evict policy / 0 | 4,858 | 802,666.7792470555 | `6097f11bec8669ff4ce5a77dcd630b410aa9480dd5054021605b0f03122059ab` |
+
+### Asymmetric capacity boundary observations
+
+Only decode per-rank capacity changed while locating each boundary; prefill capacity and every
+other workload/configuration field remained frozen.
+
+| Row | Lower observation | Frozen point | Upper observation |
+| --- | --- | --- | --- |
+| vLLM disaggregated ADP2→4 | 5,500 blocks → 10 preemptions | 6,000 → 3 | 7,000 → 0 |
+| SGLang disaggregated ADP2→4 | 1,700 pages → 7 retractions | 1,900 → 1 | 2,000 → 0 |
+| TRT-LLM disaggregated ADP2→4 | Not tuned; guaranteed-no-evict | 3,867 → complete output | Not tuned; guaranteed-no-evict |
 
 ### Performance is outside the current skill
 

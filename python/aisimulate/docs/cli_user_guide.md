@@ -268,9 +268,9 @@ aiconfigurator cli estimate \
 
 #### MoE communication topology provenance
 
-For SGLang DeepEP communication (`deepep_ht` or `deepep_ll`), AIConfigurator always uses silicon data collected at the exact requested EP size and node count when that topology is available. If a multi-node request has no exact all-to-all row but the same MoE shape has the canonical legacy EP8/node1 row, AIConfigurator may use that row as a substitute; all other frameworks, communication backends, single-node requests, and missing donor rows remain exact-topology only. A compatible MoE expert-compute row is still required at the requested EP size.
+For SGLang DeepEP communication (`deepep_ht` or `deepep_ll`), AIConfigurator first selects a curve collected at the exact requested EP size and node count when that topology is available. DeepEP-HT returns that curve as silicon data. DeepEP-LL uses it as a calibration anchor and applies Monte Carlo routing skew, without applying an NVLink/IB specification floor, so the resulting LL value is still `estimated`. If a multi-node request has no exact all-to-all row but the same MoE shape has a compatible node-1 row, AIConfigurator may use that row as a donor; LL then applies both routing skew and topology bandwidth guardrails. Legacy HT node-1 rows represent EP8, while legacy LL node-1 rows use the system's physical node width (EP4 on GB200/GB300 and EP8 on HGX). A compatible MoE expert-compute row is still required at the requested EP size.
 
-A successfully executed EP8/node1 substitution keeps the generic per-op source as `estimated` and records separate requested-versus-measurement coordinates. The CLI emits a warning by default, for example `context/deepep_ht: requested EP32/node8; using EP8/node1 silicon data`. Add `--detail source` to show the same executed provenance alongside the per-op source table. Exact hits and failed substitute lookups do not produce a fallback record.
+A successfully executed node-1 substitution keeps the generic per-op source as `estimated` and records separate requested-versus-measurement coordinates. The CLI emits a warning by default, for example `context/deepep_ht: requested EP32/node8; using EP8/node1 silicon data`. Add `--detail source` to show the same executed provenance alongside the per-op source table. Exact hits and failed substitute lookups do not produce a fallback record; an exact DeepEP-LL hit is nevertheless `estimated` because Monte Carlo scaling still runs.
 
 The Python `cli_estimate` API exposes the ordered, de-duplicated records through `EstimateResult.moe_comm_fallbacks`. Each `MoECommFallback` identifies the inference phase, communication backend, requested EP size and node count, and measurement EP size and node count.
 
@@ -459,11 +459,21 @@ Beyond `--ttft`, `--tpot`, `--isl`, `--osl`, and `--prefix`, `default` mode acce
 > no coverage, a one-time INFO log names the collectors to run
 > (see [Advanced Tuning](advanced_tuning.md#large-ep-wideep-exploration)).
 
-**Vision-language inputs** (multimodal models such as Qwen3-VL):
+**Vision-language inputs** (multimodal models such as Qwen3-VL and Qwen3.5):
 
 - `--image-height`, `--image-width`: Image dimensions in pixels. Default: `0` (disabled — the request is modeled as text-only).
 - `--num-images`: Number of images per request. Default: `1`.
-- `--disable-encoder-dp`: Model the vision encoder as TP-sharded instead of the default data-parallel. Also available in `estimate` mode (alongside the image flags above).
+- `--video-height`, `--video-width`: Video frame dimensions in pixels. Default: `0` (disabled).
+- `--video-frames`: Number of sampled/preprocessed frames per video. Default: `0` (disabled).
+- `--num-videos`: Number of videos per request. Default: `0`.
+- `--num-video-tokens`: Explicit post-merge tokens per video; requires `--video-frames`.
+  Default: `0` (derive from dimensions).
+- `--disable-encoder-dp`: Model the vision encoder as TP-sharded instead of the default data-parallel. Available in `default` and `estimate` modes.
+
+The image and video input flags are also available in `recommend` mode.
+
+Image and video workloads must currently be estimated separately. Qwen3-VL dense/MoE and Qwen3.5 video token accounting uses each model's temporal patch size before the spatial merge.
+Visual encoder workloads are not supported by AFD mode. Video estimates are supported for functional estimation, but saving deployment artifacts for a video workload is rejected until the generator has a video benchmark schema; run without `--save-dir`.
 
 **Encoder disaggregation (EPD)** — serve the vision encoder from a dedicated encode-worker pool rate-matched against the LM workers (agg becomes E+agg, disagg becomes E+P+D). Requires image inputs; the LM workers are modeled language-only. Result rows carry `(e)workers`/`(e)tp`/`(e)bs` columns.
 
