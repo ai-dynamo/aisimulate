@@ -129,7 +129,8 @@ not make them supported by the unified CLI.
 
 ## Output contract
 
-Replay JSON and prediction tables use these optional fields:
+Once the follow-up runtime work adds a conforming producer, Replay JSON and
+prediction tables will use these optional fields:
 
 | Field | Unit | Availability |
 |---|---|---|
@@ -141,18 +142,18 @@ The machine-readable fragment is
 It deliberately permits unrelated report metrics so it can validate both a
 replay report and a Sweeper candidate's `metrics` object.
 
-Recommendation results retain the fields in `candidates[].metrics` using the
-same names and units. `candidates[].provenance.power` repeats the published
-values and may add evidence metadata such as the method, threshold, role, and
-source identities. It must not contain a `power_w` value that the candidate
-metrics correctly withheld.
+Recommendation results will retain the fields in `candidates[].metrics` using
+the same names and units. `candidates[].provenance.power` will repeat the
+published values and may add evidence metadata such as the method, threshold,
+role, and source identities. It must not contain a `power_w` value that the
+candidate metrics correctly withheld.
 
-Human-readable tables display unavailable power as `N/A` or `unavailable`, not
-as `0 W`. CSV exporters use an empty field for unavailable power. JSON omits
-`power_w` rather than serializing `null`, `0`, or a non-finite sentinel.
-Before validating or serializing a host-language metrics object, producers must
-reject `NaN` and positive or negative infinity; permissive encoder extensions
-are not valid JSON values under this contract.
+Conforming human-readable tables will display unavailable power as `N/A` or
+`unavailable`, not as `0 W`. CSV exporters will use an empty field for
+unavailable power. JSON will omit `power_w` rather than serializing `null`, `0`,
+or a non-finite sentinel. Before validating or serializing a host-language
+metrics object, producers must reject `NaN` and positive or negative infinity;
+permissive encoder extensions are not valid JSON values under this contract.
 
 ## Provenance boundary
 
@@ -169,10 +170,10 @@ and provenance that states its measurement boundary.
 
 ## Compatibility rules
 
-The two power fields are optional additions to existing replay and Sweeper
-objects. Older consumers must ignore fields they do not recognize, and newer
-consumers must accept their absence. Producers must not fabricate placeholder
-values to satisfy consumers.
+The two power fields are planned optional additions to existing replay and
+Sweeper objects. Older consumers must ignore fields they do not recognize, and
+newer consumers must accept their absence. Producers must not fabricate
+placeholder values to satisfy consumers.
 
 Changing a field name, unit, scope, aggregation formula, missing-value rule, or
 the `0.9` gate is a breaking semantic change. It requires a versioned schema

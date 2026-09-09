@@ -83,5 +83,6 @@ def test_public_docs_keep_availability_separate_from_semantics() -> None:
     assert "This PR does not change current AIC or FPE runtime behavior" in contract
     assert "the contract\ndoes not by itself make modeled power available" in contract
     assert "exactly `0.90` is sufficient;\n`0.899` is not" in contract
+    assert "Once the follow-up runtime work adds a conforming producer" in contract
     assert "[modeled-power contract](../power-model.md)" in migration
     assert "Typed per-op energy alone does\nnot make unified replay power available" in core_api
