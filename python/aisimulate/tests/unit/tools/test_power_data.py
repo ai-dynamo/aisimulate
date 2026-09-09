@@ -124,6 +124,20 @@ def test_manifest_rejects_checksum_drift(power_data_module, tmp_path):
     assert any("packaged_sha256 mismatch" in issue for issue in power_data_module.validate_manifest(manifest))
 
 
+def test_manifest_requires_source_repository(power_data_module, tmp_path):
+    table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
+    _write_power_table(table_path)
+    manifest = _write_manifest(tmp_path, table_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    del payload["source"]["repository"]
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert any(
+        "source.repository must be a non-empty string" in issue
+        for issue in power_data_module.validate_manifest(manifest)
+    )
+
+
 def test_manifest_rejects_identity_evidence_drift(power_data_module, tmp_path):
     table_path = tmp_path / "gemm" / "trtllm" / "1.0.0" / "gemm_perf.parquet"
     _write_power_table(table_path)

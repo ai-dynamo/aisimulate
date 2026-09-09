@@ -144,6 +144,9 @@ def validate_manifest(manifest_path: Path) -> list[str]:
     if not isinstance(source, dict):
         issues.append(f"{manifest_path}: source must be an object")
     else:
+        repository = source.get("repository")
+        if not isinstance(repository, str) or not repository.strip():
+            issues.append(f"{manifest_path}: source.repository must be a non-empty string")
         commit = source.get("commit")
         if not isinstance(commit, str) or len(commit) != 40 or any(ch not in "0123456789abcdef" for ch in commit):
             issues.append(f"{manifest_path}: source.commit must be a lowercase 40-character Git SHA")
