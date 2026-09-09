@@ -224,8 +224,8 @@ def test_runner_and_export_guards():
         from_sweeper_candidate({"config": {"encoder": asdict(_encoder())}}, workload={})
 
 
-@pytest.mark.parametrize("gpu_budget", [2, 8])
-def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget):
+@pytest.mark.parametrize("gpu_budget,build_error", [(2, False), (8, False), (8, True)])
+def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, build_error):
     config = _config(search_space=_config().search_space.model_dump() | {"gpu_budget": gpu_budget})
     parallel = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     branch = BranchSpace(
@@ -238,6 +238,12 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget):
     monkeypatch.setattr(search_mod, "enumerate_branches", lambda *a, **kw: [branch])
     monkeypatch.setattr(search_mod, "resolve_encoder_catalog", lambda c: catalog)
     monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a: "0.5.14")
+    if build_error:
+
+        def fail_build(*args, **kwargs):
+            raise ValueError("missing language performance data")
+
+        monkeypatch.setattr(search_mod, "build_backend_deployment", fail_build)
 
     class Sampler:
         def __init__(self, branch, **kwargs):
@@ -283,7 +289,7 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget):
 
     sweeper = Sweeper(runner_factory=Factory(), sampler_factory=Sampler, show_progress=False)
     result = sweeper.run(config)
-    assert len(result.selected_candidates) == (2 if gpu_budget == 8 else 0)
+    assert len(result.selected_candidates) == (2 if gpu_budget == 8 and not build_error else 0)
     assert {c.used_gpus for c in result.candidates} == {3, 4}
     for candidate in result.candidates:
         assert candidate.config["encoder"]["backend_version"] == "0.5.14"

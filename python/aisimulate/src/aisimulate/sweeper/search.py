@@ -553,6 +553,7 @@ def _materialize_one(
     encoder_catalog: Mapping[str, Any] | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
+    epd_snapshot = None
     try:
         sample = unroll_sample(
             search_space=config.search_space,
@@ -618,6 +619,7 @@ def _materialize_one(
             sample["used_gpus"] += encoder.total_gpus
             sample["deployment_artifact_generation_supported"] = False
             sample["prediction_config_supported"] = False
+            epd_snapshot = deepcopy(sample)
             if sample["used_gpus"] > config.search_space.gpu_budget:
                 return None, _EvalResult(
                     candidate=None,
@@ -626,7 +628,7 @@ def _materialize_one(
                     reason="language plus encoder pool exceeds gpu_budget",
                     reason_category=ReasonCategory.GPU_BUDGET,
                     runner_metadata={},
-                    config_snapshot=deepcopy(sample),
+                    config_snapshot=epd_snapshot,
                 )
         backend_deployment = build_backend_deployment(sample, backend_version=backend_version, encoder=encoder)
         adapter_specs: dict[str, AdapterReplaySpec] = {}
@@ -670,6 +672,7 @@ def _materialize_one(
             reason=f"candidate KV capacity infeasible: {exc}",
             reason_category=ReasonCategory.KV_CAPACITY,
             runner_metadata={},
+            config_snapshot=epd_snapshot,
         )
     except InfeasibleCandidate as exc:
         return None, _EvalResult(
@@ -679,6 +682,7 @@ def _materialize_one(
             reason=f"candidate adapter selection infeasible: {exc}",
             reason_category=ReasonCategory.ADAPTER_CONSTRAINT,
             runner_metadata={},
+            config_snapshot=epd_snapshot,
         )
     except Exception as exc:
         logger.exception("Sweeper candidate build failed")
@@ -689,6 +693,7 @@ def _materialize_one(
             reason=f"candidate build failed: {type(exc).__name__}: {exc}",
             reason_category=ReasonCategory.CANDIDATE_MATERIALIZATION,
             runner_metadata={},
+            config_snapshot=epd_snapshot,
         )
     return _PreparedCandidate(
         sample=sample,
