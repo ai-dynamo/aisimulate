@@ -139,7 +139,7 @@ def test_kimi_quantization_accepts_valid_ignore_container(container):
     assert _parse_hf_config_json(raw)["encoder_config"].hidden_size == 1152
 
 
-@pytest.mark.parametrize("heads", [0, -1, False, None, 1.5, "16"])
+@pytest.mark.parametrize("heads", [0, -1, False, True, None, 1.5, "16"])
 def test_kimi_k25_parser_rejects_invalid_vision_head_count(heads):
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K2.5")["raw_config"])
     raw["vision_config"]["vt_num_attention_heads"] = heads
