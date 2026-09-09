@@ -95,10 +95,13 @@ a time. Native database loading and hot-path queries release the Python GIL,
 but Python-backed model compilation and database memory still limit scaling.
 Increase `--max-workers` only with measured memory headroom.
 
-The scheduled workflow creates one shard per system/backend pair and runs at
+Nightly CI calls the reusable FPE workflow after confirming that `main` has
+changed. The workflow creates one shard per system/backend pair and runs at
 most eight shards concurrently on the repository-specific CPU runner set. Each
 shard runs only `forward_model=op_level` with an eight-thread local pool. A
-final job combines the raw shards into the split web CSV artifact. This avoids
+final job combines the raw shards into the split web CSV artifact, and nightly
+release artifacts do not advance to Artifactory if the refresh fails. The FPE
+workflow remains manually dispatchable for an out-of-band refresh. This avoids
 leaving runners idle when a small system finishes before the largest systems.
 Full runs also suppress repeated SDK warnings at the console while preserving
 every classified failure and representative error in the matrix artifacts.

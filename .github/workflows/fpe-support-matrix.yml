@@ -1,10 +1,8 @@
 name: FPE Support Matrix
 
 on:
+  workflow_call:
   workflow_dispatch:
-  schedule:
-    # Daily at 14:00 UTC (07:00 PT during daylight time).
-    - cron: "0 14 * * *"
 
 permissions:
   contents: read
@@ -20,7 +18,9 @@ jobs:
     outputs:
       shards: ${{ steps.shards.outputs.value }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: shards
         name: Read system/backend identities from the curated matrix
         run: |
@@ -51,26 +51,34 @@ jobs:
     needs: discover-shards
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 480
+    container:
+      # Keep in sync with the amd64 Nightly CI image. The repository-specific
+      # runner policy requires every self-hosted job to use a container.
+      image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
+      env:
+        HOME: /__w/aisimulate/aisimulate
     strategy:
       fail-fast: false
       max-parallel: 8
       matrix:
         shard: ${{ fromJSON(needs.discover-shards.outputs.shards) }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          lfs: true
-      - uses: actions/setup-python@v7
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install stable Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      - run: rustup default stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.98.0"
       - name: Install AISimulate from this source SHA
         run: |
-          python -m pip install 'maturin>=1.12,<2'
-          python -m pip install './python/aisimulate'
+          python -m pip install \
+            --require-hashes \
+            --requirement .github/nightly/build-requirements.txt
+          python -m pip install --no-build-isolation './python/aisimulate'
       - name: Generate strict-native op-level coverage through the FPE SDK
         run: |
           python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
@@ -92,8 +100,10 @@ jobs:
     needs: generate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: fpe-support-matrix-*
           path: fpe-support-matrix

@@ -235,7 +235,7 @@ graph/runtime headroom already encoded by `mem_fraction_static`. The default is
 zero, so existing serialized callers do not change. See the
 [core API contract](docs/core-api.md#kv-cache-capacity-reservation).
 
-### FPE support matrix — in development
+### FPE support matrix
 
 The new strict-native Forward Pass Engine (FPE) matrix measures estimator
 coverage across a curated roster of current models, GPU systems, backends, and
@@ -243,10 +243,10 @@ backend versions. It probes native prefill, decode-start, decode-end, and mixed
 forward-pass calls without fallback. It does not certify the CLI, Replay,
 Sweeper, serving orchestration, or prediction accuracy.
 
-The FPE matrix is currently under review in
-[AISimulate PR #41](https://github.com/ai-dynamo/aisimulate/pull/41). Treat it
-as an in-development coverage surface until that work merges and publishes the
-interactive matrix.
+The matrix was introduced in
+[AISimulate PR #41](https://github.com/ai-dynamo/aisimulate/pull/41). Nightly
+CI refreshes the complete matrix at the nightly source SHA before release
+artifacts advance to Artifactory.
 
 ### AIC CLI support matrix
 
