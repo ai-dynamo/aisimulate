@@ -588,6 +588,13 @@ def _parse_llama4_vision_config(
     if missing:
         raise ValueError(f"Llama 4 vision_config is missing required fields: {', '.join(missing)}")
 
+    for key in required:
+        if key == "pixel_shuffle_ratio":
+            continue
+        value = vision_cfg[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"Llama 4 vision_config.{key} must be a positive integer, got {value!r}")
+
     processor_required = ("max_patches", "resize_to_max_canvas", "add_global_tile")
     if not isinstance(image_processor_cfg, dict):
         raise TypeError("Llama 4 config must preserve image_processor_config metadata")

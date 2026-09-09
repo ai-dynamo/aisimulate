@@ -3,6 +3,7 @@
 
 import importlib.resources as pkg_resources
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,29 @@ LLAMA4_CHECKPOINTS = (
     ("meta-llama/Llama-4-Maverick-17B-128E-Instruct", 128, 24, 24),
 )
 LLAMA4_MODEL_IDS = tuple(checkpoint[0] for checkpoint in LLAMA4_CHECKPOINTS)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "hidden_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_channels",
+        "intermediate_size",
+        "image_size",
+        "patch_size",
+        "projector_input_dim",
+        "projector_output_dim",
+        "vision_output_dim",
+    ],
+)
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "16", None])
+def test_llama4_parser_rejects_invalid_integer_vision_fields(field, value):
+    raw = deepcopy(get_model_config_from_model_path(LLAMA4_MODEL_IDS[0])["raw_config"])
+    raw["vision_config"][field] = value
+    with pytest.raises(ValueError, match=field + " must be a positive integer"):
+        _parse_hf_config_json(raw)
 
 
 def _model_config(**overrides):
@@ -235,6 +259,85 @@ def test_single_tile_image_produces_nonzero_engine_and_text_tokens():
     assert workload.context_tokens_per_image == 147
     assert workload.sequences_per_image == 1
     assert BaseBackend._visual_context_tokens_from_encoder_config(enc_cfg, runtime_config) == 147
+
+
+@pytest.mark.parametrize("encoder_dp", [False, True])
+def test_llama4_parallel_operation_dimensions_reach_compiled_specs(encoder_dp):
+    from aiconfigurator.sdk.engine import build_ops_json
+
+    model = get_model(
+        LLAMA4_MODEL_IDS[0],
+        _model_config(
+            tp_size=8,
+            moe_tp_size=1,
+            moe_ep_size=8,
+            enable_encoder_dp=encoder_dp,
+        ),
+        "trtllm",
+    )
+    ops = {op._name: op for op in model.encoder_ops}
+    tp = 1 if encoder_dp else 8
+    assert (ops["encoder_patch_embedding_gemm"]._n, ops["encoder_patch_embedding_gemm"]._k) == (1408 // tp, 588)
+    assert (ops["encoder_qkv_gemm"]._n, ops["encoder_qkv_gemm"]._k) == (4224 // tp, 1408)
+    assert (ops["encoder_ffn1_gemm"]._n, ops["encoder_ffn1_gemm"]._k) == (5632 // tp, 1408)
+    assert (ops["encoder_ffn2_gemm"]._n, ops["encoder_ffn2_gemm"]._k) == (1408, 5632 // tp)
+    assert (ops["encoder_projector_adapter_fc0_gemm"]._n, ops["encoder_projector_adapter_fc0_gemm"]._k) == (
+        4096 // tp,
+        5632,
+    )
+    assert (ops["encoder_projector_adapter_fc1_gemm"]._n, ops["encoder_projector_adapter_fc1_gemm"]._k) == (
+        4096,
+        4096 // tp,
+    )
+    assert (ops["encoder_projector_mm_gemm"]._n, ops["encoder_projector_mm_gemm"]._k) == (5120 // tp, 4096)
+    specs = {
+        value["name"]: value for entry in json.loads(build_ops_json(model.encoder_ops)) for value in entry.values()
+    }
+    for name, width in [("encoder_ar_1", 1408), ("encoder_ar_2", 1408), ("encoder_projector_adapter_ar", 4096)]:
+        assert specs[name]["hidden_size"] == width
+        assert specs[name]["tp_size"] == tp
+    payloads = (
+        {"encoder_dp_all_gather": 5120 * 8}
+        if encoder_dp
+        else {
+            "encoder_patch_embedding_all_gather": 1408,
+            "encoder_projector_mm_all_gather": 5120,
+        }
+    )
+    for name, width in payloads.items():
+        assert ops[name]._num_elements_per_token == width
+        assert ops[name]._num_gpus == 8
+
+
+def test_llama4_encoder_dp_uses_busiest_rank_and_all_image_tiles(monkeypatch):
+    model = get_model(
+        LLAMA4_MODEL_IDS[0],
+        _model_config(
+            tp_size=8,
+            moe_tp_size=1,
+            moe_ep_size=8,
+            enable_encoder_dp=True,
+        ),
+        "trtllm",
+    )
+    runtime = RuntimeConfig(batch_size=9, isl=128, osl=1, image_height=672, image_width=672)
+    backend = BaseBackend()
+    captured = {}
+
+    def evaluate(model_arg, database, shape_of, *, include_energy):
+        captured.update({op._name: shape_of(op) for op in model_arg.encoder_ops})
+        return {"encoder_attention": 1.0}, {"encoder_attention": 2.0}, {"encoder_attention": "silicon"}
+
+    monkeypatch.setattr(backend, "_require_rust_engine_step", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend, "_run_encoder_phase_with_rust", evaluate)
+    latency, energy, source, tokens = backend._run_encoder_phase(model, object(), runtime, batch_size=9)
+    # ceil(9 / 8) images on the busiest rank, each with four local tiles plus global.
+    assert captured["encoder_patch_embedding_gemm"] == (10, 576)
+    assert captured["encoder_attention"] == (10, 577)
+    assert captured["encoder_projector_mm_gemm"] == (10, 144)
+    assert captured["encoder_dp_all_gather"] == (10, 144)
+    assert tokens == 727
+    assert latency and energy and source
 
 
 def test_four_local_tiles_add_engine_global_tile_and_720_text_tokens():

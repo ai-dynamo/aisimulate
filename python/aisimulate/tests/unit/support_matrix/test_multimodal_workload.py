@@ -3,6 +3,9 @@
 
 import pytest
 
+from aiconfigurator.sdk.backends.base_backend import BaseBackend
+from aiconfigurator.sdk.config import RuntimeConfig
+from aiconfigurator.sdk.utils import get_model_config_from_model_path
 from tools.support_matrix.support_matrix import (
     SUPPORT_MATRIX_IMAGE_WORKLOAD,
     SupportMatrix,
@@ -44,6 +47,13 @@ def test_llama4_matrix_tasks_enable_nonzero_image_work(mode, model_id):
     assert task.image_height == 1024
     assert task.image_width == 1024
     assert task.num_images_per_request == 1
+    enc = get_model_config_from_model_path(model_id)["extra_params"].vision_config
+    runtime = RuntimeConfig(
+        image_height=task.image_height, image_width=task.image_width, num_images_per_request=task.num_images_per_request
+    )
+    resolved = BaseBackend._encoder_workload_per_visual(runtime, enc)
+    assert resolved.sequences_per_image == 17
+    assert BaseBackend._visual_context_tokens_from_encoder_config(enc, runtime) == 17 * 144 + 16 + 3
 
 
 @pytest.mark.parametrize("model_id", [SCOUT, MAVERICK])
