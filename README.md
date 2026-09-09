@@ -326,5 +326,5 @@ python -m pytest -c pytest.ini tests
 python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"
 ```
 
-See [DEVELOPMENT.md](python/aisimulate/DEVELOPMENT.md) for environment and test details and
+See [DEVELOPMENT.md](DEVELOPMENT.md) for environment and test details and
 [CONTRIBUTING.md](CONTRIBUTING.md) before sending a change.
