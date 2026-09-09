@@ -201,7 +201,9 @@ spec:
           containers:
             - name: main
               image: *image
-              command: [python3, -m, dynamo.sglang]
+              # Nightly disagg + speculative decode FPM crashes on seq_lens_cpu=None.
+              # Disable only the operator's automatic FPM opt-in, not normal metrics.
+              command: [env, -u, DYN_FORWARDPASS_METRIC_PORT, python3, -m, dynamo.sglang]
               args:
                 - --model-path
                 - /model-cache/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab

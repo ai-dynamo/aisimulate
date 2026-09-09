@@ -27,7 +27,7 @@ it does not reproduce the AgentX trace distribution, lane timing or cache pressu
   after namespace creation. We did not create or edit a PV, StorageClass or policy.
   This is the existing shared Lustre filesystem, **not a new 36 TB allocation**.
   Both PVC references and volume mounts are read-only; HF offline mode is enabled.
-- Worker scratch/compiler caches are container-local `/tmp`, not the shared cache.
+- Worker scratch/compiler caches are container-local, not the shared cache.
 - No node taints/labels, other namespaces, cluster RBAC, CRDs, operator deployments,
   global scheduling settings or other users' resources are modified.
 
@@ -71,6 +71,40 @@ flags are expressed as current `dsa-*` flags. The initial version omits explicit
 multithread model-loader configuration; loading speed is not a benchmark result.
 Observe the nightly's actual normalized startup arguments before interpreting
 performance. Same visible flags do not guarantee identical kernel/runtime behavior.
+
+### Nightly decode FPM workaround
+
+The first endpoint smoke on September 8 reached prefill and decode but crashed
+SGLang's speculative disaggregated decode scheduler while emitting forward-pass
+metrics. The operator automatically sets `DYN_FORWARDPASS_METRIC_PORT=20380`,
+which opts the engine into FPM. The first failure was:
+
+```text
+scheduler.py:3952 process_batch_result
+  self.metrics_reporter._emit_forward_pass_metrics(batch, result)
+metrics_reporter.py:1040 _emit_forward_pass_metrics
+  scheduled_requests=self._build_scheduled_request_metrics(batch)
+metrics_reporter.py:291 _build_scheduled_request_metrics
+  for sl in batch.seq_lens_cpu:
+TypeError: 'NoneType' object is not iterable
+```
+
+The DGD therefore removes that environment variable **only from decode's engine
+process** using `env -u DYN_FORWARDPASS_METRIC_PORT python3 -m dynamo.sglang`.
+Normal engine metrics remain enabled. No image source, operator or cluster
+configuration is patched. A successful smoke with this workaround must not be
+reported as validation of FPM-enabled speculative disaggregated decode.
+
+The original complete failure log is preserved at
+`/tmp/hzhou-gb200-debug-20260908/decode-fpm-failure-full.log` on the operator
+workstation. Subsequent cross-configuration FPM-on/off campaigns should account
+for this failure before enabling FPM. The manifest image digest fixes the exact
+failing engine build.
+
+Changing the DGD advances its worker namespace hash. Both prefill and decode
+must be recreated under that generation; leaving an old prefill process alive
+with a new decode process would split their discovery namespaces. Only this
+test's named pods/PodCliqueScalingGroup were recreated.
 
 ## Run
 

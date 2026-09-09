@@ -42,6 +42,7 @@ spec:
           env:
             - {name: HF_HUB_OFFLINE, value: '1'}
             - {name: XDG_CACHE_HOME, value: /tmp/agentx-cache}
+          securityContext: {runAsUser: 0}
           resources:
             requests: {cpu: '4', memory: 8Gi}
             limits: {memory: 16Gi}
