@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -182,17 +183,61 @@ def test_full_ci_propagates_the_exact_sha_to_reusable_gates() -> None:
 def test_migrated_workflows_keep_reviewed_safety_fixes() -> None:
     collector = _workflow("collector-check.yml")
     prediction = _workflow("prediction-regression-gate.yml")
+    platform_wheels = _workflow("validate-platform-wheels.yml")
 
     collector_commands = _run_commands(collector["jobs"]["check"])
-    assert "git fetch --no-tags origin" in collector_commands
+    assert '--no-tags origin "${BASE_SHA}"' in collector_commands
     assert "--depth=1" not in collector_commands
     assert "github.run_id" in collector["concurrency"]["group"]
+    assert "cancel-in-progress" not in collector["concurrency"]
 
     collect_commands = _run_commands(prediction["jobs"]["collect"])
     report_commands = _run_commands(prediction["jobs"]["report"])
     assert "NO_HARNESS" in collect_commands
     assert "pyyaml==6.0.3" in report_commands
-    assert "github.run_id" in prediction["concurrency"]["group"]
+    concurrency_group = prediction["concurrency"]["group"]
+    assert "github.event_name == 'workflow_dispatch'" in concurrency_group
+    assert "github.run_id" in concurrency_group
+    assert "github.ref" in concurrency_group
+
+    wheel_concurrency_group = platform_wheels["concurrency"]["group"]
+    assert "github.event_name == 'workflow_dispatch'" in wheel_concurrency_group
+    assert "github.run_id" in wheel_concurrency_group
+    assert "github.ref" in wheel_concurrency_group
+
+
+def test_migrated_workflows_pin_actions_and_do_not_persist_checkout_credentials() -> None:
+    for filename in (
+        "collector-check.yml",
+        "prediction-regression-gate.yml",
+        "validate-platform-wheels.yml",
+    ):
+        workflow = _workflow(filename)
+        source = (WORKFLOW_ROOT / filename).read_text(encoding="utf-8")
+        assert "https://github.com/ai-dynamo/AIConfigurator/tree/" in source
+
+        for uses in re.findall(r"^\s*-?\s*uses:\s+([^\s#]+)", source, re.MULTILINE):
+            if uses.startswith("./"):
+                continue
+            assert re.search(r"@[0-9a-f]{40}$", uses), f"{filename}: {uses} is not pinned"
+
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                if step.get("uses", "").startswith("actions/checkout@"):
+                    assert step.get("with", {}).get("persist-credentials") == "false"
+
+
+def test_exact_target_checks_bind_expressions_through_step_environments() -> None:
+    expression = "${{ inputs.expected_sha || github.sha }}"
+    for filename in (
+        "collector-check.yml",
+        "prediction-regression-gate.yml",
+        "validate-platform-wheels.yml",
+    ):
+        workflow = _workflow(filename)
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                assert expression not in step.get("run", "")
 
 
 def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
@@ -234,7 +279,7 @@ def test_prediction_gate_resolves_base_for_push_and_manual_callers(tmp_path: Pat
 def test_collector_comparison_fetch_preserves_full_history() -> None:
     commands = _run_commands(_workflow("collector-check.yml")["jobs"]["check"])
 
-    assert 'git fetch --no-tags origin "${BASE_SHA}"' in commands
+    assert '--no-tags origin "${BASE_SHA}"' in commands
     assert "--depth=1" not in commands
 
 

@@ -112,7 +112,7 @@ jobs:
           python/aisimulate/src/aisimulate
           python/aisimulate/tests/e2e/cli/test_cli_experiments.py
           python/aisimulate/tests/e2e/cli/test_cli_recommend.py
-          tests/test_ci_workflow_contracts.py
+          tests
       - name: Compile Python sources
         run: >-
           python -m compileall -q

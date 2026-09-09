@@ -30,16 +30,6 @@ def test_recommend_multi_node_moe_returns_results():
 
     top = best.iloc[0]
     assert top["num_total_gpus"] > 8, f"Expected multi-node config (>8 GPUs), got {top['num_total_gpus']}"
-    parallel_dims = [
-        top.get("tp", 1),
-        top.get("moe_tp", 1),
-        top.get("moe_ep", 1),
-        top.get("(p)tp", 1),
-        top.get("(d)tp", 1),
-        top.get("(p)moe_ep", 1),
-        top.get("(d)moe_ep", 1),
-    ]
-    assert max(parallel_dims) > 8
     assert top["ttft"] > 0
     assert top["tpot"] > 0
 

@@ -400,6 +400,10 @@ def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
     canceled_job = {**passing_pr, "NEEDS_JSON": json.dumps(canceled_results)}
     assert _run_readiness_script(script, tmp_path, canceled_job).returncode != 0
 
+    failed_results = {**passing_results, "rust": {"result": "failure"}}
+    failed_job = {**passing_pr, "NEEDS_JSON": json.dumps(failed_results)}
+    assert _run_readiness_script(script, tmp_path, failed_job).returncode != 0
+
     missing_results = {
         **passing_results,
         "application-tests": {"result": ""},
