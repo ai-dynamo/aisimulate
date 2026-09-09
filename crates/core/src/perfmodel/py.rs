@@ -1226,6 +1226,23 @@ mod builder_tests {
     use super::*;
 
     #[test]
+    fn flat_native_config_forwards_routing_fields() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "model_name": "model", "system_name": "system",
+            "backend": "sglang", "tp_size": 1, "pp_size": 1,
+            "moe_routing_mode": "power-law", "moe_power_law_alpha": 1.25,
+            "moe_model_revision": "revision",
+            "moe_comm_backend": {"context": "deepep_ll"}
+        }))
+        .unwrap();
+        let routing: crate::MoeRoutingConfig = config.moe_routing.clone();
+        let request = engine_build_request(&config, None);
+        assert_eq!(request.moe_routing, routing);
+        assert_eq!(routing.moe_power_law_alpha, Some(1.25));
+        assert_eq!(routing.moe_routing_mode.as_deref(), Some("power-law"));
+    }
+
+    #[test]
     fn builder_defaults_match_compile_engine_defaults() {
         let builder = AicEngineBuilder::new("model", "system", BackendKind::Vllm);
         assert_eq!(builder.request.tp_size, 1);
