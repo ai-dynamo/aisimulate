@@ -13,6 +13,10 @@ disabled to work around a nightly engine crash, and all 12 GPUs were released.
 Cache-pressure offload/reload is not validated by this short smoke workload;
 consult the run details before interpreting any results.
 
+The subsequent [formal c48 replay](FORMAL.md) failed during warmup and never
+entered the one-hour profiling phase. Its partial records and final failure
+evidence were recovered on September 9; GPU resources were confirmed released.
+
 Published image:
 
 ```text

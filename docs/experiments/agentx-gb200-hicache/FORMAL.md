@@ -5,6 +5,59 @@ SPDX-License-Identifier: Apache-2.0
 
 # Queued one-hour AgentX run: 12-GPU variant, c48
 
+## Final outcome: failed during warmup
+
+Recovered and verified on September 9, 2026. **Attempt 5 did not reach the
+one-hour profiling phase.** The runner's three-hour subprocess timeout fired and
+`FAILED.json` was persisted. GPU cleanup ran; live checks found no remaining DGD,
+worker pods, ComputeDomain or ResourceClaims. Both result/model PVCs were retained.
+No new attempt was started during result recovery.
+
+| Milestone / count | Verified value |
+| --- | --- |
+| Preparation started | September 8, 21:10:20 PDT |
+| Warmup started | September 8, 21:14:44 PDT |
+| Hard timeout / failure marker | September 9, 00:10:23 PDT |
+| Requests sent | 178 |
+| Returned records | 121, all warmup |
+| Returned without error | 105 |
+| Returned with error | 16 |
+| Still unreturned at timeout | 57 |
+| Formal profiling records | 0 |
+
+The console continued printing `errors=0`, but the record JSONL contains **16
+`InvalidInferenceResultError` entries** with no output content. Use the per-record
+errors, not that progress counter, when interpreting this run. No final aggregate
+or server-metrics export was produced before the hard timeout; this is not a
+valid AgentX performance comparison.
+
+The strongest failure evidence is repeated PD timeout propagation:
+
+- Prefill logged 300-second `KVPoll.Bootstrapping` timeouts for 73 unique rooms.
+- Decode logged 900-second `KVPoll.WaitingForInput` timeouts for 16 unique rooms;
+  all 16 also appear among prefill's failed bootstrap rooms.
+- For example, room `1250160255957218402` failed on prefill at 21:19:56 PDT,
+  then on decode at 21:35:46 PDT. Decode warned that KV transfer completion was
+  not received after bootstrapping.
+- The final saved pod snapshot had zero container restarts. This failure was
+  not the earlier liveness-probe termination.
+
+These logs establish bootstrap/transfer timeout failure, not a proven permanent
+Gloo deadlock or GPU hardware failure. The current configuration uses the default
+300-second prefill bootstrap timeout and a 900-second decode waiting timeout;
+these were not fully aligned with the much longer timeouts in the reference
+launcher. A follow-up should investigate the single-decode admission queue and
+timeout ordering, then error propagation, before changing engine code or c48.
+No such changes or reruns were made during this recovery.
+
+Structured results and checksums: [formal-result-20260909.json](formal-result-20260909.json).
+The complete 11 MB attempt directory is retained on the private PVC and copied to
+`/home/hongkuanz/Projects/aisimulate-agentx-results/gb200-20260908/attempt5/`.
+An archive is adjacent at `attempt5.tar.gz`. The temporary recovery pod mounted
+only that result PVC read-only, requested no GPUs, and was deleted after copying.
+
+## Intended experiment
+
 This run retains the validated [smoke engine topology](KUBERNETES.md) but uses
 the published AgentX replay workload: 393 Weka trajectories, concurrency 48,
 3600-second measurement, seed 42, trajectory start ratios 0.25–0.75,
@@ -204,7 +257,7 @@ PVC records this evidence. The first-request 9.94-second latency is a cold
 transport/setup diagnostic, not a steady-state performance number. The formal
 warmup and profiling data remain separate from this check.
 
-### Latest observed state (21:26 PDT)
+### Interim observation (21:26 PDT, superseded by final outcome above)
 
 Attempt 5 entered warmup at 21:14:44. It completed 43 of the 531-request warmup
 budget with zero reported errors; eight of the 51 initial primers remained
@@ -227,4 +280,5 @@ Teleport access expired at 21:29, preventing further live observation until
 renewed. The in-pod runner continues independently. Its 10,800-second AIPerf
 process timeout is a hard bound; the 1800-second warmup **grace** must not be
 interpreted as a confirmed total warmup deadline. Completion, failure and GPU
-release still require verification from the retained PVC/current cluster state.
+release were not yet verified at that time; the September 9 recovery and final
+outcome above provide the verified terminal state.
