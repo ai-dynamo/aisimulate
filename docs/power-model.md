@@ -1,13 +1,32 @@
-# Modeled-power contract
+# AIC-compatible modeled-power contract
 
-This document defines the public meaning, aggregation, availability, and
-compatibility rules for modeled power in AISimulate. It is the normative
-contract for the `power_w` and `power_coverage` fields planned for the unified
-`aisimulate predict` and `aisimulate recommend` paths.
+This document makes AIC's existing modeled-power semantics explicit as the
+target contract for AISimulate. It is normative for the `power_w` and
+`power_coverage` fields planned for the unified `aisimulate predict` and
+`aisimulate recommend` paths.
 
-The contract does not by itself make modeled power available. The
-[AIC migration guide](cli/migrate-from-aiconfigurator.md) is authoritative for
-which workflows are implemented in the current release.
+The migration boundary is:
+
+- **Already present, unchanged:** FPE can return per-operation latency and
+  `energy_wms`; AIC already derives power from energy over latency, computes
+  latency-weighted coverage, and accepts coverage of at least 90%.
+- **Added by this PR:** one documented AISimulate definition, a JSON Schema,
+  and contract tests so each future consumer uses the same names, units, gate,
+  aggregation, and missing-value rules.
+- **Added by follow-up PRs:** wiring the existing FPE evidence through Replay,
+  aggregating it, and publishing it through prediction, recommendation, and
+  diagnostic outputs.
+
+This PR does not change current AIC or FPE runtime behavior, and the contract
+does not by itself make modeled power available in unified AISimulate commands.
+The [AIC migration guide](cli/migrate-from-aiconfigurator.md) is authoritative
+for which workflows are implemented in the current release.
+
+Most semantics below match AIC directly. AISimulate deliberately normalizes
+one legacy representation detail: unavailable `power_w` is omitted from public
+output instead of carrying forward `0.0`, `None`, or `NaN` sentinels used by
+some AIC compatibility paths. An absent value means unavailable, never zero
+watts.
 
 ## Scope and units
 
@@ -54,8 +73,8 @@ of silently repairing it.
 
 ## Publication gate
 
-AISimulate uses AIC's fail-closed `0.9` coverage threshold. `power_w` may be
-published only when all of the following are true:
+AISimulate uses AIC's fail-closed 90% coverage threshold. `power_w` may be
+published only when every condition below is true:
 
 1. every replay role uses a timing provider that supplies operation-energy
    evidence;
@@ -63,11 +82,13 @@ published only when all of the following are true:
 3. `power_coverage >= 0.9`; and
 4. the resulting power is finite and positive.
 
-At exactly `0.9`, power is publishable. Below `0.9`, the output keeps
-`power_coverage` but omits `power_w`, allowing a consumer to distinguish
-insufficient data from an implementation failure. A provider with an energy
-channel but no covered operations therefore reports `power_coverage: 0` and
-omits `power_w`.
+Coverage is based on modeled active time, not operation count. If operations
+covering 90 ms of a 100 ms forward pass have energy data, `power_coverage` is
+`0.90`. Because the threshold is inclusive, exactly `0.90` is sufficient;
+`0.899` is not. Below the threshold, the output keeps `power_coverage` but omits
+`power_w`, allowing a consumer to distinguish insufficient data from an
+implementation failure. A provider with an energy channel but no covered
+operations therefore reports `power_coverage: 0` and omits `power_w`.
 
 Fixed, polynomial, and forward-pass-metrics (FPM) timing providers do not
 synthesize energy. A replay using any of those providers, or mixing an

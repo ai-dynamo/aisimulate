@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Machine-readable checks for the modeled-power public contract."""
+"""Machine-readable checks for the AIC-compatible power contract."""
 
 from __future__ import annotations
 
@@ -80,7 +80,8 @@ def test_public_docs_keep_availability_separate_from_semantics() -> None:
     migration = (ROOT / "docs" / "cli" / "migrate-from-aiconfigurator.md").read_text(encoding="utf-8")
     core_api = (ROOT / "docs" / "core-api.md").read_text(encoding="utf-8")
 
-    assert "The contract does not by itself make modeled power available" in contract
-    assert "0.9" in contract
+    assert "This PR does not change current AIC or FPE runtime behavior" in contract
+    assert "the contract\ndoes not by itself make modeled power available" in contract
+    assert "exactly `0.90` is sufficient;\n`0.899` is not" in contract
     assert "[modeled-power contract](../power-model.md)" in migration
     assert "Typed per-op energy alone does\nnot make unified replay power available" in core_api

@@ -73,9 +73,11 @@ have a unit; use the named metric or `objectives` for display and comparisons.
 
 When a runner supplies modeled power, `power_w` and `power_coverage` follow the
 [modeled-power contract](../power-model.md): active-forward-pass power per GPU,
-energy-over-active-latency aggregation, and a fail-closed `0.9` latency-weighted coverage gate. Below that gate,
-`power_coverage` remains in metrics and provenance while `power_w` is omitted. A runner without
-typed operation-energy evidence must omit both fields rather than inventing a zero value.
+energy-over-active-latency aggregation, and AIC's existing coverage rule. Coverage is the share of
+modeled active time with operation-energy evidence. Exactly 90% is sufficient to publish
+`power_w`; below 90%, `power_coverage` remains in metrics and provenance while `power_w` is
+omitted. A runner without typed operation-energy evidence must omit both fields rather than
+inventing a zero value. This contract does not itself add power support to a runner.
 
 ### Counts
 

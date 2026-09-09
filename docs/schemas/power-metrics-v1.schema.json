@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ai-dynamo/aisimulate/blob/main/docs/schemas/power-metrics-v1.schema.json",
   "title": "AISimulate modeled-power metrics v1",
-  "description": "Optional modeled-power fields carried by replay reports and Sweeper candidate metrics.",
-  "$comment": "JSON numbers are finite. Producers validating host-language objects must reject NaN and positive or negative infinity before serialization.",
+  "description": "AIC-compatible optional modeled-power fields planned for replay reports and Sweeper candidate metrics.",
+  "$comment": "This schema formalizes field semantics; it does not add a runtime producer. JSON numbers are finite. Producers validating host-language objects must reject NaN and positive or negative infinity before serialization.",
   "type": "object",
   "properties": {
     "power_w": {
@@ -12,7 +12,7 @@
       "exclusiveMinimum": 0
     },
     "power_coverage": {
-      "description": "Latency-weighted fraction of modeled active latency with positive operation-energy evidence.",
+      "description": "Fraction of modeled active latency with positive operation-energy evidence, weighted by latency rather than operation count.",
       "type": "number",
       "minimum": 0,
       "maximum": 1

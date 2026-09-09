@@ -215,7 +215,7 @@ Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/core-api.md)
-- [Modeled-power semantics and compatibility contract](docs/power-model.md)
+- [AIC-compatible modeled-power contract (semantics only)](docs/power-model.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
 - [Sweeper SDK](docs/sweeper/overview.md)
 - [AIConfigurator compatibility Python API](python/aisimulate/README.md#python-api)
