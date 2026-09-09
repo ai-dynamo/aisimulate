@@ -60,6 +60,8 @@ frontend = dgd['spec']['components'][0]['podTemplate']['spec']
 client = next(c for c in frontend['containers'] if c['name'] == 'aiperf')
 client['command'] = ['python3', '-u', '/runner/stage_validation.py' if args.stage == 'validate' else '/runner/formal-runner.py']
 client['env'] = [{'name': 'AGENTX_RUN_DIR', 'value': '/results/' + run_id}]
+if args.stage == 'formal':
+    client['env'].append({'name': 'AGENTX_EXPECTED_DECODES', 'value': '3'})
 config = next(d for d in docs if d['kind'] == 'ConfigMap')
 for file in ['staged_control.py', 'stage_watchdog.py', 'stage_validation.py']:
     config['data'][file] = (here / file).read_text()

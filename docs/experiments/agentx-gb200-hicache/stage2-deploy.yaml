@@ -184,12 +184,19 @@ data:
 
     print('Waiting for P and D readiness and frontend model availability', flush=True)
     prefill_url = None
+    decode_urls = []
+    expected_decodes = int(os.environ.get('AGENTX_EXPECTED_DECODES', '1'))
     while True:
         try:
             pods = json.loads(api('/api/v1/namespaces/hzhou/pods?labelSelector=nvidia.com%2Fdynamo-graph-deployment-name%3D' + DGD))
             leader = next(pod for pod in pods['items'] if '-prefill-ldr-' in pod['metadata']['name'] and pod['status'].get('podIP'))
             prefill_url = 'http://' + leader['status']['podIP'] + ':9090'
-            for base_url in [prefill_url, 'http://' + DGD + '-decode:9090']:
+            decode_pods = [pod for pod in pods['items'] if '-decode-' in pod['metadata']['name']
+                           and not pod['metadata'].get('deletionTimestamp')]
+            if len(decode_pods) != expected_decodes:
+                raise RuntimeError('Not all expected decode replicas exist')
+            decode_urls = ['http://' + pod['status']['podIP'] + ':9090' for pod in decode_pods]
+            for base_url in [prefill_url, *decode_urls]:
                 with urllib.request.urlopen(base_url + '/live', timeout=10) as response:
                     if response.status != 200:
                         raise RuntimeError('worker not ready')
@@ -223,7 +230,7 @@ data:
         '--cache-bust', 'first_turn_prefix', '--streaming', '--extra-inputs', 'ignore_eos:true',
         '--use-server-token-count', '--no-gpu-telemetry', '--slice-duration', '1', '--stats-interval', '30',
         '--server-metrics', prefill_url + '/metrics',
-        'http://' + DGD + '-decode:9090/metrics',
+        *[url + '/metrics' for url in decode_urls],
         '--artifact-dir', str(ROOT / 'aiperf'),
     ]
     (ROOT / 'command.json').write_text(json.dumps(command, indent=2))
@@ -789,6 +796,8 @@ spec:
           env:
           - name: AGENTX_RUN_DIR
             value: /results/agentx-gb200-20260909-stage2-rdma-v1
+          - name: AGENTX_EXPECTED_DECODES
+            value: '3'
         volumes:
         - &id003
           name: model-cache

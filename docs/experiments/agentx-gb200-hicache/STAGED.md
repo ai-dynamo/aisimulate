@@ -8,6 +8,16 @@ was gang Pending, with no GPUs allocated. This is a deployment record, **not a
 successful transport or benchmark result**. Stage 2 has not been authorized by
 the validation gate yet.
 
+At 10:20 PDT stage 1 obtained all 12 GPUs: Prefill leader `grdk`, Prefill follower
+`tqtb`, and Decode/frontend `gjn2`. The ComputeDomain reported all three nodes
+Ready in the same clique. Before HTTP testing, a separate bounded 64 MiB DRAM
+NIXL WRITE from each Prefill node to Decode passed full byte verification.
+UCX protocol logs show `rc_mlx5` zero-copy, with no TCP transport enabled. The two
+client-observed transfer times were 25.9 and 30.3 ms; these are sanity probes,
+not calibrated bandwidth measurements. NIXL per-transfer telemetry was unavailable
+in this image, and Linux RDMA netdev counters did not account for verbs traffic.
+Actual inference and HiCache reload acceptance were still pending at this update.
+
 Both configurations stay in `hzhou`, use the existing read-only shared model PVC,
 and store new results on `agentx-gb200-results-hyperdisk`. Previous attempt folders
 are not overwritten. The image digest and checkpoint revision remain those in
@@ -90,3 +100,12 @@ Only after reviewing stage 1 and confirming its GPU resources are gone, render
 `--stage formal`, arm the stage 2 guard, and apply its workload. Do not apply the
 combined generated manifests blindly, or reuse these run directories for a new
 attempt. Preserve failure evidence and use a new explicitly named attempt.
+
+`rdma_probe.py` can be streamed through `kubectl exec -i` into existing experiment
+pods: run `python3 -u - server` on Decode, then `python3 -u - client DECODE_POD_IP
+PATTERN_BYTE` on each Prefill node. The server binds port 18997 for at most 180
+seconds. It registers only a 64 MiB CPU buffer and never allocates GPU memory.
+Use `UCX_LOG_LEVEL=info UCX_PROTO_INFO=y` for actual protocol-selection evidence;
+save both client and server output. Do not run against another user's pod.
+The formal runner checks every expected Decode replica directly and scrapes all
+three Decode metrics endpoints, not a service that might reach only one replica.
