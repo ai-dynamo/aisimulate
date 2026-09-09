@@ -1961,11 +1961,11 @@ mod tests {
     }
 
     #[test]
-    fn build_rejects_sol_full_as_database_default() {
-        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
-        let mut config = fixture_engine_config(None);
-        config.database_mode = DatabaseMode::SolFull;
-        let spec = EngineSpec::new(config, context_ops(), generation_ops());
+    fn build_rejects_sol_full_database_view() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .unwrap()
+            .sol_full_view();
+        let spec = EngineSpec::new(fixture_engine_config(None), context_ops(), generation_ops());
 
         let result = Engine::build(spec, Arc::new(db));
 
