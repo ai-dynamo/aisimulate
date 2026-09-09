@@ -54,7 +54,7 @@ prediction/deployment outputs. The unified CLI's EPD gap below remains open.
 
 | Capability | Current unified status | Migration action |
 |---|---|---|
-| Multimodal image inputs and EPD | **Not supported.** The public traffic schema has no image dimensions or image count, and the engine schema has only aggregated, prefill, and decode workers. It cannot represent AIC's E+agg or E+P+D topology. | Continue using AIC `--enable-epd` workflows. |
+| Multimodal image inputs and EPD | **Unified CLI not supported.** The public traffic schema has no image dimensions or image count, and the engine schema has no encoder worker. The [Sweeper SDK](../sweeper/epd.md) separately supports analytical fixed-image E+agg/E+P+D search, without public prediction or deployment outputs. | Use the SDK for that bounded search, or continue using AIC `--enable-epd` workflows. |
 | Attention/FFN disaggregation (AFD) | **Not supported.** There is no unified A/F worker topology or AFD prediction/search mode. | Continue using AIC `--estimate-mode afd` or AIC AFD experiments. |
 | Power and energy analysis | **Not AIC-equivalent.** Sweeper results can preserve optional runner-supplied power or energy metadata, but the unified engine path does not currently provide AIC's predicted `power_w`, coverage gate, or `--detail energy` report. | Continue using AIC estimate/reporting, and confirm that the selected model/system data has sufficient energy coverage. |
 | Static, per-operation, and source breakdowns | **Not supported.** Unified prediction simulates serving traffic; it does not expose AIC's `static`, `static_ctx`, or `static_gen` single-pass modes or `--detail` memory/time/source reports. | Continue using `aiconfigurator cli estimate`. |

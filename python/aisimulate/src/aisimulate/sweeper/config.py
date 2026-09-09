@@ -272,6 +272,8 @@ class Workload(BaseModel):
             or self.random_range_ratio != 1.0
             or self.turns_per_session != 1
             or self.shared_prefix_ratio != 0.0
+            or self.num_prefix_groups != 0
+            or self.inter_turn_delay_ms != 0.0
             or self.max_sim_time_ms is not None
             or self.load_type is not None
             or self.replay_concurrency is not None

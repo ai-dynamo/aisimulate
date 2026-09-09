@@ -202,10 +202,19 @@ class EngineReplayRunner:
             for args in role_args:
                 if not args or args.get("aic_model_path") != encoder.model:
                     raise InvalidRunnerError("encoder and language model must match")
-                if args.get("timing_model") is not None or args.get("aic_forward_model", "op_level") != "op_level":
-                    raise InvalidRunnerError("analytical EPD requires op_level language timing")
-                if args.get("startup_time") not in (None, 0.0):
-                    raise InvalidRunnerError("analytical EPD requires static worker pools")
+                scopes = [args]
+                if args.get("rank") is not None:
+                    if not isinstance(args["rank"], Mapping):
+                        raise InvalidRunnerError("language rank config must be a mapping")
+                    scopes.append(args["rank"])
+                for scope in scopes:
+                    if scope.get("timing_model") is not None or any(
+                        scope.get(alias, "op_level") != "op_level"
+                        for alias in _AIC_TIMING_FIELD_ALIASES["forward_model"]
+                    ):
+                        raise InvalidRunnerError("analytical EPD requires op_level language timing")
+                    if scope.get("startup_time") not in (None, 0.0):
+                        raise InvalidRunnerError("analytical EPD requires static worker pools")
             original_spec = spec
             spec = replace(spec, workload={**spec.workload, "isl": spec.workload["isl"] + encoder.visual_tokens})
         execution_spec = _materialize_engine_execution_spec(

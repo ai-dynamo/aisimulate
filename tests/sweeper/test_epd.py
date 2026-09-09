@@ -5,6 +5,7 @@
 
 import json
 from dataclasses import asdict, replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -153,6 +154,12 @@ def test_overlay_differential_against_aic(mode, language_gpus, workers):
     assert actual.metrics["output_throughput_tok_s"] == expected["tokens/s"]
     assert actual.metrics["mean_ttft_ms"] == expected["ttft"]
     assert actual.metrics["mean_e2e_latency_ms"] == expected["request_latency"]
+    assert actual.metrics["mean_tpot_ms"] == expected["tpot"]
+    assert (
+        actual.metrics["mean_output_token_throughput_per_user"]
+        == _report().metrics["mean_output_token_throughput_per_user"]
+    )
+    assert actual.metrics["completed_requests"] == _report().metrics["completed_requests"]
     avg_gpus = actual.metrics["gpu_hours"] / (actual.metrics["duration_ms"] / 3_600_000)
     assert avg_gpus == pytest.approx(expected["num_total_gpus"])
     assert actual.metrics["output_throughput_tok_s"] / avg_gpus == pytest.approx(expected["tokens/s/gpu"])
@@ -180,6 +187,17 @@ def test_invalid_encoder_domains(field, value):
         EncoderSearch.model_validate({field: value})
 
 
+def test_encoder_batch_size_upper_boundary():
+    assert EncoderSearch.model_validate({"batch_size": [8]}).batch_size == [8]
+
+
+def test_documented_example_validates():
+    example = Path(__file__).resolve().parents[2] / "examples" / "sweeper" / "epd.yaml"
+    config = SmartSearchConfig.from_yaml(example)
+    assert config.workload.images.count == 1
+    assert config.search_space.encoder.batch_size == [1, 2, 4]
+
+
 @pytest.mark.parametrize(
     "updates",
     [
@@ -187,6 +205,8 @@ def test_invalid_encoder_domains(field, value):
         {"random_range_ratio": 0.5},
         {"turns_per_session": 2},
         {"shared_prefix_ratio": 0.5},
+        {"num_prefix_groups": 2},
+        {"inter_turn_delay_ms": 1.0},
         {"max_sim_time_ms": 100.0},
     ],
 )
@@ -340,15 +360,17 @@ def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
     assert all(point.power_w is None for point in catalog.values())
 
 
-def test_invalid_metrics_do_not_become_epd_results():
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_invalid_metrics_do_not_become_epd_results(bad):
     for field in ("completed_requests", "duration_ms", "mean_ttft_ms"):
-        values = _report().metrics | {field: float("nan")}
+        values = _report().metrics | {field: bad}
         with pytest.raises(ValueError, match="finite"):
             apply_encoder_overlay(ReplayReport(values), _spec())
 
 
 @pytest.mark.parametrize("mode", ["agg", "disagg"])
-def test_runner_adds_visual_context_exactly_once(monkeypatch, mode):
+@pytest.mark.parametrize("timing_scope", ["flat", "nested"])
+def test_runner_adds_visual_context_exactly_once(monkeypatch, mode, timing_scope):
     captured = []
     monkeypatch.setattr(
         "aisimulate.runner._materialize_engine_execution_spec",
@@ -356,7 +378,14 @@ def test_runner_adds_visual_context_exactly_once(monkeypatch, mode):
     )
     runtime = SimpleNamespace(run_replay_json=lambda _: json.dumps(_report().metrics))
     spec = _spec(mode)
+    args = {"aic_model_path": _encoder().model}
+    args.update({"rank": {"forward_model": "op_level"}} if timing_scope == "nested" else {"forward_model": "op_level"})
+    roles = ["agg"] if mode == "agg" else ["prefill", "decode"]
+    spec = replace(
+        spec, backend_deployment=replace(spec.backend_deployment, **{f"{role}_engine_args": args for role in roles})
+    )
     result = EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert len(captured) == 1
     assert captured[0]["isl"] == 128 + 196
     assert spec.workload["isl"] == 128
     assert result.metrics["mean_ttft_ms"] == 110.0
@@ -370,6 +399,8 @@ def test_runner_adds_visual_context_exactly_once(monkeypatch, mode):
         {"random_range_ratio": 0.5},
         {"turns_per_session": 2},
         {"shared_prefix_ratio": 0.5},
+        {"num_prefix_groups": 2},
+        {"inter_turn_delay_ms": 1.0},
         {"max_sim_time_ms": 100.0},
         {"load_type": "concurrency"},
         {"trace_path": "unused.jsonl"},
@@ -381,18 +412,25 @@ def test_direct_runner_rejects_mismatched_or_unsupported_workload(updates):
         EngineReplayRunnerFactory().create(0).run(replace(spec, workload=spec.workload | updates))
 
 
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
 @pytest.mark.parametrize(
     "updates",
     [
         {"aic_model_path": "another-model"},
         {"aic_forward_model": "fpm"},
+        {"forward_model": "fpm"},
         {"timing_model": {"type": "fixed"}},
         {"startup_time": 1.0},
+        {"rank": {"aic_forward_model": "fpm"}},
+        {"rank": {"forward_model": "fpm"}},
+        {"rank": {"timing_model": {"type": "fixed"}}},
+        {"rank": {"startup_time": 1.0}},
     ],
 )
-def test_direct_runner_rejects_mismatched_language_estimates(updates):
-    spec = _spec()
-    deployment = replace(spec.backend_deployment, agg_engine_args=spec.backend_deployment.agg_engine_args | updates)
+def test_direct_runner_rejects_mismatched_language_estimates(updates, role):
+    spec = _spec("agg" if role == "agg" else "disagg")
+    key = f"{role}_engine_args"
+    deployment = replace(spec.backend_deployment, **{key: getattr(spec.backend_deployment, key) | updates})
     with pytest.raises(InvalidRunnerError):
         EngineReplayRunnerFactory().create(0).run(replace(spec, backend_deployment=deployment))
 
