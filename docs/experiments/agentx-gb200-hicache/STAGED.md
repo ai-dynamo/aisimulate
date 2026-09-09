@@ -16,7 +16,14 @@ UCX protocol logs show `rc_mlx5` zero-copy, with no TCP transport enabled. The t
 client-observed transfer times were 25.9 and 30.3 ms; these are sanity probes,
 not calibrated bandwidth measurements. NIXL per-transfer telemetry was unavailable
 in this image, and Linux RDMA netdev counters did not account for verbs traffic.
-Actual inference and HiCache reload acceptance were still pending at this update.
+At 10:31:26 PDT, after both engines became ready, the capacity guard stopped the
+suite **before its first HTTP request**. Decode reported 996352 KV token slots,
+below the 996579-token longest primer and the suite's 997120-token requirement.
+This is a capacity rejection, not evidence of a transport hang. The runner saved
+`FAILED.json`, `capacity.json`, metrics and logs, then deleted the GPU workload.
+All 12 GPUs were released; stage 2 was not started. No prompt was clipped, no
+context limit was increased, and actual GPU KV transfer/G2 reload acceptance
+remain untested. The final record is [stage1-result-20260909.json](stage1-result-20260909.json).
 
 Both configurations stay in `hzhou`, use the existing read-only shared model PVC,
 and store new results on `agentx-gb200-results-hyperdisk`. Previous attempt folders
