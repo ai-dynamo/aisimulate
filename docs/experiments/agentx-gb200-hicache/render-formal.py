@@ -24,6 +24,9 @@ for component in dgd['spec']['components']:
     }
     pod.pop('affinity', None)
     if component['type'] in {'prefill', 'decode'}:
+        # Existing SGLang loader: avoids asynchronous CPU-tensor weight copies
+        # that stalled the default NVFP4 loader on two fresh GB200 nodes.
+        pod['containers'][0]['args'].extend(['--load-format', 'runai_streamer'])
         # The HTTP startup probe still verifies model readiness. Once started,
         # use process-liveness probes: long AgentX prefill can delay canaries.
         for probe in ['livenessProbe', 'readinessProbe']:

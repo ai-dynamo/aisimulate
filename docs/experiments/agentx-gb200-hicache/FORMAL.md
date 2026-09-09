@@ -156,6 +156,26 @@ cluster operator, engine source and c48 load remain unchanged.
 Attempt 4 was submitted at 20:09 PDT with those probes; the actual generated Pod
 specs were checked. By 20:12, other workloads occupied the ordinary w0e pool:
 only three fragmented GPUs remained and no whole node was free. The four pods
-therefore remain gang-queued rather than preempting another workload. Once
-capacity is available, initialization, warmup and one-hour profiling start
-automatically. Earlier attempt directories remain intact on the result PVC.
+were gang-queued rather than preempting another workload. Capacity became available
+at 20:14 and initialization resumed. Earlier attempt directories remain intact
+on the result PVC.
+
+### Startup loader fallback
+
+On newly selected decode nodes, the default loader stalled after scanning all
+47 shards. A stack sample showed its main thread waiting in
+`deepseek_weight_loader.py:444` (`as_completed`) while 32 loader threads were in
+MoE tensor device-copy/scale-loading calls. A separate tiny CUDA probe succeeded.
+Recreating only decode on another eligible node produced similar symptoms.
+The diagnostic stack/logs are retained in the attempt4 directory. An ephemeral
+diagnostic container used SYS_PTRACE only in that owned decode pod's process
+namespace; it exited successfully and was removed with that pod.
+
+The formal manifest therefore uses the image's existing
+**`--load-format runai_streamer`** for P and D. This loader is explicitly supported
+for prequantized ModelOpt models and synchronously consumes its streamed tensors,
+avoiding the default loader's asynchronous CPU-to-GPU copy pool. RunAI's native
+import and actual model/draft loading passed. There is no engine-source patch or
+new checkpoint: the same shared, read-only snapshot, quantization and serving
+parallelism remain. This is an initialization-path difference from the reference
+and must be recorded when reproducing the run.

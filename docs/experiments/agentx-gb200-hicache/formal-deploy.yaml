@@ -541,6 +541,8 @@ spec:
           - --enable-metrics
           - --weight-loader-prefetch-checkpoints
           - --enable-flashinfer-allreduce-fusion
+          - --load-format
+          - runai_streamer
           env:
           - name: SGLANG_ENABLE_UNIFIED_RADIX_TREE
             value: '1'
@@ -677,6 +679,8 @@ spec:
           - --enable-metrics
           - --weight-loader-prefetch-checkpoints
           - --enable-flashinfer-allreduce-fusion
+          - --load-format
+          - runai_streamer
           env:
           - name: SGLANG_SIMULATE_ACC_LEN
             value: '2.5'
