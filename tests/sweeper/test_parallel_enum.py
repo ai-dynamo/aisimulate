@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from aisimulate.sweeper.parallel_enum import (
+    ParallelShape,
     enumerate_disagg_configs,
     enumerate_parallel_configs,
     enumerate_worker_shapes,
@@ -106,8 +107,20 @@ def test_sglang_moe_backend_filters():
     assert (4, 1, 4, 1) in _tuples(shapes)
 
 
-def test_moe_has_no_shape_below_two_gpus():
-    assert enumerate_worker_shapes(is_moe=True, backend="vllm", gpus_per_worker=1) == []
+def test_moe_keeps_degenerate_single_gpu_shape():
+    assert enumerate_worker_shapes(is_moe=True, backend="vllm", gpus_per_worker=1) == [
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1, pp=1)
+    ]
+
+
+def test_moe_parallel_configs_include_single_gpu_path():
+    configs = enumerate_parallel_configs(is_moe=True, backend="vllm", gpu_budget=1)
+
+    # The full public enumeration path must retain the shape too. A downstream
+    # KV check decides whether the model actually fits.
+    assert len(configs) == 1
+    assert configs[0].shape == ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1, pp=1)
+    assert configs[0].replicas == 1
 
 
 def test_replica_iteration_within_budget():
@@ -148,11 +161,11 @@ def test_moe_budget_includes_pure_tp():
 
 def test_disagg_pairs_share_budget():
     cfgs = enumerate_disagg_configs(is_moe=True, backend="trtllm", gpu_budget=8)
-    assert len(cfgs) == 176
+    assert len(cfgs) == 332
     for c in cfgs:
         assert c.total_gpus == c.prefill.total_gpus + c.decode.total_gpus <= 8
         assert (
-            c.prefill.total_gpus >= 2 and c.decode.total_gpus >= 2
+            c.prefill.total_gpus >= 1 and c.decode.total_gpus >= 1
         )  # each role >= 1 worker
     # prefill and decode may differ in shape
     assert any(c.prefill.shape != c.decode.shape for c in cfgs)
@@ -162,7 +175,7 @@ def test_disagg_min_gpu_budget_full_utilization():
     cfgs = enumerate_disagg_configs(
         is_moe=True, backend="trtllm", gpu_budget=8, min_gpu_budget=8
     )
-    assert len(cfgs) == 96
+    assert len(cfgs) == 135
     assert all(c.total_gpus == 8 for c in cfgs)
 
 
