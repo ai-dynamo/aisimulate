@@ -6,6 +6,7 @@ from __future__ import annotations
 import shlex
 
 import pytest
+import yaml
 
 from aiconfigurator.generator.api import generate_from_request
 from aiconfigurator.generator.request import (
@@ -269,6 +270,106 @@ def test_disagg_candidate_renders_role_specific_vllm_gpu_memory_utilization():
     assert _cli_flag_value(artifacts["cli_args_prefill"], "--gpu-memory-utilization") == "0.9"
     assert _cli_flag_value(artifacts["cli_args_decode"], "--gpu-memory-utilization") == "0.85"
     assert artifacts["k8s_deploy.yaml"].count("--gpu-memory-utilization") == 2
+
+
+@pytest.mark.parametrize(
+    ("backend", "backend_version", "expected_fraction"),
+    [
+        ("vllm", "0.24.0", 0.9),
+        ("sglang", "0.5.14", 0.88),
+        ("trtllm", "1.3.0rc20", 0.9),
+    ],
+)
+def test_agg_candidate_materializes_backend_default_kv_capacity(backend, backend_version, expected_fraction):
+    request = from_sweeper_candidate(
+        _agg_candidate(
+            backend=backend,
+            backend_version=backend_version,
+            agg_gpu_memory_utilization=None,
+        ),
+        workload={"isl": 4000, "osl": 1000},
+        model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+    )
+
+    extra = request.topology.roles["agg"].extra
+    assert extra["kv_cache_free_gpu_memory_fraction"] == expected_fraction
+    assert "num_gpu_blocks" not in extra
+    assert "kv_cache_max_tokens" not in extra
+
+
+@pytest.mark.parametrize(
+    ("backend", "backend_version"),
+    [
+        ("vllm", "0.24.0"),
+        ("sglang", "0.5.14"),
+        ("trtllm", "1.3.0rc20"),
+        ("trtllm", "1.3.0rc23"),
+    ],
+)
+def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backend, backend_version):
+    request = from_sweeper_candidate(
+        _agg_candidate(
+            backend=backend,
+            backend_version=backend_version,
+            agg_gpu_memory_utilization=None,
+            agg_num_gpu_blocks=256,
+        ),
+        workload={"isl": 4000, "osl": 1000},
+        model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": f"example/{backend}:{backend_version}"}},
+    )
+
+    extra = request.topology.roles["agg"].extra
+    assert extra["num_gpu_blocks"] == 256
+    assert "kv_cache_free_gpu_memory_fraction" not in extra
+
+    artifacts = generate_from_request(request)
+    if backend == "vllm":
+        assert _cli_flag_value(artifacts["cli_args_agg"], "--num-gpu-blocks-override") == "256"
+        assert "--gpu-memory-utilization" not in shlex.split(artifacts["cli_args_agg"])
+    elif backend == "sglang":
+        assert extra["kv_cache_max_tokens"] == 16384
+        assert _cli_flag_value(artifacts["cli_args_agg"], "--max-total-tokens") == "16384"
+        assert "--mem-fraction-static" not in shlex.split(artifacts["cli_args_agg"])
+    else:
+        assert extra["kv_cache_max_tokens"] == 16384
+        engine_args = yaml.safe_load(artifacts["extra_engine_args_agg.yaml"])
+        assert engine_args["kv_cache_config"]["max_tokens"] == 16384
+        assert "free_gpu_memory_fraction" not in engine_args["kv_cache_config"]
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+def test_disagg_candidate_preserves_role_specific_fixed_kv_capacity(backend):
+    request = from_sweeper_candidate(
+        _disagg_candidate(
+            backend=backend,
+            prefill_gpu_memory_utilization=None,
+            prefill_num_gpu_blocks=256,
+            decode_gpu_memory_utilization=None,
+            decode_num_gpu_blocks=512,
+        ),
+        workload={"isl": 8192, "osl": 1024},
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+    )
+
+    prefill = request.topology.roles["prefill"].extra
+    decode = request.topology.roles["decode"].extra
+    assert prefill["num_gpu_blocks"] == 256
+    assert decode["num_gpu_blocks"] == 512
+    assert "kv_cache_free_gpu_memory_fraction" not in prefill
+    assert "kv_cache_free_gpu_memory_fraction" not in decode
+    if backend in {"sglang", "trtllm"}:
+        assert prefill["kv_cache_max_tokens"] == 16384
+        assert decode["kv_cache_max_tokens"] == 32768
+
+
+def test_candidate_rejects_conflicting_fixed_and_fractional_kv_capacity():
+    with pytest.raises(SweeperCandidateError, match="are mutually exclusive"):
+        from_sweeper_candidate(
+            _agg_candidate(agg_gpu_memory_utilization=0.9, agg_num_gpu_blocks=256),
+            workload={"isl": 4000, "osl": 1000},
+            model_facts=ModelFacts(is_moe=False),
+        )
 
 
 def _cli_flag_value(cli_args: str, flag: str) -> str:

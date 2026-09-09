@@ -30,6 +30,8 @@ pep440_rs = "0.7.3"
 pyo3 = { version = "0.23.4", features = ["abi3-py311"], optional = true }
 quick_cache = "0.7.0"
 rand = { workspace = true }
+rand08 = { package = "rand", version = "0.8.5" }
+rand_chacha = "0.3.1"
 rustc-hash = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }

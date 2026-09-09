@@ -24,6 +24,7 @@ from aiconfigurator.generator.module_bridge import task_config_to_generator_conf
 from aiconfigurator.generator.request import from_legacy_params
 from aiconfigurator.logging_utils import _cli_bold, _cli_underline
 from aiconfigurator.sdk import pareto_analysis
+from aiconfigurator.sdk.config import has_video_input
 from aiconfigurator.sdk.pareto_analysis import draw_pareto_to_string
 from aiconfigurator.sdk.performance_result import (
     MOE_COMM_FALLBACKS_COLUMN,
@@ -750,6 +751,22 @@ def save_results(
     backend: str | None = None,
 ):
     """Save the results to a directory."""
+    # The deployment generator has no video benchmark schema. Validate before
+    # creating the result directory so this unsupported request cannot be
+    # swallowed by the best-effort artifact rendering block below.
+    for task in tasks.values():
+        if has_video_input(
+            num_videos=getattr(task, "num_videos_per_request", 0),
+            video_height=getattr(task, "video_height", 0),
+            video_width=getattr(task, "video_width", 0),
+            video_frames=getattr(task, "video_frames", 0),
+            num_video_tokens=getattr(task, "num_video_tokens", 0),
+        ):
+            raise NotImplementedError(
+                "Saved deployment artifacts do not support video workloads yet; "
+                "run without --save-dir or use an image workload."
+            )
+
     # display_* copies carry inclusive TPOT for CSV/plot output only.
     # Originals are kept for artifact generation (task_config_to_generator_config).
     if getattr(args, "inclusive_tpot", False):
@@ -1122,8 +1139,9 @@ def save_results(
                         generator_overrides=generator_overrides,
                     )
 
+                    generator_config_yaml = yaml.safe_dump(cfg, sort_keys=False)
                     with open(os.path.join(top_config_dir, "generator_config.yaml"), "w") as f:
-                        yaml.safe_dump(cfg, f, sort_keys=False)
+                        f.write(generator_config_yaml)
 
                     try:
                         deployment_target = getattr(args, "deployment_target", "dynamo-j2")
@@ -1151,3 +1169,4 @@ def save_results(
 
     except Exception:
         logger.exception("Failed to save results")
+        raise

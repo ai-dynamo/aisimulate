@@ -118,7 +118,8 @@ def _build_mla_test_cases(case_specs, *, dtype_list):
     return list(cases_by_physical_key.values())
 
 
-# Copied from transformers.models.llama.modeling_llama.rotate_half
+# Copied from transformers v4.57.1:
+# transformers.models.llama.modeling_llama.rotate_half
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]

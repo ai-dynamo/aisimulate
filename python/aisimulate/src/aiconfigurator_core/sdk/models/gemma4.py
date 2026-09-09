@@ -17,6 +17,9 @@ class _Gemma4VisualBlockAttention(ops.ContextAttention):
     RoPE, KV writes, and causal attention over the combined sequence. This op
     reuses only its collected kernel curve and scales that latency/energy to the
     additional strict-upper-triangle pairs unmasked within each image block.
+
+    Source: Hugging Face Transformers Gemma 4 attention-mask behavior at commit
+    cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55.
     """
 
     def query(self, database, **kwargs):
@@ -189,6 +192,8 @@ class Gemma4MixModel(BaseModel):
                 # additionally unmasks the upper triangle for every SWA layer.
                 # BaseBackend supplies the per-image pooled length; the op
                 # scales Gemma's collected causal curve to the added pairs.
+                # Independent image blocks use an average layer split under CP;
+                # unlike the language path they do not use zigzag representative-rank sizing.
                 d = self._resolve_dims(self.config.tp_size)
                 self.visual_context_ops.append(
                     _Gemma4VisualBlockAttention(

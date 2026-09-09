@@ -164,6 +164,161 @@ class TestEncoderTokenFormula:
         assert total == 1176  # 2 * 3 * 196
 
 
+class TestEncoderVideoTokenFormula:
+    @pytest.fixture
+    def enc_cfg(self):
+        return common.VisionEncoderConfig(
+            depth=27,
+            hidden_size=1152,
+            num_heads=16,
+            intermediate_size=4304,
+            patch_size=16,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            out_hidden_size=5120,
+        )
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("num_videos", -1),
+            ("video_height", -448),
+            ("video_width", -448),
+            ("video_frames", -1),
+            ("num_video_tokens", -196),
+        ],
+    )
+    def test_negative_video_workload_fields_fail_loudly(self, field, value):
+        with pytest.raises(ValueError, match=rf"{field} must be nonnegative"):
+            config.has_video_input(**{field: value})
+
+    def test_video_frames_contribute_temporal_patches(self, enc_cfg):
+        rc = RuntimeConfig(
+            video_height=448,
+            video_width=448,
+            video_frames=8,
+            num_videos_per_request=2,
+        )
+
+        post_merge, pre_merge, num_visuals = BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg)
+
+        assert pre_merge == (8 // 2) * (448 // 16) * (448 // 16) == 3136
+        assert post_merge == (8 // 2) * (448 // 32) * (448 // 32) == 784
+        assert num_visuals == 2
+        assert BaseBackend._visual_context_tokens_from_encoder_config(enc_cfg, rc) == 1568
+
+    @pytest.mark.parametrize(("frames", "temporal_patches"), [(1, 1), (3, 2)])
+    def test_partial_temporal_patch_repeats_last_frame(self, enc_cfg, frames, temporal_patches):
+        rc = RuntimeConfig(
+            video_height=448,
+            video_width=448,
+            video_frames=frames,
+            num_videos_per_request=1,
+        )
+
+        post_merge, pre_merge, num_visuals = BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg)
+
+        assert pre_merge == temporal_patches * (448 // 16) * (448 // 16)
+        assert post_merge == temporal_patches * (448 // 32) * (448 // 32)
+        assert num_visuals == 1
+
+    def test_video_pre_and_post_merge_use_the_same_aligned_grid(self, enc_cfg):
+        rc = RuntimeConfig(
+            video_height=448,
+            video_width=336,
+            video_frames=8,
+            num_videos_per_request=1,
+        )
+
+        post_merge, pre_merge, num_visuals = BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg)
+
+        assert (post_merge, pre_merge, num_visuals) == (560, 2240, 1)
+        assert pre_merge == post_merge * enc_cfg.spatial_merge_size**2
+
+    def test_video_grid_smaller_than_spatial_stride_uses_minimum_grid(self, enc_cfg):
+        rc = RuntimeConfig(
+            video_height=16,
+            video_width=16,
+            video_frames=1,
+            num_videos_per_request=1,
+        )
+
+        assert BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg) == (1, 4, 1)
+
+    def test_video_input_requires_a_supported_vision_encoder(self):
+        rc = RuntimeConfig(
+            video_height=448,
+            video_width=448,
+            video_frames=8,
+            num_videos_per_request=1,
+        )
+
+        with pytest.raises(ValueError, match="supported vision encoder"):
+            BaseBackend._visual_context_tokens_from_encoder_config(None, rc)
+
+        text_only_model = type("TextOnlyModel", (), {"encoder_ops": [], "encoder_config": None})()
+        with pytest.raises(ValueError, match="supported vision encoder"):
+            BaseBackend()._run_encoder_phase(text_only_model, None, rc, batch_size=1)
+
+    def test_num_video_tokens_override_is_per_video(self, enc_cfg):
+        rc = RuntimeConfig(video_frames=8, num_video_tokens=300, num_videos_per_request=3)
+
+        post_merge, pre_merge, num_visuals = BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg)
+
+        assert (post_merge, pre_merge, num_visuals) == (300, 1200, 3)
+
+    def test_num_video_tokens_override_requires_temporal_metadata(self, enc_cfg):
+        rc = RuntimeConfig(num_video_tokens=300, num_videos_per_request=1)
+
+        with pytest.raises(ValueError, match="requires video_frames"):
+            BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg)
+
+    def test_num_video_tokens_override_must_split_across_temporal_sequences(self, enc_cfg):
+        rc = RuntimeConfig(video_frames=8, num_video_tokens=301, num_videos_per_request=1)
+
+        with pytest.raises(ValueError, match="divide evenly across temporal attention sequences"):
+            BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg)
+
+    @pytest.mark.parametrize(
+        "rc",
+        [
+            RuntimeConfig(video_height=448, video_width=448, num_videos_per_request=1),
+            RuntimeConfig(video_frames=8, video_height=448, num_videos_per_request=1),
+            RuntimeConfig(video_frames=8, video_height=448, video_width=448),
+        ],
+    )
+    def test_incomplete_video_workload_fails_loudly(self, enc_cfg, rc):
+        with pytest.raises(ValueError, match=r"Video workloads require|Video height and width"):
+            BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg)
+
+    def test_mixed_image_video_workload_fails_loudly(self, enc_cfg):
+        rc = RuntimeConfig(
+            image_height=448,
+            image_width=448,
+            num_images_per_request=1,
+            video_height=448,
+            video_width=448,
+            video_frames=8,
+            num_videos_per_request=1,
+        )
+
+        with pytest.raises(ValueError, match="Mixed image/video"):
+            BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg)
+
+    def test_mixed_image_video_token_override_fails_loudly(self, enc_cfg):
+        rc = RuntimeConfig(
+            image_height=448,
+            image_width=448,
+            num_images_per_request=1,
+            video_frames=8,
+            num_video_tokens=196,
+            num_videos_per_request=1,
+        )
+
+        with pytest.raises(ValueError, match="Mixed image/video"):
+            BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg)
+
+
 class TestFixBEffectiveISL:
     """Fix B: post-merge image tokens must be added to the LLM context ISL."""
 
@@ -237,17 +392,6 @@ class TestEncoderRuntime:
     @pytest.fixture
     def model_config(self):
         return config.ModelConfig()
-
-    def test_qwen_encoder_dp_all_gather_uses_per_rank_payload(self):
-        model = get_model(
-            "Qwen/Qwen3-VL-32B-Instruct",
-            config.ModelConfig(tp_size=4, enable_encoder_dp=True),
-            "trtllm",
-        )
-
-        gather = next(op for op in model.encoder_ops if op._name == "encoder_dp_all_gather")
-        expected_per_rank_width = model.encoder_config.out_hidden_size * model.encoder_config.projector_n_instances
-        assert gather._num_elements_per_token == expected_per_rank_width
 
     def test_text_only_model_has_empty_encoder_ops(self, model_config):
         model = get_model("Qwen/Qwen3-32B", model_config, "trtllm")
@@ -593,6 +737,143 @@ class TestEncoderMemoryInSummary:
         assert enc_mem["weights"] > 0.0
         assert enc_mem["activations"] > 0.0
 
+    @pytest.mark.parametrize("model_name", ["Qwen/Qwen3.5-27B", "Qwen/Qwen3.5-35B-A3B"])
+    def test_qwen35_image_estimate_executes_nonzero_encoder_work(self, model_name, monkeypatch):
+        from types import SimpleNamespace
+
+        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+
+        model_config = config.ModelConfig(moe_tp_size=1) if "A3B" in model_name else config.ModelConfig()
+        model = get_model(model_name, model_config, "trtllm")
+        database = SimpleNamespace(
+            backend="trtllm",
+            version="10.0",
+            system="h200_sxm",
+            system_spec={
+                "gpu": {"mem_capacity": 640 * (1 << 30)},
+                "misc": {
+                    "nccl_mem": {1: 500 * 1024 * 1024, 8: 1024 * 1024 * 1024},
+                    "other_mem": 200 * 1024 * 1024,
+                },
+            },
+        )
+        self._stub_engine_step(monkeypatch)
+        backend = TRTLLMBackend()
+        monkeypatch.setattr(
+            backend,
+            "_run_encoder_phase_with_rust",
+            lambda *args, **kwargs: (
+                {"encoder_attention": 2.0},
+                {"encoder_attention": 5.0},
+                {"encoder_attention": "silicon"},
+            ),
+        )
+
+        summary = backend.run_static(
+            model,
+            database,
+            RuntimeConfig(
+                batch_size=1,
+                isl=256,
+                osl=16,
+                image_height=448,
+                image_width=448,
+                num_images_per_request=1,
+            ),
+            mode="static",
+        )
+
+        encoder_latency = sum(summary.get_encoder_latency_dict().values())
+        encoder_energy = sum(summary.get_encoder_energy_wms_dict().values())
+        context_latency = sum(summary.get_context_latency_dict().values())
+        assert encoder_latency > 0
+        assert encoder_energy > 0
+        assert summary.get_encoder_memory()["total"] > 0
+        assert summary.get_summary_df().iloc[0]["ttft"] == pytest.approx(encoder_latency + context_latency)
+
+    @pytest.mark.parametrize(
+        ("model_name", "expected_projector_instances"),
+        [
+            ("Qwen/Qwen3.5-27B", 1),
+            ("Qwen/Qwen3-VL-8B-Instruct", 4),
+            ("Qwen/Qwen3-VL-30B-A3B-Instruct", 4),
+        ],
+    )
+    def test_qwen_video_estimate_executes_encoder_and_adds_video_tokens_to_context(
+        self, model_name, expected_projector_instances, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+
+        model_config = config.ModelConfig(moe_tp_size=1, moe_ep_size=1) if "A3B" in model_name else config.ModelConfig()
+        model = get_model(model_name, model_config, "trtllm")
+        assert model.encoder_config.temporal_patch_size == 2
+        assert model.encoder_config.projector_n_instances == expected_projector_instances
+        projector_op = next(op for op in model.encoder_ops if op._name == "encoder_projector_fc0_gemm")
+        assert projector_op._scale_factor == expected_projector_instances
+        database = SimpleNamespace(
+            backend="trtllm",
+            version="10.0",
+            system="h200_sxm",
+            system_spec={
+                "gpu": {"mem_capacity": 640 * (1 << 30)},
+                "misc": {
+                    "nccl_mem": {1: 500 * 1024 * 1024, 8: 1024 * 1024 * 1024},
+                    "other_mem": 200 * 1024 * 1024,
+                },
+            },
+        )
+        self._stub_engine_step(monkeypatch)
+        backend = TRTLLMBackend()
+        attention_shapes: list[tuple[int, int]] = []
+
+        def _run_encoder_phase_with_rust(model_arg, _database, shape_of, *, include_energy):
+            attention_op = next(op for op in model_arg.encoder_ops if "encoder_attention" in op._name)
+            attention_shapes.append(shape_of(attention_op))
+            return (
+                {"encoder_attention": 2.0},
+                {"encoder_attention": 5.0 if include_energy else 0.0},
+                {"encoder_attention": "silicon"},
+            )
+
+        monkeypatch.setattr(backend, "_run_encoder_phase_with_rust", _run_encoder_phase_with_rust)
+        rc = RuntimeConfig(
+            batch_size=1,
+            isl=256,
+            osl=16,
+            video_height=448,
+            video_width=448,
+            video_frames=8,
+            num_videos_per_request=1,
+        )
+
+        summary = backend.run_static(model, database, rc, mode="static")
+
+        encoder_latency = sum(summary.get_encoder_latency_dict().values())
+        encoder_energy = sum(summary.get_encoder_energy_wms_dict().values())
+        context_latency = sum(summary.get_context_latency_dict().values())
+        assert encoder_latency > 0
+        assert encoder_energy > 0
+        assert summary.get_encoder_memory()["total"] > 0
+        assert summary.get_summary_df().iloc[0]["ttft"] == pytest.approx(encoder_latency + context_latency)
+        assert BaseBackend._visual_context_tokens(model, rc) == 784
+        assert summary.get_summary_df().iloc[0]["isl"] == 256
+        assert attention_shapes[-1] == (4, 784)
+
+        # The explicit post-merge token override still needs the sampled frame count
+        # to preserve Qwen's one-spatial-sequence-per-temporal-patch contract.
+        override_rc = RuntimeConfig(
+            batch_size=1,
+            isl=256,
+            osl=16,
+            video_frames=8,
+            num_video_tokens=196,
+            num_videos_per_request=1,
+        )
+        backend.run_static(model, database, override_rc, mode="static")
+        assert attention_shapes[-1] == (4, 196)
+
 
 class TestSmartResizeTokenResolution:
     """_encoder_pre_merge_per_visual mirrors the upstream VL processor's
@@ -616,229 +897,66 @@ class TestSmartResizeTokenResolution:
         # 500 rounds to 512 (nearest multiple of 32; floor gave 480):
         # post-merge 16^2, pre-merge (512/16)^2.
         rc = RuntimeConfig(isl=1, osl=1, image_height=500, image_width=500, num_images_per_request=1)
-        assert BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg) == (256, 1024)
+        assert BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg) == (256, 1024, 1)
         # Aligned dims are untouched.
         rc_aligned = RuntimeConfig(isl=1, osl=1, image_height=448, image_width=448, num_images_per_request=1)
-        assert BaseBackend._encoder_pre_merge_per_visual(rc_aligned, enc_cfg) == (196, 784)
+        assert BaseBackend._encoder_pre_merge_per_visual(rc_aligned, enc_cfg) == (196, 784, 1)
 
-
-class TestGemma4VisionRuntime:
-    """Gemma 4 derives a pooled grid from its own aspect-ratio resize contract."""
-
-    @staticmethod
-    def _model():
-        return get_model(
-            "google/gemma-4-26B-A4B",
-            config.ModelConfig(moe_tp_size=1, moe_ep_size=1),
-            "trtllm",
+    def test_non_aligned_video_dims_use_the_same_smart_resize_grid(self):
+        enc_cfg = common.VisionEncoderConfig(
+            depth=27,
+            hidden_size=1152,
+            num_heads=16,
+            intermediate_size=4304,
+            patch_size=16,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            out_hidden_size=5120,
         )
-
-    def test_checkpoint_default_maps_one_image_to_280_soft_tokens_and_2520_patches(self):
-        model = self._model()
         rc = RuntimeConfig(
-            batch_size=1,
-            isl=512,
-            osl=64,
-            image_height=672,
-            image_width=960,
-            num_images_per_request=1,
+            isl=1,
+            osl=1,
+            video_height=500,
+            video_width=500,
+            video_frames=2,
+            num_videos_per_request=1,
+        )
+        assert BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg) == (256, 1024, 1)
+
+    @pytest.mark.parametrize(
+        "runtime_config",
+        [
+            RuntimeConfig(image_height=448, num_images_per_request=1),
+            RuntimeConfig(image_width=448, num_images_per_request=1),
+            RuntimeConfig(image_height=448, num_image_tokens=196, num_images_per_request=1),
+        ],
+    )
+    def test_partial_image_dimensions_fail_loudly(self, runtime_config):
+        enc_cfg = common.VisionEncoderConfig(
+            depth=27,
+            hidden_size=1152,
+            num_heads=16,
+            intermediate_size=4304,
+            patch_size=16,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            out_hidden_size=5120,
         )
 
-        post_pool, pre_pool = BaseBackend._encoder_pre_merge_per_visual(rc, model.encoder_config)
+        with pytest.raises(ValueError, match="Image height and width"):
+            BaseBackend._encoder_pre_merge_per_visual(runtime_config, enc_cfg)
 
-        assert post_pool == 280
-        assert pre_pool == 2520
-        assert BaseBackend._visual_context_tokens(model, rc) == 280
-
-    def test_square_image_keeps_padded_tower_budget_but_fewer_soft_tokens(self):
-        model = self._model()
-        rc = RuntimeConfig(
-            batch_size=1,
-            isl=512,
-            osl=64,
-            image_height=448,
-            image_width=448,
-            num_images_per_request=1,
+    def test_zero_image_count_keeps_image_workload_disabled(self):
+        enc_cfg = common.VisionEncoderConfig(
+            depth=27,
+            hidden_size=1152,
+            num_heads=16,
+            intermediate_size=4304,
+            patch_size=16,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            out_hidden_size=5120,
         )
+        rc = RuntimeConfig(image_height=448, num_images_per_request=0)
 
-        post_pool, pre_pool = BaseBackend._encoder_pre_merge_per_visual(rc, model.encoder_config)
-
-        # Gemma4ImageProcessor upsizes this to 768x768: 48x48 patches,
-        # then 3x3 average pooling gives a 16x16 soft-token grid.
-        assert post_pool == 256
-        # Gemma4ImageProcessor pads the resized 2304-patch image back to the
-        # checkpoint's 2520-patch tower input, then strips invalid pool outputs.
-        assert pre_pool == 2520
-        assert BaseBackend._visual_context_tokens(model, rc) == 256
-
-    def test_dynamic_soft_token_override_follows_supported_gemma_budget(self):
-        model = self._model()
-        rc = RuntimeConfig(
-            batch_size=1,
-            isl=512,
-            osl=64,
-            image_height=672,
-            image_width=960,
-            num_images_per_request=2,
-            num_image_tokens=560,
-        )
-
-        post_pool, pre_pool = BaseBackend._encoder_pre_merge_per_visual(rc, model.encoder_config)
-
-        # 560 is a maximum budget, not an unconditional output length. The
-        # 672x960 aspect ratio rounds to 912x1344 and yields 532 soft tokens;
-        # the tower input remains padded to the 560-token/5040-patch budget.
-        assert post_pool == 532
-        assert pre_pool == 5040
-        assert BaseBackend._visual_context_tokens(model, rc) == 1064
-
-    def test_invalid_soft_token_budget_is_rejected(self):
-        model = self._model()
-        rc = RuntimeConfig(
-            batch_size=1,
-            isl=512,
-            osl=64,
-            image_height=672,
-            image_width=960,
-            num_image_tokens=281,
-        )
-
-        with pytest.raises(ValueError, match="must be one of"):
-            BaseBackend._encoder_pre_merge_per_visual(rc, model.encoder_config)
-
-    def test_encoder_tp_memory_uses_rank_local_activation_widths(self):
-        model = get_model(
-            "google/gemma-4-26B-A4B",
-            config.ModelConfig(
-                tp_size=4,
-                moe_tp_size=1,
-                moe_ep_size=4,
-                enable_encoder_dp=False,
-            ),
-            "trtllm",
-        )
-        enc_cfg = model.encoder_config
-
-        memory = BaseBackend()._get_encoder_component_memory(model, num_tokens=5040, embed_tokens=280)
-
-        qkv_width = 3 * enc_cfg.hidden_size // model.config.tp_size
-        gated_mlp_width = enc_cfg.hidden_size + (2 * enc_cfg.intermediate_size) // model.config.tp_size
-        expected_bytes = 2 * 5040 * max(qkv_width, gated_mlp_width)
-        expected_bytes += 2 * 280 * (2 * enc_cfg.hidden_size + enc_cfg.out_hidden_size)
-        assert expected_bytes > 32 * 1024 * 1024
-        assert memory["activations"] == pytest.approx(expected_bytes / (1 << 30))
-
-        unsharded_bytes = (
-            2
-            * 5040
-            * max(
-                3 * enc_cfg.hidden_size,
-                enc_cfg.hidden_size + 2 * enc_cfg.intermediate_size,
-            )
-        )
-        unsharded_bytes += 2 * 280 * (2 * enc_cfg.hidden_size + enc_cfg.out_hidden_size)
-        assert memory["activations"] < unsharded_bytes / (1 << 30)
-
-    def test_visual_attention_overlay_uses_compiled_op_evaluation(self, monkeypatch):
-        from aiconfigurator_core.sdk import engine as engine_module
-        from aiconfigurator_core.sdk import rust_engine_step as rust_engine_module
-
-        model = self._model()
-        runtime = RuntimeConfig(
-            batch_size=2,
-            isl=512,
-            osl=2,
-            image_height=672,
-            image_width=960,
-            num_images_per_request=1,
-            seq_imbalance_correction_scale=1.25,
-        )
-        captured = {}
-        monkeypatch.setattr(engine_module, "build_ops_json", lambda ops: "visual-ops")
-
-        def _evaluate(*args, **kwargs):
-            captured.update(kwargs)
-            return [("context_swa_visual_block_attention", 10.0, 20.0, "silicon")]
-
-        monkeypatch.setattr(rust_engine_module, "evaluate_ops_json_with_rust", _evaluate)
-
-        latency, energy, source = BaseBackend()._run_visual_context_phase(model, object(), runtime, batch_size=2)
-
-        expected_scale = (280 * 279 / 2) / (280**2 / 2)
-        assert latency["context_swa_visual_block_attention"] == pytest.approx(10.0 * expected_scale)
-        assert energy["context_swa_visual_block_attention"] == pytest.approx(20.0 * expected_scale)
-        assert source == {"context_swa_visual_block_attention": "silicon"}
-        assert captured["ops_json"] == "visual-ops"
-        assert captured["batch_size"] == 2
-        assert captured["s"] == 280
-        assert captured["imbalance_correction_scale"] == 1.25
-
-    def test_image_estimate_reports_encoder_latency_memory_energy_and_ttft(self, monkeypatch):
-        from types import SimpleNamespace
-
-        from aiconfigurator.sdk.backends import base_backend as base_backend_module
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
-
-        model = self._model()
-        database = SimpleNamespace(
-            backend="trtllm",
-            version="1.3.0rc20",
-            system="b200_sxm",
-            system_spec={
-                "gpu": {"mem_capacity": 192 * (1 << 30)},
-                "misc": {"nccl_mem": {1: 0}, "other_mem": 0},
-            },
-        )
-        monkeypatch.setattr(base_backend_module, "should_use_rust_engine_step", lambda *args, **kwargs: True)
-        monkeypatch.setattr(
-            base_backend_module,
-            "estimate_static_latency_breakdown_with_rust",
-            lambda *args, **kwargs: (
-                {"context_attention": 1.0},
-                {"generation_attention": 1.0},
-                {"context_attention": 2.0},
-                {"generation_attention": 2.0},
-                {"context_attention": "silicon"},
-                {"generation_attention": "silicon"},
-                (),
-            ),
-        )
-
-        rc = RuntimeConfig(
-            batch_size=1,
-            isl=512,
-            osl=2,
-            image_height=672,
-            image_width=960,
-            num_images_per_request=1,
-        )
-        backend = TRTLLMBackend()
-        monkeypatch.setattr(
-            backend,
-            "_run_encoder_phase_with_rust",
-            lambda *args, **kwargs: (
-                {"encoder_attention": 1.0},
-                {"encoder_attention": 2.0},
-                {"encoder_attention": "silicon"},
-            ),
-        )
-        monkeypatch.setattr(
-            backend,
-            "_run_visual_context_phase",
-            lambda *args, **kwargs: (
-                {"context_swa_visual_block_attention": 1.0},
-                {"context_swa_visual_block_attention": 2.0},
-                {"context_swa_visual_block_attention": "silicon"},
-            ),
-        )
-        summary = backend.run_static(model, database, rc, mode="static")
-        metrics = summary.get_result_dict()
-
-        assert metrics["encoder_latency"] > 0.0
-        assert metrics["encoder_memory"] > 0.0
-        assert sum(summary.get_encoder_energy_wms_dict().values()) > 0.0
-        assert summary.get_encoder_power_avg() > 0.0
-        assert metrics["ttft"] == pytest.approx(metrics["encoder_latency"] + metrics["context_latency"])
-        assert summary.get_context_latency_dict()["context_swa_visual_block_attention"] == pytest.approx(1.0)
-        assert summary.get_encoder_memory()["weights"] > 0.0
-        assert summary.get_encoder_memory()["activations"] > 0.0
+        assert BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg) == (0, 0, 0)

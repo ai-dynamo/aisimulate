@@ -1,3 +1,7 @@
+{#
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-#}
 backend: pytorch
 
 {% if is_moe is defined %}  # is_moe from sdk
@@ -25,7 +29,14 @@ max_seq_len: {{ _max_seq_len }}
 {% endif %}
 
 kv_cache_config:
-  free_gpu_memory_fraction: {{ kv_cache_config.free_gpu_memory_fraction | default(0.80) }}  # Fraction of GPU memory usable for KV-cache
+  {% if kv_cache_config.free_gpu_memory_fraction is defined %}
+  free_gpu_memory_fraction: {{ kv_cache_config.free_gpu_memory_fraction }}  # Fraction of GPU memory usable for KV-cache
+  {% elif kv_cache_config.max_tokens is not defined %}
+  free_gpu_memory_fraction: 0.80  # Fraction of GPU memory usable for KV-cache
+  {% endif %}
+  {% if kv_cache_config.max_tokens is defined %}
+  max_tokens: {{ kv_cache_config.max_tokens }}
+  {% endif %}
   dtype: {{ kv_cache_config.dtype | default('auto') }}
   {% if kv_cache_config.tokens_per_block is defined %}
   tokens_per_block: {{ kv_cache_config.tokens_per_block }}

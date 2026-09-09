@@ -31,7 +31,7 @@ _LEGACY_VERIFY_MS = 0.00067456  # merge-base KDAKernel("chunk_kda", "verify") @ 
 
 @pytest.fixture(scope="module")
 def database():
-    db = get_database(_SYSTEM, _BACKEND, _VERSION)
+    db = get_database(_SYSTEM, _BACKEND, _VERSION, allow_unlisted_version=True)
     if db is None:
         pytest.skip(f"{_SYSTEM}/{_BACKEND}/{_VERSION} data missing")
     return db

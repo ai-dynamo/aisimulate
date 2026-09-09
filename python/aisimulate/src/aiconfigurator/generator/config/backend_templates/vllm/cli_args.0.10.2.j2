@@ -1,3 +1,7 @@
+{#
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-#}
 {%- set args = [] -%}
 {%- if vllm['tensor-parallel-size'] is defined -%}{%- set _ = args.append('--tensor-parallel-size ' ~ vllm['tensor-parallel-size']) -%}{%- endif -%}
 {%- if vllm['pipeline-parallel-size'] is defined -%}{%- set _ = args.append('--pipeline-parallel-size ' ~ vllm['pipeline-parallel-size']) -%}{%- endif -%}

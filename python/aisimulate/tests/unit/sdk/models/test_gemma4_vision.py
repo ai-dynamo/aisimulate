@@ -6,6 +6,7 @@
 import pytest
 
 from aiconfigurator.sdk import common, config
+from aiconfigurator.sdk.backends.base_backend import BaseBackend
 from aiconfigurator.sdk.models import get_model
 
 pytestmark = pytest.mark.unit
@@ -130,9 +131,9 @@ def test_gemma4_encoder_dp_replicates_compute_and_gathers_soft_tokens():
     assert _op(model, "encoder_ffn_gate_up_gemm")._n == 2 * 4304
     gather = _op(model, "encoder_dp_all_gather")
     assert gather._num_gpus == 4
-    # NCCL's all-gather message size is the per-rank send payload; the backend
-    # already queries this op with the rank-local image/token count.
-    assert gather._num_elements_per_token == 2816
+    # The backend supplies rank-local tokens; the NCCL table axis is the total
+    # receive buffer, so the per-token width reconstructs all TP payloads.
+    assert gather._num_elements_per_token == 2816 * 4
 
 
 def test_gemma4_encoder_tp_shards_tower_but_replicates_adapter_and_communicates():
@@ -149,3 +150,134 @@ def test_gemma4_encoder_tp_shards_tower_but_replicates_adapter_and_communicates(
     assert _op(model, "encoder_ar_1")._tp_size == 4
     assert _op(model, "encoder_ar_2")._tp_size == 4
     assert "encoder_projector_ar" not in names
+
+
+class TestGemma4VisionRuntime:
+    """Gemma 4 derives a pooled grid from its aspect-ratio resize contract."""
+
+    @staticmethod
+    def _model():
+        return get_model(
+            MODEL,
+            config.ModelConfig(moe_tp_size=1, moe_ep_size=1),
+            "trtllm",
+        )
+
+    def test_checkpoint_default_maps_one_image_to_280_soft_tokens_and_2520_patches(self):
+        model = self._model()
+        runtime = config.RuntimeConfig(
+            batch_size=1,
+            isl=512,
+            osl=64,
+            image_height=672,
+            image_width=960,
+            num_images_per_request=1,
+        )
+
+        post_pool, pre_pool, num_visuals = BaseBackend._encoder_pre_merge_per_visual(runtime, model.encoder_config)
+
+        assert (post_pool, pre_pool, num_visuals) == (280, 2520, 1)
+        assert BaseBackend._visual_context_tokens(model, runtime) == 280
+
+    def test_square_image_keeps_padded_tower_budget_but_fewer_soft_tokens(self):
+        model = self._model()
+        runtime = config.RuntimeConfig(
+            batch_size=1,
+            isl=512,
+            osl=64,
+            image_height=448,
+            image_width=448,
+            num_images_per_request=1,
+        )
+
+        post_pool, pre_pool, num_visuals = BaseBackend._encoder_pre_merge_per_visual(runtime, model.encoder_config)
+
+        assert (post_pool, pre_pool, num_visuals) == (256, 2520, 1)
+        assert BaseBackend._visual_context_tokens(model, runtime) == 256
+
+    def test_dynamic_soft_token_override_follows_supported_budget(self):
+        model = self._model()
+        runtime = config.RuntimeConfig(
+            batch_size=1,
+            isl=512,
+            osl=64,
+            image_height=672,
+            image_width=960,
+            num_images_per_request=2,
+            num_image_tokens=560,
+        )
+
+        post_pool, pre_pool, num_visuals = BaseBackend._encoder_pre_merge_per_visual(runtime, model.encoder_config)
+
+        assert (post_pool, pre_pool, num_visuals) == (532, 5040, 2)
+        assert BaseBackend._visual_context_tokens(model, runtime) == 1064
+
+    def test_invalid_soft_token_budget_is_rejected(self):
+        model = self._model()
+        runtime = config.RuntimeConfig(
+            batch_size=1,
+            isl=512,
+            osl=64,
+            image_height=672,
+            image_width=960,
+            num_image_tokens=281,
+        )
+
+        with pytest.raises(ValueError, match="must be one of"):
+            BaseBackend._encoder_pre_merge_per_visual(runtime, model.encoder_config)
+
+    def test_encoder_tp_memory_uses_rank_local_activation_widths(self):
+        model = get_model(
+            MODEL,
+            config.ModelConfig(
+                tp_size=4,
+                moe_tp_size=1,
+                moe_ep_size=4,
+                enable_encoder_dp=False,
+            ),
+            "trtllm",
+        )
+        enc_cfg = model.encoder_config
+
+        memory = BaseBackend()._get_encoder_component_memory(model, num_tokens=5040, embed_tokens=280)
+
+        qkv_width = 3 * enc_cfg.hidden_size // model.config.tp_size
+        gated_mlp_width = enc_cfg.hidden_size + (2 * enc_cfg.intermediate_size) // model.config.tp_size
+        expected_bytes = 2 * 5040 * max(qkv_width, gated_mlp_width)
+        expected_bytes += 2 * 280 * (2 * enc_cfg.hidden_size + enc_cfg.out_hidden_size)
+        assert expected_bytes > 32 * 1024 * 1024
+        assert memory["activations"] == pytest.approx(expected_bytes / (1 << 30))
+
+    def test_visual_attention_overlay_uses_compiled_op_evaluation(self, monkeypatch):
+        from aiconfigurator_core.sdk import engine as engine_module
+        from aiconfigurator_core.sdk import rust_engine_step as rust_engine_module
+
+        model = self._model()
+        runtime = config.RuntimeConfig(
+            batch_size=2,
+            isl=512,
+            osl=2,
+            image_height=672,
+            image_width=960,
+            num_images_per_request=1,
+            seq_imbalance_correction_scale=1.25,
+        )
+        captured = {}
+        monkeypatch.setattr(engine_module, "build_ops_json", lambda ops: "visual-ops")
+
+        def _evaluate(*args, **kwargs):
+            captured.update(kwargs)
+            return [("context_swa_visual_block_attention", 10.0, 20.0, "silicon")]
+
+        monkeypatch.setattr(rust_engine_module, "evaluate_ops_json_with_rust", _evaluate)
+
+        latency, energy, source = BaseBackend()._run_visual_context_phase(model, object(), runtime, batch_size=2)
+
+        expected_scale = (280 * 279 / 2) / (280**2 / 2)
+        assert latency["context_swa_visual_block_attention"] == pytest.approx(10.0 * expected_scale)
+        assert energy["context_swa_visual_block_attention"] == pytest.approx(20.0 * expected_scale)
+        assert source == {"context_swa_visual_block_attention": "silicon"}
+        assert captured["ops_json"] == "visual-ops"
+        assert captured["batch_size"] == 2
+        assert captured["s"] == 280
+        assert captured["imbalance_correction_scale"] == 1.25

@@ -29,6 +29,37 @@ For a technical deep dive into the design and methodology of AIConfigurator, ple
 The tool models LLM inference using collected data for a target machine and framework. It evaluates thousands of
 configurations and runs anywhere via the CLI.
 
+## DeepEP-LL decode modeling
+
+Stage 1 models each DeepEP low-latency decode dispatch/combine from a measured
+same-shape curve, OLS or system-startup one-shot calibration, and deterministic
+Monte Carlo routing skew. Runtime uses the P50 of complete trials. Typed rows
+are tried per shape before the phase-compatible legacy `default` row;
+`default` is FP8 dispatch or BF16 combine, not a general dtype wildcard.
+Exact-topology curves are not rescaled by advertised bandwidth;
+NVLink/MNVL/IB endpoint limits guard only single-domain donor extrapolation.
+DeepEP-HT, DeepEP V2, and TensorRT-LLM communication paths are unchanged. See the detailed
+[DeepEP-LL modeling document](docs/DEEPEP_LL_MODELING.md) for token conventions,
+payload dtypes, formulas, topology rules, fixed assumptions, and Stage 2/3/4
+TODOs.
+
+Expert compute remains on the measured `MoeExpertCompute` path, including the
+existing SGLang `DeepEPMoE.run_moe_core`-derived WideEP data. The Monte Carlo
+routing/load adjustment is applied only to LL dispatch and combine, so this
+stage changes communication modeling without replacing the measured compute
+kernel with the ordinary fused-MoE predictor.
+
+Across the 192 checked-in LL curves, every OLS slope and raw intercept is
+positive; the smallest raw intercept is approximately 6.02 us, median
+\(R^2\) is approximately 0.99909, and the minimum is approximately 0.9522. A
+future finite negative intercept caused by measurement noise is clamped to
+zero instead of making the configuration unavailable. For
+GB200 \(H=7168,K=8,N=256\), the dispatch and combine fitted bandwidths are
+634.3 and 776.8 GB/s, respectively. These slopes are fitted from parquet data;
+the separate 900 GB/s NVLink value comes from `SystemSpec`.
+
+![GB200 DeepEP-LL OLS feasibility](docs/deepep_ll_gb200_ols.svg)
+
 Let's get started.
 
 ## Build and Install
@@ -134,6 +165,16 @@ Any quantization set via `profiles` or YAML `config` overrides the HF defaults.
 For a full end-to-end walkthrough (support check, sweep, deploy, benchmark), see the [CLI User Guide -- End-to-End Workflow](docs/cli_user_guide.md#end-to-end-workflow).
 
 Refer to [CLI User Guide](docs/cli_user_guide.md)
+
+KV-cache estimation and AISimulate engine replay accept an optional
+`cuda_graph_reserved_bytes` rank-local reservation. For SGLang, the value is
+additional to headroom already encoded by `mem_fraction_static`. The default is zero. See
+the [core API contract](../../docs/core-api.md#kv-cache-capacity-reservation)
+for the Python and Rust fields and budget semantics.
+
+The standard prediction CLI accepts the same value at
+`engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` when
+`capacity.type` is `default`.
 
 ### Python API
 
@@ -517,8 +558,9 @@ aiconfigurator cli support --model-path Qwen/Qwen3-32B-FP8 --system h100_sxm --b
 
 We welcome contributions from the community! Check out the below resources to get started:
 
-- [DEVELOPMENT.md](DEVELOPMENT.md) - Set up your development environment, run tests, and follow our coding standards
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guidelines and requirements
+- [DEVELOPMENT.md](https://github.com/ai-dynamo/aisimulate/blob/main/DEVELOPMENT.md) - Set up your development environment, run tests, and follow our coding standards
+- [CONTRIBUTING.md](https://github.com/ai-dynamo/aisimulate/blob/main/CONTRIBUTING.md) - Contribution guidelines and requirements
+- [CODE_OF_CONDUCT.md](https://github.com/ai-dynamo/aisimulate/blob/main/CODE_OF_CONDUCT.md) - Community standards
 - [Discord](https://discord.gg/mRJ2KNzwYE) - Chat with team and community
 
 ### How To Add A New Model

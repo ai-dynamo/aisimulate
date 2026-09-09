@@ -988,7 +988,7 @@ impl PyContextAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None, apply_rope=true))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1002,6 +1002,7 @@ impl PyContextAttention {
         use_qk_norm: bool,
         cp_size: u32,
         lane_order: Option<Vec<String>>,
+        apply_rope: bool,
     ) -> PyResult<(Self, PyOperation)> {
         let inner = Op::ContextAttention(ContextAttentionOp {
             name,
@@ -1015,6 +1016,7 @@ impl PyContextAttention {
             use_qk_norm,
             cp_size,
             lane_order: lane_order.unwrap_or_else(default_lane_order),
+            apply_rope,
         });
         Ok((PyContextAttention, PyOperation { inner }))
     }
@@ -1036,6 +1038,7 @@ impl PyContextAttention {
             o.use_qk_norm,
             o.cp_size,
             o.lane_order.clone(),
+            o.apply_rope,
         )
             .into_pyobject(py)?;
         Ok((args, PyDict::new(py)))
@@ -1085,6 +1088,11 @@ impl PyContextAttention {
     #[getter(_use_qk_norm)]
     fn use_qk_norm(slf: PyRef<'_, Self>) -> PyResult<bool> {
         Ok(slf.as_super().context_attention()?.use_qk_norm)
+    }
+
+    #[getter(_apply_rope)]
+    fn apply_rope(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().context_attention()?.apply_rope)
     }
 
     #[getter(_cp_size)]
@@ -1143,9 +1151,6 @@ impl PyGenerationAttention {
         use_qk_norm: bool,
         lane_order: Option<Vec<String>>,
     ) -> PyResult<(Self, PyOperation)> {
-        // use_qk_norm is accepted for calling-shape compatibility; the decode
-        // table never keyed on it (the retired serializer dropped it too).
-        let _ = use_qk_norm;
         let inner = Op::GenerationAttention(GenerationAttentionOp {
             name,
             scale_factor,
@@ -1155,6 +1160,7 @@ impl PyGenerationAttention {
             window_size,
             kv_cache_dtype: kv_quant(kv_cache_dtype)?,
             lane_order: lane_order.unwrap_or_else(default_lane_order),
+            use_qk_norm,
         });
         Ok((PyGenerationAttention, PyOperation { inner }))
     }
@@ -1172,11 +1178,11 @@ impl PyGenerationAttention {
             enum_token(&o.kv_cache_dtype),
             o.window_size,
             o.head_size,
+            o.use_qk_norm,
         )
             .into_pyobject(py)?;
-        // lane_order rides the kwargs dict, not the positional tuple: position
-        // 8 is use_qk_norm, which this op discards (never round-tripped), so a
-        // positional 8th slot would bind to the wrong parameter.
+        // Keep lane_order in kwargs so the constructor's established
+        // positional fields stay independent of the resolved lane list.
         let kwargs = PyDict::new(py);
         kwargs.set_item("lane_order", o.lane_order.clone())?;
         Ok((args, kwargs))
@@ -1209,6 +1215,11 @@ impl PyGenerationAttention {
             "KVCacheQuantMode",
             &enum_token(&slf.as_super().generation_attention()?.kv_cache_dtype),
         )
+    }
+
+    #[getter(_use_qk_norm)]
+    fn use_qk_norm(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().generation_attention()?.use_qk_norm)
     }
 
     #[getter(_lane_order)]
@@ -2103,7 +2114,7 @@ impl PyMoEAllToAll {
     const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, *, phase, comm_backend, hidden_size, topk, num_experts, moe_ep_size, node_num, comm_dtype="default", sms=0, attention_tp_size=1))]
+    #[pyo3(signature = (name, scale_factor, *, phase, comm_backend, hidden_size, topk, num_experts, moe_ep_size, node_num, comm_dtype="default", sms=0, attention_tp_size=1, workload_distribution="power_law_1.2", enable_eplb=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -2118,6 +2129,8 @@ impl PyMoEAllToAll {
         comm_dtype: &str,
         sms: u32,
         attention_tp_size: u32,
+        workload_distribution: &str,
+        enable_eplb: bool,
     ) -> PyResult<(Self, PyOperation)> {
         let inner = Op::MoeAllToAll(crate::operators::MoeAllToAllOp {
             name,
@@ -2132,6 +2145,8 @@ impl PyMoEAllToAll {
             node_num,
             sms,
             attention_tp_size,
+            workload_distribution: workload_distribution.to_string(),
+            enable_eplb,
         });
         Ok((PyMoEAllToAll, PyOperation { inner }))
     }
@@ -2153,6 +2168,8 @@ impl PyMoEAllToAll {
         kwargs.set_item("comm_dtype", o.comm_dtype.clone())?;
         kwargs.set_item("sms", o.sms)?;
         kwargs.set_item("attention_tp_size", o.attention_tp_size)?;
+        kwargs.set_item("workload_distribution", o.workload_distribution.clone())?;
+        kwargs.set_item("enable_eplb", o.enable_eplb)?;
         Ok((args, kwargs))
     }
 
@@ -2204,6 +2221,16 @@ impl PyMoEAllToAll {
     #[getter(_attention_tp_size)]
     fn attention_tp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().moe_a2a()?.attention_tp_size)
+    }
+
+    #[getter(_workload_distribution)]
+    fn workload_distribution(slf: PyRef<'_, Self>) -> PyResult<String> {
+        Ok(slf.as_super().moe_a2a()?.workload_distribution.clone())
+    }
+
+    #[getter(_enable_eplb)]
+    fn enable_eplb(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().moe_a2a()?.enable_eplb)
     }
 }
 
