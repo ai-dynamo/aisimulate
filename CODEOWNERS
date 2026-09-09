@@ -61,6 +61,7 @@
 /tests/test_power_contract.py                        @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners
+/tests/fixtures/power-contract-v1.json               @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners
 
 # === mocker  (@ai-dynamo/aisimulate-mocker-codeowners) ===
@@ -153,6 +154,7 @@
 /crates/core/parity_tests/perfmodel/                 @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_e2e_accuracy_overview.py                 @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/codeowners/               @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/fixtures/power-contract-v1.json               @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/aic.py             @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/replay/            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain

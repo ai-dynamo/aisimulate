@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -15,6 +16,7 @@ from jsonschema.exceptions import ValidationError
 
 ROOT = Path(__file__).parents[1]
 SCHEMA_PATH = ROOT / "docs" / "schemas" / "power-metrics-v1.schema.json"
+EXAMPLES_PATH = ROOT / "tests" / "fixtures" / "power-contract-v1.json"
 
 
 def validate_strict_json(
@@ -31,6 +33,40 @@ def power_validator() -> Draft202012Validator:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
+
+
+def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float]:
+    """Independently evaluate the documented AIC-compatible formulas."""
+    roles = case["roles"]
+    if any(not role["energy_aware"] for role in roles):
+        return {}
+
+    total_latency_ms = 0.0
+    covered_latency_ms = 0.0
+    total_energy_wms = 0.0
+    for role in roles:
+        scale = float(role.get("scale", 1.0))
+        for operation in role["operations"]:
+            latency_ms = float(operation["latency_ms"]) * scale
+            energy_wms = float(operation["energy_wms"]) * scale
+            if not math.isfinite(latency_ms) or latency_ms < 0.0:
+                raise ValueError("latency evidence must be finite and non-negative")
+            if not math.isfinite(energy_wms) or energy_wms < 0.0:
+                raise ValueError("energy evidence must be finite and non-negative")
+            total_latency_ms += latency_ms
+            total_energy_wms += energy_wms
+            if energy_wms > 0.0:
+                covered_latency_ms += latency_ms
+
+    if total_latency_ms <= 0.0:
+        return {"power_coverage": 0.0}
+
+    power_coverage = covered_latency_ms / total_latency_ms
+    metrics = {"power_coverage": power_coverage}
+    power_w = total_energy_wms / total_latency_ms
+    if power_coverage >= 0.9 and math.isfinite(power_w) and power_w > 0.0:
+        metrics["power_w"] = power_w
+    return metrics
 
 
 @pytest.mark.parametrize(
@@ -75,6 +111,46 @@ def test_power_contract_rejects_fabricated_or_invalid_metrics(
         validate_strict_json(power_validator, metrics)
 
 
+@pytest.mark.parametrize(
+    "case",
+    json.loads(EXAMPLES_PATH.read_text(encoding="utf-8"))["cases"],
+    ids=lambda case: case["name"],
+)
+def test_reproducible_examples_match_documented_aic_semantics(
+    power_validator: Draft202012Validator,
+    case: dict[str, Any],
+) -> None:
+    actual = derive_contract_metrics(case)
+    expected = case["expected"]
+
+    assert actual.keys() == expected.keys()
+    for name, value in expected.items():
+        assert actual[name] == pytest.approx(value)
+    validate_strict_json(power_validator, actual)
+
+
+def test_reproducible_examples_record_provenance() -> None:
+    fixture = json.loads(EXAMPLES_PATH.read_text(encoding="utf-8"))
+    provenance = fixture["provenance"]
+
+    assert provenance["kind"] == "synthetic_contract_fixture"
+    assert provenance["measured"] is False
+    assert provenance["accuracy_evidence"] is False
+    assert len(provenance["aic_semantics_revision"]) == 40
+    assert len(provenance["fpe_energy_revision"]) == 40
+    assert all((ROOT / path).is_file() for path in provenance["reference_paths"])
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads(EXAMPLES_PATH.read_text(encoding="utf-8"))["invalid_evidence_cases"],
+    ids=lambda case: case["name"],
+)
+def test_reproducible_examples_reject_invalid_operation_evidence(case: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        derive_contract_metrics(case)
+
+
 def test_public_docs_keep_availability_separate_from_semantics() -> None:
     contract = (ROOT / "docs" / "power-model.md").read_text(encoding="utf-8")
     migration = (ROOT / "docs" / "cli" / "migrate-from-aiconfigurator.md").read_text(encoding="utf-8")
@@ -84,5 +160,6 @@ def test_public_docs_keep_availability_separate_from_semantics() -> None:
     assert "the contract\ndoes not by itself make modeled power available" in contract
     assert "exactly `0.90` is sufficient;\n`0.899` is not" in contract
     assert "Once the follow-up runtime work adds a conforming producer" in contract
+    assert "fixtures/power-contract-v1.json" in contract
     assert "[modeled-power contract](../power-model.md)" in migration
     assert "Typed per-op energy alone does\nnot make unified replay power available" in core_api

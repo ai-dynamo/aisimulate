@@ -28,6 +28,19 @@ output instead of carrying forward `0.0`, `None`, or `NaN` sentinels used by
 some AIC compatibility paths. An absent value means unavailable, never zero
 watts.
 
+The existing implementation references are AIC's
+[`InferenceSummary.get_power_data_coverage`](../python/aisimulate/src/aiconfigurator_core/sdk/inference_summary.py),
+its CLI
+[`POWER_DATA_COVERAGE_THRESHOLD` and publication gate](../python/aisimulate/src/aiconfigurator/cli/api.py),
+and FPE's
+[`PerOpValue` energy channel](../crates/core/src/perfmodel/engine/runtime.rs).
+The machine-readable
+[`power-contract-v1.json`](../tests/fixtures/power-contract-v1.json) fixture
+provides synthetic, reproducible inputs and expected outputs for aggregate,
+disaggregated, exact-threshold, below-threshold, speedup, uncovered, and mixed
+provider cases. It is contract evidence, not measured data or an accuracy
+claim.
+
 ## Scope and units
 
 `power_w` is the active forward-pass average power of one GPU, in watts. It is
