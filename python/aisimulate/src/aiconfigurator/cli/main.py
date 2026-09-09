@@ -250,17 +250,6 @@ def _memory_fraction(value: str) -> float:
     return fraction
 
 
-def _positive_int(value: str) -> int:
-    """Argparse type for positive integers."""
-    try:
-        parsed = int(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}") from None
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
-    return parsed
-
-
 def _validate_model_path(model_path: str) -> str:
     """
     Validate model_path which can be:
@@ -466,11 +455,15 @@ def _add_default_mode_arguments(parser):
     parser.add_argument(
         "--num-images", type=int, default=1, help="Number of images per request for vision-language models. Default: 1."
     )
+    parser.add_argument("--video-height", type=int, default=0, help="Video frame height in pixels. Default: 0.")
+    parser.add_argument("--video-width", type=int, default=0, help="Video frame width in pixels. Default: 0.")
+    parser.add_argument("--video-frames", type=int, default=0, help="Frames per video. Default: 0 (disabled).")
+    parser.add_argument("--num-videos", type=int, default=0, help="Number of videos per request. Default: 0.")
     parser.add_argument(
-        "--num-frames-per-visual",
-        type=_positive_int,
-        default=1,
-        help="Frames per visual input. Use 1 for images and >1 for video clips. Default: 1.",
+        "--num-video-tokens",
+        type=int,
+        default=0,
+        help="Explicit post-merge tokens per video; requires --video-frames. Default: 0 (derive from dimensions).",
     )
     parser.add_argument(
         "--disable-encoder-dp",
@@ -699,11 +692,15 @@ def _add_recommend_mode_arguments(parser):
     parser.add_argument(
         "--num-images", type=int, default=1, help="Number of images per request for vision-language models. Default: 1."
     )
+    parser.add_argument("--video-height", type=int, default=0, help="Video frame height in pixels. Default: 0.")
+    parser.add_argument("--video-width", type=int, default=0, help="Video frame width in pixels. Default: 0.")
+    parser.add_argument("--video-frames", type=int, default=0, help="Frames per video. Default: 0 (disabled).")
+    parser.add_argument("--num-videos", type=int, default=0, help="Number of videos per request. Default: 0.")
     parser.add_argument(
-        "--num-frames-per-visual",
-        type=_positive_int,
-        default=1,
-        help="Frames per visual input. Use 1 for images and >1 for video clips. Default: 1.",
+        "--num-video-tokens",
+        type=int,
+        default=0,
+        help="Explicit post-merge tokens per video; requires --video-frames. Default: 0 (derive from dimensions).",
     )
     parser.add_argument(
         "--ttft",
@@ -937,11 +934,15 @@ def _add_estimate_mode_arguments(parser):
     parser.add_argument(
         "--num-images", type=int, default=1, help="Number of images per request for vision-language models. Default: 1."
     )
+    parser.add_argument("--video-height", type=int, default=0, help="Video frame height in pixels. Default: 0.")
+    parser.add_argument("--video-width", type=int, default=0, help="Video frame width in pixels. Default: 0.")
+    parser.add_argument("--video-frames", type=int, default=0, help="Frames per video. Default: 0 (disabled).")
+    parser.add_argument("--num-videos", type=int, default=0, help="Number of videos per request. Default: 0.")
     parser.add_argument(
-        "--num-frames-per-visual",
-        type=_positive_int,
-        default=1,
-        help="Frames per visual input. Use 1 for images and >1 for video clips. Default: 1.",
+        "--num-video-tokens",
+        type=int,
+        default=0,
+        help="Explicit post-merge tokens per video; requires --video-frames. Default: 0 (derive from dimensions).",
     )
     parser.add_argument(
         "--disable-encoder-dp",
@@ -1671,7 +1672,11 @@ def build_default_tasks(
     afd_max_a_batch_size: int = 1024,
     afd_max_candidates: int = 10_000,
     afd_candidate_overflow: str = "error",
-    num_frames_per_visual: int = 1,
+    video_height: int = 0,
+    video_width: int = 0,
+    video_frames: int = 0,
+    num_videos: int = 0,
+    num_video_tokens: int = 0,
 ) -> dict[str, Task]:
     """Build task configs for the selected default-mode serving modes.
 
@@ -1686,10 +1691,12 @@ def build_default_tasks(
         database_mode: Database mode for performance estimation.
         isl: Input sequence length.
         osl: Output sequence length.
-        image_height: Height of each visual input. Zero disables encoder modeling.
-        image_width: Width of each visual input. Zero disables encoder modeling.
-        num_images: Number of visual inputs per request.
-        num_frames_per_visual: Frames per visual input; 1 is an image and >1 is video.
+        video_height: Video frame height in pixels.
+        video_width: Video frame width in pixels.
+        video_frames: Frames per video.
+        num_videos: Number of videos per request.
+        num_video_tokens: Explicit post-merge tokens per video. Requires
+            ``video_frames``; zero derives the token count from dimensions.
         ttft: Time to first token target in ms.
         tpot: Time per output token target in ms.
         request_latency: Optional end-to-end request latency target (ms).
@@ -1732,8 +1739,6 @@ def build_default_tasks(
         _warn_large_ep_flag("moe_backend=deepep_moe")
 
     decode_system = decode_system or system
-    if num_frames_per_visual > 1 and not (image_height > 0 and image_width > 0):
-        raise ValueError("num_frames_per_visual > 1 requires positive image_height and image_width")
     if serving_mode not in ("auto", "all", "agg", "disagg", "afd"):
         raise ValueError(f"Invalid serving_mode: {serving_mode!r}. Use 'auto', 'all', 'agg', 'disagg', or 'afd'.")
     if serving_mode == "auto":
@@ -1874,11 +1879,16 @@ def build_default_tasks(
         global_kwargs["nextn"] = nextn
         global_kwargs["nextn_accepted"] = nextn_accepted
 
-    if image_height or image_width or (num_images and num_images != 1) or num_frames_per_visual != 1:
+    if image_height or image_width or (num_images and num_images != 1):
         global_kwargs["image_height"] = image_height
         global_kwargs["image_width"] = image_width
         global_kwargs["num_images_per_request"] = num_images
-        global_kwargs["num_frames_per_visual"] = num_frames_per_visual
+    if video_height or video_width or video_frames or num_videos or num_video_tokens:
+        global_kwargs["video_height"] = video_height
+        global_kwargs["video_width"] = video_width
+        global_kwargs["video_frames"] = video_frames
+        global_kwargs["num_videos_per_request"] = num_videos
+        global_kwargs["num_video_tokens"] = num_video_tokens
     if not enable_encoder_dp:
         global_kwargs["enable_encoder_dp"] = False
 
@@ -2807,7 +2817,11 @@ def _run_estimate_mode(args):
         image_height=args.image_height,
         image_width=args.image_width,
         num_images=args.num_images,
-        num_frames_per_visual=args.num_frames_per_visual,
+        video_height=args.video_height,
+        video_width=args.video_width,
+        video_frames=args.video_frames,
+        num_videos=args.num_videos,
+        num_video_tokens=args.num_video_tokens,
         enable_encoder_dp=not args.disable_encoder_dp,
         batch_size=args.batch_size,
         ctx_tokens=args.ctx_tokens,
@@ -2898,9 +2912,20 @@ def _run_estimate_mode(args):
     print(f"  ISL:              {result.isl}")
     print(f"  OSL:              {result.osl}")
     if args.image_height > 0 and args.image_width > 0 and args.num_images > 0:
-        media = "Images" if args.num_frames_per_visual == 1 else "Video clips"
-        frames = "" if args.num_frames_per_visual == 1 else f" x {args.num_frames_per_visual} frames"
-        print(f"  {media + ':':<18}{args.num_images} x {args.image_height}x{args.image_width}{frames}")
+        print(f"  Images:           {args.num_images} x {args.image_height}x{args.image_width}")
+        print(f"  Encoder parallel: {'TP (weight-sharded)' if args.disable_encoder_dp else 'DP (data-parallel)'}")
+    has_video_dimensions = args.video_height > 0 and args.video_width > 0
+    if args.video_frames > 0 and args.num_videos > 0 and (has_video_dimensions or args.num_video_tokens > 0):
+        if has_video_dimensions:
+            print(
+                f"  Videos:           {args.num_videos} x {args.video_frames} frames x "
+                f"{args.video_height}x{args.video_width}"
+            )
+        else:
+            print(
+                f"  Videos:           {args.num_videos} x {args.video_frames} frames x "
+                f"{args.num_video_tokens} tokens/video"
+            )
         print(f"  Encoder parallel: {'TP (weight-sharded)' if args.disable_encoder_dp else 'DP (data-parallel)'}")
 
     # ``--prefix`` and ``--nextn`` are common parameters applied to every
@@ -3124,7 +3149,11 @@ def _run_recommend(args) -> None:
             image_height=args.image_height,
             image_width=args.image_width,
             num_images=args.num_images,
-            num_frames_per_visual=args.num_frames_per_visual,
+            video_height=args.video_height,
+            video_width=args.video_width,
+            video_frames=args.video_frames,
+            num_videos=args.num_videos,
+            num_video_tokens=args.num_video_tokens,
             ttft=args.ttft,
             tpot=args.tpot,
             request_latency=args.request_latency,
@@ -3292,7 +3321,11 @@ def main(args):
             image_height=args.image_height,
             image_width=args.image_width,
             num_images=args.num_images,
-            num_frames_per_visual=args.num_frames_per_visual,
+            video_height=args.video_height,
+            video_width=args.video_width,
+            video_frames=args.video_frames,
+            num_videos=args.num_videos,
+            num_video_tokens=args.num_video_tokens,
             enable_encoder_dp=not args.disable_encoder_dp,
             enable_epd=args.enable_epd,
             encoder_tp=args.encoder_tp,

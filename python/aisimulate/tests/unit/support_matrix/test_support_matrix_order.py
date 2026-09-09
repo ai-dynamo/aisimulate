@@ -14,6 +14,8 @@ from tools.support_matrix.support_matrix import (
     STATUS_PASS,
     SupportMatrix,
     TestConstraints,
+    _get_encoder_coverage,
+    _support_matrix_row_command,
 )
 
 pytestmark = pytest.mark.unit
@@ -145,9 +147,7 @@ def test_task_uses_silicon_database_mode(monkeypatch):
     assert captured_kwargs["engine_step_backend"] == "rust"
 
 
-@pytest.mark.parametrize("mode", ["agg", "disagg"])
-@pytest.mark.parametrize("model", ["moonshotai/Kimi-K2.5", "nvidia/Kimi-K2.5-NVFP4"])
-def test_kimi_matrix_tasks_exercise_representative_encoder_workload(monkeypatch, mode, model):
+def test_qwen35_support_matrix_runs_and_replays_with_image_workload(monkeypatch):
     captured_kwargs = {}
 
     class FakeTask:
@@ -155,28 +155,57 @@ def test_kimi_matrix_tasks_exercise_representative_encoder_workload(monkeypatch,
             captured_kwargs.update(kwargs)
 
     monkeypatch.setattr(support_matrix_module, "Task", FakeTask)
+    constraints = TestConstraints(total_gpus=32, isl=256, osl=256, prefix=128, ttft=2000.0, tpot=50.0)
+    coverage = _get_encoder_coverage("Qwen/Qwen3.5-27B")
+    assert coverage.aic_encoder_implemented
+
     SupportMatrix._create_task(
-        mode=mode,
-        model=model,
+        mode="agg",
+        model="Qwen/Qwen3.5-27B",
         system="b200_sxm",
-        backend="trtllm",
-        version="1.2.0rc5",
-        constraints=TestConstraints(total_gpus=8, isl=256, osl=256, prefix=0, ttft=2000.0, tpot=50.0),
+        backend="vllm",
+        version="0.24.0",
+        constraints=constraints,
+        image_workload=coverage.workload,
+    )
+    command = _support_matrix_row_command(
+        model="Qwen/Qwen3.5-27B",
+        system="b200_sxm",
+        backend="vllm",
+        version="0.24.0",
+        constraints=constraints,
+        image_workload=coverage.workload,
     )
 
-    assert captured_kwargs["image_height"] == 448
-    assert captured_kwargs["image_width"] == 448
+    assert captured_kwargs["image_height"] == 1024
+    assert captured_kwargs["image_width"] == 1024
     assert captured_kwargs["num_images_per_request"] == 1
-    assert captured_kwargs["num_frames_per_visual"] == 1
+    assert "--image-height 1024 --image-width 1024 --num-images 1" in command
 
 
-def test_kimi_matrix_reproduction_command_includes_visual_workload():
-    command = support_matrix_module._support_matrix_row_command(
-        model="nvidia/Kimi-K2.5-NVFP4",
-        system="b200_sxm",
-        backend="trtllm",
-        version="1.2.0rc5",
-        constraints=TestConstraints(total_gpus=8, isl=256, osl=256, prefix=0, ttft=2000.0, tpot=50.0),
+def test_run_single_test_keeps_encoder_metadata_failures_fail_fast(monkeypatch):
+    monkeypatch.setattr(
+        support_matrix_module,
+        "_get_test_constraints",
+        lambda _model: TestConstraints(total_gpus=32, isl=256, osl=256, prefix=128, ttft=2000.0, tpot=50.0),
+    )
+    monkeypatch.setattr(
+        support_matrix_module,
+        "_get_encoder_coverage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("broken encoder metadata")),
+    )
+    monkeypatch.setattr(
+        SupportMatrix,
+        "_run_mode",
+        lambda **_kwargs: pytest.fail("metadata failure must abort before support attempts"),
     )
 
-    assert "--image-height 448 --image-width 448 --num-images 1" in command
+    with pytest.raises(RuntimeError, match="broken encoder metadata"):
+        SupportMatrix.run_single_test(
+            "Qwen/Qwen3.5-27B",
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            system_spec={},
+            modes_to_test=("agg",),
+        )

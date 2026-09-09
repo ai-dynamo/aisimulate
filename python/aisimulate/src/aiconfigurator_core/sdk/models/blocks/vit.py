@@ -11,6 +11,10 @@ Op structure
 ------------
 For a ViT with depth D and projector_dims with P (in, out) pairs::
 
+  _patch_embedding_ops  →  2 ops, each with count=1:
+    encoder_patch_embed_gemm  GEMM equivalent of the strided Conv3D patch projection
+    encoder_position_embed    ElementWise position interpolation/addition
+
   _vit_transformer_ops  →  10 ops, each with count=depth:
     encoder_add_norm_1    ElementWise
     encoder_qkv_gemm      GEMM
@@ -25,14 +29,16 @@ For a ViT with depth D and projector_dims with P (in, out) pairs::
     encoder_rope_apply    ElementWise  (only if partial_rotary_factor > 0;
                                         replaces the attention-internal RoPE term)
 
-  _projector_ops  →  2*P ops + 1 AR  (or 0 ops if projector_dims is empty):
+  _projector_ops  →  P GEMMs + (P-1) activations + 1 norm + 1 AR
+                     (or 0 ops if projector_dims is empty):
+    encoder_merger_norm          ElementWise pre-pixel-shuffle LayerNorm
     encoder_projector_fc{i}_gemm  GEMM
     encoder_projector_fc{i}_act   ElementWise  (omitted for final layer)
     encoder_projector_ar          CustomAllReduce
 
   Encoder DP (enable_encoder_dp, default; vLLM mm_encoder_tp_mode="data" /
   SGLang --mm-enable-dp-encoder) builds all of the above with tp=1 — full
-  replica per rank, images ceil-sharded across the tp_size ranks at query
+  replica per rank, visuals ceil-sharded across the tp_size ranks at query
   time in BaseBackend._run_encoder_phase — and appends for tp_size > 1:
     encoder_dp_all_gather         NCCL all_gather of post-merge embeddings
 
@@ -59,6 +65,23 @@ import aiconfigurator_core.sdk.operations as ops
 from aiconfigurator_core.sdk import common
 
 
+def _patch_embedding_ops(enc_cfg: common.VisionEncoderConfig) -> list:
+    """Build the input patch projection and position-embedding operations.
+
+    Qwen's strided Conv3D has kernel and stride equal to
+    ``(temporal_patch_size, patch_size, patch_size)``. Patches do not overlap,
+    so each output patch is semantically the same linear projection represented
+    by the GEMM below.
+    """
+    patch_volume = enc_cfg.in_channels * enc_cfg.temporal_patch_size * enc_cfg.patch_size * enc_cfg.patch_size
+    vit_gemm_mode = common.GEMMQuantMode.bfloat16
+    return [
+        ops.GEMM("encoder_patch_embed_gemm", 1, enc_cfg.hidden_size, patch_volume, vit_gemm_mode),
+        # Reads the patch embedding and interpolated position table, then writes their sum.
+        ops.ElementWise("encoder_position_embed", 1, 2 * enc_cfg.hidden_size, enc_cfg.hidden_size, 0.8),
+    ]
+
+
 def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
     """Build the 10 ViT transformer block ops (each repeated enc_cfg.depth times),
     plus the optional encoder_rope_apply elementwise op.
@@ -77,80 +100,61 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         if inter_vit % tp_size != 0:
             raise ValueError(f"ViT intermediate_size ({inter_vit}) must be divisible by tp_size ({tp_size})")
 
-    try:
-        vit_gemm_mode = common.GEMMQuantMode[enc_cfg.gemm_quant_mode]
-        vit_fmha_mode = common.FMHAQuantMode[enc_cfg.fmha_quant_mode]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported vision encoder precision: {exc.args[0]}") from exc
+    # ViT always runs in bfloat16 regardless of LLM quantization settings
+    vit_gemm_mode = common.GEMMQuantMode.bfloat16
+    vit_fmha_mode = common.FMHAQuantMode.bfloat16
 
-    result = []
-    if enc_cfg.patch_embed_input_channels > 0:
-        result.extend(
-            [
-                ops.GEMM(
-                    "encoder_patch_embed_gemm",
-                    1,
-                    h_vit,
-                    enc_cfg.patch_embed_input_channels * enc_cfg.patch_size**2,
-                    vit_gemm_mode,
-                ),
-                ops.ElementWise("encoder_pos_embed", 1, h_vit, h_vit, 0.8),
-            ]
-        )
-
-    result.extend(
-        [
-            ops.ElementWise("encoder_add_norm_1", depth, 2 * h_vit, 2 * h_vit, 0.8),
-            ops.GEMM(
-                "encoder_qkv_gemm",
-                depth,
-                3 * n_vit * head_size_vit // tp_size,
-                h_vit,
-                vit_gemm_mode,
-            ),
-            ops.EncoderAttention(
-                "encoder_attention",
-                depth,
-                n_vit // tp_size,
-                head_size_vit,
-                fmha_quant_mode=vit_fmha_mode,
-                partial_rotary_factor=0.0,
-            ),
-            ops.GEMM(
-                "encoder_proj_gemm",
-                depth,
-                h_vit,
-                n_vit * head_size_vit // tp_size,
-                vit_gemm_mode,
-                low_precision_input=True,
-            ),
-            ops.CustomAllReduce("encoder_ar_1", depth, h_vit, tp_size),
-            ops.ElementWise("encoder_add_norm_2", depth, 2 * h_vit, 2 * h_vit, 0.8),
-            ops.GEMM(
-                "encoder_ffn1_gemm",
-                depth,
-                inter_vit // tp_size,
-                h_vit,
-                vit_gemm_mode,
-            ),
-            ops.ElementWise(
-                "encoder_act",
-                depth,
-                inter_vit // tp_size,
-                inter_vit // tp_size,
-                0.8,
-            ),
-            ops.GEMM(
-                "encoder_ffn2_gemm",
-                depth,
-                h_vit,
-                inter_vit // tp_size,
-                vit_gemm_mode,
-                low_precision_input=True,
-            ),
-            ops.CustomAllReduce("encoder_ar_2", depth, h_vit, tp_size),
-        ]
-    )
+    result = [
+        ops.ElementWise("encoder_add_norm_1", depth, 2 * h_vit, 2 * h_vit, 0.8),
+        ops.GEMM(
+            "encoder_qkv_gemm",
+            depth,
+            3 * n_vit * head_size_vit // tp_size,
+            h_vit,
+            vit_gemm_mode,
+        ),
+        ops.EncoderAttention(
+            "encoder_attention",
+            depth,
+            n_vit // tp_size,
+            head_size_vit,
+            fmha_quant_mode=vit_fmha_mode,
+            partial_rotary_factor=0.0,
+        ),
+        ops.GEMM(
+            "encoder_proj_gemm",
+            depth,
+            h_vit,
+            n_vit * head_size_vit // tp_size,
+            vit_gemm_mode,
+            low_precision_input=True,
+        ),
+        ops.CustomAllReduce("encoder_ar_1", depth, h_vit, tp_size),
+        ops.ElementWise("encoder_add_norm_2", depth, 2 * h_vit, 2 * h_vit, 0.8),
+        ops.GEMM(
+            "encoder_ffn1_gemm",
+            depth,
+            inter_vit // tp_size,
+            h_vit,
+            vit_gemm_mode,
+        ),
+        ops.ElementWise(
+            "encoder_act",
+            depth,
+            inter_vit // tp_size,
+            inter_vit // tp_size,
+            0.8,
+        ),
+        ops.GEMM(
+            "encoder_ffn2_gemm",
+            depth,
+            h_vit,
+            inter_vit // tp_size,
+            vit_gemm_mode,
+            low_precision_input=True,
+        ),
+        ops.CustomAllReduce("encoder_ar_2", depth, h_vit, tp_size),
+    ]
 
     if enc_cfg.partial_rotary_factor > 0:
         # the attention op's internal RoPE term is disabled in exchange (partial_rotary_factor=0.0).
@@ -161,12 +165,12 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
 
     if enc_cfg.final_norm:
         result.append(ops.ElementWise("encoder_final_norm", 1, h_vit, h_vit, 0.8))
-    if enc_cfg.projector_pre_norm:
-        result.append(ops.ElementWise("encoder_merger_pre_norm", 1, h_vit, h_vit, 0.8))
     if enc_cfg.pool_temporal:
         # Kimi's sd2_tpool merger performs temporal mean pooling and spatial
         # 2x2 rearrangement before PatchMerger. This is a memory-bound layout
-        # operation; projector GEMMs below run on the resulting post-merge tokens.
+        # operation; projector GEMMs run on the pooled output-token geometry.
+        # Sources: Transformers commit cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55
+        # and vLLM commit d2906091bfc579cebefe3d8e8fb9077397ce9882.
         result.append(ops.ElementWise("encoder_patch_merge_pool", 1, h_vit, h_vit, 0.8))
 
     return result
@@ -188,13 +192,22 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
         return []
 
     n_inst = enc_cfg.projector_n_instances
-    try:
-        vit_gemm_mode = common.GEMMQuantMode[enc_cfg.gemm_quant_mode]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported vision encoder GEMM precision: {exc.args[0]}") from exc
+    vit_gemm_mode = common.GEMMQuantMode.bfloat16
     n_layers = len(dims)
 
     result = []
+    # The final merger normalizes hidden_size before pixel shuffle. Deepstack
+    # mergers normalize merger_dim after shuffle, but the inverse token-count
+    # change preserves the same total hidden_size traffic per pre-merge patch.
+    result.append(
+        ops.ElementWise(
+            "encoder_merger_norm",
+            n_inst,
+            enc_cfg.hidden_size,
+            enc_cfg.hidden_size,
+            0.8,
+        )
+    )
     for i, (in_d, out_d) in enumerate(dims):
         is_last = i == n_layers - 1
         # Final layer in a multi-layer projector takes sharded input from the previous
@@ -224,8 +237,9 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
 def build_encoder_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int, enable_encoder_dp: bool = True) -> list:
     """Build the complete list of encoder ops for a ViT-based vision encoder.
 
-    Combines ViT transformer ops (10 ops x depth repetitions) with projector ops
-    (2 x n_layers + 1 ops with AllReduce, or 0 if no projector configured).
+    Combines the patch/position input ops, ViT transformer ops (10 ops x depth
+    repetitions), and projector ops (one GEMM per layer, activations between
+    layers, merger norm, and AllReduce; or 0 if no projector is configured).
 
     Args:
         enc_cfg: VisionEncoderConfig populated with ViT and projector parameters.
@@ -239,10 +253,10 @@ def build_encoder_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int, enable_
         Flat list of operation objects ready to assign to model.encoder_ops.
     """
     if not enable_encoder_dp:
-        return _vit_transformer_ops(enc_cfg, tp_size) + _projector_ops(enc_cfg, tp_size)
+        return _patch_embedding_ops(enc_cfg) + _vit_transformer_ops(enc_cfg, tp_size) + _projector_ops(enc_cfg, tp_size)
 
     # DP: full-replica ops (tp=1); the per-layer AllReduces degenerate to no-ops.
-    result = _vit_transformer_ops(enc_cfg, 1) + _projector_ops(enc_cfg, 1)
+    result = _patch_embedding_ops(enc_cfg) + _vit_transformer_ops(enc_cfg, 1) + _projector_ops(enc_cfg, 1)
     if tp_size > 1:
         result.append(
             ops.NCCL(

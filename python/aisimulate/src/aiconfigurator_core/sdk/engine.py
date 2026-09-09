@@ -117,6 +117,11 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 #   `attn_projection_quant_modes` v12, and v14 alongside #1533's
 #   `GdnOp::mamba_ssm_dtype` v14); each landed first, so this renumbers to 15
 #   at merge (same v3/v4, v5/v6 precedent).
+# - 16 (Muse Glimmer continuation): Generation attention gained
+#   `use_qk_norm`; the Rust op now preserves the Python constructor flag and
+#   adds its decode latency.
+# - 17 (Muse Glimmer review follow-up): Context attention gained
+#   `apply_rope`, allowing global NoPE layers to omit the fused RoPE cost.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aiconfigurator_core.engine_spec_schema_version()
@@ -441,7 +446,12 @@ def build_ops_json(ops: Any) -> str:
     return _ops_json(ops)
 
 
-def _resolve_attention_lane_orders(ops: Any, database: Any, override: str | None) -> None:
+def _resolve_attention_lane_orders(
+    ops: Any,
+    database: Any,
+    override: str | None,
+    architecture: str | None = None,
+) -> None:
     """Set ``_lane_order`` on every ``ContextAttention``/``GenerationAttention``
     in *ops*, mutating in place.
 
@@ -452,6 +462,10 @@ def _resolve_attention_lane_orders(ops: Any, database: Any, override: str | None
     same place ``_wideep_moe`` pre-bakes its kernel_source. Every op not
     explicitly re-resolved keeps the always-valid ``["default"]`` its pyo3
     constructor already carries.
+
+    *architecture* selects a model-specific framework-default lane when the
+    resolver map declares one. Ops carry no model identity, so the model's
+    architecture must be threaded at this spec-build boundary.
     """
     from aiconfigurator_core.sdk.operations.attention import (
         ContextAttention,
@@ -461,11 +475,21 @@ def _resolve_attention_lane_orders(ops: Any, database: Any, override: str | None
 
     for op in ops:
         if isinstance(op, ContextAttention):
-            op._lane_order = resolved_lane_order_for_op(database, "_context_attention_data", override)
+            op._lane_order = resolved_lane_order_for_op(
+                database,
+                "_context_attention_data",
+                override,
+                architecture,
+            )
         elif isinstance(op, GenerationAttention):
-            op._lane_order = resolved_lane_order_for_op(database, "_generation_attention_data", override)
+            op._lane_order = resolved_lane_order_for_op(
+                database,
+                "_generation_attention_data",
+                override,
+                architecture,
+            )
         elif isinstance(op, FPMForwardOp):
-            _resolve_attention_lane_orders(op._sol_ops, database, override)
+            _resolve_attention_lane_orders(op._sol_ops, database, override, architecture)
 
 
 def build_engine_spec_json(
@@ -491,8 +515,9 @@ def build_engine_spec_json(
     # per-op) — every model family gets a valid, table-aware lane order this
     # way, whether or not it exposes the override.
     override = getattr(getattr(model, "config", None), "attention_backend", None)
-    _resolve_attention_lane_orders(model.context_ops, database, override)
-    _resolve_attention_lane_orders(model.generation_ops, database, override)
+    architecture = getattr(model, "architecture", None)
+    _resolve_attention_lane_orders(model.context_ops, database, override, architecture)
+    _resolve_attention_lane_orders(model.generation_ops, database, override, architecture)
 
     # Vision encoder ops are intentionally NOT emitted into the spec.
     #

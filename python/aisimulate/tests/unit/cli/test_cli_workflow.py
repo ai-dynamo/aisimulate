@@ -9,7 +9,6 @@ while keeping heavy computation mocked out.
 """
 
 import argparse
-import inspect
 import logging
 from dataclasses import fields
 from unittest.mock import MagicMock, patch
@@ -56,16 +55,6 @@ def test_estimate_result_preserves_existing_positional_field_order() -> None:
         "kv_cache_warning",
     ]
     assert fields(EstimateResult)[-1].name == "moe_comm_fallbacks"
-
-
-def test_build_default_tasks_appends_new_video_parameter():
-    parameters = list(inspect.signature(build_default_tasks).parameters)
-    assert parameters[-2:] == ["afd_candidate_overflow", "num_frames_per_visual"]
-
-
-def test_build_default_tasks_rejects_video_without_dimensions():
-    with pytest.raises(ValueError, match="requires positive image_height and image_width"):
-        build_default_tasks("moonshotai/Kimi-K2.5", 8, "b200_sxm", num_frames_per_visual=8)
 
 
 class TestCLILogLevelResolution:

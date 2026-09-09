@@ -69,7 +69,10 @@ from aiconfigurator.sdk.speculative import (
     SpeculativeDecodingProfile,
     normalize_speculative_decoding,
 )
-from aiconfigurator.sdk.utils import enumerate_parallel_config, get_model_config_from_model_path
+from aiconfigurator.sdk.utils import (
+    enumerate_parallel_config,
+    get_model_config_from_model_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -517,7 +520,7 @@ class Task:
     isl: int = 4000
     osl: int = 1000
     prefix: int = 0
-    # Multimodal inputs (folded into the effective ISL by RuntimeConfig).
+    # Multimodal image inputs (folded into the effective ISL by RuntimeConfig).
     image_height: int = 0
     image_width: int = 0
     num_images_per_request: int = 1
@@ -712,11 +715,16 @@ class Task:
     afd_ttft_correction_factor: float | None = None
     afd_decode_latency_correction: float = 1.0
 
-    # Keep new public fields at the end so existing positional construction is stable.
-    # 1 models an image; >1 models a video clip per visual input.
-    num_frames_per_visual: int = 1
+    # ====== 11. Multimodal video inputs ======
+    # Appended to preserve the positional constructor contract of all existing
+    # Task fields. New callers should pass these by keyword.
+    video_height: int = 0
+    video_width: int = 0
+    video_frames: int = 0
+    num_videos_per_request: int = 0
+    num_video_tokens: int = 0
 
-    # ====== 11. Internal — resolved in __post_init__ ======
+    # ====== 12. Internal — resolved in __post_init__ ======
     _is_moe: bool = field(default=False, repr=False, init=False)
     _model_family: str = field(default="", repr=False, init=False)
     _raw_config: dict = field(default_factory=dict, repr=False, init=False)
@@ -862,16 +870,6 @@ class Task:
         if self.moe_backend == "deepep_moe":
             _warn_large_ep_flag("moe_backend=deepep_moe")
         self._check_prefix_discipline()
-        if (
-            isinstance(self.num_frames_per_visual, bool)
-            or not isinstance(self.num_frames_per_visual, int)
-            or self.num_frames_per_visual <= 0
-        ):
-            raise ValueError(
-                f"num_frames_per_visual must be a positive non-boolean integer, got {self.num_frames_per_visual!r}"
-            )
-        if self.num_frames_per_visual > 1 and not (self.image_height > 0 and self.image_width > 0):
-            raise ValueError("num_frames_per_visual > 1 requires positive image_height and image_width")
         # Validate the MTP pair BEFORE model-identity resolution: the latter is
         # skipped when no primary model path is set, and the check must not
         # depend on it (non-negative integer nextn; finite acceptance in range).
@@ -1369,6 +1367,7 @@ class Task:
         coverage: dict[str, dict[str, set[int]]] = {}
         if gpus_per_node and a2a_probe is not None:
             quant_mode = self._role_attr(role, "moe_quant_mode")
+            enable_eplb = bool(self._role_attr(role, "enable_eplb"))
             if quant_mode is not None and not isinstance(quant_mode, common.MoEQuantMode):
                 # The compute table is keyed by MoEQuantMode members; any
                 # other type (str, int, a sibling enum like
@@ -1393,6 +1392,11 @@ class Task:
                 per_backend: dict[str, set[int]] = {}
                 for name, backend_spec in MOE_A2A_BACKENDS.items():
                     if backend_name not in backend_spec.frameworks or phase not in backend_spec.inference_phases:
+                        continue
+                    if name == "deepep_ll" and enable_eplb:
+                        # Stage 1 has no LL placement model for EPLB. Keep the
+                        # direct op-level error, but do not generate invalid
+                        # sweep candidates in the first place.
                         continue
                     eps = {
                         ep
@@ -2036,7 +2040,11 @@ class Task:
             image_height=self.image_height,
             image_width=self.image_width,
             num_images_per_request=self.num_images_per_request,
-            num_frames_per_visual=self.num_frames_per_visual,
+            video_height=self.video_height,
+            video_width=self.video_width,
+            video_frames=self.video_frames,
+            num_videos_per_request=self.num_videos_per_request,
+            num_video_tokens=self.num_video_tokens,
             ttft=self.ttft,
             tpot=self.tpot,
             request_latency=self.request_latency,
@@ -2046,11 +2054,14 @@ class Task:
             rt.batch_size = batch_size
         return rt
 
-    def _prefill_effective_isl(self) -> int:
+    def _prefill_effective_isl(self, runtime_config: config.RuntimeConfig | None = None) -> int:
         """Text ISL + vision context tokens for one request."""
         from aiconfigurator.sdk.backends.base_backend import BaseBackend
 
-        return BaseBackend.effective_prefill_isl(self.primary_model_path, self.build_runtime_config())
+        return BaseBackend.effective_prefill_isl(
+            self.primary_model_path,
+            runtime_config or self.build_runtime_config(),
+        )
 
     def build_model_config(
         self,
@@ -2157,20 +2168,24 @@ class Task:
                 f"decode_cp_candidates={cp_list}. Enable CP via prefill/agg instead."
             )
 
-        return iter(
-            enumerate_parallel_config(
-                num_gpu_list=_cands("num_gpu"),
-                tp_list=_cands("tp"),
-                pp_list=_cands("pp"),
-                dp_list=_cands("dp"),
-                moe_tp_list=_cands("moe_tp"),
-                moe_ep_list=_cands("moe_ep"),
-                cp_list=cp_list,
-                is_moe=self._is_moe,
-                backend=common.BackendName[self._role_attr(role, "backend_name")],
-                moe_backend=self.moe_backend,
-            )
+        backend = common.BackendName[self._role_attr(role, "backend_name")]
+        parallel = enumerate_parallel_config(
+            num_gpu_list=_cands("num_gpu"),
+            tp_list=_cands("tp"),
+            pp_list=_cands("pp"),
+            dp_list=_cands("dp"),
+            moe_tp_list=_cands("moe_tp"),
+            moe_ep_list=_cands("moe_ep"),
+            cp_list=cp_list,
+            is_moe=self._is_moe,
+            backend=backend,
+            moe_backend=self.moe_backend,
         )
+        if self._model_family == "MUSEGLIMMER" and backend == common.BackendName.sglang:
+            # Muse supports pure TP and pure prefill CP, but SGLang rejects a
+            # mixed attention TP/CP topology before model construction.
+            parallel = [cfg for cfg in parallel if cfg[5] == 1 or (cfg[0] == 1 and cfg[2] == 1)]
+        return iter(parallel)
 
     # =====================================================================
     # Validation
@@ -2297,6 +2312,18 @@ class Task:
             raise ValueError("afd mode requires system_name")
         if self.effective_total_gpus is None:
             raise ValueError("afd mode requires total_gpus or afd_total_gpus")
+        has_image_workload = self.num_images_per_request > 0 and self.image_height > 0 and self.image_width > 0
+        has_video_workload = config.has_video_input(
+            num_videos=self.num_videos_per_request,
+            video_height=self.video_height,
+            video_width=self.video_width,
+            video_frames=self.video_frames,
+            num_video_tokens=self.num_video_tokens,
+        )
+        if has_image_workload or has_video_workload:
+            raise NotImplementedError(
+                "AFD does not support image/video encoder workloads; use agg, disagg, or static estimation."
+            )
         if (
             isinstance(self.afd_max_a_batch_size, bool)
             or not isinstance(self.afd_max_a_batch_size, int)
@@ -3074,7 +3101,7 @@ class Task:
             backend=backend,
             database=database,
             runtime_config=runtime_config,
-            ctx_tokens=ctx_tokens if ctx_tokens is not None else self.isl,
+            ctx_tokens=ctx_tokens if ctx_tokens is not None else self._prefill_effective_isl(runtime_config),
             predictor=self.predictor,
             speculative_profile=self.build_speculative_profile(),
             **backend_kwargs,

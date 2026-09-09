@@ -17,6 +17,7 @@ import importlib.resources as pkg_resources
 import logging
 import os
 import re
+from collections.abc import Mapping
 from typing import Optional
 
 import yaml
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # the framework default and is not a named measurement lane.
 ATTENTION_BACKEND_CHOICES: tuple[str, ...] = ("fa3", "triton", "trtllm_mha", "flashinfer", "fla", "default")
 _KNOWN_LANES: frozenset[str] = frozenset(choice for choice in ATTENTION_BACKEND_CHOICES if choice != "default")
+_KNOWN_LANE_VALUES: frozenset[str] = frozenset(ATTENTION_BACKEND_CHOICES)
 
 # User-facing override vocabulary (the CLI's ``--attention-backend`` choices,
 # minus the universal ``"default"``) -> the stored ``kernel_source`` labels
@@ -84,6 +86,57 @@ def resolve_attention_override_lanes(backend: str, override: str) -> tuple[str, 
 _LEADING_DIGITS = re.compile(r"^(\d+)")
 
 
+def _validate_backend_defaults(version_map: object, *, location: str) -> None:
+    """Validate one ``{version: {sm: lane}}`` default map."""
+    if not isinstance(version_map, Mapping):
+        raise ValueError(
+            f"attention_lane_defaults.yaml: {location} must be a mapping, got {type(version_map).__name__}"
+        )
+    for version, sm_map in version_map.items():
+        if not isinstance(version, str):
+            raise ValueError(f"attention_lane_defaults.yaml: {location} version key {version!r} must be a string")
+        if not isinstance(sm_map, Mapping):
+            raise ValueError(
+                f"attention_lane_defaults.yaml: {location}[{version!r}] must be a mapping, got {type(sm_map).__name__}"
+            )
+        for sm, lane in sm_map.items():
+            if not isinstance(sm, int):
+                raise ValueError(f"attention_lane_defaults.yaml: {location}[{version!r}] sm key {sm!r} must be an int")
+            if lane not in _KNOWN_LANE_VALUES:
+                raise ValueError(
+                    f"attention_lane_defaults.yaml: {location}[{version!r}][{sm!r}] lane {lane!r} "
+                    f"is not a known lane; expected one of {sorted(_KNOWN_LANE_VALUES)}"
+                )
+
+
+def _validate_defaults(defaults: object) -> None:
+    """Fail closed on malformed global and per-architecture lane maps."""
+    if not isinstance(defaults, Mapping):
+        raise ValueError(f"attention_lane_defaults.yaml must be a mapping, got {type(defaults).__name__}")
+
+    for backend, version_map in defaults.items():
+        if backend == "architectures":
+            continue
+        _validate_backend_defaults(version_map, location=f"{backend!r}")
+
+    architectures = defaults.get("architectures", {})
+    if not isinstance(architectures, Mapping):
+        raise ValueError(
+            f"attention_lane_defaults.yaml: 'architectures' must be a mapping, got {type(architectures).__name__}"
+        )
+    for architecture, backend_map in architectures.items():
+        if not isinstance(backend_map, Mapping):
+            raise ValueError(
+                f"attention_lane_defaults.yaml: architectures[{architecture!r}] must be a mapping, "
+                f"got {type(backend_map).__name__}"
+            )
+        for backend, version_map in backend_map.items():
+            _validate_backend_defaults(
+                version_map,
+                location=f"architectures[{architecture!r}][{backend!r}]",
+            )
+
+
 @functools.cache
 def _load_defaults(systems_root: Optional[str]) -> dict:
     """Load and cache attention_lane_defaults.yaml, keyed by *systems_root*.
@@ -100,7 +153,7 @@ def _load_defaults(systems_root: Optional[str]) -> dict:
     )
     try:
         with open(path, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            data = yaml.safe_load(f) or {}
     except FileNotFoundError:
         if systems_root is not None:
             logger.warning(
@@ -109,14 +162,20 @@ def _load_defaults(systems_root: Optional[str]) -> dict:
             )
             try:
                 with packaged_path.open(encoding="utf-8") as f:
-                    return yaml.safe_load(f) or {}
+                    data = yaml.safe_load(f) or {}
             except FileNotFoundError:
                 path = os.fspath(packaged_path)
-        logger.warning(
-            "attention_lane_defaults.yaml not found at %s; no framework defaults available",
-            path,
-        )
-        return {}
+            else:
+                _validate_defaults(data)
+                return data
+        if systems_root is None or path == os.fspath(packaged_path):
+            logger.warning(
+                "attention_lane_defaults.yaml not found at %s; no framework defaults available",
+                path,
+            )
+            return {}
+    _validate_defaults(data)
+    return data
 
 
 def _donor_tier(pinned) -> tuple[str, ...]:
@@ -216,20 +275,21 @@ def resolve_attention_lane_tiers(
     sm_version: int,
     override: Optional[str],
     systems_root: Optional[str] = None,
+    architecture: Optional[str] = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
     """Return ``(pinned, donors, framework_default_matched)`` for the context.
 
     *pinned* is the explicit-intent head — the override (translated to the
     backend's stored ``kernel_source`` labels, see
     :func:`resolve_attention_override_lanes`)
-    and the framework-default map lane, in that precedence, ``"default"``
-    excluded (it is always the donor tier's last element). *donors* is the
-    generic tail from :func:`_donor_tier`.  *framework_default_matched* is
-    True when the map had an entry for this exact (backend, floor-matched
-    version, sm_version) — even one whose lane is ``"default"`` and therefore
-    pins nothing. :func:`resolve_attention_lane_order` concatenates the first
-    two; this function is what makes the boundary between them (and the
-    map-evidence bit) knowable downstream (see :class:`LaneOrder`).
+    and either the per-architecture default or, when no architecture entry
+    matches, the global framework-default map lane, in that precedence,
+    ``"default"`` excluded (it is always the donor tier's last element).
+    *donors* is the generic tail from :func:`_donor_tier`.
+    *framework_default_matched* is True when either map had an entry for this
+    exact context — even one whose lane is ``"default"`` and therefore pins
+    nothing. :func:`resolve_attention_lane_order` concatenates the first two;
+    this function makes the boundary and map-evidence bit knowable downstream.
 
     Raises :class:`UnsupportedAttentionBackendError` when *override* names a
     lane the backend's tables do not collect.
@@ -239,43 +299,63 @@ def resolve_attention_lane_tiers(
     listed: list[str] = []
     framework_default_matched = False
 
-    # Step 1: override first, translated to the stored kernel_source labels.
-    if override is not None:
+    # Step 1: a named override comes first, translated to the stored
+    # kernel_source labels. Literal "default" requests framework dispatch and
+    # therefore follows the same mapped-default path as an unset override.
+    uses_framework_default = override in (None, "default")
+    if override is not None and override != "default":
         listed.extend(resolve_attention_override_lanes(backend, override))
 
-    # Step 2: framework-default lane from the map.
-    backend_map = defaults.get(backend)
-    if backend_map is None:
-        logger.warning(
-            "resolve_attention_lane_order: unknown backend %r — no framework defaults available",
-            backend,
-        )
+    # Step 2: a per-architecture default replaces the global map when it
+    # resolves. Missing architecture entries are normal and silently fall
+    # through to step 3.
+    req_ver = _parse_version(version)
+    arch_lane: Optional[str] = None
+    if uses_framework_default and architecture is not None:
+        arch_backend_map = defaults.get("architectures", {}).get(architecture, {}).get(backend)
+        if arch_backend_map is not None:
+            valid = [(v_str, _parse_version(v_str)) for v_str in arch_backend_map if _parse_version(v_str) <= req_ver]
+            if valid:
+                best_v_str = max(valid, key=lambda item: item[1])[0]
+                arch_lane = arch_backend_map[best_v_str].get(sm_version)
+
+    if arch_lane is not None:
+        framework_default_matched = True
+        if arch_lane not in listed:
+            listed.append(arch_lane)
     else:
-        req_ver = _parse_version(version)
-        valid = [(v_str, _parse_version(v_str)) for v_str in backend_map if _parse_version(v_str) <= req_ver]
-        if valid:
-            best_v_str = max(valid, key=lambda x: x[1])[0]
-            map_lane = backend_map[best_v_str].get(sm_version)
-            if map_lane is None:
-                logger.warning(
-                    "resolve_attention_lane_order: no entry for sm_version=%d in %r/%r",
-                    sm_version,
-                    backend,
-                    best_v_str,
-                )
-            else:
-                framework_default_matched = True
-                if map_lane not in listed:
-                    listed.append(map_lane)
-        else:
+        # Step 3: global framework-default map.
+        backend_map = defaults.get(backend)
+        if backend_map is None:
             logger.warning(
-                "resolve_attention_lane_order: version %r is below all entries for backend %r"
-                " — no framework default available",
-                version,
+                "resolve_attention_lane_order: unknown backend %r — no framework defaults available",
                 backend,
             )
+        else:
+            valid = [(v_str, _parse_version(v_str)) for v_str in backend_map if _parse_version(v_str) <= req_ver]
+            if valid:
+                best_v_str = max(valid, key=lambda item: item[1])[0]
+                map_lane = backend_map[best_v_str].get(sm_version)
+                if map_lane is None:
+                    logger.warning(
+                        "resolve_attention_lane_order: no entry for sm_version=%d in %r/%r",
+                        sm_version,
+                        backend,
+                        best_v_str,
+                    )
+                else:
+                    framework_default_matched = True
+                    if map_lane not in listed:
+                        listed.append(map_lane)
+            else:
+                logger.warning(
+                    "resolve_attention_lane_order: version %r is below all entries for backend %r"
+                    " — no framework default available",
+                    version,
+                    backend,
+                )
 
-    # Steps 3-4: the donor tier — remaining known lanes alphabetically, then
+    # Steps 4-5: the donor tier — remaining known lanes alphabetically, then
     # "default" last exactly once (so a pinned "default" moves to the tail).
     pinned = tuple(lane for lane in listed if lane != "default")
     return pinned, _donor_tier(pinned), framework_default_matched
@@ -287,33 +367,39 @@ def resolve_attention_lane_order(
     sm_version: int,
     override: Optional[str],
     systems_root: Optional[str] = None,
+    architecture: Optional[str] = None,
 ) -> LaneOrder:
     """Return an ordered tuple of attention lane names for the given context.
 
     Precedence rules (applied in order, each lane included at most once):
 
-    1. *override* — always first when given, translated to the backend's
-       stored ``kernel_source`` labels
+    1. A named *override* — always first when given, translated to the
+       backend's stored ``kernel_source`` labels. ``"default"`` has the same
+       framework-default semantics as an unset override
        (:func:`resolve_attention_override_lanes`; an override the backend does
        not support raises
        :class:`UnsupportedAttentionBackendError`).
-    2. The framework-default lane for (*backend*, floor-matched *version*,
-       *sm_version*) from ``attention_lane_defaults.yaml``, if present and
-       not already listed.
-    3. The remaining known lanes ``{"fa3","triton","trtllm_mha","flashinfer",
+    2. The per-architecture default lane for (*architecture*, *backend*,
+       floor-matched *version*, *sm_version*) from the ``architectures:``
+       section of ``attention_lane_defaults.yaml``, when no named override is
+       given. A match replaces the global map for this resolution.
+    3. Otherwise, the global framework-default lane for (*backend*,
+       floor-matched *version*, *sm_version*) from the same file, if present.
+    4. The remaining known lanes ``{"fa3","triton","trtllm_mha","flashinfer",
        "fla"}`` minus already-listed entries, in sorted (alphabetical) order.
-    4. ``"default"`` — always last, exactly once.
+    5. ``"default"`` — always last, exactly once.
 
     Floor-match on version: the highest version key in the map that is
     ``<= version`` (dotted-numeric comparison).  Unknown backend or no
-    matching version/sm entry: skip step 2 and log one WARNING.
+    matching version/sm entry: skip step 3 and log one WARNING. A missing
+    per-architecture entry is an ordinary global-map fallback and is silent.
 
-    The return value is the flat tuple of steps 1-4 (:class:`LaneOrder`, which
+    The return value is the flat tuple of steps 1-5 (:class:`LaneOrder`, which
     is a ``tuple``), carrying the length of its pinned head so downstream
     re-ranking can leave that head alone, plus whether the framework-default
     map matched so the caller can fail closed when it did not.
     """
     pinned, donors, framework_default_matched = resolve_attention_lane_tiers(
-        backend, version, sm_version, override, systems_root
+        backend, version, sm_version, override, systems_root, architecture
     )
     return LaneOrder(pinned + donors, len(pinned), framework_default_matched)

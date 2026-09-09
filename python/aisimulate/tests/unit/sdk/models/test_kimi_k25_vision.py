@@ -56,7 +56,6 @@ def test_kimi_vision_geometry_matches_published_checkpoint(model_id):
     assert enc.video_attention_type == "spatial_temporal"
     assert enc.pool_temporal is True
     assert enc.final_norm is True
-    assert enc.projector_pre_norm is True
 
 
 @pytest.mark.parametrize("model_id", _KIMI_MODELS)
@@ -66,12 +65,12 @@ def test_kimi_builds_spatial_temporal_vit_patch_merger_and_projector(model_id):
 
     assert {
         "encoder_patch_embed_gemm",
-        "encoder_pos_embed",
+        "encoder_position_embed",
         "encoder_qkv_gemm",
         "encoder_attention",
         "encoder_rope_apply",
         "encoder_final_norm",
-        "encoder_merger_pre_norm",
+        "encoder_merger_norm",
         "encoder_patch_merge_pool",
         "encoder_projector_fc0_gemm",
         "encoder_projector_fc1_gemm",
@@ -112,8 +111,6 @@ def test_language_checkpoint_modes_are_retained_while_encoder_stays_bf16(model_i
         model_cfg.fmha_quant_mode,
         model_cfg.kvcache_quant_mode,
     ) == language_modes
-    assert model.encoder_config.gemm_quant_mode == "bfloat16"
-    assert model.encoder_config.fmha_quant_mode == "bfloat16"
     assert {op._quant_mode for op in model.encoder_ops if hasattr(op, "_quant_mode")} == {common.GEMMQuantMode.bfloat16}
     encoder_attention = next(op for op in model.encoder_ops if op._name == "encoder_attention")
     assert encoder_attention._fmha_quant_mode == common.FMHAQuantMode.bfloat16
@@ -143,13 +140,16 @@ def test_encoder_parallelism_models_required_communication():
     assert tp_ops["encoder_projector_ar"]._tp_size == 2
 
 
-def test_video_frame_count_must_be_positive():
+def test_kimi_video_temporal_pooling_keeps_context_tokens_spatial():
     enc = get_model_config_from_model_path("moonshotai/Kimi-K2.5")["encoder_config"]
-    runtime = config.RuntimeConfig(image_height=448, image_width=448)
-    runtime.num_frames_per_visual = 0
+    runtime = config.RuntimeConfig(
+        video_height=448,
+        video_width=448,
+        video_frames=8,
+        num_videos_per_request=1,
+    )
 
-    with pytest.raises(ValueError, match="num_frames_per_visual must be positive"):
-        BaseBackend._encoder_pre_merge_per_visual(runtime, enc)
+    assert BaseBackend._encoder_pre_merge_per_visual(runtime, enc) == (256, 8192, 1)
 
 
 @pytest.mark.parametrize("model_id", _KIMI_MODELS)
@@ -182,11 +182,11 @@ def test_kimi_image_and_video_runtime_cover_latency_memory_energy_and_ttft(model
     )
     attention_shapes = []
 
-    def _stub_encoder_phase(model_arg, _database, _images_local, eff_s_of, *, include_energy):
+    def _stub_encoder_phase(model_arg, _database, shape_of, *, include_energy):
         attention = next(op for op in model_arg.encoder_ops if op._name == "encoder_attention")
-        attention_s = eff_s_of(attention)
-        attention_shapes.append(attention_s)
-        latency = attention_s / 1_000.0
+        attention_shape = shape_of(attention)
+        attention_shapes.append(attention_shape)
+        latency = attention_shape[0] * attention_shape[1] / 1_000.0
         return (
             {"encoder_attention": latency},
             {"encoder_attention": latency * 2 if include_energy else 0.0},
@@ -201,29 +201,30 @@ def test_kimi_image_and_video_runtime_cover_latency_memory_energy_and_ttft(model
         osl=1,
         image_height=448,
         image_width=448,
-        num_frames_per_visual=1,
         engine_step_backend="rust",
     )
     video_runtime = config.RuntimeConfig(
         batch_size=1,
         isl=128,
         osl=1,
-        image_height=448,
-        image_width=448,
-        num_frames_per_visual=8,
+        num_images_per_request=0,
+        video_height=448,
+        video_width=448,
+        video_frames=8,
+        num_videos_per_request=1,
         engine_step_backend="rust",
     )
 
     enc = model.encoder_config
-    assert BaseBackend._encoder_pre_merge_per_visual(image_runtime, enc) == (256, 1024)
-    assert BaseBackend._encoder_pre_merge_per_visual(video_runtime, enc) == (256, 8192)
+    assert BaseBackend._encoder_pre_merge_per_visual(image_runtime, enc) == (256, 1024, 1)
+    assert BaseBackend._encoder_pre_merge_per_visual(video_runtime, enc) == (256, 8192, 1)
     assert BaseBackend._visual_context_tokens(model, image_runtime) == 256
     assert BaseBackend._visual_context_tokens(model, video_runtime) == 256
 
     image_summary = backend.run_static(model, database, image_runtime, mode="static_ctx")
     video_summary = backend.run_static(model, database, video_runtime, mode="static_ctx")
 
-    assert attention_shapes == [1024, 8192]
+    assert attention_shapes == [(1, 1024), (1, 8192)]
     assert sum(image_summary.get_encoder_latency_dict().values()) > 0
     assert sum(image_summary.get_encoder_energy_wms_dict().values()) > 0
     assert sum(video_summary.get_encoder_latency_dict().values()) > sum(

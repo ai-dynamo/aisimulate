@@ -25,6 +25,32 @@ def normalize_kernel_backend(
         raise ValueError(f"{field_name} must be one of {choices}, got {value!r}.") from exc
 
 
+def has_video_input(
+    *,
+    num_videos: int = 0,
+    video_height: int = 0,
+    video_width: int = 0,
+    video_frames: int = 0,
+    num_video_tokens: int = 0,
+) -> bool:
+    """Return whether any video workload field was configured.
+
+    Unsupported boundaries use this partial-input-aware predicate so an
+    incomplete video request cannot silently degrade to a text-only request.
+    """
+    fields = {
+        "num_videos": num_videos,
+        "video_height": video_height,
+        "video_width": video_width,
+        "video_frames": video_frames,
+        "num_video_tokens": num_video_tokens,
+    }
+    for name, value in fields.items():
+        if value is not None and value < 0:
+            raise ValueError(f"{name} must be nonnegative, got {value}.")
+    return any((value or 0) > 0 for value in fields.values())
+
+
 @dataclass
 class ModelConfig:
     """
@@ -214,20 +240,11 @@ class RuntimeConfig:
     image_width: int = 0
     num_images_per_request: int = 1
     num_image_tokens: int = 0  # override: ViT output tokens per image; ignored when image_height/width are set
-    # Frames in each visual input. 1 models an image; >1 models a video clip.
-    num_frames_per_visual: int = 1
-
-    def __post_init__(self) -> None:
-        if (
-            isinstance(self.num_frames_per_visual, bool)
-            or not isinstance(self.num_frames_per_visual, int)
-            or self.num_frames_per_visual <= 0
-        ):
-            raise ValueError(
-                f"num_frames_per_visual must be a positive non-boolean integer, got {self.num_frames_per_visual!r}"
-            )
-        if self.num_frames_per_visual > 1 and not (self.image_height > 0 and self.image_width > 0):
-            raise ValueError("num_frames_per_visual > 1 requires positive image_height and image_width")
+    video_height: int = 0
+    video_width: int = 0
+    video_frames: int = 0
+    num_videos_per_request: int = 0
+    num_video_tokens: int = 0  # override: ViT output tokens per video; ignored when video dimensions are set
 
 
 @dataclass

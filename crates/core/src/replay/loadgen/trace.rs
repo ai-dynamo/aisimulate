@@ -378,6 +378,7 @@ impl TurnTrace {
             uuid: Some(request_uuid),
             dp_rank: 0,
             preferred_dp_rank: None,
+            preferred_prefill_dp_rank: None,
             arrival_timestamp_ms,
             priority: self.priority,
             strict_priority: self.strict_priority,

@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.e2e, pytest.mark.build]
+# Release wheel builds on arm64 routinely approach the suite's 180-second
+# per-test limit, so keep a larger guard for this build-and-install workflow.
+pytestmark = [pytest.mark.e2e, pytest.mark.build, pytest.mark.timeout(600)]
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 APP_ROOT = REPO_ROOT / "python" / "aisimulate"
