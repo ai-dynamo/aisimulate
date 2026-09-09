@@ -1080,6 +1080,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "comm": _raw_quant_name(getattr(model_config, "comm_quant_mode", None)),
                     },
                     "model_config": {
+                        "moe_routing_provenance": getattr(model, "moe_routing_provenance", {}),
                         "cp_style": getattr(model_config, "cp_style", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
                         "overwrite_num_layers": getattr(model_config, "overwrite_num_layers", None),

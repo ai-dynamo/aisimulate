@@ -20,6 +20,143 @@ use rand08::{Rng, SeedableRng};
 
 use crate::common::error::AicError;
 
+/// A fixed per-layer marginal profile, in expert-ID (NOT popularity) order.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MeasuredRouting {
+    pub probabilities: Vec<f64>,
+    pub profile_digest: String,
+    pub layer_id: u32,
+    pub seed: u64,
+    pub trials: u32,
+}
+
+impl MeasuredRouting {
+    pub(crate) fn validate(&self, experts: u32, topk: u32, ranks: u32) -> Result<(), AicError> {
+        if experts == 0
+            || ranks == 0
+            || experts % ranks != 0
+            || topk == 0
+            || topk > experts
+            || self.probabilities.len() != experts as usize
+            || self.trials == 0
+            || self.trials > 4096
+            || self
+                .probabilities
+                .iter()
+                .any(|p| !p.is_finite() || *p < 0.0 || *p * f64::from(topk) > 1.0 + 1e-10)
+            || (self.probabilities.iter().sum::<f64>() - 1.0).abs() > 1e-10
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "Invalid measured expert marginal/Top-K geometry".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn rng(&self, trial: u32) -> ChaCha8Rng {
+        ChaCha8Rng::seed_from_u64(self.seed ^ (u64::from(trial)).wrapping_mul(0x9E3779B97F4A7C15))
+    }
+
+    /// Systematic dependent rounding: exact total, unbiased fractional quotas,
+    /// and a hard T upper bound. Zero-probability experts stay zero. Feasible
+    /// quotas are realized by the existing distinct Top-K bipartite constructor.
+    fn counts(&self, tokens: usize, topk: u32, rng: &mut ChaCha8Rng) -> Vec<usize> {
+        let total = tokens * topk as usize;
+        let sum = self.probabilities.iter().sum::<f64>();
+        let offset = rng.gen_range(0.0..1.0);
+        let mut cumulative = offset;
+        let mut previous = 0;
+        let mut counts = Vec::with_capacity(self.probabilities.len());
+        for (index, probability) in self.probabilities.iter().enumerate() {
+            cumulative += total as f64 * probability / sum;
+            let next = if index + 1 == self.probabilities.len() {
+                total
+            } else {
+                cumulative.floor() as usize
+            };
+            counts.push(next - previous);
+            previous = next;
+        }
+        counts
+    }
+
+    /// Identical trial quotas used by compute and both communication phases.
+    pub(crate) fn equivalent_balanced_tokens(
+        &self,
+        tokens: u32,
+        topk: u32,
+        ranks: u32,
+    ) -> Result<Vec<u32>, AicError> {
+        self.validate(self.probabilities.len() as u32, topk, ranks)?;
+        (0..self.trials)
+            .map(|trial| {
+                let counts = self.counts(tokens as usize, topk, &mut self.rng(trial));
+                let maximum = counts
+                    .chunks_exact(counts.len() / ranks as usize)
+                    .map(|chunk| chunk.iter().sum::<usize>())
+                    .max()
+                    .unwrap_or(0);
+                // Ceil to an integer lookup coordinate; never divide attention DP twice.
+                u32::try_from((maximum as u64 * u64::from(ranks)).div_ceil(u64::from(topk)))
+                    .map_err(|_| {
+                        AicError::InvalidEngineConfig(
+                            "Measured compute token count overflow".into(),
+                        )
+                    })
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct MeasuredCacheKey {
+    request: MonteCarloRequest,
+    probabilities: Vec<u64>,
+    digest: String,
+    layer: u32,
+    seed: u64,
+    trials: u32,
+}
+
+static MEASURED_CACHE: OnceLock<Cache<MeasuredCacheKey, f64>> = OnceLock::new();
+
+pub(crate) fn estimate_measured(
+    request: MonteCarloRequest,
+    profile: &MeasuredRouting,
+) -> Result<f64, AicError> {
+    validate_request(request)?;
+    profile.validate(request.num_experts, request.topk, request.num_ranks)?;
+    if request.per_rank_tokens == 0 {
+        return Ok(0.0);
+    }
+    let key = MeasuredCacheKey {
+        request,
+        probabilities: profile.probabilities.iter().map(|p| p.to_bits()).collect(),
+        digest: profile.profile_digest.clone(),
+        layer: profile.layer_id,
+        seed: profile.seed,
+        trials: profile.trials,
+    };
+    let cache = MEASURED_CACHE.get_or_init(|| Cache::new(4096));
+    if let Some(value) = cache.get(&key) {
+        return Ok(value);
+    }
+    let tokens = request
+        .per_rank_tokens
+        .checked_mul(request.num_ranks)
+        .ok_or_else(|| AicError::InvalidEngineConfig("Measured token count overflow".into()))?;
+    let mut sum = 0.0;
+    for trial in 0..profile.trials {
+        let mut rng = profile.rng(trial);
+        let counts = profile.counts(tokens as usize, request.topk, &mut rng);
+        // Do not move the busiest rank to rank zero. Physical placement matters.
+        sum += trial_from_counts(request, &counts, &mut rng)?;
+    }
+    let value = sum / f64::from(profile.trials);
+    cache.insert(key, value);
+    Ok(value)
+}
+
 pub(crate) const MONTE_CARLO_TRIALS: u32 = 4_096;
 const MONTE_CARLO_CACHE_CAPACITY: usize = 4_096;
 const MONTE_CARLO_CACHE_SHARDS: usize = 16;
@@ -279,10 +416,23 @@ fn one_trial(request: MonteCarloRequest, rng: &mut ChaCha8Rng) -> Result<f64, Ai
     let global_tokens = per_rank_tokens.checked_mul(p).ok_or_else(|| {
         AicError::InvalidEngineConfig("DeepEP-LL global token count overflow".to_string())
     })?;
-    let total_assignments = global_tokens.checked_mul(k).ok_or_else(|| {
+    let _total_assignments = global_tokens.checked_mul(k).ok_or_else(|| {
         AicError::InvalidEngineConfig("DeepEP-LL token-expert count overflow".to_string())
     })?;
     let counts = expert_counts(global_tokens, n, k, p, request.distribution, rng)?;
+    trial_from_counts(request, &counts, rng)
+}
+
+fn trial_from_counts(
+    request: MonteCarloRequest,
+    counts: &[usize],
+    rng: &mut ChaCha8Rng,
+) -> Result<f64, AicError> {
+    let p = request.num_ranks as usize;
+    let n = request.num_experts as usize;
+    let k = request.topk as usize;
+    let per_rank_tokens = request.per_rank_tokens as usize;
+    let total_assignments = counts.iter().sum::<usize>();
     let average_endpoint = total_assignments as f64 / p as f64;
     let experts_per_rank = n / p;
     let busiest_endpoint = counts
@@ -298,7 +448,7 @@ fn one_trial(request: MonteCarloRequest, rng: &mut ChaCha8Rng) -> Result<f64, Ai
     }
 
     let nvl_domain = request.nvl_domain_size as usize;
-    let loads = endpoint_loads_from_counts(&counts, per_rank_tokens, p, k, nvl_domain, rng)?;
+    let loads = endpoint_loads_from_counts(counts, per_rank_tokens, p, k, nvl_domain, rng)?;
     let nvl_assignments = max_directional_endpoint(&loads.nvl_tx, &loads.nvl_rx);
     let ib_assignments = max_directional_endpoint(&loads.ib_tx, &loads.ib_rx);
     let payload = request.payload_bytes as f64;
@@ -650,6 +800,88 @@ fn sample_power_law(alpha: f64, xmin: f64, xmax: f64, rng: &mut ChaCha8Rng) -> f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn measured(probabilities: Vec<f64>) -> MeasuredRouting {
+        MeasuredRouting {
+            probabilities,
+            profile_digest: "test-content".into(),
+            layer_id: 3,
+            seed: MONTE_CARLO_BASE_SEED,
+            trials: 32,
+        }
+    }
+
+    #[test]
+    fn measured_quotas_conserve_and_realize_distinct_topk_without_reordering() {
+        for probabilities in [
+            vec![0.0, 0.5, 0.0, 0.5],
+            vec![0.31, 0.19, 0.27, 0.23],
+            vec![0.25; 4],
+        ] {
+            let profile = measured(probabilities);
+            profile.validate(4, 2, 2).unwrap();
+            for tokens in [1, 2, 3, 17, 128] {
+                for trial in 0..64 {
+                    let mut rng = profile.rng(trial);
+                    let counts = profile.counts(tokens, 2, &mut rng);
+                    assert_eq!(counts.iter().sum::<usize>(), tokens * 2);
+                    assert!(counts.iter().all(|n| *n <= tokens));
+                    let routes = random_assignments_from_counts(&counts, 2, &mut rng).unwrap();
+                    let mut actual = vec![0; 4];
+                    for route in routes.chunks_exact(2) {
+                        assert_ne!(route[0], route[1]);
+                        for &expert in route {
+                            actual[expert] += 1;
+                        }
+                    }
+                    assert_eq!(actual, counts);
+                    for (p, count) in profile.probabilities.iter().zip(counts) {
+                        if *p == 0.0 {
+                            assert_eq!(count, 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn measured_changes_actual_load_latency_and_cache_content_key() {
+        let request = request(RoutingDistribution::Balanced);
+        let uniform = measured(vec![0.125; 8]);
+        // Both experts reside on rank THREE. They must not be rotated to rank zero.
+        let skewed = measured(vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5]);
+        let low = estimate_measured(request, &uniform).unwrap();
+        let high = estimate_measured(request, &skewed).unwrap();
+        assert!((high - low * 4.0).abs() < 1e-12);
+        assert_eq!(estimate_measured(request, &skewed).unwrap(), high);
+        assert_eq!(
+            skewed.equivalent_balanced_tokens(8, 2, 4).unwrap(),
+            vec![32; 32]
+        );
+        assert_eq!(
+            uniform.equivalent_balanced_tokens(8, 2, 4).unwrap(),
+            vec![8; 32]
+        );
+        let counts = skewed.counts(8, 2, &mut skewed.rng(0));
+        assert_eq!(&counts[..6], &[0; 6]);
+        assert_eq!(&counts[6..], &[8; 2]);
+        let routes = endpoint_loads_from_counts(&counts, 2, 4, 2, 2, &mut skewed.rng(0)).unwrap();
+        assert_eq!(routes.total_rx, vec![0, 0, 0, 16]);
+        assert_eq!(routes.ib_rx, vec![0, 0, 0, 8]);
+    }
+
+    #[test]
+    fn measured_invalid_marginals_are_errors() {
+        for values in [
+            vec![0.75, 0.25],
+            vec![f64::NAN, 0.5],
+            vec![-0.1, 1.1],
+            vec![0.1, 0.2],
+        ] {
+            assert!(measured(values).validate(2, 2, 1).is_err());
+        }
+    }
 
     fn request(distribution: RoutingDistribution) -> MonteCarloRequest {
         MonteCarloRequest {

@@ -1532,6 +1532,7 @@ def test_large_ep_opspec_key_sets_match_the_rust_structs():
             "attention_tp_size",
             "workload_distribution",
             "enable_eplb",
+            "measured_routing",
         }
     )
     assert a2a_spec["MoeAllToAll"]["workload_distribution"] == "power_law_1.2"
@@ -1574,6 +1575,8 @@ def test_large_ep_opspec_key_sets_match_the_rust_structs():
             "kernel_source",
             "is_gated",
             "enable_eplb",
+            "measured_routing",
+            "routing_attention_tp_size",
         }
     )
     # Wire formats the Rust serde impls expect: quant_mode is the snake_case
@@ -1775,7 +1778,13 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
         assert result.summary is not None
         assert result.summary.get_moe_comm_fallbacks() == expected
         assert result.summary.get_context_source_dict()["context_moe_dispatch"] == "estimated"
-        assert result.summary.get_generation_source_dict()["generation_moe_dispatch"] == "estimated"
+        # Default auto now emits independent MoE-layer operators.
+        dispatch_sources = [
+            source
+            for name, source in result.summary.get_generation_source_dict().items()
+            if name.startswith("generation_moe_dispatch")
+        ]
+        assert dispatch_sources and set(dispatch_sources) == {"estimated"}
         assert (
             "Estimated MoE communication latency used fallback silicon data: "
             "context/deepep_ht: requested EP32/node8; using EP8/node1 silicon data." in caplog.messages

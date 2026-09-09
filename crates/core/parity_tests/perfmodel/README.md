@@ -53,6 +53,13 @@ uv run pytest -q aic-core/rust/aiconfigurator-core/parity_tests/test_compile_eng
 
 ## Golden Fixtures (captured at Gate 2, frozen at Gate 3)
 
+Expert-popularity Stage 4 introduces default `auto` selection. The frozen
+synthetic-routing regression fixtures explicitly select `moe_routing_mode="power-law"`;
+their latency values are not regenerated to accommodate measured profiles.
+Default-auto behavior is covered separately by `test_moe_routing.py` and the
+native measured-routing tests. EngineSpec v19 is a serialization-layout change,
+not a change to the legacy synthetic numerical baseline.
+
 - `goldens/engine_step.json` — every (case, surface) pair in
   `ENGINE_STEP_GOLDEN_MATRIX`, as `{"values": {...}}` or (error-symmetry
   cases) `{"error": ExceptionClassName}` records.

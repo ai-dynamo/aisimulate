@@ -114,6 +114,12 @@ class InferenceSummary:
         self._kv_bytes_per_seq: float | None = None
         self._kv_seq_len_used: int | None = None
 
+    def get_moe_routing_provenance(self) -> dict:
+        """Distribution selection, phase/proxy and calibrated-compute provenance."""
+        from copy import deepcopy
+
+        return deepcopy(getattr(self, "moe_routing_provenance", {}))
+
     def set_memory_and_check_oom(
         self,
         memory_dict: dict,

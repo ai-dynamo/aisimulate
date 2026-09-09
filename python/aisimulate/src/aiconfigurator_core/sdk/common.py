@@ -834,6 +834,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "MiMoForCausalLM": "LLAMA",
     "DeepSeekForCausalLM": "DEEPSEEK",
     "DeepseekV3ForCausalLM": "DEEPSEEK",
+    "DeepseekV2ForCausalLM": "DEEPSEEK",
     "DeepseekV32ForCausalLM": "DEEPSEEKV32",
     "GlmMoeDsaForCausalLM": "DEEPSEEKV32",
     "DeepseekV4ForCausalLM": "DEEPSEEKV4",

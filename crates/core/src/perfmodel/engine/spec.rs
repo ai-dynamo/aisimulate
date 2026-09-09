@@ -583,6 +583,7 @@ mod tests {
             attention_tp_size: 2,
             workload_distribution: "power_law_1.01".into(),
             enable_eplb: true,
+            measured_routing: None,
         }
     }
 
@@ -606,6 +607,8 @@ mod tests {
             kernel_source: Some("deepep_moe".into()),
             is_gated: true,
             enable_eplb: true,
+            measured_routing: None,
+            routing_attention_tp_size: 1,
         }
     }
 
@@ -767,6 +770,7 @@ mod tests {
             backend: crate::BackendKind::Trtllm,
             backend_version: Some("1.0.0rc3".into()),
             forward_model: None,
+            moe_routing: Default::default(),
             kv_block_size: Some(64),
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -1159,16 +1163,15 @@ mod tests {
         let fpm: crate::operators::FpmForwardOp = serde_json::from_value(fpm_json).unwrap();
         assert_eq!(fpm.verify_width, 1);
 
-        let mut bytes = handshake_spec().to_bincode().unwrap();
-        bytes[..4].copy_from_slice(&17u32.to_le_bytes());
-        bytes.truncate(4);
-        assert!(matches!(
-            EngineSpec::from_bincode(&bytes),
-            Err(AicError::UnsupportedSchemaVersion {
-                got: 17,
-                expected: 18,
-                ..
-            })
-        ));
+        for old_version in [17u32, 18u32] {
+            let mut bytes = handshake_spec().to_bincode().unwrap();
+            bytes[..4].copy_from_slice(&old_version.to_le_bytes());
+            bytes.truncate(4);
+            assert!(matches!(
+                EngineSpec::from_bincode(&bytes),
+                Err(AicError::UnsupportedSchemaVersion { got, expected, .. })
+                    if got == old_version && expected == ENGINE_SPEC_SCHEMA_VERSION
+            ));
+        }
     }
 }

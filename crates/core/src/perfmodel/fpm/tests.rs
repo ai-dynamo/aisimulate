@@ -106,6 +106,7 @@ fn fixture_engine_config() -> EngineConfig {
         backend: BackendKind::Vllm,
         backend_version: Some("0.24.0".to_string()),
         forward_model: None,
+        moe_routing: Default::default(),
         kv_block_size: None,
         parallel: ParallelMapping {
             tp_size: 8,

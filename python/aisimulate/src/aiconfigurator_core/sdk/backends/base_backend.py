@@ -1194,6 +1194,7 @@ class BaseBackend:
 
         summary.set_encoder_latency_dict(encoder_latency_dict)
         summary.set_context_latency_dict(context_latency_dict)
+        summary.moe_routing_provenance = getattr(model, "moe_routing_provenance", {})
         summary.set_generation_latency_dict(generation_latency_dict)
         summary.set_encoder_energy_wms_dict(encoder_energy_wms_dict)
         summary.set_context_energy_wms_dict(context_energy_wms_dict)  # UPDATED: explicit units
@@ -1976,6 +1977,7 @@ class BaseBackend:
             per_ops_data["encoder"] = dict(encoder_latency_dict)
             per_ops_source["encoder"] = dict(encoder_source_dict)
         summary.set_per_ops_data(per_ops_data)
+        summary.moe_routing_provenance = getattr(model, "moe_routing_provenance", {})
         summary.set_per_ops_source(per_ops_source)
         summary.set_moe_comm_fallbacks(
             merge_moe_comm_fallbacks(

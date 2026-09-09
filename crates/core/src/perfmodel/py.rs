@@ -28,6 +28,7 @@
 //! * `PyErr → AicError` (inline in [`compile_engine_from_request`]) for the
 //!   embedded path.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1030,6 +1031,7 @@ struct EngineBuildRequest {
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
+    moe_routing: crate::perfmodel::config::MoeRoutingConfig,
     database_mode: Option<String>,
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
@@ -1074,6 +1076,7 @@ impl AicEngineBuilder {
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
+                moe_routing: Default::default(),
                 database_mode: None,
                 shared_layer: None,
                 transfer_policy: None,
@@ -1086,6 +1089,20 @@ impl AicEngineBuilder {
     /// Python's default (op_level).
     pub fn forward_model(mut self, forward_model: &str) -> Self {
         self.request.forward_model = Some(forward_model.to_owned());
+        self
+    }
+
+    /// Select auto, uniform, random (Random-input measured), or power-law.
+    pub fn moe_routing(mut self, mode: &str, alpha: Option<f64>, revision: Option<&str>) -> Self {
+        self.request.moe_routing.moe_routing_mode = Some(mode.to_owned());
+        self.request.moe_routing.moe_power_law_alpha = alpha;
+        self.request.moe_routing.moe_model_revision = revision.map(str::to_owned);
+        self
+    }
+
+    /// Explicit per-phase communication backend; absent uses normal coverage resolution.
+    pub fn moe_comm_backend(mut self, backends: BTreeMap<String, String>) -> Self {
+        self.request.moe_routing.moe_comm_backend = Some(backends);
         self
     }
 
@@ -1235,6 +1252,8 @@ mod builder_tests {
             .attention_dp_size(4)
             .moe_parallelism(Some(1), Some(8))
             .attention_backend("fa3")
+            .moe_routing("power-law", Some(1.25), Some("revision"))
+            .moe_comm_backend(BTreeMap::from([("context".into(), "deepep_ll".into())]))
             .database_mode(DatabaseMode::Empirical)
             .shared_layer(true)
             .transfer_policy(vec!["xshape".to_owned(), "xquant".to_owned()])
@@ -1251,6 +1270,15 @@ mod builder_tests {
             (Some(1), Some(8))
         );
         assert_eq!(builder.request.attention_backend.as_deref(), Some("fa3"));
+        assert_eq!(
+            builder.request.moe_routing.moe_routing_mode.as_deref(),
+            Some("power-law")
+        );
+        assert_eq!(builder.request.moe_routing.moe_power_law_alpha, Some(1.25));
+        assert_eq!(
+            builder.request.moe_routing.moe_model_revision.as_deref(),
+            Some("revision")
+        );
         assert_eq!(builder.request.database_mode.as_deref(), Some("EMPIRICAL"));
         assert_eq!(builder.request.shared_layer, Some(true));
         assert_eq!(
@@ -1358,6 +1386,23 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
+        kwargs.set_item(
+            "moe_routing_mode",
+            request
+                .moe_routing
+                .moe_routing_mode
+                .as_deref()
+                .unwrap_or("auto"),
+        )?;
+        kwargs.set_item(
+            "moe_power_law_alpha",
+            request.moe_routing.moe_power_law_alpha,
+        )?;
+        kwargs.set_item(
+            "moe_model_revision",
+            request.moe_routing.moe_model_revision.as_deref(),
+        )?;
+        kwargs.set_item("moe_comm_backend", request.moe_routing.moe_comm_backend)?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
@@ -1382,7 +1427,18 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
     // `UnsupportedModel` — the variant `best_available` treats as
     // fallback-safe. Hard caller/config errors use `InvalidEngineConfig` (which
     // is NOT fallback-safe) so they surface instead of silently degrading.
-    .map_err(|e| AicError::UnsupportedModel(format!("compile_engine: {e}")))?;
+    .map_err(|e| {
+        let hard_routing_error = Python::with_gil(|py| {
+            e.get_type(py)
+                .name()
+                .is_ok_and(|name| name == "MoeRoutingError")
+        });
+        if hard_routing_error {
+            AicError::InvalidEngineConfig(format!("compile_engine: {e}"))
+        } else {
+            AicError::UnsupportedModel(format!("compile_engine: {e}"))
+        }
+    })?;
 
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
 }
@@ -1436,6 +1492,7 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
+        moe_routing: config.moe_routing.clone(),
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
@@ -1701,6 +1758,20 @@ mod tests {
     }
 
     #[test]
+    fn invalid_routing_is_not_best_available_fallback_safe() {
+        py_init();
+        let result = AicEngineBuilder::new("unused/model", "gb200", BackendKind::Sglang)
+            .systems_path(systems_root().to_string_lossy())
+            .moe_routing("invalid-mode", None, None)
+            .build();
+        assert!(
+            matches!(result, Err(AicError::InvalidEngineConfig(_))),
+            "{:?}",
+            result.err()
+        );
+    }
+
+    #[test]
     fn w4a16_nvfp4_wire_dtype_maps_to_distinct_gemm_mode() {
         assert_eq!(
             gemm_quant_name(Some(&DataType::W4a16Nvfp4)),
@@ -1801,6 +1872,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            moe_routing: Default::default(),
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,
