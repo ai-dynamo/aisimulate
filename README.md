@@ -317,6 +317,10 @@ compatibility tests.
 
 ## Accuracy evidence
 
+Hardware measurement runbooks (separate from validated accuracy results):
+
+- [AgentX GLM-5.2: single-node B200 Slurm experiment](docs/experiments/agentx-b200-slurm/README.md)
+
 The public-ready [E2E Accuracy Overview](python/aisimulate/docs/e2e-accuracy/)
 reports matched client-observed TTFT and TPOT accuracy against measured silicon
 operating points. It keeps accuracy, evidence coverage, and curve-shape error
