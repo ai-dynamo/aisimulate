@@ -59,7 +59,7 @@ pub struct WekaImportSummary {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WekaNestedTimestampBasis {
-    /// Infer one basis from decisive anchors across the complete corpus.
+    /// Heuristically select one basis after scanning every nested request.
     #[default]
     Auto,
     /// Nested timestamps are already root-trace-relative.
@@ -84,8 +84,6 @@ impl WekaNestedTimestampBasis {
 pub enum WekaResolvedTimestampBasis {
     Absolute,
     Relative,
-    /// All replayable nested markers are exactly zero, so both transforms agree.
-    Equivalent,
     /// The corpus contains no replayable nested subagent requests.
     NotApplicable,
 }
@@ -95,7 +93,6 @@ impl WekaResolvedTimestampBasis {
         match self {
             Self::Absolute => "absolute",
             Self::Relative => "relative",
-            Self::Equivalent => "equivalent",
             Self::NotApplicable => "not_applicable",
         }
     }
@@ -103,9 +100,7 @@ impl WekaResolvedTimestampBasis {
     fn effective_basis(self) -> WekaNestedTimestampBasis {
         match self {
             Self::Relative => WekaNestedTimestampBasis::Relative,
-            Self::Absolute | Self::Equivalent | Self::NotApplicable => {
-                WekaNestedTimestampBasis::Absolute
-            }
+            Self::Absolute | Self::NotApplicable => WekaNestedTimestampBasis::Absolute,
         }
     }
 }
@@ -199,7 +194,7 @@ impl WekaImporter {
                 },
             )?;
         }
-        let nested_timestamp_basis = evidence.resolve(options.nested_timestamp_basis)?;
+        let nested_timestamp_basis = evidence.resolve(options.nested_timestamp_basis);
         let digest = semantic_digest(&raw_digest, nested_timestamp_basis);
 
         let mut plays = 0;
@@ -253,9 +248,15 @@ impl WekaImporter {
         tracing::info!(
             requested_basis = options.nested_timestamp_basis.as_str(),
             resolved_basis = nested_timestamp_basis.as_str(),
+            resolution = if options.nested_timestamp_basis == WekaNestedTimestampBasis::Auto {
+                "corpus_heuristic"
+            } else {
+                "configured"
+            },
             files = file_count,
             plays,
             requests,
+            relative_witness = evidence.relative_witness.as_deref().unwrap_or("none"),
             "resolved Weka nested timestamp basis for complete corpus"
         );
 
@@ -399,6 +400,11 @@ fn load_weka_agentic_graph_with_cache_status(
             tracing::info!(
                 requested_basis = options.nested_timestamp_basis.as_str(),
                 resolved_basis = cached.resolved_timestamp_basis.as_str(),
+                resolution = if options.nested_timestamp_basis == WekaNestedTimestampBasis::Auto {
+                    "corpus_heuristic"
+                } else {
+                    "configured"
+                },
                 cache_hit = true,
                 "resolved Weka nested timestamp basis for complete corpus"
             );
@@ -617,73 +623,42 @@ struct SourceSnapshot {
 
 #[derive(Default)]
 struct TimestampBasisEvidence {
-    absolute: Option<String>,
-    relative: Option<String>,
-    ambiguous_non_equivalent: Option<String>,
+    relative_witness: Option<String>,
     replayable_subagents: usize,
 }
 
 impl TimestampBasisEvidence {
-    fn observe(
-        &mut self,
-        trace: &WekaTrace,
-        source_name: &str,
-        subagent: &WekaSubagent,
-        first_t: f64,
-    ) {
-        self.replayable_subagents += 1;
-        let context = format!(
-            "source {source_name}, trace {}, subagent {} (marker={}, first_inner={})",
-            trace.id, subagent.agent_id, subagent.t, first_t
-        );
-        if subagent.t == 0.0 {
-            // Adding an exactly zero marker changes no nested timestamp, so
-            // this subagent is mathematically basis-independent.
+    fn observe(&mut self, trace: &WekaTrace, source_name: &str, subagent: &WekaSubagent) {
+        if subagent.requests.is_empty() {
             return;
         }
-        let absolute_anchor = (first_t - subagent.t).abs() <= JOIN_EPSILON_SECONDS;
-        let relative_anchor = first_t.abs() <= JOIN_EPSILON_SECONDS;
-        match (absolute_anchor, relative_anchor) {
-            (true, false) => {
-                self.absolute.get_or_insert(context);
-            }
-            (false, true) => {
-                self.relative.get_or_insert(context);
-            }
-            (false, false) => {
-                self.ambiguous_non_equivalent.get_or_insert(context);
-            }
-            // A non-zero marker inside the anchor tolerance is not exactly
-            // equivalent under both transforms, so do not guess.
-            (true, true) => {
-                self.ambiguous_non_equivalent.get_or_insert(context);
+        self.replayable_subagents += 1;
+        for (inner_index, entry) in subagent.requests.iter().enumerate() {
+            let request = match entry {
+                WekaInnerEntry::Normal(request) | WekaInnerEntry::Streaming(request) => request,
+            };
+            if nested_timestamp_precedes_marker(request.t, subagent.t) {
+                self.relative_witness.get_or_insert_with(|| {
+                    format!(
+                        "source {source_name}, trace {}, subagent {}, inner request {} (marker={}, inner={})",
+                        trace.id, subagent.agent_id, inner_index, subagent.t, request.t
+                    )
+                });
             }
         }
     }
 
-    fn resolve(&self, requested: WekaNestedTimestampBasis) -> Result<WekaResolvedTimestampBasis> {
+    fn resolve(&self, requested: WekaNestedTimestampBasis) -> WekaResolvedTimestampBasis {
         match requested {
-            WekaNestedTimestampBasis::Absolute => Ok(WekaResolvedTimestampBasis::Absolute),
-            WekaNestedTimestampBasis::Relative => Ok(WekaResolvedTimestampBasis::Relative),
-            WekaNestedTimestampBasis::Auto => match (&self.absolute, &self.relative) {
-                (Some(absolute), Some(relative)) => bail!(
-                    "Weka corpus mixes decisive nested timestamp bases: absolute evidence at {absolute}; relative evidence at {relative}; set nested_timestamp_basis only after fixing the corpus"
-                ),
-                (Some(_), None) => Ok(WekaResolvedTimestampBasis::Absolute),
-                (None, Some(_)) => Ok(WekaResolvedTimestampBasis::Relative),
-                (None, None) if self.replayable_subagents == 0 => {
-                    Ok(WekaResolvedTimestampBasis::NotApplicable)
-                }
-                (None, None) if self.ambiguous_non_equivalent.is_none() => {
-                    Ok(WekaResolvedTimestampBasis::Equivalent)
-                }
-                (None, None) => bail!(
-                    "Weka corpus nested timestamp basis is ambiguous at {}; set nested_timestamp_basis to 'absolute' or 'relative'",
-                    self.ambiguous_non_equivalent
-                        .as_deref()
-                        .expect("ambiguous evidence was checked")
-                ),
-            },
+            WekaNestedTimestampBasis::Absolute => WekaResolvedTimestampBasis::Absolute,
+            WekaNestedTimestampBasis::Relative => WekaResolvedTimestampBasis::Relative,
+            WekaNestedTimestampBasis::Auto if self.replayable_subagents == 0 => {
+                WekaResolvedTimestampBasis::NotApplicable
+            }
+            WekaNestedTimestampBasis::Auto if self.relative_witness.is_some() => {
+                WekaResolvedTimestampBasis::Relative
+            }
+            WekaNestedTimestampBasis::Auto => WekaResolvedTimestampBasis::Absolute,
         }
     }
 }
@@ -708,14 +683,7 @@ fn validate_trace_requests_and_collect_timestamp_evidence(
                     };
                     validate_request(request, source_name)?;
                 }
-                if let Some(first) = subagent.requests.first() {
-                    let first = match first {
-                        WekaInnerEntry::Normal(request) | WekaInnerEntry::Streaming(request) => {
-                            request
-                        }
-                    };
-                    evidence.observe(trace, source_name, subagent, first.t);
-                }
+                evidence.observe(trace, source_name, subagent);
             }
         }
     }
@@ -1642,7 +1610,7 @@ fn canonical_nested_timestamp(
 ) -> Result<f64> {
     match basis {
         WekaNestedTimestampBasis::Absolute | WekaNestedTimestampBasis::Auto => {
-            if inner_t + JOIN_EPSILON_SECONDS < marker_t {
+            if nested_timestamp_precedes_marker(inner_t, marker_t) {
                 bail!(
                     "Weka source {source_name}, trace {trace_id}, subagent {agent_id} inner request {inner_index} at {inner_t} precedes its marker at {marker_t} under absolute nested_timestamp_basis"
                 );
@@ -1661,6 +1629,10 @@ fn canonical_nested_timestamp(
             Ok(canonical)
         }
     }
+}
+
+fn nested_timestamp_precedes_marker(inner_t: f64, marker_t: f64) -> bool {
+    inner_t < marker_t - JOIN_EPSILON_SECONDS
 }
 
 fn subagent_end(
@@ -2623,7 +2595,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_rejects_mixed_absolute_and_relative_evidence_across_jsonl() {
+    fn auto_uses_later_relative_evidence_for_the_complete_jsonl_corpus() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("mixed.jsonl");
         let absolute = trace_value(
@@ -2646,17 +2618,48 @@ mod tests {
         );
         std::fs::write(&path, format!("{absolute}\n{relative}\n")).unwrap();
 
-        let error = WekaImporter::open(&path).err().expect("mixed basis");
-        let message = error.to_string();
-        assert!(message.contains("mixes decisive nested timestamp bases"));
-        assert!(message.contains("trace absolute-play, subagent absolute-worker"));
-        assert!(message.contains("trace relative-play, subagent relative-worker"));
+        let importer = WekaImporter::open(&path).unwrap();
+        let (summary, rows) = importer.collect_rows().unwrap();
+        assert_eq!(
+            summary.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Relative
+        );
+        let child_starts = rows
+            .iter()
+            .filter(|row| row.request_id.contains(":inner:"))
+            .map(|row| row.not_before_ms)
+            .collect::<Vec<_>>();
+        // The first subagent happens to look absolute, but a later corpus row
+        // selects relative and that one basis is applied uniformly to both.
+        assert_eq!(child_starts, vec![20_000.0, 20_000.0]);
     }
 
     #[test]
-    fn ambiguous_auto_requires_explicit_basis_and_semantic_digest_records_it() {
+    fn auto_scans_beyond_the_first_child_for_relative_evidence() {
         let directory = tempdir().unwrap();
-        let path = directory.path().join("ambiguous.json");
+        let path = directory.path().join("later-child.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":1.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":1.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]},
+                    {"t":0.5,"type":"s","model":"model","in":8,"out":1,"hash_ids":[2,3]}
+                ],"models":["model"]}
+            ]),
+        );
+
+        let importer = WekaImporter::open(&path).unwrap();
+        assert_eq!(
+            importer.collect_rows().unwrap().0.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Relative
+        );
+    }
+
+    #[test]
+    fn auto_defaults_delayed_children_to_absolute_and_explicit_override_is_authoritative() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("delayed-absolute.json");
         write_trace(
             &path,
             serde_json::json!([
@@ -2667,12 +2670,7 @@ mod tests {
             ]),
         );
 
-        let error = WekaImporter::open(&path).err().expect("ambiguous auto");
-        assert!(
-            error
-                .to_string()
-                .contains("set nested_timestamp_basis to 'absolute' or 'relative'")
-        );
+        let automatic = WekaImporter::open(&path).unwrap();
         let absolute = WekaImporter::open_with_options(
             &path,
             WekaImportOptions {
@@ -2687,6 +2685,14 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(
+            automatic.collect_rows().unwrap().0.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Absolute
+        );
+        assert_eq!(
+            automatic.header().source.digest,
+            absolute.header().source.digest
+        );
         assert_ne!(
             absolute.header().source.digest,
             relative.header().source.digest
@@ -2718,10 +2724,29 @@ mod tests {
         .unwrap();
         let (_, rows) = importer.collect_rows().unwrap();
         assert_eq!(rows[1].not_before_ms, 1_000.0);
+
+        let boundary_path = directory.path().join("epsilon-boundary.json");
+        let boundary = 1.0 - JOIN_EPSILON_SECONDS;
+        write_trace(
+            &boundary_path,
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":1.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":boundary,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+        let boundary_importer = WekaImporter::open(&boundary_path).unwrap();
+        let (summary, rows) = boundary_importer.collect_rows().unwrap();
+        assert_eq!(
+            summary.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Absolute
+        );
+        assert_eq!(rows[1].not_before_ms, 1_000.0);
     }
 
     #[test]
-    fn auto_reports_equivalent_and_not_applicable_corpora() {
+    fn auto_treats_zero_marker_as_absolute_with_equivalent_canonical_rows() {
         let directory = tempdir().unwrap();
         let no_subagent = directory.path().join("plain.json");
         write_trace(&no_subagent, serde_json::json!([request(0.0, 4, 1, &[1])]));
@@ -2745,14 +2770,23 @@ mod tests {
                 ],"models":["model"]}
             ]),
         );
+        let automatic = WekaImporter::open(&equivalent).unwrap();
+        let relative = WekaImporter::open_with_options(
+            &equivalent,
+            WekaImportOptions {
+                nested_timestamp_basis: WekaNestedTimestampBasis::Relative,
+            },
+        )
+        .unwrap();
+        let (automatic_summary, automatic_rows) = automatic.collect_rows().unwrap();
+        let (_, relative_rows) = relative.collect_rows().unwrap();
         assert_eq!(
-            WekaImporter::open(&equivalent)
-                .unwrap()
-                .collect_rows()
-                .unwrap()
-                .0
-                .nested_timestamp_basis,
-            WekaResolvedTimestampBasis::Equivalent
+            automatic_summary.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Absolute
+        );
+        assert_eq!(
+            serde_json::to_value(automatic_rows).unwrap(),
+            serde_json::to_value(relative_rows).unwrap()
         );
 
         let nearly_zero = directory.path().join("nearly-zero.json");
@@ -2765,11 +2799,43 @@ mod tests {
                 ],"models":["model"]}
             ]),
         );
-        let error = WekaImporter::open(&nearly_zero)
+        let nearly_zero = WekaImporter::open(&nearly_zero).unwrap();
+        let (summary, rows) = nearly_zero.collect_rows().unwrap();
+        assert_eq!(
+            summary.nested_timestamp_basis,
+            WekaResolvedTimestampBasis::Absolute
+        );
+        assert_eq!(rows[1].not_before_ms, 0.0005);
+    }
+
+    #[test]
+    fn auto_still_validates_later_rows_after_finding_relative_evidence() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("invalid-later.jsonl");
+        let relative = trace_value(
+            "relative-play",
+            serde_json::json!([
+                request(0.0, 4, 1, &[1]),
+                {"t":10.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","status":"completed","requests":[
+                    {"t":0.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[2]}
+                ],"models":["model"]}
+            ]),
+        );
+        let invalid = trace_value(
+            "invalid-play",
+            serde_json::json!([request(-1.0, 4, 1, &[3])]),
+        );
+        std::fs::write(&path, format!("{relative}\n{invalid}\n")).unwrap();
+
+        let error = WekaImporter::open(&path)
             .err()
-            .expect("near-zero marker is not mathematically equivalent");
+            .expect("later malformed rows must still fail preflight");
         assert!(
-            error.to_string().contains("basis is ambiguous"),
+            error.to_string().contains("invalid-later.jsonl#000001"),
+            "{error:#}"
+        );
+        assert!(
+            error.to_string().contains("invalid request timestamp"),
             "{error:#}"
         );
     }

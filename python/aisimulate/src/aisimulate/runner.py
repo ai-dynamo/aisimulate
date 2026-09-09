@@ -203,8 +203,8 @@ class EngineReplayRunner:
         resolved_basis = report.get("weka_nested_timestamp_basis")
         if isinstance(resolved_basis, str):
             logger.info(
-                "Interpreting the complete Weka corpus with nested timestamp basis %r; "
-                "the resolved basis is included in source identity",
+                "The complete Weka corpus uses resolved nested timestamp basis %r; auto selection, "
+                "when requested, is a corpus-wide heuristic and the resolved basis is included in source identity",
                 resolved_basis,
             )
         return _normalize_engine_replay_report(

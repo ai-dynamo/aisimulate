@@ -508,10 +508,15 @@ Dynamo is an optional integration and is not required to parse, convert, or pred
 Two producer timestamp conventions exist: raw kv-cache-tester nested request timestamps are relative
 to their subagent marker, while SemiAnalysis-published AgentX timestamps are root-trace absolute.
 `nested_timestamp_basis` may select either convention explicitly. When omitted (or set to `auto`),
-AISimulate scans every JSON/JSONL row before lowering, resolves one convention from decisive first-inner
-anchors, and rejects mixed or inconclusive non-equivalent corpora. It never guesses per request. Both
-conventions lower to root-absolute canonical timestamps. The selected basis is logged, reported as
-`weka_nested_timestamp_basis`, and included in source identity.
+AISimulate scans every nested request in every JSON/JSONL row before lowering. If any child timestamp
+is earlier than its subagent marker by more than the join epsilon, the complete corpus is interpreted
+as relative; otherwise it is interpreted as absolute. This is one corpus-wide heuristic, never a
+per-request rewrite. It cannot prove that a corpus is homogeneous: a malformed absolute request can
+select relative for the entire corpus, while relative offsets that are all at or above their markers
+can select absolute. Producers with ambiguous data should set the basis explicitly. Both conventions
+lower uniformly to root-absolute canonical timestamps. The selected basis and whether it was inferred
+heuristically or configured are logged; the resolved value is reported as
+`weka_nested_timestamp_basis` and included in source identity.
 The neutral importer accepts mixed source models and preserves each request's model label in graph
 provenance and identity. Version 1 execution is intentionally single-target: before the graph enters
 the model-neutral `WorkloadDriver`, AISimulate projects every request onto the one model configured by
