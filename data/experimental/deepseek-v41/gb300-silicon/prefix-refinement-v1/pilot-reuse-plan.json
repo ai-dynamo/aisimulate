@@ -1,0 +1,48 @@
+{
+  "cases": [
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0000",
+      "phase": "context",
+      "prefix": 256,
+      "query": 3
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0001",
+      "phase": "context",
+      "prefix": 256,
+      "query": 128
+    }
+  ],
+  "schema_version": 1,
+  "source_payload": {
+    "decode": [],
+    "prefill": [
+      {
+        "batch_size": 1,
+        "rows": [
+          [
+            3,
+            256
+          ]
+        ],
+        "total_kv_read_tokens": 256,
+        "total_prefill_tokens": 3
+      },
+      {
+        "batch_size": 1,
+        "rows": [
+          [
+            128,
+            256
+          ]
+        ],
+        "total_kv_read_tokens": 256,
+        "total_prefill_tokens": 128
+      }
+    ],
+    "schema_version": 3
+  },
+  "source_sha256": "3510af05f3857f5ffa24305fbf045d10633594ffda7f69a0c13b89f5565aa626"
+}
