@@ -48,7 +48,7 @@ The original thinking template is a runtime dependency, not vendored here.
 ## Short diagnostic window
 
 The user requested approximately10-minute measurements to accelerate iteration.
-Both off/on cases use `--benchmark-duration600 --unsafe-override`: the pinned
+Both off/on cases use `--benchmark-duration 600 --unsafe-override`: the pinned
 AgentX scenario normally enforces a900-second minimum. Consequently these runs
 are explicitly diagnostic, and `submission_valid=false` is expected from that
 protocol override. Request errors, cancellations, coverage and FPM validity still
