@@ -311,11 +311,11 @@ class TestGemma4VisionRuntime:
 
         latency, energy, source = BaseBackend()._run_visual_context_phase(model, object(), runtime, batch_size=2)
 
-        expected_scale = (280 * 279 / 2) / (280**2 / 2)
-        assert latency["context_swa_visual_block_attention"] == pytest.approx(10.0 * expected_scale)
-        assert energy["context_swa_visual_block_attention"] == pytest.approx(20.0 * expected_scale)
+        assert latency["context_swa_visual_block_attention"] == 10.0
+        assert energy["context_swa_visual_block_attention"] == 20.0
         assert source == {"context_swa_visual_block_attention": "silicon"}
         assert captured["ops_json"] == "visual-ops"
         assert captured["batch_size"] == 2
         assert captured["s"] == 280
         assert captured["imbalance_correction_scale"] == 1.25
+        assert captured["visual_block_upper_triangle"] is True

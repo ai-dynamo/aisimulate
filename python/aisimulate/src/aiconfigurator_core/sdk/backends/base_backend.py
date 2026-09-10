@@ -625,23 +625,14 @@ class BaseBackend:
             batch_size=image_batch,
             s=tokens_per_image,
             imbalance_correction_scale=runtime_config.seq_imbalance_correction_scale,
+            visual_block_upper_triangle=True,
         )
-        ops_by_name = {op._name: op for op in visual_ops}
         latency_dict: dict[str, float] = {}
         energy_dict: dict[str, float] = {}
         source_dict: dict[str, str] = {}
-        upper_triangle_pairs = tokens_per_image * (tokens_per_image - 1) / 2
         for name, latency_ms, energy_wms, source in entries:
-            op = ops_by_name[name]
-            window_size = op._window_size
-            modeled_causal_pairs = (
-                tokens_per_image**2 / 2
-                if window_size <= 0 or tokens_per_image <= window_size
-                else tokens_per_image * window_size
-            )
-            overlay_scale = upper_triangle_pairs / modeled_causal_pairs
-            latency_dict[name] = float(latency_ms) * overlay_scale
-            energy_dict[name] = float(energy_wms) * overlay_scale if include_energy else 0.0
+            latency_dict[name] = float(latency_ms)
+            energy_dict[name] = float(energy_wms) if include_energy else 0.0
             source_dict[name] = source
         return latency_dict, energy_dict, source_dict
 

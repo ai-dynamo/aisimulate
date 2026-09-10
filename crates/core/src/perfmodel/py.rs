@@ -753,7 +753,8 @@ impl AicEngine {
     }
 
     /// Evaluate context-attention kernels without fused RoPE/KV-write extras.
-    #[pyo3(signature = (ops_json, batch_size, s, prefix=0, imbalance_correction_scale=1.0))]
+    #[pyo3(signature = (ops_json, batch_size, s, prefix=0, imbalance_correction_scale=1.0, visual_block_upper_triangle=false))]
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_context_attention_kernels_json(
         &self,
         py: Python<'_>,
@@ -762,6 +763,7 @@ impl AicEngine {
         s: u32,
         prefix: u32,
         imbalance_correction_scale: f64,
+        visual_block_upper_triangle: bool,
     ) -> PyResult<Vec<PerOpValue>> {
         self.inner.reset_provenance();
         py.allow_threads(|| {
@@ -771,6 +773,7 @@ impl AicEngine {
                 s,
                 prefix,
                 imbalance_correction_scale,
+                visual_block_upper_triangle,
             )
         })
         .map_err(aic_to_py)

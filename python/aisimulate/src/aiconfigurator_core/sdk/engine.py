@@ -1148,10 +1148,16 @@ class EngineHandle:
         s: int,
         prefix: int = 0,
         imbalance_correction_scale: float = 1.0,
+        visual_block_upper_triangle: bool = False,
     ) -> list[PerOpValue]:
         """Evaluate visual-mask kernel work without repeating fused attention extras."""
         return self._engine.evaluate_context_attention_kernels_json(
-            ops_json, int(batch_size), int(s), int(prefix), float(imbalance_correction_scale)
+            ops_json,
+            int(batch_size),
+            int(s),
+            int(prefix),
+            float(imbalance_correction_scale),
+            bool(visual_block_upper_triangle),
         )
 
     def evaluate_ops_sol_json(

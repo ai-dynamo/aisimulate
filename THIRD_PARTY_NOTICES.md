@@ -46,11 +46,22 @@ The following files are derived from vLLM's attention test utilities at tag
 Upstream source:
 https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
 
-The Gemma 4 vision operation topology and replicated multimodal adapter in
-`src/aiconfigurator_core/sdk/models/blocks/vit.py` follow vLLM at commit
+The Gemma 4 visual-mask behavior and replicated multimodal adapter in
+`src/aiconfigurator_core/sdk/models/gemma4.py` and
+`src/aiconfigurator_core/sdk/models/blocks/vit.py` are adapted and modified
+for performance modeling from vLLM at commit
 `d2906091bfc579cebefe3d8e8fb9077397ce9882`:
 
 https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/gemma4.py
+https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/gemma4_mm.py
+
+The Gemma 4 source preserves these upstream notices:
+
+Copyright contributors to the vLLM project.
+Copyright 2025 The vLLM team.
+Copyright 2025 Google Inc. HuggingFace Inc. team. All rights reserved.
+
+This material is licensed under the Apache License 2.0.
 
 The upstream license at that revision is available at:
 https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/LICENSE
@@ -407,7 +418,8 @@ Transformers project at tag `v4.57.1`:
 https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/models/llama/modeling_llama.py#L109-L113
 
 The Gemma 4 vision-tower graph, bidirectional visual-block mask behavior, and
-aspect-ratio-preserving processor math in these files follow Hugging Face
+aspect-ratio-preserving processor math in these files are adapted and modified
+for performance modeling from Hugging Face
 Transformers at commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
 
 - `src/aiconfigurator_core/sdk/models/blocks/vit.py`
@@ -418,6 +430,9 @@ Upstream sources:
 
 - https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/gemma4/modeling_gemma4.py
 - https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/gemma4/image_processing_gemma4.py
+
+Copyright 2026 the HuggingFace Team. All rights reserved.
+This Gemma 4 material is licensed under the Apache License 2.0.
 
 The upstream license at that revision is available at:
 https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE

@@ -601,13 +601,19 @@ def test_evaluate_op_helpers_forward_args_and_return_entries_verbatim(monkeypatc
     )
 
     result = rust_engine_step.evaluate_context_attention_kernels_with_rust(
-        model, database, ops_json=ops_json, batch_size=6, s=280, imbalance_correction_scale=0.0
+        model,
+        database,
+        ops_json=ops_json,
+        batch_size=6,
+        s=280,
+        imbalance_correction_scale=0.0,
+        visual_block_upper_triangle=True,
     )
     assert result is entries
     assert calls[3] == (
         "attention_kernels",
         ops_json,
-        {"batch_size": 6, "s": 280, "imbalance_correction_scale": 0.0},
+        {"batch_size": 6, "s": 280, "imbalance_correction_scale": 0.0, "visual_block_upper_triangle": True},
     )
 
 
