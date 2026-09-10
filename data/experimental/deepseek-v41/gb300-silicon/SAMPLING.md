@@ -1,16 +1,66 @@
 # Independent sampling assessment
 
-The current 32 profile/workload cells qualify implementation paths. Three
-repetitions estimate within-cell noise; they do not add architectural coverage.
-The 618 module keys and 45 baseline keys are derived operator geometries, not
-independent full-model cases. Prefix 128, which independent serving verification
-uses, is absent from the current `{0,256}` grid and must be reported as missing.
+The first 32 profile/workload cells qualified implementation paths. Their 618
+module keys and 45 baseline keys were derived operator geometries, not
+independent full-model cases. That pilot's `{0,256}` prefix grid did not cover
+the serving verification's prefix 128. The completed common study and separately
+versioned prefix refinement below expand coverage while preserving the pilot.
+Repetitions estimate within-cell noise; they do not add architectural coverage.
+
+## Completed designs and interpretation
+
+| Study | Calibration configurations | Fresh holdout geometries | Repetitions and scope |
+|---|---:|---:|---|
+| [Common GB300 study](study/README.md) | 126 per profile | 38 per profile | Three measurements per configuration, after one warmup |
+| [Precision attempt](report/precision-v2/README.md) | Unchanged | Same 38 per profile | Separate ten-repeat attempt; original attempt retained |
+| [Prefix refinement](report/prefix-refinement-v1/README.md) | 18 additional bounded-profile configurations; two earlier pilot attention cells explicitly reused | 46 per profile, disjoint from original calibration, original 38 and new calibration | Ten-repeat holdouts; no forward-holdout timing becomes a module row |
+| [Ordinary serving, OFF](report/serving-v4/off-prefix-refined/README.md) | Frozen original/refined overlays compared separately | 15 metric-bearing scenarios per trial | Ten pilot trials selected 40 main trials; 600 metric cohorts / 880 requests |
+
+The 126/38 design is a bounded geometry and interpolation assessment. It is not
+a statistical proof of accuracy across arbitrary contexts, content or hardware.
+The new 46 geometries cannot be compared with the original 38 as if a change in
+their aggregate error isolated the effect of calibration refinement. The OFF
+serving report instead uses exactly the same observations for both overlays and
+shows prediction coverage as well as error on the same supported subset.
+
+For E2E precision, the frozen rule estimates `CV = sample_stddev / mean` from
+ten pilot trials and takes the largest requirement across all 15 scenarios'
+TTFT, mean time per output token and throughput:
+
+`N_required = max(20, round_up_to_10((1.96 * CV / 0.05)^2))`.
+
+The main-stage cap is 100. Pilot data chooses this budget and is excluded from
+main confidence intervals. The normal approximation is a planning estimate
+using an estimated variance, so achieved interval widths must also be reported;
+it does not guarantee them. See the [NIST sample-size guidance](https://www.itl.nist.gov/div898/handbook/prc/section2/prc222.htm).
+The completed OFF run selected 40 trials and all 45 required mean intervals had
+relative half-width at most 5% (maximum 4.38%). The ON pilot selected a requirement
+of 150, above the 100-trial cap; this remains a recorded precision shortfall.
+The ON pilot statistics are frozen at SHA256
+`d7a0388ea15514f67165d2b06aeb2fb7b8faed52d11e7e2fda7a0abc393df2d6`;
+this budget receipt does not qualify the still separate main observations.
+
+Bootstrap intervals resample whole trials and are pointwise, conditional on the
+observed physical runtime and frozen calibration. They do not give simultaneous
+95% coverage of all 45 metrics or include uncertainty from collecting another
+calibration table. Tokens, native dispatches and four TP ranks do not increase
+the trial count. If a fixed allocation deadline divides the main plan across
+physical lifecycles, retain the original trial IDs and all boundary observations,
+report lifecycle-specific complete-trial intervals where eligible, and report
+combined coverage and errors descriptively. Do not pool those segments into a
+single-run confidence interval or claim the original precision target passed.
+
+GB200's native FPM policy currently collects one timing per manifest point.
+Its independent 38-point holdout therefore supports descriptive prediction
+errors, with no per-geometry repeated-run confidence interval. HTTP E2E uses the
+separate pilot/main rule. Different observation boundaries and replication
+units must remain explicit in the combined PR report.
 
 ## Common bounded calibration and hold-out domain
 
 For the common GB200/GB300 text domain, fix TP4/EP1, batch 1–2, total new tokens
 per iteration at most 512, per-request past KV at most 2048 (native decode includes the current token, up to 2049), and eager execution.
-The proposed explicit point manifest has the following independently checked
+The frozen explicit point manifest has the following independently checked
 counts **per execution profile**:
 
 | Purpose | Grid and constraint | Points |
@@ -24,7 +74,7 @@ counts **per execution profile**:
 For SGLang replay OFF and ON this is 252 calibration and 76 held-out forward
 configurations. vLLM's verified full profile needs one set. These counts exclude
 warmup, statistical repetitions, content variants, and actual prefix-building
-forwards. The current prefix-256 samples remain evidence but do not substitute
+forwards. The original prefix-256 samples remain evidence but do not substitute
 for an exact prefix-128/512/1536 bucket.
 
 This is a reasonable bounded first calibration design, not a universal minimum
@@ -44,7 +94,8 @@ combined validation report specifies the adaptive repetition rule.
 ## Separate semantic and extended-domain challenges
 
 Use at least two additional tokenized corpora with different repetition/locality
-at four representative cells per profile: 16 further SGLang E2E observations.
+at four representative cells per profile: 16 further SGLang corpus/scenario/
+profile combinations, each with its own pilot and main repetitions.
 Preserve input hashes and actual expert histograms. One uniform-routing baseline
 cannot establish Engram locality or expert-popularity accuracy.
 
@@ -123,6 +174,6 @@ The native point manifest's decode axis is **past KV**, while SGLang attention
 keys include the current token. Plans and forward records therefore retain
 both `canonical_past_kv=K` and `native_inclusive_kv=K+1`; the runner seeds K
 real tokens. At batch 2 and past KV 2048 the decode needs 4098 logical token
-slots before page rounding. The next canary uses 8192 allocator slots and a
+slots before page rounding. The expanded native-forward study uses 8192 allocator slots and a
 4096-token prefill setup capacity, while preserving every measured geometry.
 These are capacity settings, not an expansion of the statistical study domain.
