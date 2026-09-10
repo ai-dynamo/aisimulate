@@ -395,6 +395,7 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    decoder_replay: bool = False,
     database_mode: str | None = None,
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
@@ -429,6 +430,7 @@ def compile_engine(
     # Apply MTP BEFORE get_model so the walked op lists carry the
     # (L+nextn)/L compute scale; accepted-token progress is applied above core.
     apply_nextn(model_config, nextn)
+    model_config.decoder_replay = decoder_replay
     model = get_model(model_path, model_config, backend)
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a

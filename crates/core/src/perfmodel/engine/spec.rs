@@ -165,10 +165,11 @@ mod tests {
     use crate::operators::op::{FallbackOp, OverlapOp};
     use crate::operators::{
         ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp,
-        Dsv4ModuleOp, ElementwiseOp, EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp,
-        GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp,
-        MlaModuleOp, MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp, P2POp,
-        VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
+        Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp,
+        EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp, GenerationAttentionOp, GenerationMlaOp,
+        KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp, MoeAllToAllOp,
+        MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp, WideEpContextMlaOp,
+        WideEpGenerationMlaOp,
     };
     use crate::perf_database::dsv4::AttnKind;
     use crate::{
@@ -700,6 +701,50 @@ mod tests {
             OpSpec::FpmForward(fpm_forward()),
             OpSpec::MoeAllToAll(moe_all_to_all()),
             OpSpec::MoeExpertCompute(moe_expert_compute()),
+            OpSpec::Dsv41Attention(Dsv41AttentionOp {
+                name: "v41_attention".into(),
+                is_context: true,
+                role: "full".into(),
+                compress_ratio: 2,
+                hidden_size: 5120,
+                num_heads: 16,
+                head_dim: 512,
+                q_lora_rank: 1280,
+                o_lora_rank: 1024,
+                o_groups: 2,
+                index_n_heads: 8,
+                index_head_dim: 128,
+                index_topk: 512,
+                window_size: 128,
+                candidate_limit: 0,
+                is_candidate_source: false,
+                bounded_prefill: false,
+                gemm_quant_mode: GemmQuantMode::Fp8Block,
+                fmha_quant_mode: FmhaQuantMode::Fp8,
+            }),
+            OpSpec::Dsv41Mhc(Dsv41MhcOp {
+                name: "v41_mhc".into(),
+                hidden_size: 5120,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            }),
+            OpSpec::Dsv41Engram(Dsv41EngramOp {
+                name: "v41_engram".into(),
+                num_embeddings: 384006168,
+                head_dim: 256,
+                hash_columns: 24,
+                hidden_size: 5120,
+                hc_mult: 4,
+                tp_size: 4,
+            }),
+            OpSpec::Dsv41Stage(Dsv41StageOp {
+                name: "v41_stage".into(),
+                is_context: true,
+                decoder_replay: true,
+                bounded: true,
+                window_size: 128,
+                children: vec![OpSpec::Gemm(gemm())],
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -740,7 +785,11 @@ mod tests {
                 | OpSpec::Dsv4MegaMoe(_)
                 | OpSpec::Kda(_)
                 | OpSpec::MoeAllToAll(_)
-                | OpSpec::MoeExpertCompute(_) => {}
+                | OpSpec::MoeExpertCompute(_)
+                | OpSpec::Dsv41Attention(_)
+                | OpSpec::Dsv41Mhc(_)
+                | OpSpec::Dsv41Engram(_)
+                | OpSpec::Dsv41Stage(_) => {}
             }
         }
         ops
@@ -817,11 +866,14 @@ mod tests {
             "MoeExpertCompute index moved"
         );
 
-        // The two last variants must stay adjacent and terminal: appending is
-        // the only safe growth direction.
+        // Existing variants remain adjacent; the four V41 variants append
+        // after them without shifting any persisted index.
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
+        for (offset, op) in all_op_variants().iter().skip(35).enumerate() {
+            assert_eq!(index_of(op), 35 + offset as u32, "V41 appended index moved");
+        }
         assert_eq!(
-            MOE_EXPERT_COMPUTE_INDEX as usize + 1,
+            MOE_EXPERT_COMPUTE_INDEX as usize + 5,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );

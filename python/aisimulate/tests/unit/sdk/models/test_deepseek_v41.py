@@ -58,3 +58,88 @@ def test_unverified_replay_backend_fails(backend):
     assert resolve_execution_profile(False, backend) == "full"
     with pytest.raises(NotImplementedError, match="not verified"):
         resolve_execution_profile(True, backend)
+
+
+def _build_model(*, replay=False, backend="sglang", tp=4):
+    from aiconfigurator_core.sdk.config import ModelConfig
+    from aiconfigurator_core.sdk.models import get_model
+
+    return get_model(
+        MODEL_PATH,
+        ModelConfig(tp_size=tp, pp_size=1, attention_dp_size=1, moe_tp_size=1, moe_ep_size=tp, decoder_replay=replay),
+        backend,
+    )
+
+
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+def test_v41_text_graph_full_profile_all_backends(backend):
+    import json
+
+    model = _build_model(backend=backend)
+    assert model.execution_profile == "full"
+    assert not model.encoder_ops
+    specs = [json.loads(op._spec_json()) for op in model.context_ops]
+    stages = [op["Dsv41Stage"] for op in specs if "Dsv41Stage" in op]
+    assert len(stages) == 40
+    assert sum(stage["bounded"] for stage in stages) == 19
+    assert all(not stage["decoder_replay"] for stage in stages)
+    roles = Counter(
+        next(c["Dsv41Attention"]["role"] for c in stage["children"] if "Dsv41Attention" in c) for stage in stages
+    )
+    assert roles == {"swa": 2, "full": 4, "reindex": 4, "reuse": 30}
+
+
+def test_replay_keeps_inventory_and_kv_pool_capacity():
+    full, replay = _build_model(), _build_model(replay=True)
+    assert replay.execution_profile == "decoder_bounded"
+    assert full.get_resident_weights_bytes() == replay.get_resident_weights_bytes()
+    assert full.get_resident_weights_bytes() > full.extra_params.engram_table_bytes(4)
+    assert full.get_kvcache_bytes_per_sequence(4096) == replay.get_kvcache_bytes_per_sequence(4096)
+    assert replay.get_kvcache_max_tokens(replay.get_kvcache_bytes_per_sequence(4096)) == 4096
+
+
+def test_batch_capacity_reserves_each_request_window(descriptor):
+    model = _build_model()
+    fixed = 40 * 128 * 512 + 3 * 2 * 2 * 512 * 4
+    assert model.get_kvcache_batch_capacity(4 * fixed + 4096 * 890, 4) == 4096
+    assert model.get_kvcache_batch_capacity(4 * fixed - 1, 4) == 0
+    assert model.get_additional_activation_bytes(1024) > 1024 * 4 * 5120 * 2
+
+
+@pytest.mark.parametrize(("dp", "pp"), [(2, 1), (1, 2)])
+def test_unmodeled_parallel_cache_ownership_fails(dp, pp):
+    from aiconfigurator_core.sdk.config import ModelConfig
+    from aiconfigurator_core.sdk.models import get_model
+
+    with pytest.raises(NotImplementedError, match="DP Engram collectives and PP cache ownership"):
+        get_model(
+            MODEL_PATH,
+            ModelConfig(tp_size=4, pp_size=pp, attention_dp_size=dp, moe_tp_size=1, moe_ep_size=4 * dp),
+            "sglang",
+        )
+
+
+def test_native_sol_replay_decode_and_short_extend_contract():
+    from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
+
+    def engine(replay):
+        return EngineHandle(
+            compile_engine(
+                MODEL_PATH,
+                "gb300",
+                "sglang",
+                tp_size=4,
+                moe_tp_size=1,
+                moe_ep_size=4,
+                decoder_replay=replay,
+                database_mode="SOL",
+            )
+        )
+
+    full, replay = engine(False), engine(True)
+    assert replay.predict_prefill_latency(1, 1024) < full.predict_prefill_latency(1, 1024)
+    assert replay.predict_decode_latency(1, 1024) == full.predict_decode_latency(1, 1024)
+    # Both modes process the same three actual query tokens; the bounded SWA
+    # intentionally does not read the pre-existing ring prefix.
+    assert replay.predict_prefill_latency(1, 4099, 4096) > 0
+    assert replay.mixed_step_latency(2048, 1, 1024, 2) > 0

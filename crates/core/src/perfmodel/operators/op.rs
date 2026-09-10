@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::common::error::AicError;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
+    Dsv41AttentionOp, Dsv41MhcOp, Dsv41EngramOp, Dsv41StageOp,
     ElementwiseOp, EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp,
     GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp,
     MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp,
@@ -171,6 +172,10 @@ pub enum Op {
     /// the op's `inference_phase` field selects the slice.
     /// Measured-SILICON-only; see `operators/moe_expert_compute.rs`.
     MoeExpertCompute(MoeExpertComputeOp),
+    Dsv41Attention(Dsv41AttentionOp),
+    Dsv41Mhc(Dsv41MhcOp),
+    Dsv41Engram(Dsv41EngramOp),
+    Dsv41Stage(Dsv41StageOp),
 }
 
 /// Inline-defined here (rather than a sibling module under `operators/`)
@@ -224,6 +229,10 @@ impl Op {
     /// family multiplies its own scale_factor inside its `weight_bytes`.
     pub fn weight_bytes(&self) -> f64 {
         match self {
+            Op::Dsv41Attention(o) => o.weight_bytes(),
+            Op::Dsv41Mhc(o) => o.weight_bytes(),
+            Op::Dsv41Engram(o) => o.weight_bytes(),
+            Op::Dsv41Stage(o) => o.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
             Op::Moe(o) => o.weight_bytes(),
@@ -278,6 +287,10 @@ impl Op {
     /// debugging.
     pub fn name(&self) -> &str {
         match self {
+            Op::Dsv41Attention(o) => &o.name,
+            Op::Dsv41Mhc(o) => &o.name,
+            Op::Dsv41Engram(o) => &o.name,
+            Op::Dsv41Stage(o) => &o.name,
             Op::Gemm(o) => &o.name,
             Op::Embedding(o) => &o.name,
             Op::Elementwise(o) => &o.name,
@@ -321,6 +334,10 @@ impl Op {
     /// returns them). Every variant carries `name`.
     pub fn set_name(&mut self, name: String) {
         match self {
+            Op::Dsv41Attention(o) => o.name = name,
+            Op::Dsv41Mhc(o) => o.name = name,
+            Op::Dsv41Engram(o) => o.name = name,
+            Op::Dsv41Stage(o) => o.name = name,
             Op::Gemm(o) => o.name = name,
             Op::Embedding(o) => o.name = name,
             Op::Elementwise(o) => o.name = name,
@@ -409,6 +426,10 @@ impl Op {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         match self {
+            Op::Dsv41Attention(op) => op.query(db, ctx),
+            Op::Dsv41Mhc(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv41Engram(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv41Stage(op) => op.query(db, ctx),
             Op::Gemm(op) => op.query(db, ctx.num_tokens, None),
             Op::Embedding(op) => op.query(db, ctx.num_tokens),
             Op::Elementwise(op) => op.query(db, ctx.num_tokens),

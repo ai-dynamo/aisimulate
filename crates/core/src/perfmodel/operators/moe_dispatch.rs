@@ -136,6 +136,15 @@ impl MoEDispatchOp {
 
     pub fn query(&self, db: &PerfDatabase, num_tokens: u32) -> Result<PerformanceResult, AicError> {
         let spec: &SystemSpec = &db.system_spec;
+        // Explicit attention modules already include this TP reduction. With
+        // no attention DP, the following pre-dispatch has no collective work.
+        if self.pre_dispatch
+            && self.attn_ar_modeled
+            && self.attention_dp_size == 1
+            && self.attn_cp_size == 1
+        {
+            return Ok(PerformanceResult::sol(SolComponents::new(0.0, 0.0)));
+        }
         match self.flavor {
             DispatchFlavor::RetiredDeepEp => {
                 return Err(AicError::InvalidEngineConfig(format!(
@@ -206,7 +215,24 @@ impl MoEDispatchOp {
                     }
                     BackendKind::Sglang => {
                         let combined_tp_dp = attn_tp > 1 && attn_dp > 1;
-                        if combined_tp_dp {
+                        if pre && self.attn_ar_modeled {
+                            // The attention module has already reduced its TP
+                            // partials. Gather replicated inputs across DP;
+                            // reducing again would double count that collective.
+                            if attn_dp > 1 {
+                                NcclOp::new(
+                                    &self.name,
+                                    1.0,
+                                    self.hidden_size as f64,
+                                    num_gpus,
+                                    "all_gather",
+                                )
+                                .query(db, num_tokens * attn_dp)?
+                                .latency_ms
+                            } else {
+                                0.0
+                            }
+                        } else if combined_tp_dp {
                             // Two NCCL terms; order/op differs between pre and combine.
                             let (op1, gpus1, tokens1, op2, gpus2, tokens2) = if pre {
                                 (
@@ -294,9 +320,13 @@ impl MoEDispatchOp {
                     }
                 };
 
-                Ok(PerformanceResult::new(comm_latency_ms, Source::Silicon)
-                    .clamp_non_negative()
-                    .scaled(self.scale_factor))
+                let result =
+                    if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+                        PerformanceResult::sol(SolComponents::new(0.0, comm_latency_ms))
+                    } else {
+                        PerformanceResult::new(comm_latency_ms, Source::Silicon)
+                    };
+                Ok(result.clamp_non_negative().scaled(self.scale_factor))
             }
             DispatchFlavor::TrtllmAlltoall => {
                 // Full port of Python `MoEDispatch.query`'s trtllm branch
@@ -415,9 +445,13 @@ impl MoEDispatchOp {
                     0.0
                 };
 
-                Ok(PerformanceResult::new(comm_latency_ms, Source::Silicon)
-                    .clamp_non_negative()
-                    .scaled(self.scale_factor))
+                let result =
+                    if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+                        PerformanceResult::sol(SolComponents::new(0.0, comm_latency_ms))
+                    } else {
+                        PerformanceResult::new(comm_latency_ms, Source::Silicon)
+                    };
+                Ok(result.clamp_non_negative().scaled(self.scale_factor))
             }
         }
     }

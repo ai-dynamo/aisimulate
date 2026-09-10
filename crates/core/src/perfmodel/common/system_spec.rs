@@ -42,6 +42,9 @@ pub struct GpuSpec {
     /// HBM capacity in bytes.
     #[serde(default)]
     pub mem_capacity: Option<u64>,
+    /// Peak scalar FP32 throughput (not tensor-core throughput).
+    #[serde(default)]
+    pub fp32_flops: Option<f64>,
     /// Peak TC-FLOPS at bf16.
     #[serde(default)]
     pub bfloat16_tc_flops: Option<f64>,
@@ -221,6 +224,7 @@ mod tests {
         let spec = SystemSpec {
             data_dir: PathBuf::from("data/synthetic"),
             gpu: GpuSpec {
+                fp32_flops: None,
                 mem_bw: 1.0,
                 mem_bw_empirical_scaling_factor: 1.0,
                 mem_empirical_constant_latency: 0.0,
@@ -259,6 +263,7 @@ mod tests {
         let spec = SystemSpec {
             data_dir: PathBuf::from("data/synthetic"),
             gpu: GpuSpec {
+                fp32_flops: None,
                 mem_bw: 1.0,
                 mem_bw_empirical_scaling_factor: 1.0,
                 mem_empirical_constant_latency: 0.0,

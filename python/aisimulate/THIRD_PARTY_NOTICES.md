@@ -295,6 +295,25 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## SGLang DeepSeek-V4.1 serving contracts
+
+The V4.1 execution and performance-model logic in
+`src/aiconfigurator_core/sdk/deepseek_v41.py`, `sdk/models/deepseek_v41.py`
+(with the same `src/aiconfigurator_core/` prefix), and repository-root
+`crates/core/src/perfmodel/operators/dsv41.rs` is informed by and modified from
+SGLang's serving architecture at immutable commit
+`1aa0e962b206102b7c439a4a0c4981cfec6e87bc`:
+
+- `python/sglang/srt/models/deepseek_v4.py` and `deepseek_v2.py`
+- `python/sglang/srt/layers/engram.py`
+- `python/sglang/srt/layers/attention/dsv4/compressor.py`
+- `python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py`
+
+Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+Copyright SGLang contributors. Licensed under Apache-2.0; its terms are
+reproduced in the repository `LICENSE`. These are analytical adaptations,
+not a copy of the model execution implementation.
+
 ## DeepSeek model configuration files
 
 The following model configuration files are copied from, or formatting-only

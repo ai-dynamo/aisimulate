@@ -61,6 +61,7 @@ class BaseBackend:
         "DEEPSEEK",
         "DEEPSEEKV32",
         "DEEPSEEKV4",
+        "DEEPSEEKV41",
         "KIMIK25",
     )
 
@@ -1854,6 +1855,7 @@ class BaseBackend:
                 * 4
             )
 
+        activations += model.get_additional_activation_bytes(num_tokens)
         activations = max(activations, self.MIN_ACTIVATION_BYTES)
 
         # MTP correction: speculative decoding verifies nextn+1 tokens per decode step,
