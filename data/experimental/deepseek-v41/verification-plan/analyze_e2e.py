@@ -51,7 +51,13 @@ def trial_metrics(cohort):
 def summarize(values, *, main, seed=92031519, resamples=5000):
     mean = statistics.mean(values)
     cv = statistics.stdev(values) / mean if len(values) > 1 else None
-    result = {"independent_trials": len(values), "mean": mean, "cv": cv}
+    result = {
+        "independent_trials": len(values),
+        "mean": mean,
+        "median": statistics.median(values),
+        "sample_stddev": statistics.stdev(values) if len(values) > 1 else None,
+        "cv": cv,
+    }
     if not main:
         # NIST normal approximation is a budget estimate; the fixed main-stage
         # bootstrap interval reports the precision actually achieved.
@@ -79,7 +85,28 @@ def analyze(plan, progress):
     seen = set()
     values = defaultdict(lambda: defaultdict(list))
     failures = []
+    invalid_cohorts = []
     primary = {c["purpose"] for c in expected.values() if c.get("comparison_role") == "primary"}
+    if not primary:
+        raise ValueError("plan has no primary scenarios")
+    planned_trials = defaultdict(set)
+    planned_seeds = defaultdict(set)
+    planned_requests = set()
+    for cohort in expected.values():
+        for request in cohort["requests"]:
+            request_id = request["request_id"]
+            if request_id in planned_requests:
+                raise ValueError("duplicate planned request ID")
+            planned_requests.add(request_id)
+        if cohort.get("comparison_role") == "primary":
+            purpose = cohort["purpose"]
+            trial, seed = cohort["trial_index"], cohort["trial_seed"]
+            if trial in planned_trials[purpose] or seed in planned_seeds[purpose]:
+                raise ValueError("duplicate independent trial or seed within a scenario")
+            planned_trials[purpose].add(trial)
+            planned_seeds[purpose].add(seed)
+    if any(len(trials) != plan["requested_trials"] for trials in planned_trials.values()):
+        raise ValueError("planned scenario count differs from requested trials")
     completed = defaultdict(int)
     for row in progress:
         key = row["cohort_id"]
@@ -89,11 +116,15 @@ def analyze(plan, progress):
         target = expected[key]
         if any(row.get(k) != target.get(k) for k in ("purpose", "trial_index", "trial_seed")):
             raise ValueError(f"cohort trial identity mismatch: {key}")
+        request_ids = [r.get("request_id") for r in row["requests"]]
+        expected_ids = {r["request_id"] for r in target["requests"]}
+        if len(request_ids) != len(set(request_ids)) or set(request_ids) != expected_ids:
+            raise ValueError(f"cohort request identity mismatch: {key}")
+        if row.get("valid") is not True or any(r.get("valid") is not True for r in row["requests"]):
+            invalid_cohorts.append(key)
         if target.get("comparison_role") != "primary":
             continue
         metrics = trial_metrics(row)
-        if len(row["requests"]) != len(target["requests"]):
-            metrics = {}
         if not metrics:
             failures.append({"cohort_id": key, "reason": "client_invalid_or_missing_metrics"})
             continue
@@ -109,8 +140,10 @@ def analyze(plan, progress):
         "planned_cohorts": len(expected),
         "observed_cohorts": len(seen),
         "missing_cohorts": sorted(set(expected) - seen),
+        "invalid_client_cohorts": invalid_cohorts,
         "failed_primary_cohorts": failures,
         "client_coverage_complete": len(seen) == len(expected)
+        and not invalid_cohorts
         and not failures
         and all(completed[p] == plan["requested_trials"] for p in primary),
         "qualification": "client statistics only; closed-run and FPM audits are separate",

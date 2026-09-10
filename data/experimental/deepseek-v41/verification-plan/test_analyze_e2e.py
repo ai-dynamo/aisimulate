@@ -13,6 +13,7 @@ def fixture():
     progress = []
     for trial in range(10):
         request = {
+            "request_id": f"request-{trial}",
             "valid": True,
             "ttft_ms": 100,
             "average_tpot_ms": 10,
@@ -63,3 +64,31 @@ def test_duplicate_trial_and_nonfinite_timing_fail_admission():
     result = analyze(plan, progress)
     assert result["main_stage_budget"] is None
     assert result["points"]["example"]["ttft_ms"]["independent_trials"] == 9
+
+
+def test_failed_setup_cannot_qualify_pilot():
+    plan, progress = fixture()
+    setup = {
+        "cohort_id": "setup",
+        "purpose": "prefix-warm-A",
+        "trial_index": 0,
+        "trial_seed": 0,
+        "comparison_role": "setup",
+        "requests": [{"request_id": "setup-request"}],
+    }
+    plan["cohorts"].append(setup)
+    progress.append(deepcopy(setup) | {"valid": False})
+    result = analyze(plan, progress)
+    assert result["main_stage_budget"] is None
+    assert result["invalid_client_cohorts"] == ["setup"]
+
+
+def test_request_identity_and_independent_trial_identity_are_checked():
+    plan, progress = fixture()
+    wrong = deepcopy(progress)
+    wrong[0]["requests"][0]["request_id"] = "different-request"
+    with pytest.raises(ValueError, match="request identity"):
+        analyze(plan, wrong)
+    plan["cohorts"][1]["trial_seed"] = 0
+    with pytest.raises(ValueError, match="duplicate independent trial"):
+        analyze(plan, progress)
