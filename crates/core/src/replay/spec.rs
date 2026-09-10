@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::replay::protocol::{DirectRequest, ReplayPromptTokenSource};
 use crate::replay::{ReplayError, ReplayResult, SlaThresholds};
 
 pub const CURRENT_REPLAY_SPEC_VERSION: u32 = 1;
@@ -239,6 +240,92 @@ impl ReplayRequest {
     }
 }
 
+impl TryFrom<(usize, DirectRequest)> for ReplayRequest {
+    type Error = ReplayError;
+
+    fn try_from((index, request): (usize, DirectRequest)) -> Result<Self, Self::Error> {
+        let DirectRequest {
+            tokens,
+            max_output_tokens,
+            output_token_ids,
+            uuid,
+            preferred_dp_rank,
+            preferred_prefill_dp_rank,
+            arrival_timestamp_ms,
+            priority,
+            strict_priority,
+            policy_class,
+            replay_context,
+            ..
+        } = request;
+        let input_tokens = tokens.len();
+        let arrival_time_ms = arrival_timestamp_ms.ok_or_else(|| {
+            ReplayError::InvalidSpec(
+                "DirectRequest is missing arrival_timestamp_ms, required by ReplayRequest"
+                    .to_string(),
+            )
+        })?;
+        validate_time("request arrival_time_ms", arrival_time_ms)?;
+        let (id, session_id, turn_index, mut metadata, input_token_ids) = match replay_context {
+            Some(context) => (
+                context.authored_id,
+                context.session_id,
+                context.turn_index,
+                context.metadata,
+                (context.prompt_token_source != ReplayPromptTokenSource::LengthOnlySynthetic)
+                    .then_some(tokens),
+            ),
+            None => (
+                uuid.map(|uuid| uuid.to_string())
+                    .unwrap_or_else(|| index.to_string()),
+                None,
+                None,
+                Value::Null,
+                Some(tokens),
+            ),
+        };
+        if !metadata.is_null() || priority != 0 || strict_priority != 0 || policy_class.is_some() {
+            if metadata.is_null() {
+                metadata = Value::Object(Default::default());
+            }
+            let object = metadata.as_object_mut().ok_or_else(|| {
+                ReplayError::InvalidSpec("DirectRequest metadata must be an object".to_string())
+            })?;
+            if priority == 0 {
+                object.remove("priority");
+            } else {
+                object.insert("priority".to_string(), Value::from(priority));
+            }
+            if strict_priority == 0 {
+                object.remove("strict_priority");
+            } else {
+                object.insert("strict_priority".to_string(), Value::from(strict_priority));
+            }
+            if let Some(policy_class) = policy_class {
+                object.insert("policy_class".to_string(), Value::from(policy_class));
+            } else {
+                object.remove("policy_class");
+            }
+        }
+
+        let converted = Self {
+            id,
+            arrival_time_ms,
+            input_tokens,
+            input_token_ids,
+            output_tokens: max_output_tokens,
+            output_token_ids,
+            dp_rank: preferred_dp_rank,
+            prefill_dp_rank: preferred_prefill_dp_rank,
+            session_id,
+            turn_index,
+            metadata,
+        };
+        converted.validate()?;
+        Ok(converted)
+    }
+}
+
 /// Provider-neutral routing controls recognized during ReplaySpec lowering.
 /// Unknown metadata keys remain available in [`ReplayRequest::metadata`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,4 +393,137 @@ fn validate_time(name: &str, value: f64) -> ReplayResult<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod direct_request_conversion_tests {
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::replay::protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
+
+    #[test]
+    fn direct_request_conversion_requires_arrival_time() {
+        let request = DirectRequest {
+            tokens: vec![1, 2, 3],
+            max_output_tokens: 4,
+            ..Default::default()
+        };
+
+        let error = ReplayRequest::try_from((0, request)).unwrap_err();
+        assert!(
+            error.to_string().contains("arrival_timestamp_ms"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn direct_request_conversion_rejects_invalid_arrival_time() {
+        for arrival_timestamp_ms in [-1.0, f64::INFINITY] {
+            let request = DirectRequest {
+                arrival_timestamp_ms: Some(arrival_timestamp_ms),
+                ..Default::default()
+            };
+
+            assert!(ReplayRequest::try_from((0, request)).is_err());
+        }
+    }
+
+    #[test]
+    fn direct_request_conversion_uses_authored_id_then_uuid_then_index() {
+        let authored = DirectRequest {
+            uuid: Some(Uuid::from_u128(7)),
+            arrival_timestamp_ms: Some(1.0),
+            replay_context: Some(ReplayRequestContext {
+                authored_id: "authored-42".to_string(),
+                session_id: None,
+                turn_index: None,
+                metadata: Value::Null,
+                prompt_token_source: Default::default(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            ReplayRequest::try_from((0, authored)).unwrap().id,
+            "authored-42"
+        );
+
+        let uuid = DirectRequest {
+            uuid: Some(Uuid::from_u128(7)),
+            arrival_timestamp_ms: Some(1.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            ReplayRequest::try_from((0, uuid)).unwrap().id,
+            Uuid::from_u128(7).to_string()
+        );
+
+        let index = DirectRequest {
+            arrival_timestamp_ms: Some(1.0),
+            ..Default::default()
+        };
+        assert_eq!(ReplayRequest::try_from((3, index)).unwrap().id, "3");
+    }
+
+    #[test]
+    fn direct_request_conversion_preserves_execution_fields() {
+        let request = DirectRequest {
+            tokens: vec![1, 2],
+            max_output_tokens: 4,
+            output_token_ids: Some(vec![3, 4]),
+            arrival_timestamp_ms: Some(10.0),
+            preferred_dp_rank: Some(2),
+            preferred_prefill_dp_rank: Some(5),
+            priority: -7,
+            strict_priority: 9,
+            policy_class: Some("latency".to_string()),
+            replay_context: Some(ReplayRequestContext {
+                authored_id: "request".to_string(),
+                session_id: Some("session-1".to_string()),
+                turn_index: Some(3),
+                metadata: serde_json::json!({"k": "v"}),
+                prompt_token_source: Default::default(),
+            }),
+            ..Default::default()
+        };
+
+        let converted = ReplayRequest::try_from((0, request)).unwrap();
+        assert_eq!(converted.arrival_time_ms, 10.0);
+        assert_eq!(converted.input_token_ids, Some(vec![1, 2]));
+        assert_eq!(converted.output_tokens, 4);
+        assert_eq!(converted.output_token_ids, Some(vec![3, 4]));
+        assert_eq!(converted.dp_rank, Some(2));
+        assert_eq!(converted.prefill_dp_rank, Some(5));
+        assert_eq!(converted.session_id.as_deref(), Some("session-1"));
+        assert_eq!(converted.turn_index, Some(3));
+        assert_eq!(
+            converted.metadata,
+            serde_json::json!({
+                "k": "v",
+                "priority": -7,
+                "strict_priority": 9,
+                "policy_class": "latency"
+            })
+        );
+    }
+
+    #[test]
+    fn direct_request_conversion_keeps_synthetic_tokens_unmaterialized() {
+        let request = DirectRequest {
+            tokens: vec![1, 2],
+            arrival_timestamp_ms: Some(1.0),
+            replay_context: Some(ReplayRequestContext {
+                authored_id: "synthetic".to_string(),
+                session_id: None,
+                turn_index: None,
+                metadata: Value::Null,
+                prompt_token_source: ReplayPromptTokenSource::LengthOnlySynthetic,
+            }),
+            ..Default::default()
+        };
+
+        let converted = ReplayRequest::try_from((0, request)).unwrap();
+        assert_eq!(converted.input_tokens, 2);
+        assert_eq!(converted.input_token_ids, None);
+    }
 }
