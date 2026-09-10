@@ -34,6 +34,18 @@ def test_real_v41_config_and_quant(descriptor):
     assert quant["moe_quant_mode"] == common.MoEQuantMode.w4a8_mxfp4_mxfp8
 
 
+@pytest.mark.parametrize("system", ["gb200", "gb300"])
+def test_sglang_blackwell_experts_select_measured_kernel_lane(system):
+    from aiconfigurator_core.sdk.config import ModelConfig
+    from aiconfigurator_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_dsv4_moe_arch_mode
+
+    assert resolve_dsv4_moe_arch_mode(MODEL_PATH, system, "sglang") == common.MoEQuantMode.w4a8_mxfp4_mxfp8_trtllm
+    assert resolve_dsv4_moe_arch_mode(MODEL_PATH, system, "vllm") is None
+    explicit = ModelConfig(moe_quant_mode=common.MoEQuantMode.bfloat16)
+    resolve_dsv4_moe_arch(explicit, MODEL_PATH, system_name=system, backend_name="sglang")
+    assert explicit.moe_quant_mode == common.MoEQuantMode.bfloat16
+
+
 @pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
 @pytest.mark.parametrize("total_gpus", [4, 32])
 def test_default_task_enumerates_matching_moe_parallel_widths(backend, total_gpus):

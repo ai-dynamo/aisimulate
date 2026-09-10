@@ -798,10 +798,14 @@ def _is_dsv4_fp4_expert_model(model_path: str) -> bool:
     ``expert_dtype`` and return False.
     """
     info = _get_model_info(model_path)
-    if info.get("architecture") != "DeepseekV4ForCausalLM":
+    architecture = info.get("architecture")
+    if architecture not in {"DeepseekV4ForCausalLM", "DeepseekV41ForCausalLM"}:
         return False
     raw_config = info.get("raw_config", {})
-    if str(raw_config.get("expert_dtype") or "").lower() != "fp4":
+    expert_config = (
+        raw_config.get("quantization_config", {}) if architecture == "DeepseekV41ForCausalLM" else raw_config
+    )
+    if str(expert_config.get("expert_dtype") or "").lower() != "fp4":
         return False
     _gemm_algos, moe_algos = _collect_mixed_precision_layer_algos(raw_config)
     return "nvfp4" not in moe_algos
