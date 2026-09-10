@@ -475,6 +475,7 @@ def paired_summary(rows, *, final, seed=94051000):
                 "observed_mean": statistics.mean(o for o, _ in pairs),
                 "predicted_mean": statistics.mean(p for _, p in pairs),
                 "mean_signed_error_percent": statistics.mean(errors),
+                "mape_percent": statistics.mean(abs(e) for e in errors),
                 "median_absolute_error_percent": statistics.median(abs(e) for e in errors),
                 "p90_absolute_error_percent_across_trials": quantile([abs(e) for e in errors], 0.9),
                 "wape_percent": 100 * sum(abs(p - o) for o, p in pairs) / sum(o for o, _ in pairs),

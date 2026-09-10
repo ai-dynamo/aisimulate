@@ -187,6 +187,7 @@ def error_summary(rows):
             "WAPE: observed-latency weighted; observed median of rank maxima"
         ),
         "mean_signed_error_percent": statistics.mean(signed),
+        "mape_percent": statistics.mean(absolute),
         "median_absolute_error_percent": statistics.median(absolute),
         "p90_absolute_error_percent_across_configurations": quantile(absolute, 0.9),
         "wape_percent": 100

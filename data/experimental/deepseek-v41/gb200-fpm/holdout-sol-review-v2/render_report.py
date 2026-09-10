@@ -89,7 +89,10 @@ def render(directory):
         low, high = min(numbers) * 0.7, max(numbers) * 1.4
         ax.plot([low, high], [low, high], color="#64748b", linestyle="--", linewidth=1)
         ax.set(xscale="log", yscale="log", xlim=(low, high), ylim=(low, high))
-        ax.set_title(f"{mode}: WAPE {current[mode]['summary']['wape_percent']:.2f}%")
+        ax.set_title(
+            f"{mode}: MAPE {current[mode]['summary']['mape_percent']:.2f}% / "
+            f"WAPE {current[mode]['summary']['wape_percent']:.2f}%"
+        )
         ax.set_xlabel("Observed native wall time (ms)")
         ax.set_ylabel("Corrected prediction (ms)")
         ax.grid(alpha=0.15)
@@ -112,13 +115,14 @@ def render(directory):
         "activation coefficients. The actual native build and merged FPM source are pinned in "
         "[refresh-provenance.json](refresh-provenance.json).",
         "",
-        "| Prediction | Coverage | Previous WAPE | Corrected WAPE | Changed predictions |",
+        "| Prediction | Coverage | Previous MAPE / WAPE | Corrected MAPE / WAPE | Changed predictions |",
         "|---|---:|---:|---:|---:|",
     ]
     for mode in ("FPM", "SOL"):
         lines.append(
-            f"| {mode} | 38/38 | {previous[mode]['summary']['wape_percent']:.5f}% | "
-            f"{current[mode]['summary']['wape_percent']:.5f}% | "
+            f"| {mode} | 38/38 | {previous[mode]['summary']['mape_percent']:.5f}% / "
+            f"{previous[mode]['summary']['wape_percent']:.5f}% | "
+            f"{current[mode]['summary']['mape_percent']:.5f}% / {current[mode]['summary']['wape_percent']:.5f}% | "
             f"{receipt['changed_prediction_counts'][mode.lower()]}/38 |"
         )
     lines += [
@@ -126,6 +130,10 @@ def render(directory):
         "All 38 whole-forward FPM predictions are bit-identical to the previous report. All 38 "
         "analytical SOL predictions change. SOL remains a strong underestimate of this runtime "
         "wall-time boundary; these formula fixes do not establish serving-latency accuracy.",
+        "",
+        "MAPE averages per-configuration absolute percentage errors; WAPE divides total absolute "
+        "latency error by total observed latency. Both use the same 38 supported pairs. "
+        "The additive [derived metrics](derived-error-metrics.json) preserve every original compressed result.",
         "",
         "![Observed and corrected predictions](prediction-refresh.png)",
         "",
@@ -152,6 +160,16 @@ def render(directory):
         "",
     ]
     (directory / "README.md").write_text("\n".join(lines))
+    derived = {
+        "schema": "dsv41.derived-error-metrics.v1",
+        "derivation": "Add MAPE to the same supported pairs; original prediction result bytes unchanged",
+        "renderer_sha256": sha(Path(__file__)),
+        "inputs_sha256": {
+            f"{mode.lower()}-results.json.gz": sha(directory / f"{mode.lower()}-results.json.gz") for mode in current
+        },
+        "metrics": {mode: {"all": report["summary"], **report["by_phase"]} for mode, report in current.items()},
+    }
+    (directory / "derived-error-metrics.json").write_text(json.dumps(derived, sort_keys=True, indent=2) + "\n")
     hashes = {p.name: sha(p) for p in sorted(directory.iterdir()) if p.is_file() and p.name != "artifact-hashes.json"}
     (directory / "artifact-hashes.json").write_text(json.dumps(hashes, sort_keys=True, indent=2) + "\n")
 

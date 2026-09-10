@@ -8,16 +8,18 @@ The measured configuration is one node, four GB200 GPUs, pure TP4/EP1/DP1/PP1/CP
 
 The timing target is the native Dynamo FPM wall-time boundary: CPU schedule/output or adjacent output timing, depending on phase. Prefill uses a single step; decode uses a real-KV seeded steady-state second step. It is not a pure GPU device interval and is not interchangeable with the SGLang GPU-event study or HTTP TTFT/ITL. The consumer uses the native **past-KV** axis. The analytical op baseline adds the query once to obtain its inclusive attention length.
 
-| Prediction | Phase | Predicted / planned | Mean signed error | Median APE | p90 APE | WAPE |
-|---|---|---:|---:|---:|---:|---:|
-| FPM | all | 38/38 | 1.46% | 3.84% | 8.30% | 4.89% |
-| FPM | prefill | 28/28 | 0.16% | 4.17% | 7.70% | 4.75% |
-| FPM | decode | 10/10 | 5.08% | 3.84% | 12.40% | 5.33% |
-| SOL | all | 38/38 | -99.12% | 98.87% | 99.93% | 99.10% |
-| SOL | prefill | 28/28 | -98.83% | 98.79% | 99.09% | 98.83% |
-| SOL | decode | 10/10 | -99.92% | 99.92% | 99.93% | 99.92% |
+| Prediction | Phase | Predicted / planned | Mean signed error | MAPE | Median APE | p90 APE | WAPE |
+|---|---|---:|---:|---:|---:|---:|---:|
+| FPM | all | 38/38 | 1.46% | 4.89% | 3.84% | 8.30% | 4.89% |
+| FPM | prefill | 28/28 | 0.16% | 4.69% | 4.17% | 7.70% | 4.75% |
+| FPM | decode | 10/10 | 5.08% | 5.46% | 3.84% | 12.40% | 5.33% |
+| SOL | all | 38/38 | -99.12% | 99.12% | 98.87% | 99.93% | 99.10% |
+| SOL | prefill | 28/28 | -98.83% | 98.83% | 98.79% | 99.09% | 98.83% |
+| SOL | decode | 10/10 | -99.92% | 99.92% | 99.92% | 99.93% | 99.92% |
 
-Missing predictions stay in the coverage denominator; error statistics use supported pairs. Signed/APE statistics weight each configuration equally. WAPE divides total absolute latency error by total observed latency. p90 APE is a percentile of prediction errors, not p90 serving latency. No correction factor, outlier removal, replacement sample, or fitting to these holdouts is applied.
+Missing predictions stay in the coverage denominator; error statistics use supported pairs. Signed/APE statistics weight each configuration equally. WAPE divides total absolute latency error by total observed latency. MAPE is the mean per-configuration absolute percentage error; both metrics use the same supported pairs. p90 APE is a percentile of prediction errors, not p90 serving latency. No correction factor, outlier removal, replacement sample, or fitting to these holdouts is applied.
+
+MAPE is an additive report statistic computed from the original observed/predicted pairs. [Derived metric provenance](derived-error-metrics.json) binds those unchanged compressed results and the reporting source; it does not replace the original prediction provenance.
 
 ![Real native forward timing and prediction](forward-comparison.png)
 

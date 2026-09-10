@@ -463,6 +463,7 @@ def statistics_for(rows):
     lower = int(position)
     result.update(
         mean_signed_error_percent=statistics.mean(signed),
+        mape_percent=statistics.mean(absolute),
         median_absolute_error_percent=statistics.median(absolute),
         p90_absolute_error_percent=absolute[lower]
         + (position - lower) * (absolute[min(lower + 1, len(absolute) - 1)] - absolute[lower]),

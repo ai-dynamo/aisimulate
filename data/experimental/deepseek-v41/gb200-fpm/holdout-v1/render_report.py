@@ -9,6 +9,7 @@ import csv
 import gzip
 import hashlib
 import json
+import statistics
 from pathlib import Path
 
 
@@ -55,6 +56,15 @@ def load_reports(directory):
             any(a[key] != b[key] for key in keys) for a, b in zip(report["cases"], reference["cases"], strict=True)
         ):
             raise ValueError("real heldout observations differ across modes")
+        for phase, summary in [(None, report["summary"]), *report["by_phase"].items()]:
+            paired = [
+                row
+                for row in report["cases"]
+                if row["status"] == "predicted" and (phase is None or row["phase"] == phase)
+            ]
+            summary["mape_percent"] = statistics.mean(
+                abs(row["predicted_ms"] / row["observed_ms"] - 1) * 100 for row in paired
+            )
     return reports
 
 
@@ -87,8 +97,8 @@ def write_readme(directory, reports):
         "the SGLang GPU-event study or HTTP TTFT/ITL. The consumer uses the native **past-KV** axis. "
         "The analytical op baseline adds the query once to obtain its inclusive attention length.",
         "",
-        "| Prediction | Phase | Predicted / planned | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Prediction | Phase | Predicted / planned | Mean signed error | MAPE | Median APE | p90 APE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for mode, report in reports.items():
         for phase, value in [("all", report["summary"]), *report["by_phase"].items()]:
@@ -96,6 +106,7 @@ def write_readme(directory, reports):
                 metric(value, key)
                 for key in (
                     "mean_signed_error_percent",
+                    "mape_percent",
                     "median_absolute_error_percent",
                     "p90_absolute_error_percent",
                     "wape_percent",
@@ -110,8 +121,13 @@ def write_readme(directory, reports):
         "",
         "Missing predictions stay in the coverage denominator; error statistics use supported pairs. "
         "Signed/APE statistics weight each configuration equally. WAPE divides total absolute latency "
-        "error by total observed latency. p90 APE is a percentile of prediction errors, not p90 serving latency. "
+        "error by total observed latency. MAPE is the mean per-configuration absolute percentage error; "
+        "both metrics use the same supported pairs. p90 APE is a percentile of prediction errors, not p90 serving latency. "
         "No correction factor, outlier removal, replacement sample, or fitting to these holdouts is applied.",
+        "",
+        "MAPE is an additive report statistic computed from the original observed/predicted pairs. "
+        "[Derived metric provenance](derived-error-metrics.json) binds those unchanged compressed results "
+        "and the reporting source; it does not replace the original prediction provenance.",
         "",
         "![Real native forward timing and prediction](forward-comparison.png)",
         "",
@@ -305,6 +321,16 @@ def main():
     render(directory, reports)
     inputs = [directory / name for name in ("fpm-results.json.gz", "sol-results.json.gz", "render_report.py")]
     (directory / "plot-input-hashes.json").write_text(json.dumps({p.name: sha(p) for p in inputs}, indent=2) + "\n")
+    derived = {
+        "schema": "dsv41.derived-error-metrics.v1",
+        "derivation": "Add MAPE to the same supported pairs; original prediction result bytes unchanged",
+        "renderer_sha256": sha(Path(__file__)),
+        "inputs_sha256": {p.name: sha(p) for p in inputs[:2]},
+        "metrics": {mode: {"all": report["summary"], **report["by_phase"]} for mode, report in reports.items()},
+    }
+    (directory / "derived-error-metrics.json").write_text(json.dumps(derived, sort_keys=True, indent=2) + "\n")
+    hashes = {p.name: sha(p) for p in sorted(directory.iterdir()) if p.is_file() and p.name != "artifact-hashes.json"}
+    (directory / "artifact-hashes.json").write_text(json.dumps(hashes, sort_keys=True, indent=2) + "\n")
 
 
 if __name__ == "__main__":

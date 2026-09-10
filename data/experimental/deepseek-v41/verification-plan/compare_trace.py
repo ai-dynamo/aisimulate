@@ -427,7 +427,8 @@ def independent_trial_summary(cohorts, *, final, seed=94051000, resamples=5000):
             observed = sum(r["observed_ms"] for r in rows)
             predicted = sum(r["predicted_ms"] for r in rows)
             absolute = sum(abs(r["predicted_ms"] - r["observed_ms"]) for r in rows)
-            trials.append((observed, absolute, 100 * (predicted / observed - 1)))
+            absolute_percent = sum(abs(r["predicted_ms"] / r["observed_ms"] - 1) * 100 for r in rows)
+            trials.append((observed, absolute, 100 * (predicted / observed - 1), absolute_percent, len(rows)))
         result = {
             "observed_trials": len(group),
             "fully_predicted_trials": len(trials),
@@ -436,13 +437,17 @@ def independent_trial_summary(cohorts, *, final, seed=94051000, resamples=5000):
                 for c in group
                 if not c["intervals"] or any(r["status"] != "predicted" for r in c["intervals"])
             ],
-            "weighting": "equal trials for total-forward bias; observed-latency weighted interval WAPE",
+            "weighting": (
+                "equal trials for total-forward bias; equal native intervals for MAPE; "
+                "observed-latency weighted interval WAPE"
+            ),
         }
         if trials:
 
             def metrics(sample):
                 return {
                     "mean_trial_total_forward_signed_error_percent": statistics.mean(t[2] for t in sample),
+                    "interval_mape_percent": sum(t[3] for t in sample) / sum(t[4] for t in sample),
                     "interval_wape_percent": 100 * sum(t[1] for t in sample) / sum(t[0] for t in sample),
                 }
 

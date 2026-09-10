@@ -4,12 +4,14 @@ This reruns the **same 38 independent holdouts** and unchanged 126-point calibra
 
 The predictor includes SOL correction `563f1238`: replicated indexer heads, unique-row SWA HBM lower bounds, both compressor weight reads, restored shared MoE communication and MoE activation coefficients. The actual native build and merged FPM source are pinned in [refresh-provenance.json](refresh-provenance.json).
 
-| Prediction | Coverage | Previous WAPE | Corrected WAPE | Changed predictions |
+| Prediction | Coverage | Previous MAPE / WAPE | Corrected MAPE / WAPE | Changed predictions |
 |---|---:|---:|---:|---:|
-| FPM | 38/38 | 4.88827% | 4.88827% | 0/38 |
-| SOL | 38/38 | 99.09783% | 99.10230% | 38/38 |
+| FPM | 38/38 | 4.89423% / 4.88827% | 4.89423% / 4.88827% | 0/38 |
+| SOL | 38/38 | 99.11601% / 99.09783% | 99.12040% / 99.10230% | 38/38 |
 
 All 38 whole-forward FPM predictions are bit-identical to the previous report. All 38 analytical SOL predictions change. SOL remains a strong underestimate of this runtime wall-time boundary; these formula fixes do not establish serving-latency accuracy.
+
+MAPE averages per-configuration absolute percentage errors; WAPE divides total absolute latency error by total observed latency. Both use the same 38 supported pairs. The additive [derived metrics](derived-error-metrics.json) preserve every original compressed result.
 
 ![Observed and corrected predictions](prediction-refresh.png)
 

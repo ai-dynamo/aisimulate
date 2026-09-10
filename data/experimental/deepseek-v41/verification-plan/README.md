@@ -155,9 +155,13 @@ to versioned evidence and reproduction instructions. The report must contain:
   and unsupported cases. Preserve failed attempts without manufacturing rows.
 - Paired observed/predicted forward latency and measured E2E TTFT, token timing
   and throughput. Define signed error as `(prediction / observation - 1) * 100`;
-  also report median absolute percentage error, 90th-percentile absolute error
-  across configurations and WAPE `sum(abs(predicted-observed))/sum(observed)`.
-  State the weighting, sample count and prediction provenance for each table.
+  every report must provide both MAPE `mean(abs(predicted/observed - 1))*100`
+  and WAPE `sum(abs(predicted-observed))/sum(observed)*100` on the same supported
+  pairs, alongside median absolute percentage error and 90th-percentile error.
+  Missing predictions remain in the coverage denominator. State whether a pair
+  is a configuration, HTTP cohort/trial, or native interval; do not silently
+  exchange these weighting units. Keep prediction provenance attached when
+  adding descriptive metrics to historical reports.
 - Main-trial 95% uncertainty intervals; workload-level scatter/error plots;
   boundary/prefix breakdowns; source coverage and explicit remaining gaps.
   Do not imply a tail-latency percentile is well estimated by 20 requests.
