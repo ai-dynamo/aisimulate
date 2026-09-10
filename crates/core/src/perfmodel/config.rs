@@ -109,6 +109,10 @@ pub struct EngineConfig {
     #[serde(default)]
     pub forward_model: Option<String>,
 
+    /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
+    #[serde(default)]
+    pub decoder_replay: bool,
+
     // KV
     pub kv_block_size: Option<u32>,
 

@@ -507,6 +507,7 @@ mod tests {
                 backend: BackendKind::Vllm,
                 backend_version: Some("test-version".to_string()),
                 forward_model: None,
+                decoder_replay: false,
                 kv_block_size: None,
                 parallel: ParallelMapping {
                     tp_size: 1,

@@ -811,6 +811,7 @@ mod tests {
             backend: crate::BackendKind::Trtllm,
             backend_version: Some("1.0.0rc3".into()),
             forward_model: None,
+            decoder_replay: false,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
                 tp_size: 8,
