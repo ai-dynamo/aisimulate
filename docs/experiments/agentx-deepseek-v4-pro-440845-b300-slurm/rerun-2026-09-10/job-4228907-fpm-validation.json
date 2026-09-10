@@ -1,0 +1,82 @@
+{
+  "ranks": {
+    "2": {
+      "records": 17091,
+      "active": 13630,
+      "decode": 13399,
+      "missing": 0,
+      "resets": 0,
+      "first": 0,
+      "last": 17090
+    },
+    "5": {
+      "records": 17093,
+      "active": 13486,
+      "decode": 13279,
+      "missing": 0,
+      "resets": 0,
+      "first": 0,
+      "last": 17092
+    },
+    "4": {
+      "records": 17092,
+      "active": 12672,
+      "decode": 12342,
+      "missing": 0,
+      "resets": 0,
+      "first": 0,
+      "last": 17091
+    },
+    "0": {
+      "records": 17092,
+      "active": 12908,
+      "decode": 12544,
+      "missing": 0,
+      "resets": 0,
+      "first": 0,
+      "last": 17091
+    },
+    "1": {
+      "records": 17094,
+      "active": 12281,
+      "decode": 11929,
+      "missing": 0,
+      "resets": 0,
+      "first": 0,
+      "last": 17093
+    },
+    "7": {
+      "records": 17092,
+      "active": 13824,
+      "decode": 13603,
+      "missing": 0,
+      "resets": 0,
+      "first": 0,
+      "last": 17091
+    },
+    "6": {
+      "records": 17096,
+      "active": 15718,
+      "decode": 15365,
+      "missing": 0,
+      "resets": 0,
+      "first": 0,
+      "last": 17095
+    },
+    "3": {
+      "records": 17091,
+      "active": 11990,
+      "decode": 11655,
+      "missing": 0,
+      "resets": 0,
+      "first": 0,
+      "last": 17090
+    }
+  },
+  "invalid_records": 0,
+  "bytes": 75076664,
+  "complete_rank_coverage": true,
+  "all_ranks_active": true,
+  "all_ranks_decode": true,
+  "valid": true
+}

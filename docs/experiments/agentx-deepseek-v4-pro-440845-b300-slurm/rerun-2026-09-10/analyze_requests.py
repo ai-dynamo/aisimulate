@@ -51,13 +51,16 @@ def summary(rows):
                 token_weighted_reuse=sum(r['cached'] for r in rows)/prompt if prompt else None,
                 mean_prompt=statistics.mean(r['prompt'] for r in rows) if rows else None,
                 mean_uncached=statistics.mean(r['uncached'] for r in rows) if rows else None,
-                ttft_p50_ms=quantile([r['ttft'] for r in rows],.5),ttft_p90_ms=quantile([r['ttft'] for r in rows],.9))
+                ttft_p50_ms=quantile([r['ttft'] for r in rows],.5),ttft_p90_ms=quantile([r['ttft'] for r in rows],.9),
+                itl_p50_ms=quantile([r['itl'] for r in rows],.5),itl_p90_ms=quantile([r['itl'] for r in rows],.9),
+                latency_p50_ms=quantile([r['latency'] for r in rows],.5),latency_p90_ms=quantile([r['latency'] for r in rows],.9))
 
 
 def compare_pairs(pairs):
     deltas=[b['ttft']-a['ttft'] for a,b in pairs if a['ttft'] is not None and b['ttft'] is not None]
     ratios=[100*(b['ttft']/a['ttft']-1) for a,b in pairs if a['ttft'] and b['ttft'] is not None]
-    return dict(requests=len(pairs),off=summary([a for a,b in pairs]),on=summary([b for a,b in pairs]),
+    itl_ratios=[100*(b['itl']/a['itl']-1) for a,b in pairs if a['itl'] and b['itl'] is not None]
+    return dict(requests=len(pairs),median_paired_itl_delta_percent=quantile(itl_ratios,.5),off=summary([a for a,b in pairs]),on=summary([b for a,b in pairs]),
                 median_paired_ttft_delta_ms=quantile(deltas,.5),median_paired_ttft_delta_percent=quantile(ratios,.5))
 
 
@@ -84,7 +87,8 @@ def main(root):
                 distinct_source_keys={c:len(v) for c,v in groups.items()},shared_keys=len(common),
                 duplicate_keys={c:sum(len(v)>1 for v in g.values()) for c,g in groups.items()},
                 matched_unique=compare_pairs(pairs),
-                matched_within4_prompt_uncached_tokens_same_output=compare_pairs(near_same_work),matched_same_prompt_length=compare_pairs(same_prompt),
+                matched_within4_prompt_uncached_tokens_same_output=compare_pairs(near_same_work),
+                matched_near_work_by_prompt={label:compare_pairs([(a,b) for a,b in near_same_work if bucket(a,'prompt')==label]) for label in sorted({bucket(a,'prompt') for a,b in near_same_work})},matched_same_prompt_length=compare_pairs(same_prompt),
                 matched_same_prompt_and_cached_tokens=compare_pairs(same_prompt_cache),
                 matched_same_input_output_lengths=compare_pairs(same_lengths),
                 matched_same_lengths_and_cached_tokens=compare_pairs(same_cache),strata=strata,

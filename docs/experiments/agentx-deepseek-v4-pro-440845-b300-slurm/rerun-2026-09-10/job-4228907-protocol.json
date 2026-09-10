@@ -1,0 +1,19 @@
+{
+  "image": "nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:f856a45537f82e1900ea7607edcbaa7f77fbb2e70220eae522d1d50d0046727e",
+  "cases": [
+    "off",
+    "on"
+  ],
+  "model": "deepseek-ai/DeepSeek-V4-Pro",
+  "checkpoint_revision": "b5968e9190ef611bbf34a7229255be88a0e937c1",
+  "concurrency": 32,
+  "duration_seconds": 600,
+  "diagnostic_short_run": true,
+  "hicache": false,
+  "fpm_rank_count": 8,
+  "seed": 42,
+  "timezone": "UTC",
+  "reference_id": 440845,
+  "engine_entrypoint": "sglang.launch_server",
+  "router": "sglang-router consistent_hashing dp-aware"
+}

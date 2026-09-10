@@ -1,0 +1,29 @@
+[
+  {
+    "block": 1,
+    "valid": true,
+    "bytes": 97403165,
+    "records": 177632,
+    "missing": 0,
+    "resets": 0,
+    "invalid_records": 0
+  },
+  {
+    "block": 2,
+    "valid": true,
+    "bytes": 97594319,
+    "records": 178088,
+    "missing": 0,
+    "resets": 0,
+    "invalid_records": 0
+  },
+  {
+    "block": 5,
+    "valid": true,
+    "bytes": 97088742,
+    "records": 177226,
+    "missing": 0,
+    "resets": 0,
+    "invalid_records": 0
+  }
+]

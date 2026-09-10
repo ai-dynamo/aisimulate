@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # SGLang FPM overhead: fixed 8K input / 1K output
 
-Status: job `4225429` completed successfully on `umb-b300-dp-142`. All18
+Status: job `4225429` completed successfully on `umb-b300-dp-142`. All 18
 measured cells and three FPM captures validated; the allocation is released. This follow-up measures FPM-off/on differences across low, mid and high
 request concurrency on one eight-GPU B300 node, using DeepSeek-V4-Pro.
 
@@ -132,9 +132,9 @@ Gap is100*(on/off-1) for each pair, then averaged. A negative throughput gap is 
 - FPM-on includes buffered external recording; no-consumer emission cost is not isolated.
 - Synthetic 8192-token prompts and fixed1024-token output; acceptance length is simulated2.49.
 
-All measured requests had actual ISL8192 and OSL1024, zero cached tokens and
+All measured requests had actual ISL 8192 and OSL 1024, zero cached tokens and
 zero request errors. Three pairs per concurrency produced small throughput gaps:
--0.12%, +0.13% and -0.28% at concurrency1/32/128. Latency changes have more run-to-run
+-0.12%, +0.13% and -0.28% at concurrency 1/32/128. Latency changes have more run-to-run
 variance. These results do not support a large fixed-workload FPM penalty.
 They do not establish zero overhead, or exclude workload-dependent effects in
 AgentX's long-context/prefix-reuse workload.
@@ -144,6 +144,11 @@ Detailed metrics, per-run values, paired deltas and input hashes are in
 state are preserved alongside it. Raw client exports and FPM remain in the
 scratch result root above.
 
-Per user direction, AgentX is being rerun on the same node to investigate whether
-long prefill, uncached-token counts or prefix reuse explain the earlier gap.
+Per user direction, a short AgentX off/on rerun has now completed to investigate
+long prefill, uncached-token counts and prefix reuse. It used another B300 NVL8
+node after the original node became occupied.
 See [the AgentX rerun](../agentx-deepseek-v4-pro-440845-b300-slurm/rerun-2026-09-10/README.md).
+
+The three FPM-on captures contain 532946 records in total (292086226 raw bytes),
+all with complete 8-rank coverage, zero invalid records, zero observed counter gaps
+and zero resets. See [capture summary](job-4225429-fpm-capture-summary.json).

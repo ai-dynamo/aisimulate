@@ -1,0 +1,187 @@
+{
+  "cases": {
+    "off": {
+      "total_tokens_per_s_per_gpu": 14120.222503033416,
+      "output_tokens_per_s_per_gpu": 96.27973081903836,
+      "ttft_p50_ms": 1565.2216145,
+      "ttft_p90_ms": 3616.656645,
+      "itl_p90_ms": 29.264939641536504,
+      "request_latency_p90_ms": 29153.285963100014,
+      "requests": 800.0,
+      "mean_input_tokens": 89754.5575,
+      "mean_output_tokens": 616.1925,
+      "osl_mismatch_count": 0.0,
+      "was_cancelled": false,
+      "error_summary": [],
+      "start_time": "2026-09-10T22:54:29.068129",
+      "end_time": "2026-09-10T23:05:09.070438",
+      "request_activity_duration_s": 627.683735296,
+      "scenario": "inferencex-agentx-mvp",
+      "phases": [
+        {
+          "name": "profiling",
+          "kind": "profiling",
+          "type": "concurrency",
+          "duration": 600.0,
+          "concurrency": 32,
+          "grace_period": 30.0,
+          "timing_mode": "agentic_replay",
+          "trajectory_start_min_ratio": 0.25,
+          "trajectory_start_max_ratio": 0.75,
+          "system_idle_gap_cap_seconds": 10.0,
+          "warmup_requests_per_lane": 10,
+          "agentic_warmup_grace_period": 1800.0
+        }
+      ],
+      "response_prompt_cache_hit_fraction": 0.9405276161046195,
+      "submission_valid": false,
+      "warmup_requests": 353.0,
+      "warmup_error_requests": 1.0,
+      "metric_duration_coverage": null,
+      "profiling_cancelled_requests": 5,
+      "validity_evidence": {}
+    },
+    "on": {
+      "total_tokens_per_s_per_gpu": 14249.01002325062,
+      "output_tokens_per_s_per_gpu": 97.05142567674204,
+      "ttft_p50_ms": 1459.95951,
+      "ttft_p90_ms": 3314.4970559,
+      "itl_p90_ms": 31.75048567529215,
+      "request_latency_p90_ms": 28980.358976299995,
+      "requests": 802.0,
+      "mean_input_tokens": 90347.97755610972,
+      "mean_output_tokens": 619.5822942643391,
+      "osl_mismatch_count": 0.0,
+      "was_cancelled": false,
+      "error_summary": [],
+      "start_time": "2026-09-10T23:16:48.255039",
+      "end_time": "2026-09-10T23:27:28.257229",
+      "request_activity_duration_s": 629.9862717440001,
+      "scenario": "inferencex-agentx-mvp",
+      "phases": [
+        {
+          "name": "profiling",
+          "kind": "profiling",
+          "type": "concurrency",
+          "duration": 600.0,
+          "concurrency": 32,
+          "grace_period": 30.0,
+          "timing_mode": "agentic_replay",
+          "trajectory_start_min_ratio": 0.25,
+          "trajectory_start_max_ratio": 0.75,
+          "system_idle_gap_cap_seconds": 10.0,
+          "warmup_requests_per_lane": 10,
+          "agentic_warmup_grace_period": 1800.0
+        }
+      ],
+      "response_prompt_cache_hit_fraction": 0.940863200053415,
+      "submission_valid": false,
+      "warmup_requests": 352.0,
+      "warmup_error_requests": 2.0,
+      "metric_duration_coverage": null,
+      "profiling_cancelled_requests": 4,
+      "validity_evidence": {}
+    }
+  },
+  "on_vs_off_percent": {
+    "total_tokens_per_s_per_gpu": 0.9120785468468062,
+    "output_tokens_per_s_per_gpu": 0.8015133103707051,
+    "ttft_p50_ms": -6.72506075336976,
+    "ttft_p90_ms": -8.35466616710031,
+    "itl_p90_ms": 8.493255288412914,
+    "request_latency_p90_ms": -0.5931646505265231,
+    "requests": 0.24999999999999467,
+    "response_prompt_cache_hit_fraction": 0.03568039290384739
+  },
+  "fpm": {
+    "ranks": {
+      "2": {
+        "records": 17091,
+        "active": 13630,
+        "decode": 13399,
+        "missing": 0,
+        "resets": 0,
+        "first": 0,
+        "last": 17090
+      },
+      "5": {
+        "records": 17093,
+        "active": 13486,
+        "decode": 13279,
+        "missing": 0,
+        "resets": 0,
+        "first": 0,
+        "last": 17092
+      },
+      "4": {
+        "records": 17092,
+        "active": 12672,
+        "decode": 12342,
+        "missing": 0,
+        "resets": 0,
+        "first": 0,
+        "last": 17091
+      },
+      "0": {
+        "records": 17092,
+        "active": 12908,
+        "decode": 12544,
+        "missing": 0,
+        "resets": 0,
+        "first": 0,
+        "last": 17091
+      },
+      "1": {
+        "records": 17094,
+        "active": 12281,
+        "decode": 11929,
+        "missing": 0,
+        "resets": 0,
+        "first": 0,
+        "last": 17093
+      },
+      "7": {
+        "records": 17092,
+        "active": 13824,
+        "decode": 13603,
+        "missing": 0,
+        "resets": 0,
+        "first": 0,
+        "last": 17091
+      },
+      "6": {
+        "records": 17096,
+        "active": 15718,
+        "decode": 15365,
+        "missing": 0,
+        "resets": 0,
+        "first": 0,
+        "last": 17095
+      },
+      "3": {
+        "records": 17091,
+        "active": 11990,
+        "decode": 11655,
+        "missing": 0,
+        "resets": 0,
+        "first": 0,
+        "last": 17090
+      }
+    },
+    "invalid_records": 0,
+    "bytes": 75076664,
+    "complete_rank_coverage": true,
+    "all_ranks_active": true,
+    "all_ranks_decode": true,
+    "valid": true
+  },
+  "campaign": {
+    "status": "complete",
+    "completed_at_ns": 1789082888850939589,
+    "cases": [
+      "off",
+      "on"
+    ]
+  },
+  "caveat": "One ordered pair, off then on; warmed compilation cache and fresh engine/KV plus warmup per case. Closed-loop requests may differ; no statistical overhead claim."
+}
