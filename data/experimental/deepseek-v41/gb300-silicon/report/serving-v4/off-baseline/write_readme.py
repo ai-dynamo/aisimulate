@@ -315,7 +315,7 @@ def main():
         "ratio_error_ci95_high",
     ]
     with (root / "scenario-means.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for mode, (e2e, _) in reports.items():
             for purpose, point in e2e["points"].items():
