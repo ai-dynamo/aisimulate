@@ -19,6 +19,7 @@ from .config_adapter import (
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
+from .resources import GuardedRunnerFactory, build_plan, require_plan, workload_bounds
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplaySpec, RunnerFactory
@@ -36,9 +37,19 @@ def run_recommendation(
 ) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
+    plan = build_plan(
+        workload_bounds(config),
+        stack=stack,
+        policy=config.execution.resources,
+        requested_parallelism=config.optimizer.parallelism,
+        factory=runner_factory,
+    )
+    require_plan(plan)
     from .sweeper.search import Sweeper
 
+    runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
+    smart.sweep.parallel_evals = plan["effective_parallelism"]
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
         workload=smart.workload.model_dump(mode="json"),
@@ -700,6 +711,7 @@ def _candidate_prediction(
                 "traffic": traffic,
                 "engine": engine,
                 "evaluation": source.evaluation.model_dump(mode="python", exclude_none=True),
+                "execution": source.execution.model_dump(mode="python", exclude_none=True),
             }
         )
     except ValueError as exc:

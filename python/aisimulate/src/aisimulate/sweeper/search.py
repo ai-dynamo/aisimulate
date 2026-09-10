@@ -41,6 +41,7 @@ from typing import Any
 
 from tqdm import tqdm
 
+from ..resources import ResourceLimitError
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
@@ -677,6 +678,8 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
     try:
         try:
             report = runner.run(spec)
+        except ResourceLimitError:
+            raise
         except Exception as exc:
             logger.exception("Sweeper candidate replay failed")
             return _ReplayEvaluation(
@@ -755,6 +758,8 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
             reason="",
             reason_category=None,
         )
+    except ResourceLimitError:
+        raise
     except Exception as exc:  # fail closed if contract normalization itself regresses
         logger.exception("Sweeper candidate replay failed")
         return _ReplayEvaluation(
@@ -1180,6 +1185,8 @@ class Sweeper:
                     for future in done:
                         try:
                             replay_result = future.result()
+                        except ResourceLimitError:
+                            raise
                         except BrokenProcessPool as exc:
                             raise _pool_error("collecting a candidate result") from exc
                         except Exception as exc:

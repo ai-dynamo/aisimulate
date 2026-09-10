@@ -29,7 +29,7 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
         raise ValueError(f"output directory {root} is not empty; pass --overwrite to replace known AISimulate outputs")
     root.mkdir(parents=True, exist_ok=True)
     if overwrite:
-        for name in ("prediction.json", "recommendation.json", "requests.jsonl"):
+        for name in ("prediction.json", "recommendation.json", "requests.jsonl", "resource-plan.json"):
             target = root / name
             if target.is_file() or target.is_symlink():
                 target.unlink()

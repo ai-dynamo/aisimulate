@@ -108,6 +108,20 @@ class EvaluationConfig(StrictModel):
     sla: SlaConfig | None = None
 
 
+class ResourceConfig(StrictModel):
+    """Execution-host limits, independent of the simulated GPU configuration."""
+
+    memory_limit_gib: PositiveFiniteFloat | Literal["auto"] = "auto"
+    cpu_limit: PositiveStrictInt | Literal["auto"] = "auto"
+    reserve_memory_gib: float = Field(default=2.0, strict=True, ge=0, allow_inf_nan=False)
+    reserve_memory_fraction: float = Field(default=0.1, strict=True, ge=0, lt=1, allow_inf_nan=False)
+    available_memory_fraction: float = Field(default=0.5, strict=True, gt=0, le=1, allow_inf_nan=False)
+
+
+class ExecutionConfig(StrictModel):
+    resources: ResourceConfig = Field(default_factory=ResourceConfig)
+
+
 class CandidateConstraints(StrictModel):
     min_candidate_gpus: PositiveStrictInt | None = None
     max_candidate_gpus: PositiveStrictInt = 32
@@ -166,7 +180,7 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
-PREDICTION_CORE_SECTIONS = frozenset({"traffic", "engine", "evaluation"})
+PREDICTION_CORE_SECTIONS = frozenset({"traffic", "engine", "evaluation", "execution"})
 RECOMMENDATION_CORE_SECTIONS = frozenset({*PREDICTION_CORE_SECTIONS, "optimization", "optimizer"})
 
 

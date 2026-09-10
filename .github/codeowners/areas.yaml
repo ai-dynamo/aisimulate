@@ -135,6 +135,12 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py
     owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resources.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_host_resources.py
+    owners: [replay, sweeper, maintainers]
+  - glob: docs/local-resources.md
+    owners: [replay, sweeper, maintainers]
   - glob: tests/test_unified_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
