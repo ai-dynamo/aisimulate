@@ -191,3 +191,23 @@ def test_native_block32_shared_projections_have_distinct_perf_identity():
     linears = [c["Dsv41Linear"] for c in first_layer["children"] if "Dsv41Linear" in c]
     assert {(op["n"], op["k"]) for op in linears} == {(1152, 5120), (5120, 576)}
     assert all(c["Gemm"]["quant_mode"] == "bfloat16" for c in first_layer["children"] if "Gemm" in c)
+
+
+@pytest.mark.parametrize("first_replay", [False, True])
+def test_engine_cache_keeps_replay_profiles_separate(first_replay):
+    from aiconfigurator_core.sdk import rust_engine_step
+    from aiconfigurator_core.sdk.perf_database import get_database_view
+
+    database = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode="SOL")
+    rust_engine_step._engine_handle_cache_clear()
+    try:
+        models = {replay: _build_model(replay=replay) for replay in (first_replay, not first_replay)}
+        handles = {replay: rust_engine_step._cached_engine_handle(model, database) for replay, model in models.items()}
+        assert handles[False] is not handles[True]
+        assert handles[True].predict_prefill_latency(1, 1024) < handles[False].predict_prefill_latency(1, 1024)
+        assert handles[True].predict_decode_latency(1, 1024) == handles[False].predict_decode_latency(1, 1024)
+        assert (
+            rust_engine_step._cached_engine_handle(_build_model(replay=first_replay), database) is handles[first_replay]
+        )
+    finally:
+        rust_engine_step._engine_handle_cache_clear()
