@@ -211,3 +211,52 @@ def test_engine_cache_keeps_replay_profiles_separate(first_replay):
         )
     finally:
         rust_engine_step._engine_handle_cache_clear()
+
+
+def test_sglang_pure_tp_eager_shared_and_routed_costs_are_sequential():
+    import json
+
+    import aiconfigurator_core._aiconfigurator_core as native
+    from aiconfigurator_core.sdk.config import ModelConfig
+    from aiconfigurator_core.sdk.engine import _evaluate_single_op
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.perf_database import get_database_view
+
+    model = get_model(MODEL_PATH, ModelConfig(tp_size=4, moe_tp_size=4, moe_ep_size=1), "sglang")
+    stages = [
+        json.loads(op._spec_json())["Dsv41Stage"]
+        for op in model.generation_ops
+        if "Dsv41Stage" in json.loads(op._spec_json())
+    ]
+    assert len(stages) == 40
+    assert all(not any("Overlap" in child for child in stage["children"]) for stage in stages)
+    children = stages[0]["children"]
+    shared = [child for child in children if "shared_" in next(iter(child.values())).get("name", "")]
+    routed = [
+        child
+        for child in children
+        if next(iter(child.values())).get("name", "")
+        in ("generation_router_gemm", "generation_moe_pre_dispatch", "generation_moe")
+    ]
+    assert len(shared) == 3 and len(routed) == 3
+    db = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode="SOL")
+
+    def cost(children):
+        stage = stages[0] | {"children": children}
+        op = native.op_from_spec_json(json.dumps({"Dsv41Stage": stage}))
+        return float(_evaluate_single_op(db, op, is_context=False, batch_size=2, s=129, prefix=0, x=2))
+
+    assert cost(shared + routed) == pytest.approx(cost(shared) + cost(routed))
+    assert cost(shared + routed) > max(cost(shared), cost(routed))
+
+
+def test_unqualified_ep_generation_overlap_is_not_changed_by_tp_eager_fix():
+    import json
+
+    model = _build_model()
+    stages = [
+        json.loads(op._spec_json())["Dsv41Stage"]
+        for op in model.generation_ops
+        if "Dsv41Stage" in json.loads(op._spec_json())
+    ]
+    assert all(any("Overlap" in child for child in stage["children"]) for stage in stages)
