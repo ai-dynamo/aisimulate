@@ -792,6 +792,16 @@ mod tests {
         }
     }
 
+    /// Inverse-distance weight of one neighbour site, restating the resolver's
+    /// `w = 1.0 / (d * d + 1e-12)` over the log2 site metric
+    /// (`perf_database/perf_interp.rs:1054-1064` for `d`, `:944-947` for the site
+    /// logs, `:1170` for `w`). The FPM tests below have a single varying site axis,
+    /// so `d` is one absolute log2 difference.
+    fn idw_weight(site: f64, query: f64) -> f64 {
+        let d = (site.log2() - query.log2()).abs();
+        1.0 / (d * d + 1e-12)
+    }
+
     /// A chunked prefill queries KV totals of 8192*k; k=3 (24576) is not a collected site in
     /// the GLM cells (powers of two only). With the DSA arms the SOL-ratio transfer from the
     /// neighbouring sites (16384, 32768) answers instead of `no usable neighbour site`.
@@ -824,9 +834,46 @@ mod tests {
             "{}",
             got.latency_ms
         );
-        // The transfer moves each neighbour's measured latency by the roofline ratio between
-        // the queried and the neighbouring shape; the answer must land near the neighbours,
-        // not at a degenerate value.
+
+        // EXACT expected value, not a band: the query's site key (batch=1,
+        // total_kv=24576) is uncollected, so `SiteIndex::resolve_pair`
+        // (`perf_database/perf_interp.rs:1153-1185`) transfers UTIL from the nearest
+        // collected sites — `util_i = SOL(site_i) / lat_i`, inverse-distance mean,
+        // then `SOL(query) / mean_util`. That is a weighted HARMONIC-style combination
+        // of the neighbours, not an arithmetic mean of SOL-rescaled latencies, so a
+        // raw-neighbour or plain-lerp answer cannot satisfy it.
+        //
+        // Prefill site axes are (batch, total_kv) with total_prefill as the curve axis
+        // (`interp_config`), and batch is 1 on the query and on both sites, so only the
+        // KV axis contributes to `d`. Both neighbour curves carry an EXACT point at
+        // total_prefill=8192, so `lat_i` is the measured row latency (90 / 100), not an
+        // interpolation. SOL is the op-level roofline under `sol_total`'s documented
+        // back-mapping (`s = max(total_prefill/batch, 1)`, `prefix = total_kv/batch`,
+        // `x = total_prefill`), restated here so the expected value cannot inherit a
+        // mapping bug from the code under test.
+        let sol = |batch: f64, total_prefill: f64, total_kv: f64| -> f64 {
+            crate::operators::fpm_sol::op_sol_latency_ms(
+                &prefill.sol_ops[0],
+                &db,
+                total_prefill,
+                batch,
+                (total_prefill / batch).max(1.0),
+                total_kv / batch,
+            )
+            .unwrap()
+        };
+        let (w_lo, w_hi) = (idw_weight(16384.0, 24576.0), idw_weight(32768.0, 24576.0));
+        let mean_util = (w_lo * (sol(1.0, 8192.0, 16384.0) / 90.0)
+            + w_hi * (sol(1.0, 8192.0, 32768.0) / 100.0))
+            / (w_lo + w_hi);
+        let expected = sol(1.0, 8192.0, 24576.0) / mean_util;
+        assert!(
+            (got.latency_ms - expected).abs() <= 1e-9 * expected,
+            "transferred latency {} != the SOL-util transfer {expected}",
+            got.latency_ms
+        );
+        // Independent sanity bound on the answer (no SOL term), so a roofline that
+        // degenerated identically on both sides of the check above cannot hide here.
         assert!(
             (60.0..=130.0).contains(&got.latency_ms),
             "transferred latency {} is not between the neighbouring sites",
@@ -863,6 +910,33 @@ mod tests {
         assert!(
             got.latency_ms.is_finite() && got.latency_ms > 0.0,
             "{}",
+            got.latency_ms
+        );
+
+        // EXACT expected value, by the same transfer as the prefill case
+        // (`perf_database/perf_interp.rs:1153-1185`). Decode sites are (batch,) with
+        // total_kv as the curve axis, so `d` is the log2 batch distance; rows 8 and 16
+        // both carry an exact curve point at total_kv=131072, so `lat_i` is 22 / 30.
+        // The decode SOL back-mapping is `s = max(total_kv/batch, 1)`, `prefix = 0`,
+        // `x = batch` (see [`sol_total`]).
+        let sol = |batch: f64, total_kv: f64| -> f64 {
+            crate::operators::fpm_sol::op_sol_latency_ms(
+                &decode.sol_ops[0],
+                &db,
+                batch,
+                batch,
+                (total_kv / batch).max(1.0),
+                0.0,
+            )
+            .unwrap()
+        };
+        let (w_lo, w_hi) = (idw_weight(8.0, 12.0), idw_weight(16.0, 12.0));
+        let mean_util = (w_lo * (sol(8.0, 131072.0) / 22.0) + w_hi * (sol(16.0, 131072.0) / 30.0))
+            / (w_lo + w_hi);
+        let expected = sol(12.0, 131072.0) / mean_util;
+        assert!(
+            (got.latency_ms - expected).abs() <= 1e-9 * expected,
+            "transferred latency {} != the SOL-util transfer {expected}",
             got.latency_ms
         );
         assert!(

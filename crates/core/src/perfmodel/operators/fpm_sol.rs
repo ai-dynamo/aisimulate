@@ -312,7 +312,8 @@ fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f6
 /// `scale_factor`. FPM hands per-request coordinates as f64 (`s = total_prefill / batch`,
 /// `prefix = total_kv / batch`); the roofline takes integers, so they are rounded.
 /// DSA context parallelism composes latency-only table deltas in the op-level path
-/// and has no roofline, so it stays a typed `SolNotImplemented`.
+/// and has no roofline, so it stays a typed `SolNotImplemented`, and a `full_frac`
+/// outside `[0, 1]` a typed `InvalidEngineConfig`.
 fn dsa_context_module_sol(
     op: &DsaModuleOp,
     spec: &SystemSpec,
@@ -350,7 +351,23 @@ fn dsa_context_module_sol(
             flops,
         )
     };
+    // `full_frac` is a fraction of layers (Python `dsa_full_layer_fraction`), copied
+    // verbatim by the `py_ops` constructors and defaulted — never validated — on the
+    // wire, so a bad value first becomes observable here, and every way it lands is
+    // a plausible-looking wrong number rather than a failure: w < 0 extrapolates
+    // BELOW both legs, w > 1 and +inf are silently swallowed by the `w >= 1.0`
+    // short-circuit, and NaN / -inf are laundered into 0.0 by the `max(0.0)` floor —
+    // a free attention module. Reject instead of clamping: a clamp would price a
+    // misconfigured model as if it had been configured correctly. `contains` is
+    // false for NaN and for both infinities, so this one gate covers them all.
     let w = op.full_frac;
+    if !(0.0..=1.0).contains(&w) {
+        return Err(AicError::InvalidEngineConfig(format!(
+            "DSA context op {} has dsa_full_layer_fraction={w}, which is not a fraction \
+             in [0, 1]; the full/skip SOL blend is undefined outside that range",
+            op.name
+        )));
+    }
     let ms = if w >= 1.0 {
         sol(false)
     } else {
@@ -1050,6 +1067,121 @@ mod tests {
         );
         assert!(got.is_finite() && got > 0.0, "{got}");
         approx(got, expected);
+    }
+
+    /// FROZEN parity record for the DSA context arm at FPM totals that are NOT
+    /// divisible by the batch. `sol_total` back-maps the raw prefill totals
+    /// (batch=2, total_prefill=8193, total_kv=2049) to `s = 8193/2 = 4096.5` and
+    /// `prefix = 2049/2 = 1024.5`, which the arm rounds with `f64::round`'s
+    /// half-AWAY-from-zero tie-break to `s = 4097`, `prefix = 1025` (half-to-even
+    /// would give 4096/1024 and 1.3674139411342223 ms instead).
+    ///
+    /// Expected value derived by hand from the `dsa_context_sol` terms
+    /// (`perf_database/dsa.rs:771-867`) at b=2, s=4097, prefix=1025, num_heads=64,
+    /// index_topk=2048, `GLM_MOE_DSA_DIMS` (hidden 6144, q_lora 2048, kv_lora 512,
+    /// qk_nope 192, qk_rope 64, v 256, index 32x128) on b200_sxm (mem_bw 7.7e12,
+    /// fp4 9e15, fp8 4.5e15, bf16 2.25e15), nvfp4 GEMM weights (9/16 B/elem),
+    /// fp8 KV (1 B/elem), bf16 context FMHA (2 B/elem):
+    ///   full_s = 4097 + 1025 = 5122 > 2048 = topk, prefix 1025 < topk
+    ///     -> the ramp+saturation KV-pair branch (`dsa.rs:824-832`):
+    ///        ramp = 2*(2048*2049 - 1025*1026)/2 =  3_144_702
+    ///        sat  = 2*(5122 - 2048)*2048        = 12_591_104
+    ///        total_kv_pairs                     = 15_735_806
+    ///   gemm_group_ops     = 2_857_924_558_848 / 9.0e15
+    ///   indexer_logits_ops =   343_815_520_256 / 4.5e15   (= 2*8194*32*128*5122)
+    ///   sparse_attn_ops    = 2_191_431_286_784 / 2.25e15  (= 2*64*(576+512)*pairs)
+    ///   sol_math = (that sum) * 1000                      = 1.3679200829440001 ms
+    ///   sol_mem  = (89_837_568 + 150_994_944 + 1_352_208 + 537_001_984) B
+    ///            = 779_186_704 / 7.7e12 * 1000            = 0.1011930784415... ms
+    ///   time_ms  = max(math, mem)                         -> math-bound
+    #[test]
+    fn dsa_context_fpm_sol_frozen_at_fractional_fpm_coordinates() {
+        let d = db();
+        let op = glm_dsa_op("context_attention");
+        let got = op_sol_latency_ms(&Op::DsaContext(op), &d, 8193.0, 2.0, 4096.5, 1024.5).unwrap();
+        approx(got, 1.3679200829440001);
+    }
+
+    /// FROZEN parity record for the DSA generation arm at a decode total that is
+    /// NOT divisible by the batch: `sol_total` back-maps (batch=6,
+    /// total_kv=393219) to `s = 393219/6 = 65536.5`, which rounds half-away-from-zero
+    /// to 65537 (half-to-even would give 65536 and 0.019327268571428573 ms).
+    ///
+    /// Expected value derived by hand from the `dsa_generation_sol` terms
+    /// (`perf_database/dsa.rs:907-973`) at b=6, s=65537, num_heads=64, same dims,
+    /// system and quant modes as the context record above. Decode clamps the
+    /// attention window with the DIMS top-k, not the op's:
+    /// `effective_kv = min(65537, 2048) = 2048`.
+    ///   gemm_group_ops     = 2_092_695_552 / 9.0e15
+    ///   indexer_logits_ops = 3_221_274_624 / 4.5e15   (= 2*6*32*128*65537)
+    ///   sparse_attn_ops    = 1_711_276_032 / 2.25e15  (= 2*6*64*(576+512)*2048)
+    ///   sol_math = (that sum) * 1000 = 0.00170892765866... ms
+    ///   sol_mem: weights  159_711_232 elems * 9/16      =  89_837_568 B
+    ///            indexer  6*65537*132 (entry_bytes 128) =  51_905_304 B
+    ///            kv       6*2048*576 * 1                =   7_077_888 B
+    ///            total   148_820_760 / 7.7e12 * 1000    = 0.019327371428571428 ms
+    ///   time_ms  = max(math, mem) -> memory-bound, so the frozen literal pins the
+    ///   generation memory model and the rounded `s` through the indexer cache term.
+    #[test]
+    fn dsa_generation_fpm_sol_frozen_at_fractional_fpm_coordinates() {
+        let d = db();
+        let op = glm_dsa_op("generation_attention");
+        let got = op_sol_latency_ms(&Op::DsaGeneration(op), &d, 6.0, 6.0, 65536.5, 0.0).unwrap();
+        approx(got, 0.019327371428571428);
+    }
+
+    /// `full_frac` domain. The two valid boundaries select the pure legs, and every
+    /// value outside [0, 1] is a typed `InvalidEngineConfig` rather than an
+    /// extrapolated blend (negative / > 1) or a silent 0 (NaN, -inf) — see the gate
+    /// in `dsa_context_module_sol`.
+    #[test]
+    fn dsa_context_fpm_sol_full_frac_boundaries_and_domain_gate() {
+        let d = db();
+        let spec = &d.system_spec;
+        let flops =
+            dsa_context_sol_flops(spec, GemmQuantMode::Nvfp4, FmhaQuantMode::Bfloat16).unwrap();
+        let leg = |skip: bool| {
+            dsa_context_sol_ms(
+                spec,
+                dsa_dims("GlmMoeDsaForCausalLM"),
+                2048,
+                KvCacheQuantMode::Fp8,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Nvfp4,
+                2,
+                4096,
+                65536,
+                64,
+                skip,
+                flops,
+            )
+        };
+        let at = |w: f64| {
+            let mut op = glm_dsa_op("context_attention");
+            op.full_frac = w;
+            op_sol_latency_ms(&Op::DsaContext(op), &d, 8192.0, 2.0, 4096.0, 65536.0)
+        };
+
+        let full = at(1.0).unwrap();
+        let skip = at(0.0).unwrap();
+        assert!(full.is_finite() && full > 0.0, "{full}");
+        assert!(skip.is_finite() && skip > 0.0, "{skip}");
+        approx(full, leg(false));
+        approx(skip, leg(true));
+        // The skip leg drops the per-layer indexer, so it is strictly cheaper —
+        // proof the two boundaries are not the same code path.
+        assert!(
+            skip < full,
+            "skip-only {skip} must be below full-only {full}"
+        );
+
+        for bad in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                matches!(at(bad), Err(AicError::InvalidEngineConfig(_))),
+                "full_frac={bad} must be rejected, got {:?}",
+                at(bad)
+            );
+        }
     }
 
     #[test]
