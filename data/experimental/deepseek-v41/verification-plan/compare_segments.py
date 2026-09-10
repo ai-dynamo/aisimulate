@@ -141,6 +141,80 @@ def expected_physical_cases(logical, offset, run_id):
     return cases, restored
 
 
+def qualify_runtime_equivalence(receipt, measurement):
+    """Bind a normalizer's reviewed equivalence proof without granting new exceptions."""
+    field = "runtime_identity_equivalence"
+    bindings = measurement["source_bindings"]
+    bound = field + "_sha256"
+    present = field in receipt, bound in bindings
+    if not any(present):
+        return  # Legacy receipts precede the optional equivalence proof.
+    require(all(present), "runtime equivalence proof and hash must both be present")
+    proof = receipt[field]
+    require(type(proof) is dict, "runtime equivalence proof must be an object")
+    trace.require_hash(bindings[bound], bound)
+    require(bindings[bound] == trace.digest(proof), "runtime equivalence proof hash differs")
+    actual = proof.get("actual_runtime_identity_sha256")
+    trace.require_hash(actual, "actual runtime identity")
+    kind = proof.get("kind")
+    if kind == "exact":
+        require(set(proof) == {"kind", "actual_runtime_identity_sha256"}, "unknown exact equivalence fields")
+        require(actual == receipt["runtime_identity_sha256"], "exact runtime identity differs from comparison")
+        return
+    require(kind == "reviewed_aggregated_bootstrap_port_only", "unknown runtime equivalence kind")
+    require(
+        set(proof)
+        == {
+            "kind",
+            "actual_runtime_identity_sha256",
+            "comparison_reference_runtime_identity_sha256",
+            "control_source_transition",
+            "server_arguments_comparison",
+            "actual_installed_source_sha256",
+            "continuation_file_sha256",
+            "review_addendum_sha256",
+            "review_addendum",
+            "source_evidence_receipt_sha256",
+            "frozen_original_plan_sha256",
+            "original_closed_audit_sha256",
+            "original_progress_sha256",
+            "physical_plan_sha256",
+            "prior_completed_cohorts",
+            "remaining_cohorts",
+        },
+        "unknown reviewed equivalence fields",
+    )
+    reference = proof["comparison_reference_runtime_identity_sha256"]
+    trace.require_hash(reference, "comparison reference runtime identity")
+    require(
+        reference == receipt["runtime_identity_sha256"] and actual != reference,
+        "reviewed runtime comparison reference differs or conceals the raw identity",
+    )
+    for key in (
+        "continuation_file_sha256",
+        "review_addendum_sha256",
+        "source_evidence_receipt_sha256",
+        "frozen_original_plan_sha256",
+        "original_closed_audit_sha256",
+        "original_progress_sha256",
+        "physical_plan_sha256",
+    ):
+        trace.require_hash(proof[key], key)
+    trace.integer(proof["prior_completed_cohorts"], "prior completed cohorts")
+    trace.integer(proof["remaining_cohorts"], "remaining cohorts", minimum=1)
+    for key, schema_key, schema in (
+        ("control_source_transition", "transition", "dsv41.continuation.aggregated-port-equivalence.v1"),
+        ("server_arguments_comparison", "contract", "dsv41.continuation.aggregated-port-equivalence.v1"),
+        ("review_addendum", "schema", "dsv41.continuation.aggregated-port-addendum.v1"),
+    ):
+        require(type(proof[key]) is dict and proof[key].get(schema_key) == schema, "unknown " + key + " schema")
+    sources = proof["actual_installed_source_sha256"]
+    require(type(sources) is dict and sources, "missing reviewed installed source hashes")
+    for name, sha in sources.items():
+        require(type(name) is str and name, "invalid reviewed installed source name")
+        trace.require_hash(sha, "reviewed installed source")
+
+
 def qualify_segment(logical, segment, offset):
     """Validate originals before using an internal non-statistical proof view."""
     logical_contract(logical)
@@ -184,6 +258,7 @@ def qualify_segment(logical, segment, offset):
         receipt.get("normalizer_source_sha256") == measurement["source_bindings"]["measurement_builder_sha256"],
         "normalizer source binding differs",
     )
+    qualify_runtime_equivalence(receipt, measurement)
     require(
         measurement["source_bindings"].get("audit_canonical_sha256") == trace.digest(audit)
         and measurement["source_bindings"].get("plan_canonical_sha256") == trace.digest(physical),

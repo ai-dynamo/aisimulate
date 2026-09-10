@@ -173,6 +173,148 @@ def test_partial_first_lifecycle_preserves_boundary_and_original_identity():
     assert proof["originals"][-1]["trial_index"] == 1
 
 
+def runtime_equivalence(segment, *, reviewed=False):
+    reference = segment["receipt"]["runtime_identity_sha256"]
+    if not reviewed:
+        return {"kind": "exact", "actual_runtime_identity_sha256": reference}
+    return {
+        "kind": "reviewed_aggregated_bootstrap_port_only",
+        "actual_runtime_identity_sha256": "a" * 64,
+        "comparison_reference_runtime_identity_sha256": reference,
+        "control_source_transition": {"transition": "dsv41.continuation.aggregated-port-equivalence.v1"},
+        "server_arguments_comparison": {"contract": "dsv41.continuation.aggregated-port-equivalence.v1"},
+        "actual_installed_source_sha256": {"example/actual_source.py": "b" * 64},
+        "continuation_file_sha256": "c" * 64,
+        "review_addendum_sha256": "d" * 64,
+        "review_addendum": {"schema": "dsv41.continuation.aggregated-port-addendum.v1"},
+        "source_evidence_receipt_sha256": "1" * 64,
+        "frozen_original_plan_sha256": "2" * 64,
+        "original_closed_audit_sha256": "3" * 64,
+        "original_progress_sha256": "4" * 64,
+        "physical_plan_sha256": "5" * 64,
+        "prior_completed_cohorts": 6,
+        "remaining_cohorts": 74,
+    }
+
+
+def bind_runtime_equivalence(segment, plan, proof):
+    segment["receipt"]["runtime_identity_equivalence"] = proof
+    segment["measurement"]["source_bindings"]["runtime_identity_equivalence_sha256"] = subject.trace.digest(proof)
+    reseal(segment, plan)
+
+
+@pytest.mark.parametrize("reviewed", [False, True])
+def test_bound_runtime_equivalence_preserves_raw_identity_and_all_observations(reviewed):
+    plan = logical_plan()
+    segment = segment_fixture(plan, length=6)
+    bind_runtime_equivalence(segment, plan, runtime_equivalence(segment, reviewed=reviewed))
+    before = deepcopy(segment)
+    assert subject.qualify_segment(plan, segment, 0)["next_offset"] == 6
+    assert segment == before
+
+
+@pytest.mark.parametrize("missing", ["proof", "hash"])
+def test_runtime_equivalence_requires_both_fields_even_after_outer_receipt_reseal(missing):
+    plan = logical_plan()
+    segment = segment_fixture(plan, length=6)
+    bind_runtime_equivalence(segment, plan, runtime_equivalence(segment))
+    if missing == "proof":
+        del segment["receipt"]["runtime_identity_equivalence"]
+    else:
+        del segment["measurement"]["source_bindings"]["runtime_identity_equivalence_sha256"]
+    reseal(segment, plan)
+    with pytest.raises(ValueError, match="both be present"):
+        subject.qualify_segment(plan, segment, 0)
+
+
+def test_runtime_equivalence_content_tamper_is_rejected_without_other_receipt_changes():
+    plan = logical_plan()
+    segment = segment_fixture(plan, length=6)
+    bind_runtime_equivalence(segment, plan, runtime_equivalence(segment, reviewed=True))
+    segment["receipt"]["runtime_identity_equivalence"]["review_addendum"]["schema"] = "forged"
+    # This nested receipt object is outside the existing measurement hash.
+    with pytest.raises(ValueError, match="proof hash differs"):
+        subject.qualify_segment(plan, segment, 0)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "null",
+        "unknown_kind",
+        "extra_exact_field",
+        "exact_reference",
+        "invalid_actual_hash",
+        "reviewed_reference",
+        "concealed_actual",
+        "missing_reviewed_field",
+        "extra_reviewed_field",
+        "invalid_continuation_hash",
+        "invalid_addendum_hash",
+        "unknown_control_schema",
+        "unknown_argument_schema",
+        "unknown_addendum_schema",
+        "nonobject_addendum",
+        "empty_sources",
+        "nonobject_sources",
+        "invalid_source_hash",
+        "invalid_prior_count",
+        "empty_remaining",
+        "invalid_origin_proof_hash",
+    ],
+)
+def test_resealed_equivalence_cannot_relabel_runtime_identity_or_schema(mutation):
+    plan = logical_plan()
+    segment = segment_fixture(plan, length=6)
+    exact = mutation in {"null", "unknown_kind", "extra_exact_field", "exact_reference", "invalid_actual_hash"}
+    proof = runtime_equivalence(segment, reviewed=not exact)
+    if mutation == "null":
+        proof = None
+    elif mutation == "unknown_kind":
+        proof["kind"] = "arbitrary_runtime_equivalence"
+    elif mutation == "extra_exact_field":
+        proof["ignored_difference"] = "kernel"
+    elif mutation == "exact_reference":
+        proof["actual_runtime_identity_sha256"] = "f" * 64
+    elif mutation == "invalid_actual_hash":
+        proof["actual_runtime_identity_sha256"] = True
+    elif mutation == "reviewed_reference":
+        proof["comparison_reference_runtime_identity_sha256"] = "f" * 64
+    elif mutation == "concealed_actual":
+        proof["actual_runtime_identity_sha256"] = proof["comparison_reference_runtime_identity_sha256"]
+    elif mutation == "missing_reviewed_field":
+        del proof["control_source_transition"]
+    elif mutation == "extra_reviewed_field":
+        proof["unreviewed_exception"] = "dtype"
+    elif mutation == "invalid_continuation_hash":
+        proof["continuation_file_sha256"] = "invalid"
+    elif mutation == "invalid_addendum_hash":
+        proof["review_addendum_sha256"] = None
+    elif mutation == "unknown_control_schema":
+        proof["control_source_transition"]["transition"] = "other"
+    elif mutation == "unknown_argument_schema":
+        proof["server_arguments_comparison"]["contract"] = "other"
+    elif mutation == "unknown_addendum_schema":
+        proof["review_addendum"]["schema"] = "other"
+    elif mutation == "nonobject_addendum":
+        proof["review_addendum"] = []
+    elif mutation == "empty_sources":
+        proof["actual_installed_source_sha256"] = {}
+    elif mutation == "nonobject_sources":
+        proof["actual_installed_source_sha256"] = []
+    elif mutation == "invalid_source_hash":
+        proof["actual_installed_source_sha256"]["example/actual_source.py"] = "invalid"
+    elif mutation == "invalid_prior_count":
+        proof["prior_completed_cohorts"] = True
+    elif mutation == "empty_remaining":
+        proof["remaining_cohorts"] = 0
+    elif mutation == "invalid_origin_proof_hash":
+        proof["original_progress_sha256"] = "invalid"
+    bind_runtime_equivalence(segment, plan, proof)
+    with pytest.raises(ValueError):
+        subject.qualify_segment(plan, segment, 0)
+
+
 def test_continuation_restore_seed_is_bound_to_actual_audit_and_original_token_ids():
     plan = logical_plan()
     segment = segment_fixture(plan, offset=2, length=3)
