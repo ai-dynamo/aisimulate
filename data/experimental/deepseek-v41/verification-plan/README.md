@@ -3,8 +3,12 @@
 Status: the study design is frozen. GB300 completed the 126-configuration
 calibration and 38 independent forward holdouts per Decoder profile, followed
 by a separate ten-repeat attempt on every holdout. The [versioned report](https://github.com/ai-dynamo/aisimulate/tree/22068b86/data/experimental/deepseek-v41/gb300-silicon/report/precision-v2)
-retains both attempts and all missing predictions. GB200 calibration and both
-GPUs' complete HTTP E2E/FPM verification remain pending. The original GB300
+retains both attempts and all missing predictions. The [GB200 126-point FPM
+calibration](../gb200-fpm/calibration-v1/README.md) and the [GB300 OFF HTTP/native
+FPM comparison](https://github.com/ai-dynamo/aisimulate/tree/221bd7b2/data/experimental/deepseek-v41/gb300-silicon/report/serving-v4/off-prefix-refined)
+are published separately. Remaining profile and content strata require their
+own closed-run evidence; calibration self-queries do not establish verification
+accuracy. The original GB300
 16-workload qualification grid and its 309 derived module keys per profile
 remain separate from independent verification counts.
 
@@ -108,6 +112,22 @@ above is a planning estimate, so verify achieved interval width and report it
 even if the target is missed. This follows the distinction between variance,
 sample size and uncertainty in the
 [NIST confidence-limit guidance](https://itl.nist.gov/div898/handbook/eda/section3/eda352.htm).
+
+These are pointwise intervals, conditional on the observed runtime lifecycle
+and frozen calibration. Meeting the width target for all 45 required means
+does not imply simultaneous 95% coverage for all 45, nor a 5% prediction-error
+bound. Ten pilot trials provide an estimated variance, not a known population
+variance; the planning formula does not guarantee achieved precision. The
+[NIST sample-size guidance](https://www.itl.nist.gov/div898/handbook/prc/section2/prc222.htm)
+makes that distinction explicit. Keep these limits when choosing or reporting N.
+
+The bounded geometry design and the replication budget answer different
+questions: 126 calibration points and 38 disjoint holdouts test the declared
+interpolation domain, while main trials estimate measurement and prediction
+uncertainty under actual serving conditions. GB200's native FPM policy records
+one measurement per geometry; that holdout report therefore gives descriptive
+errors and no repeated-run confidence interval. More tokens or TP ranks cannot
+supply the missing independent repetitions.
 
 If prediction errors expose a transition missed by calibration, add neighboring
 calibration points and reserve new, unseen geometric holdouts. Preserve the
@@ -231,13 +251,16 @@ Both tools require source bindings to the exact audit/plan/execution/worker
 artifacts and analysis source. E2E additionally binds the original HTTP summary
 and resolved scheduler receipt. The normalized identity must be generated from
 verified original receipts, not constructed by selecting arbitrary values.
-The qualified GB200 whole-FPM query explicitly uses `activation_dtype="fp8"`
+The qualified GB200 whole-FPM query explicitly uses `fpm_fmha_dtype="fp8"`
 to match the runtime's FMHA table identity. Admission requires an independent
 native FP8-KV/Collector-policy receipt and its hash; the table label alone is
-insufficient. The raw checkpoint fingerprint remains unchanged and the execution
-override is recorded separately. GB300 op-level comparisons continue to reject
-precision overrides. The native HTTP replay bridge forwards this identity as
-`fmha_dtype`, rather than silently using the SDK's default BF16 FMHA label.
+insufficient. This selector only chooses the whole-forward table: the original
+op graph, its SOL interpolation anchors and memory retain checkpoint-native
+precision. The raw checkpoint fingerprint remains unchanged. New comparisons
+do not use the broad `activation_dtype` override; the historical calibration
+packet remains unchanged. GB300 op-level comparisons continue to reject precision
+overrides. The native HTTP replay bridge forwards the isolated `fpm_fmha_dtype`
+identity and preserves `forward_model="fpm"` in serialized engine configuration.
 `--diagnostic` accepts an explicitly closed partial lifecycle while preserving
 the original main budget and missing coverage; it never reports a completed
 study or final confidence interval. Partial stages cannot be silently pooled
