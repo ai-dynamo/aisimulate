@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -48,7 +49,35 @@ class SlurmCellRunner:
     def _command(self, args: list[str], *, timeout: int = 60, check: bool = True):
         from .runner import _run_command
 
-        return _run_command(args, timeout=timeout, check=check)
+        try:
+            return _run_command(args, timeout=timeout, check=check)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            # Preparation and cleanup also invoke Slurm. Preserve their failure
+            # streams even when a campaign formats only str(error), and keep
+            # concurrent failures or retries from overwriting earlier evidence.
+            logs = self.cell_dir / "logs" / "transport-failures" / uuid.uuid4().hex
+            try:
+                logs.mkdir(parents=True)
+                for stream in ("stdout", "stderr"):
+                    output = getattr(error, stream, None) or ""
+                    if isinstance(output, bytes):
+                        output = output.decode(errors="replace")
+                    (logs / f"{stream}.log").write_text(output)
+                (logs / "failure.json").write_text(
+                    json.dumps(
+                        {
+                            "executable": Path(args[0]).name,
+                            "exception": type(error).__name__,
+                            "returncode": getattr(error, "returncode", None),
+                            "timeout_seconds": timeout,
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            except OSError as log_error:
+                error.add_note(f"Could not preserve Slurm failure streams: {log_error}")
+            raise
 
     def apply(self) -> None:
         for executable in ("srun", "scontrol", "squeue", "scancel"):

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -88,3 +89,28 @@ def test_slurm_refuses_allocation_geometry_mismatch(runner, monkeypatch):
     monkeypatch.setattr(runner, "_command", lambda *a, **k: SimpleNamespace(stdout="node-a node-b"))
     with pytest.raises(ValueError, match="exactly 1 allocated nodes"):
         runner.wait_ready(1)
+
+
+def test_preparation_preserves_slurm_failure_streams_across_retries(runner, monkeypatch):
+    runner.hosts = ["test-node"]
+    errors = [
+        subprocess.CalledProcessError(1, ["srun"], output="preparation started", stderr="task resource conflict"),
+        subprocess.TimeoutExpired(["srun"], 300, output=b"waiting", stderr=b"container startup stalled"),
+    ]
+    for failure in errors:
+
+        def fail(*args, **kwargs):
+            raise failure
+
+        monkeypatch.setattr("collector.fpm_forward.runner._run_command", fail)
+        with pytest.raises(type(failure)) as caught:
+            runner.prepare_attempt(runner.pods(), cell_id="cell", plan_sha256="plan", attempt_id="attempt")
+        assert caught.value is failure
+    records = list((runner.cell_dir / "logs" / "transport-failures").iterdir())
+    assert len(records) == 2
+    assert {path.joinpath("stderr.log").read_text() for path in records} == {
+        "task resource conflict",
+        "container startup stalled",
+    }
+    assert {path.joinpath("stdout.log").read_text() for path in records} == {"preparation started", "waiting"}
+    assert all(json.loads(path.joinpath("failure.json").read_text())["executable"] == "srun" for path in records)
