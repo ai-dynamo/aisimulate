@@ -885,7 +885,9 @@ def test_fpm_exec_consumes_only_contract_environment():
     barrier timeout, which is defaulted in-script and never rendered."""
 
     script = FPM_EXEC.read_text()
-    consumed = set(re.findall(r"FPM_[A-Z0-9_]+", script))
+    # Match complete shell identifiers. DYN_FPM_* exports configure the native
+    # producer and must not be mistaken for Generator-owned FPM_* inputs.
+    consumed = set(re.findall(r"\bFPM_[A-Z0-9_]+\b", script))
 
     assert {"FPM_NODE_RANK", "FPM_MASTER_ADDR", "FPM_BENCHMARK_OUTPUT_PATH"} <= consumed
     allowed = set(FPM_ENV_EXPORTED_VARS) | {"FPM_COMPLETION_BARRIER_TIMEOUT_SECONDS"}

@@ -45,6 +45,7 @@ def test_native_v41_requires_measured_execution_and_text_evidence():
     cell = SimpleNamespace(execution_identity=identity, input_text_sha256="a" * 64)
     fields = ("model_config_sha256", "execution_profile", "engram_residency", "input_modality")
     payload = {
+        "execution_mode": "eager",
         "execution_identity": dict(zip(fields, identity, strict=True)),
         "input_provenance": {
             "source": "tokenizer_text",
@@ -56,6 +57,11 @@ def test_native_v41_requires_measured_execution_and_text_evidence():
         },
     }
     assert _validate_execution_provenance(cell, payload, Path("artifact")) == payload["input_provenance"]
+    for mode in (None, "cuda_graph"):
+        corrupt = copy.deepcopy(payload)
+        corrupt["execution_mode"] = mode
+        with pytest.raises(ValueError, match="verified eager execution"):
+            _validate_execution_provenance(cell, corrupt, Path("artifact"))
     corrupt = copy.deepcopy(payload)
     corrupt["execution_identity"]["execution_profile"] = "decoder_bounded"
     with pytest.raises(ValueError, match="execution identity"):
