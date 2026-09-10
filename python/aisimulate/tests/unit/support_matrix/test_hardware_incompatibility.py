@@ -198,13 +198,13 @@ def test_run_single_test_propagates_hardware_preflight_failures(monkeypatch):
         (
             "google/gemma-4-26B-A4B",
             "sglang",
-            "0.5.10",
+            "0.5.14",
             "Failed to query context attention data for b=1, s=128.0, prefix=128.0",
         ),
         (
             "meta-llama/Llama-4-Scout-17B-16E-Instruct",
             "trtllm",
-            "1.3.0rc10",
+            "1.3.0rc20",
             "Failed to query moe data for num_tokens=128.0, hidden_size=5120",
         ),
     ],
