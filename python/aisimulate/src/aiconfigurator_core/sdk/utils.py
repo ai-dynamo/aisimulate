@@ -726,6 +726,134 @@ def _parse_kimi_k25_vision_encoder_config(
     )
 
 
+def _parse_llama4_vision_config(
+    vision_cfg: dict,
+    image_processor_cfg: dict | None,
+    text_hidden_size: int,
+) -> VisionEncoderConfig:
+    """Translate the published Llama 4 tower and connector shapes."""
+    required = (
+        "hidden_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_channels",
+        "intermediate_size",
+        "image_size",
+        "patch_size",
+        "pixel_shuffle_ratio",
+        "projector_input_dim",
+        "projector_output_dim",
+        "vision_output_dim",
+    )
+    missing = [key for key in required if key not in vision_cfg]
+    if missing:
+        raise ValueError(f"Llama 4 vision_config is missing required fields: {', '.join(missing)}")
+
+    for key in required:
+        if key == "pixel_shuffle_ratio":
+            continue
+        value = vision_cfg[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"Llama 4 vision_config.{key} must be a positive integer, got {value!r}")
+
+    hidden = int(vision_cfg["hidden_size"])
+    num_heads = int(vision_cfg["num_attention_heads"])
+    if hidden % num_heads != 0:
+        raise ValueError(
+            "Llama 4 vision_config.hidden_size must be divisible by num_attention_heads: "
+            f"hidden_size={hidden}, num_attention_heads={num_heads}"
+        )
+
+    processor_required = ("max_patches", "resize_to_max_canvas", "add_global_tile")
+    if not isinstance(image_processor_cfg, dict):
+        raise TypeError(
+            "Llama 4 config must preserve image_processor_config metadata or provide preprocessor_config.json"
+        )
+    if "image_processor_type" in image_processor_cfg:
+        if image_processor_cfg["image_processor_type"] not in ("Llama4ImageProcessor", "Llama4ImageProcessorFast"):
+            raise ValueError(
+                f"Unsupported Llama 4 image_processor_type: {image_processor_cfg['image_processor_type']!r}"
+            )
+        # Processor defaults and conditional global tile adapted from Transformers:
+        # https://github.com/huggingface/transformers/blob/0720e206c6ba28887e4d60ef60a6a089f6c1cc76/src/transformers/models/llama4/image_processing_llama4_fast.py
+        # Copyright 2025 HuggingFace Inc. team. All rights reserved.
+        # Apache-2.0; modified to normalize metadata without loading image tensors.
+        image_processor_cfg = {
+            "max_patches": 16,
+            "resize_to_max_canvas": False,
+            "add_global_tile": True,
+            "size": {"height": 336, "width": 336},
+            **image_processor_cfg,
+        }
+    if "size" in image_processor_cfg:
+        size = image_processor_cfg["size"]
+        if (
+            not isinstance(size, dict)
+            or any(
+                not isinstance(size.get(axis), int) or isinstance(size.get(axis), bool) for axis in ("height", "width")
+            )
+            or size != {"height": vision_cfg["image_size"], "width": vision_cfg["image_size"]}
+        ):
+            raise ValueError("Llama 4 image processor size must match the square vision_config.image_size")
+    processor_missing = [key for key in processor_required if key not in image_processor_cfg]
+    if processor_missing:
+        raise ValueError("Llama 4 image_processor_config is missing required fields: " + ", ".join(processor_missing))
+    max_patches = image_processor_cfg["max_patches"]
+    if not isinstance(max_patches, int) or isinstance(max_patches, bool) or max_patches <= 0:
+        raise ValueError(f"Llama 4 image_processor_config.max_patches must be a positive integer, got {max_patches!r}")
+    for key in ("resize_to_max_canvas", "add_global_tile"):
+        if not isinstance(image_processor_cfg[key], bool):
+            raise TypeError(f"Llama 4 image_processor_config.{key} must be boolean")
+
+    ratio = vision_cfg["pixel_shuffle_ratio"]
+    if not isinstance(ratio, (int, float)) or isinstance(ratio, bool) or ratio <= 0:
+        raise ValueError(f"Llama 4 pixel_shuffle_ratio must be positive, got {ratio!r}")
+    spatial_merge_size = round(1.0 / float(ratio))
+    if spatial_merge_size <= 0 or abs(float(ratio) * spatial_merge_size - 1.0) > 1e-9:
+        raise ValueError(f"Llama 4 pixel_shuffle_ratio must have an integral reciprocal, got {ratio!r}")
+
+    merge_dim = hidden * spatial_merge_size**2
+    if merge_dim != vision_cfg["intermediate_size"]:
+        raise ValueError(
+            "Llama 4 pixel-shuffle width must equal vision intermediate_size: "
+            f"{hidden} * {spatial_merge_size}^2 = {merge_dim}, config has {vision_cfg['intermediate_size']}"
+        )
+    if vision_cfg["projector_output_dim"] != vision_cfg["vision_output_dim"]:
+        raise ValueError(
+            "Llama 4 vision adaptor output must match multimodal projector input: "
+            f"projector_output_dim={vision_cfg['projector_output_dim']} "
+            f"vision_output_dim={vision_cfg['vision_output_dim']}"
+        )
+
+    adapter_hidden = int(vision_cfg["projector_input_dim"])
+    adapter_out = int(vision_cfg["projector_output_dim"])
+    return VisionEncoderConfig(
+        depth=int(vision_cfg["num_hidden_layers"]),
+        hidden_size=hidden,
+        num_heads=num_heads,
+        intermediate_size=int(vision_cfg["intermediate_size"]),
+        patch_size=int(vision_cfg["patch_size"]),
+        temporal_patch_size=1,
+        spatial_merge_size=spatial_merge_size,
+        out_hidden_size=text_hidden_size,
+        projector_dims=(
+            (merge_dim, adapter_hidden),
+            (adapter_hidden, adapter_out),
+            (int(vision_cfg["vision_output_dim"]), text_hidden_size),
+        ),
+        projector_n_instances=1,
+        partial_rotary_factor=0.5,
+        in_channels=int(vision_cfg["num_channels"]),
+        image_size=int(vision_cfg["image_size"]),
+        has_cls_token=True,
+        max_num_tiles=max_patches,
+        resize_to_max_canvas=image_processor_cfg["resize_to_max_canvas"],
+        add_global_tile=image_processor_cfg["add_global_tile"],
+        prompt_image_tokens=3,
+        prompt_tokens_per_local_tile=1,
+    )
+
+
 def _parse_hf_config_json(config: dict) -> dict:
     """
     Convert a HuggingFace config.json dictionary into model configuration parameters.
@@ -744,6 +872,7 @@ def _parse_hf_config_json(config: dict) -> dict:
     processor_cfg = config.get("preprocessor_config")
     root_quant_cfg = config.get("quantization_config")
     encoder_config = None
+    image_processor_cfg = config.get("image_processor_config")
     image_token_id = int(config.get("image_token_id") or 0)
     video_token_id = int(config.get("video_token_id") or 0)
 
@@ -876,18 +1005,23 @@ def _parse_hf_config_json(config: dict) -> dict:
             raise ValueError(f"interleave_moe_layer_step must be a positive integer, got {step}")
         attn_pattern = tuple(i % 2 for i in range(layers))
         moe_freq = tuple(1 if (i + 1) % step == 0 else 0 for i in range(layers))
+        if not isinstance(vision_cfg, dict):
+            raise TypeError("Llama 4 config must preserve vision_config metadata")
+        llama4_vision_config = _parse_llama4_vision_config(vision_cfg, image_processor_cfg, hidden_size)
         extra_params = HybridMoEConfig(
             attn_layer_pattern=attn_pattern,
             moe_layer_freq=moe_freq,
             # All attention dims are uniform (0 → fall back to model-level defaults).
             sliding_window_size=config.get("attention_chunk_size", 0),
             dense_inter_size=config.get("intermediate_size_mlp", 0),
+            vision_config=llama4_vision_config,
         )
         logger.info(
             f"Llama4 hybrid config: interleave_moe_layer_step={step}, "
             f"global_attn_layers={sum(attn_pattern)}, local_attn_layers={attn_pattern.count(0)}, "
             f"moe_layers={sum(moe_freq)}, dense_layers={moe_freq.count(0)}, "
-            f"sliding_window_size={extra_params.sliding_window_size}"
+            f"sliding_window_size={extra_params.sliding_window_size}, "
+            f"vision_encoder={'enabled' if llama4_vision_config else 'absent'}"
         )
     elif architecture == "KimiK25ForConditionalGeneration":
         # KIMI K2.5 wraps a DeepSeek-V3-style MLA text model. Store v_head_dim so
@@ -1511,6 +1645,25 @@ def _attach_hf_quant_config(raw_config: dict, hf_quant_config: dict | None) -> d
     return raw_config
 
 
+def _attach_llama4_processor_config(raw_config: dict, model_path: str) -> dict:
+    """Load Llama 4's separate processor metadata, retaining bundled inline configs."""
+    if (raw_config.get("architectures") or [None])[0] != "Llama4ForConditionalGeneration":
+        return raw_config
+    if "image_processor_config" in raw_config:
+        return raw_config
+    if os.path.isdir(model_path):
+        processor_path = Path(model_path) / "preprocessor_config.json"
+        processor_config = _load_json_with_infinity(processor_path) if processor_path.exists() else None
+    elif model_path in DefaultHFModels:
+        processor_path = _get_model_config_path() / f"{model_path.replace('/', '--')}_preprocessor_config.json"
+        processor_config = _load_json_with_infinity(processor_path) if processor_path.exists() else None
+    else:
+        processor_config = _download_hf_json(model_path, "preprocessor_config.json", raise_on_404=False)
+    if processor_config is not None:
+        raw_config["image_processor_config"] = processor_config
+    return raw_config
+
+
 @cache
 def _load_model_config_from_model_path(model_path: str) -> dict:
     """
@@ -1532,17 +1685,17 @@ def _load_model_config_from_model_path(model_path: str) -> dict:
     """
     # Check if it's a local path
     if os.path.isdir(model_path):
-        config = _load_local_config(model_path)
+        config = _attach_llama4_processor_config(_load_local_config(model_path), model_path)
         return _attach_inferred_quant_fields(_attach_hf_quant_config(config, _load_local_quant_config(model_path)))
 
     # Otherwise treat as HuggingFace path
     if model_path in DefaultHFModels:
-        config = _load_pre_downloaded_hf_config(model_path)
+        config = _attach_llama4_processor_config(_load_pre_downloaded_hf_config(model_path), model_path)
         return _attach_inferred_quant_fields(
             _attach_hf_quant_config(config, _load_pre_downloaded_hf_quant_config(model_path))
         )
 
-    config = _download_hf_config(model_path)
+    config = _attach_llama4_processor_config(_download_hf_config(model_path), model_path)
     try:
         hf_quant_config = _download_hf_json(model_path, "hf_quant_config.json", raise_on_404=False)
     except Exception as exc:  # best-effort for optional quant config

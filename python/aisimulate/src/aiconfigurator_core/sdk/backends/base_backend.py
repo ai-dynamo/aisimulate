@@ -56,6 +56,19 @@ def _kimi_resized_spatial_tokens(
     return (padded_height // stride) * (padded_width // stride), (padded_height // patch) * (padded_width // patch)
 
 
+@dataclasses.dataclass(frozen=True)
+class _EncoderVisualWorkload:
+    """Per-visual token geometry after checkpoint preprocessing."""
+
+    output_tokens_per_image: int
+    context_tokens_per_image: int
+    output_tokens_per_sequence: int
+    transformer_tokens_per_sequence: int
+    patch_tokens_per_sequence: int
+    sequences_per_image: int
+    num_visuals: int = 0
+
+
 class BaseBackend:
     """Base class for all inference backends.
 
@@ -280,8 +293,8 @@ class BaseBackend:
             ):
                 raise ValueError("Video workloads require a model with a supported vision encoder configuration.")
             return 0
-        post_merge, _, num_visuals = BaseBackend._encoder_pre_merge_per_visual(runtime_config, enc_cfg)
-        return post_merge * num_visuals
+        workload = BaseBackend._encoder_workload_per_visual(runtime_config, enc_cfg)
+        return workload.context_tokens_per_image * workload.num_visuals
 
     @staticmethod
     def effective_prefill_isl(model_path: str, runtime_config: RuntimeConfig) -> int:
@@ -314,6 +327,54 @@ class BaseBackend:
         runtime_config: RuntimeConfig,
         enc_cfg,
     ) -> tuple[int, int, int]:
+        """Compatibility tuple for output tokens, transformer tokens, and count."""
+        workload = BaseBackend._encoder_workload_per_visual(runtime_config, enc_cfg)
+        return (
+            workload.output_tokens_per_image,
+            workload.transformer_tokens_per_sequence * workload.sequences_per_image,
+            workload.num_visuals,
+        )
+
+    @staticmethod
+    def _tiled_encoder_sequence_count(height: int, width: int, enc_cfg: common.VisionEncoderConfig) -> int:
+        """Mirror Llama4ImageProcessor's best-fit canvas and global-tile rule.
+
+        Source: Hugging Face Transformers v4.51.0, commit
+        0720e206c6ba28887e4d60ef60a6a089f6c1cc76, image_processing_llama4_fast.py.
+        """
+        tile = enc_cfg.image_size
+        if height <= 0 or width <= 0 or tile <= 0 or enc_cfg.max_num_tiles <= 0:
+            raise ValueError(
+                "tiled sequence count requires positive geometry: "
+                f"height={height}, width={width}, tile={tile}, max_num_tiles={enc_cfg.max_num_tiles}"
+            )
+        candidates: list[tuple[int, int]] = []
+        for chunk_count in range(enc_cfg.max_num_tiles, 0, -1):
+            for factor in range(1, int(chunk_count**0.5) + 1):
+                if chunk_count % factor == 0:
+                    candidates.append((factor * tile, (chunk_count // factor) * tile))
+                    if factor != chunk_count // factor:
+                        candidates.append(((chunk_count // factor) * tile, factor * tile))
+
+        scales = [min(target_h / height, target_w / width) for target_h, target_w in candidates]
+        upscaling = [scale for scale in scales if scale >= 1]
+        selected_scale = (
+            (max(upscaling) if enc_cfg.resize_to_max_canvas else min(upscaling)) if upscaling else max(scales)
+        )
+        viable = [
+            candidate
+            for candidate, scale in zip(candidates, scales, strict=True)
+            if abs(scale - selected_scale) <= 1e-12
+        ]
+        target_h, target_w = min(viable, key=lambda size: size[0] * size[1])
+        local_tiles = (target_h // tile) * (target_w // tile)
+        return local_tiles + int(enc_cfg.add_global_tile and local_tiles > 1)
+
+    @staticmethod
+    def _encoder_workload_per_visual(
+        runtime_config: RuntimeConfig,
+        enc_cfg: common.VisionEncoderConfig,
+    ) -> _EncoderVisualWorkload:
         """Resolve one homogeneous image or video workload.
 
         Images and videos use different temporal semantics and may have
@@ -331,9 +392,11 @@ class BaseBackend:
             1. video_frames + video_height + video_width
             2. num_video_tokens (explicit per-video override)
 
-        Returns ``(tokens_post_merge_per_visual, pre_merge_per_visual,
-        num_visuals_per_request)``. Returns zeros for the text-only path.
+        Fixed tiled encoders retain per-tile transformer sequence geometry and
+        prompt-only context tokens. Dynamic encoders retain the Qwen image and
+        video semantics already used by the shared path.
         """
+        zero = _EncoderVisualWorkload(0, 0, 0, 0, 0, 0, 0)
         image_count = runtime_config.num_images_per_request
         image_height = runtime_config.image_height
         image_width = runtime_config.image_width
@@ -384,6 +447,45 @@ class BaseBackend:
                 "Mixed image/video encoder workloads are not modeled yet; estimate images and videos separately."
             )
 
+        if enc_cfg.image_size > 0 and enc_cfg.max_num_tiles > 0:
+            if has_videos:
+                raise ValueError("Video workloads are not modeled for fixed-tile vision encoders.")
+            if not has_images:
+                return zero
+            post_per_sequence = (enc_cfg.image_size // (enc_cfg.patch_size * enc_cfg.spatial_merge_size)) ** 2
+            patch_per_sequence = (enc_cfg.image_size // enc_cfg.patch_size) ** 2
+            transformer_per_sequence = patch_per_sequence + int(enc_cfg.has_cls_token)
+            if has_image_dims:
+                sequences = BaseBackend._tiled_encoder_sequence_count(image_height, image_width, enc_cfg)
+                output_tokens = post_per_sequence * sequences
+            else:
+                output_tokens = image_token_override
+                if output_tokens % post_per_sequence != 0:
+                    patch_tokens = output_tokens * enc_cfg.spatial_merge_size**2
+                    return _EncoderVisualWorkload(
+                        output_tokens,
+                        output_tokens + enc_cfg.prompt_image_tokens,
+                        output_tokens,
+                        patch_tokens + int(enc_cfg.has_cls_token),
+                        patch_tokens,
+                        1,
+                        image_count,
+                    )
+                sequences = output_tokens // post_per_sequence
+            local_tiles = sequences - int(enc_cfg.add_global_tile and sequences > 1)
+            context_tokens = output_tokens + enc_cfg.prompt_image_tokens
+            if local_tiles > 1:
+                context_tokens += local_tiles * enc_cfg.prompt_tokens_per_local_tile
+            return _EncoderVisualWorkload(
+                output_tokens,
+                context_tokens,
+                post_per_sequence,
+                transformer_per_sequence,
+                patch_per_sequence,
+                sequences,
+                image_count,
+            )
+
         def _smart_resized_spatial_tokens(height: int, width: int, *, is_video: bool = False) -> tuple[int, int]:
             if enc_cfg.resize_mode == "kimi":
                 return _kimi_resized_spatial_tokens(height, width, enc_cfg, is_video=is_video)
@@ -430,7 +532,7 @@ class BaseBackend:
                 tokens_per_visual = image_token_override
                 pre_merge_per_visual = tokens_per_visual * (enc_cfg.spatial_merge_size**2)
             else:
-                return 0, 0, 0
+                return zero
         if has_videos and (tokens_per_visual <= 0 or pre_merge_per_visual <= 0):
             spatial_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
             raise ValueError(
@@ -438,8 +540,23 @@ class BaseBackend:
                 f"height and width must each be at least {spatial_stride} pixels."
             )
         if tokens_per_visual <= 0 or pre_merge_per_visual <= 0 or num_visuals <= 0:
-            return 0, 0, 0
-        return tokens_per_visual, pre_merge_per_visual, num_visuals
+            return zero
+        sequences_per_visual = temporal_patches if has_videos and not enc_cfg.pool_temporal else 1
+        if tokens_per_visual % sequences_per_visual != 0 or pre_merge_per_visual % sequences_per_visual != 0:
+            raise ValueError(
+                "Visual tokens must divide evenly across encoder attention sequences: "
+                f"post_merge_tokens={tokens_per_visual}, pre_merge_tokens={pre_merge_per_visual}, "
+                f"sequences={sequences_per_visual}."
+            )
+        return _EncoderVisualWorkload(
+            tokens_per_visual,
+            tokens_per_visual,
+            tokens_per_visual // sequences_per_visual,
+            pre_merge_per_visual // sequences_per_visual,
+            pre_merge_per_visual // sequences_per_visual,
+            sequences_per_visual,
+            num_visuals,
+        )
 
     def _run_encoder_phase(
         self,
@@ -462,53 +579,34 @@ class BaseBackend:
             self._visual_context_tokens_from_encoder_config(enc_cfg, runtime_config)
             return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, 0
 
-        tokens_per_visual, pre_merge_per_visual, num_visuals = self._encoder_pre_merge_per_visual(
-            runtime_config, enc_cfg
-        )
-        if tokens_per_visual == 0:
+        workload = self._encoder_workload_per_visual(runtime_config, enc_cfg)
+        if workload.output_tokens_per_image == 0:
             # No visual dimensions specified; skip encoder modeling.
             return encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict, 0
 
-        visual_context_tokens = tokens_per_visual * num_visuals  # post-merge: injected into LLM context
+        visual_context_tokens = workload.context_tokens_per_image * workload.num_visuals
 
         # Encoder DP: whole visuals are sharded across the tp_size ranks and the
         # busiest rank (ceil share) gates the phase.
         encoder_dp_size = model.config.tp_size if model.config.enable_encoder_dp else 1
-        visuals_local = -(-batch_size * num_visuals // encoder_dp_size)
+        visuals_local = -(-batch_size * workload.num_visuals // encoder_dp_size)
+        sequences_local = visuals_local * workload.sequences_per_image
 
         # Per-op shape rules (the encoder orchestration — this token math —
         # stays Python-side; only the per-op values may come from the
         # compiled engine below). Projector ops and the DP exit AllGather run
-        # on post-merge tokens. ViT attention uses cu_seqlens: each image is an
-        # independent sequence, and each temporal patch of a video is an
-        # independent spatial sequence.
-        has_video_workload = (
-            runtime_config.num_videos_per_request > 0
-            and runtime_config.video_frames > 0
-            and (
-                runtime_config.num_video_tokens > 0
-                or (runtime_config.video_height > 0 and runtime_config.video_width > 0)
-            )
-        )
-        temporal_sequences_per_visual = 1
-        if has_video_workload and not enc_cfg.pool_temporal:
-            temporal_sequences_per_visual = -(-runtime_config.video_frames // enc_cfg.temporal_patch_size)
-        if tokens_per_visual % temporal_sequences_per_visual != 0:
-            raise ValueError(
-                "Video post-merge tokens must divide evenly across temporal attention sequences: "
-                f"post_merge_tokens={tokens_per_visual}, "
-                f"temporal_sequences={temporal_sequences_per_visual}."
-            )
+        # on post-merge tokens. ViT attention uses cu_seqlens: each image tile
+        # or temporal patch is an independent transformer sequence.
 
         def _encoder_shape(op) -> tuple[int, int]:
-            use_post = "encoder_projector" in op._name or "all_gather" in op._name
-            use_varlen = "encoder_attention" in op._name
-            if use_varlen:
-                return (
-                    visuals_local * temporal_sequences_per_visual,
-                    pre_merge_per_visual // temporal_sequences_per_visual,
-                )
-            return visuals_local, tokens_per_visual if use_post else pre_merge_per_visual
+            name = op._name
+            if "encoder_patch_embedding" in name:
+                return sequences_local, workload.patch_tokens_per_sequence
+            if "encoder_attention" in name:
+                return sequences_local, workload.transformer_tokens_per_sequence
+            if "encoder_projector" in name or name == "encoder_dp_all_gather":
+                return sequences_local, workload.output_tokens_per_sequence
+            return sequences_local, workload.transformer_tokens_per_sequence
 
         self._require_rust_engine_step(runtime_config, database, surface="encoder")
         encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict = self._run_encoder_phase_with_rust(
@@ -1324,18 +1422,16 @@ class BaseBackend:
         enc_cfg = getattr(model, "encoder_config", None)
         if not model.encoder_ops or not isinstance(enc_cfg, common.VisionEncoderConfig):
             return {}
-        tokens_per_visual, pre_merge_per_visual, num_visuals = self._encoder_pre_merge_per_visual(
-            runtime_config, enc_cfg
-        )
-        if pre_merge_per_visual <= 0:
+        workload = self._encoder_workload_per_visual(runtime_config, enc_cfg)
+        if workload.transformer_tokens_per_sequence <= 0:
             return {}
         # ViT activations follow the busiest rank's image share; the embeddings
         # buffer covers the full batch on every rank.
-        total_visuals = batch_size * num_visuals
+        total_visuals = batch_size * workload.num_visuals
         encoder_dp_size = model.config.tp_size if model.config.enable_encoder_dp else 1
         visuals_local = -(-total_visuals // encoder_dp_size)
-        num_tokens = visuals_local * pre_merge_per_visual
-        embed_tokens = total_visuals * tokens_per_visual
+        num_tokens = visuals_local * workload.sequences_per_image * workload.transformer_tokens_per_sequence
+        embed_tokens = total_visuals * workload.output_tokens_per_image
         return self._get_encoder_component_memory(model, num_tokens, embed_tokens)
 
     def run_agg(

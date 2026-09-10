@@ -153,6 +153,9 @@ class HybridMoEConfig:
     swa_num_heads: int = 0
     use_qk_norm: bool = False
     use_head_wise_attn_gate: bool = False
+    # Llama 4 is a multimodal wrapper around this hybrid text backbone. Keep
+    # the normalized vision-tower metadata beside the text layer plan.
+    vision_config: "VisionEncoderConfig | None" = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +189,20 @@ class VisionEncoderConfig:
             the encoder_rope_apply op; 0.0 means no RoPE.
         in_channels (int): Number of image/video input channels consumed by the
             patch embedding projection.
+        image_size (int): Fixed square image-tile size in pixels. Zero denotes
+            a dynamic-resolution encoder such as Qwen3-VL.
+        has_cls_token (bool): Whether each tile appends a CLS token before the
+            transformer and removes it before pixel shuffle/projector work.
+        max_num_tiles (int): Maximum tile count selected by the checkpoint's
+            image processor. Zero means the input is not tiled.
+        resize_to_max_canvas (bool): Whether processor tiling chooses the
+            largest viable upscaling canvas instead of the smallest one.
+        add_global_tile (bool): Whether the image processor adds a global
+            thumbnail whenever the selected canvas contains multiple tiles.
+        prompt_image_tokens (int): Fixed structural tokens emitted around each
+            image by the multimodal processor.
+        prompt_tokens_per_local_tile (int): Separator tokens emitted per local
+            tile when a tiled prompt also contains a global tile.
         final_norm (bool): Whether the vision tower applies a final norm after
             its transformer blocks.
         pool_temporal (bool): Whether the merger pools temporal patches before
@@ -207,6 +224,13 @@ class VisionEncoderConfig:
     projector_n_instances: int = 1
     partial_rotary_factor: float = 0.0
     in_channels: int = 3
+    image_size: int = 0
+    has_cls_token: bool = False
+    max_num_tiles: int = 0
+    resize_to_max_canvas: bool = False
+    add_global_tile: bool = False
+    prompt_image_tokens: int = 0
+    prompt_tokens_per_local_tile: int = 0
     # Keep new defaults appended: generated bindings and legacy callers may use
     # this dataclass positionally.
     final_norm: bool = False
