@@ -71,6 +71,12 @@ if [[ "${FPM_NODE_RANK}" == "0" ]]; then
   etcd_pid=$!
 fi
 
+# This adapter is staged only for a config-bound V4.1 cell. Activate it before
+# the import audit as well as the engine; run.sh repeats the frozen model env.
+if [[ -f "${workdir}/dsv41_scheduler.py" ]]; then
+  export DYN_FPM_DSV41_REAL_KV=1
+  export PYTHONPATH="${workdir}:/opt/dsv41-dynamo/components/src:/opt/dsv41-aisimulate/python/aisimulate/src"
+fi
 python3 "${workdir}/preflight.py"
 
 if [[ "${FPM_NODE_RANK}" == "0" ]]; then

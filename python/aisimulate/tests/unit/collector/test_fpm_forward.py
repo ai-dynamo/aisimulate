@@ -16,8 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from aiconfigurator.sdk.utils import HuggingFaceDownloadError
 from collector.fpm_forward.capabilities import resolve_model_capability
 from collector.fpm_forward.config import FPMCollectionOptions, PrefillSamplingProfile, add_fpm_arguments
 from collector.fpm_forward.database import (
@@ -35,6 +33,8 @@ from collector.fpm_forward.planner import (
 )
 from collector.fpm_forward.topology import enumerate_fpm_topologies
 from collector.fpm_forward.types import ParallelTopology
+
+from aiconfigurator.sdk.utils import HuggingFaceDownloadError
 
 pytestmark = pytest.mark.unit
 
@@ -2374,6 +2374,47 @@ def test_missing_perf_data_stays_runnable_under_memory_admission(monkeypatch):
     assert {decision.disposition for decision in plan.topology_memory_admission} == {"unknown"}
 
 
+def _write_v41_token_streams(payload, path):
+    import hashlib
+
+    lines = []
+    for row in payload["results"]:
+        point = row["point"]
+        batch = point["batch_size"]
+        decode = point["point_type"] == "decode"
+        seed = point["total_kv_read_tokens"] - (batch if decode else 0)
+        prompt_total = seed + (0 if decode else point["total_prefill_tokens"])
+        lengths = [prompt_total // batch + (index < prompt_total % batch) for index in range(batch)]
+        stream = {
+            "benchmark_id": point["benchmark_id"],
+            "requests": [
+                {
+                    "request_index": index,
+                    "prompt_token_ids": [11 + index % 2] * length,
+                    "output_token_ids": [37],
+                    "computed_tokens": length + (2 if decode else 0),
+                }
+                for index, length in enumerate(lengths)
+            ],
+        }
+        encoded = json.dumps(stream, sort_keys=True, separators=(",", ":")).encode()
+        lines.append(encoded)
+        row["real_kv_witness"] = {
+            "same_request": True,
+            "allocated_fake_tokens": 0,
+            "completed_seed_tokens": seed,
+            "token_stream_sha256": hashlib.sha256(encoded).hexdigest(),
+        }
+    raw = b"\n".join(lines) + b"\n"
+    sidecar = path.with_suffix(".token-streams.jsonl")
+    sidecar.write_bytes(raw)
+    payload["input_provenance"]["token_stream_manifest"] = {
+        "file": sidecar.name,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "records": len(lines),
+    }
+
+
 @pytest.mark.parametrize("marker", ["kvwarm_real_kv", "kvwarm_fake_fallback", None])
 def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
     from dataclasses import replace
@@ -2407,9 +2448,37 @@ def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
                     mark(child)
 
         mark(payload)
+        _write_v41_token_streams(payload, path)
         path.write_text(json.dumps(payload))
     if marker == "kvwarm_real_kv":
         assert aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]["kv_seed_regime"] == "real_kv"
     else:
         with pytest.raises(ValueError, match="requires real_kv"):
             aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+@pytest.mark.parametrize("corruption", ["missing", "tampered", "fake", "seed", "path", "coverage"])
+def test_v41_real_token_stream_validation_rejects_broken_witness(tmp_path, corruption):
+    from collector.fpm_forward.native_artifact import _validate_token_streams
+
+    _plan, _cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    path = next((cell_dir / "raw").glob("*/benchmark*.json"))
+    payload = json.loads(path.read_text())
+    payload["input_provenance"] = {}
+    _write_v41_token_streams(payload, path)
+    _validate_token_streams(payload, path)
+    manifest = payload["input_provenance"]["token_stream_manifest"]
+    if corruption == "missing":
+        del payload["input_provenance"]["token_stream_manifest"]
+    elif corruption == "tampered":
+        path.with_name(manifest["file"]).write_text("changed")
+    elif corruption == "fake":
+        payload["results"][0]["real_kv_witness"]["allocated_fake_tokens"] = 1
+    elif corruption == "seed":
+        payload["results"][0]["real_kv_witness"]["completed_seed_tokens"] -= 1
+    elif corruption == "path":
+        manifest["file"] = "../outside.token-streams.jsonl"
+    else:
+        manifest["records"] += 1
+    with pytest.raises(ValueError, match="V4.1"):
+        _validate_token_streams(payload, path)

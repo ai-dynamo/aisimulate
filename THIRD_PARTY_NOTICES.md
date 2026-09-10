@@ -35,6 +35,19 @@ This material is licensed under the Apache License 2.0. The upstream license
 at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
 
+## Dynamo V4.1 FPM collection adapter
+
+`collector/fpm_forward/runtime/dsv41/dsv41_scheduler.py` is modified code
+adapted from `components/src/dynamo/vllm/instrumented_scheduler.py` in
+https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9.
+It adds bounded same-request real-KV collection while preserving the native
+benchmark and FPM contracts. Copyright (c) 2025-2026 NVIDIA CORPORATION &
+AFFILIATES. All rights reserved. Licensed under Apache-2.0; the upstream
+license is preserved in the adapter's adjacent `LICENSE`. The adjacent README
+records the inspected vLLM API revision and immutable runtime image/source
+hashes. vLLM implementation files are not vendored. The text fixture and
+lifecycle tests are original work for this change, with no external corpus.
+
 ## vLLM
 
 The following files are derived from vLLM's attention test utilities at tag

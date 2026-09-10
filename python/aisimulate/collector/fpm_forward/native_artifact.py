@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -109,6 +110,62 @@ def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path:
     if counts[1] > counts[0]:
         raise ValueError(f"V4.1 native input corpus token counts are inconsistent: {path}")
     return evidence
+
+
+def _validate_token_streams(payload: dict[str, Any], path: Path) -> None:
+    """Verify archived real request histories and completed-forward witnesses."""
+    manifest = payload["input_provenance"].get("token_stream_manifest")
+    if not isinstance(manifest, dict):
+        raise ValueError(f"V4.1 native result lacks token-stream manifest: {path}")
+    name = manifest.get("file")
+    if not isinstance(name, str) or Path(name).name != name or not name.endswith(".token-streams.jsonl"):
+        raise ValueError(f"V4.1 token-stream path must be an adjacent JSONL file: {path}")
+    raw = path.with_name(name).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != manifest.get("sha256"):
+        raise ValueError(f"V4.1 token-stream manifest SHA mismatch: {path}")
+    lines = raw.splitlines()
+    if manifest.get("records") != len(lines) or len(lines) != len(payload["results"]):
+        raise ValueError(f"V4.1 token-stream coverage mismatch: {path}")
+    streams = {}
+    for line in lines:
+        stream = json.loads(line)
+        benchmark_id = stream.get("benchmark_id")
+        if type(benchmark_id) is not int or benchmark_id in streams:
+            raise ValueError(f"V4.1 token-stream benchmark ID is invalid or duplicated: {path}")
+        streams[benchmark_id] = (stream, hashlib.sha256(line).hexdigest())
+    for row in payload["results"]:
+        point = row["point"]
+        witness = row.get("real_kv_witness")
+        stream, digest = streams.get(point["benchmark_id"], ({}, None))
+        batch = _require_int(point, "batch_size")
+        decode = point["point_type"] == "decode"
+        expected_seed = _require_int(point, "total_kv_read_tokens") - (batch if decode else 0)
+        if (
+            not isinstance(witness, dict)
+            or witness.get("same_request") is not True
+            or witness.get("allocated_fake_tokens") != 0
+            or witness.get("completed_seed_tokens") != expected_seed
+            or witness.get("token_stream_sha256") != digest
+        ):
+            raise ValueError(f"V4.1 native result has invalid completed real-KV witness: {path}")
+        requests = stream.get("requests")
+        if not isinstance(requests, list) or len(requests) != batch:
+            raise ValueError(f"V4.1 token-stream request count mismatch: {path}")
+        prompt_total = 0
+        for index, request in enumerate(requests):
+            if not isinstance(request, dict) or request.get("request_index") != index:
+                raise ValueError(f"V4.1 token-stream request order mismatch: {path}")
+            for field in ("prompt_token_ids", "output_token_ids"):
+                ids = request.get(field)
+                if not isinstance(ids, list) or not ids or any(type(token) is not int or token < 0 for token in ids):
+                    raise ValueError(f"V4.1 token-stream has invalid real token IDs: {path}")
+            prompt_length = len(request["prompt_token_ids"])
+            prompt_total += prompt_length
+            if request.get("computed_tokens") != prompt_length + (2 if decode else 0):
+                raise ValueError(f"V4.1 token-stream computed-token witness mismatch: {path}")
+        expected_prompt = expected_seed + (0 if decode else _require_int(point, "total_prefill_tokens"))
+        if prompt_total != expected_prompt:
+            raise ValueError(f"V4.1 token-stream prompt history differs from the measured point: {path}")
 
 
 def _validate_collector_provenance(
@@ -286,9 +343,16 @@ def validate_native_collection(
 
     for path, payload in rank_payloads:
         evidence = _validate_execution_provenance(cell, payload, path)
+        if evidence is not None:
+            _validate_token_streams(payload, path)
         if input_provenance is None:
             input_provenance = evidence
-        elif evidence != input_provenance:
+        elif (
+            {k: v for k, v in evidence.items() if k != "token_stream_manifest"}
+            != {k: v for k, v in input_provenance.items() if k != "token_stream_manifest"}
+            or {k: v for k, v in evidence["token_stream_manifest"].items() if k != "file"}
+            != {k: v for k, v in input_provenance["token_stream_manifest"].items() if k != "file"}
+        ):
             raise ValueError(f"native DP ranks disagree on input provenance: {path}")
         if (
             payload.get("schema_version") != FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION

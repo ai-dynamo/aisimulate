@@ -992,6 +992,11 @@ def _cell_generator_overrides(
         env.extend(
             [
                 {"name": "DYN_FPM_DSV41_REAL_KV", "value": "1"},
+                {
+                    "name": "PYTHONPATH",
+                    "value": "/tmp/fpm-bench:/opt/dsv41-dynamo/components/src:"
+                    "/opt/dsv41-aisimulate/python/aisimulate/src",
+                },
                 {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
                 {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISION},
             ]
@@ -1703,7 +1708,14 @@ def _run_collection_impl(
                     env_script,
                     runtime_exec,
                     runtime_preflight,
-                    *([runtime_preflight.parent / "fpm_text.txt"] if cell.execution_identity[0] else []),
+                    *(
+                        [
+                            runtime_preflight.parent / "fpm_text.txt",
+                            *sorted(p for p in (runtime_preflight.parent / "dsv41").iterdir() if p.is_file()),
+                        ]
+                        if cell.execution_identity[0]
+                        else []
+                    ),
                 ],
             )
             resource.prepare_attempt(
