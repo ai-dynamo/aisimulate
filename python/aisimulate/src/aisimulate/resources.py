@@ -59,14 +59,18 @@ class ResourceLimitError(RuntimeError):
 def _read_text(path: Path) -> str | None:
     try:
         return path.read_text().strip()
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise ResourceLimitError(f"cannot inspect container resource file {path}: {exc}") from exc
 
 
 def _cgroup_directories(proc: Path, root: Path) -> list[tuple[Path, str]]:
     """Resolve membership against mounts, including a container's mount root."""
-    memberships = _read_text(proc / "self/cgroup") or ""
-    mounts = _read_text(proc / "self/mountinfo") or ""
+    memberships = _read_text(proc / "self/cgroup")
+    mounts = _read_text(proc / "self/mountinfo")
+    if memberships is None or mounts is None:
+        raise ResourceLimitError("cannot inspect container resource membership and mounts")
     result: list[tuple[Path, str]] = []
     for line in memberships.splitlines():
         parts = line.split(":", 2)
@@ -92,15 +96,17 @@ def _cgroup_directories(proc: Path, root: Path) -> list[tuple[Path, str]]:
                 relative = Path(member).relative_to(mount_root)
             except ValueError:
                 # Cgroup namespaces expose membership relative to the mounted root.
-                if member != "/":
-                    continue
-                relative = Path(".")
+                relative = Path(member.lstrip("/"))
+                if ".." in relative.parts:
+                    raise ResourceLimitError("container resource membership is outside its visible namespace") from None
             directory = mount_point / relative
             while directory.is_relative_to(mount_point):
                 result.append((directory, kind))
                 if directory == mount_point:
                     break
                 directory = directory.parent
+    if memberships.strip() and not result:
+        raise ResourceLimitError("cannot resolve container resource membership against its mounts")
     return list(dict.fromkeys(result))
 
 

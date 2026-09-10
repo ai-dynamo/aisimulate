@@ -281,3 +281,25 @@ def test_resource_refusal_survives_process_transport():
     error = ResourceLimitError("pressure", plan={"status": "resource_limited", "reason": "pressure", "bytes": 123})
     transported = pickle.loads(pickle.dumps(error))
     assert transported.plan == error.plan
+
+
+def test_namespace_relative_descendant_keeps_ancestor_limits(tmp_path, host):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text("0::/child\n")
+    (proc / "self/mountinfo").write_text("42 30 0:27 /container /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
+    root = tmp_path / "sys/fs/cgroup"
+    (root / "child").mkdir(parents=True)
+    (root / "memory.max").write_text(str(4 * GIB))
+    (root / "memory.current").write_text(str(GIB))
+    actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
+    assert actual.total_memory_bytes == 4 * GIB
+    assert actual.available_memory_bytes == 3 * GIB
+
+
+def test_missing_container_mount_probe_fails_closed(tmp_path, host):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text("0::/\n")
+    with pytest.raises(ResourceLimitError, match="membership and mounts"):
+        constrain_to_cgroups(host, proc=proc, root=tmp_path)
