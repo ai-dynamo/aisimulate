@@ -1,0 +1,17 @@
+{
+  "dataset_role": "calibration",
+  "schema": "dsv41.sampling.design.v1",
+  "configurations": 126,
+  "prefill_configurations": 100,
+  "decode_configurations": 26,
+  "batch_sizes": [
+    1,
+    2
+  ],
+  "max_scheduled_new_tokens": 512,
+  "max_kv_end_tokens": 2048,
+  "native_manifest_sha256": "20b2223efe67c03eab3204fdf0875ba9a9d19d7566877d47ac50a5b00dd915f1",
+  "native_schema_source": "https://github.com/ai-dynamo/dynamo/blob/54960177085413259859c88bd34ed0734d4c2ea9/components/src/dynamo/vllm/benchmark_points.py",
+  "measurement_status": "planned_not_collected",
+  "distribution": "equal_request_lengths"
+}

@@ -1,0 +1,187 @@
+{
+  "decode": [
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 96
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 192
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 384
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 768
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 1792
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 192
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 384
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 768
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 1536
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 3584
+    }
+  ],
+  "prefill": [
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 0,
+      "total_prefill_tokens": 48
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 0,
+      "total_prefill_tokens": 96
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 0,
+      "total_prefill_tokens": 192
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 0,
+      "total_prefill_tokens": 384
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 128,
+      "total_prefill_tokens": 48
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 128,
+      "total_prefill_tokens": 96
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 128,
+      "total_prefill_tokens": 192
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 128,
+      "total_prefill_tokens": 384
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 512,
+      "total_prefill_tokens": 48
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 512,
+      "total_prefill_tokens": 96
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 512,
+      "total_prefill_tokens": 192
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 512,
+      "total_prefill_tokens": 384
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 1536,
+      "total_prefill_tokens": 48
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 1536,
+      "total_prefill_tokens": 96
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 1536,
+      "total_prefill_tokens": 192
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 1536,
+      "total_prefill_tokens": 384
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 0,
+      "total_prefill_tokens": 96
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 0,
+      "total_prefill_tokens": 192
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 0,
+      "total_prefill_tokens": 384
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 256,
+      "total_prefill_tokens": 96
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 256,
+      "total_prefill_tokens": 192
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 256,
+      "total_prefill_tokens": 384
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 1024,
+      "total_prefill_tokens": 96
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 1024,
+      "total_prefill_tokens": 192
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 1024,
+      "total_prefill_tokens": 384
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 3072,
+      "total_prefill_tokens": 96
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 3072,
+      "total_prefill_tokens": 192
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 3072,
+      "total_prefill_tokens": 384
+    }
+  ],
+  "schema_version": 3
+}
