@@ -25,6 +25,16 @@ profile executes fewer decoder tokens. FPM interpolation uses the original
 stage-aware SOL graph. Vision and speculative decoding remain outside this
 campaign's measurement contract.
 
+When a native FPM table labels FMHA by its cache precision, select that table
+with `fpm_fmha_dtype: "fp8"` in native engine/replay JSON, or
+`ModelConfig(fpm_fmha_quant_mode=FMHAQuantMode.fp8, forward_model="fpm")`.
+This option requires `forward_model="fpm"` and changes only the exact FPM cell
+selector. The checkpoint's analytical attention graph, interpolation SOL
+anchors, and memory inventory remain unchanged. `activation_dtype` retains its
+existing arithmetic-override meaning; it is not a substitute for this selector.
+The qualified GB200 comparison uses the table selector with no activation
+override, and its optional op-level SOL comparison uses checkpoint precision.
+
 `--fpm-decoder-replay` describes true bounded decoder execution. The current
 vLLM route rejects it because the verified preview executes the full backbone.
 Prefix-cache/SWA tail recomputation does not establish true decoder replay.

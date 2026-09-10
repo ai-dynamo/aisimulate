@@ -126,6 +126,8 @@ class ModelConfig:
     system: str | None = None
     # DeepSeek-V4.1 text AR: use the backend-verified bounded decoder replay profile.
     decoder_replay: bool = False
+    # Whole-forward database identity only; never changes arithmetic or memory.
+    fpm_fmha_quant_mode: common.FMHAQuantMode | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")

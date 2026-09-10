@@ -308,17 +308,28 @@ def test_qualified_prediction_contract(backend, mode):
 
 
 @pytest.mark.parametrize(
-    "mutation", [None, "missing_override", "wrong_override", "missing_receipt", "wrong_native_identity", "op_level"]
+    "mutation",
+    [
+        None,
+        "missing_override",
+        "wrong_override",
+        "activation_override",
+        "missing_receipt",
+        "wrong_native_identity",
+        "op_level",
+    ],
 )
 def test_gb200_fpm_fp8_identity_requires_independent_native_receipt(mutation):
     _, _, measurement = fixture(backend="vllm")
     measurement["fmha_quant_mode"] = "fp8"
     measurement["source_bindings"]["fmha_identity_receipt_sha256"] = "f" * 64
-    cfg = config(measurement) | {"forward_model": "fpm", "activation_dtype": "fp8"}
+    cfg = config(measurement) | {"forward_model": "fpm", "fpm_fmha_dtype": "fp8"}
     if mutation == "missing_override":
-        cfg.pop("activation_dtype")
+        cfg.pop("fpm_fmha_dtype")
     elif mutation == "wrong_override":
-        cfg["activation_dtype"] = "bf16"
+        cfg["fpm_fmha_dtype"] = "bf16"
+    elif mutation == "activation_override":
+        cfg["activation_dtype"] = "fp8"
     elif mutation == "missing_receipt":
         measurement["source_bindings"].pop("fmha_identity_receipt_sha256")
     elif mutation == "wrong_native_identity":

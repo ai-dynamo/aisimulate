@@ -125,10 +125,11 @@ class FPMForwardOp(PythonOperation):
         self._phase = phase
         self._model_path = str(model_path)
         self._weight_bytes = float(weight_bytes)
+        fmha_selector = getattr(model_config, "fpm_fmha_quant_mode", None)
         self._match_identity = (
             _norm_identity(model_config.gemm_quant_mode),
             _norm_identity(model_config.moe_quant_mode),
-            _norm_identity(model_config.fmha_quant_mode),
+            _norm_identity(model_config.fmha_quant_mode if fmha_selector is None else fmha_selector),
             _norm_identity(model_config.comm_quant_mode),
             _norm_identity(model_config.kvcache_quant_mode),
             _norm_identity(model_config.tp_size),

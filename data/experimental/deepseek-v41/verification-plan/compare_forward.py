@@ -148,6 +148,9 @@ def resolved_model_identity(config, observations):
             "SDK _attach_inferred_quant_fields on the pinned checkpoint; execution override recorded separately"
         )
         identity["execution_quantization_override"] = {"activation_dtype": config["activation_dtype"]}
+    if config.get("fpm_fmha_dtype") is not None:
+        identity["fpm_query_identity_override"] = {"fpm_fmha_dtype": config["fpm_fmha_dtype"]}
+        identity["fpm_selector_semantics"] = "Table identity only; checkpoint arithmetic and memory remain unchanged"
     return identity
 
 

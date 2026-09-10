@@ -420,8 +420,13 @@ def validate_prediction_config(config, calibration):
         "only strict FPM or explicit analytical op-level baseline is qualified",
     )
     expected.update(database_mode=config["database_mode"], forward_model=config["forward_model"])
-    if config["forward_model"] == "op_level":
-        expected.pop("activation_dtype", None)
+    # Preserve published calibration bytes while migrating their former broad
+    # override into the explicit table-only selector for new comparisons.
+    old_override = expected.pop("activation_dtype", None)
+    selector = expected.pop("fpm_fmha_dtype", old_override)
+    require(selector == "fp8", "calibration must identify its qualified FP8 FMHA table")
+    if config["forward_model"] == "fpm":
+        expected["fpm_fmha_dtype"] = selector
     require(set(config) == set(expected), "unknown prediction configuration fields")
     require(
         all(same(value, expected[key]) for key, value in config.items() if key != "systems_path"),
@@ -437,7 +442,8 @@ def prediction_precision_identity(config):
     if config["forward_model"] == "fpm":
         return {
             "precision_contract": "qualified_fpm_table_fmha_fp8_selector_not_analytical_operand_precision",
-            "execution_quantization_override": {"activation_dtype": "fp8"},
+            "fpm_query_identity_override": {"fpm_fmha_dtype": "fp8"},
+            "analytical_precision": "checkpoint_native_without_activation_override",
         }
     return {"precision_contract": "checkpoint_native_analytical_precision_without_activation_override"}
 

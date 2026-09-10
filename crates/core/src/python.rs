@@ -104,6 +104,8 @@ struct AicTimingConfig {
     moe_dtype: Option<String>,
     #[serde(default, alias = "fmha_quant_mode")]
     fmha_dtype: Option<String>,
+    #[serde(default, alias = "fpm_fmha_quant_mode")]
+    fpm_fmha_dtype: Option<String>,
     #[serde(default, alias = "kvcache_quant_mode")]
     kv_cache_dtype: Option<String>,
     #[serde(default, alias = "comm_quant_mode")]
@@ -219,6 +221,10 @@ impl AicTimingModel {
         );
         config.validate_parallel_shape()?;
         ensure!(
+            config.fpm_fmha_dtype.is_none() || config.forward_model.as_deref() == Some("fpm"),
+            "fpm_fmha_dtype requires forward_model='fpm'"
+        );
+        ensure!(
             matches!(config.backend.as_str(), "vllm" | "sglang" | "trtllm"),
             "unsupported AIC backend {:?}; expected vllm, sglang, or trtllm",
             config.backend
@@ -242,6 +248,7 @@ impl AicTimingModel {
             kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
             kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
             kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
+            kwargs.set_item("fpm_fmha_quant_mode", config.fpm_fmha_dtype.as_deref())?;
             kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
             kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
             kwargs.set_item("nextn", config.nextn)?;
@@ -1017,6 +1024,7 @@ mod tests {
             gemm_dtype: None,
             moe_dtype: None,
             fmha_dtype: None,
+            fpm_fmha_dtype: None,
             kv_cache_dtype: None,
             comm_dtype: None,
             nextn: 0,
@@ -1139,6 +1147,7 @@ mod tests {
             let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
                 "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1,
                 "decoder_replay": replay, "database_mode": "SILICON",
+                "forward_model": "fpm", "fpm_fmha_dtype": "fp8",
                 "enable_shared_layer": false, "strict_provenance": true
             }))
             .unwrap();
@@ -1157,7 +1166,10 @@ def compile_engine(*args, **kwargs):
     return b'unused-spec'
 engine_module.compile_engine = compile_engine
 core_module = types.ModuleType(names[1])
-core_module.AicEngine = type('AicEngine', (), {'from_spec': staticmethod(lambda *args: object())})
+class EngineStub:
+    def fpm_decode_kv_ceiling(self):
+        return None
+core_module.AicEngine = type('AicEngine', (), {'from_spec': staticmethod(lambda *args: EngineStub())})
 sys.modules[names[0]] = engine_module
 sys.modules[names[1]] = core_module
 "#,
@@ -1193,6 +1205,8 @@ assert captured['decoder_replay'] is expected_replay
 assert captured['database_mode'] == 'SILICON'
 assert captured['shared_layer'] is False
 assert captured['strict_provenance'] is True
+assert captured['fpm_fmha_quant_mode'] == 'fp8'
+assert captured['fmha_quant_mode'] is None
 "#,
                     )
                     .unwrap(),

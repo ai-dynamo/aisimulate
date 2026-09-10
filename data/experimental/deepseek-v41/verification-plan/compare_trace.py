@@ -293,10 +293,14 @@ def qualify_prediction_config(config, measurement):
         # The qualified vLLM runtime uses FP8 KV, whose Collector FMHA identity
         # differs from the SDK's default BF16 label. Require independent native
         # evidence, not just a matching table label, before selecting that cell.
-        if config.get("activation_dtype") != "fp8" or measurement.get("fmha_quant_mode") != "fp8":
+        if (
+            config.get("fpm_fmha_dtype") != "fp8"
+            or config.get("activation_dtype") is not None
+            or measurement.get("fmha_quant_mode") != "fp8"
+        ):
             raise ValueError("GB200 FPM requires the independently qualified FP8 FMHA identity")
         require_hash(measurement.get("source_bindings", {}).get("fmha_identity_receipt_sha256"), "native FMHA receipt")
-        common["activation_dtype"] = None
+        common.pop("fpm_fmha_dtype")
     compare_forward.validate_prediction_contract(
         common, {"execution_profile": "decoder_bounded" if measurement["decoder_replay"] else "full"}
     )

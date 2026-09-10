@@ -96,6 +96,7 @@ def timing_provider(config):
         "systems_path": config["systems_path"],
         "forward_model": config.get("forward_model", "op_level"),
         **({"fmha_dtype": config["activation_dtype"]} if config.get("activation_dtype") is not None else {}),
+        **({"fpm_fmha_dtype": config["fpm_fmha_dtype"]} if config.get("fpm_fmha_dtype") is not None else {}),
     }
 
 

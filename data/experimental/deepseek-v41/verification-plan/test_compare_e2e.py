@@ -12,8 +12,27 @@ from compare_e2e import (
     paired_summary,
     predicted_metrics,
     replay_spec,
+    timing_provider,
 )
 from compare_forward import canonical
+
+
+def test_fpm_selector_reaches_replay_without_becoming_an_arithmetic_override():
+    config = dict(
+        model_name="model",
+        backend="vllm",
+        system_name="gb200",
+        backend_version="pinned",
+        decoder_replay=False,
+        database_mode="SILICON",
+        systems_path="systems",
+        forward_model="fpm",
+        fpm_fmha_dtype="fp8",
+    )
+    provider = timing_provider(config)
+    assert provider["fpm_fmha_dtype"] == "fp8"
+    assert "fmha_dtype" not in provider
+    assert timing_provider(config | {"activation_dtype": "bfloat16"})["fmha_dtype"] == "bfloat16"
 
 
 def case(name="short", *, start=1000000000):
@@ -218,6 +237,52 @@ def test_actual_external_aic_provider_compiles_and_runs_sol(tmp_path):
     assert result["status"] == "predicted", result.get("failure")
     assert 0 < result["prediction"]["ttft_ms"] < 5
     assert 0 < result["prediction"]["average_tpot_ms"] < 1
+
+
+@pytest.mark.parametrize("past_kv", [127, 128, 129])
+def test_actual_fpm_replay_selector_preserves_decode_past_kv_boundary(past_kv):
+    from pathlib import Path
+
+    import aisimulate._runtime as native
+    from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    calibration = Path(__file__).parent.parent / "gb200-fpm/calibration-v1"
+    config = json.loads((calibration / "prediction-config.json").read_text())
+    config["fpm_fmha_dtype"] = config.pop("activation_dtype")
+    config["systems_path"] = str((calibration / "systems").resolve())
+    query = past_kv + 1
+    engine = fixed_engine()
+    engine["rank"].update(
+        backend="vllm",
+        timing_model={"type": "external", "provider": "aic", "config": timing_provider(config)},
+    )
+    spec = {
+        "version": 1,
+        "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+        "record_per_request": True,
+        "engine": engine,
+        "requests": [
+            {
+                "id": "boundary",
+                "input_tokens": query,
+                "input_token_ids": list(range(query)),
+                "output_tokens": 1,
+                "arrival_time_ms": 0.0,
+            }
+        ],
+    }
+    report = json.loads(native.run_replay_json(json.dumps(spec)))
+    model = RustForwardPassPerfModel.from_native(config)
+    pref = dict(num_prefill_requests=1, sum_prefill_tokens=query, sum_prefill_kv_tokens=0)
+    dec = dict(num_decode_requests=1, sum_decode_kv_tokens=past_kv)
+    expected = sum(
+        model.estimate_forward_pass_time_ms({"version": 1, "wall_time": 1.0, "scheduled_requests": scheduled})
+        for scheduled in (pref, dec)
+    )
+    assert report["completed_requests"] == 1
+    # The current replay emits its first output after a decode iteration;
+    # preserve that documented scheduler boundary while testing its KV axis.
+    assert report["per_request"][0]["ttft_ms"] == pytest.approx(expected, abs=0.000001, rel=0)
 
 
 def test_no_interval_for_partial_or_too_few_trials_and_paired_resampling():

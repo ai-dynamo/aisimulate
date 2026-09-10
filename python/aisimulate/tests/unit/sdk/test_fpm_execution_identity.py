@@ -98,3 +98,106 @@ def test_v41_fpm_wrap_retains_resident_inventory_and_serialized_stages(replay, b
         assert len(stages) == 40
         assert all(stage["decoder_replay"] == replay for stage in stages)
         assert '"Dsv41Linear"' in json.dumps(native["sol_ops"])
+
+
+def test_table_selector_preserves_checkpoint_graph_residency_and_cache_identity():
+    from types import SimpleNamespace
+
+    from aiconfigurator_core.sdk.common import FMHAQuantMode
+    from aiconfigurator_core.sdk.config import ModelConfig
+    from aiconfigurator_core.sdk.deepseek_v41 import MODEL_PATH
+    from aiconfigurator_core.sdk.engine import build_ops_json
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.rust_engine_step import _engine_config_json
+
+    kwargs = dict(tp_size=4, pp_size=1, attention_dp_size=1, moe_tp_size=4, moe_ep_size=1)
+    granular = get_model(MODEL_PATH, ModelConfig(**kwargs), "vllm")
+    native = get_model(MODEL_PATH, ModelConfig(**kwargs, forward_model="fpm"), "vllm")
+    selected = get_model(
+        MODEL_PATH,
+        ModelConfig(**kwargs, forward_model="fpm", fpm_fmha_quant_mode=FMHAQuantMode.fp8),
+        "vllm",
+    )
+    overridden = get_model(
+        MODEL_PATH, ModelConfig(**kwargs, forward_model="fpm", fmha_quant_mode=FMHAQuantMode.fp8), "vllm"
+    )
+    assert native.config.fmha_quant_mode == selected.config.fmha_quant_mode == FMHAQuantMode.bfloat16
+    assert overridden.config.fmha_quant_mode == FMHAQuantMode.fp8
+    for phase in ("context_ops", "generation_ops"):
+        direct = json.loads(build_ops_json(getattr(granular, phase)))
+        baseline = json.loads(build_ops_json(getattr(native, phase)))[0]["FpmForward"]
+        query = json.loads(build_ops_json(getattr(selected, phase)))[0]["FpmForward"]
+        arithmetic = json.loads(build_ops_json(getattr(overridden, phase)))[0]["FpmForward"]
+        assert query["sol_ops"] == baseline["sol_ops"] == direct
+        assert query["sol_ops"] != arithmetic["sol_ops"]
+        assert query["match_identity"][2] == arithmetic["match_identity"][2] == "fp8"
+        assert baseline["match_identity"][2] == "bfloat16"
+    for model in (native, selected):
+        assert model.get_resident_weights_bytes() == granular.get_resident_weights_bytes()
+        assert model.get_additional_activation_bytes(512) == granular.get_additional_activation_bytes(512)
+        assert model.get_kvcache_bytes_per_sequence(2048) == granular.get_kvcache_bytes_per_sequence(2048)
+    # Same arithmetic with a different table selector must not reuse a compiled
+    # handle that selected another FPM identity.
+    database = SimpleNamespace(system="gb200", backend="vllm", version="test")
+    assert _engine_config_json(native, database) != _engine_config_json(selected, database)
+
+
+@pytest.mark.parametrize("forward_model", [None, "op_level"])
+def test_table_selector_requires_fpm_before_model_resolution(forward_model):
+    from aiconfigurator_core.sdk.common import FMHAQuantMode
+    from aiconfigurator_core.sdk.config import ModelConfig
+    from aiconfigurator_core.sdk.models import get_model
+
+    with pytest.raises(ValueError, match="requires forward_model='fpm'"):
+        get_model(
+            "deliberately-unresolved-model",
+            ModelConfig(forward_model=forward_model, fpm_fmha_quant_mode=FMHAQuantMode.fp8),
+            "vllm",
+        )
+
+
+def test_real_v41_fpm_selector_roundtrip_and_frozen_interpolation_are_unchanged():
+    """126 exact cells and 38 geometry-only queries; no heldout timing is read."""
+    import pyarrow.parquet as pq
+
+    from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    root = Path(__file__).resolve().parents[5]
+    data = root / "data/experimental/deepseek-v41"
+    calibration = data / "gb200-fpm/calibration-v1"
+    legacy = json.loads((calibration / "prediction-config.json").read_text())
+    legacy["systems_path"] = str(calibration / "systems")
+    selected = dict(legacy)
+    selected["fpm_fmha_dtype"] = selected.pop("activation_dtype")
+    old = RustForwardPassPerfModel.from_native(legacy)
+    new = RustForwardPassPerfModel.from_native(selected)
+    native_rows = pq.read_table(next((calibration / "systems").rglob("fpm_forward_perf.parquet"))).to_pylist()
+    observed = {
+        (r["workload_kind"], r["batch_size"], r["total_prefill_tokens"], r["total_kv_read_tokens"]): r["latency_ms"]
+        for r in native_rows
+    }
+    assert len(observed) == 126
+    count = 0
+    for role in ("calibration", "heldout"):
+        manifest = json.loads((data / f"verification-plan/{role}.json").read_text())
+        for phase in ("prefill", "decode"):
+            for point in manifest[phase]:
+                b, q, k = point["batch_size"], point.get("total_prefill_tokens", 0), point["total_kv_read_tokens"]
+                scheduled = dict(
+                    num_prefill_requests=b if phase == "prefill" else 0,
+                    num_decode_requests=b if phase == "decode" else 0,
+                    sum_prefill_tokens=q,
+                    sum_prefill_kv_tokens=k if phase == "prefill" else 0,
+                    sum_decode_kv_tokens=k if phase == "decode" else 0,
+                    var_prefill_length=0.0,
+                    var_decode_kv_tokens=0.0,
+                )
+                fpm = dict(version=1, wall_time=1.0, scheduled_requests=scheduled)
+                prediction = new.estimate_forward_pass_time_ms(fpm)
+                assert prediction == old.estimate_forward_pass_time_ms(fpm)
+                if role == "calibration":
+                    assert prediction == observed[(phase, b, q, k)]
+                count += 1
+    assert count == 164
+    with pytest.raises(ValueError, match="requires forward_model='fpm'"):
+        RustForwardPassPerfModel.from_native(selected | {"forward_model": "op_level"})

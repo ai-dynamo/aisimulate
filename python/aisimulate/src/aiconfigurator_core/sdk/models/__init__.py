@@ -123,6 +123,8 @@ def get_model(
     forward_model = getattr(model_config, "forward_model", "op_level") or "op_level"
     if forward_model not in _FORWARD_MODELS:
         raise ValueError(f"Unknown forward_model: {forward_model!r}. Valid values: {', '.join(_FORWARD_MODELS)}")
+    if getattr(model_config, "fpm_fmha_quant_mode", None) is not None and forward_model != "fpm":
+        raise ValueError("fpm_fmha_quant_mode requires forward_model='fpm'")
 
     # Shallow-copy so mutations below don't poison the @cache'd original.
     model_info = dict(_get_model_info(model_path))

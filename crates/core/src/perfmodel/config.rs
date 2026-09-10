@@ -217,6 +217,9 @@ pub struct QuantizationConfig {
     #[serde(default)]
     pub moe_dtype: Option<DataType>,
     pub activation_dtype: Option<DataType>,
+    /// FPM cell selector only; does not override model arithmetic or memory.
+    #[serde(default)]
+    pub fpm_fmha_dtype: Option<DataType>,
     pub kv_cache_dtype: Option<DataType>,
 }
 

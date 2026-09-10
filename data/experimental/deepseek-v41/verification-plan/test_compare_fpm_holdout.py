@@ -388,6 +388,7 @@ def prediction_configuration(tmp_path):
         "forward_model": "fpm",
     }
     (tmp_path / "prediction-config.json").write_text(encode(config))
+    config["fpm_fmha_dtype"] = config.pop("activation_dtype")
     return config, {"directory": tmp_path}
 
 
@@ -396,13 +397,14 @@ def test_qualified_configurations(tmp_path, mode, forward):
     config, calibration = prediction_configuration(tmp_path)
     config.update(database_mode=mode, forward_model=forward)
     if forward == "op_level":
-        config.pop("activation_dtype")
+        config.pop("fpm_fmha_dtype")
     subject.validate_prediction_config(config, calibration)
     identity = subject.prediction_precision_identity(config)
     if forward == "op_level":
         assert identity == {"precision_contract": "checkpoint_native_analytical_precision_without_activation_override"}
     else:
-        assert identity["execution_quantization_override"] == {"activation_dtype": "fp8"}
+        assert identity["fpm_query_identity_override"] == {"fpm_fmha_dtype": "fp8"}
+        assert identity["analytical_precision"] == "checkpoint_native_without_activation_override"
         assert "not_analytical_operand_precision" in identity["precision_contract"]
 
 
