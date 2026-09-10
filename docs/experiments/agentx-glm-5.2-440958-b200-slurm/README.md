@@ -12,9 +12,10 @@ The one-hour run is complete. See [results and comparison](results-2026-09-08.md
 for measured metrics, comparability limits and verified allocation cleanup.
 
 September 9 update: the [FPM-fixed multi-architecture image build log](../agentx-glm-5.2-440082-gb200-hicache/fpm-image-2026-09-09.md)
-records the new image shared with GB200 Kubernetes. The FPM-on/off performance
-comparison is still pending; the baseline and cached image documented below
-have not been replaced.
+records the new image shared with GB200 Kubernetes. The subsequent
+[FPM recording results](results-fpm-2026-09-09.md) document the successful
+one-hour FPM-on run and comparison with the historical FPM-off baseline.
+The baseline results below have not been replaced.
 
 ## Pinned configuration
 
