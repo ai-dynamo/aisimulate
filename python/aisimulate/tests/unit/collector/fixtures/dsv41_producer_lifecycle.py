@@ -15,7 +15,7 @@ from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 def module(name, **values):
@@ -313,6 +313,35 @@ class RealKVTests(unittest.TestCase):
             obj._real_step("decode")
         self.assertEqual(obj.saved, [])
 
+    def test_real_seed_jit_has_bounded_deadline_independent_of_fake_point_timeout(self):
+        obj = scheduler(point("prefill", context=512, new=64))
+        obj._bench_point_result_timeout_seconds = 8.0
+        worker = Driver(obj)
+        with patch.object(impl.time, "monotonic", return_value=100.0):
+            worker.submit(obj._real_step("prefill"))
+        self.assertEqual(obj._real_deadline, 220.0)
+        with patch.object(impl.time, "monotonic", return_value=109.0):
+            self.assertIsNone(obj._real_step("prefill"))
+        worker.finish()
+        with patch.object(impl.time, "monotonic", return_value=190.0):
+            worker.submit(obj._real_step("prefill"))
+        worker.finish()
+        with patch.object(impl.time, "monotonic", return_value=191.0):
+            obj._real_step("prefill")
+        self.assertEqual(obj.saved[0][1], ["measure"])
+        self.assertEqual(obj._bench_point_result_timeout_seconds, 8.0)
+
+        obj = scheduler(point("prefill", context=512, new=64))
+        with patch.object(impl.time, "monotonic", return_value=100.0):
+            obj._real_step("prefill")
+        with (
+            patch.object(impl.time, "monotonic", return_value=220.0),
+            self.assertRaisesRegex(RuntimeError, "timed out"),
+        ):
+            obj._real_step("prefill")
+        self.assertEqual(obj.saved, [])
+        self.assertEqual(obj._real_witnesses, {})
+
     def test_synthetic_entry_points_are_blocked(self):
         obj = scheduler(point("decode"))
         for method in [obj._bench_cache_fake_prefixes, obj._bench_inject_fake_decode]:
@@ -433,6 +462,7 @@ class RealKVTests(unittest.TestCase):
             self.assertIsNone(payload["producer"]["dynamo_revision"])
             self.assertEqual(payload["producer"]["instrumentation_revision"], impl.DYNAMO_SHA)
             self.assertEqual(payload["producer"]["vllm_package_version"], "test-runtime")
+            self.assertEqual(payload["producer"]["collection_timeouts"]["same_request_seed_and_measure_seconds"], 120.0)
             cell = SimpleNamespace(
                 execution_identity=tuple(obj._real_identity.values()),
                 input_text_sha256="b" * 64,

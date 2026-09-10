@@ -30,6 +30,11 @@ MODEL_SHA = "fb2764a5cf321eaa5070ca8f9e892818f477c16d"
 MAX_BATCH = 2
 MAX_CONTEXT = 2048
 MAX_NEW = 512
+# This DP1 producer executes a real seed chain and first-use kernel compilation
+# before measurement. The native short result timeout bounds a synthetic point,
+# not this complete real-KV lifecycle. Keep a finite whole-point deadline without
+# changing native measurement timing, DP synchronization or campaign timeout.
+REAL_POINT_TIMEOUT_SECONDS = 120.0
 
 
 def token_slice(pool: list[int], length: int, offset: int) -> list[int]:
@@ -227,7 +232,7 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
         self._bench_admission_kv_tokens = sum(prefix)
         self._real_seed_tokens = 0
         self._real_expected_seed = sum(prefix)
-        self._real_deadline = time.monotonic() + self._bench_point_result_timeout_seconds
+        self._real_deadline = time.monotonic() + REAL_POINT_TIMEOUT_SECONDS
         self._real_requests = []
         self._real_submitted = set()
         self._real_stages = []
@@ -469,6 +474,11 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
                 Path(__file__).with_name("runtime-source-sha256.json").read_bytes()
             ).hexdigest(),
             "overlay_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "collection_timeouts": {
+                "same_request_seed_and_measure_seconds": REAL_POINT_TIMEOUT_SECONDS,
+                "native_point_result_seconds": self._bench_point_result_timeout_seconds,
+                "scope": "DP1 whole real-KV point; native timing and campaign timeout unchanged",
+            },
         }
         for item in output["results"]:
             item["kv_seed_regime"] = "real_kv"

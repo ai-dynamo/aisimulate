@@ -13,6 +13,15 @@ native `BenchmarkPoint`, FPM messages, schema-v2 rank artifacts, coverage checks
 and second-step decode timing. The producer writes additive provenance directly.
 The Collector must continue to reject failed, incomplete, fake, or unmarked rows.
 
+The DP1 adapter bounds each complete real-KV point at 120 seconds, including
+all same-request seed forwards and first-use kernel compilation. This deadline
+is independent of Dynamo's short synthetic-point result timeout; that native
+timeout, native interval timing and the campaign timeout remain unchanged.
+Both timeout values and the adapter source hash are recorded in producer
+provenance. Expiration raises a retained failure and never publishes a partial
+point or switches to synthetic KV. The first formal-geometry canary exposed
+the old eight-second deadline during Engram JIT; that failed attempt is retained.
+
 ## Source and attribution
 
 The scheduler adapter is modified code derived from NVIDIA's Apache-2.0 Dynamo
