@@ -232,6 +232,7 @@ class FPMCollectionOptions:
     max_decode_batch_size: int | None = None
     max_prefill_cudagraph_size: int = FPM_MAX_PREFILL_CUDAGRAPH_SIZE
     decoder_replay: bool = False
+    enforce_eager: bool = False
     benchmark_points_json: str | None = None
     benchmark_points_sha256: str | None = None
     executor: str = "kubernetes"
@@ -335,6 +336,7 @@ class FPMCollectionOptions:
                 getattr(args, "fpm_max_prefill_cudagraph_size", None) or FPM_MAX_PREFILL_CUDAGRAPH_SIZE
             ),
             decoder_replay=bool(getattr(args, "fpm_decoder_replay", False)),
+            enforce_eager=bool(getattr(args, "fpm_enforce_eager", False)),
             executor=executor,
             slurm_container_image=image,
             slurm_container_mounts=mounts,
@@ -370,6 +372,8 @@ class FPMCollectionOptions:
             "point_source": "dynamo_native_self_benchmark",
             "prefill_sampling": self.prefill_sampling.to_dict(),
         }
+        if self.enforce_eager:
+            payload["enforce_eager"] = True
         if self.benchmark_points_json is not None:
             payload["benchmark_points"] = {
                 "payload": json.loads(self.benchmark_points_json),
@@ -384,6 +388,12 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group(
         "FPM forward collection",
         "Whole-model forward-pass planning, execution, and publication.",
+    )
+    group.add_argument(
+        "--fpm-enforce-eager",
+        action="store_true",
+        default=None,
+        help="Require native eager execution with CUDA graphs disabled; included in the frozen plan.",
     )
     group.add_argument(
         "--fpm-benchmark-points-file",

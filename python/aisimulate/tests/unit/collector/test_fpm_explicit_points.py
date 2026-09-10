@@ -220,3 +220,27 @@ def test_checked_in_study_manifests_freeze_exact_phase_counts():
         )
         payload = json.loads(options.benchmark_points_json)
         assert (len(payload["prefill"]), len(payload["decode"])) == counts
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+def test_eager_is_frozen_and_rendered_without_capture_configuration(tmp_path, phase):
+    options, _ = _options(tmp_path, fpm_enforce_eager=True)
+    plan, cell = _plan(options), _cell(phase)
+    assert options.to_dict()["enforce_eager"] is True
+    args = _cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
+    assert args.count("--enforce-eager") == 1
+    assert "--compilation-config" not in args
+    assert "--benchmark-points-file" in args
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    parsed = parser.parse_args(["--fpm-max-gpus", "4", "--fpm-enforce-eager"])
+    assert FPMCollectionOptions.from_args(parsed).enforce_eager is True
+    assert "enforce_eager" not in FPMCollectionOptions.from_args(argparse.Namespace(fpm_max_gpus=4)).to_dict()
+
+
+@pytest.mark.parametrize("argument", ["--enforce-eager", "--no-enforce-eager", "--enforce-eager=false"])
+def test_policy_cannot_hide_eager_identity(tmp_path, argument):
+    options, _ = _options(tmp_path, fpm_enforce_eager=True)
+    cell = _cell(policy=BackendPolicy("conflict", {"params": {"agg": {"extra_cli_args": [argument]}}}, {}))
+    with pytest.raises(ValueError, match="must be supplied through --fpm-enforce-eager"):
+        _cell_generator_overrides(_plan(options), cell, {})

@@ -977,6 +977,7 @@ def _cell_generator_overrides(
     smoke: bool = False,
 ) -> dict[str, Any]:
     explicit_points = _frozen_points(plan)
+    enforce_eager = bool(getattr(plan.options, "enforce_eager", False))
     if explicit_points is not None and smoke:
         raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
     unsupported_base = set(base) - {"K8sConfig", "generator_dynamo_version"}
@@ -1008,6 +1009,8 @@ def _cell_generator_overrides(
         "--max-model-len",
         str(plan.options.vllm_max_model_len),
     ]
+    if enforce_eager:
+        scheduler_args.append("--enforce-eager")
     if explicit_points is not None:
         payload = json.loads(explicit_points)
         if not payload[cell.workload_kind]:
@@ -1025,14 +1028,16 @@ def _cell_generator_overrides(
             [
                 "--max-num-batched-tokens",
                 str(profile.max_total_prefill_tokens),
-                "--compilation-config",
-                json.dumps(compilation_config, sort_keys=True, separators=(",", ":")),
                 "--prefill-max-new-token-samples",
                 str(profile.max_new_token_samples),
                 "--prefill-max-kv-read-token-samples",
                 str(profile.max_kv_read_token_samples),
             ]
         )
+        if not enforce_eager:
+            scheduler_args.extend(
+                ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
+            )
         if profile.max_batch_size is not None:
             scheduler_args.extend(["--max-num-seqs", str(profile.max_batch_size)])
     elif smoke:
@@ -1146,6 +1151,8 @@ def _cell_generator_overrides(
     merged.setdefault("K8sConfig", {})["extra_env"] = list(resolved_env.values())
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
+    if any(str(arg).split("=", 1)[0] in {"--enforce-eager", "--no-enforce-eager"} for arg in policy_args):
+        raise ValueError("eager execution must be supplied through --fpm-enforce-eager")
     if any(str(arg).split("=", 1)[0] == "--benchmark-points-file" for arg in policy_args):
         raise ValueError("benchmark points must be supplied through --fpm-benchmark-points-file")
     if cell.workload_kind == "decode":
