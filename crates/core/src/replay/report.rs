@@ -868,12 +868,6 @@ impl TraceCollector {
         self.requests.contains_key(&uuid)
     }
 
-    /// Start the next report epoch at an absolute simulated timestamp.
-    pub(crate) fn set_report_start_ms(&mut self, report_start_ms: f64) {
-        debug_assert!(report_start_ms.is_finite());
-        self.report_start_ms = report_start_ms;
-    }
-
     /// Defer token-timeline folding until the entire replay has ended.
     pub fn set_defer_token_timeline_finalization(&mut self, value: bool) {
         self.defer_token_timeline_finalization = value;
@@ -1362,9 +1356,12 @@ impl TraceCollector {
     }
 
     /// Drain measurements while retaining the configuration that applies to
-    /// each reporting epoch of a reusable runtime.
-    pub(crate) fn take_report(&mut self) -> ReplayReport {
+    /// each reporting epoch of a reusable runtime. The absolute report boundary
+    /// includes idle time in this epoch and starts the next one.
+    pub(crate) fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
+        debug_assert!(report_end_ms.is_finite() && report_end_ms >= self.report_start_ms);
         let next = Self {
+            report_start_ms: report_end_ms,
             defer_token_timeline_finalization: self.defer_token_timeline_finalization,
             capture_per_request: self.capture_per_request,
             sla: self.sla,
@@ -1373,10 +1370,14 @@ impl TraceCollector {
             decode_gpus_per_worker: self.decode_gpus_per_worker,
             ..Default::default()
         };
-        std::mem::replace(self, next).finish()
+        std::mem::replace(self, next).finish_at(Some(report_end_ms))
     }
 
-    pub fn finish(mut self) -> ReplayReport {
+    pub fn finish(self) -> ReplayReport {
+        self.finish_at(None)
+    }
+
+    fn finish_at(mut self, report_end_ms: Option<f64>) -> ReplayReport {
         let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {
             let left = self
@@ -1443,7 +1444,9 @@ impl TraceCollector {
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
-        let mut duration_ms = 0.0_f64;
+        let mut duration_ms = report_end_ms
+            .map(|end_ms| (end_ms - report_start_ms).max(0.0))
+            .unwrap_or(0.0);
         let mut total_input_tokens = 0usize;
         let mut total_output_tokens = 0usize;
         let mut completed_requests = 0usize;

@@ -114,7 +114,9 @@ pub trait SteppableReplay {
     fn advance_now_ms(&mut self, now_ms: f64);
 
     /// Admit `request` at the current simulated time. The returned id
-    /// correlates it with later [`EngineEvent`]s.
+    /// correlates it with later [`EngineEvent`]s. Explicit UUIDs must be unique
+    /// among live requests and measurements retained in the current report
+    /// epoch. A successful [`Self::take_report`] permits reuse in the next epoch.
     fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid>;
 
     /// Cancel one live request. Returns its terminal event when cancellation
@@ -161,7 +163,11 @@ pub trait SteppableReplay {
     fn actual_output_length(&self, uuid: Uuid) -> Option<usize>;
 
     /// Drain the accumulated measurements into a report stamped with `wall_ms`,
-    /// leaving the runtime's collector empty.
+    /// leaving the runtime's collector empty. Requires an idle runtime. Aggregate
+    /// rates cover simulated time through the current clock, including idle gaps
+    /// since the preceding report (or time zero for the first report). Request
+    /// timestamps remain absolute, and capture/SLA settings persist. Previously
+    /// retained UUIDs may be reused; request queries then refer to the new epoch.
     fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport>;
 }
 
@@ -678,6 +684,114 @@ mod tests {
         let report = engine.take_report(second_end_ms).unwrap();
 
         assert!((report.throughput.duration_ms - (second_end_ms - first_end_ms)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn report_duration_includes_trailing_idle_time_in_each_epoch() {
+        let mut engine = SteppableAgg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            2,
+        )
+        .unwrap();
+        engine.set_capture_per_request(true);
+        engine.set_sla_thresholds(SlaThresholds {
+            e2e_ms: Some(f64::MAX),
+            ..Default::default()
+        });
+        for ordinal in 1..=2 {
+            let start_ms = engine.now_ms();
+            engine.submit(request(ordinal, 128, 1)).unwrap();
+            drain(&mut engine);
+            let terminal_ms = engine.now_ms();
+            engine.advance_now_ms(terminal_ms + 1_000.0);
+            let elapsed_ms = engine.now_ms() - start_ms;
+            let report = engine.take_report(0.0).unwrap();
+
+            assert!((report.throughput.duration_ms - elapsed_ms).abs() < 1e-9);
+            assert_eq!(report.per_request[0].terminal_time_ms, terminal_ms);
+            assert!(
+                (report.throughput.decode_worker_seconds - 2.0 * elapsed_ms / 1_000.0).abs() < 1e-9
+            );
+            assert!((report.throughput.request_throughput_rps - 1_000.0 / elapsed_ms).abs() < 1e-9);
+            assert!(
+                (report.goodput.unwrap().request_throughput_rps - 1_000.0 / elapsed_ms).abs()
+                    < 1e-9
+            );
+        }
+    }
+
+    #[test]
+    fn empty_report_epochs_include_idle_time_without_request_rates() {
+        let mut engine =
+            SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new())
+                .unwrap();
+        for end_ms in [1_000.0, 2_000.0] {
+            engine.advance_now_ms(end_ms);
+            let report = engine.take_report(0.0).unwrap();
+            assert_eq!(report.throughput.duration_ms, 1_000.0);
+            assert_eq!(report.throughput.decode_worker_seconds, 1.0);
+            assert_eq!(report.request_counts.num_requests, 0);
+            assert_eq!(report.throughput.request_throughput_rps, 0.0);
+            assert_eq!(report.throughput.output_throughput_tok_s, 0.0);
+        }
+    }
+
+    #[test]
+    fn report_epochs_preserve_runtime_evidence_capture() {
+        let mut engine = SteppableAgg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+        )
+        .unwrap();
+        engine.runtime = engine
+            .runtime
+            .with_capture_options(crate::replay::ReplayCaptureOptions {
+                capture_canonical_evidence: true,
+                capture_lifecycle_evidence: true,
+                ..Default::default()
+            });
+        for ordinal in 1..=2 {
+            engine.submit(request(ordinal, 128, 1)).unwrap();
+            drain(&mut engine);
+            let report = engine.take_report(0.0).unwrap();
+            assert!(report.runtime_evidence.pressure.is_some());
+            assert!(report.runtime_evidence.kv_ingest.is_some());
+        }
+    }
+
+    #[test]
+    fn a_report_drain_allows_uuid_reuse_with_fresh_measurements() {
+        let mut engine = SteppableAgg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+        )
+        .unwrap();
+        let uuid = engine.submit(request(25, 128, 1)).unwrap();
+        drain(&mut engine);
+        let first = engine.take_report(0.0).unwrap();
+        assert_eq!(first.request_counts.total_output_tokens, 1);
+        assert!(engine.actual_output_length(uuid).is_none());
+        assert!(engine.request_latencies(uuid).is_none());
+        assert!(engine.request_admission(uuid).is_none());
+        assert!(engine.cancel(uuid).unwrap().is_none());
+
+        assert_eq!(engine.submit(request(25, 128, 3)).unwrap(), uuid);
+        let events = drain(&mut engine);
+        assert_eq!(events.iter().filter(|event| event.emitted_token).count(), 3);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.terminal_status.is_some())
+                .count(),
+            1
+        );
+        let second = engine.take_report(0.0).unwrap();
+        assert_eq!(second.request_counts.num_requests, 1);
+        assert_eq!(second.request_counts.completed_requests, 1);
+        assert_eq!(second.request_counts.total_output_tokens, 3);
     }
 
     #[test]

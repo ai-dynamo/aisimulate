@@ -327,6 +327,14 @@ where
         let effects = self
             .placement
             .place(&request, metadata, session_id, self.now_ms)?;
+        if let PlacementDecision::Immediate(placement) = &effects.decision
+            && placement.request_id != uuid
+        {
+            bail!(
+                "offline placement returned request {} while placing {uuid}",
+                placement.request_id
+            );
+        }
         self.collector
             .on_arrival(uuid, arrival_time_ms, input_length, output_length);
         if let Some(context) = request.metadata().replay_context.as_ref() {
@@ -335,12 +343,6 @@ where
         self.traffic.on_arrival();
         match effects.decision {
             PlacementDecision::Immediate(placement) => {
-                if placement.request_id != uuid {
-                    bail!(
-                        "offline placement returned request {} while placing {uuid}",
-                        placement.request_id
-                    );
-                }
                 self.record_placement(placement);
                 let (logical_worker_id, dp_rank) = self
                     .engine
@@ -1695,7 +1697,6 @@ where
             ReplayTerminalStatus::Canceled,
         )?;
         self.progress.inc_completed();
-        self.step_freed_slot = true;
         let placements = self.placement.request_terminal(uuid, self.now_ms)?;
         self.dispatch_placements(placements)?;
         if self.cluster_in_flight() == 0
@@ -1804,10 +1805,12 @@ where
             self.is_workload_done(),
             "replay report requires an idle runtime"
         );
+        let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
         self.collector
-            .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
-        let report = self.collector.take_report().with_wall_time_ms(wall_ms);
-        self.collector.set_report_start_ms(self.now_ms);
-        Ok(report)
+            .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
+        Ok(self
+            .collector
+            .take_report(self.now_ms)
+            .with_wall_time_ms(wall_ms))
     }
 }
