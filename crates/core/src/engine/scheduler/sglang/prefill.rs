@@ -166,11 +166,15 @@ pub(super) fn get_new_batch_prefill(
         req.allocated_tokens = ceil_to_block(chunk_end, config.block_size);
         req.debug_assert_invariants(config.block_size);
 
-        admissions.push(AdmissionEvent {
-            uuid: req.uuid,
-            reused_input_tokens: admission_reused_tokens,
-            cache_tier_attribution: None,
-        });
+        // One admission per request: a continuation chunk is the same admission still running,
+        // not a readmission.
+        if first_admission {
+            admissions.push(AdmissionEvent {
+                uuid: req.uuid,
+                reused_input_tokens: admission_reused_tokens,
+                cache_tier_attribution: None,
+            });
+        }
         prefill_fpm.push(PrefillFpmItem {
             prompt_len: req.prompt_len(),
             tokens_computed,

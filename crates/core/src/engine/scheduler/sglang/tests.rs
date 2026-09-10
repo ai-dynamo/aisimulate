@@ -2244,9 +2244,13 @@ mod forward_pass_metrics {
         let pass1 = core.execute_pass(&mut collector, 0.0);
         assert_eq!(pass1.mocker_metrics.sglang_cache_hit_tokens, 0);
         assert_eq!(pass1.mocker_metrics.sglang_cache_total_tokens, 6);
+        assert_eq!(pass1.admissions.len(), 1);
+        assert_eq!(pass1.admissions[0].reused_input_tokens, 0);
         let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
-        assert_eq!(pass2.admissions.len(), 1);
-        assert_eq!(pass2.admissions[0].reused_input_tokens, 0);
+        assert!(
+            pass2.admissions.is_empty(),
+            "a continuation chunk is not a new admission"
+        );
         assert_eq!(pass2.mocker_metrics.sglang_cache_hit_tokens, 0);
         assert_eq!(pass2.mocker_metrics.sglang_cache_total_tokens, 6);
         let fpm2 = pass2.fpm.expect("FPM should be present");
@@ -2257,12 +2261,8 @@ mod forward_pass_metrics {
         );
     }
 
-    #[test]
-    fn test_prefill_pass_never_retracts_first_token_slots_wait_for_decode() {
-        // Three pages; two 4-token prompts are admitted together and fill two pages. There is no
-        // room for both first-output slots: a prefill pass must not retract (that is decode-pass
-        // work in SGLang), so the tokens are deferred and the next decode pass retracts as usual.
-        let args = MockEngineArgs::builder()
+    fn three_page_args() -> MockEngineArgs {
+        MockEngineArgs::builder()
             .engine_type(EngineType::Sglang)
             .block_size(4)
             .num_gpu_blocks(3)
@@ -2275,8 +2275,15 @@ mod forward_pass_metrics {
                 ..Default::default()
             }))
             .build()
-            .unwrap();
-        let mut core = SglangCore::new(args);
+            .unwrap()
+    }
+
+    #[test]
+    fn test_single_token_requests_finish_in_the_prefill_pass_without_kv_slots() {
+        // Two 4-token prompts with `max_output_tokens = 1` fill two of three pages. SGLang finishes
+        // them in `process_batch_result_prefill` → `check_finished()`: the sampled token never gets
+        // a KV slot, so there is no decode forward and no memory pressure at all.
+        let mut core = SglangCore::new(three_page_args());
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         for (uuid, tokens) in [(r1, (0..4).collect::<Vec<_>>()), (r2, (100..104).collect())] {
@@ -2288,39 +2295,76 @@ mod forward_pass_metrics {
                 arrival_timestamp_ms: None,
             });
         }
+        let available_before = core.kv_manager.cache().available_tokens();
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(pass.admissions.len(), 2);
+        assert!(pass.pressure_events.is_empty());
+        assert_eq!(
+            pass.output_signals
+                .iter()
+                .map(|s| (s.uuid, s.completed))
+                .collect::<Vec<_>>(),
+            vec![(r1, true), (r2, true)]
+        );
+        assert!(core.running.is_empty() && core.waiting.is_empty());
+        // Both prompts are cached (two pages held by the tree); no page was spent on outputs.
+        assert_eq!(
+            available_before - core.kv_manager.cache().available_tokens(),
+            8
+        );
+    }
+
+    #[test]
+    fn test_prefill_pass_gives_continuing_requests_their_first_token_without_retraction() {
+        // Same prompts but the requests keep decoding (`max_output_tokens = 2`). The prefill pass
+        // still emits exactly one first token per request, never retracts (SGLang's decode memory
+        // check runs in `update_running_batch` on the next decode pass), and the following decode
+        // pass completes both.
+        let mut core = SglangCore::new(three_page_args());
+        core.receive(DirectRequest {
+            tokens: (0..4).collect(),
+            max_output_tokens: 2,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(1)),
+            arrival_timestamp_ms: None,
+        });
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass1 = core.execute_pass(&mut collector, 0.0);
-        assert_eq!(
-            pass1.admissions.len(),
-            2,
-            "both prompts fit the prefill budget"
-        );
+        assert_eq!(pass1.admissions.len(), 1);
         assert!(
             pass1.pressure_events.is_empty(),
             "no retraction in a prefill pass"
         );
-        assert!(
-            pass1.output_signals.is_empty(),
-            "first tokens wait for KV slots"
+        assert_eq!(
+            pass1
+                .output_signals
+                .iter()
+                .map(|s| (s.uuid, s.completed))
+                .collect::<Vec<_>>(),
+            vec![(Uuid::from_u128(1), false)]
         );
-        assert_eq!(core.running.len(), 2);
-        assert!(core.waiting.is_empty());
+        assert_eq!(core.running.len(), 1);
+        assert_eq!(core.running[0].output_len(), 1);
+        let fpm1 = pass1.fpm.as_ref().expect("FPM should be present");
+        assert_eq!(
+            fpm1.num_decode_requests, 0,
+            "a prefill pass schedules no decode work"
+        );
 
         let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
-        assert_eq!(
-            pass2.pressure_events.len(),
-            1,
-            "the decode pass retracts one request"
-        );
-        assert_eq!(core.waiting.len(), 1);
-        assert_eq!(core.waiting[0].uuid, r1);
+        assert!(pass2.pressure_events.is_empty());
         assert_eq!(
             pass2
                 .output_signals
                 .iter()
                 .map(|s| (s.uuid, s.completed))
                 .collect::<Vec<_>>(),
-            vec![(r2, true)]
+            vec![(Uuid::from_u128(1), true)]
+        );
+        assert!(
+            pass2.end_ms > pass1.end_ms,
+            "the decode pass is the one that takes time"
         );
     }
 

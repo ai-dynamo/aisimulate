@@ -315,7 +315,8 @@ impl SglangKvManager {
     /// re-matches, so this only extends the request's own pages. Eviction for
     /// the new pages happens here, after the request's path is already locked.
     /// Returns the owned prefix length, or `None` if protected and free capacity
-    /// cannot satisfy the extension.
+    /// cannot satisfy the extension. A `None` result may already have evicted
+    /// cached pages; callers must not assume the cache is unchanged.
     pub(crate) fn extend_allocation(
         &mut self,
         token_ids: &[u32],

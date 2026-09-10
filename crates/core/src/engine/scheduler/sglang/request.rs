@@ -133,6 +133,14 @@ impl SglangRequest {
         self.materialized_tokens += 1;
     }
 
+    /// Append the token that completes the request. Its KV is never computed (SGLang finishes
+    /// the request in `check_finished` right after the forward that sampled it), so it owns no
+    /// slot and `materialized_tokens` is unchanged.
+    pub(super) fn append_final_output_token(&mut self, token: u32) {
+        debug_assert_eq!(self.remaining_output_tokens(), 1);
+        self.sequence_tokens.push(token);
+    }
+
     pub(super) fn debug_assert_invariants(&self, _block_size: usize) {
         #[cfg(debug_assertions)]
         {

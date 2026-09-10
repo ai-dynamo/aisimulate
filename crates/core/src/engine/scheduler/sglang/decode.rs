@@ -236,6 +236,106 @@ pub(super) fn simulate_decode_step(
     result
 }
 
+/// Bookkeeping for the first token that a prefill forward produced for each freshly prefilled
+/// request. SGLang finishes a request whose first token is also its last right after the prefill
+/// batch (`check_finished` in `process_batch_result_prefill`) without ever giving that token a KV
+/// slot; the others get their slot at the next decode step (`prepare_for_decode`), where the
+/// decode memory check and retraction live. This is a pure prefill forward, so it never retracts
+/// and takes no decode time. When the first-output slots do not fit even after evicting cached
+/// pages, the continuing requests keep their first token until the next decode step (which is
+/// where SGLang would have to retract for them).
+fn prefill_first_tokens(
+    running: &mut Vec<SglangRequest>,
+    kv_manager: &mut SglangKvManager,
+    config: &SglangConfig,
+    current_time_ms: f64,
+    mut completed_requests: Vec<SglangRequest>,
+    mut output_signals: Vec<OutputSignal>,
+) -> DecodeResult {
+    let mut completed_indices = Vec::new();
+
+    // Requests that finish with their first token need no KV slot.
+    for (idx, req) in running.iter_mut().enumerate() {
+        if req.remaining_output_tokens() != 1 {
+            continue;
+        }
+        let token_id = req.next_output_token();
+        req.append_final_output_token(token_id);
+        req.debug_assert_invariants(config.block_size);
+        output_signals.push(OutputSignal {
+            uuid: req.uuid,
+            token_id: Some(token_id),
+            completed: true,
+            rejected: false,
+            cached_tokens: None,
+            handoff_delay_ms: compute_prefill_handoff_delay_ms(
+                config.worker_type,
+                true,
+                req.prompt_len(),
+                config.kv_transfer_bandwidth,
+                config.kv_transfer_bytes_per_token,
+            ),
+        });
+        completed_indices.push(idx);
+    }
+    let mut newly_completed = Vec::with_capacity(completed_indices.len());
+    for &idx in completed_indices.iter().rev() {
+        newly_completed.push(running.remove(idx));
+    }
+    newly_completed.reverse();
+    completed_requests.extend(newly_completed);
+
+    // The rest need a slot for the first output token. Make room by evicting cached pages only.
+    let needed = decode_page_growth_needed(running, config.block_size, 1);
+    let available = kv_manager.cache().available_tokens();
+    if available < needed {
+        kv_manager.evict(needed - available);
+    }
+    let reserved_pages = needed / config.block_size;
+    let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
+        return DecodeResult {
+            completed_requests,
+            output_signals,
+            end_ms: current_time_ms,
+            ..DecodeResult::default()
+        };
+    };
+    for req in running.iter_mut() {
+        let crossing_page_boundary = req.current_sequence_len() + 1 > req.allocated_tokens;
+        kv_manager.extend_decode(&mut req.kv_lease, &mut reservation);
+        if crossing_page_boundary {
+            req.allocated_tokens += config.block_size;
+        }
+        let token_id = req.next_output_token();
+        req.append_output_token(token_id, config.block_size);
+        cache_materialized_prefix(req, kv_manager, config);
+        req.debug_assert_invariants(config.block_size);
+        output_signals.push(OutputSignal {
+            uuid: req.uuid,
+            token_id: Some(token_id),
+            completed: false,
+            rejected: false,
+            cached_tokens: None,
+            handoff_delay_ms: compute_prefill_handoff_delay_ms(
+                config.worker_type,
+                false,
+                req.prompt_len(),
+                config.kv_transfer_bandwidth,
+                config.kv_transfer_bytes_per_token,
+            ),
+        });
+    }
+    debug_assert!(reservation.len() <= reserved_pages);
+    kv_manager.release_decode_reservation(reservation);
+
+    DecodeResult {
+        completed_requests,
+        output_signals,
+        end_ms: current_time_ms,
+        ..DecodeResult::default()
+    }
+}
+
 pub(super) fn cleanup_completed_request(
     request: &mut SglangRequest,
     kv_manager: &mut SglangKvManager,
@@ -345,46 +445,35 @@ fn simulate_step(
         });
     }
 
-    let max_burst = if kind == StepKind::PrefillFirstToken
-        || config.worker_type == crate::engine::common::protocols::WorkerType::Prefill
-    {
+    if kind == StepKind::PrefillFirstToken {
+        return Ok(prefill_first_tokens(
+            running,
+            kv_manager,
+            config,
+            current_time_ms,
+            completed_requests,
+            output_signals,
+        ));
+    }
+
+    let max_burst = if config.worker_type == crate::engine::common::protocols::WorkerType::Prefill {
         1
     } else {
         config.speculative_max_tokens.unwrap_or(1)
     };
-    if kind == StepKind::PrefillFirstToken {
-        sampler = None;
-    }
     let mut pressure_events = Vec::new();
-    let (retracted, new_token_ratio_estimate) = match kind {
-        StepKind::Decode => {
-            let retracted = check_decode_mem_for_burst(
-                running,
-                kv_manager,
-                config,
-                max_burst,
-                current_time_ms,
-                &mut pressure_events,
-            );
-            // SGLang re-estimates the ratio in `retract_decode`, i.e. from the survivors before
-            // the forward that follows, not from their state after this pass's tokens were
-            // appended.
-            let estimate = (!retracted.is_empty()).then(|| retraction_ratio_estimate(running));
-            (retracted, estimate)
-        }
-        StepKind::PrefillFirstToken => {
-            // A prefill pass is a pure prefill forward: SGLang's decode memory check and
-            // retraction (`update_running_batch`) run on the next decode pass over the whole
-            // running batch. Only make room for the first-output slots by evicting cached pages;
-            // if that is not enough the slots are simply taken at the next decode step.
-            let available = kv_manager.cache().available_tokens();
-            let needed = decode_page_growth_needed(running, config.block_size, 1);
-            if available < needed {
-                kv_manager.evict(needed - available);
-            }
-            (Vec::new(), None)
-        }
-    };
+    let retracted = check_decode_mem_for_burst(
+        running,
+        kv_manager,
+        config,
+        max_burst,
+        current_time_ms,
+        &mut pressure_events,
+    );
+    // SGLang re-estimates the ratio in `retract_decode`, i.e. from the survivors before the
+    // forward that follows, not from their state after this pass's tokens were appended.
+    let new_token_ratio_estimate =
+        (!retracted.is_empty()).then(|| retraction_ratio_estimate(running));
     if running.is_empty() {
         return Ok(DecodeResult {
             completed_requests,
@@ -402,33 +491,24 @@ fn simulate_step(
         .sum();
     let avg_context = total_context / running.len();
     let active_kv_tokens = total_context;
-    let decode_time = match kind {
-        StepKind::Decode => config.perf_model.predict_decode_time(
-            running.len(),
-            active_kv_tokens,
-            avg_context,
-            config.total_kv_tokens,
-        )?,
-        StepKind::PrefillFirstToken => 0.0,
-    };
+    let decode_time = config.perf_model.predict_decode_time(
+        running.len(),
+        active_kv_tokens,
+        avg_context,
+        config.total_kv_tokens,
+    )?;
     let effective_ratio = config.speedup_ratio * config.decode_speedup_ratio;
     let speedup_ratio = if apply_speedup { effective_ratio } else { 0.0 };
     let modeled_ms = modeled_duration_ms(decode_time, speedup_ratio)?;
-    let total_time = match kind {
-        StepKind::Decode => Duration::from_secs_f64(modeled_ms / 1_000.0),
-        // The tokens were produced by the prefill forward that ran in this pass.
-        StepKind::PrefillFirstToken => Duration::ZERO,
-    };
+    let total_time = Duration::from_secs_f64(modeled_ms / 1_000.0);
 
     let reserved_page_tokens = decode_page_growth_needed(running, config.block_size, max_burst);
     let reserved_pages = reserved_page_tokens / config.block_size;
     let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
-        if kind == StepKind::Decode {
-            tracing::warn!(
-                reserved_pages,
-                "Failed to reserve speculative decode pages after capacity preflight"
-            );
-        }
+        tracing::warn!(
+            reserved_pages,
+            "Failed to reserve speculative decode pages after capacity preflight"
+        );
         return Ok(DecodeResult {
             completed_requests,
             output_signals,
