@@ -132,6 +132,102 @@ def test_model_level_quantization_must_explicitly_exclude_kimi_vision_components
         _parse_hf_config_json(raw)
 
 
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize(
+    "ignore,match",
+    [
+        (["language_model.lm_head"], "does not explicitly exclude both"),
+        (["vision_tower.*", "mm_projector.linear_1"], "does not explicitly exclude both"),
+        (["vision_tower.encoder.*", "mm_projector.*"], "does not explicitly exclude both"),
+        (["re:vision_tower.*", "re:mm_projector.*"], "does not explicitly exclude both"),
+        ("vision_tower mm_projector", "ignore must be a list or tuple of strings"),
+        (["vision_tower", "mm_projector", None], "ignore must be a list or tuple of strings"),
+    ],
+)
+def test_equal_root_and_text_quantization_still_requires_vision_exclusions(tmp_path, language_only, ignore, match):
+    raw = deepcopy(get_model_config_from_model_path("nvidia/Kimi-K2.5-NVFP4")["raw_config"])
+    raw["quantization_config"]["ignore"] = ignore
+    raw["text_config"]["quantization_config"] = deepcopy(raw["quantization_config"])
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_cfg = _model_config()
+    model_cfg.language_only = language_only
+
+    with pytest.raises(ValueError, match=match):
+        get_model(str(tmp_path), model_cfg, "trtllm")
+
+
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("ignore", [["*"], ["vision_tower", "mm_projector"], ["vision_tower.*", "mm_projector.*"]])
+def test_equal_root_and_text_quantization_accepts_complete_vision_exclusions(tmp_path, language_only, ignore):
+    raw = deepcopy(get_model_config_from_model_path("nvidia/Kimi-K2.5-NVFP4")["raw_config"])
+    raw["quantization_config"]["ignore"] = ignore
+    raw["text_config"]["quantization_config"] = deepcopy(raw["quantization_config"])
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_cfg = _model_config()
+    model_cfg.language_only = language_only
+
+    model = get_model(str(tmp_path), model_cfg, "trtllm")
+
+    assert model_cfg.gemm_quant_mode == common.GEMMQuantMode.nvfp4
+    assert model_cfg.moe_quant_mode == common.MoEQuantMode.nvfp4
+    assert model_cfg.fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert model_cfg.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+    if language_only:
+        assert not model.encoder_ops
+    else:
+        assert {op._quant_mode for op in model.encoder_ops if hasattr(op, "_quant_mode")} == {
+            common.GEMMQuantMode.bfloat16
+        }
+
+
+@pytest.mark.parametrize("source", ["bundled", "local", "downloaded"])
+@pytest.mark.parametrize("language_only", [False, True])
+def test_repeated_text_only_quantized_loads_preserve_scope_and_language_modes(
+    tmp_path, monkeypatch, source, language_only
+):
+    from aiconfigurator_core.sdk import utils as utils_module
+    from aiconfigurator_core.sdk.models.helpers import _get_model_info
+
+    model_id = "moonshotai/Kimi-K2.5"
+    raw = utils_module._load_pre_downloaded_hf_config(model_id)
+    text_quant = deepcopy(raw["text_config"]["quantization_config"])
+    assert "quantization_config" not in raw
+    if source == "local":
+        (tmp_path / "config.json").write_text(json.dumps(raw))
+        model_id = str(tmp_path)
+    elif source == "downloaded":
+        model_id = f"synthetic-kimi-k25/text-quant-{tmp_path.name}"
+        monkeypatch.setattr(utils_module, "_download_hf_config", lambda model_path: deepcopy(raw))
+        monkeypatch.setattr(utils_module, "_download_hf_json", lambda *args, **kwargs: None)
+
+    _get_model_info.cache_clear()
+    get_model_config_from_model_path.cache_clear()
+    utils_module._load_model_config_from_model_path.cache_clear()
+    for load_round in range(3):
+        # Exercise cold loading, the parsed cache, then reparsing cached raw
+        # metadata. None may promote text-only quantization into model scope.
+        if load_round == 2:
+            _get_model_info.cache_clear()
+            get_model_config_from_model_path.cache_clear()
+        model_cfg = _model_config()
+        model_cfg.language_only = language_only
+        model = get_model(model_id, model_cfg, "trtllm")
+        loaded = get_model_config_from_model_path(model_id)["raw_config"]
+
+        assert "quantization_config" not in loaded
+        assert loaded["text_config"]["quantization_config"] == text_quant
+        assert model_cfg.gemm_quant_mode == common.GEMMQuantMode.bfloat16
+        assert model_cfg.moe_quant_mode == common.MoEQuantMode.int4_wo
+        assert model_cfg.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+        assert model_cfg.kvcache_quant_mode == common.KVCacheQuantMode.bfloat16
+        if language_only:
+            assert not model.encoder_ops
+        else:
+            assert {op._quant_mode for op in model.encoder_ops if hasattr(op, "_quant_mode")} == {
+                common.GEMMQuantMode.bfloat16
+            }
+
+
 @pytest.mark.parametrize("ignore", [None, "vision_tower mm_projector", 1, {}, ["vision_tower", "mm_projector", None]])
 def test_kimi_quantization_rejects_invalid_ignore_container(ignore):
     raw = deepcopy(get_model_config_from_model_path("nvidia/Kimi-K2.5-NVFP4")["raw_config"])

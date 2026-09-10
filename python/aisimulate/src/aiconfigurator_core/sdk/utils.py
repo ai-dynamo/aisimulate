@@ -644,7 +644,6 @@ def _parse_kimi_k25_vision_encoder_config(
     *,
     expected_out_hidden_size: int,
     root_quant_cfg: dict | None,
-    nested_text_quant_cfg: dict | None,
     processor_cfg: dict | None = None,
 ) -> VisionEncoderConfig | None:
     """Parse Kimi K2.5's spatial-temporal ViT and pooled PatchMerger.
@@ -675,8 +674,7 @@ def _parse_kimi_k25_vision_encoder_config(
 
     # The Moonshot checkpoint scopes quantization to text_config. NVIDIA's
     # model-level NVFP4 config explicitly excludes both vision components.
-    quant_is_text_only = root_quant_cfg is not None and root_quant_cfg == nested_text_quant_cfg
-    if root_quant_cfg and not quant_is_text_only:
+    if root_quant_cfg:
         exclusions = root_quant_cfg.get("ignore", [])
         if not isinstance(exclusions, (list, tuple)) or any(not isinstance(pattern, str) for pattern in exclusions):
             raise ValueError("Kimi K2.5 quantization_config.ignore must be a list or tuple of strings")
@@ -745,7 +743,6 @@ def _parse_hf_config_json(config: dict) -> dict:
     vision_cfg = config.get("vision_config")
     processor_cfg = config.get("preprocessor_config")
     root_quant_cfg = config.get("quantization_config")
-    nested_text_quant_cfg = None
     encoder_config = None
     image_token_id = int(config.get("image_token_id") or 0)
     video_token_id = int(config.get("video_token_id") or 0)
@@ -765,10 +762,6 @@ def _parse_hf_config_json(config: dict) -> dict:
             architecture,
             text_key,
         )
-        nested_text_quant_cfg = text_cfg.get("quantization_config")
-        # Merge quantization_config from text_config if not present at top level
-        if "quantization_config" not in config and "quantization_config" in text_cfg:
-            config["quantization_config"] = text_cfg["quantization_config"]
         config = {**text_cfg, **{"architectures": [architecture]}}
 
     if architecture not in ARCHITECTURE_TO_MODEL_FAMILY:
@@ -910,7 +903,6 @@ def _parse_hf_config_json(config: dict) -> dict:
             vision_cfg,
             expected_out_hidden_size=hidden_size,
             root_quant_cfg=root_quant_cfg,
-            nested_text_quant_cfg=nested_text_quant_cfg,
             processor_cfg=processor_cfg,
         )
     elif architecture == "KimiK3ForConditionalGeneration":
@@ -1426,9 +1418,19 @@ def _infer_quant_dynamic(quant_cfg: dict) -> bool | None:
     return None
 
 
+def _get_language_quantization_config(raw_config: dict) -> dict | None:
+    """Read root-first language quantization without changing its declared scope."""
+    if "quantization_config" in raw_config:
+        return raw_config["quantization_config"]
+    architecture = (raw_config.get("architectures") or [None])[0]
+    text_key = MULTIMODAL_TEXT_CONFIG_KEY.get(architecture)
+    nested = raw_config.get(text_key, {}) if text_key else {}
+    return nested.get("quantization_config", {}) if isinstance(nested, dict) else {}
+
+
 def _infer_quantization_fields(raw_config: dict) -> dict[str, object]:
     """Infer quant_method, kv_cache_quant_method, and quant_dynamic from config."""
-    quant_cfg = raw_config.get("quantization_config")
+    quant_cfg = _get_language_quantization_config(raw_config)
     quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else {}
 
     hf_quant = raw_config.get("hf_quant_config")
@@ -1489,15 +1491,8 @@ def _infer_quantization_fields(raw_config: dict) -> dict[str, object]:
 
 def _attach_inferred_quant_fields(raw_config: dict) -> dict:
     """Attach inferred quantization fields to config, checking text_config for multimodal models."""
-    # For multimodal models the quantization_config may live under text_config.
-    # Promote it to the top level so downstream inference picks it up.
-    if "quantization_config" not in raw_config:
-        architecture = (raw_config.get("architectures") or [None])[0]
-        text_key = MULTIMODAL_TEXT_CONFIG_KEY.get(architecture)
-        if text_key:
-            nested = raw_config.get(text_key, {})
-            if isinstance(nested, dict) and "quantization_config" in nested:
-                raw_config["quantization_config"] = nested["quantization_config"]
+    # Keep text-only metadata nested: vision validation needs the original
+    # model-level scope even after repeated loads of the cached raw config.
     inferred = _infer_quantization_fields(raw_config)
     for key, value in inferred.items():
         raw_config.setdefault(key, value)
@@ -1566,6 +1561,7 @@ def get_model_config_from_model_path(model_path: str) -> dict:
 
     Returns:
         dict: Model configuration parameters and raw config under "raw_config".
+        Quantization metadata retains its original root or text_config scope.
     """
     raw_config = _load_model_config_from_model_path(model_path)
     if raw_config.get("architectures") == ["KimiK25ForConditionalGeneration"] and model_path not in DefaultHFModels:
