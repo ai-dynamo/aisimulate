@@ -140,6 +140,27 @@ def forward_admission_report(attempt: Path) -> dict:
                     continue
                 if row.get("status") != "passed":
                     failures.append(row)
+        missing_observations = []
+        try:
+            plan = json.loads((attempt / "workload-plan.json").read_text())
+            contract = json.loads((attempt / "execution-contract.json").read_text())
+            observed = defaultdict(set)
+            for path in sorted(attempt.glob("forward-rank-*.jsonl")):
+                for line in path.read_text().splitlines():
+                    row = json.loads(line)
+                    key = tuple(row[k] for k in ("phase", "batch_size", "query", "prefix", "sample"))
+                    observed[key].add(row["tp_rank"])
+            for case in plan["cases"]:
+                geometry = tuple(case[k] for k in ("phase", "batch_size", "query", "prefix"))
+                for sample in range(contract["warmup"], contract["warmup"] + contract["iterations"]):
+                    missing = sorted(set(range(4)) - observed[(*geometry, sample)])
+                    if missing:
+                        missing_observations.append(
+                            {"case_id": case["case_id"], "sample": sample, "missing_ranks": missing}
+                        )
+        except (ValueError, KeyError, OSError, json.JSONDecodeError):
+            # Keep the primary admission error when even the inventory is unreadable.
+            missing_observations = None
         return {
             "status": "rejected",
             "complete": False,
@@ -150,6 +171,7 @@ def forward_admission_report(attempt: Path) -> dict:
                 if not (attempt / f"forward-rank-{rank}.jsonl").is_file()
             ],
             "failed_workloads": failures,
+            "missing_observations": missing_observations,
         }
 
 

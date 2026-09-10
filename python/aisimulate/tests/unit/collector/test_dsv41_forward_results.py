@@ -112,4 +112,7 @@ def test_rejected_forward_preserves_failure_and_missing_rank_inventory(attempt):
     assert report["status"] == "rejected" and report["complete"] is False
     assert report["missing_rank_files"] == ["forward-rank-3.jsonl"]
     assert report["failed_workloads"] == [failed]
+    assert report["missing_observations"] == [
+        {"case_id": "decode-0000", "sample": sample, "missing_ranks": [3]} for sample in range(1, 4)
+    ]
     assert "cases" not in report
