@@ -36,6 +36,33 @@ def aggregate_forward_results(attempt: Path, *, tp_size: int = 4) -> dict:
         or contract["iterations"] < 3
     ):
         raise ValueError("independent forward timing contract is not qualified")
+    progress_paths = sorted(attempt.glob("workloads-rank-*.jsonl"))
+    if {p.name for p in progress_paths} != {f"workloads-rank-{rank}.jsonl" for rank in range(tp_size)}:
+        raise ValueError("missing forward warmup/progress rank files")
+    expected_progress = {
+        (index, sample)
+        for index in range(len(plan["cases"]))
+        for sample in range(contract["warmup"] + contract["iterations"])
+    }
+    for path in progress_paths:
+        rank = int(path.stem.rsplit("-", 1)[1])
+        observed_progress = set()
+        for line in path.read_text().splitlines():
+            row = json.loads(line)
+            key = (row["case_index"], row["sample"])
+            if key not in expected_progress or key in observed_progress:
+                raise ValueError("duplicate or unknown native progress record")
+            expected_case = plan["cases"][row["case_index"]]
+            if (
+                row["tp_rank"] != rank
+                or row["status"] != "passed"
+                or row["measured"] != (row["sample"] >= contract["warmup"])
+                or any(row[k] != v for k, v in expected_case.items())
+            ):
+                raise ValueError("failed or inconsistent native warmup/progress record")
+            observed_progress.add(key)
+        if observed_progress != expected_progress:
+            raise ValueError("incomplete native warmup/progress record set")
     argv = contract["native_cli_args"]
     for flag in (
         "--disable-custom-all-reduce",

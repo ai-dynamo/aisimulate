@@ -68,6 +68,18 @@ def attempt(tmp_path):
             for sample in range(1, 4)
         ]
         (tmp_path / f"forward-rank-{rank}.jsonl").write_text("\n".join(map(json.dumps, rows)) + "\n")
+        progress = [
+            {
+                **plan["cases"][0],
+                "case_index": 0,
+                "sample": sample,
+                "tp_rank": rank,
+                "measured": sample >= 1,
+                "status": "passed",
+            }
+            for sample in range(4)
+        ]
+        (tmp_path / f"workloads-rank-{rank}.jsonl").write_text("\n".join(map(json.dumps, progress)) + "\n")
     return tmp_path
 
 
@@ -116,3 +128,11 @@ def test_rejected_forward_preserves_failure_and_missing_rank_inventory(attempt):
         {"case_id": "decode-0000", "sample": sample, "missing_ranks": [3]} for sample in range(1, 4)
     ]
     assert "cases" not in report
+
+
+def test_forward_admission_requires_the_recorded_warmup(attempt):
+    path = attempt / "workloads-rank-2.jsonl"
+    lines = path.read_text().splitlines()
+    path.write_text("\n".join(lines[1:]) + "\n")
+    with pytest.raises(ValueError, match="warmup/progress"):
+        aggregate_forward_results(attempt)
