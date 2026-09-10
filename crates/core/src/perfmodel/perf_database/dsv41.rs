@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -130,22 +130,64 @@ impl Dsv41Table {
     }
 
     /// Honor family-first primary discovery and explicit admission vetoes,
-    /// excluding declared/sibling/cross-backend donors.
+    /// excluding declared/sibling/cross-backend donors. A filtered primary is
+    /// unsupported: never discard its requested kernel admission constraint.
     pub fn with_sources(data_root: &Path, resolver: &SourceResolver) -> Result<Self, AicError> {
         let primary = resolver
             .prioritized_sources_for(BASENAME, data_root)?
             .into_iter()
             .find(|source| source.channel == "primary");
+        if primary
+            .as_ref()
+            .is_some_and(|source| source.source.kernel_sources().is_some())
+        {
+            return Err(invalid(
+                "V41 primary kernel_sources filters are not supported; select an unfiltered homogeneous module table",
+            ));
+        }
         let path = primary.map(|source| source.source.0);
         if let Some(path) = &path {
-            let version = path.parent();
-            let backend = version.and_then(Path::parent);
-            if version.and_then(Path::file_name) != data_root.file_name()
-                || backend.and_then(Path::file_name) != data_root.parent().and_then(Path::file_name)
-            {
+            let system_root = data_root
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| invalid("V41 data root must include system/backend/version"))?;
+            let belongs_to_request = |source: &Path, root: &Path| {
+                let Ok(relative) = source.strip_prefix(root) else {
+                    return false;
+                };
+                let parts: Vec<_> = relative.components().collect();
+                // Only <backend>/<version>/<file> or one family directory
+                // beneath this system root. Parent traversal is never a donor.
+                matches!(parts.len(), 3 | 4)
+                    && parts
+                        .iter()
+                        .all(|part| matches!(part, Component::Normal(_)))
+                    && source.file_name().is_some_and(|name| name == BASENAME)
+                    && source.parent().and_then(Path::file_name) == data_root.file_name()
+                    && source
+                        .parent()
+                        .and_then(Path::parent)
+                        .and_then(Path::file_name)
+                        == data_root.parent().and_then(Path::file_name)
+            };
+            if !belongs_to_request(path, system_root) {
                 return Err(invalid(
-                    "V41 primary source must match the requested backend and version",
+                    "V41 primary source must belong to the requested system, backend and version",
                 ));
+            }
+            // A whole data root may be relocated through a symlink. Resolve
+            // both sides together, while rejecting a file/family symlink that
+            // borrows another system's measurements. Absent data stays a gap.
+            if path.try_exists().map_err(|e| invalid(e.to_string()))? {
+                let resolved_source = path.canonicalize().map_err(|e| invalid(e.to_string()))?;
+                let resolved_root = system_root
+                    .canonicalize()
+                    .map_err(|e| invalid(e.to_string()))?;
+                if !belongs_to_request(&resolved_source, &resolved_root) {
+                    return Err(invalid(
+                        "V41 primary source resolves outside the requested system, backend and version",
+                    ));
+                }
             }
         }
         Ok(Self {
@@ -515,6 +557,113 @@ mod tests {
         let resolver = SourceResolver::fixed(BTreeMap::from([(
             BASENAME.into(),
             vec![PerfSource(wrong_path, None)],
+        )]));
+        assert!(matches!(
+            Dsv41Table::with_sources(&data, &resolver),
+            Err(AicError::InvalidPerfData(_))
+        ));
+    }
+
+    #[test]
+    fn explicit_source_cannot_borrow_another_system_at_the_same_backend_version() {
+        use crate::config::PerfSource;
+        let root = tempfile::tempdir().unwrap();
+        let data = write_energy_systems_root(root.path());
+        let donor = root.path().join("other-system/dsv41/vllm/1.0");
+        std::fs::create_dir_all(&donor).unwrap();
+        write_parquet(&donor.join(BASENAME), &fixture());
+        let resolver = SourceResolver::fixed(BTreeMap::from([(
+            BASENAME.into(),
+            vec![PerfSource(donor.join(BASENAME), None)],
+        )]));
+        assert!(matches!(
+            Dsv41Table::with_sources(&data, &resolver),
+            Err(AicError::InvalidPerfData(_))
+        ));
+    }
+
+    #[test]
+    fn explicit_same_system_legacy_and_arbitrary_family_sources_remain_valid() {
+        use crate::config::PerfSource;
+        let root = tempfile::tempdir().unwrap();
+        let data = write_energy_systems_root(root.path());
+        for location in ["data/vllm/1.0", "data/native-components/vllm/1.0"] {
+            let directory = root.path().join(location);
+            std::fs::create_dir_all(&directory).unwrap();
+            write_parquet(&directory.join(BASENAME), &fixture());
+            let resolver = SourceResolver::fixed(BTreeMap::from([(
+                BASENAME.into(),
+                vec![PerfSource(directory.join(BASENAME), None)],
+            )]));
+            let table = Dsv41Table::with_sources(&data, &resolver).unwrap();
+            assert_eq!(lookup(&table, 10).unwrap().unwrap().latency, 1.0);
+        }
+    }
+
+    #[test]
+    fn explicit_primary_kernel_filter_cannot_admit_unrequested_kernels() {
+        use crate::config::PerfSource;
+        let root = tempfile::tempdir().unwrap();
+        let data = write_energy_systems_root(root.path());
+        write_parquet(&data.join(BASENAME), &fixture());
+        for filter in [vec![], vec!["a-different-native-kernel".into()]] {
+            let resolver = SourceResolver::fixed(BTreeMap::from([(
+                BASENAME.into(),
+                vec![PerfSource(data.join(BASENAME), Some(filter))],
+            )]));
+            assert!(matches!(
+                Dsv41Table::with_sources(&data, &resolver),
+                Err(AicError::InvalidPerfData(message)) if message.contains("kernel_sources")
+            ));
+        }
+    }
+
+    #[test]
+    fn explicit_source_rejects_nested_families_and_parent_traversal() {
+        use crate::config::PerfSource;
+        let root = tempfile::tempdir().unwrap();
+        let data = write_energy_systems_root(root.path());
+        for location in [
+            "data/nested/family/vllm/1.0",
+            "data/../other-system/vllm/1.0",
+        ] {
+            let resolver = SourceResolver::fixed(BTreeMap::from([(
+                BASENAME.into(),
+                vec![PerfSource(root.path().join(location).join(BASENAME), None)],
+            )]));
+            assert!(matches!(
+                Dsv41Table::with_sources(&data, &resolver),
+                Err(AicError::InvalidPerfData(_))
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_symlink_relocation_is_valid_but_cross_system_family_symlinks_are_not() {
+        use crate::config::PerfSource;
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let data = write_energy_systems_root(root.path());
+        write_parquet(&data.join(BASENAME), &fixture());
+        let relocated = root.path().join("relocated-data");
+        symlink(root.path().join("data"), &relocated).unwrap();
+        let relocated_data = relocated.join("vllm/1.0");
+        let resolver = SourceResolver::fixed(BTreeMap::from([(
+            BASENAME.into(),
+            vec![PerfSource(relocated_data.join(BASENAME), None)],
+        )]));
+        let table = Dsv41Table::with_sources(&relocated_data, &resolver).unwrap();
+        assert_eq!(lookup(&table, 10).unwrap().unwrap().latency, 1.0);
+
+        let donor = root.path().join("other-system/vllm/1.0");
+        std::fs::create_dir_all(&donor).unwrap();
+        write_parquet(&donor.join(BASENAME), &fixture());
+        let family = root.path().join("data/borrowed");
+        symlink(root.path().join("other-system"), &family).unwrap();
+        let resolver = SourceResolver::fixed(BTreeMap::from([(
+            BASENAME.into(),
+            vec![PerfSource(family.join("vllm/1.0").join(BASENAME), None)],
         )]));
         assert!(matches!(
             Dsv41Table::with_sources(&data, &resolver),
