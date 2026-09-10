@@ -46,6 +46,10 @@ When that tuple is empty, `enumerate_afd_topologies` searches:
 - microbatch count and pipeline model; and
 - A:F node ratio.
 
+`total_gpus` is an upper-bound budget, not an exact allocation. Because AFD enumeration is
+node-granular, a remainder smaller than `gpus_per_node` may remain unused while the enumerator
+still covers every full-node topology within the budget.
+
 The enumerator preserves the legacy canonical order and evaluates the complete finite domain.
 If the domain exceeds `max_candidates`, it fails with `candidate_limit` instead of returning a
 partial result.
@@ -70,6 +74,9 @@ domain = enumerate_afd_topologies(
 ## Infeasibility and Provenance
 
 Every topology failure uses a stable category such as `invalid_topology`, `gpu_budget`,
-`expert_divisibility`, or `candidate_limit`. Enumeration reports filter counts, the canonical
-candidate dimensions, and whether its finite domain was complete. Each topology records its phase,
-parallel shape, and lossless A/F GPU accounting.
+`expert_divisibility`, or `candidate_limit`. Searched enumeration reports filter counts, the
+canonical candidate dimensions, and whether its finite domain was complete. Pinned enumeration
+identifies `AFDSearchConfig.pinned_topologies` as its source and does not claim generated candidate
+dimensions. Each topology records its phase, parallel shape, and lossless A/F GPU accounting;
+generator provenance is recorded by the enumeration that created it, not by manually constructed
+topology objects.

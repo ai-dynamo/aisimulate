@@ -254,7 +254,6 @@ class AFDTopology:
     def provenance(self) -> dict[str, Any]:
         return {
             "schema_version": AFD_SCHEMA_VERSION,
-            "source": _LEGACY_SOURCE,
             "topology": {
                 "n_a_nodes": self.n_a_nodes,
                 "n_f_nodes": self.n_f_nodes,
@@ -359,6 +358,22 @@ class AFDSearchConfig:
                 )
             for value in values:
                 _positive_int(name, value)
+            if len(set(values)) != len(values):
+                raise AFDInfeasible(
+                    AFDReasonCategory.INVALID_TOPOLOGY,
+                    f"{name} must not contain duplicates",
+                    provenance={"field": name, "values": list(values)},
+                )
+        invalid_tp = [value for value in self.tp_a_candidates if self.gpus_per_node % value]
+        if invalid_tp:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "tp_a_candidates must divide gpus_per_node",
+                provenance={
+                    "gpus_per_node": self.gpus_per_node,
+                    "invalid_candidates": invalid_tp,
+                },
+            )
         for value in self.f_moe_ep_size_candidates:
             if type(value) is int:
                 _positive_int("f_moe_ep_size_candidates", value)
@@ -367,6 +382,24 @@ class AFDSearchConfig:
                     AFDReasonCategory.EXPERT_DIVISIBILITY,
                     f"f_moe_ep_size_candidates accepts positive integers, 'n_f_nodes', or 'ffn_tp'; got {value!r}",
                 )
+        if len(set(self.f_moe_ep_size_candidates)) != len(self.f_moe_ep_size_candidates):
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "f_moe_ep_size_candidates must not contain duplicates",
+                provenance={
+                    "field": "f_moe_ep_size_candidates",
+                    "values": list(self.f_moe_ep_size_candidates),
+                },
+            )
+        if len(set(pipelines)) != len(pipelines):
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "pipeline_model_candidates must not contain duplicates",
+                provenance={
+                    "field": "pipeline_model_candidates",
+                    "values": [item.value for item in pipelines],
+                },
+            )
         if any(not isinstance(topology, AFDTopology) for topology in self.pinned_topologies):
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
@@ -497,7 +530,7 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
             rejection_counts=rejections,
             provenance={
                 "schema_version": AFD_SCHEMA_VERSION,
-                "source": _LEGACY_SOURCE,
+                "source": "AFDSearchConfig.pinned_topologies",
                 "domain": "pinned",
                 "complete": True,
             },
@@ -515,7 +548,7 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
             },
         )
     if config.tp_a_candidates:
-        tp_candidates = tuple(sorted({value for value in config.tp_a_candidates if config.gpus_per_node % value == 0}))
+        tp_candidates = tuple(sorted(config.tp_a_candidates))
     else:
         tp_candidates = tuple(
             sorted({value for value in (1, 2, 4, config.gpus_per_node) if config.gpus_per_node % value == 0})
