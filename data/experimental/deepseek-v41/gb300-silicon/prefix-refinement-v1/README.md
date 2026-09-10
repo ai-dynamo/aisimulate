@@ -28,6 +28,16 @@ the decoder replay boundary. Calibration uses one warmup and three measured
 repetitions per configuration: 54 actual measured model invocations. There is
 no new full-profile calibration and no new baseline measurement.
 
+The count of 18 is a **conditional minimum for this fixed target and the
+current exact-prefix consumer**. Ten distinct `(batch, late-layer effective
+prefix)` curves are missing for the original bounded holdouts; the new
+query-130 target adds eight other missing curves. One homogeneous model
+invocation supplies only one such late-layer prefix curve for its batch.
+Consequently at least 18 new homogeneous configurations are necessary to
+populate these 18 curves without changing the consumer. This is not a
+minimum sample count for arbitrary V4.1 workloads, other interpolation
+contracts, or overall statistical accuracy.
+
 The 46 fresh forward holdouts in **each** profile are:
 
 | Phase | Batch | Query or past KV | Original prefix | Count |
@@ -43,6 +53,12 @@ holdouts, current calibration, and selected pilot reuse. Each has one warmup
 and ten measured repetitions, with the component recorder absent. There are
 92 new profile/configuration pairs and 920 measured forward invocations;
 neither TP ranks nor repetitions are independent workload configurations.
+Together with calibration, the campaign records 974 measured invocations per
+rank and 110 warmup invocations: `18*3 + 92*10` measured and `18 + 92` warmups.
+Four TP rank records describe each of those same invocations; they are not
+four independent sample points. The manifests were frozen before any of
+these measurements, and all 46/profile holdouts are disjoint from old and new
+calibration and the original holdouts.
 Decode seeds exactly the manifest's past KV, then measures native inclusive
 KV equal to past KV plus one.
 
