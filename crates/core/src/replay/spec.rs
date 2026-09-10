@@ -284,6 +284,33 @@ impl TryFrom<(usize, DirectRequest)> for ReplayRequest {
                 Some(tokens),
             ),
         };
+        if let Some(metadata_object) = metadata.as_object() {
+            let routing: ReplayRoutingMetadata =
+                serde_json::from_value(metadata.clone()).map_err(|error| {
+                    ReplayError::InvalidSpec(format!(
+                        "DirectRequest metadata has invalid routing controls: {error}"
+                    ))
+                })?;
+            if metadata_object.contains_key("priority") && routing.priority != priority {
+                return Err(ReplayError::InvalidSpec(
+                    "DirectRequest priority conflicts with replay context metadata".to_string(),
+                ));
+            }
+            if metadata_object.contains_key("strict_priority")
+                && routing.strict_priority != strict_priority
+            {
+                return Err(ReplayError::InvalidSpec(
+                    "DirectRequest strict_priority conflicts with replay context metadata"
+                        .to_string(),
+                ));
+            }
+            if metadata_object.contains_key("policy_class") && routing.policy_class != policy_class
+            {
+                return Err(ReplayError::InvalidSpec(
+                    "DirectRequest policy_class conflicts with replay context metadata".to_string(),
+                ));
+            }
+        }
         if priority != 0 || strict_priority != 0 || policy_class.is_some() {
             if metadata.is_null() {
                 metadata = Value::Object(Default::default());
@@ -524,6 +551,24 @@ mod direct_request_conversion_tests {
             ReplayRequest::try_from((0, request)).unwrap().metadata,
             metadata
         );
+    }
+
+    #[test]
+    fn direct_request_conversion_rejects_conflicting_routing_metadata() {
+        let request = DirectRequest {
+            arrival_timestamp_ms: Some(1.0),
+            replay_context: Some(ReplayRequestContext {
+                authored_id: "request".to_string(),
+                session_id: None,
+                turn_index: None,
+                metadata: serde_json::json!({"priority": 5}),
+                prompt_token_source: Default::default(),
+            }),
+            ..Default::default()
+        };
+
+        let error = ReplayRequest::try_from((0, request)).unwrap_err();
+        assert!(error.to_string().contains("priority conflicts"), "{error}");
     }
 
     #[test]
