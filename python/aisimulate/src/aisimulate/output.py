@@ -9,12 +9,12 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from .replay.reporting import format_report_table
-from .sweeper.result import SweepResult
+if TYPE_CHECKING:
+    from .sweeper.result import SweepResult
 
 _RECOMMENDATION_NAME = re.compile(r"^[0-9]{4}\.yaml$")
 
@@ -35,6 +35,7 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
             "requests.jsonl",
             "resource-plan.json",
             "resource-runtime.json",
+            "execution-events.jsonl",
         ):
             target = root / name
             if target.is_file() or target.is_symlink():
@@ -91,6 +92,8 @@ def write_recommendations(root: Path, configs: list[Mapping[str, Any]]) -> list[
 def format_prediction_stdout(summary: dict[str, Any], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    from .replay.reporting import format_report_table
+
     return format_report_table(summary)
 
 

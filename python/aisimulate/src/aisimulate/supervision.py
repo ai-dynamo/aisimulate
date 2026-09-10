@@ -310,6 +310,7 @@ def _save_runtime_report(output: str, report: dict[str, Any], *, overwrite: bool
 
 def main(argv: Sequence[str] | None = None) -> int:
     from .cli_args import _apply_overrides, _load_mapping, build_parser
+    from .output import prepare_output_directory
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
@@ -321,12 +322,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError, AttributeError):
         # The child retains stack/schema error ordering under conservative limits.
         policy = ResourceConfig()
-    output = Path(args.output_dir)
-    if output.exists() and (not output.is_dir() or (any(output.iterdir()) and not args.overwrite)):
-        parser.error("output directory must be empty; pass --overwrite to replace known AISimulate outputs")
+    try:
+        output = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     event_output = output / "execution-events.jsonl"
-    if args.overwrite and (event_output.is_file() or event_output.is_symlink()):
-        event_output.unlink()
     try:
         report = run_process(
             [sys.executable, "-m", "aisimulate.resource_worker", "cli", *arguments],

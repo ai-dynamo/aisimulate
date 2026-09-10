@@ -109,6 +109,40 @@ def test_child_exit_code_is_preserved(tmp_path):
     assert result["exit_code"] == 3
 
 
+def test_overwrite_clears_stale_results_before_early_resource_refusal(tmp_path):
+    import subprocess
+
+    config = tmp_path / "config.yaml"
+    config.write_text("execution:\n  resources:\n    memory_limit_gib: 0.000001\n")
+    output = tmp_path / "output"
+    recommendations = output / "recommendations"
+    recommendations.mkdir(parents=True)
+    (output / "recommendation.json").write_text('{"old":true}')
+    (recommendations / "0001.yaml").write_text("old: true\n")
+    (output / "notes.txt").write_text("keep")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "recommend",
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--overwrite",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 3, result.stderr
+    assert not (output / "recommendation.json").exists()
+    assert not (recommendations / "0001.yaml").exists()
+    assert (output / "notes.txt").read_text() == "keep"
+    assert json.loads((output / "resource-runtime.json").read_text())["status"] == "resource_limited"
+
+
 def test_public_cli_runs_small_native_prediction_with_resource_evidence(tmp_path):
     import subprocess
 
