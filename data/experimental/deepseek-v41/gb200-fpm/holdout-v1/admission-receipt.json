@@ -1,0 +1,52 @@
+{
+  "schema": "dsv41.fpm.holdout.admission.v1",
+  "valid": true,
+  "normalized_sha256": "98664d2d97c90cb01855a15c65cac1a272989404d03aaeaf83a28dcd546a1917",
+  "normalizer_source_sha256": "cecf6ef107e2aa3f9b8af95f29696c1ec357485905046843595fe80b26110409",
+  "validator_source_sha256": "cbe76d4d627eff965368e7e50148062d8f3e658c473e7338d10bdf6256257bb5",
+  "collector_plan_sha256": "ac084ef6d4d99db10459bf6a71e783020b3b0e2c787c720449615dcc8fa68c70",
+  "collector_plan_file_sha256": "4b857c928ff1d4dcac67334c81919340281d7324fed8c92362c873d3ba98a755",
+  "collector_checkpoint_sha256": "a082a8f3f697d0f1b3f2ddedf1ec6d5e70cc334e0945553699944a65f06ce676",
+  "calibration_files_sha256": {
+    "systems/data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.parquet": "2edc7f78efe54b58009151f77591d2ed2dd42246f0e8a228ddebe5df1b6a816e",
+    "systems/data/gb200/vllm/0.1.dev20904+g179dd0fa9/fpm_forward_perf.metadata.json": "d4b580c308e24cf8463db94b79dd56990c229c495e9fa98ddd5cb0a1d9144c8e",
+    "systems/gb200.yaml": "257db66d91458c0a6a9fcccbf06815e1b70db76b0c31b54aa54d5dcc9138c95e",
+    "collection-receipt.json": "6d6190e638f84229e7990228a38f24fa3b737c16d0014e6e63c9076602a6cda8",
+    "admission-receipt.json": "0841d41c3840753bc8850c7368f25fb6f77626e3364407a0b5e7341483b3acb7",
+    "point-manifest.json": "20b2223efe67c03eab3204fdf0875ba9a9d19d7566877d47ac50a5b00dd915f1",
+    "prediction-config.json": "e0b8bda132504df9e6c77144b8d3684e76ca91c9a18e88a1efdf6a07c853d1f3"
+  },
+  "calibration_manifest_sha256": "20b2223efe67c03eab3204fdf0875ba9a9d19d7566877d47ac50a5b00dd915f1",
+  "holdout_manifest_sha256": "a24566f90e0e36296c31795711ec504d3bab8b7d66ae2bf4aefc24085c96f60e",
+  "original_admission_json": "{\"artifacts\": [{\"artifact_sha256\": \"84d839cab3efdef087a7ca879df7114a9e010795931f63190b74abc23d176bb7\", \"attempt_id\": \"05c533385b364a51b15077c325b2d043\", \"cell_id\": \"fpm-fe339586abe4fcc9\", \"measured_points\": 28, \"point_manifest_sha256\": \"d7941c71ad17317f8dc5394b3392eb72743cdd1eba8d0b5e3834b99c7734b3ce\", \"token_stream_sha256\": \"df21084da9271f07e858788363e6f5ca03fe90716ca0c4442c66f9f13e314ec8\"}, {\"artifact_sha256\": \"6155fae554ce63ca2774e1f6655056dc8d136532c66087718134d0757802e145\", \"attempt_id\": \"7d5e08893d9b4486b3ddf4e61bbfe91f\", \"cell_id\": \"fpm-9f2c4efbd302d315\", \"measured_points\": 10, \"point_manifest_sha256\": \"d7941c71ad17317f8dc5394b3392eb72743cdd1eba8d0b5e3834b99c7734b3ce\", \"token_stream_sha256\": \"d2aced6fb777557fd6e465d117329aa11d81e3a83971caadc701c489b7e7ecad\"}], \"checkpoint_sha256\": \"a082a8f3f697d0f1b3f2ddedf1ec6d5e70cc334e0945553699944a65f06ce676\", \"collector_plan_sha256\": \"ac084ef6d4d99db10459bf6a71e783020b3b0e2c787c720449615dcc8fa68c70\", \"exporter_source_sha256\": \"c38983e63ababd3ef04e6e270a9cb1884cc4eb2b763fddee9196b4b1f12ae3d4\", \"plan_file_sha256\": \"4b857c928ff1d4dcac67334c81919340281d7324fed8c92362c873d3ba98a755\", \"schema\": \"dsv41.parity.admission.v1\", \"valid\": true, \"validator_source_sha256\": \"cbe76d4d627eff965368e7e50148062d8f3e658c473e7338d10bdf6256257bb5\"}\n",
+  "original_admission_sha256": "2beb3e87f7bd2e5c20cb9a2bdac5339b00c35d9b68020ce21f9bb463c25b423a",
+  "actual_runtime_receipt_sha256": "07a129917befa740aa69afbbb754770f1feb89410bb5a131d7b8da92143e562a",
+  "actual_runtime_evidence_sha256": {
+    "prefill": {
+      "resolved-config-node0.json": "732f86138ff2efe3fcda0e472dd91c5869da0f247b66c99029ca099c1160bfd4",
+      "runtime-preflight.json": "0073e6d37974f7440c1ffa1c2bed961b17a8f62d3462c52f74039f36ddb2599f",
+      "engine.stdout.log": "c73afc3fa772a6af3e9bc79d85faa96e16b0b48e2ef0acc39b042831c89821cc"
+    },
+    "decode": {
+      "resolved-config-node0.json": "ee759595ec339d2f6888e5285c662cd775593534682c48e079c7b4c1738459b9",
+      "runtime-preflight.json": "0073e6d37974f7440c1ffa1c2bed961b17a8f62d3462c52f74039f36ddb2599f",
+      "engine.stdout.log": "bcc945edd7a61faf70bbeaa8807b9fe59bf81120c6e793aca183f869835e931c"
+    }
+  },
+  "runtime_probe_interference": {
+    "prefill": {
+      "native_benchmark_started_at": "2026-09-10T14:47:41.217679Z",
+      "native_benchmark_completed_at": "2026-09-10T14:48:54.516716Z",
+      "readonly_runtime_probes_overlap": false,
+      "probe_timestamp_resolution_ns": 1000000000,
+      "probe_window": "reported start through reported end plus one second; half-open"
+    },
+    "decode": {
+      "native_benchmark_started_at": "2026-09-10T15:15:48.069226Z",
+      "native_benchmark_completed_at": "2026-09-10T15:16:27.996545Z",
+      "readonly_runtime_probes_overlap": false,
+      "probe_timestamp_resolution_ns": 1000000000,
+      "probe_window": "reported start through reported end plus one second; half-open"
+    }
+  }
+}

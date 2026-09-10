@@ -1,0 +1,16 @@
+{
+  "README.md": "1eddb0ce5ebeac0831c9d3a133a6d5b235edc08eeaf50c2f40837fad03ccf2b9",
+  "admission-receipt.json": "22cf1f25a9f5bd71b909cbd2ef35313dc7bee83fc27856cfd19d2f023f90098f",
+  "artifact-provenance.json": "0d4ffa4192ce9689d01934484de87d21982a22aaf9b3457c093c69e60398a110",
+  "export_holdout.py": "cecf6ef107e2aa3f9b8af95f29696c1ec357485905046843595fe80b26110409",
+  "forward-comparison.csv": "28107322e4fa60d7a16a64425d05212eda3ed63fbbef760adf9603779cbc513a",
+  "forward-comparison.pdf": "7512b45d23aa818137785b3f1cc6b94a4255950a97d827f4ea7364c39dfd0d1e",
+  "forward-comparison.png": "8d387123088ef1f62d32eefcaa7911d97eab1811220485d23171af2920a84971",
+  "fpm-prediction-config.json": "20aaf41eb5fe2e8bb25e85101b862e43cd84645430e863c21949687fec63f767",
+  "fpm-results.json.gz": "650475f5a93b843b049b7903a1408e6d4f6c8c1b48a12c82230639367e5c36e9",
+  "holdout.json.gz": "1504a7b24001f45167bc98a16ce10db2c73329b6d07078ffb894f591002aba0e",
+  "plot-input-hashes.json": "434901b7332b9e3871ef64811f5774bbc6010533fd85028f579530077cf8f54e",
+  "render_report.py": "dd3de671885028b979bd97d1c10c3eff1758f780f83c5c7f773fe315a7329c0d",
+  "sol-prediction-config.json": "186f08bcbfdf81f73be0ed91356fd85b3a8ee433f6d29452b15501f015578478",
+  "sol-results.json.gz": "c4b913fca37263b43abcfd87843c949d65f1462e62dc8d8442fffb3b64baf9ca"
+}

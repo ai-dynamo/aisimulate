@@ -12,6 +12,13 @@ accuracy. The original GB300
 16-workload qualification grid and its 309 derived module keys per profile
 remain separate from independent verification counts.
 
+The [GB200 independent whole-forward report](../gb200-fpm/holdout-v1/README.md)
+now covers all 38 frozen holdouts (28 prefill, 10 decode), with one native timing
+per geometry. FPM median APE is 3.84% and WAPE is 4.89%; this is descriptive
+native-wall accuracy, with no repeated-run interval or HTTP E2E claim. The
+original token histories, six separate warmup records, exact admission and
+unchanged 126-point calibration remain bound to the report.
+
 ## Scope and point counts
 
 The first common domain is one node, TP4/EP1/DP1/PP1/CP1, text autoregression,
