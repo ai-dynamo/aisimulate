@@ -9,6 +9,9 @@
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/gemma4/modeling_gemma4.py
 # Copyright 2026 the HuggingFace Team. All rights reserved.
 # Both upstream projects are licensed under Apache-2.0; see THIRD_PARTY_NOTICES.md.
+# Kimi topology is a modified adaptation (Apache-2.0), copyright contributors
+# to the vLLM project:
+# https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
 
 """Generic ViT encoder op builder for multimodal VL models.
 
@@ -64,6 +67,7 @@ receives a full (un-sharded) first-layer input.  For a two-layer projector
 For P = 1 the single layer is row-parallel (M = out // tp, K = in) followed by
 the AllReduce.  For P > 2 intermediate layers also receive sharded inputs; callers
 are responsible for choosing a projector_dims layout that is TP-correct.
+Replicated projectors retain full dimensions for every layer and omit AllReduce.
 """
 
 from __future__ import annotations
@@ -172,6 +176,16 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         rope_dim = 6 * (n_vit // tp_size) * head_size_vit
         result.append(ops.ElementWise("encoder_rope_apply", depth, rope_dim, rope_dim, 0.8))
 
+    if enc_cfg.final_norm:
+        result.append(ops.ElementWise("encoder_final_norm", 1, h_vit, h_vit, 0.8))
+    if enc_cfg.pool_temporal:
+        # Kimi's sd2_tpool merger performs temporal mean pooling and spatial
+        # 2x2 rearrangement before PatchMerger. This is a memory-bound layout
+        # operation; projector GEMMs run on the pooled output-token geometry.
+        # Sources: Transformers commit cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55
+        # and vLLM commit d2906091bfc579cebefe3d8e8fb9077397ce9882.
+        result.append(ops.ElementWise("encoder_patch_merge_pool", 1, h_vit, h_vit, 0.8))
+
     return result
 
 
@@ -182,7 +196,8 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
       - Non-final layers: row-parallel (M = out // tp, K = in; output sharded) + activation
       - Final layer: column-parallel if P > 1 (M = out, K = in // tp; input sharded)
                      row-parallel if P == 1 (M = out // tp, K = in; full input)
-      - Always ends with a CustomAllReduce over the final output dimension.
+      - Ends with a CustomAllReduce over the final output dimension unless
+        projector_replicated=True (full dimensions and no projector collectives).
 
     Returns [] if projector_dims is empty.
     """
@@ -193,6 +208,12 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
     n_inst = enc_cfg.projector_n_instances
     vit_gemm_mode = common.GEMMQuantMode.bfloat16
     n_layers = len(dims)
+    # Kimi PatchMerger uses ReplicatedLinear for both projections, including
+    # under encoder TP. Modified adaptation of vLLM (Apache-2.0), copyright
+    # contributors to the vLLM project:
+    # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+    if enc_cfg.projector_replicated:
+        tp_size = 1
 
     result = []
     # The final merger normalizes hidden_size before pixel shuffle. Deepstack
@@ -229,7 +250,8 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
                 )
             )
 
-    result.append(ops.CustomAllReduce("encoder_projector_ar", n_inst, dims[-1][1], tp_size))
+    if not enc_cfg.projector_replicated:
+        result.append(ops.CustomAllReduce("encoder_projector_ar", n_inst, dims[-1][1], tp_size))
     return result
 
 
@@ -456,3 +478,150 @@ class EncoderOnlyModel:
     config: object
     context_ops: list = dataclasses.field(default_factory=list)
     generation_ops: list = dataclasses.field(default_factory=list)
+
+
+def _llama4_projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
+    """Build Llama 4's pixel-shuffle adaptor and multimodal connector.
+
+    The checkpoint contains two distinct modules and therefore two distinct
+    communication boundaries:
+
+    * ``vision_adapter.mlp`` is column-parallel then row-parallel.  Its second
+      GEMM reduces the 4096-wide output across TP ranks.
+    * ``multi_modal_projector.linear_1`` is column-parallel with gathered
+      output, projecting the 4096-wide vision embedding to the 5120-wide text
+      embedding consumed by the hybrid-MoE backbone.
+    """
+    dims = enc_cfg.projector_dims
+    if len(dims) != 3:
+        raise ValueError(f"Llama 4 expects exactly three projector dimensions, got {dims!r}")
+    (merge_in, adapter_hidden), (adapter_in, adapter_out), (connector_in, connector_out) = dims
+    if adapter_hidden != adapter_in or adapter_out != connector_in:
+        raise ValueError(f"Llama 4 projector dimensions are not composable: {dims!r}")
+    for dim_name, dim in (
+        ("adapter_hidden", adapter_hidden),
+        ("adapter_in", adapter_in),
+        ("connector_out", connector_out),
+    ):
+        if dim % tp_size != 0:
+            raise ValueError(f"Llama 4 {dim_name} ({dim}) must be divisible by tp_size ({tp_size})")
+
+    q = common.GEMMQuantMode.bfloat16
+    result = [
+        # pixel_shuffle turns four 1408-wide patch vectors into one 5632-wide
+        # vector before the MLP; it is a real memory-movement stage even though
+        # it has no trainable weights.
+        ops.ElementWise("encoder_projector_pixel_shuffle", 1, merge_in, merge_in, 0.8),
+        # vLLM ColumnParallelLinear: output features are sharded.
+        ops.GEMM("encoder_projector_adapter_fc0_gemm", 1, adapter_hidden // tp_size, merge_in, q),
+        ops.ElementWise(
+            "encoder_projector_adapter_fc0_act",
+            1,
+            adapter_hidden // tp_size,
+            adapter_hidden // tp_size,
+            0.8,
+        ),
+        # vLLM RowParallelLinear: input features are sharded; output is reduced.
+        ops.GEMM("encoder_projector_adapter_fc1_gemm", 1, adapter_out, adapter_in // tp_size, q),
+        ops.CustomAllReduce("encoder_projector_adapter_ar", 1, adapter_out, tp_size),
+        ops.ElementWise("encoder_projector_adapter_fc1_act", 1, adapter_out, adapter_out, 0.8),
+        # The final connector is ColumnParallelLinear(gather_output=True).
+        ops.GEMM("encoder_projector_mm_gemm", 1, connector_out // tp_size, connector_in, q),
+    ]
+    if tp_size > 1:
+        result.append(
+            ops.NCCL(
+                "encoder_projector_mm_all_gather",
+                1,
+                "all_gather",
+                num_elements_per_token=connector_out,
+                num_gpus=tp_size,
+                comm_quant_mode=common.CommQuantMode.half,
+            )
+        )
+    return result
+
+
+def build_llama4_encoder_ops(
+    enc_cfg: common.VisionEncoderConfig,
+    tp_size: int,
+    enable_encoder_dp: bool = True,
+) -> list:
+    """Build the checkpoint-faithful Llama 4 image-tower operation graph.
+
+    Unlike Qwen3-VL's shared ViT path, Llama 4 has a learned patch-embedding
+    linear, a per-tile CLS token, a pixel-shuffle adaptor, and a separate
+    vision-to-text connector.  The backend supplies their different sequence
+    lengths: raw patches for patch embedding, raw patches + CLS for the ViT,
+    and post-shuffle image tokens for adaptor/connector operations.
+
+    The tensor-parallel sharding topology is adapted (modified) from vLLM v0.8.5, commit
+    ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d, model_executor/models/mllama4.py.
+    Copyright 2025 the LLAMA4, Meta Inc., vLLM, and HuggingFace Inc. team.
+    All rights reserved. Licensed under the Apache License, Version 2.0.
+    """
+    if enc_cfg.image_size <= 0:
+        raise ValueError("Llama 4 vision_config.image_size must be positive")
+    if not enc_cfg.has_cls_token:
+        raise ValueError("Llama 4 vision encoder requires a CLS token")
+    if enc_cfg.image_size % enc_cfg.patch_size != 0:
+        raise ValueError(
+            f"Llama 4 image_size ({enc_cfg.image_size}) must be divisible by patch_size ({enc_cfg.patch_size})"
+        )
+    merge_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
+    if enc_cfg.image_size % merge_stride != 0:
+        raise ValueError(
+            f"Llama 4 image_size ({enc_cfg.image_size}) must be divisible by the merged-patch stride ({merge_stride})"
+        )
+
+    encoder_tp = 1 if enable_encoder_dp else tp_size
+    if enc_cfg.hidden_size % encoder_tp != 0:
+        raise ValueError(
+            f"Llama 4 vision hidden_size ({enc_cfg.hidden_size}) must be divisible by tp_size ({encoder_tp})"
+        )
+    patch_input = enc_cfg.in_channels * enc_cfg.patch_size**2
+    q = common.GEMMQuantMode.bfloat16
+    result = [
+        ops.GEMM("encoder_patch_embedding_gemm", 1, enc_cfg.hidden_size // encoder_tp, patch_input, q),
+    ]
+    if encoder_tp > 1:
+        # vLLM's patch-embedding ColumnParallelLinear uses gather_output=True,
+        # so every TP rank sees the full hidden vector before the ViT blocks.
+        result.append(
+            ops.NCCL(
+                "encoder_patch_embedding_all_gather",
+                1,
+                "all_gather",
+                num_elements_per_token=enc_cfg.hidden_size,
+                num_gpus=encoder_tp,
+                comm_quant_mode=common.CommQuantMode.half,
+            )
+        )
+    result.extend(
+        [
+            # Class/position additions plus the pre-transformer LayerNorm.
+            ops.ElementWise(
+                "encoder_class_position_norm",
+                1,
+                3 * enc_cfg.hidden_size,
+                3 * enc_cfg.hidden_size,
+                0.8,
+            ),
+            *_vit_transformer_ops(enc_cfg, encoder_tp),
+            ops.ElementWise("encoder_post_norm", 1, 2 * enc_cfg.hidden_size, 2 * enc_cfg.hidden_size, 0.8),
+            *_llama4_projector_ops(enc_cfg, encoder_tp),
+        ]
+    )
+
+    if enable_encoder_dp and tp_size > 1:
+        result.append(
+            ops.NCCL(
+                "encoder_dp_all_gather",
+                1,
+                "all_gather",
+                num_elements_per_token=enc_cfg.out_hidden_size * tp_size,
+                num_gpus=tp_size,
+                comm_quant_mode=common.CommQuantMode.half,
+            )
+        )
+    return result

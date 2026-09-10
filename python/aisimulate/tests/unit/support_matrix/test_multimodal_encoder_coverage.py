@@ -156,7 +156,6 @@ def test_encoder_model_cannot_pass_with_zero_encoder_evidence(monkeypatch, mode,
 @pytest.mark.parametrize(
     "model",
     [
-        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
         "stepfun-ai/Step-3.7-Flash",
     ],
 )
@@ -199,7 +198,7 @@ def test_encoder_unsupported_row_persists_a_valid_preflight_replay_command(monke
     _patch_constraints(monkeypatch)
 
     statuses, errors, commands, _sources = SupportMatrix.run_single_test(
-        model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        model="stepfun-ai/Step-3.7-Flash",
         system="b200_sxm",
         backend="vllm",
         version="0.24.0",
@@ -207,8 +206,8 @@ def test_encoder_unsupported_row_persists_a_valid_preflight_replay_command(monke
         include_commands=True,
     )
     row = [
-        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-        "Llama4ForConditionalGeneration",
+        "stepfun-ai/Step-3.7-Flash",
+        "Step3p7FlashForCausalLM",
         "b200_sxm",
         "vllm",
         "0.24.0",
