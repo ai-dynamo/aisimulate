@@ -625,12 +625,12 @@ impl DisaggFlowState {
         request.metadata_mut().uuid = Some(uuid);
         request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
 
+        if self.requests.contains_key(&uuid) {
+            bail!("offline disagg replay request {uuid} is already active");
+        }
         collector.on_arrival(uuid, arrival_time_ms, input_length, output_length);
         if let Some(context) = request.metadata().replay_context.as_ref() {
             collector.on_request_context(uuid, context);
-        }
-        if self.requests.contains_key(&uuid) {
-            bail!("offline disagg replay request {uuid} is already active");
         }
         let handoff_id = HandoffId::new(Uuid::new_v4());
         let mut state = DisaggRequestState::new(

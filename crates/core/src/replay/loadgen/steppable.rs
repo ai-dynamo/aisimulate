@@ -904,6 +904,31 @@ mod tests {
     }
 
     #[test]
+    fn disaggregated_rejects_a_retained_terminal_request_id() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        let uuid = engine.submit(request(34, 128, 8)).unwrap();
+        engine.cancel(uuid).unwrap();
+
+        let error = engine.submit(request(34, 128, 8)).unwrap_err();
+        assert!(error.to_string().contains("already active"), "{error}");
+        assert_eq!(engine.in_flight(), 0);
+        assert_eq!(
+            engine
+                .take_report(engine.now_ms())
+                .unwrap()
+                .request_counts
+                .num_requests,
+            1
+        );
+    }
+
+    #[test]
     fn disaggregated_cancellation_suppresses_busy_worker_output() {
         let mut engine = SteppableDisagg::new(
             ReplayEngineConfig::default(),
