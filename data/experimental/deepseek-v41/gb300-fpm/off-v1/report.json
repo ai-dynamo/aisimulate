@@ -1,0 +1,22 @@
+{
+  "schema": "dsv41.public.gb300.fpm.report.v1",
+  "dataset_role": "independent_verification",
+  "profile": "off",
+  "calibration_self_queries_in_accuracy": false,
+  "scopes": [
+    {
+      "name": "core",
+      "source_summary_sha256": "307f88d7121ebddec8659e66204d72df3199cacd77214f9f7aee9ea355a9df4a"
+    },
+    {
+      "name": "field",
+      "source_summary_sha256": "f15fcf26d533275b6c9ba3d46f63598c9f571c9feb3066f725df9478f8fb55bb"
+    },
+    {
+      "name": "service",
+      "source_summary_sha256": "95464ba1ec7a4392cb0aba8ba298884fc0ef166e8220841e4b53e7aa94af5cfe"
+    }
+  ],
+  "corpora_pooled": false,
+  "lifecycle_confidence_intervals_pooled": false
+}

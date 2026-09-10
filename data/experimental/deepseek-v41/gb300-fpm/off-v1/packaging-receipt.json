@@ -1,0 +1,60 @@
+{
+  "schema": "dsv41.public.lossless-summary-packaging.v1",
+  "profile": "off",
+  "dataset_role": "packaging_only",
+  "source_packet_artifact_inventory_sha256": "1c52af53df1a399c03f07782cb2d09a3ed1c83dd809ce667c372739b44ce3e6a",
+  "source_packet_artifact_inventory_file": "packaging/source-artifact-hashes.json",
+  "historical_export_derivation_receipt_preserved": true,
+  "historical_derivation_receipt_sha256": "545f9b3860c4537d7ee53c35e5cd946b54b34c038efa81c7978c9b2d143a1d7b",
+  "historical_source_names_in_derivation_receipt": "The original export receipt names uncompressed summary.json artifacts; each is mapped below to a byte-exact decompressible summary.json.gz. This receipt describes only the subsequent packaging layer.",
+  "summary_replacements": [
+    {
+      "source_file": "reports/core/summary.json",
+      "source_sha256": "9e56dbf64496af752695d0784d5ed477f7ec8f6fe4f5bdbd3abbafa0955e3ce7",
+      "source_bytes": 7870210,
+      "packaged_file": "reports/core/summary.json.gz",
+      "packaged_sha256": "021769ff3f1e18048f84cda4c0ae9e532fc19563a8a53047a403581ae0b6f681",
+      "packaged_bytes": 198873,
+      "decompressed_bytes_equal_original": true,
+      "gzip_mtime": 0,
+      "compression_level": 9
+    },
+    {
+      "source_file": "reports/field/summary.json",
+      "source_sha256": "68046ee23f98df11cd634f3855ac9634f2aa0cc991ee647c4025c9776bcc7cfd",
+      "source_bytes": 1829818,
+      "packaged_file": "reports/field/summary.json.gz",
+      "packaged_sha256": "7d35432951b8174ccd77d3dc752497b50894b4894f827e545d82d4c011aa38ea",
+      "packaged_bytes": 72651,
+      "decompressed_bytes_equal_original": true,
+      "gzip_mtime": 0,
+      "compression_level": 9
+    },
+    {
+      "source_file": "reports/service/summary.json",
+      "source_sha256": "04b8b281f807efbcdfa3a79edb61c2a2bba65ca5b9468558b81894116f925a30",
+      "source_bytes": 1832495,
+      "packaged_file": "reports/service/summary.json.gz",
+      "packaged_sha256": "06dc6ad3dc295ad923d9401c6091bb3cfdddcddcad4bc0f361dcf908dc47e360",
+      "packaged_bytes": 72565,
+      "decompressed_bytes_equal_original": true,
+      "gzip_mtime": 0,
+      "compression_level": 9
+    }
+  ],
+  "renderer_source_file": "packaging/source-render_report.py",
+  "renderer_original_sha256": "426caf01198e245b20a1a7da45ade70b5b9e9a922696bd2d100df50b35ddf393",
+  "renderer_packaged_sha256": "aa74b25ac6e5f2271f21eefdee38fc2e882d0aa0b2c7cca16bc58b70dec7caa3",
+  "renderer_change": "Only read() changes: prefer the original summary.json, otherwise read adjacent summary.json.gz when the original path does not exist and is not a symlink. Other calculations and rendering are unchanged.",
+  "no_predictions_measurements_or_fitting": true,
+  "original_packets_unchanged": true,
+  "calibration_and_comparison_evidence_unchanged": true,
+  "required_identical_render_artifacts_sha256": {
+    "report/README.md": "b4fe572d2b19988d7dadf68a4a770c41de1de6d28454a67cf8a7c49a1542f164",
+    "report/comparison.csv": "2be6e0c4c928ed058e5a17c0d71bd6bb9dd3cc93aabbf45d6bd889be23c25191",
+    "report/comparison.png": "77fca4c2f4516f6464f6e994c4cd46be7393367b622758ab88e4fa6f89a53353",
+    "report/comparison.pdf": "e5d80be70708d02df347164d116c13060d9c0b0e05d775cb7d638ea6c3abe44b"
+  },
+  "plot_input_hashes_change": "plot-input-hashes.json records the actual new compressed filenames, packaged renderer hash and packaging provenance; it is not expected to match the historical rendering receipt.",
+  "packager_source_sha256": "16839bdeaa93c97f2ef954661772315db26f3209d5a310eea9d26d0e58467a8f"
+}
