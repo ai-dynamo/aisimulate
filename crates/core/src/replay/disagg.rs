@@ -3485,12 +3485,16 @@ where
     /// correlates the request with later measurements.
     pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> Result<Uuid> {
         let arrival_time_ms = self.now_ms;
-        self.on_external_arrival(
+        let uuid = self.on_external_arrival(
             ReplayRequestPayload::materialized(request),
             arrival_time_ms,
             None,
             None,
-        )
+        )?;
+        if self.defer_drive {
+            self.drive_pending = true;
+        }
+        Ok(uuid)
     }
 
     /// Cancel a dynamically admitted request and return its terminal status
@@ -3607,6 +3611,10 @@ where
         wall_ms: f64,
     ) -> anyhow::Result<crate::replay::ReplayReport> {
         anyhow::ensure!(wall_ms.is_finite(), "replay report wall_ms must be finite");
+        anyhow::ensure!(
+            self.is_workload_done(),
+            "replay report requires an idle runtime"
+        );
         self.collector
             .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
         Ok(std::mem::take(&mut self.collector)

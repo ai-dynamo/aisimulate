@@ -691,6 +691,17 @@ mod tests {
         engine.submit(request(19, 128, 16)).unwrap();
 
         assert!(engine.take_report(0.0).is_err());
+
+        let mut disaggregated = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        disaggregated.submit(request(20, 128, 16)).unwrap();
+
+        assert!(disaggregated.take_report(0.0).is_err());
     }
 
     #[test]
@@ -718,6 +729,18 @@ mod tests {
         engine.submit(request(20, 128, 16)).unwrap();
 
         assert_eq!(engine.next_event_ms(), Some(now_ms));
+
+        let mut disaggregated = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        let now_ms = disaggregated.now_ms();
+        disaggregated.submit(request(21, 128, 16)).unwrap();
+
+        assert_eq!(disaggregated.next_event_ms(), Some(now_ms));
     }
 
     #[test]
