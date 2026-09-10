@@ -861,6 +861,10 @@ impl TraceRequestStats {
 }
 
 impl TraceCollector {
+    pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
+        self.requests.contains_key(&uuid)
+    }
+
     /// Defer token-timeline folding until the entire replay has ended.
     pub fn set_defer_token_timeline_finalization(&mut self, value: bool) {
         self.defer_token_timeline_finalization = value;

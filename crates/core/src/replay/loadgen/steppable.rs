@@ -245,6 +245,11 @@ impl SteppableReplay for SteppableAgg {
         {
             anyhow::bail!("steppable replay request {uuid} is already live");
         }
+        if let Some(uuid) = request.uuid
+            && self.runtime.collector().contains_request(uuid)
+        {
+            anyhow::bail!("steppable replay request {uuid} is already retained");
+        }
         let uuid = self.runtime.submit_dynamic(request)?;
         self.live.insert(uuid);
         Ok(uuid)
@@ -633,6 +638,28 @@ mod tests {
         let factory = ReplayEngineFactory::new();
         let mut aggregated = SteppableAgg::new(ReplayEngineConfig::default(), &factory, 1).unwrap();
         assert_rejected(&mut aggregated);
+    }
+
+    #[test]
+    fn steppable_replay_rejects_a_completed_request_id_before_reporting() {
+        let mut engine = SteppableAgg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+        )
+        .unwrap();
+        let uuid = engine.submit(request(22, 128, 16)).unwrap();
+
+        drain(&mut engine);
+
+        let error = engine.submit(request(22, 128, 16)).unwrap_err();
+        assert!(error.to_string().contains("already retained"), "{error}");
+        assert_eq!(engine.in_flight(), 0);
+
+        let report = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(report.request_counts.num_requests, 1);
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(uuid, Uuid::from_u128(22));
     }
 
     #[test]
