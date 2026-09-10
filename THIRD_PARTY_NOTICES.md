@@ -48,11 +48,13 @@ https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
 
 The Kimi K2.5 vision-tower topology and pooled multimodal adapter modeled in
 `src/aiconfigurator_core/sdk/models/blocks/vit.py` and parsed in
-`src/aiconfigurator_core/sdk/utils.py` follow vLLM at commit
+`src/aiconfigurator_core/sdk/utils.py`, with regression derivatives in
+`tests/unit/sdk/models/test_kimi_k25_vision.py`, are modified adaptations of vLLM at commit
 `d2906091bfc579cebefe3d8e8fb9077397ce9882`:
 
 - https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25.py
 - https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+- https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/layers/quantization/modelopt.py
 
 The upstream license at that revision is available at:
 https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/LICENSE
@@ -409,13 +411,19 @@ Transformers project at tag `v4.57.1`:
 https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/models/llama/modeling_llama.py#L109-L113
 
 The Kimi K2.5 spatial-temporal vision-tower, processor, and temporal-pooling
-behavior in `src/aiconfigurator_core/sdk/models/blocks/vit.py` and
-`src/aiconfigurator_core/sdk/utils.py` follows Hugging Face Transformers at
+behavior in `src/aiconfigurator_core/sdk/models/blocks/vit.py`,
+`src/aiconfigurator_core/sdk/utils.py`, and `src/aiconfigurator_core/sdk/backends/base_backend.py`,
+with regression derivatives in `tests/unit/sdk/models/test_kimi_k25_vision.py`,
+are modified adaptations of Hugging Face Transformers at
 commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
 
 - https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/modeling_kimi_k25.py
 - https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
 - https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+
+Copyright 2026 the HuggingFace Inc. team. All rights reserved.
+Copyright 2026 the HuggingFace Team. All rights reserved.
+This material is licensed under the Apache License 2.0.
 
 The upstream license at that revision is available at:
 https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE

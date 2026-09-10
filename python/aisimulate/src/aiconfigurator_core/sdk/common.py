@@ -176,7 +176,8 @@ class VisionEncoderConfig:
         projector_dims (tuple[tuple[int, int], ...]): Per-layer (in_dim, out_dim) pairs
             for the vision-to-LLM projector MLP. Empty tuple means no projector.
             Dimensions are absolute (unsharded); build_encoder_ops applies the
-            encoder parallelism (TP sharding, or full replicas under encoder DP).
+            encoder parallelism (TP sharding, or full replicas under encoder DP
+            or when projector_replicated is enabled).
         projector_n_instances (int): Number of projector instances to model (e.g.,
             1 + len(deepstack_visual_indexes) for Qwen3VL deepstack variants).
         partial_rotary_factor (float): Engine-side rotary-table parameter, not a
@@ -211,6 +212,15 @@ class VisionEncoderConfig:
     final_norm: bool = False
     pool_temporal: bool = False
     video_attention_type: str = ""
+    # Processor geometry: Kimi resizes to patch budgets, then pads to the
+    # patch/merge stride. Qwen retains its existing nearest-stride behavior.
+    resize_mode: str = "qwen"
+    image_max_patches: int = 0
+    video_max_patches: int = 0
+    max_patches_per_side: int = 0
+    max_video_frames: int = 0
+    # Some towers use replicated projector linear layers even with encoder TP.
+    projector_replicated: bool = False
 
 
 @dataclass(frozen=True)

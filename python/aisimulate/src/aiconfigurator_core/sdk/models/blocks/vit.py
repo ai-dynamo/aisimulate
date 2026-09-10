@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Kimi topology is a modified adaptation (Apache-2.0), copyright contributors
+# to the vLLM project:
+# https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
 
 """Generic ViT encoder op builder for multimodal VL models.
 
@@ -55,6 +58,7 @@ receives a full (un-sharded) first-layer input.  For a two-layer projector
 For P = 1 the single layer is row-parallel (M = out // tp, K = in) followed by
 the AllReduce.  For P > 2 intermediate layers also receive sharded inputs; callers
 are responsible for choosing a projector_dims layout that is TP-correct.
+Replicated projectors retain full dimensions for every layer and omit AllReduce.
 """
 
 from __future__ import annotations
@@ -183,7 +187,8 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
       - Non-final layers: row-parallel (M = out // tp, K = in; output sharded) + activation
       - Final layer: column-parallel if P > 1 (M = out, K = in // tp; input sharded)
                      row-parallel if P == 1 (M = out // tp, K = in; full input)
-      - Always ends with a CustomAllReduce over the final output dimension.
+      - Ends with a CustomAllReduce over the final output dimension unless
+        projector_replicated=True (full dimensions and no projector collectives).
 
     Returns [] if projector_dims is empty.
     """
@@ -194,6 +199,12 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
     n_inst = enc_cfg.projector_n_instances
     vit_gemm_mode = common.GEMMQuantMode.bfloat16
     n_layers = len(dims)
+    # Kimi PatchMerger uses ReplicatedLinear for both projections, including
+    # under encoder TP. Modified adaptation of vLLM (Apache-2.0), copyright
+    # contributors to the vLLM project:
+    # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+    if enc_cfg.projector_replicated:
+        tp_size = 1
 
     result = []
     # The final merger normalizes hidden_size before pixel shuffle. Deepstack
@@ -230,7 +241,8 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
                 )
             )
 
-    result.append(ops.CustomAllReduce("encoder_projector_ar", n_inst, dims[-1][1], tp_size))
+    if not enc_cfg.projector_replicated:
+        result.append(ops.CustomAllReduce("encoder_projector_ar", n_inst, dims[-1][1], tp_size))
     return result
 
 

@@ -1,5 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Kimi resize/pad is a modified adaptation, copyright 2026 the HuggingFace
+# Inc. team and HuggingFace Team (Apache-2.0):
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
 
 import copy
 import dataclasses
@@ -27,6 +31,29 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 from aiconfigurator_core.sdk.step_estimate import MixedStepInput, StepEstimate
 
 logger = logging.getLogger(__name__)
+
+
+def _kimi_resized_spatial_tokens(
+    height: int, width: int, enc_cfg: common.VisionEncoderConfig, *, is_video: bool = False
+) -> tuple[int, int]:
+    """Return Kimi projected tokens and patches after processor resize/pad.
+
+    Modified adaptation of navit_resize, copyright 2026 the HuggingFace Inc.
+    team and HuggingFace Team, Apache-2.0. Image and video implementations:
+    https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+    https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+    """
+    patch = enc_cfg.patch_size
+    max_patches = enc_cfg.video_max_patches if is_video else enc_cfg.image_max_patches
+    side_limit = enc_cfg.max_patches_per_side * patch
+    patch_count = max(1.0, height // patch) * max(1.0, width // patch)
+    scale = min(1.0, math.sqrt(max_patches / patch_count), side_limit / height, side_limit / width)
+    resized_height = min(max(1, int(height * scale)), side_limit)
+    resized_width = min(max(1, int(width * scale)), side_limit)
+    stride = patch * enc_cfg.spatial_merge_size
+    padded_height = -(-resized_height // stride) * stride
+    padded_width = -(-resized_width // stride) * stride
+    return (padded_height // stride) * (padded_width // stride), (padded_height // patch) * (padded_width // patch)
 
 
 class BaseBackend:
@@ -347,12 +374,19 @@ class BaseBackend:
             if has_video_override and (video_height > 0) != (video_width > 0):
                 raise ValueError("Video height and width must either both be provided or both be omitted.")
         has_videos = has_any_video_input
+        if has_videos and enc_cfg.max_video_frames and video_frames > enc_cfg.max_video_frames:
+            raise ValueError(
+                f"Kimi video modeling supports at most {enc_cfg.max_video_frames} sampled frames per video; "
+                "longer videos require separate temporal chunks, which are not modeled yet."
+            )
         if has_images and has_videos:
             raise ValueError(
                 "Mixed image/video encoder workloads are not modeled yet; estimate images and videos separately."
             )
 
-        def _smart_resized_spatial_tokens(height: int, width: int) -> tuple[int, int]:
+        def _smart_resized_spatial_tokens(height: int, width: int, *, is_video: bool = False) -> tuple[int, int]:
+            if enc_cfg.resize_mode == "kimi":
+                return _kimi_resized_spatial_tokens(height, width, enc_cfg, is_video=is_video)
             # Upstream VL processors (Qwen smart_resize) round each raw
             # dimension to the nearest patch-and-merge stride before
             # patchify. The processor's min/max_pixels rescaling is a
@@ -369,7 +403,9 @@ class BaseBackend:
                 # Qwen pads a short final temporal group by repeating its last
                 # frame, so a partial group still produces one temporal patch.
                 temporal_patches = -(-video_frames // enc_cfg.temporal_patch_size)
-                spatial_post_merge, spatial_pre_merge = _smart_resized_spatial_tokens(video_height, video_width)
+                spatial_post_merge, spatial_pre_merge = _smart_resized_spatial_tokens(
+                    video_height, video_width, is_video=True
+                )
                 tokens_per_visual = (
                     spatial_post_merge if enc_cfg.pool_temporal else temporal_patches * spatial_post_merge
                 )

@@ -1,5 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Kimi processor/topology modeling is a modified adaptation (Apache-2.0),
+# copyright 2026 the HuggingFace Inc. team and HuggingFace Team, and copyright
+# contributors to the vLLM project:
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+# https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+# https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/layers/quantization/modelopt.py
 
 import importlib.resources as pkg_resources
 import json
@@ -568,12 +575,74 @@ def _parse_qwen_vision_encoder_config(
     )
 
 
+def _kimi_processor_limits(processor_cfg: dict | None, vision_cfg: dict) -> dict:
+    """Read legacy Moonshot or native Transformers processor geometry.
+
+    Defaults are the image/video class attributes at Transformers commit
+    cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55 (Apache-2.0), copyright 2026
+    the HuggingFace Inc. team and HuggingFace Team. Modified adaptation:
+    https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+    https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+    """
+    if processor_cfg is None:
+        processor_cfg = {}
+    if not isinstance(processor_cfg, dict):
+        raise ValueError("Kimi preprocessor_config must be an object")
+    media = processor_cfg.get("media_proc_cfg", processor_cfg)
+    if not isinstance(media, dict):
+        raise ValueError("Kimi media_proc_cfg must be an object")
+    video = processor_cfg.get("video_processor", {})
+    if not isinstance(video, dict):
+        raise ValueError("Kimi video processor config must be an object")
+
+    def positive_int(value, name):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"Kimi processor {name} must be a positive integer")
+        return value
+
+    def side_limit(settings, default):
+        size = settings.get("size", {"max_height": default, "max_width": default})
+        if not isinstance(size, dict) or size.get("max_height") != size.get("max_width"):
+            raise ValueError("Kimi processor size requires identical max_height and max_width")
+        return positive_int(size.get("max_height"), "size.max_height")
+
+    side = positive_int(media.get("patch_limit_on_one_side", side_limit(media, 512)), "patch_limit_on_one_side")
+    if side_limit(video, side) != side:
+        raise ValueError("Kimi image and video processor side limits must match")
+    for settings in (media, video):
+        if settings.get("do_resize", True) is not True:
+            raise ValueError("Kimi processor do_resize=False is not modeled")
+        if positive_int(settings.get("patch_size", vision_cfg["patch_size"]), "patch_size") != vision_cfg["patch_size"]:
+            raise ValueError("Kimi processor patch_size must match vision_config")
+        merge = settings.get("merge_kernel_size", settings.get("merge_size", 2))
+        if positive_int(merge, "merge_size") != vision_cfg.get("merge_kernel_size", [2, 2])[0]:
+            raise ValueError("Kimi processor merge_size must match vision_config")
+    for name in ("fixed_output_tokens", "in_patch_limit_video", "max_num_frames_each_video"):
+        if media.get(name) is not None:
+            raise ValueError(f"Kimi processor {name} is not modeled")
+    frames = positive_int(
+        media.get("temporal_merge_kernel_size", video.get("temporal_patch_size", 4)), "temporal_merge_kernel_size"
+    )
+    if frames != 4:
+        raise ValueError("Kimi processor temporal chunk size must be 4")
+    return {
+        "resize_mode": "kimi",
+        "image_max_patches": positive_int(media.get("in_patch_limit", media.get("max_patches", 16384)), "max_patches"),
+        "video_max_patches": positive_int(
+            media.get("in_patch_limit_each_frame", video.get("max_patches", 4096)), "video max_patches"
+        ),
+        "max_patches_per_side": side,
+        "max_video_frames": frames,
+    }
+
+
 def _parse_kimi_k25_vision_encoder_config(
     vision_cfg: dict | None,
     *,
     expected_out_hidden_size: int,
     root_quant_cfg: dict | None,
     nested_text_quant_cfg: dict | None,
+    processor_cfg: dict | None = None,
 ) -> VisionEncoderConfig | None:
     """Parse Kimi K2.5's spatial-temporal ViT and pooled PatchMerger.
 
@@ -608,9 +677,14 @@ def _parse_kimi_k25_vision_encoder_config(
         exclusions = root_quant_cfg.get("ignore", [])
         if not isinstance(exclusions, (list, tuple)) or any(not isinstance(pattern, str) for pattern in exclusions):
             raise ValueError("Kimi K2.5 quantization_config.ignore must be a list or tuple of strings")
-        ignore = tuple(pattern.lower() for pattern in exclusions)
-        vision_ignored = any("vision_tower" in pattern for pattern in ignore)
-        projector_ignored = any("mm_projector" in pattern for pattern in ignore)
+        # ModelOpt supports glob matching and legacy component substrings.
+        # Accept only patterns that prove every descendant is excluded; a
+        # child path, regex, different prefix or case cannot establish this.
+        # vLLM d2906091, quantization/modelopt.py:is_layer_excluded (Apache-2.0).
+        if root_quant_cfg.get("quant_method") != "modelopt":
+            raise ValueError("Kimi model-level vision exclusions require supported modelopt matching semantics")
+        vision_ignored = bool(set(exclusions) & {"*", "vision_tower", "vision_tower*", "vision_tower.*"})
+        projector_ignored = bool(set(exclusions) & {"*", "mm_projector", "mm_projector*", "mm_projector.*"})
         if not (vision_ignored and projector_ignored):
             raise ValueError(
                 "Kimi K2.5 has model-level quantization but does not explicitly exclude both "
@@ -644,6 +718,8 @@ def _parse_kimi_k25_vision_encoder_config(
         final_norm=True,
         pool_temporal=True,
         video_attention_type=str(vision_cfg["video_attn_type"]),
+        projector_replicated=True,
+        **_kimi_processor_limits(processor_cfg, vision_cfg),
     )
 
 
@@ -662,6 +738,7 @@ def _parse_hf_config_json(config: dict) -> dict:
     """
     architecture = config["architectures"][0]
     vision_cfg = config.get("vision_config")
+    processor_cfg = config.get("preprocessor_config")
     root_quant_cfg = config.get("quantization_config")
     nested_text_quant_cfg = None
     encoder_config = None
@@ -829,6 +906,7 @@ def _parse_hf_config_json(config: dict) -> dict:
             expected_out_hidden_size=hidden_size,
             root_quant_cfg=root_quant_cfg,
             nested_text_quant_cfg=nested_text_quant_cfg,
+            processor_cfg=processor_cfg,
         )
     elif architecture == "KimiK3ForConditionalGeneration":
         # Kimi-K3: hybrid KDA linear attention + MLA full attention with LatentMoE.
@@ -1485,6 +1563,28 @@ def get_model_config_from_model_path(model_path: str) -> dict:
         dict: Model configuration parameters and raw config under "raw_config".
     """
     raw_config = _load_model_config_from_model_path(model_path)
+    if raw_config.get("architectures") == ["KimiK25ForConditionalGeneration"] and model_path not in DefaultHFModels:
+        # Only Kimi consumes these processor files. Bundled checkpoints use
+        # the pinned processor defaults; local/downloaded checkpoints may
+        # override them with the original media_proc_cfg or native HF layout.
+        processor = {}
+        for filename, key in (
+            ("preprocessor_config.json", None),
+            ("video_preprocessor_config.json", "video_processor"),
+        ):
+            if os.path.isdir(model_path):
+                path = Path(model_path) / filename
+                data = _load_json_with_infinity(path) if path.is_file() else None
+            else:
+                data = _download_hf_json(model_path, filename, raise_on_404=False)
+            if data is not None:
+                if not isinstance(data, dict):
+                    raise ValueError(f"Kimi {filename} must be an object")
+                if key is None:
+                    processor.update(data)
+                else:
+                    processor[key] = data
+        raw_config = {**raw_config, "preprocessor_config": processor}
     parsed = _parse_hf_config_json(raw_config)
     if parsed["architecture"] == "DeepseekV4ForCausalLM" and model_path not in common.DEEPSEEK_V4_HF_MODELS:
         supported = ", ".join(sorted(common.DEEPSEEK_V4_HF_MODELS))
