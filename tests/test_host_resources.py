@@ -69,7 +69,7 @@ def test_reported_dynamo_allocation_is_rejected_without_materialization(host):
 
 def test_budget_reserves_headroom_and_leaves_cpu(host):
     budget = resolve_budget(ResourceConfig(), host)
-    assert budget["memory_limit_bytes"] == 8 * GIB
+    assert budget["memory_limit_bytes"] == 16 * GIB - int(3.2 * GIB)
     assert budget["reserved_host_memory_bytes"] == int(3.2 * GIB)
     assert budget["cpu_limit"] == 7
     assert resolve_budget(ResourceConfig(), HostResources(32 * GIB, 16 * GIB, 0.5))["cpu_limit"] == 1

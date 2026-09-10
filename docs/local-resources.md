@@ -16,11 +16,11 @@ execution:
     cpu_limit: auto
     reserve_memory_gib: 2.0
     reserve_memory_fraction: 0.1
-    available_memory_fraction: 0.5
+    available_memory_fraction: 0.9
 ```
 
 Let A be available RAM and R the larger of 2 GiB and 10% of effective physical
-RAM. The default memory budget is max(0, min(0.5 A, A - R)). Linux cgroup v1/v2
+RAM. The default memory budget is max(0, min(0.9 A, A - R)). Linux cgroup v1/v2
 memory limits, current usage, ancestor limits, affinity and CPU quotas constrain
 the host snapshot. Swap does not increase the budget. Automatic CPU selection
 leaves one CPU free when more than one whole CPU is available. An explicit
