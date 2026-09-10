@@ -284,27 +284,21 @@ impl TryFrom<(usize, DirectRequest)> for ReplayRequest {
                 Some(tokens),
             ),
         };
-        if !metadata.is_null() || priority != 0 || strict_priority != 0 || policy_class.is_some() {
+        if priority != 0 || strict_priority != 0 || policy_class.is_some() {
             if metadata.is_null() {
                 metadata = Value::Object(Default::default());
             }
             let object = metadata.as_object_mut().ok_or_else(|| {
                 ReplayError::InvalidSpec("DirectRequest metadata must be an object".to_string())
             })?;
-            if priority == 0 {
-                object.remove("priority");
-            } else {
+            if priority != 0 {
                 object.insert("priority".to_string(), Value::from(priority));
             }
-            if strict_priority == 0 {
-                object.remove("strict_priority");
-            } else {
+            if strict_priority != 0 {
                 object.insert("strict_priority".to_string(), Value::from(strict_priority));
             }
             if let Some(policy_class) = policy_class {
                 object.insert("policy_class".to_string(), Value::from(policy_class));
-            } else {
-                object.remove("policy_class");
             }
         }
 
@@ -504,6 +498,31 @@ mod direct_request_conversion_tests {
                 "strict_priority": 9,
                 "policy_class": "latency"
             })
+        );
+    }
+
+    #[test]
+    fn direct_request_conversion_preserves_authored_default_routing_metadata() {
+        let metadata = serde_json::json!({
+            "priority": 0,
+            "strict_priority": 0,
+            "policy_class": null,
+        });
+        let request = DirectRequest {
+            arrival_timestamp_ms: Some(1.0),
+            replay_context: Some(ReplayRequestContext {
+                authored_id: "request".to_string(),
+                session_id: None,
+                turn_index: None,
+                metadata: metadata.clone(),
+                prompt_token_source: Default::default(),
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ReplayRequest::try_from((0, request)).unwrap().metadata,
+            metadata
         );
     }
 
