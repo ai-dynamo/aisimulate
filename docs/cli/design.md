@@ -364,7 +364,8 @@ the current SA convention.
 | `traffic.source.session.inter_turn_delay_ms` | `0` | `x` | `-` | Nonnegative. |
 | `traffic.source.paths` | Required for trace | `x` | `-` | One path except `dynamo`, which permits multiple. |
 | `traffic.source.format` | `mooncake` | `x` | `-` | See [Trace Format Compatibility](#trace-format-compatibility). |
-| `traffic.source.block_size` | `512`; embedded for `dynamo` | `x` | `-` | Positive. |
+| `traffic.source.block_size` | `512`; embedded for `dynamo` and `weka` | `x` | `-` | Positive. For embedded formats, an explicit value is an equality assertion. |
+| `traffic.source.nested_timestamp_basis` | `auto` | `x` | `-` | `auto`, `absolute`, or `relative`; Weka only. |
 | `traffic.load.type` | `concurrency` | `x` | `-` | Synthetic: `concurrency`, `poisson`, `constant_rate`, or `kv_capacity_fraction`; trace: `trace_timestamps` or `concurrency`. |
 | `traffic.load.concurrency` | `10` | `-` | `-` | Positive integer; explicit domains are allowed in `recommend`. |
 | `traffic.load.requests_per_second` | `null` | `-` | `-` | Positive; synthetic request open-loop load only. |
@@ -372,6 +373,7 @@ the current SA convention.
 | `traffic.load.seed` | `42` | `x` | `-` | Nonnegative; `poisson` only. |
 | `traffic.load.fraction` | `null` | `-` | `-` | Positive finite number; `kv_capacity_fraction` only and may exceed `1`. |
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
+| `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |
@@ -489,13 +491,44 @@ first-arrival pacing, and inter-turn or dependency delays remain unscaled.
 | `mooncake` | One request or session turn with a full prompt | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | None specific to the format. |
 | `mooncake-delta` | One session turn; follow-up input is only the new input delta | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | Aggregated deployment only; `planner.policy` must be `disabled`. |
 | `agentic_mooncake` | One request node in a dependency graph | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; `planner.policy` must be `disabled`. |
+| `weka` | A raw kv-cache-tester or published AgentX JSON/JSONL corpus; directories are traversed recursively and JSONL files may contain multiple plays | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; source block size is embedded and the result is functionally qualified. |
 | `applied_compute_agentic` | One complete session, expanded into `num_turns + 1` requests | `concurrency` | Not supported; omit it | Supported | Source rows have no first-turn timestamps. |
 | `dynamo` standard trace | Native request-trace records, possibly across multiple files | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | The embedded trace block size is authoritative. |
 | `dynamo` agentic trace | Native agentic request-trace records, possibly across multiple files | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; `planner.policy` must be `disabled`. |
 
 The `dynamo` loader detects whether its records are standard or agentic and applies the corresponding
-row above. If `traffic.source.block_size` is supplied for `dynamo`, it must match the embedded block
-size. For the other formats, `block_size` is the trace hash-block size used to reconstruct prompts.
+row above. If `traffic.source.block_size` is supplied for `dynamo` or `weka`, it must match the
+embedded block size. For the other formats, `block_size` is the trace hash-block size used to
+reconstruct prompts.
+
+Weka is the public AgentX source format and AISimulate is its prediction entry point. AISimulate
+deterministically lowers Weka into Agentic Mooncake v2, the versioned producer-neutral interchange
+format, and then validates that lower IR as a `ValidatedAgenticGraph`, the runtime representation.
+Dynamo is an optional integration and is not required to parse, convert, or predict a Weka corpus.
+Two producer timestamp conventions exist: raw kv-cache-tester nested request timestamps are relative
+to their subagent marker, while SemiAnalysis-published AgentX timestamps are root-trace absolute.
+`nested_timestamp_basis` may select either convention explicitly. When omitted (or set to `auto`),
+AISimulate scans every nested request in every JSON/JSONL row before lowering. If any child timestamp
+is earlier than its subagent marker by more than the join epsilon, the complete corpus is interpreted
+as relative; otherwise it is interpreted as absolute. This is one corpus-wide heuristic, never a
+per-request rewrite. It cannot prove that a corpus is homogeneous: a malformed absolute request can
+select relative for the entire corpus, while relative offsets that are all at or above their markers
+can select absolute. Producers with ambiguous data should set the basis explicitly. Both conventions
+lower uniformly to root-absolute canonical timestamps. The selected basis and whether it was inferred
+heuristically or configured are logged; the resolved value is reported as
+`weka_nested_timestamp_basis` and included in source identity.
+The neutral importer accepts mixed source models and preserves each request's model label in graph
+provenance and identity. Version 1 execution is intentionally single-target: before the graph enters
+the model-neutral `WorkloadDriver`, AISimulate projects every request onto the one model configured by
+`engine.model`. The report records the sorted source-model set, target model, and
+`project_to_configured_target` policy under `agentic_model_projection`; per-node heterogeneous timing
+models are not supported yet.
+The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
+deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
+ordered graph must provide one unique contiguous ordinal for every play.
+An explicit `agentic_lanes: N` assigns plays round-robin to N lanes and starts the next play in a lane
+only after the current play becomes quiescent. Omitting the field preserves authored timestamp
+behavior; corpus wrapping and fixed-duration lane orchestration are outside the version 1 contract.
 
 ### Mooncake and Mooncake Delta JSONL
 

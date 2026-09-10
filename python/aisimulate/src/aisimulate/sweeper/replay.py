@@ -113,6 +113,10 @@ class RunnerCapabilities:
     supported_hooks: tuple[HookCapability, ...] = ()
     supports_disaggregated_attention_dp: bool = False
     supported_execution_modes: tuple[str, ...] = ("offline",)
+    supported_trace_formats: tuple[str, ...] = ("*",)
+    supports_agentic_lanes: bool = False
+    supported_agentic_topologies: tuple[str, ...] = ("agg", "disagg")
+    agentic_qualification: str | None = None
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -133,6 +137,9 @@ class RunnerCapabilities:
 
     def supports_hook(self, hook: RuntimeHookSpec) -> bool:
         return any(capability.supports(hook) for capability in self.supported_hooks)
+
+    def supports_trace_format(self, trace_format: str) -> bool:
+        return "*" in self.supported_trace_formats or trace_format in self.supported_trace_formats
 
     def supports_attention_dp(self, topology: str, *dp_sizes: int) -> bool:
         """Return whether the topology supports all requested attention-DP sizes."""
@@ -163,6 +170,31 @@ class RunnerCapabilities:
         if not self.supports_backend_topology(deployment.backend, deployment.deployment_mode):
             raise ValueError(
                 f"runner does not support backend/topology {deployment.backend!r}/{deployment.deployment_mode!r}"
+            )
+        trace_format = spec.workload.get("trace_format")
+        if isinstance(trace_format, str) and not self.supports_trace_format(trace_format):
+            raise ValueError(f"runner does not support trace format {trace_format!r}")
+        weka_basis = spec.workload.get("weka_nested_timestamp_basis")
+        if weka_basis is not None:
+            if trace_format != "weka":
+                raise ValueError("weka_nested_timestamp_basis requires Weka input")
+            if weka_basis not in {"auto", "absolute", "relative"}:
+                raise ValueError("weka_nested_timestamp_basis must be 'auto', 'absolute', or 'relative'")
+        agentic_lanes = spec.workload.get("agentic_lanes")
+        if agentic_lanes is not None:
+            if type(agentic_lanes) is not int or agentic_lanes <= 0:
+                raise ValueError("agentic_lanes must be a positive integer")
+            if trace_format not in {"weka", "agentic_mooncake", "dynamo"}:
+                raise ValueError("agentic_lanes requires weka, agentic_mooncake, or agentic dynamo input")
+            if not self.supports_agentic_lanes:
+                raise ValueError("runner does not support agentic_lanes")
+        agentic_topology_required = trace_format in {"weka", "agentic_mooncake"} or (
+            trace_format == "dynamo" and agentic_lanes is not None
+        )
+        if agentic_topology_required and deployment.deployment_mode not in self.supported_agentic_topologies:
+            raise ValueError(
+                f"runner does not support agentic trace format {trace_format!r} "
+                f"with topology {deployment.deployment_mode!r}"
             )
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]
         if unsupported:

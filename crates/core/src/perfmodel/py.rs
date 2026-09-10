@@ -752,6 +752,33 @@ impl AicEngine {
         .map_err(aic_to_py)
     }
 
+    /// Evaluate context-attention kernels without fused RoPE/KV-write extras.
+    #[pyo3(signature = (ops_json, batch_size, s, prefix=0, imbalance_correction_scale=1.0, visual_block_upper_triangle=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_context_attention_kernels_json(
+        &self,
+        py: Python<'_>,
+        ops_json: &str,
+        batch_size: u32,
+        s: u32,
+        prefix: u32,
+        imbalance_correction_scale: f64,
+        visual_block_upper_triangle: bool,
+    ) -> PyResult<Vec<PerOpValue>> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner.evaluate_context_attention_kernels_json(
+                ops_json,
+                batch_size,
+                s,
+                prefix,
+                imbalance_correction_scale,
+                visual_block_upper_triangle,
+            )
+        })
+        .map_err(aic_to_py)
+    }
+
     /// `evaluate_ops_json` under the SOL_FULL view: every op is forced onto
     /// its analytic SOL branch and the roofline decomposition is kept.
     /// Returns ``(name, sol_time_ms, sol_math_ms, sol_mem_ms)`` tuples
