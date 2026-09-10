@@ -85,6 +85,20 @@ class ComponentRecorder:
             setattr(module, method, timed)
 
         for layer_id, layer in enumerate(layers):
+            expected = [entry for entry in manifest["phases"]["context"] if entry["layer"] == layer_id]
+            attention_shape = json.loads(next(e["geometry"] for e in expected if e["component"] == "attention"))
+            for field, attribute in (
+                ("num_heads", "n_local_heads"),
+                ("o_groups", "n_local_groups"),
+                ("head_dim", "head_dim"),
+                ("q_lora_rank", "q_lora_rank"),
+                ("o_lora_rank", "o_lora_rank"),
+                ("compress_ratio", "compress_ratio"),
+            ):
+                if int(getattr(layer.self_attn, attribute)) != attention_shape[field]:
+                    raise RuntimeError(f"native attention {attribute} differs from graph at layer {layer_id}")
+            if not layer.hc_pre_from_prev_sublayer:
+                raise RuntimeError("native mHC must use predecessor single-pass mixing")
             # Upstream deepseek_v4.py:2649-2788 dispatches the same mHC
             # functions with optional stats_stream. None serializes local work.
             layer.hc_stats_stream = None
@@ -107,6 +121,18 @@ class ComponentRecorder:
             shared = layer.mlp.shared_experts
             if shared is None or getattr(layer.mlp, "_shared_expert_tp1", False):
                 raise RuntimeError("native shared-expert TP layout does not match sharded SOL graph")
+            for module, name, n_attr, k_attr in (
+                (shared.gate_up_proj, "gate_up", "output_size_per_partition", "input_size"),
+                (shared.down_proj, "ffn2", "output_size", "input_size_per_partition"),
+            ):
+                geometry = json.loads(
+                    next(e["geometry"] for e in expected if e["component"] == "linear" and name in e["name"])
+                )
+                if (getattr(module, n_attr), getattr(module, k_attr)) != (geometry["n"], geometry["k"]):
+                    raise RuntimeError(f"native shared projection geometry differs at layer {layer_id}")
+                block = module.quant_method.quant_config.weight_block_size
+                if tuple(block) != (32, 32):
+                    raise RuntimeError("native shared projection must retain FP8 block-32 checkpoint contract")
             wrap(shared.gate_up_proj, "forward", layer_id, "linear", selector="gate_up")
             wrap(shared.down_proj, "forward", layer_id, "linear", selector="ffn2")
             engram = getattr(layer, "engram", None)
@@ -162,6 +188,12 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
 
     options = bench_args.dsv41_options
     manifest = json.loads(Path(options.manifest).read_text())
+    config_path = Path(server_args.model_path) / "config.json"
+    actual_config = hashlib.sha256(
+        json.dumps(json.loads(config_path.read_text()), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if actual_config != manifest["config_sha256"]:
+        raise RuntimeError("checkpoint config differs from native graph manifest")
     bench.publish(server_args, role="scheduler")
     # Native benchmark latency_test at one_batch.py:896-899 seeds the
     # process-local dispatch flags after publication in every spawned rank.
@@ -210,12 +242,6 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
         "runtime_digest": options.runtime_digest,
         "execution_profile": manifest["execution_profile"],
     }
-    config_path = Path(server_args.model_path) / "config.json"
-    actual_config = hashlib.sha256(
-        json.dumps(json.loads(config_path.read_text()), sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    if actual_config != manifest["config_sha256"]:
-        raise RuntimeError("checkpoint config differs from native graph manifest")
     text = Path(options.prompt_file).read_text()
     token_ids = tokenizer.encode(text)
     if len(token_ids) < max(options.lengths) + max(options.prefixes):

@@ -33,6 +33,7 @@ def build_manifest(tp_size: int, decoder_replay: bool) -> dict:
     from aiconfigurator_core.sdk.config import ModelConfig
     from aiconfigurator_core.sdk.deepseek_v41 import MODEL_PATH
     from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.utils import _load_pre_downloaded_hf_config
 
     model = get_model(
         MODEL_PATH,
@@ -75,7 +76,7 @@ def build_manifest(tp_size: int, decoder_replay: bool) -> dict:
             visit(stage["children"])
         phases[phase] = rows
     return {
-        "config_sha256": sha256_json(model.raw_config),
+        "config_sha256": sha256_json(_load_pre_downloaded_hf_config(MODEL_PATH)),
         "tp_size": tp_size,
         "execution_profile": model.execution_profile,
         "phases": phases,

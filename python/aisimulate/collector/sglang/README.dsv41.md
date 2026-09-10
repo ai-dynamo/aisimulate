@@ -10,7 +10,9 @@ The integration is pinned to SGLang commit
 `1aa0e962b206102b7c439a4a0c4981cfec6e87bc`. The published runtime reports a
 development version, so an immutable image digest and installed Python source
 hash manifest are mandatory. Configuration must match the production model
-graph's canonical SHA-256. An incompatible runtime raises a recorded failure.
+graph's original cached checkpoint configuration SHA-256, before SDK-inferred
+quantization fields are attached. This differs intentionally from FPM's
+normalized execution identity. An incompatible runtime raises a recorded failure.
 
 ## Measurement boundaries
 

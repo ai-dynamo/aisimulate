@@ -38,6 +38,7 @@ def row():
 def test_manifest_matches_native_graph_and_profiles():
     full, replay = build_manifest(4, False), build_manifest(4, True)
     assert full["config_sha256"] == replay["config_sha256"]
+    assert full["config_sha256"] == "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d"
     for entry in replay["phases"]["context"]:
         if entry["component"] == "attention":
             assert json.loads(entry["geometry"])["bounded_prefill"] == (entry["layer"] >= 21)
