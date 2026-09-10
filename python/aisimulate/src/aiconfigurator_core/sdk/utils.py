@@ -597,7 +597,10 @@ def _kimi_processor_limits(processor_cfg: dict | None, vision_cfg: dict) -> dict
         return positive_int(size.get("max_height"), "size.max_height")
 
     side = positive_int(media.get("patch_limit_on_one_side", side_limit(media, 512)), "patch_limit_on_one_side")
-    if side_limit(video, side) != side:
+    # Legacy Moonshot settings share one limit across image and video;
+    # native Transformers processors each independently default to 512.
+    video_default_side = side if "patch_limit_on_one_side" in media else 512
+    if side_limit(video, video_default_side) != side:
         raise ValueError("Kimi image and video processor side limits must match")
     for settings in (media, video):
         if settings.get("do_resize", True) is not True:

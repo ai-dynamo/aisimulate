@@ -250,23 +250,25 @@ def test_kimi_processor_geometry_reaches_context_and_encoder(kimi_k3_model, heig
 
 
 @pytest.mark.parametrize("remote", [False, True])
-@pytest.mark.parametrize("native", [False, True])
-def test_processor_sidecar_limits_reach_loaded_kimi_model(tmp_path, monkeypatch, remote, native):
+@pytest.mark.parametrize("layout", ["native", "legacy-top-level", "legacy-nested"])
+def test_checkpoint_processor_limits_reach_runtime(tmp_path, monkeypatch, remote, layout):
     from aiconfigurator_core.sdk import utils as utils_module
 
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
-    processor = (
-        {"max_patches": 1024, "size": {"max_height": 16, "max_width": 16}}
-        if native
-        else {
-            "media_proc_cfg": {"in_patch_limit": 1024, "in_patch_limit_each_frame": 64, "patch_limit_on_one_side": 16}
+    if layout == "native":
+        image_processor = {"max_patches": 1024, "size": {"max_height": 16, "max_width": 16}}
+    else:
+        image_processor = {"in_patch_limit": 1024, "in_patch_limit_each_frame": 64, "patch_limit_on_one_side": 16}
+        if layout == "legacy-nested":
+            image_processor = {"media_proc_cfg": image_processor}
+    files = {"config.json": raw, "preprocessor_config.json": image_processor}
+    if layout == "native":
+        files["video_preprocessor_config.json"] = {
+            "max_patches": 64,
+            "size": {"max_height": 16, "max_width": 16},
         }
-    )
-    files = {"config.json": raw, "preprocessor_config.json": processor}
-    if native:
-        files["video_preprocessor_config.json"] = {"max_patches": 64}
     if remote:
-        path = f"synthetic-kimi-k3/processor-{native}"
+        path = f"synthetic-kimi-k3/processor-{tmp_path.name}"
         monkeypatch.setattr(utils_module, "_download_hf_config", lambda model_path: raw)
         monkeypatch.setattr(
             utils_module, "_download_hf_json", lambda model_path, filename, **kwargs: files.get(filename)
@@ -275,15 +277,118 @@ def test_processor_sidecar_limits_reach_loaded_kimi_model(tmp_path, monkeypatch,
         for filename, content in files.items():
             (tmp_path / filename).write_text(json.dumps(content))
         path = str(tmp_path)
-    model = get_model(path, _model_config(), "sglang")
-    image_runtime = config.RuntimeConfig(image_height=448, image_width=448)
+    model = get_model(path, _model_config(), "trtllm")
+    # Image is side-limited to 224² (16² patches); video budget scales the
+    # same input to 112² (8² patches), four frames pooled to 16 LM tokens.
+    image_runtime = config.RuntimeConfig(batch_size=1, isl=128, osl=1, image_height=448, image_width=448)
     video_runtime = config.RuntimeConfig(
-        num_images_per_request=0, num_videos_per_request=1, video_height=448, video_width=448, video_frames=4
+        batch_size=1,
+        isl=128,
+        osl=1,
+        num_images_per_request=0,
+        num_videos_per_request=1,
+        video_frames=4,
+        video_height=448,
+        video_width=448,
     )
-    # Synthetic processor settings cap each image side at 16 patches and
-    # each video frame at 64 patches, before the 2x2 merge.
     assert BaseBackend._encoder_pre_merge_per_visual(image_runtime, model.encoder_config) == (64, 256, 1)
     assert BaseBackend._encoder_pre_merge_per_visual(video_runtime, model.encoder_config) == (16, 256, 1)
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    backend = TRTLLMBackend()
+    for runtime, tokens in ((image_runtime, 64), (video_runtime, 16)):
+        assert BaseBackend._visual_context_tokens(model, runtime) == tokens
+        summary = backend.run_static(model, database, runtime, mode="static_ctx")
+        override = deepcopy(runtime)
+        override.image_height = override.image_width = override.video_height = override.video_width = 0
+        if runtime.num_videos_per_request:
+            override.num_video_tokens = tokens
+        else:
+            override.num_image_tokens = tokens
+        expected = backend.run_static(model, database, override, mode="static_ctx")
+        assert summary.get_encoder_latency_dict() == expected.get_encoder_latency_dict()
+        assert summary.get_encoder_memory() == expected.get_encoder_memory()
+
+
+@pytest.mark.parametrize(
+    "processor,expected_side",
+    [
+        ({}, 512),
+        ({"size": {"max_height": 512, "max_width": 512}}, 512),
+        (
+            {
+                "size": {"max_height": 16, "max_width": 16},
+                "video_processor": {"size": {"max_height": 16, "max_width": 16}},
+            },
+            16,
+        ),
+        ({"patch_limit_on_one_side": 16}, 16),
+        ({"media_proc_cfg": {"patch_limit_on_one_side": 16}}, 16),
+    ],
+    ids=["native-defaults", "native-explicit-default", "native-matched", "legacy-top-level", "legacy-nested"],
+)
+def test_kimi_processor_preserves_native_and_shared_legacy_side_limits(processor, expected_side):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["preprocessor_config"] = processor
+    enc = _parse_hf_config_json(raw)["extra_params"].vision_config
+    assert enc.max_patches_per_side == expected_side
+
+
+@pytest.mark.parametrize(
+    "processor",
+    [
+        {"size": {"max_height": 16, "max_width": 16}},
+        {"size": {"max_height": 16, "max_width": 16}, "video_processor": {}},
+        {
+            "size": {"max_height": 16, "max_width": 16},
+            "video_processor": {"size": {"max_height": 32, "max_width": 32}},
+        },
+        {"video_processor": {"size": {"max_height": 16, "max_width": 16}}},
+    ],
+    ids=["image-only", "default-video", "explicit-mismatch", "video-only"],
+)
+def test_kimi_processor_rejects_different_effective_native_side_limits(processor):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["preprocessor_config"] = processor
+    with pytest.raises(ValueError, match="image and video processor side limits must match"):
+        _parse_hf_config_json(raw)
+
+
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize(
+    "image_processor,video_processor",
+    [
+        ({"size": {"max_height": 16, "max_width": 16}}, None),
+        ({"size": {"max_height": 16, "max_width": 16}}, {"max_patches": 4096}),
+        ({}, {"size": {"max_height": 16, "max_width": 16}}),
+    ],
+    ids=["image-only", "default-video", "video-only"],
+)
+def test_loaded_native_side_override_cannot_change_other_processor_default(
+    tmp_path, monkeypatch, remote, image_processor, video_processor
+):
+    from aiconfigurator_core.sdk import utils as utils_module
+
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    files = {
+        "config.json": raw,
+        "preprocessor_config.json": image_processor,
+    }
+    if video_processor is not None:
+        files["video_preprocessor_config.json"] = video_processor
+    if remote:
+        path = f"synthetic-kimi/native-side-default-{tmp_path.name}"
+        monkeypatch.setattr(utils_module, "_download_hf_config", lambda model_path: raw)
+        monkeypatch.setattr(
+            utils_module, "_download_hf_json", lambda model_path, filename, **kwargs: files.get(filename)
+        )
+    else:
+        for filename, content in files.items():
+            (tmp_path / filename).write_text(json.dumps(content))
+        path = str(tmp_path)
+    # Native image and video sizes each default to 512 independently.
+    # A single shared side-limit field cannot model this pair accurately.
+    with pytest.raises(ValueError, match="image and video processor side limits must match"):
+        get_model(path, _model_config(), "trtllm")
 
 
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "1024", None])
