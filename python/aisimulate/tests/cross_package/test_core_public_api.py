@@ -295,6 +295,7 @@ def test_distribution_carries_typing_contract() -> None:
     assert (root / "_aiconfigurator_core.pyi").is_file()
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("namespace", ["aisimulate_core", "aiconfigurator_core"])
 def test_context_attention_kernel_stub_matches_native_contract(namespace: str) -> None:
     root = importlib.resources.files("aiconfigurator_core")
