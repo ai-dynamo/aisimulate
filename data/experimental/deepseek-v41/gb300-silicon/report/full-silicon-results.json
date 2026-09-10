@@ -1,0 +1,1512 @@
+{
+  "schema": "dsv41.forward.comparison.v1",
+  "observed_target": "sglang_one_batch_synchronized_wall_including_prepare_forward_sample",
+  "prediction_input_origin": "frozen logical workload manifest, not observed FPM timing",
+  "execution_profile": "full",
+  "database_mode": "SILICON",
+  "forward_model": "op_level",
+  "correction_fitting": false,
+  "observation_sha256": "67acf9cf8eaf4b0e63f4628fe38813fdec035f8b5256cc0c65b534e0d928877f",
+  "heldout_plan_sha256": "a24566f90e0e36296c31795711ec504d3bab8b7d66ae2bf4aefc24085c96f60e",
+  "prediction_config_sha256": "1fb02c76f43c5e46d8dcdfc7b0f368e20820d9db6ffabd505f6bc2f0a3abbbd9",
+  "prediction_sources": {
+    "model_python_sha256": "d3d7994816e9a4a52abbf27500b22d7445c376f429cd955e3fc444eee80f33b1",
+    "engine_python_sha256": "ad688d85cf558e69fb01ad3fc9fdf85afb50bcd4b231772a7d21f04b4cc44221",
+    "native_extension_sha256": "b9149eaa1aa302892eb593e584099a51c744a3823c3fc6685b004e6bd5cb4bb4"
+  },
+  "summary": {
+    "planned_points": 38,
+    "predicted_points": 38,
+    "weighting": "equal logical configurations; observed median of repeated rank maxima",
+    "mean_signed_error_percent": -5.150666746892529,
+    "median_absolute_error_percent": 4.1288346149162045,
+    "p90_absolute_error_percent_across_configurations": 17.054161330574463,
+    "wape_percent": 6.382581495549925
+  },
+  "by_phase": {
+    "context": {
+      "planned_points": 28,
+      "predicted_points": 28,
+      "weighting": "equal logical configurations; observed median of repeated rank maxima",
+      "mean_signed_error_percent": -0.9050404779190366,
+      "median_absolute_error_percent": 2.754084041735827,
+      "p90_absolute_error_percent_across_configurations": 5.201234730012456,
+      "wape_percent": 3.244589530426953
+    },
+    "generation": {
+      "planned_points": 10,
+      "predicted_points": 10,
+      "weighting": "equal logical configurations; observed median of repeated rank maxima",
+      "mean_signed_error_percent": -17.03842030001831,
+      "median_absolute_error_percent": 16.99030610554026,
+      "p90_absolute_error_percent_across_configurations": 17.555741966419145,
+      "wape_percent": 17.03597953664544
+    }
+  },
+  "cases": [
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0000",
+      "phase": "context",
+      "prefix": 0,
+      "query": 48,
+      "rank_max_ms": [
+        204.79921507649124,
+        200.46897802967578,
+        198.27893003821373
+      ],
+      "median_ms": 200.46897802967578,
+      "observed_ms": 200.46897802967578,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 48,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 201.373951451425,
+      "signed_error_percent": 0.4514281614261817
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0001",
+      "phase": "context",
+      "prefix": 0,
+      "query": 96,
+      "rank_max_ms": [
+        205.9307200834155,
+        203.99027597159147,
+        201.34380599483848
+      ],
+      "median_ms": 203.99027597159147,
+      "observed_ms": 203.99027597159147,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 230.24512342283856,
+      "signed_error_percent": 12.87063676255993
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0002",
+      "phase": "context",
+      "prefix": 0,
+      "query": 192,
+      "rank_max_ms": [
+        204.3069200590253,
+        205.6135629536584,
+        204.8976799705997
+      ],
+      "median_ms": 204.8976799705997,
+      "observed_ms": 204.8976799705997,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 217.01137126820421,
+      "signed_error_percent": 5.912068550186933
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0003",
+      "phase": "context",
+      "prefix": 0,
+      "query": 384,
+      "rank_max_ms": [
+        210.16533998772502,
+        208.61610095016658,
+        208.23206391651183
+      ],
+      "median_ms": 208.61610095016658,
+      "observed_ms": 208.61610095016658,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 217.367010740807,
+      "signed_error_percent": 4.194743239272203
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0004",
+      "phase": "context",
+      "prefix": 128,
+      "query": 48,
+      "rank_max_ms": [
+        199.8366799671203,
+        199.48717090301216,
+        199.3628490017727
+      ],
+      "median_ms": 199.48717090301216,
+      "observed_ms": 199.48717090301216,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 48,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 200.1431346102995,
+      "signed_error_percent": 0.3288250088053335
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0005",
+      "phase": "context",
+      "prefix": 128,
+      "query": 96,
+      "rank_max_ms": [
+        204.09357291646302,
+        204.9852340715006,
+        204.38260200899094
+      ],
+      "median_ms": 204.38260200899094,
+      "observed_ms": 204.38260200899094,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 210.2906128059607,
+      "signed_error_percent": 2.8906622867585607
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0006",
+      "phase": "context",
+      "prefix": 128,
+      "query": 192,
+      "rank_max_ms": [
+        204.73691006191075,
+        203.93465901724994,
+        204.46081005502492
+      ],
+      "median_ms": 204.46081005502492,
+      "observed_ms": 204.46081005502492,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 209.12716813833822,
+      "signed_error_percent": 2.2822750638899825
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0007",
+      "phase": "context",
+      "prefix": 128,
+      "query": 384,
+      "rank_max_ms": [
+        206.40762289986014,
+        206.32902905344963,
+        208.53510894812644
+      ],
+      "median_ms": 206.40762289986014,
+      "observed_ms": 206.40762289986014,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 210.13214650588267,
+      "signed_error_percent": 1.8044506078293
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0008",
+      "phase": "context",
+      "prefix": 512,
+      "query": 48,
+      "rank_max_ms": [
+        200.49659407231957,
+        198.80597689189017,
+        199.28211299702525
+      ],
+      "median_ms": 199.28211299702525,
+      "observed_ms": 199.28211299702525,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 48,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 196.74471737587874,
+      "signed_error_percent": -1.2732681237600074
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0009",
+      "phase": "context",
+      "prefix": 512,
+      "query": 96,
+      "rank_max_ms": [
+        203.63667095080018,
+        203.3931469777599,
+        203.61807907465845
+      ],
+      "median_ms": 203.61807907465845,
+      "observed_ms": 203.61807907465845,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 206.93800926069625,
+      "signed_error_percent": 1.6304692594710568
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0010",
+      "phase": "context",
+      "prefix": 512,
+      "query": 192,
+      "rank_max_ms": [
+        204.35460098087788,
+        204.30269709322602,
+        204.29658400826156
+      ],
+      "median_ms": 204.30269709322602,
+      "observed_ms": 204.30269709322602,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 205.28348418497797,
+      "signed_error_percent": 0.4800656602709452
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0011",
+      "phase": "context",
+      "prefix": 512,
+      "query": 384,
+      "rank_max_ms": [
+        206.28678798675537,
+        206.6077219787985,
+        206.50547998957336
+      ],
+      "median_ms": 206.50547998957336,
+      "observed_ms": 206.50547998957336,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 205.30419269042247,
+      "signed_error_percent": -0.5817217534428321
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0012",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 48,
+      "rank_max_ms": [
+        196.87874999362975,
+        194.53839701600373,
+        193.16480902489275
+      ],
+      "median_ms": 194.53839701600373,
+      "observed_ms": 194.53839701600373,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 48,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.6344459220213,
+      "signed_error_percent": -4.062925990560206
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0013",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 96,
+      "rank_max_ms": [
+        201.26210909802467,
+        200.6149310618639,
+        197.78785109519958
+      ],
+      "median_ms": 200.6149310618639,
+      "observed_ms": 200.6149310618639,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 195.94490611035883,
+      "signed_error_percent": -2.3278551236373124
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0014",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 192,
+      "rank_max_ms": [
+        199.72592708654702,
+        198.43458093237132,
+        199.27398394793272
+      ],
+      "median_ms": 199.27398394793272,
+      "observed_ms": 199.27398394793272,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 195.47206170272773,
+      "signed_error_percent": -1.907886905195999
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0015",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 384,
+      "rank_max_ms": [
+        199.54682001844049,
+        201.78358803968877,
+        202.2136430023238
+      ],
+      "median_ms": 201.78358803968877,
+      "observed_ms": 201.78358803968877,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 196.50189092593425,
+      "signed_error_percent": -2.6175057967130932
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0016",
+      "phase": "context",
+      "prefix": 0,
+      "query": 48,
+      "rank_max_ms": [
+        203.00949399825186,
+        201.63363497704268,
+        197.2010270692408
+      ],
+      "median_ms": 201.63363497704268,
+      "observed_ms": 201.63363497704268,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 196.8221690748487,
+      "signed_error_percent": -2.3862417114792422
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0017",
+      "phase": "context",
+      "prefix": 0,
+      "query": 96,
+      "rank_max_ms": [
+        196.74278004094958,
+        199.5806769700721,
+        199.2513610748574
+      ],
+      "median_ms": 199.2513610748574,
+      "observed_ms": 199.2513610748574,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 196.8552037914692,
+      "signed_error_percent": -1.2025801331856378
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0018",
+      "phase": "context",
+      "prefix": 0,
+      "query": 192,
+      "rank_max_ms": [
+        200.91304800007492,
+        199.0693419938907,
+        201.0346179595217
+      ],
+      "median_ms": 200.91304800007492,
+      "observed_ms": 200.91304800007492,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 198.69747952139545,
+      "signed_error_percent": -1.1027499212886593
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0019",
+      "phase": "context",
+      "prefix": 128,
+      "query": 48,
+      "rank_max_ms": [
+        195.29936695471406,
+        197.26794003508985,
+        198.1356960022822
+      ],
+      "median_ms": 197.26794003508985,
+      "observed_ms": 197.26794003508985,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.79388118727545,
+      "signed_error_percent": -5.3095595999792415
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0020",
+      "phase": "context",
+      "prefix": 128,
+      "query": 96,
+      "rank_max_ms": [
+        195.77367801684886,
+        195.51233004312962,
+        198.0126539710909
+      ],
+      "median_ms": 195.77367801684886,
+      "observed_ms": 195.77367801684886,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.47051557871112,
+      "signed_error_percent": -4.751998599800067
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0021",
+      "phase": "context",
+      "prefix": 128,
+      "query": 192,
+      "rank_max_ms": [
+        199.4205149821937,
+        197.88414100185037,
+        197.33821297995746
+      ],
+      "median_ms": 197.88414100185037,
+      "observed_ms": 197.88414100185037,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 188.13332862855196,
+      "signed_error_percent": -4.927536044036607
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0022",
+      "phase": "context",
+      "prefix": 512,
+      "query": 48,
+      "rank_max_ms": [
+        196.41551095992327,
+        196.87446195166558,
+        194.72630391828716
+      ],
+      "median_ms": 196.41551095992327,
+      "observed_ms": 196.41551095992327,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.290664980248,
+      "signed_error_percent": -5.1548097857409765
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0023",
+      "phase": "context",
+      "prefix": 512,
+      "query": 96,
+      "rank_max_ms": [
+        195.38068096153438,
+        194.13522293325514,
+        194.37788194045424
+      ],
+      "median_ms": 194.37788194045424,
+      "observed_ms": 194.37788194045424,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.59909224340856,
+      "signed_error_percent": -4.001890348526715
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0024",
+      "phase": "context",
+      "prefix": 512,
+      "query": 192,
+      "rank_max_ms": [
+        197.05692899879068,
+        196.97449507657439,
+        195.39264892227948
+      ],
+      "median_ms": 196.97449507657439,
+      "observed_ms": 196.97449507657439,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 188.04472625463288,
+      "signed_error_percent": -4.533464506899754
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0025",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 48,
+      "rank_max_ms": [
+        194.02120599988848,
+        192.93879007454962,
+        195.23866195231676
+      ],
+      "median_ms": 194.02120599988848,
+      "observed_ms": 194.02120599988848,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.55064923508505,
+      "signed_error_percent": -3.8503815736552705
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0026",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 96,
+      "rank_max_ms": [
+        194.50486090499908,
+        192.94967001769692,
+        194.09477501176298
+      ],
+      "median_ms": 194.09477501176298,
+      "observed_ms": 194.09477501176298,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.7505252495742,
+      "signed_error_percent": -3.7838472270794954
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0027",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 192,
+      "rank_max_ms": [
+        196.98671996593475,
+        197.28890107944608,
+        195.48039406072348
+      ],
+      "median_ms": 196.98671996593475,
+      "observed_ms": 196.98671996593475,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 188.2985520571356,
+      "signed_error_percent": -4.410534837222335
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 96,
+      "case_id": "decode-0000",
+      "native_inclusive_kv": 97,
+      "phase": "generation",
+      "prefix": 96,
+      "query": 1,
+      "rank_max_ms": [
+        163.4480640059337,
+        164.38103804830462,
+        162.12894103955477
+      ],
+      "median_ms": 163.4480640059337,
+      "observed_ms": 163.4480640059337,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 97,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 97,
+        "canonical_past_kv_sum": 96,
+        "prediction_decode_kv_sum": 97,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 134.56353156088613,
+      "signed_error_percent": -17.671994232980925
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 192,
+      "case_id": "decode-0001",
+      "native_inclusive_kv": 193,
+      "phase": "generation",
+      "prefix": 192,
+      "query": 1,
+      "rank_max_ms": [
+        163.0932439584285,
+        163.06741908192635,
+        162.064973032102
+      ],
+      "median_ms": 163.06741908192635,
+      "observed_ms": 163.06741908192635,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 193,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 193,
+        "canonical_past_kv_sum": 192,
+        "prediction_decode_kv_sum": 193,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 135.08845611452907,
+      "signed_error_percent": -17.15791120318182
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 384,
+      "case_id": "decode-0002",
+      "native_inclusive_kv": 385,
+      "phase": "generation",
+      "prefix": 384,
+      "query": 1,
+      "rank_max_ms": [
+        163.32063905429095,
+        164.1409700969234,
+        162.8762490581721
+      ],
+      "median_ms": 163.32063905429095,
+      "observed_ms": 163.32063905429095,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 385,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 385,
+        "canonical_past_kv_sum": 384,
+        "prediction_decode_kv_sum": 385,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 134.66958507786438,
+      "signed_error_percent": -17.54282504791228
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 768,
+      "case_id": "decode-0003",
+      "native_inclusive_kv": 769,
+      "phase": "generation",
+      "prefix": 768,
+      "query": 1,
+      "rank_max_ms": [
+        164.2836290411651,
+        160.78156302683055,
+        162.474483018741
+      ],
+      "median_ms": 162.474483018741,
+      "observed_ms": 162.474483018741,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 769,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 769,
+        "canonical_past_kv_sum": 768,
+        "prediction_decode_kv_sum": 769,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 134.83806559334442,
+      "signed_error_percent": -17.00969709945702
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 1792,
+      "case_id": "decode-0004",
+      "native_inclusive_kv": 1793,
+      "phase": "generation",
+      "prefix": 1792,
+      "query": 1,
+      "rank_max_ms": [
+        162.51777892466635,
+        162.18187101185322,
+        163.00092195160687
+      ],
+      "median_ms": 162.51777892466635,
+      "observed_ms": 162.51777892466635,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 1793,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 1793,
+        "canonical_past_kv_sum": 1792,
+        "prediction_decode_kv_sum": 1793,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 134.93702462206528,
+      "signed_error_percent": -16.970915111623498
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 96,
+      "case_id": "decode-0005",
+      "native_inclusive_kv": 97,
+      "phase": "generation",
+      "prefix": 96,
+      "query": 1,
+      "rank_max_ms": [
+        168.00573002547026,
+        167.74937405716628,
+        176.5108429826796
+      ],
+      "median_ms": 168.00573002547026,
+      "observed_ms": 168.00573002547026,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 194,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 194,
+        "canonical_past_kv_sum": 192,
+        "prediction_decode_kv_sum": 194,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 138.8411000944471,
+      "signed_error_percent": -17.35930668948118
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 192,
+      "case_id": "decode-0006",
+      "native_inclusive_kv": 193,
+      "phase": "generation",
+      "prefix": 192,
+      "query": 1,
+      "rank_max_ms": [
+        167.8665280342102,
+        166.73099203035235,
+        167.65362804289907
+      ],
+      "median_ms": 167.65362804289907,
+      "observed_ms": 167.65362804289907,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 386,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 386,
+        "canonical_past_kv_sum": 384,
+        "prediction_decode_kv_sum": 386,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 139.30182552110608,
+      "signed_error_percent": -16.910938852178226
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 384,
+      "case_id": "decode-0007",
+      "native_inclusive_kv": 385,
+      "phase": "generation",
+      "prefix": 384,
+      "query": 1,
+      "rank_max_ms": [
+        167.19576600007713,
+        167.2727280529216,
+        167.81718307174742
+      ],
+      "median_ms": 167.2727280529216,
+      "observed_ms": 167.2727280529216,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 770,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 770,
+        "canonical_past_kv_sum": 768,
+        "prediction_decode_kv_sum": 770,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 139.49834161582072,
+      "signed_error_percent": -16.60425268386466
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 768,
+      "case_id": "decode-0008",
+      "native_inclusive_kv": 769,
+      "phase": "generation",
+      "prefix": 768,
+      "query": 1,
+      "rank_max_ms": [
+        166.02803696878254,
+        166.86366498470306,
+        168.1825639680028
+      ],
+      "median_ms": 166.86366498470306,
+      "observed_ms": 166.86366498470306,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 1538,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 1538,
+        "canonical_past_kv_sum": 1536,
+        "prediction_decode_kv_sum": 1538,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 139.44869440379222,
+      "signed_error_percent": -16.42956277115456
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 1792,
+      "case_id": "decode-0009",
+      "native_inclusive_kv": 1793,
+      "phase": "generation",
+      "prefix": 1792,
+      "query": 1,
+      "rank_max_ms": [
+        166.1451910622418,
+        167.34808892942965,
+        167.296182946302
+      ],
+      "median_ms": 167.296182946302,
+      "observed_ms": 167.296182946302,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 3586,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 3586,
+        "canonical_past_kv_sum": 3584,
+        "prediction_decode_kv_sum": 3586,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 139.3128861743458,
+      "signed_error_percent": -16.726799308348927
+    }
+  ]
+}
