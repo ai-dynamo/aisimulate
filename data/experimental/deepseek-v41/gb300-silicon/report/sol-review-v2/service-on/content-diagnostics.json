@@ -1,0 +1,4429 @@
+{
+  "bindings": [
+    {
+      "closed_audit_sha256": "6d71c4401b61bf2193eb0925fa07b3ed3a9115765a60d3ba8eacadf9c52f45a8",
+      "execution_sha256": "feebfa6fea13ab7e8ee13732930461f0e3cd8b7c366ebc6f1f91f8cbc504a3e4",
+      "original_summary_sha256": "b881083d64840b6332365ffd29062e9c9f3d1890060ee3dcf064e8d53b875672",
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed"
+    }
+  ],
+  "content_coverage_complete": true,
+  "limitations": [
+    "Raw n-grams are input diagnostics, not compressed Engram addresses or hardware cache hits.",
+    "KV reset does not flush Engram/HBM/L2 state; native initial cache reuse remains explicitly observed.",
+    "Same first-prefill batch does not imply equal decode schedules or a causal Engram effect.",
+    "This descriptive diagnostic does not alter observations or publish a cross-lifecycle confidence interval."
+  ],
+  "logical_plan_sha256": "f75635695575bb09baa5046a6daa6c06b3174d4fac76a1af983a59aef4be3f21",
+  "logical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+  "missing_cohort_ids": [],
+  "records": [
+    {
+      "cohort_id": "552dbb9f-e8d5-539e-829e-899cf683817f/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        1527,
+        1526
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "c3c5510dc52374fffd1cc6544c8cd3090fe2f5d6bae966f6a0aab7cc1308bc2c",
+        "17c92472424d4b6e46d52e407169216a83d98e0f2a3710cc233f3b09963490de"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1527,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1526,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 200,
+          "jaccard": 0.38095238095238093,
+          "left_unique": 362,
+          "right_unique": 363,
+          "union": 525
+        },
+        "3": {
+          "intersection": 201,
+          "jaccard": 0.3602150537634409,
+          "left_unique": 379,
+          "right_unique": 380,
+          "union": 558
+        },
+        "4": {
+          "intersection": 199,
+          "jaccard": 0.3540925266903915,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 562
+        }
+      },
+      "request_ids": [
+        "f38d2460-f342-5c98-94e0-fba4aa3f076d",
+        "42d7a2b0-5921-5a85-af19-76f9958d1403"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 0,
+      "trial_seed": 95031519
+    },
+    {
+      "cohort_id": "552dbb9f-e8d5-539e-829e-899cf683817f/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        1492,
+        1493
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "211360022f44e45918e9e51513b6584f785d90b844b4220948aaa002490c329d",
+        "211360022f44e45918e9e51513b6584f785d90b844b4220948aaa002490c329d"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1492,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1493,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 360,
+          "jaccard": 1.0,
+          "left_unique": 360,
+          "right_unique": 360,
+          "union": 360
+        },
+        "3": {
+          "intersection": 378,
+          "jaccard": 1.0,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 378
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "d4aac85a-3b20-5c77-b9e1-5c6bdadf2be6",
+        "a7a856d4-377f-51ad-807d-3d52ce787409"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 0,
+      "trial_seed": 95031519
+    },
+    {
+      "cohort_id": "4e66d7fc-4ed1-577e-b8c2-e507bec0c9dc/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        1643,
+        1643
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "a044a9771d6cc8046dc067ef474991a4bfda1b15ee33e961e07eb3612088dfee",
+        "0a11c9a55a81ba927fafe06ef505f259c0b7b4fcbf9bed3a733b64e2e687511f"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1643,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1643,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 286,
+          "jaccard": 0.6620370370370371,
+          "left_unique": 356,
+          "right_unique": 362,
+          "union": 432
+        },
+        "3": {
+          "intersection": 298,
+          "jaccard": 0.6492374727668845,
+          "left_unique": 378,
+          "right_unique": 379,
+          "union": 459
+        },
+        "4": {
+          "intersection": 298,
+          "jaccard": 0.645021645021645,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 462
+        }
+      },
+      "request_ids": [
+        "0d4b0849-10b8-5139-930d-5a1da9d4d1da",
+        "fab6fe1a-75c5-52dd-b588-f07178d7372b"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 1,
+      "trial_seed": 95031520
+    },
+    {
+      "cohort_id": "4e66d7fc-4ed1-577e-b8c2-e507bec0c9dc/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        1610,
+        1610
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "e44fb10e7184a64edf0e49deae4b9e3a7101dda22d0d04d1365ea90f456db389",
+        "e44fb10e7184a64edf0e49deae4b9e3a7101dda22d0d04d1365ea90f456db389"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1610,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1610,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 360,
+          "jaccard": 1.0,
+          "left_unique": 360,
+          "right_unique": 360,
+          "union": 360
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "e3204401-9bb9-57df-843f-2c6152d3c774",
+        "04c35a3f-de59-5a26-8362-fb84c30d5b40"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 1,
+      "trial_seed": 95031520
+    },
+    {
+      "cohort_id": "9c58a87b-014d-5157-86b7-94d8387a8cb6/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        1759,
+        1759
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "cbaef840ea4cc26238dfe0715732ae3035d9bda3d91a444f5d4339b2a8d32f0f",
+        "d5828f6de9a073224995cedf53b7bfeb90391fd8cb1a52913883d1b0f841a516"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1759,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1759,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 201,
+          "jaccard": 0.38285714285714284,
+          "left_unique": 362,
+          "right_unique": 364,
+          "union": 525
+        },
+        "3": {
+          "intersection": 200,
+          "jaccard": 0.35842293906810035,
+          "left_unique": 380,
+          "right_unique": 378,
+          "union": 558
+        },
+        "4": {
+          "intersection": 199,
+          "jaccard": 0.3540925266903915,
+          "left_unique": 381,
+          "right_unique": 380,
+          "union": 562
+        }
+      },
+      "request_ids": [
+        "e3f9b296-8d63-5591-b323-6c1c0cf769bd",
+        "d82a596d-c9cf-524d-8d7b-f80cb78291f8"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 2,
+      "trial_seed": 95031521
+    },
+    {
+      "cohort_id": "9c58a87b-014d-5157-86b7-94d8387a8cb6/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        1726,
+        1726
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "80cc5d5a188d52014c9dc172543aa68a3cba0cd7f8ceb95c9dc69cc5f2cce20e",
+        "80cc5d5a188d52014c9dc172543aa68a3cba0cd7f8ceb95c9dc69cc5f2cce20e"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1726,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1726,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 358,
+          "jaccard": 1.0,
+          "left_unique": 358,
+          "right_unique": 358,
+          "union": 358
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 381,
+          "jaccard": 1.0,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 381
+        }
+      },
+      "request_ids": [
+        "46181540-c1b1-5bce-bfc8-66748c35ff45",
+        "d5fe4ec7-25a6-553e-b262-f808c81768b9"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 2,
+      "trial_seed": 95031521
+    },
+    {
+      "cohort_id": "67d416b7-8930-562d-acfd-b8138a2357ff/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        1876,
+        1876
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "b71eb4e259f85d5f9cdb001635b4f2df6b3ef803c925ea24ac31eafee3b61e58",
+        "e9d2ea06aa3c838c13076bf9794c14dcb25d9e488b4a243cceb540f6c18d7b30"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1876,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1876,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 207,
+          "jaccard": 0.39655172413793105,
+          "left_unique": 368,
+          "right_unique": 361,
+          "union": 522
+        },
+        "3": {
+          "intersection": 206,
+          "jaccard": 0.37184115523465705,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 554
+        },
+        "4": {
+          "intersection": 204,
+          "jaccard": 0.36624775583482944,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 557
+        }
+      },
+      "request_ids": [
+        "b13a5055-478f-552c-9271-376cccb84060",
+        "e0d4109c-37c0-56ce-9ffc-8859e893ed99"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 3,
+      "trial_seed": 95031522
+    },
+    {
+      "cohort_id": "67d416b7-8930-562d-acfd-b8138a2357ff/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        1842,
+        1843
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "58e0efb1b7c481b63688c730b01ee1993f1531351ada3a013b63848b75eea085",
+        "58e0efb1b7c481b63688c730b01ee1993f1531351ada3a013b63848b75eea085"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1842,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1843,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 364,
+          "jaccard": 1.0,
+          "left_unique": 364,
+          "right_unique": 364,
+          "union": 364
+        },
+        "3": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        },
+        "4": {
+          "intersection": 381,
+          "jaccard": 1.0,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 381
+        }
+      },
+      "request_ids": [
+        "3a3bac98-3ef2-5c31-84f1-10c438cde6a4",
+        "1976355a-a6d7-5f5d-9a5a-345a78a4a546"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 3,
+      "trial_seed": 95031522
+    },
+    {
+      "cohort_id": "dacc1fd6-5cb3-5bf4-aa9b-56b3042cd88e/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        1992,
+        1992
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "80d87d3fba29e1522f64cb6f862f98974d73d07addf72fdd3bf63f560fbfaabf",
+        "5fd6eaf897a8f8d0fbbaec98f23769cb4404ba34c4558b160b597569157379a7"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1992,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1992,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 196,
+          "jaccard": 0.37333333333333335,
+          "left_unique": 367,
+          "right_unique": 354,
+          "union": 525
+        },
+        "3": {
+          "intersection": 199,
+          "jaccard": 0.35663082437275984,
+          "left_unique": 379,
+          "right_unique": 378,
+          "union": 558
+        },
+        "4": {
+          "intersection": 198,
+          "jaccard": 0.35231316725978645,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 562
+        }
+      },
+      "request_ids": [
+        "7c544b13-5695-514a-9a80-74a8bff7ee95",
+        "1dbfd01a-4437-5113-af08-28f0f3495728"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 4,
+      "trial_seed": 95031523
+    },
+    {
+      "cohort_id": "dacc1fd6-5cb3-5bf4-aa9b-56b3042cd88e/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        1959,
+        1959
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "d0851e3688f61237d39b6bc1f280a576af41ecfbe68084bfd883b9fc8bad6ad6",
+        "d0851e3688f61237d39b6bc1f280a576af41ecfbe68084bfd883b9fc8bad6ad6"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 1959,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 1959,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 361,
+          "jaccard": 1.0,
+          "left_unique": 361,
+          "right_unique": 361,
+          "union": 361
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "abd92594-9db4-5dbe-848b-73aceb5bc02a",
+        "2dc05100-5cef-5210-823c-be381df04163"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 4,
+      "trial_seed": 95031523
+    },
+    {
+      "cohort_id": "1dcbade9-f41a-541b-b4bf-60d92eae877e/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        2108,
+        2109
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "c9d4df05a37a7f2bc01f17322db782e5151b7826015a55c69ca058fbdd075e83",
+        "f34d9ac11a460bdf2654e6f9cb5de3c24ea800d1f0388772b140d9e465337033"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2108,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2109,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 306,
+          "jaccard": 0.7355769230769231,
+          "left_unique": 363,
+          "right_unique": 359,
+          "union": 416
+        },
+        "3": {
+          "intersection": 320,
+          "jaccard": 0.730593607305936,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 438
+        },
+        "4": {
+          "intersection": 321,
+          "jaccard": 0.7312072892938497,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 439
+        }
+      },
+      "request_ids": [
+        "d0eda0a7-d6e8-5cec-aedb-cbf2502c608d",
+        "a9ef7df3-b37f-59ec-9086-9530f2a443a6"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 5,
+      "trial_seed": 95031524
+    },
+    {
+      "cohort_id": "1dcbade9-f41a-541b-b4bf-60d92eae877e/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        2075,
+        2075
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "d924048d49f185f32a39f34b56bd2f978b259f3a0094e33556cb728c184802a2",
+        "d924048d49f185f32a39f34b56bd2f978b259f3a0094e33556cb728c184802a2"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2075,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2075,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 363,
+          "jaccard": 1.0,
+          "left_unique": 363,
+          "right_unique": 363,
+          "union": 363
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "d5727637-ece3-5c08-9ad5-9fb264ef58de",
+        "f4634d21-6328-50a9-9a5f-a1876aedd9a6"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 5,
+      "trial_seed": 95031524
+    },
+    {
+      "cohort_id": "84e8963d-b94f-5efd-941d-011deb7fee73/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        2226,
+        2226
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "f98c922d551d1d2aece83388a1a59b11ac3fb48ec84650ed588ce52f7f38e560",
+        "9240fbcb2579021efd7a49f3e241ba652d0b43de1d52a5b61af1652b34a89a17"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2226,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2226,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 330,
+          "jaccard": 0.8354430379746836,
+          "left_unique": 363,
+          "right_unique": 362,
+          "union": 395
+        },
+        "3": {
+          "intersection": 345,
+          "jaccard": 0.8353510895883777,
+          "left_unique": 378,
+          "right_unique": 380,
+          "union": 413
+        },
+        "4": {
+          "intersection": 346,
+          "jaccard": 0.8337349397590361,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 415
+        }
+      },
+      "request_ids": [
+        "a1e67271-7ebc-5b19-ad1a-ea50d16ae996",
+        "3343719e-6668-5cac-aadd-7b66d4d71271"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 6,
+      "trial_seed": 95031525
+    },
+    {
+      "cohort_id": "84e8963d-b94f-5efd-941d-011deb7fee73/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        2192,
+        2193
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "45523390b804be8f88fda616c0caa72f81e266e637f6f760ebc5ead74b9e6100",
+        "45523390b804be8f88fda616c0caa72f81e266e637f6f760ebc5ead74b9e6100"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2192,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2193,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 364,
+          "jaccard": 1.0,
+          "left_unique": 364,
+          "right_unique": 364,
+          "union": 364
+        },
+        "3": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        },
+        "4": {
+          "intersection": 381,
+          "jaccard": 1.0,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 381
+        }
+      },
+      "request_ids": [
+        "9db2fc5a-4631-531b-b8cc-e2325ebf41c0",
+        "8b57ae8a-377d-598d-8481-42a418afe17d"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 6,
+      "trial_seed": 95031525
+    },
+    {
+      "cohort_id": "ba5c8ea7-3eb9-5afe-bd94-64aa5b666f7c/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        2343,
+        2343
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "426286098ee25a35e09eaef6fd6aff64d661f378b1bc4056ace04d3bc6b0d281",
+        "1f0b7f3273b3d4b69350dd8f4bfe1fcd486de3a4b7c8d3eca7c252c549bb375e"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2343,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2343,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 239,
+          "jaccard": 0.4979166666666667,
+          "left_unique": 357,
+          "right_unique": 362,
+          "union": 480
+        },
+        "3": {
+          "intersection": 245,
+          "jaccard": 0.478515625,
+          "left_unique": 379,
+          "right_unique": 378,
+          "union": 512
+        },
+        "4": {
+          "intersection": 246,
+          "jaccard": 0.47766990291262135,
+          "left_unique": 381,
+          "right_unique": 380,
+          "union": 515
+        }
+      },
+      "request_ids": [
+        "78fded4e-aeb9-541c-a6f6-1299926721c5",
+        "9c11165f-2601-59f4-b7dd-173a7d6b836e"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 7,
+      "trial_seed": 95031526
+    },
+    {
+      "cohort_id": "ba5c8ea7-3eb9-5afe-bd94-64aa5b666f7c/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        2309,
+        2310
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "1dcdc55c7ed2d1359065e3666fda66ef77b75a332e98f750cd453bfbabc322bd",
+        "1dcdc55c7ed2d1359065e3666fda66ef77b75a332e98f750cd453bfbabc322bd"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2309,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2310,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 364,
+          "jaccard": 1.0,
+          "left_unique": 364,
+          "right_unique": 364,
+          "union": 364
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "5f447240-0429-5eca-ad0e-e8ee30c4ac18",
+        "953e1659-6599-5bbd-b464-3edaf15e7209"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 7,
+      "trial_seed": 95031526
+    },
+    {
+      "cohort_id": "4fdb6041-b95e-5027-b966-d8a7e1f0d36e/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        2459,
+        2460
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "9bd517960c31303b423518b591545b6a2ee7549cd01123892acce7c8fa9dd976",
+        "181c471dc5a9fedebdcc8396fe8d6ca31bfd6f6323bcf789d9450feef0cc7024"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2459,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2460,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 335,
+          "jaccard": 0.8656330749354005,
+          "left_unique": 362,
+          "right_unique": 360,
+          "union": 387
+        },
+        "3": {
+          "intersection": 350,
+          "jaccard": 0.8578431372549019,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 408
+        },
+        "4": {
+          "intersection": 351,
+          "jaccard": 0.8581907090464548,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 409
+        }
+      },
+      "request_ids": [
+        "e02fe8b6-184a-5b16-9224-69560c567c35",
+        "e5d1c66d-0229-5bb4-84fd-8e076bb8a976"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 8,
+      "trial_seed": 95031527
+    },
+    {
+      "cohort_id": "4fdb6041-b95e-5027-b966-d8a7e1f0d36e/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        2426,
+        2426
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "dca63ec83b4c472820973a6362cb62f147acfd3f50509d4f619ae88232f2f39a",
+        "dca63ec83b4c472820973a6362cb62f147acfd3f50509d4f619ae88232f2f39a"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2426,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2426,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 359,
+          "jaccard": 1.0,
+          "left_unique": 359,
+          "right_unique": 359,
+          "union": 359
+        },
+        "3": {
+          "intersection": 378,
+          "jaccard": 1.0,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 378
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "324f4418-4ce6-517b-967c-3f40b5ff88c3",
+        "85cb635a-be75-566c-9692-6331ab9ada2a"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 8,
+      "trial_seed": 95031527
+    },
+    {
+      "cohort_id": "dd49326e-7fc6-5e06-9a24-cb95e3aef14f/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        2577,
+        2577
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "c82d3d063f03d937d614cbef4f4e04bd70ae1d8d45ca82165dab3062b312ce2a",
+        "28f8c90371f581d6b06af190bdc5926907a6ce6167cdd051f6d01a56e5b4f7a8"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2577,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2577,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 242,
+          "jaccard": 0.49896907216494846,
+          "left_unique": 362,
+          "right_unique": 365,
+          "union": 485
+        },
+        "3": {
+          "intersection": 246,
+          "jaccard": 0.48046875,
+          "left_unique": 380,
+          "right_unique": 378,
+          "union": 512
+        },
+        "4": {
+          "intersection": 247,
+          "jaccard": 0.4805447470817121,
+          "left_unique": 381,
+          "right_unique": 380,
+          "union": 514
+        }
+      },
+      "request_ids": [
+        "424b3e5d-0456-5931-a640-56d00e8fdac1",
+        "354e99c3-76f7-5212-96d3-11dd5c014f62"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 9,
+      "trial_seed": 95031528
+    },
+    {
+      "cohort_id": "dd49326e-7fc6-5e06-9a24-cb95e3aef14f/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        2544,
+        2543
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "d79aa7f0914e5acd4eb55b1a773b3deafdcf220b048978ba34acb215038345d1",
+        "d79aa7f0914e5acd4eb55b1a773b3deafdcf220b048978ba34acb215038345d1"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2544,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2543,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 365,
+          "jaccard": 1.0,
+          "left_unique": 365,
+          "right_unique": 365,
+          "union": 365
+        },
+        "3": {
+          "intersection": 378,
+          "jaccard": 1.0,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 378
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "c0617e2e-42d1-5760-b756-afba96749ffe",
+        "87d87d56-ce5d-5235-8504-f41b6b735799"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 9,
+      "trial_seed": 95031528
+    },
+    {
+      "cohort_id": "f1850a74-ccc0-5584-b59c-08524d2fb0e9/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        2695,
+        2694
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "9e8680ba0e34c0d8765766e8613da2e2b564245b941da00501264fd925149502",
+        "6549fa2f1e1f973b733d625c531e9575e10402371792aa97006d5efe1d0b9bc7"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2695,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2694,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 272,
+          "jaccard": 0.5978021978021978,
+          "left_unique": 364,
+          "right_unique": 363,
+          "union": 455
+        },
+        "3": {
+          "intersection": 277,
+          "jaccard": 0.5770833333333333,
+          "left_unique": 378,
+          "right_unique": 379,
+          "union": 480
+        },
+        "4": {
+          "intersection": 277,
+          "jaccard": 0.5734989648033126,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 483
+        }
+      },
+      "request_ids": [
+        "6bd2eda8-836f-5e13-a8ee-48ac0b50bbe0",
+        "3c62bc3b-5c64-5b84-9b53-6edc3e428d10"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 10,
+      "trial_seed": 95031529
+    },
+    {
+      "cohort_id": "f1850a74-ccc0-5584-b59c-08524d2fb0e9/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        2661,
+        2660
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "0fd65b08b05a8b00c0a6080ebbc66e4a145ae18eaf3bc854f7591a6020a5f8ba",
+        "0fd65b08b05a8b00c0a6080ebbc66e4a145ae18eaf3bc854f7591a6020a5f8ba"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2661,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2660,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 363,
+          "jaccard": 1.0,
+          "left_unique": 363,
+          "right_unique": 363,
+          "union": 363
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "2a6efb20-0374-590a-8696-76e380475344",
+        "8c860ac2-14a9-51eb-a8de-f1845628f725"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 10,
+      "trial_seed": 95031529
+    },
+    {
+      "cohort_id": "6fd91e1e-bf8e-5f0d-aefc-7091df3c6942/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        2811,
+        2812
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "7b9e4d3c7aecc9fed64508a3db9803548bb3218bbfe1f2ffa5b919f93cd49a2a",
+        "a8960af85db66ce290a5d49c2eb78e6a1fcd9e6077c46dcc2c02d263b8601d80"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2811,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2812,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 200,
+          "jaccard": 0.38095238095238093,
+          "left_unique": 360,
+          "right_unique": 365,
+          "union": 525
+        },
+        "3": {
+          "intersection": 199,
+          "jaccard": 0.35663082437275984,
+          "left_unique": 379,
+          "right_unique": 378,
+          "union": 558
+        },
+        "4": {
+          "intersection": 198,
+          "jaccard": 0.35231316725978645,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 562
+        }
+      },
+      "request_ids": [
+        "01941db3-a6b5-5f91-8d6c-5ca9b4623656",
+        "e43b67fc-e2d2-5d2e-bd9e-e32c008b1339"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 11,
+      "trial_seed": 95031530
+    },
+    {
+      "cohort_id": "6fd91e1e-bf8e-5f0d-aefc-7091df3c6942/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        2778,
+        2778
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "e842d53a10eb8c382256165ea9b5af36dd9a6a42bcf3c9917ae946b5034cf0bb",
+        "e842d53a10eb8c382256165ea9b5af36dd9a6a42bcf3c9917ae946b5034cf0bb"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2778,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2778,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 362,
+          "jaccard": 1.0,
+          "left_unique": 362,
+          "right_unique": 362,
+          "union": 362
+        },
+        "3": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        },
+        "4": {
+          "intersection": 381,
+          "jaccard": 1.0,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 381
+        }
+      },
+      "request_ids": [
+        "033e0912-b813-59ee-adef-c9c26aa4e4a2",
+        "32a6e55d-afda-55fa-a347-13cf8ec3a91b"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 11,
+      "trial_seed": 95031530
+    },
+    {
+      "cohort_id": "ffbbfde8-cb63-5f06-bc76-aef614138d1e/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        2929,
+        2928
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "a6ac2d118f30a085c8713b69e59f09cb81620c8aab01c7d283aa84e34bd670d0",
+        "a165a1210e3902b7c19f439b616d0ac5a2a4f118f0669ab52c0d8eca61305e24"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2929,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2928,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 226,
+          "jaccard": 0.4621676891615542,
+          "left_unique": 356,
+          "right_unique": 359,
+          "union": 489
+        },
+        "3": {
+          "intersection": 238,
+          "jaccard": 0.4576923076923077,
+          "left_unique": 378,
+          "right_unique": 380,
+          "union": 520
+        },
+        "4": {
+          "intersection": 239,
+          "jaccard": 0.4578544061302682,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 522
+        }
+      },
+      "request_ids": [
+        "51674a66-0ffb-52a7-9fd7-c22cdee76556",
+        "1c5f7875-002d-537c-97c1-1e2dad09307c"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 12,
+      "trial_seed": 95031531
+    },
+    {
+      "cohort_id": "ffbbfde8-cb63-5f06-bc76-aef614138d1e/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        2895,
+        2895
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "5e9e4ca748373865334edcfd28854402a4ee434ccf3480b1af4349a5247ae895",
+        "5e9e4ca748373865334edcfd28854402a4ee434ccf3480b1af4349a5247ae895"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 2895,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 2895,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 363,
+          "jaccard": 1.0,
+          "left_unique": 363,
+          "right_unique": 363,
+          "union": 363
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "8aa5a509-9628-5aef-a640-2ae090c647fa",
+        "f598f3e1-6666-57ef-a29d-ab1b529cf998"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 12,
+      "trial_seed": 95031531
+    },
+    {
+      "cohort_id": "fb32f603-f9ef-5af7-89f6-ccd9eac0ad0a/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        3046,
+        3046
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "a98243cffd7c7a4a76bcf0279f2ecc01ba2f6f529f0b9af65156293cc801d116",
+        "3b7d5dcd3d12287f93c83e4f132dbf8adc6c6f0e7fda7d65478f4fcf6b4ef2e2"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3046,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3046,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 344,
+          "jaccard": 0.8797953964194374,
+          "left_unique": 368,
+          "right_unique": 367,
+          "union": 391
+        },
+        "3": {
+          "intersection": 351,
+          "jaccard": 0.8602941176470589,
+          "left_unique": 380,
+          "right_unique": 379,
+          "union": 408
+        },
+        "4": {
+          "intersection": 351,
+          "jaccard": 0.8581907090464548,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 409
+        }
+      },
+      "request_ids": [
+        "61cfc30b-87d0-5fb1-b511-9702f962b677",
+        "79cfeabf-c671-59ee-8c9a-ef40f067bb1f"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 13,
+      "trial_seed": 95031532
+    },
+    {
+      "cohort_id": "fb32f603-f9ef-5af7-89f6-ccd9eac0ad0a/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        3012,
+        3013
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "eddc3c8d78dc15d471b7784e693812a641beee5ebf2a9f2b4156be8bb792ec5b",
+        "eddc3c8d78dc15d471b7784e693812a641beee5ebf2a9f2b4156be8bb792ec5b"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3012,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3013,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 368,
+          "jaccard": 1.0,
+          "left_unique": 368,
+          "right_unique": 368,
+          "union": 368
+        },
+        "3": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "dca167c9-bb1b-545d-9e47-22f007d28858",
+        "33070360-e265-5b20-8cd6-b06a0b81e221"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 13,
+      "trial_seed": 95031532
+    },
+    {
+      "cohort_id": "4ba42081-e433-5658-8c70-528da13a5949/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        3162,
+        3162
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "9d96bad28ff1b88282db6befd2feec11ea1996d94b01aeecd7d2a5de75c4f091",
+        "e4123fd5717ee74ee3e5a20f8ff7517d21f79df1633542eb6f5da977237a1f2f"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3162,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3162,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 202,
+          "jaccard": 0.38476190476190475,
+          "left_unique": 365,
+          "right_unique": 362,
+          "union": 525
+        },
+        "3": {
+          "intersection": 201,
+          "jaccard": 0.3602150537634409,
+          "left_unique": 379,
+          "right_unique": 380,
+          "union": 558
+        },
+        "4": {
+          "intersection": 199,
+          "jaccard": 0.3540925266903915,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 562
+        }
+      },
+      "request_ids": [
+        "c236acbb-7690-58df-8547-5ec26a1c7831",
+        "7f13a409-84a9-5054-8918-773090d222b0"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 14,
+      "trial_seed": 95031533
+    },
+    {
+      "cohort_id": "4ba42081-e433-5658-8c70-528da13a5949/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        3129,
+        3129
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "35eafdff47d96e2c24c779ec080bb70c70fa62c2f35bb8c3ad2a5174a70feff1",
+        "35eafdff47d96e2c24c779ec080bb70c70fa62c2f35bb8c3ad2a5174a70feff1"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3129,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3129,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 361,
+          "jaccard": 1.0,
+          "left_unique": 361,
+          "right_unique": 361,
+          "union": 361
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "df551147-d684-5222-9094-694d6a788e80",
+        "dbf42958-88e9-5716-8a5b-e68739ed9c76"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 14,
+      "trial_seed": 95031533
+    },
+    {
+      "cohort_id": "51d186b0-72c6-5bfd-90b9-bc0c8ffd22d4/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        3279,
+        3279
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "fd4664b28d3b0ad20af3943e5a52646e9ee214f7d8a1a5f08c327551f9bd108e",
+        "a8755323c66e29995b650244232e11bb4df8a01a316df0c2349cada9d7e43339"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3279,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3279,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 334,
+          "jaccard": 0.8542199488491049,
+          "left_unique": 362,
+          "right_unique": 363,
+          "union": 391
+        },
+        "3": {
+          "intersection": 346,
+          "jaccard": 0.8357487922705314,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 414
+        },
+        "4": {
+          "intersection": 347,
+          "jaccard": 0.8361445783132531,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 415
+        }
+      },
+      "request_ids": [
+        "de18f7a0-1809-53f1-906c-6734cd61900f",
+        "bc184276-60b9-5e5c-aea6-b53880855fd6"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 15,
+      "trial_seed": 95031534
+    },
+    {
+      "cohort_id": "51d186b0-72c6-5bfd-90b9-bc0c8ffd22d4/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        3245,
+        3246
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "b04bede31f1e6dd5165f423441c9b41d519d3811ca41a0ae7aba3333b23d492a",
+        "b04bede31f1e6dd5165f423441c9b41d519d3811ca41a0ae7aba3333b23d492a"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3245,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3246,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 357,
+          "jaccard": 1.0,
+          "left_unique": 357,
+          "right_unique": 357,
+          "union": 357
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 381,
+          "jaccard": 1.0,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 381
+        }
+      },
+      "request_ids": [
+        "0eeec75f-afab-5bc7-bafb-f4b514c33ec3",
+        "bbae3ceb-06da-58b3-84ec-4a01ef17e45c"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 15,
+      "trial_seed": 95031534
+    },
+    {
+      "cohort_id": "04457f5d-3616-57ae-9757-35bf99a24d8d/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        3396,
+        3397
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "ed2197245b015342d2e277c7e379182a09ad12a2d6c68b78ab3b1bac80debed6",
+        "11f0198685e2d64f585df0e5cd42ba1d1dc0e909e9ac332fb522b2ab82b2dfbb"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3396,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3397,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 198,
+          "jaccard": 0.37714285714285717,
+          "left_unique": 362,
+          "right_unique": 361,
+          "union": 525
+        },
+        "3": {
+          "intersection": 199,
+          "jaccard": 0.35663082437275984,
+          "left_unique": 379,
+          "right_unique": 378,
+          "union": 558
+        },
+        "4": {
+          "intersection": 198,
+          "jaccard": 0.35231316725978645,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 562
+        }
+      },
+      "request_ids": [
+        "e200174b-0685-5828-b496-7fd135dbe1a9",
+        "ae4a16ba-0c83-5b2c-bf51-8765a649b632"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 16,
+      "trial_seed": 95031535
+    },
+    {
+      "cohort_id": "04457f5d-3616-57ae-9757-35bf99a24d8d/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        3362,
+        3363
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "cf52a0eb565ee7ba66c1001a666d116664b79e43f3fb9991217ee5cfae84ee53",
+        "cf52a0eb565ee7ba66c1001a666d116664b79e43f3fb9991217ee5cfae84ee53"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3362,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3363,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 362,
+          "jaccard": 1.0,
+          "left_unique": 362,
+          "right_unique": 362,
+          "union": 362
+        },
+        "3": {
+          "intersection": 378,
+          "jaccard": 1.0,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 378
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "708dd772-3d4e-5ec9-b1b0-52e0ee16d80e",
+        "f81a2691-ebb2-5ca2-a015-59a284474985"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 16,
+      "trial_seed": 95031535
+    },
+    {
+      "cohort_id": "e6318f4b-68ee-516b-8fb1-ead495af09c1/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        3513,
+        3513
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "148850a4009521d78c5931a30c8d038801908fe46beb9734de3b24ec9682a649",
+        "81ff86fe32070d9c50cbc039a3b5e2652f2fe095560750b2cb45ee8f3831d1d6"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3513,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3513,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 297,
+          "jaccard": 0.6955503512880562,
+          "left_unique": 364,
+          "right_unique": 360,
+          "union": 427
+        },
+        "3": {
+          "intersection": 310,
+          "jaccard": 0.695067264573991,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 446
+        },
+        "4": {
+          "intersection": 312,
+          "jaccard": 0.6964285714285714,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 448
+        }
+      },
+      "request_ids": [
+        "5c63339d-6a96-58ee-b7c1-25d443f2bd59",
+        "d5a79f3a-b989-5e20-ba51-3ded3ccade50"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 17,
+      "trial_seed": 95031536
+    },
+    {
+      "cohort_id": "e6318f4b-68ee-516b-8fb1-ead495af09c1/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        3480,
+        3480
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "8c3854cd883f767103e59d8240a7fa69fa7e30e4196c1c1237d962d8e7a83e36",
+        "8c3854cd883f767103e59d8240a7fa69fa7e30e4196c1c1237d962d8e7a83e36"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3480,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3480,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 363,
+          "jaccard": 1.0,
+          "left_unique": 363,
+          "right_unique": 363,
+          "union": 363
+        },
+        "3": {
+          "intersection": 378,
+          "jaccard": 1.0,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 378
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "5715d0c1-1925-5363-bd8d-75864c023ccf",
+        "afbb1d10-c2c0-5798-b6cd-54450d67ddda"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 17,
+      "trial_seed": 95031536
+    },
+    {
+      "cohort_id": "96165803-3283-50d7-952b-495326511ace/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        3629,
+        3629
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "dc499b95649315eba4da6d5a5631358353b6aeadbfc937112d0a0c6d52e477a4",
+        "8c3854cd883f767103e59d8240a7fa69fa7e30e4196c1c1237d962d8e7a83e36"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3629,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3629,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 200,
+          "jaccard": 0.38095238095238093,
+          "left_unique": 362,
+          "right_unique": 363,
+          "union": 525
+        },
+        "3": {
+          "intersection": 200,
+          "jaccard": 0.35842293906810035,
+          "left_unique": 380,
+          "right_unique": 378,
+          "union": 558
+        },
+        "4": {
+          "intersection": 199,
+          "jaccard": 0.3540925266903915,
+          "left_unique": 381,
+          "right_unique": 380,
+          "union": 562
+        }
+      },
+      "request_ids": [
+        "1074bc76-c8d4-5d35-865d-3ba4b8f8f39a",
+        "6e82ccd4-66fb-55ea-a82e-48d261a82dc9"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 18,
+      "trial_seed": 95031537
+    },
+    {
+      "cohort_id": "96165803-3283-50d7-952b-495326511ace/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        3596,
+        3596
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "da0365facf5c56abcad815ebd7b5d3ce23b63e00efd15ad4e65e58bf7966456f",
+        "da0365facf5c56abcad815ebd7b5d3ce23b63e00efd15ad4e65e58bf7966456f"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3596,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3596,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 356,
+          "jaccard": 1.0,
+          "left_unique": 356,
+          "right_unique": 356,
+          "union": 356
+        },
+        "3": {
+          "intersection": 378,
+          "jaccard": 1.0,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 378
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "2bd87b8e-780f-5943-b78d-3997ffebc13d",
+        "f01bf52c-5f6d-577d-a4c5-d38ac767c0e4"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 18,
+      "trial_seed": 95031537
+    },
+    {
+      "cohort_id": "fff01160-fda6-55a7-bae1-c4bc79572f14/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        3745,
+        3745
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "4298d8e333e0b7a47944c582cc11a957b9fd7f645228bee20dec29f40ff34b1a",
+        "d924048d49f185f32a39f34b56bd2f978b259f3a0094e33556cb728c184802a2"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3745,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3745,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 358,
+          "jaccard": 0.9728260869565217,
+          "left_unique": 363,
+          "right_unique": 363,
+          "union": 368
+        },
+        "3": {
+          "intersection": 374,
+          "jaccard": 0.9739583333333334,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 384
+        },
+        "4": {
+          "intersection": 375,
+          "jaccard": 0.974025974025974,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 385
+        }
+      },
+      "request_ids": [
+        "6ccb454f-23c0-5f3b-a923-b9c044173e55",
+        "e5a40082-472b-521a-8993-1298d3693e2d"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 19,
+      "trial_seed": 95031538
+    },
+    {
+      "cohort_id": "fff01160-fda6-55a7-bae1-c4bc79572f14/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        3712,
+        3712
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "e70914e74e2e35ebb981cf444bfd089175ba5f1327719acc849a187a7e0d17af",
+        "e70914e74e2e35ebb981cf444bfd089175ba5f1327719acc849a187a7e0d17af"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3712,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3712,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 364,
+          "jaccard": 1.0,
+          "left_unique": 364,
+          "right_unique": 364,
+          "union": 364
+        },
+        "3": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        },
+        "4": {
+          "intersection": 381,
+          "jaccard": 1.0,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 381
+        }
+      },
+      "request_ids": [
+        "392b4b48-18d5-57b8-82f5-34ba7dd12059",
+        "43a7d0b1-901f-587e-a9f9-486584248b5d"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 19,
+      "trial_seed": 95031538
+    },
+    {
+      "cohort_id": "9c95dc2a-68ff-5cb8-a9e6-8e570bc09634/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        3863,
+        3862
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "48033f29d34e34f1caac7cc5705a6f7b4bb8c1749dccdfc49ec879791afe424f",
+        "30f864459d265c32d23db66e70bf97a61a741ae7f7d73cf29c94620568a6dc3b"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3863,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3862,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 203,
+          "jaccard": 0.3911368015414258,
+          "left_unique": 363,
+          "right_unique": 359,
+          "union": 519
+        },
+        "3": {
+          "intersection": 206,
+          "jaccard": 0.3738656987295826,
+          "left_unique": 379,
+          "right_unique": 378,
+          "union": 551
+        },
+        "4": {
+          "intersection": 206,
+          "jaccard": 0.37184115523465705,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 554
+        }
+      },
+      "request_ids": [
+        "d43dc11c-2afe-57fc-b316-3d5977363650",
+        "a0b31dc2-b72a-5b95-9ccb-3c7f24526646"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 20,
+      "trial_seed": 95031539
+    },
+    {
+      "cohort_id": "9c95dc2a-68ff-5cb8-a9e6-8e570bc09634/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        3828,
+        3829
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "44ffb30c510bd603bea49f23b0ce8aa36cca1a6b1643a4ffadc453d51bcc3655",
+        "44ffb30c510bd603bea49f23b0ce8aa36cca1a6b1643a4ffadc453d51bcc3655"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3828,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3829,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 363,
+          "jaccard": 1.0,
+          "left_unique": 363,
+          "right_unique": 363,
+          "union": 363
+        },
+        "3": {
+          "intersection": 378,
+          "jaccard": 1.0,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 378
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "e881eb0b-9de2-5ec9-b6a3-1cdc0a400b51",
+        "f9087d80-7208-5a83-8107-05648304e66f"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 20,
+      "trial_seed": 95031539
+    },
+    {
+      "cohort_id": "36ad72b3-edd4-55c8-ad7c-a952507fc80e/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        3979,
+        3979
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "68d540487ab7f1781d74c3b5fa36bb6e2ca47fc169dd1561821045ab83078665",
+        "e2500f4685dfc63fd5ddaac1af4256831c8f4b9d18e77c42c33e0bd15a616519"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3979,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3979,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 307,
+          "jaccard": 0.748780487804878,
+          "left_unique": 356,
+          "right_unique": 361,
+          "union": 410
+        },
+        "3": {
+          "intersection": 325,
+          "jaccard": 0.7505773672055427,
+          "left_unique": 378,
+          "right_unique": 380,
+          "union": 433
+        },
+        "4": {
+          "intersection": 326,
+          "jaccard": 0.7494252873563219,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 435
+        }
+      },
+      "request_ids": [
+        "f17e240d-85a4-5a83-8cad-eb2c324d2def",
+        "113f5c68-1b49-5ae7-8641-0163b66a2114"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 21,
+      "trial_seed": 95031540
+    },
+    {
+      "cohort_id": "36ad72b3-edd4-55c8-ad7c-a952507fc80e/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        3946,
+        3946
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "d7843348671e34d45c8d7742af1b50ccdfacbbbf28127c233bcd21f211dd8376",
+        "d7843348671e34d45c8d7742af1b50ccdfacbbbf28127c233bcd21f211dd8376"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 3946,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 3946,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 359,
+          "jaccard": 1.0,
+          "left_unique": 359,
+          "right_unique": 359,
+          "union": 359
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "7a7e085e-1a45-52c7-b8fe-8bc76a902758",
+        "3bc2dce5-2787-5289-89b1-32df1e5bd67b"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 21,
+      "trial_seed": 95031540
+    },
+    {
+      "cohort_id": "79fb035a-e81c-555a-9993-7252441c26db/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        4096,
+        4096
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "0f740abb6ac6d350c36388b06d117621036d8df3ed003fb8949a58d3831459a0",
+        "feefeb0f035830476ac261fa5a56a7500556c1e276061ce508bc5520703ed576"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4096,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4096,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 288,
+          "jaccard": 0.6560364464692483,
+          "left_unique": 365,
+          "right_unique": 362,
+          "union": 439
+        },
+        "3": {
+          "intersection": 300,
+          "jaccard": 0.6550218340611353,
+          "left_unique": 378,
+          "right_unique": 380,
+          "union": 458
+        },
+        "4": {
+          "intersection": 301,
+          "jaccard": 0.6543478260869565,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 460
+        }
+      },
+      "request_ids": [
+        "c617e232-9e9a-5c7d-8bb9-745efb2c4791",
+        "5e8fa279-ac8a-54cd-ab63-2d6b60f74d6b"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 22,
+      "trial_seed": 95031541
+    },
+    {
+      "cohort_id": "79fb035a-e81c-555a-9993-7252441c26db/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        4063,
+        4062
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "221e5e7cd6fcf65e85f6f19431d25d8fb34e257214ef3e9a428f8d2c0bfae3ae",
+        "221e5e7cd6fcf65e85f6f19431d25d8fb34e257214ef3e9a428f8d2c0bfae3ae"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4063,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4062,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 362,
+          "jaccard": 1.0,
+          "left_unique": 362,
+          "right_unique": 362,
+          "union": 362
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "8156b7f1-8a9a-5380-8326-c93d29a4f1b7",
+        "0aae19fd-9952-5566-a27d-68b4cc25d8d5"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 22,
+      "trial_seed": 95031541
+    },
+    {
+      "cohort_id": "c60ca82e-abf9-5b6f-b5da-0ef6db93a8d9/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        4213,
+        4213
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "0e7dfb60022445c8059ceda1ee14e4b390c16c7dab471faf82cd475cff7e5d9b",
+        "24eeb7ddc495093e40ff1169faa89cbc828561e5e7634f0a0451dca8f73e4bdf"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4213,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4213,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 275,
+          "jaccard": 0.6057268722466961,
+          "left_unique": 366,
+          "right_unique": 363,
+          "union": 454
+        },
+        "3": {
+          "intersection": 281,
+          "jaccard": 0.589098532494759,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 477
+        },
+        "4": {
+          "intersection": 281,
+          "jaccard": 0.5866388308977035,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 479
+        }
+      },
+      "request_ids": [
+        "a764d989-8508-5e4c-99bb-30ecb9931964",
+        "26873136-3d8c-5e36-8280-0523f32f29cd"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 23,
+      "trial_seed": 95031542
+    },
+    {
+      "cohort_id": "c60ca82e-abf9-5b6f-b5da-0ef6db93a8d9/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        4179,
+        4180
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "154024ae3c8ff18a0d634e19c3cdf80b2612138d7989f730f8396caf433330fd",
+        "154024ae3c8ff18a0d634e19c3cdf80b2612138d7989f730f8396caf433330fd"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4179,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4180,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 362,
+          "jaccard": 1.0,
+          "left_unique": 362,
+          "right_unique": 362,
+          "union": 362
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "562a1af5-3611-5838-a327-70b4c732c2fb",
+        "6c3886b5-975a-51a1-b855-babe01e5bf5d"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 23,
+      "trial_seed": 95031542
+    },
+    {
+      "cohort_id": "bcec75d3-3dcf-546a-9f3a-239168b5ab0c/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        4329,
+        4329
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "b7b228a2d1bf5d3fe728feaa67ae1f4259df718017e8239ad71034ed1723e34c",
+        "2b5023a9119d922393d0002e2b685799c783f4fe7d2357dab263049b562279f0"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4329,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4329,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 266,
+          "jaccard": 0.5757575757575758,
+          "left_unique": 365,
+          "right_unique": 363,
+          "union": 462
+        },
+        "3": {
+          "intersection": 273,
+          "jaccard": 0.5617283950617284,
+          "left_unique": 379,
+          "right_unique": 380,
+          "union": 486
+        },
+        "4": {
+          "intersection": 273,
+          "jaccard": 0.5594262295081968,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 488
+        }
+      },
+      "request_ids": [
+        "5d4b7093-cddf-51ec-8f3d-0aa96adff49a",
+        "4d392a21-5fa7-553a-b28f-1d37170ee222"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 24,
+      "trial_seed": 95031543
+    },
+    {
+      "cohort_id": "bcec75d3-3dcf-546a-9f3a-239168b5ab0c/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        4296,
+        4296
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "2e4d2766344f56f9385f0d5fd021ec3b64c60f790316734491890ce35c0d8d31",
+        "2e4d2766344f56f9385f0d5fd021ec3b64c60f790316734491890ce35c0d8d31"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4296,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4296,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 361,
+          "jaccard": 1.0,
+          "left_unique": 361,
+          "right_unique": 361,
+          "union": 361
+        },
+        "3": {
+          "intersection": 378,
+          "jaccard": 1.0,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 378
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "19020001-4fb2-5679-bac5-5c08b99ff379",
+        "4f4dab53-e7a9-5e9a-aa0b-a8ee0eab2c46"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 24,
+      "trial_seed": 95031543
+    },
+    {
+      "cohort_id": "5b2288dc-a7d4-5830-90e3-18e64859efa2/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        4446,
+        4446
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "c3941fd766f63c104ebb1ab9091e27f474caf54ebafbdc8a84ec81a916b048d7",
+        "772e4a18bf9d519a2aaa77651a62ef4f0bf5f992dd244081fdb6dce5f64cf9a8"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4446,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4446,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 344,
+          "jaccard": 0.8935064935064935,
+          "left_unique": 365,
+          "right_unique": 364,
+          "union": 385
+        },
+        "3": {
+          "intersection": 357,
+          "jaccard": 0.8947368421052632,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 399
+        },
+        "4": {
+          "intersection": 359,
+          "jaccard": 0.8952618453865336,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 401
+        }
+      },
+      "request_ids": [
+        "ea4cd3e0-4865-5aaa-863f-ed0edc53ecbe",
+        "51e9ec24-a6ff-5eb6-91ca-dd8e66b85932"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 25,
+      "trial_seed": 95031544
+    },
+    {
+      "cohort_id": "5b2288dc-a7d4-5830-90e3-18e64859efa2/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        4413,
+        4412
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "2b608524db381fbc47b15ebf299b0ec6aea0b236cd1bb14c8bebda401302f0ce",
+        "2b608524db381fbc47b15ebf299b0ec6aea0b236cd1bb14c8bebda401302f0ce"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4413,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4412,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 360,
+          "jaccard": 1.0,
+          "left_unique": 360,
+          "right_unique": 360,
+          "union": 360
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "89b87407-a29b-56d9-948b-5b7eb068abb5",
+        "7d191aae-ff4c-512d-82da-70048111e148"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 25,
+      "trial_seed": 95031544
+    },
+    {
+      "cohort_id": "6c9c4bb4-7d69-518e-8ce7-424ec8ba48be/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        4562,
+        4562
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "132b2a40ebd01f1742e546b0441113b39038962c1b0523fda6c94bd9ca6ab178",
+        "1dc98dcedadc6770265b3c9292e2015eee5b91d18f37d00ef77d3bb469f7560a"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4562,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4562,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 207,
+          "jaccard": 0.40038684719535783,
+          "left_unique": 362,
+          "right_unique": 362,
+          "union": 517
+        },
+        "3": {
+          "intersection": 210,
+          "jaccard": 0.3825136612021858,
+          "left_unique": 379,
+          "right_unique": 380,
+          "union": 549
+        },
+        "4": {
+          "intersection": 209,
+          "jaccard": 0.3786231884057971,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 552
+        }
+      },
+      "request_ids": [
+        "40e2d5d5-ec61-5028-a742-83bce2d5a61c",
+        "e8c2c667-2c48-573e-b6cd-71ec1babf00d"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 26,
+      "trial_seed": 95031545
+    },
+    {
+      "cohort_id": "6c9c4bb4-7d69-518e-8ce7-424ec8ba48be/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        4529,
+        4529
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "96b414812109114be7ad1d5c923ce2e60027d18fcb6307d870cea9404eda8777",
+        "96b414812109114be7ad1d5c923ce2e60027d18fcb6307d870cea9404eda8777"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4529,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4529,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 363,
+          "jaccard": 1.0,
+          "left_unique": 363,
+          "right_unique": 363,
+          "union": 363
+        },
+        "3": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        },
+        "4": {
+          "intersection": 381,
+          "jaccard": 1.0,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 381
+        }
+      },
+      "request_ids": [
+        "345bc281-a2a0-5926-a171-07e9b1b42219",
+        "8bd5dff9-54b8-586c-b849-c28c6aaed389"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 26,
+      "trial_seed": 95031545
+    },
+    {
+      "cohort_id": "72913c21-f6f0-50c5-95e7-9cf758df7f3b/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        4678,
+        4679
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "c550eb8701f5511fa8e684e6e5849688205529f72af5079110c9353dc5d8b521",
+        "9d0d3463845e54ec0c4e148af7cd56d2d4adcfe11b07790abedb1d3373e35c77"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4678,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4679,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 228,
+          "jaccard": 0.4532803180914513,
+          "left_unique": 367,
+          "right_unique": 364,
+          "union": 503
+        },
+        "3": {
+          "intersection": 228,
+          "jaccard": 0.4293785310734463,
+          "left_unique": 379,
+          "right_unique": 380,
+          "union": 531
+        },
+        "4": {
+          "intersection": 228,
+          "jaccard": 0.4277673545966229,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 533
+        }
+      },
+      "request_ids": [
+        "d2e10bb2-c5e4-546c-be49-eefa5ea38b44",
+        "3d804e5b-a86a-5360-a5d3-224bc509c06f"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 27,
+      "trial_seed": 95031546
+    },
+    {
+      "cohort_id": "72913c21-f6f0-50c5-95e7-9cf758df7f3b/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        4645,
+        4645
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "7ea950e1605763a90e510fa8638a057e185dee633ac084ae9839eeefe1220fb2",
+        "7ea950e1605763a90e510fa8638a057e185dee633ac084ae9839eeefe1220fb2"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4645,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4645,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 362,
+          "jaccard": 1.0,
+          "left_unique": 362,
+          "right_unique": 362,
+          "union": 362
+        },
+        "3": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        },
+        "4": {
+          "intersection": 381,
+          "jaccard": 1.0,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 381
+        }
+      },
+      "request_ids": [
+        "9ce67d71-8c23-57a4-a5df-8d55f99ad054",
+        "5c2eb8e4-1dd6-5c80-8ebb-7bc7415ec4a3"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 27,
+      "trial_seed": 95031546
+    },
+    {
+      "cohort_id": "758fb674-d744-59d3-a500-b5d69b63ea38/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        4796,
+        4796
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "896f969ef68ad866278f89837eb9101453820fb65906e03143685637fc7498ff",
+        "c93e913996d73e21c0803fc05603dc7cf8f6f4bf881af9f1905c2f8adcdafdf6"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4796,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4796,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 261,
+          "jaccard": 0.5588865096359743,
+          "left_unique": 366,
+          "right_unique": 362,
+          "union": 467
+        },
+        "3": {
+          "intersection": 268,
+          "jaccard": 0.5458248472505092,
+          "left_unique": 379,
+          "right_unique": 380,
+          "union": 491
+        },
+        "4": {
+          "intersection": 268,
+          "jaccard": 0.5436105476673428,
+          "left_unique": 380,
+          "right_unique": 381,
+          "union": 493
+        }
+      },
+      "request_ids": [
+        "02a0d8f5-9987-5fb9-b43e-ef86d064071e",
+        "a0a27a7b-6487-5ca8-8482-9c0e7344725c"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 28,
+      "trial_seed": 95031547
+    },
+    {
+      "cohort_id": "758fb674-d744-59d3-a500-b5d69b63ea38/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        4763,
+        4762
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "152e7374721bc083391d0de55fa80adafccfbc96e07b6527df162e146c28263f",
+        "152e7374721bc083391d0de55fa80adafccfbc96e07b6527df162e146c28263f"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4763,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4762,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 357,
+          "jaccard": 1.0,
+          "left_unique": 357,
+          "right_unique": 357,
+          "union": 357
+        },
+        "3": {
+          "intersection": 379,
+          "jaccard": 1.0,
+          "left_unique": 379,
+          "right_unique": 379,
+          "union": 379
+        },
+        "4": {
+          "intersection": 381,
+          "jaccard": 1.0,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 381
+        }
+      },
+      "request_ids": [
+        "535b1118-a351-5d60-ad81-7ed69ea67ffc",
+        "efe80e8a-bda4-5c61-91f9-eec2d4f944b8"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 28,
+      "trial_seed": 95031547
+    },
+    {
+      "cohort_id": "f7b68f42-f40f-5749-ae37-78147ebda62b/engram-distinct-text",
+      "cold_same_first_prefill_dispatch": false,
+      "equal_sequences": false,
+      "first_prefill_dispatch_ids": [
+        4912,
+        4913
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "989d4fa73ff44a063a6d679fcb0fd7a7a8c878e215014fe9c2b5c28af777c369",
+        "e15cd99c0ff1737319f8341e986996678197bbb01fdace5dc65f266b7b9b0eff"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4912,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4913,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-distinct-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 252,
+          "jaccard": 0.53276955602537,
+          "left_unique": 362,
+          "right_unique": 363,
+          "union": 473
+        },
+        "3": {
+          "intersection": 261,
+          "jaccard": 0.5230460921843687,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 499
+        },
+        "4": {
+          "intersection": 261,
+          "jaccard": 0.5209580838323353,
+          "left_unique": 381,
+          "right_unique": 381,
+          "union": 501
+        }
+      },
+      "request_ids": [
+        "99d270a3-4c87-569f-8566-e6de79b28d71",
+        "56c0aa25-cf76-56c1-95a1-fbab319b2c3b"
+      ],
+      "same_first_prefill_dispatch": false,
+      "trial_index": 29,
+      "trial_seed": 95031548
+    },
+    {
+      "cohort_id": "f7b68f42-f40f-5749-ae37-78147ebda62b/engram-repeated-text",
+      "cold_same_first_prefill_dispatch": true,
+      "equal_sequences": true,
+      "first_prefill_dispatch_ids": [
+        4879,
+        4879
+      ],
+      "initial_cached_tokens": [
+        0,
+        0
+      ],
+      "input_hashes": [
+        "b5ca24ed3b76eb4c718ff29250667afe73e736523161249c794d51c8422118a1",
+        "b5ca24ed3b76eb4c718ff29250667afe73e736523161249c794d51c8422118a1"
+      ],
+      "input_lengths": [
+        384,
+        384
+      ],
+      "native_prefill_chunks": [
+        [
+          {
+            "dispatch_id": 4879,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ],
+        [
+          {
+            "dispatch_id": 4879,
+            "initial_cross_request_cached_tokens": 0,
+            "prefix_tokens": 0,
+            "query_tokens": 384,
+            "same_request_prior_query_tokens": 0
+          }
+        ]
+      ],
+      "physical_run_id": "8a089d4f-0042-4b9c-aa9f-8b57ba6b80ed",
+      "purpose": "engram-repeated-text",
+      "raw_ngram_overlap": {
+        "2": {
+          "intersection": 356,
+          "jaccard": 1.0,
+          "left_unique": 356,
+          "right_unique": 356,
+          "union": 356
+        },
+        "3": {
+          "intersection": 378,
+          "jaccard": 1.0,
+          "left_unique": 378,
+          "right_unique": 378,
+          "union": 378
+        },
+        "4": {
+          "intersection": 380,
+          "jaccard": 1.0,
+          "left_unique": 380,
+          "right_unique": 380,
+          "union": 380
+        }
+      },
+      "request_ids": [
+        "7ac93014-a274-5d3e-8fc5-7cf04a8a2b47",
+        "bf78d292-f88e-5a0f-b5a7-7f83baef1b04"
+      ],
+      "same_first_prefill_dispatch": true,
+      "trial_index": 29,
+      "trial_seed": 95031548
+    }
+  ],
+  "sampling_exclusion": false,
+  "schema": "dsv41.segment-content-controls.v1",
+  "source_sha256": "bd68a6a9ca86e757060cd39633f1cc327fdb16e570853665b5885f4ceb64575f",
+  "summary": {
+    "engram-distinct-text": {
+      "cold_same_first_prefill_dispatch": 20,
+      "equal_sequences": 0,
+      "initial_cache_patterns": {
+        "[0, 0]": 30
+      },
+      "observed_trials": 30,
+      "planned_trials": 30,
+      "same_first_prefill_dispatch": 20,
+      "same_raw_3gram_sets": 0
+    },
+    "engram-repeated-text": {
+      "cold_same_first_prefill_dispatch": 16,
+      "equal_sequences": 30,
+      "initial_cache_patterns": {
+        "[0, 0]": 30
+      },
+      "observed_trials": 30,
+      "planned_trials": 30,
+      "same_first_prefill_dispatch": 16,
+      "same_raw_3gram_sets": 30
+    }
+  }
+}
