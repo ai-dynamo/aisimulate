@@ -1,0 +1,38 @@
+{
+  "schema": "dsv41.serving.refinement.comparison.v1",
+  "same_measured_lifecycle": true,
+  "same_model_and_native_binary": true,
+  "same_raw_observations": true,
+  "refinement": "Explicit previously measured pilot attention at B1/P256; original formal rows retain same-key precedence. Only calibration overlay changed.",
+  "baseline_report": "../off-baseline",
+  "modes": {
+    "sol": {
+      "baseline_http_predicted": 600,
+      "refined_http_predicted": 600,
+      "changed_http_cohorts": 0,
+      "changed_http_scenarios": [],
+      "baseline_trace_predicted": 15756,
+      "refined_trace_predicted": 15756
+    },
+    "hybrid": {
+      "baseline_http_predicted": 600,
+      "refined_http_predicted": 600,
+      "changed_http_cohorts": 40,
+      "changed_http_scenarios": [
+        "engram-repeated-text"
+      ],
+      "baseline_trace_predicted": 15756,
+      "refined_trace_predicted": 15756
+    },
+    "silicon": {
+      "baseline_http_predicted": 520,
+      "refined_http_predicted": 560,
+      "changed_http_cohorts": 40,
+      "changed_http_scenarios": [
+        "engram-repeated-text"
+      ],
+      "baseline_trace_predicted": 14476,
+      "refined_trace_predicted": 14476
+    }
+  }
+}
