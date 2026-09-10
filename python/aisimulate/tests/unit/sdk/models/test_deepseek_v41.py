@@ -34,6 +34,28 @@ def test_real_v41_config_and_quant(descriptor):
     assert quant["moe_quant_mode"] == common.MoEQuantMode.w4a8_mxfp4_mxfp8
 
 
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+@pytest.mark.parametrize("total_gpus", [4, 32])
+def test_default_task_enumerates_matching_moe_parallel_widths(backend, total_gpus):
+    from aiconfigurator.sdk.task_v2 import Task
+
+    task = Task(
+        model_path=MODEL_PATH,
+        system_name="gb300",
+        backend_name=backend,
+        total_gpus=total_gpus,
+        database_mode="SOL",
+        isl=1024,
+        osl=128,
+        nextn=0,
+    )
+    assert task.model_family == "DEEPSEEKV41"
+    assert task.is_moe
+    parallel = [tuple(choice) for choice in task.iter_parallel("agg")]
+    assert (4, 1, 1, 1, 4, 1) in parallel
+    assert all(tp * dp * cp == moe_tp * moe_ep for tp, _, dp, moe_tp, moe_ep, cp in parallel)
+
+
 def test_shared_pool_memory_slope_and_odd_decode(descriptor):
     assert descriptor.compressed_entry_bytes == 288
     assert descriptor.index_entry_bytes == 68
