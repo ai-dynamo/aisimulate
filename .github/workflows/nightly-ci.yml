@@ -477,6 +477,8 @@ jobs:
           # Preflight requires a dated NIGHTLY_TAG for nightly runs.
           nightly_tag="nightly-${WHEEL_VERSION##*.dev}-${GH_SHA:0:7}"
           # ref is TEMPORARY: revert to main once the onboarding MR merges.
+          # DRY_RUN=true is TEMPORARY: publish rehearsal only — remove
+          # before merge so nightlies publish for real.
           curl -q --fail --silent --show-error --retry 3 --output /dev/null \
             -F "token=${GITLAB_TRIGGER_TOKEN}" \
             -F "ref=pvijayakrish/onboard-aisimulate-nightly" \
@@ -487,5 +489,6 @@ jobs:
             -F "variables[WHEEL_VERSION]=${WHEEL_VERSION}" \
             -F "variables[GITHUB_RUN_ID]=${GH_RUN_ID}" \
             -F "variables[COMMIT_SHA]=${GH_SHA}" \
+            -F "variables[DRY_RUN]=true" \
             "${GITLAB_PIPELINE_URL}"
           echo "internal security pipeline triggered"
