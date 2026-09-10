@@ -19,12 +19,12 @@ Download `deepseek-ai/DeepSeek-V4-Pro` at revision
 reference client's config/tokenizer fetches. The reference server's local weight
 revision was not recorded, so exact weight identity is not yet established.
 
-**Download started; completion and shard validation are pending.**
+**Download complete and verified at approximately 17:21 PDT on September 9.**
 The preparation agent confirmed the following on September 9, 2026:
 
 | Item | Value |
 | --- | --- |
-| Running preparation job | `4208387` |
+| Completed preparation job | `4208387`; allocation released after validation |
 | Node | `lego-c2-qs-25` |
 | Requested resources | 4 CPUs, 16 GiB RAM, 0 GPUs |
 | Expected snapshot | 91 files, including 64 safetensors shards |
@@ -45,8 +45,10 @@ Evidence paths:
 /home/scratch.hongkuanz_gpu/agentx-dsv4-pro-440845-checkpoint/download-result.json
 ```
 
-The manifest exists; `download-result.json` is the planned terminal success/error
-report, not evidence of success at this update. The snapshot uses the HF cache
+`download-result.json` now reports `status=complete`, 91 verified files,
+64 shards and `errors=[]`, with all file sizes matching the pinned Hub metadata.
+`cleanup-result.json` verifies the allocation is absent from `squeue`; the download
+step completed 0:0, followed by the cleanup watcher cancelling the allocation. The snapshot uses the HF cache
 layout: preserve backing blobs when moving it.
 
 An initial frontend submission failed because the Slurm CLI filter could not
@@ -77,7 +79,7 @@ No B300 allocation was submitted for checkpoint preparation.
 
 ## Reproduction checks still open
 
-- Verify checkpoint completion and release the CPU preparation allocation.
+- Checkpoint verification and CPU allocation cleanup are complete.
 - Use the same FPM-fixed linux/amd64 image as B200 GLM job `4207957`, as pinned
   in the [runtime plan](README.md#planned-local-runtime-shared-fpm-fixed-x86-image).
   Validate DSv4 GPU compatibility and align exact AIPerf revision/settings.
@@ -131,11 +133,24 @@ depends on an available B300 node.
   execute its NVIDIA hook there; execution checks therefore used the native
   x86 jobs above. Failed image-authentication attempts were not GPU runs.
 - The dispatcher is running locally with `dispatch-state.json`, `dispatch.log`
-  and `dispatch.pid` in the controller bundle. At startup it is waiting for
-  verified checkpoint completion; it has not submitted a B300 GPU job yet.
+  and `dispatch.pid` in the controller bundle. After verified checkpoint completion it submitted B300 job `4209414`,
+  which is pending with reason `Priority` at approximately 17:22 PDT.
 - Slurm `sbatch --test-only` accepted the resource request. Its September 9
   estimate was September 10 at approximately 04:10 PDT; this is only a scheduling
   estimate, not a reservation or an actual submitted job ID.
 - Both cases use UTC for saved timestamps. A Slurm termination signal three
   minutes before the allocation limit gives cleanup time; FPM is flushed and
   copied before slow engine teardown.
+
+## Submitted campaign
+
+Actual B300 job: **4209414**, submitted automatically after the checkpoint and
+image gates passed. The initial state was `PENDING (Priority)`. The protocol
+remains FPM-off then FPM-on, 3600 measured seconds each, both with HiCache off.
+The raw output root will be
+`/home/scratch.hongkuanz_gpu/agentx-dsv4-results/job-4209414/`.
+The local submission record is
+`/home/hongkuanz/Experiments/agentx-dsv4-440845-ab-20260909/submission.json`.
+A GPT-5.6 Luna agent monitors the controller, queue, execution and artifact
+validation; the primary task remains waiting and handles actionable failures.
+No B300 performance result is available at submission time.
