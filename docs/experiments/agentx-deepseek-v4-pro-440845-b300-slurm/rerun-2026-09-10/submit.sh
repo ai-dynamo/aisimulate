@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #SBATCH --account=aifm
 #SBATCH --qos=batch-short
-#SBATCH --partition=b300@ts6/dgx-b300@ts1/8gpu-256cpu-2048gb,b300@ts7/dgx-b300@ts1/8gpu-256cpu-2048gb,b300@ts4/b300-nvl8@ts3/8gpu-224cpu-2048gb,b300@ts5/b300-nvl8@ts5/8gpu-224cpu-2048gb,b300@ts8/b300-nvl8@cr+mp/8gpu-224cpu-2048gb,b300@qs1/b300-nvl8@cr+mp/8gpu-224cpu-2048gb,b300@ts7/b300-nvl8@ts7/8gpu-224cpu-2048gb
+#SBATCH --partition=b300@ts4/b300-nvl8@ts3/8gpu-224cpu-2048gb,b300@ts5/b300-nvl8@ts5/8gpu-224cpu-2048gb,b300@ts8/b300-nvl8@cr+mp/8gpu-224cpu-2048gb,b300@qs1/b300-nvl8@cr+mp/8gpu-224cpu-2048gb,b300@ts7/b300-nvl8@ts7/8gpu-224cpu-2048gb
 #SBATCH --nodes=1
-#SBATCH --nodelist=umb-b300-dp-142
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=112
 #SBATCH --exclusive

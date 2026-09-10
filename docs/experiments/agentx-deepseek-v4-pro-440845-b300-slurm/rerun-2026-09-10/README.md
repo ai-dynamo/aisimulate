@@ -5,8 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # AgentX DSv4 rerun after the fixed-workload FPM sweep
 
-Job `4227233` targets `umb-b300-dp-142`, the same node used for the completed
-[fixed8K/1K experiment](../../sglang-fpm-fixed-8k1k/README.md). The fixed sweep
+Job `4227233` targets one eight-GPU B300 NVL8 node. The completed
+[fixed8K/1K experiment](../../sglang-fpm-fixed-8k1k/README.md) used `umb-b300-dp-142`. The fixed sweep
 showed small throughput gaps; this rerun checks whether AgentX reproduces its
 prior gap and whether request context/cache distributions explain it.
 
@@ -55,3 +55,17 @@ protocol override. Request errors, cancellations, coverage and FPM validity stil
 need independent checks. Keep warmup separate, and do not compare these as formal
 one-hour leaderboard submissions. A short run may miss late cache-pressure or
 eviction effects.
+
+## Queue and initial request-level evidence
+
+The initial node142 constraint was removed because its running allocation was
+expected to last until17:40 PDT. The candidate pool stays within B300 NVL8;
+the AgentX off/on pair still runs on one node. If the selected node differs from
+the fixed sweep, keep that hardware change explicit in cross-workload comparisons.
+
+Analysis of the original one-hour pair4209414 finds3388 shared unique source
+requests. Across all successful measured requests, average uncached input was
+4657 tokens off versus4864 on (+4.4%). Thus the original throughput gap includes
+an observed workload difference. Matched-source context/cache strata are preserved
+in [original4209414 request analysis](original-4209414-request-analysis.json).
+This is observational evidence, not a causal attribution of the gap to cache hits.
