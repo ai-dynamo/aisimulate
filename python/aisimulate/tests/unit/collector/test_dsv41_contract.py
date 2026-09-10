@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import shutil
+from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
@@ -98,3 +100,25 @@ def test_rank_aggregation_requires_complete_distinct_invocations(tmp_path):
     paths[0].write_text(paths[0].read_text() + "\n" + paths[0].read_text().splitlines()[0])
     with pytest.raises(ValueError, match="duplicate TP rank"):
         aggregate_rank_records(paths, 2)
+
+
+def test_writer_to_native_silicon_query_roundtrip(tmp_path):
+    import aiconfigurator_core._aiconfigurator_core as core
+    from aiconfigurator_core.sdk.engine import _evaluate_single_op
+    from aiconfigurator_core.sdk.perf_database import PerfDatabase
+
+    package = Path(__file__).resolve().parents[3]
+    shutil.copy(package / "src/aiconfigurator_core/systems/gb300.yaml", tmp_path / "gb300.yaml")
+    data = tmp_path / "data/gb300/sglang/0.0.0.dev0"
+    data.mkdir(parents=True)
+    point = row()
+    write_parquet([point], data / "dsv41_module_perf.parquet")
+    operation = core.op_from_spec_json(
+        json.dumps({"Dsv41Attention": json.loads(point["geometry"]) | {"name": "generation_attention"}})
+    )
+    database = PerfDatabase(
+        "gb300", "sglang", "0.0.0.dev0", str(tmp_path), database_mode="SILICON", strict_provenance=False
+    )
+    result = _evaluate_single_op(database, operation, is_context=False, batch_size=1, s=129, x=1)
+    assert float(result) == pytest.approx(0.125)
+    assert result.source == "silicon"

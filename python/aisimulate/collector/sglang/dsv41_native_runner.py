@@ -163,8 +163,40 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
     options = bench_args.dsv41_options
     manifest = json.loads(Path(options.manifest).read_text())
     bench.publish(server_args, role="scheduler")
+    # Native benchmark latency_test at one_batch.py:896-899 seeds the
+    # process-local dispatch flags after publication in every spawned rank.
+    # Omitting these initializers makes the MoE accessor default to AUTO
+    # even when the published configuration selects flashinfer_mxfp4.
+    bench.initialize_moe_config()
+    bench.initialize_fp8_gemm_config()
+    bench.initialize_fp4_gemm_config()
     bench.configure_logger(server_args, prefix=f" TP{tp_rank}")
+    from sglang.srt.layers.moe import get_moe_runner_backend
+    from sglang.srt.layers.quantization.fp8 import Fp8Config
+
+    original_selector = Fp8Config.get_quant_method
+
+    def observe_selector(quant_config, layer, prefix):
+        method = original_selector(quant_config, layer, prefix)
+        if prefix.endswith(".experts"):
+            print(
+                json.dumps(
+                    {
+                        "event": "native_expert_dispatch",
+                        "tp_rank": tp_rank,
+                        "prefix": prefix,
+                        "is_fp4_experts": quant_config.is_fp4_experts,
+                        "runner_backend": str(get_moe_runner_backend()),
+                        "method": type(method).__module__ + "." + type(method).__name__,
+                    }
+                ),
+                flush=True,
+            )
+        return method
+
+    Fp8Config.get_quant_method = observe_selector
     runner, tokenizer = bench.load_model(server_args, port_args, gpu_id, tp_rank)
+    Fp8Config.get_quant_method = original_selector
     recorder = ComponentRecorder(runner.torch_runner, manifest)
     package_root = Path(bench.__file__).resolve().parents[1]
     sources = {
