@@ -7,7 +7,7 @@
         "prefix": 0,
         "query": 3,
         "prefill_ms": 174.48753462756406,
-        "decode_ms": 121.8491037998621,
+        "decode_ms": 142.94094436506674,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -24,7 +24,7 @@
         "prefix": 0,
         "query": 128,
         "prefill_ms": 220.7771219368292,
-        "decode_ms": 120.6872147236292,
+        "decode_ms": 141.77905528883383,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -41,7 +41,7 @@
         "prefix": 0,
         "query": 129,
         "prefill_ms": 189.83949738614135,
-        "decode_ms": 121.5256137166445,
+        "decode_ms": 142.61745428184912,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -58,7 +58,7 @@
         "prefix": 0,
         "query": 256,
         "prefill_ms": 182.66161018398662,
-        "decode_ms": 118.61566220859929,
+        "decode_ms": 139.70750277380392,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -75,7 +75,7 @@
         "prefix": 256,
         "query": 3,
         "prefill_ms": 166.89844702208768,
-        "decode_ms": 116.44513594250127,
+        "decode_ms": 137.53697650770587,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -92,7 +92,7 @@
         "prefix": 256,
         "query": 128,
         "prefill_ms": 214.1108801718069,
-        "decode_ms": 116.83300673107549,
+        "decode_ms": 137.9248472962801,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -109,7 +109,7 @@
         "prefix": 256,
         "query": 129,
         "prefill_ms": 179.36912947766356,
-        "decode_ms": 116.40938996414586,
+        "decode_ms": 137.50123052935047,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -126,7 +126,7 @@
         "prefix": 256,
         "query": 256,
         "prefill_ms": 178.84935611275097,
-        "decode_ms": 116.78187083343907,
+        "decode_ms": 137.87371139864368,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -143,7 +143,7 @@
         "prefix": 0,
         "query": 3,
         "prefill_ms": 169.02254871876497,
-        "decode_ms": 121.61395864518964,
+        "decode_ms": 141.3963581803688,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -160,7 +160,7 @@
         "prefix": 0,
         "query": 128,
         "prefill_ms": 182.18010607150455,
-        "decode_ms": 120.74778084787214,
+        "decode_ms": 140.5301803830513,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -177,7 +177,7 @@
         "prefix": 0,
         "query": 129,
         "prefill_ms": 183.26477806937442,
-        "decode_ms": 120.86901484760129,
+        "decode_ms": 140.65141438278044,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -194,7 +194,7 @@
         "prefix": 0,
         "query": 256,
         "prefill_ms": 185.64452665797393,
-        "decode_ms": 120.75264565976941,
+        "decode_ms": 140.53504519494857,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -211,7 +211,7 @@
         "prefix": 256,
         "query": 3,
         "prefill_ms": 167.78801862747926,
-        "decode_ms": 120.15655081304395,
+        "decode_ms": 139.9389503482231,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -228,7 +228,7 @@
         "prefix": 256,
         "query": 128,
         "prefill_ms": 180.5181876697864,
-        "decode_ms": 120.8246787074455,
+        "decode_ms": 140.60707824262465,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -245,7 +245,7 @@
         "prefix": 256,
         "query": 129,
         "prefill_ms": 182.06468086611972,
-        "decode_ms": 120.94143002065503,
+        "decode_ms": 140.7238295558342,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -262,7 +262,7 @@
         "prefix": 256,
         "query": 256,
         "prefill_ms": 185.23092585555236,
-        "decode_ms": 121.16957442792737,
+        "decode_ms": 140.95197396310652,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -284,7 +284,7 @@
         "prefix": 0,
         "query": 3,
         "prefill_ms": 170.1971966887487,
-        "decode_ms": 122.77286264563844,
+        "decode_ms": 143.86470321084306,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -301,7 +301,7 @@
         "prefix": 0,
         "query": 128,
         "prefill_ms": 217.5197141188396,
-        "decode_ms": 123.32857427264497,
+        "decode_ms": 144.4204148378496,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -318,7 +318,7 @@
         "prefix": 0,
         "query": 129,
         "prefill_ms": 202.66149306208058,
-        "decode_ms": 122.7293758716707,
+        "decode_ms": 143.82121643687532,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -335,7 +335,7 @@
         "prefix": 0,
         "query": 256,
         "prefill_ms": 202.0443006915282,
-        "decode_ms": 123.82057556773469,
+        "decode_ms": 144.9124161329393,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -352,7 +352,7 @@
         "prefix": 256,
         "query": 3,
         "prefill_ms": 170.49015816698204,
-        "decode_ms": 123.66409442092225,
+        "decode_ms": 144.75593498612687,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -369,7 +369,7 @@
         "prefix": 256,
         "query": 128,
         "prefill_ms": 215.16982555568347,
-        "decode_ms": 120.96956584121033,
+        "decode_ms": 142.06140640641496,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -386,7 +386,7 @@
         "prefix": 256,
         "query": 129,
         "prefill_ms": 197.21538150221272,
-        "decode_ms": 120.6162233677034,
+        "decode_ms": 141.70806393290803,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -403,7 +403,7 @@
         "prefix": 256,
         "query": 256,
         "prefill_ms": 197.16618813697804,
-        "decode_ms": 121.4499493565683,
+        "decode_ms": 142.54178992177293,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -420,7 +420,7 @@
         "prefix": 0,
         "query": 3,
         "prefill_ms": 167.34678677694458,
-        "decode_ms": 124.19259900930011,
+        "decode_ms": 143.97499854447926,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -437,7 +437,7 @@
         "prefix": 0,
         "query": 128,
         "prefill_ms": 184.5955294535782,
-        "decode_ms": 124.10722203137958,
+        "decode_ms": 143.88962156655873,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -454,7 +454,7 @@
         "prefix": 0,
         "query": 129,
         "prefill_ms": 184.6775041036042,
-        "decode_ms": 123.73333419444644,
+        "decode_ms": 143.5157337296256,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -471,7 +471,7 @@
         "prefix": 0,
         "query": 256,
         "prefill_ms": 186.82993815144516,
-        "decode_ms": 124.78661651494586,
+        "decode_ms": 144.56901605012501,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -488,7 +488,7 @@
         "prefix": 256,
         "query": 3,
         "prefill_ms": 167.21766785757202,
-        "decode_ms": 123.92715997579181,
+        "decode_ms": 143.70955951097096,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -505,7 +505,7 @@
         "prefix": 256,
         "query": 128,
         "prefill_ms": 182.53405751449128,
-        "decode_ms": 123.06664676549518,
+        "decode_ms": 142.84904630067433,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -522,7 +522,7 @@
         "prefix": 256,
         "query": 129,
         "prefill_ms": 184.04303995889748,
-        "decode_ms": 123.20866281869495,
+        "decode_ms": 142.9910623538741,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,
@@ -539,7 +539,7 @@
         "prefix": 256,
         "query": 256,
         "prefill_ms": 184.87281940182663,
-        "decode_ms": 123.62130219819629,
+        "decode_ms": 143.40370173337544,
         "context_sources": {
           "empirical": 1,
           "silicon": 3,

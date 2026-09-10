@@ -68,6 +68,16 @@ Component collection kept default communication outside the local intervals;
 its whole-forward configuration therefore differs from that validation setting.
 No NCCL timing is relabeled as custom-all-reduce data.
 
+The SGLang pure-TP eager graph runs shared and routed experts sequentially.
+The verified runtime has `enable_single_batch_overlap=false` and both CUDA graph
+backends disabled. In the actual `srt/models/deepseek_v2.py` (SHA-256
+`4be6f035f7a573ef4016eb38dd08ac1dede74fb3bcc13e8d529bd0bd983f22dd`),
+`_can_dual_stream_graph` requires graph capture/replay; `forward_normal` executes
+the shared and routed calls on the same stream. See the pinned
+[dispatch and eager implementation](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/models/deepseek_v2.py#L885).
+The prediction grid uses their summed cost. Graph/SBO configurations require a
+separately qualified execution contract.
+
 ## What the checks establish
 
 All 618 V4.1 physical table points round-trip through the strict Rust SILICON
@@ -80,8 +90,8 @@ predictions; independent E2E/FPM comparison is pending and will be recorded in P
 The shared Engram hash/history update and framework metadata preparation are
 outside the timed module boundary and are not modeled explicitly. Embedding,
 norm/activation and other memory operations retain the existing empirical
-formulas; stage totals consequently include `source=mixed`. Default serving's
-mHC/shared-expert overlap and fused communication can differ from this graph.
+formulas; stage totals consequently include `source=mixed`. Graph-enabled serving's mHC/shared-expert overlap and fused communication can
+differ from this eager graph.
 Long KV, candidate saturation, larger batches, other TP/EP layouts, additional
 content/routing distributions and CUDA graphs remain unqualified.
 
