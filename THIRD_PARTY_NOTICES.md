@@ -36,7 +36,8 @@ image/checkpoint, read-only shared storage and AgentX reference cache settings.
 ## InferenceX DSv4 experiment configuration
 
 `docs/experiments/agentx-deepseek-v4-pro-440845-b300-slurm/campaign.py` and
-`docs/experiments/sglang-fpm-fixed-8k1k/campaign.py` contain
+`docs/experiments/sglang-fpm-fixed-8k1k/campaign.py`, and
+`docs/experiments/agentx-deepseek-v4-pro-440845-b300-slurm/rerun-2026-09-10/campaign.py` contain
 locally authored orchestration with serving and replay configuration adapted from
 SemiAnalysisAI/InferenceX contributors, commit
 `fb85931b1edec09f9498509835a8c814bebe3c65`:

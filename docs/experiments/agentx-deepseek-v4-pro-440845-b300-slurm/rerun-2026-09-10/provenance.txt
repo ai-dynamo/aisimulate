@@ -1,0 +1,7 @@
+Follow-up authorized2026-09-10: if fixed8K/1K FPM gaps are small, rerun AgentX and inspect long-prefill/prefix-hit interactions.
+Same DSv4 model revision, runtime digest, TP8EP8DP8, c32, HiCacheoff, synthetic acceptance2.49 as original4209414.
+Off then on, 3600s measured each. FPM retained. Native SGLang router consistent hashing.
+Setup uses AIPERF_DATASET_WEKA_PARALLEL_WORKERS=1 to avoid the demonstrated blocked-SIGCHLD forkserver cleanup bug; startup only, same reconstructed input contract.
+Persistent mmap cache is placed on own scratch rather than small home; byte-identity keyed by client.
+Compare matched source-request keys and bucket total/uncached prompt tokens and reuse, preserving unmatched/recycled requests and warmup/error/drain caveats. This observational replay comparison alone cannot establish causality.
+Thinking template unchanged from SemiAnalysisAI/InferenceX fb85931b1edec09f9498509835a8c814bebe3c65, benchmarks/single_node/chat_templates/deepseek_v4_thinking.jinja; Apache-2.0 license retained.

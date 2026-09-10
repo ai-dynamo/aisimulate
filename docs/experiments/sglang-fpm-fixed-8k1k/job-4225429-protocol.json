@@ -1,0 +1,31 @@
+{
+  "model": "deepseek-ai/DeepSeek-V4-Pro",
+  "revision": "b5968e9190ef611bbf34a7229255be88a0e937c1",
+  "image": "sha256:f856a45537f82e1900ea7607edcbaa7f77fbb2e70220eae522d1d50d0046727e",
+  "concurrency": [
+    1,
+    32,
+    128
+  ],
+  "request_counts": {
+    "1": 24,
+    "32": 256,
+    "128": 1024
+  },
+  "isl": 8192,
+  "osl": 1024,
+  "modes": [
+    "off",
+    "on",
+    "on",
+    "off",
+    "off",
+    "on"
+  ],
+  "repetitions_per_mode": 3,
+  "hicache": false,
+  "cache": "unique token-id prompts and cache flush before every cell; assert zero cached tokens",
+  "native_endpoint": "/generate",
+  "client": "image-pinned sglang.benchmark.serving",
+  "speculative_acceptance": 2.49
+}

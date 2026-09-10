@@ -5,8 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # SGLang FPM overhead: fixed 8K input / 1K output
 
-Status: retry Computelab job `4225429` submitted on September 10, 2026. Results
-are pending. This follow-up measures FPM-off/on differences across low, mid and high
+Status: job `4225429` completed successfully on `umb-b300-dp-142`. All18
+measured cells and three FPM captures validated; the allocation is released. This follow-up measures FPM-off/on differences across low, mid and high
 request concurrency on one eight-GPU B300 node, using DeepSeek-V4-Pro.
 
 The previous [AgentX DSv4 comparison](../agentx-deepseek-v4-pro-440845-b300-slurm/README.md)
@@ -114,3 +114,36 @@ Retry job `4225429` uses a3600-second readiness limit and adds periodic GPU/proc
 snapshots and scheduler-stack diagnostics during startup. The measured workload
 and all off/on settings are unchanged. Diagnostic tooling is installed separately
 from the engine Python environment and is not active during measurements.
+
+## Fixed-workload results
+
+
+Same node and image; ISL8192, OSL1024; three off/on pairs per concurrency.
+
+| Concurrency | Output tok/s off (mean ± SD) | Output tok/s on (mean ± SD) | Paired throughput gap (mean ± SD) | Mean TPOT gap | TTFT p90 gap |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 139.88 ± 0.59 | 139.72 ± 0.62 | -0.12% ± 0.15% | +0.15% | -0.33% |
+| 32 | 2737.08 ± 26.77 | 2740.59 ± 15.46 | +0.13% ± 0.44% | -1.19% | +0.48% |
+| 128 | 5844.75 ± 29.32 | 5828.32 ± 22.91 | -0.28% ± 0.13% | +1.75% | -3.98% |
+
+Gap is100*(on/off-1) for each pair, then averaged. A negative throughput gap is slower; a positive latency gap is slower.
+
+- Three finite-request repetitions per mode; report observed variance, not a universal overhead bound.
+- FPM-on includes buffered external recording; no-consumer emission cost is not isolated.
+- Synthetic 8192-token prompts and fixed1024-token output; acceptance length is simulated2.49.
+
+All measured requests had actual ISL8192 and OSL1024, zero cached tokens and
+zero request errors. Three pairs per concurrency produced small throughput gaps:
+-0.12%, +0.13% and -0.28% at concurrency1/32/128. Latency changes have more run-to-run
+variance. These results do not support a large fixed-workload FPM penalty.
+They do not establish zero overhead, or exclude workload-dependent effects in
+AgentX's long-context/prefix-reuse workload.
+
+Detailed metrics, per-run values, paired deltas and input hashes are in
+[job-4225429-comparison.json](job-4225429-comparison.json). Hardware and final
+state are preserved alongside it. Raw client exports and FPM remain in the
+scratch result root above.
+
+Per user direction, AgentX is being rerun on the same node to investigate whether
+long prefill, uncached-token counts or prefix reuse explain the earlier gap.
+See [the AgentX rerun](../agentx-deepseek-v4-pro-440845-b300-slurm/rerun-2026-09-10/README.md).
