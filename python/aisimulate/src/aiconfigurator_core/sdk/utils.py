@@ -698,6 +698,8 @@ def _parse_kimi_k25_vision_encoder_config(
     vision_heads = vision_cfg["vt_num_attention_heads"]
     if not isinstance(vision_heads, int) or isinstance(vision_heads, bool) or vision_heads <= 0:
         raise ValueError("Kimi K2.5 vision vt_num_attention_heads must be a positive integer")
+    if hidden_vit % vision_heads:
+        raise ValueError("Kimi K2.5 vision vt_hidden_size must be divisible by vt_num_attention_heads")
     spatial_merge_size = int(merge_kernel[0])
     merger_dim = hidden_vit * spatial_merge_size**2
     out_hidden_size = int(vision_cfg["text_hidden_size"])

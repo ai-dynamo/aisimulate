@@ -188,6 +188,41 @@ def test_kimi_k25_parser_rejects_invalid_vision_head_count(heads):
         _parse_hf_config_json(raw)
 
 
+@pytest.mark.parametrize("model_id", _KIMI_MODELS)
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("heads", [5, 17, 19])
+def test_kimi_local_checkpoint_rejects_incompatible_vision_head_count(tmp_path, model_id, language_only, heads):
+    raw = deepcopy(get_model_config_from_model_path(model_id)["raw_config"])
+    raw["vision_config"]["vt_num_attention_heads"] = heads
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_cfg = _model_config()
+    model_cfg.language_only = language_only
+
+    with pytest.raises(ValueError, match="vt_hidden_size must be divisible by vt_num_attention_heads"):
+        get_model(str(tmp_path), model_cfg, "trtllm")
+
+
+@pytest.mark.parametrize("model_id", _KIMI_MODELS)
+@pytest.mark.parametrize("language_only", [False, True])
+def test_kimi_local_checkpoint_preserves_valid_vision_attention_width(tmp_path, model_id, language_only):
+    raw = deepcopy(get_model_config_from_model_path(model_id)["raw_config"])
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_cfg = _model_config()
+    model_cfg.language_only = language_only
+
+    model = get_model(str(tmp_path), model_cfg, "trtllm")
+
+    assert (model.encoder_config.hidden_size, model.encoder_config.num_heads) == (1152, 16)
+    if language_only:
+        assert not model.encoder_ops
+    else:
+        encoder_ops = {op._name: op for op in model.encoder_ops}
+        qkv = encoder_ops["encoder_qkv_gemm"]
+        attention = encoder_ops["encoder_attention"]
+        assert (qkv._n, qkv._k) == (3456, 1152)
+        assert (attention._n, attention._head_size) == (16, 72)
+
+
 @pytest.mark.parametrize(
     "field,value,match",
     [
