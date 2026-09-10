@@ -1352,6 +1352,21 @@ impl TraceCollector {
         ))
     }
 
+    /// Drain measurements while retaining the configuration that applies to
+    /// each reporting epoch of a reusable runtime.
+    pub(crate) fn take_report(&mut self) -> ReplayReport {
+        let next = Self {
+            defer_token_timeline_finalization: self.defer_token_timeline_finalization,
+            capture_per_request: self.capture_per_request,
+            sla: self.sla,
+            static_worker_count: self.static_worker_count,
+            prefill_gpus_per_worker: self.prefill_gpus_per_worker,
+            decode_gpus_per_worker: self.decode_gpus_per_worker,
+            ..Default::default()
+        };
+        std::mem::replace(self, next).finish()
+    }
+
     pub fn finish(mut self) -> ReplayReport {
         let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {

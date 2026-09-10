@@ -1807,8 +1807,6 @@ where
         );
         self.collector
             .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
-        Ok(std::mem::take(&mut self.collector)
-            .finish()
-            .with_wall_time_ms(wall_ms))
+        Ok(self.collector.take_report().with_wall_time_ms(wall_ms))
     }
 }

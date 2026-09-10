@@ -663,6 +663,33 @@ mod tests {
     }
 
     #[test]
+    fn aggregated_report_drain_preserves_collector_configuration() {
+        let mut engine = SteppableAgg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+        )
+        .unwrap();
+        engine.set_capture_per_request(true);
+        engine.set_sla_thresholds(SlaThresholds {
+            e2e_ms: Some(f64::MAX),
+            ..Default::default()
+        });
+
+        engine.submit(request(23, 128, 16)).unwrap();
+        drain(&mut engine);
+        let first = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(first.per_request.len(), 1);
+        assert!(first.goodput.is_some());
+
+        engine.submit(request(24, 128, 16)).unwrap();
+        drain(&mut engine);
+        let second = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(second.per_request.len(), 1);
+        assert!(second.goodput.is_some());
+    }
+
+    #[test]
     fn steppable_constructors_reject_zero_workers() {
         let factory = ReplayEngineFactory::new();
 
