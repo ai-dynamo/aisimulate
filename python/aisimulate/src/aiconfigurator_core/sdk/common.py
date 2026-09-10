@@ -179,7 +179,8 @@ class VisionEncoderConfig:
         projector_dims (tuple[tuple[int, int], ...]): Per-layer (in_dim, out_dim) pairs
             for the vision-to-LLM projector MLP. Empty tuple means no projector.
             Dimensions are absolute (unsharded); build_encoder_ops applies the
-            encoder parallelism (TP sharding, or full replicas under encoder DP).
+            encoder parallelism (TP sharding, or full replicas under encoder DP
+            or when projector_replicated is enabled).
         projector_n_instances (int): Number of projector instances to model (e.g.,
             1 + len(deepstack_visual_indexes) for Qwen3VL deepstack variants).
         partial_rotary_factor (float): Engine-side rotary-table parameter, not a
@@ -202,6 +203,12 @@ class VisionEncoderConfig:
             image by the multimodal processor.
         prompt_tokens_per_local_tile (int): Separator tokens emitted per local
             tile when a tiled prompt also contains a global tile.
+        final_norm (bool): Whether the vision tower applies a final norm after
+            its transformer blocks.
+        pool_temporal (bool): Whether the merger pools temporal patches before
+            producing the visual tokens injected into the language model.
+        video_attention_type (str): Declared video-attention topology retained
+            for architecture validation and reporting.
     """
 
     depth: int
@@ -224,6 +231,20 @@ class VisionEncoderConfig:
     add_global_tile: bool = False
     prompt_image_tokens: int = 0
     prompt_tokens_per_local_tile: int = 0
+    # Keep new defaults appended: generated bindings and legacy callers may use
+    # this dataclass positionally.
+    final_norm: bool = False
+    pool_temporal: bool = False
+    video_attention_type: str = ""
+    # Processor geometry: Kimi resizes to patch budgets, then pads to the
+    # patch/merge stride. Qwen retains its existing nearest-stride behavior.
+    resize_mode: str = "qwen"
+    image_max_patches: int = 0
+    video_max_patches: int = 0
+    max_patches_per_side: int = 0
+    max_video_frames: int = 0
+    # Some towers use replicated projector linear layers even with encoder TP.
+    projector_replicated: bool = False
 
 
 @dataclass(frozen=True)
