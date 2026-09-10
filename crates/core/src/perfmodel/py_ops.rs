@@ -4231,6 +4231,7 @@ pub(crate) fn reject_retired_ops(ops: &[Op]) -> Result<(), String> {
                 reject_retired_ops(&o.fallback)?;
             }
             Op::FpmForward(o) => reject_retired_ops(&o.sol_ops)?,
+            Op::Dsv41Stage(o) => reject_retired_ops(&o.children)?,
             _ => {}
         }
     }

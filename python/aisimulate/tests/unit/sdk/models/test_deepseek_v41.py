@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import Counter
+from dataclasses import replace
 
 import pytest
 
@@ -238,7 +239,7 @@ def test_sglang_pure_tp_eager_shared_and_routed_costs_are_sequential():
         if next(iter(child.values())).get("name", "")
         in ("generation_router_gemm", "generation_moe_pre_dispatch", "generation_moe")
     ]
-    assert len(shared) == 3 and len(routed) == 3
+    assert len(shared) == 3 and len(routed) == 2
     db = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode="SOL")
 
     def cost(children):
@@ -260,3 +261,136 @@ def test_unqualified_ep_generation_overlap_is_not_changed_by_tp_eager_fix():
         if "Dsv41Stage" in json.loads(op._spec_json())
     ]
     assert all(any("Overlap" in child for child in stage["children"]) for stage in stages)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"compress_ratios": (0,)}, "one backbone compression ratio"),
+        ({"compress_ratios": (3,) * 40}, "one backbone compression ratio"),
+        ({"kv_source_layer_ids": (8, 2)}, "unique, ascending"),
+        ({"index_source_layer_ids": (2, 8, 14)}, "must also own an indexer"),
+        ({"candidate_source_layer_id": 3}, "candidate source must own"),
+        ({"engram_num_embeddings": (1,)}, "layer/table counts differ"),
+        (
+            {"kv_source_layer_ids": (0, 2, 8, 14, 20), "index_source_layer_ids": (0, 2, 8, 14, 20, 24, 28, 32, 36)},
+            "positive compression ratio",
+        ),
+    ],
+)
+def test_descriptor_rejects_malformed_ownership(descriptor, changes, message):
+    with pytest.raises(ValueError, match=message):
+        replace(descriptor, **changes).validate()
+
+
+def test_descriptor_rejects_ownerless_and_incompatible_compression(descriptor):
+    for layer, ratio in [(0, 1), (3, 1)]:
+        ratios = list(descriptor.compress_ratios)
+        ratios[layer] = ratio
+        with pytest.raises(ValueError, match="no compatible preceding KV owner"):
+            replace(descriptor, compress_ratios=tuple(ratios)).validate()
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "message"),
+    [
+        ({"nextn": 1}, NotImplementedError, "nextn=0"),
+        ({"overwrite_num_layers": 2}, ValueError, "layer overrides"),
+        ({"moe_backend": "megamoe"}, NotImplementedError, "decomposed MoE"),
+        ({"cp_size": 2, "moe_ep_size": 8}, NotImplementedError, "Context parallelism"),
+        ({"tp_size": 16, "moe_ep_size": 16}, ValueError, "TP must divide"),
+    ],
+)
+def test_model_constructor_rejects_unmodeled_configuration(changes, error, message):
+    from aiconfigurator_core.sdk.config import ModelConfig
+    from aiconfigurator_core.sdk.models import get_model
+
+    config = ModelConfig(**({"tp_size": 4, "moe_tp_size": 1, "moe_ep_size": 4} | changes))
+    with pytest.raises(error, match=message):
+        get_model(MODEL_PATH, config, "sglang")
+
+
+@pytest.mark.parametrize("tp", [1, 4, 8])
+def test_replicated_indexer_preserves_weights_and_score_cost_across_tp(tp):
+    import json
+
+    import aiconfigurator_core._aiconfigurator_core as native
+    from aiconfigurator_core.sdk.engine import _evaluate_single_op
+    from aiconfigurator_core.sdk.perf_database import get_database_view
+
+    model = _build_model(tp=tp)
+    specs = [json.loads(op._spec_json()) for op in model.context_ops]
+    attention = next(
+        child["Dsv41Attention"]
+        for stage in specs
+        if "Dsv41Stage" in stage
+        for child in stage["Dsv41Stage"]["children"]
+        if "Dsv41Attention" in child and child["Dsv41Attention"]["role"] == "reindex"
+    )
+    assert attention["index_n_heads"] == 32
+    indexed = native.op_from_spec_json(json.dumps({"Dsv41Attention": attention}))
+    reused = native.op_from_spec_json(json.dumps({"Dsv41Attention": attention | {"role": "reuse"}}))
+    # 1280*32*128 FP8 weights plus 32x32 block scales, and 5120*32 BF16 gates.
+    assert indexed.get_weights() - reused.get_weights() == 5_575_680
+    db = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode="SOL")
+
+    def cost(op):
+        return float(_evaluate_single_op(db, op, is_context=True, batch_size=1, s=4096, prefix=0, x=4096))
+
+    index_cost = cost(indexed) - cost(reused)
+    # Every TP uses the identical replicated indexer. Changing main attention
+    # heads must not divide this complete scoring/selection contribution.
+    reference = attention | {"num_heads": 64, "o_groups": 8}
+    full = native.op_from_spec_json(json.dumps({"Dsv41Attention": reference}))
+    full_reuse = native.op_from_spec_json(json.dumps({"Dsv41Attention": reference | {"role": "reuse"}}))
+    assert index_cost == pytest.approx(cost(full) - cost(full_reuse), rel=1e-12)
+    assert index_cost > 0
+
+
+@pytest.mark.parametrize(
+    ("backend_name", "coefficient", "overhead"), [("sglang", 13, 1.15), ("vllm", 10, 1.0), ("trtllm", 10, 1.0)]
+)
+def test_v41_actual_activation_memory_uses_moe_coefficient(backend_name, coefficient, overhead):
+    from aiconfigurator_core.sdk.backends.factory import get_backend
+    from aiconfigurator_core.sdk.perf_database import get_database_view
+
+    model = _build_model(backend=backend_name)
+    backend = get_backend(backend_name)
+    db = get_database_view("gb300", backend_name, "current", allow_missing_data=True, database_mode="SOL")
+    memory = backend._get_memory_usage(model, db, 1, 1, 8192, 1, num_tokens=8192)
+    # Generic MoE workspace plus the separately owned mHC/Engram buffers.
+    workspace_width = 5120 if backend_name == "sglang" else 64 * 512
+    workspace = 8192 * workspace_width * 384 * 6 / 4 / 128 * 4
+    expanded = model.get_additional_activation_bytes(8192)
+    expected = (2 * 8192 * 64 * 512 * coefficient + workspace + expanded) * overhead
+    assert memory["activations"] * (1 << 30) == pytest.approx(expected)
+    assert memory["weights"] * (1 << 30) == model.get_resident_weights_bytes()
+
+
+def test_nested_stage_rejects_retired_dispatch_at_serialization():
+    import json
+
+    import aiconfigurator_core._aiconfigurator_core as native
+
+    model = _build_model()
+    stage = next(json.loads(op._spec_json()) for op in model.context_ops if "Dsv41Stage" in json.loads(op._spec_json()))
+    dispatch = next(child for child in stage["Dsv41Stage"]["children"] if "MoeDispatch" in child)
+    dispatch["MoeDispatch"]["flavor"] = "RetiredDeepEp"
+    inner = stage | {"Dsv41Stage": stage["Dsv41Stage"] | {"children": [dispatch]}}
+    outer = stage | {"Dsv41Stage": stage["Dsv41Stage"] | {"children": [inner]}}
+    op = native.op_from_spec_json(json.dumps(outer))
+    with pytest.raises(ValueError, match="retired"):
+        native.ops_json_from_ops([op])
+
+
+@pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm"])
+def test_hgx_blackwell_has_published_scalar_fp32_rate(system):
+    from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
+    from aiconfigurator_core.sdk.perf_database import get_database_view
+
+    db = get_database_view(system, "sglang", "current", allow_missing_data=True, database_mode="SOL")
+    assert db.system_spec["gpu"]["fp32_flops"] == 75e12
+    engine = EngineHandle(
+        compile_engine(MODEL_PATH, system, "sglang", tp_size=4, moe_tp_size=4, moe_ep_size=1, database_mode="SOL")
+    )
+    assert engine.predict_prefill_latency(1, 128) > 0

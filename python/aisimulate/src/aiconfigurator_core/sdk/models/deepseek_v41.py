@@ -68,9 +68,9 @@ class DeepSeekV41Model(BaseModel):
             raise NotImplementedError(
                 "DeepSeek-V4.1 SOL/Hybrid uses decomposed MoE; MegaMoE requires separate measurement"
             )
-        if model_config.attention_dp_size != 1 or model_config.pp_size != 1:
+        if model_config.attention_dp_size != 1 or model_config.pp_size != 1 or model_config.cp_size != 1:
             raise NotImplementedError(
-                "DeepSeek-V4.1 text baseline requires attention_dp_size=1 and pp_size=1; "
+                "DeepSeek-V4.1 text baseline requires attention_dp_size=1, pp_size=1 and cp_size=1; "
                 "DP Engram collectives and PP cache ownership need separate contracts"
             )
         tp = model_config.tp_size
@@ -104,7 +104,11 @@ class DeepSeekV41Model(BaseModel):
                 q_lora_rank=d.q_lora_rank,
                 o_lora_rank=d.o_lora_rank,
                 o_groups=max(1, d.o_groups // tp),
-                index_n_heads=d.index_n_heads // tp,
+                # SGLang's pinned V4.1 indexer replicates both projections
+                # and all index heads across TP (dsv41_sparse.py:203-224).
+                # The DeepSeek reference instead shards heads and reduces
+                # scores; that different execution contract is not used here.
+                index_n_heads=d.index_n_heads,
                 index_head_dim=d.index_head_dim,
                 index_topk=d.index_topk,
                 window_size=d.sliding_window,
@@ -177,44 +181,42 @@ class DeepSeekV41Model(BaseModel):
                     quant_mode=model_config.gemm_quant_mode.name,
                 ),
             ]
-            routed = [ops.GEMM(f"{phase}_router_gemm", 1, self._num_experts, h, common.GEMMQuantMode.bfloat16)]
-            for pre in (True, False):
-                routed.append(
-                    ops.MoEDispatch(
-                        f"{phase}_moe_{'pre' if pre else 'post'}_dispatch",
-                        1,
-                        h,
-                        self._topk,
-                        self._num_experts,
-                        mtp,
-                        ep,
-                        model_config.attention_dp_size,
-                        pre,
-                        quant_mode=model_config.moe_quant_mode,
-                        backend=backend_name,
-                        is_context=context,
-                        attn_ar_modeled=True,
-                    )
-                )
-                if pre:
-                    routed.append(
-                        ops.MoE(
-                            f"{phase}_moe",
-                            1,
-                            h,
-                            self._moe_inter_size,
-                            self._topk,
-                            self._num_experts,
-                            mtp,
-                            ep,
-                            model_config.moe_quant_mode,
-                            distribution,
-                            model_config.attention_dp_size,
-                        )
-                    )
+            # DP=CP=1 is required above and the attention output was already
+            # reduced. Omit this model's redundant pre-MLP dispatch; retain
+            # the legacy backend-specific semantics for all other models.
+            routed = [
+                ops.GEMM(f"{phase}_router_gemm", 1, self._num_experts, h, common.GEMMQuantMode.bfloat16),
+                ops.MoE(
+                    f"{phase}_moe",
+                    1,
+                    h,
+                    self._moe_inter_size,
+                    self._topk,
+                    self._num_experts,
+                    mtp,
+                    ep,
+                    model_config.moe_quant_mode,
+                    distribution,
+                    model_config.attention_dp_size,
+                ),
+            ]
             # The post-expert reduction consumes both routed and shared
             # partials, and therefore follows the optional compute overlap.
-            combine = routed.pop()
+            combine = ops.MoEDispatch(
+                f"{phase}_moe_post_dispatch",
+                1,
+                h,
+                self._topk,
+                self._num_experts,
+                mtp,
+                ep,
+                model_config.attention_dp_size,
+                False,
+                quant_mode=model_config.moe_quant_mode,
+                backend=backend_name,
+                is_context=context,
+                attn_ar_modeled=True,
+            )
             # SGLang's qualified TP eager path executes forward_normal on
             # one stream. Dual-stream shared/routed work requires capture or
             # graph/SBO dispatch (sglang@1aa0e962 deepseek_v2.py:885-960,
