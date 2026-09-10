@@ -115,7 +115,8 @@ def run_block(index, mode):
             recorder = spawn('recorder', [sys.executable, str(BUNDLE/'record_fpm.py'), 'record', str(local/'fpm.jsonl'), '--endpoint', endpoint])
         save(out/'environment.json', {k:v for k,v in env.items() if k.startswith(('SGLANG_', 'FIXED_')) or k=='TZ'})
         server = spawn('server', args)
-        deadline = time.monotonic() + 1800
+        deadline = time.monotonic() + 3600
+        next_diagnostic = time.monotonic() + 600
         while True:
             check()
             try:
@@ -124,8 +125,25 @@ def run_block(index, mode):
                         break
             except Exception:
                 pass
+            if time.monotonic() >= next_diagnostic:
+                stamp=str(int(time.time()))
+                gpu_snapshot(out/f'loading-{stamp}-gpu.csv')
+                rows=subprocess.check_output(['ps','-eo','pid=,pgid=,pcpu=,rss=,args='],text=True).splitlines()
+                owned=[r for r in rows if len(r.split(None,4))==5 and r.split(None,4)[1]==str(server.pid)]
+                (out/f'loading-{stamp}-processes.txt').write_text('\n'.join(owned)+'\n')
+                spy=Path(f'/tmp/fixed-debug-{JOB}/bin/py-spy')
+                if spy.exists():
+                    for row in owned:
+                        pid,_,_,_,command=row.split(None,4)
+                        if 'sglang::scheduler' in command:
+                            with (out/f'loading-{stamp}-stack-{pid}.txt').open('w') as f:
+                                try:
+                                    subprocess.run([str(spy),'dump','-p',pid],stdout=f,stderr=subprocess.STDOUT,timeout=15)
+                                except subprocess.TimeoutExpired:
+                                    f.write('Diagnostic stack capture timed out\n')
+                next_diagnostic=time.monotonic()+300
             if time.monotonic()>deadline:
-                raise TimeoutError('Engine readiness')
+                raise TimeoutError('Engine readiness after3600s; see loading diagnostics')
             time.sleep(5)
         # Confirm that the native input-id interface does not add prompt tokens.
         payload = dict(input_ids=[1000+i%100 for i in range(8192)],
@@ -202,6 +220,8 @@ def main():
         native_endpoint='/generate',client='image-pinned sglang.benchmark.serving',speculative_acceptance=2.49))
     with (ROOT/'pip-freeze.txt').open('w') as f:
         subprocess.run([sys.executable,'-m','pip','freeze'],stdout=f,check=True)
+    with (ROOT/'debug-tool-setup.log').open('w') as f:
+        subprocess.run([sys.executable,'-m','pip','install','--no-cache-dir','--no-deps','--target',f'/tmp/fixed-debug-{JOB}','py-spy'],stdout=f,stderr=subprocess.STDOUT,timeout=180)
     for i,mode in enumerate(MODES):
         run_block(i,mode)
     subprocess.run([sys.executable,str(BUNDLE/'compare.py'),str(ROOT)],check=True)

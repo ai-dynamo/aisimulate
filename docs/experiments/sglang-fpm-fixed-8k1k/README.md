@@ -5,8 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # SGLang FPM overhead: fixed 8K input / 1K output
 
-Status: Computelab job `4224680` submitted on September 10, 2026. Results are
-pending. This follow-up measures FPM-off/on differences across low, mid and high
+Status: retry Computelab job `4225429` submitted on September 10, 2026. Results
+are pending. This follow-up measures FPM-off/on differences across low, mid and high
 request concurrency on one eight-GPU B300 node, using DeepSeek-V4-Pro.
 
 The previous [AgentX DSv4 comparison](../agentx-deepseek-v4-pro-440845-b300-slurm/README.md)
@@ -77,7 +77,7 @@ Submit through Computelab Slurm with an eligible account and B300 partition.
 The script requests one exclusive eight-GPU node for at most four hours.
 
 Raw results:
-`/home/scratch.hongkuanz_gpu/sglang-fpm-fixed-8k1k-results/job-4224680/`.
+`/home/scratch.hongkuanz_gpu/sglang-fpm-fixed-8k1k-results/job-4225429/`.
 
 Each `block-I-MODE/` contains commands, environment, GPU snapshots, separate
 warmup/measured client exports, input hashes, actual server usage and validation
@@ -101,3 +101,16 @@ disable HiCache, increase the fixed request pool to256 and add repeated FPM pair
 See the root `THIRD_PARTY_NOTICES.md`. The native SGLang benchmark is used as an
 installed dependency at the pinned engine revision; its implementation is not
 vendored here.
+
+## Startup attempts
+
+Job `4224680` on `umb-b300-025` exited1:0 after the original1800-second engine
+readiness limit. No measured requests ran. The visible shard-progress bar reached
+64/64 after12m46s, but the engine did not finish subsequent loading/initialization
+before the deadline; no OOM or engine exception was logged. The allocation is
+released and its raw logs remain in `job-4224680/`.
+
+Retry job `4225429` uses a3600-second readiness limit and adds periodic GPU/process
+snapshots and scheduler-stack diagnostics during startup. The measured workload
+and all off/on settings are unchanged. Diagnostic tooling is installed separately
+from the engine Python environment and is not active during measurements.
