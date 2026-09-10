@@ -665,6 +665,10 @@ fn build_runtime_input(
 ) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
     ensure!(
+        traffic.source_type == "trace" || traffic.agentic_lanes.is_none(),
+        "agentic_lanes requires agentic trace input"
+    );
+    ensure!(
         traffic.source_type == "trace" || traffic.weka_nested_timestamp_basis.is_none(),
         "weka_nested_timestamp_basis requires Weka trace input"
     );

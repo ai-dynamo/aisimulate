@@ -346,10 +346,14 @@ def _materialize_engine_execution_spec(
         }
         if traffic.get("trace_format") not in {"dynamo", "weka"}:
             traffic.setdefault("trace_block_size", trace_block_size)
-        if traffic.get("trace_format") in {"agentic_mooncake", "dynamo", "weka"}:
-            if execution_model is None:
+        trace_format = traffic.get("trace_format")
+        if trace_format in {"agentic_mooncake", "dynamo", "weka"}:
+            requires_agentic_model = trace_format != "dynamo" or traffic.get("agentic_lanes") is not None
+            if requires_agentic_model and execution_model is None:
                 raise ValueError("agentic execution requires a configured target model")
-            traffic["execution_model"] = execution_model
+            # Dynamo may contain standard or agentic requests; native validates the loaded kind.
+            if execution_model is not None:
+                traffic["execution_model"] = execution_model
         return {"spec": execution_spec, "traffic": traffic}
     return execution_spec
 
