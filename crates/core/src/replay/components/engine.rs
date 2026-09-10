@@ -491,6 +491,10 @@ where
         })
     }
 
+    pub(crate) fn scheduler_ids(&self, worker_id: usize) -> Result<&[usize]> {
+        Ok(&self.required_worker(worker_id)?.scheduler_ids)
+    }
+
     pub(crate) fn active_topology(&self) -> Vec<WorkerTopology> {
         self.active_group_ids()
             .into_iter()

@@ -22,8 +22,8 @@ use super::core::NoEngineEvents;
 #[cfg(test)]
 use super::core::round_robin::PoolRoundRobinPlacement;
 use super::core::{
-    AdmissionSource as CoreAdmissionSource, Placement, PlacementDecision, PlacementPolicy,
-    ReadyArrival, WorkerTopology,
+    AdmissionSource as CoreAdmissionSource, EngineEventBatch, Placement, PlacementDecision,
+    PlacementPolicy, ReadyArrival, WorkerTopology,
 };
 use super::events::{SimulationEvent, SimulationWorkerStage, WorkerCompletionPayload};
 use super::evidence::{
@@ -57,6 +57,8 @@ use crate::replay::protocol::ForwardPassSnapshot;
 use crate::replay::protocol::{DirectRequest, OutputSignal};
 use crate::replay::{OfflineDisaggReplayConfig, ReplayTerminalStatus, TraceCollector};
 use crate::replay::{ReplayCaptureOptions, ReplayRequestPool};
+
+const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -623,12 +625,12 @@ impl DisaggFlowState {
         request.metadata_mut().uuid = Some(uuid);
         request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
 
+        if self.requests.contains_key(&uuid) {
+            bail!("offline disagg replay request {uuid} is already active");
+        }
         collector.on_arrival(uuid, arrival_time_ms, input_length, output_length);
         if let Some(context) = request.metadata().replay_context.as_ref() {
             collector.on_request_context(uuid, context);
-        }
-        if self.requests.contains_key(&uuid) {
-            bail!("offline disagg replay request {uuid} is already active");
         }
         let handoff_id = HandoffId::new(Uuid::new_v4());
         let mut state = DisaggRequestState::new(
@@ -937,6 +939,21 @@ where
     /// above. Only the planner consumes them, so the plain `run()` path leaves this
     /// `false`.
     collect_fpm: bool,
+    /// Output tokens observed since the last steppable step, in emission order.
+    /// Only the steppable seam drains this; `run()` leaves it empty.
+    step_tokens: Vec<(Uuid, u32)>,
+    step_terminals: Vec<(Uuid, ReplayTerminalStatus)>,
+    /// Whether a terminal settled during the current steppable step, freeing an
+    /// in-flight slot. `step_tokens` alone cannot carry this fact: a terminal
+    /// signal may carry no token — an admission rejection, or a terminal whose
+    /// last token was emitted by an earlier signal — and the caller must still
+    /// get that instant back to submit a replacement before time advances.
+    step_freed_slot: bool,
+    /// Whether the steppable seam's evaluate/commit delta cycle is in use.
+    defer_drive: bool,
+    /// Set between the halves of that delta cycle: the next step commits the
+    /// admissions and worker drives the previous step deferred.
+    drive_pending: bool,
 }
 
 #[cfg(test)]
@@ -1072,6 +1089,11 @@ where
             scaling_policy: None,
             telemetry: None,
             collect_fpm: false,
+            step_tokens: Vec::new(),
+            step_terminals: Vec::new(),
+            step_freed_slot: false,
+            defer_drive: false,
+            drive_pending: false,
         })
     }
 
@@ -1144,7 +1166,7 @@ where
     }
 
     /// Count all requests consuming cluster capacity across prefill, decode, and router queues.
-    fn cluster_in_flight(&self) -> usize {
+    pub(crate) fn cluster_in_flight(&self) -> usize {
         self.flow.logical_in_flight
     }
 
@@ -1231,6 +1253,9 @@ where
         let Some(status) = status else {
             return Ok(());
         };
+        if self.defer_drive {
+            self.step_terminals.push((uuid, status));
+        }
         self.admission
             .on_request_causal_terminal(uuid, self.now_ms, status)
     }
@@ -1536,8 +1561,22 @@ where
         self.flow.action_queues.wake_worker_waiters(stage);
     }
 
-    fn wake_deferred_actions(&mut self, stage: SimulationWorkerStage, worker_idx: usize) {
-        self.flow.action_queues.wake_deferred(stage, worker_idx);
+    fn wake_deferred_actions(
+        &mut self,
+        stage: SimulationWorkerStage,
+        worker_id: usize,
+    ) -> Result<()> {
+        let scheduler_ids = match stage {
+            SimulationWorkerStage::Prefill => self.prefill_engine.scheduler_ids(worker_id)?,
+            SimulationWorkerStage::Decode => self.decode_engine.scheduler_ids(worker_id)?,
+            SimulationWorkerStage::Aggregated => {
+                bail!("disaggregated replay completed an aggregated worker")
+            }
+        };
+        for &scheduler_id in scheduler_ids {
+            self.flow.action_queues.wake_deferred(stage, scheduler_id);
+        }
+        Ok(())
     }
 
     fn execute_action(
@@ -1674,13 +1713,6 @@ where
                     self.acknowledge_action(uuid, issued, HandoffActionOutcome::Noop)?;
                     return Ok(ActionExecution::Applied);
                 };
-                if self.prefill_engine.worker_is_busy(worker_idx)? {
-                    return Ok(ActionExecution::Deferred {
-                        action: issued,
-                        stage: SimulationWorkerStage::Prefill,
-                        worker_idx,
-                    });
-                }
                 let effects = self.prefill_engine.apply_command(
                     worker_idx,
                     Command::CancelSource { handoff_id },
@@ -1700,13 +1732,6 @@ where
                     self.acknowledge_action(uuid, issued, HandoffActionOutcome::Noop)?;
                     return Ok(ActionExecution::Applied);
                 };
-                if self.decode_engine.worker_is_busy(worker_idx)? {
-                    return Ok(ActionExecution::Deferred {
-                        action: issued,
-                        stage: SimulationWorkerStage::Decode,
-                        worker_idx,
-                    });
-                }
                 let effects = self.decode_engine.apply_command(
                     worker_idx,
                     Command::CancelDestination { handoff_id },
@@ -1811,6 +1836,9 @@ where
 
     fn finish_logical_request(&mut self, uuid: Uuid, remove_actions: bool) -> Result<()> {
         self.flow.prepare_logical_finish(uuid, remove_actions)?;
+        if self.defer_drive {
+            self.step_freed_slot = true;
+        }
         self.progress.inc_completed();
         #[cfg(test)]
         {
@@ -1863,9 +1891,10 @@ where
     }
 
     /// Return true once the request workload is complete, even if `WorkerReady`
-    /// or control-tick events remain in the queue.
-    fn is_workload_done(&self) -> bool {
-        self.cluster_in_flight() == 0
+    /// or control-tick (`ScalingTick`/`TelemetryTick`) events remain in the queue.
+    pub(crate) fn is_workload_done(&self) -> bool {
+        !self.drive_pending
+            && self.cluster_in_flight() == 0
             && CoreAdmissionSource::is_drained(&self.admission)
             && self.prefill_engine.is_drained()
             && self.decode_engine.is_drained()
@@ -1888,15 +1917,26 @@ where
         })
     }
 
-    /// Pick the next logical timestamp from arrivals, worker completions, or decode handoffs.
-    #[cfg(test)]
-    fn next_timestamp(&mut self) -> Option<f64> {
-        self.next_timestamps().0
+    /// Pick the next canonical logical timestamp (excluding pure-telemetry
+    /// ticks) from arrivals, worker completions, or decode handoffs, for the
+    /// external steppable driver.
+    pub(crate) fn next_timestamp(&mut self) -> Option<f64> {
+        self.next_timestamps().1
     }
 
     /// Return both the next event including telemetry and the canonical next
     /// timestamp that can advance replay semantics.
     fn next_timestamps(&mut self) -> (Option<f64>, Option<f64>) {
+        // A step that freed an in-flight slot holds the instant so an
+        // external caller can interleave a same-`now_ms` submission before
+        // the freed pipeline commits to its next pass (the delta-cycle
+        // invariant documented on `step_dynamic_until`). When the caller has
+        // nothing to submit, this deadline is what tells it to call the
+        // stepper again at the same instant rather than treating a stale
+        // "no next event" reading as the end of the run.
+        if self.drive_pending {
+            return (Some(self.now_ms), Some(self.now_ms));
+        }
         let next_arrival_ms = CoreAdmissionSource::next_ready_time_ms(&mut self.admission);
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
@@ -1904,9 +1944,24 @@ where
         } else {
             next_event_ms
         };
+        // Unlike the single-engine aggregated runtime, disaggregated replay
+        // owns two independently scheduled engines: a deadline either one of
+        // them holds (e.g. a pass whose completion has not yet posted to
+        // `self.events`) is real replay-advancing work even when the shared
+        // event queue and admission source both have nothing to report.
+        let next_internal_deadline_ms = choose_next_timestamp(
+            self.prefill_engine.next_internal_deadline_ms(),
+            self.decode_engine.next_internal_deadline_ms(),
+        );
         (
-            choose_next_timestamp(next_arrival_ms, next_event_ms),
-            choose_next_timestamp(next_arrival_ms, next_canonical_event_ms),
+            choose_next_timestamp(
+                choose_next_timestamp(next_arrival_ms, next_event_ms),
+                next_internal_deadline_ms,
+            ),
+            choose_next_timestamp(
+                choose_next_timestamp(next_arrival_ms, next_canonical_event_ms),
+                next_internal_deadline_ms,
+            ),
         )
     }
 
@@ -1995,6 +2050,7 @@ where
 
     /// Process one decode output signal, including decode router frees and request completion.
     fn process_decode_signal(&mut self, signal: OutputSignal) -> Result<()> {
+        let suppress_step_event = self.state(signal.uuid)?.terminal_status().is_some();
         if let Some(token_id) = signal.token_id {
             CoreAdmissionSource::on_output_token(&mut self.admission, signal.uuid, token_id)?;
             // Generalized-engine completion effects become visible at the
@@ -2002,6 +2058,9 @@ where
             // preserves the old EngineComponent::align_pass_token_times
             // semantics without giving the engine ownership of report state.
             self.collector.on_token(signal.uuid, self.now_ms);
+            if self.defer_drive && !suppress_step_event {
+                self.step_tokens.push((signal.uuid, token_id));
+            }
         }
         if !signal.completed {
             return Ok(());
@@ -2074,6 +2133,8 @@ where
     fn apply_worker_completions(&mut self) -> Result<bool> {
         let mut changed = false;
         while let Some(completion) = pop_ready_worker_completions(&mut self.events, self.now_ms) {
+            let stage = completion.stage;
+            let worker_id = completion.worker_id;
             let payloads = match completion.stage {
                 SimulationWorkerStage::Prefill => self
                     .prefill_engine
@@ -2085,6 +2146,7 @@ where
                     bail!("disaggregated replay received an aggregated completion")
                 }
             };
+            self.wake_deferred_actions(stage, worker_id)?;
             for payload in payloads {
                 self.process_worker_completion_payload(payload)?;
             }
@@ -2099,7 +2161,6 @@ where
     ) -> Result<()> {
         match payload.stage {
             SimulationWorkerStage::Prefill => {
-                self.wake_deferred_actions(SimulationWorkerStage::Prefill, payload.worker_idx);
                 if self.collect_fpm
                     && let Some(fpm) = payload.fpm
                 {
@@ -2114,7 +2175,6 @@ where
                 )
             }
             SimulationWorkerStage::Decode => {
-                self.wake_deferred_actions(SimulationWorkerStage::Decode, payload.worker_idx);
                 if self.collect_fpm
                     && let Some(fpm) = payload.fpm
                 {
@@ -2194,6 +2254,9 @@ where
             }
             changed = true;
             self.handle_prefill_engine_effects(effects)?;
+            if self.defer_drive && self.step_freed_slot {
+                return Ok(changed);
+            }
         }
     }
 
@@ -2213,6 +2276,44 @@ where
             }
             changed = true;
             self.handle_decode_engine_effects(effects)?;
+            if self.defer_drive && self.step_freed_slot {
+                return Ok(changed);
+            }
+        }
+    }
+
+    fn settle_internal_work(&mut self) -> Result<bool> {
+        let mut changed = false;
+        let mut consecutive_internal_steps = 0usize;
+        loop {
+            let prefill_effects = self.prefill_engine.process_internal_work(self.now_ms)?;
+            let decode_effects = self.decode_engine.process_internal_work(self.now_ms)?;
+            let made_progress = prefill_effects.made_progress || decode_effects.made_progress;
+            if !prefill_effects.engine_events.is_empty() {
+                self.apply_prefill_observations(
+                    prefill_effects.engine_events,
+                    KvIngestBoundary::OffloadTick,
+                )?;
+            }
+            if !decode_effects.engine_events.is_empty() {
+                self.apply_decode_observations(
+                    decode_effects.engine_events,
+                    KvIngestBoundary::OffloadTick,
+                )?;
+            }
+            changed |= made_progress;
+            if !made_progress {
+                return Ok(changed);
+            }
+            consecutive_internal_steps = consecutive_internal_steps
+                .checked_add(1)
+                .context("internal-work convergence counter overflow")?;
+            if consecutive_internal_steps >= MAX_CONSECUTIVE_INTERNAL_STEPS {
+                bail!(
+                    "offline replay detected non-converging engine internal work at {} ms",
+                    self.now_ms
+                );
+            }
         }
     }
 
@@ -2435,13 +2536,34 @@ where
         }
         loop {
             let mut changed = self.prune_stale_transfer_events();
+            changed |= self.settle_internal_work()?;
             changed |= self.apply_worker_completions()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.release_ready_arrivals()?;
             changed |= self.drive_pending_actions()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.drive_prefill_workers()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.drive_decode_workers()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             let removed_prefill = self
                 .prefill_engine
                 .try_remove_drained()
@@ -2831,7 +2953,7 @@ where
     /// worker-seconds for both pools over the interval just elapsed.
     /// `worker_count()` counts active + starting-up + draining workers, so this
     /// captures the startup ramp and the scale-down drain tail.
-    fn advance_now_ms(&mut self, new_now_ms: f64) {
+    pub(crate) fn advance_now_ms(&mut self, new_now_ms: f64) {
         let dt_ms = (new_now_ms - self.now_ms).max(0.0);
         if dt_ms > 0.0 {
             let prefill_worker_seconds = self.prefill_engine.worker_count() as f64 * dt_ms / 1000.0;
@@ -3188,12 +3310,6 @@ where
         Ok(self.is_workload_done())
     }
 
-    /// Current simulated time in milliseconds.
-    #[cfg(test)]
-    fn now_ms(&self) -> f64 {
-        self.now_ms
-    }
-
     /// Drain accumulated traffic stats since the last drain.
     #[cfg(test)]
     fn drain_traffic(&mut self) -> TrafficStats {
@@ -3346,3 +3462,205 @@ fn direct_to_native(request: DirectRequest) -> Result<crate::engine::Request> {
 #[cfg(test)]
 #[path = "disagg_tests.rs"]
 mod tests;
+
+impl<PlacementPolicyImpl, Observation, Metadata>
+    DisaggRuntimeImpl<PlacementPolicyImpl, Observation, Metadata>
+where
+    Observation: ReplayEngineObservation,
+    Metadata: ReplayAdmissionMetadata,
+    PlacementPolicyImpl: PlacementPolicy<ReplayRequestPayload, Metadata = Metadata, Observation = Observation::Batch>,
+{
+    /// Put this runtime under external control: the caller owns the clock and
+    /// the loop, and the drain splits into an evaluate half and a commit half
+    /// (see [`Self::step_dynamic_until`]).
+    pub(crate) fn into_steppable(mut self) -> Self {
+        self.defer_drive = true;
+        self
+    }
+
+    /// Current simulated time in milliseconds.
+    pub(crate) fn now_ms(&self) -> f64 {
+        self.now_ms
+    }
+
+    /// Shared read access to the accumulating measurements.
+    pub(crate) fn collector(&self) -> &TraceCollector {
+        &self.collector
+    }
+
+    /// Mutable access for the steppable seam's capture and SLA configuration.
+    pub(crate) fn collector_mut(&mut self) -> &mut TraceCollector {
+        &mut self.collector
+    }
+
+    /// Drain the output tokens observed since the previous call.
+    pub(crate) fn take_step_tokens(&mut self) -> Vec<(Uuid, u32)> {
+        std::mem::take(&mut self.step_tokens)
+    }
+
+    pub(crate) fn take_step_terminals(&mut self) -> Vec<(Uuid, ReplayTerminalStatus)> {
+        std::mem::take(&mut self.step_terminals)
+    }
+
+    pub(crate) fn discard_step_terminal(&mut self, uuid: Uuid) {
+        self.step_terminals
+            .retain(|(terminal_uuid, _)| *terminal_uuid != uuid);
+    }
+
+    /// Admit `request` at the current simulated time. The returned id
+    /// correlates the request with later measurements.
+    pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> Result<Uuid> {
+        let arrival_time_ms = self.now_ms;
+        let uuid = self.on_external_arrival(
+            ReplayRequestPayload::materialized(request),
+            arrival_time_ms,
+            None,
+            None,
+        )?;
+        if self.defer_drive {
+            self.drive_pending = true;
+        }
+        Ok(uuid)
+    }
+
+    /// Cancel a dynamically admitted request and return its terminal status
+    /// when it was still owned by this replay.
+    pub(crate) fn cancel_dynamic(&mut self, uuid: Uuid) -> Result<Option<ReplayTerminalStatus>> {
+        let Some((handoff_id, is_live)) = self.flow.requests.get(&uuid).map(|state| {
+            (
+                state.handoff_id,
+                state.counted_in_flight && state.phase != DisaggPhase::Done,
+            )
+        }) else {
+            return Ok(None);
+        };
+        if !is_live {
+            return Ok(None);
+        }
+
+        self.apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })?;
+        self.drive_pending_actions()?;
+        self.step_freed_slot = true;
+        if self.cluster_in_flight() == 0
+            && CoreAdmissionSource::is_drained(&self.admission)
+            && self.prefill_engine.is_drained()
+            && self.decode_engine.is_drained()
+            && self.flow.action_queues.is_empty()
+            && self.flow.requests_by_handoff.is_empty()
+        {
+            self.drive_pending = false;
+        }
+        Ok(Some(ReplayTerminalStatus::Canceled))
+    }
+
+    /// Completion-only slice of [`Self::drain_current_timestamp`]: settle every
+    /// worker completion ready at the current instant without admitting
+    /// arrivals or starting new passes.
+    fn drain_completions(&mut self) -> Result<()> {
+        while self.apply_worker_completions()? {}
+        Ok(())
+    }
+
+    /// Evaluate half of the delta cycle. Settle completions first; if one freed
+    /// an in-flight slot, arm the commit half and return `true` so the caller
+    /// sees the terminal and can submit a replacement at this same instant,
+    /// before the freed prefill pool is committed to its next pass. That
+    /// reproduces `run()`'s in-drain admission. Otherwise complete the full
+    /// drain here.
+    fn evaluate_completions_and_maybe_defer(&mut self) -> Result<bool> {
+        let before_in_flight = self.cluster_in_flight();
+        self.drain_completions()?;
+        if self.cluster_in_flight() < before_in_flight {
+            self.drive_pending = true;
+            return Ok(true);
+        }
+        self.drain_current_timestamp()?;
+        Ok(false)
+    }
+
+    /// Advance at most through `until_ms`, returning the simulated time the
+    /// step ended at. A non-finite `until_ms` runs to the next event whenever
+    /// one exists.
+    ///
+    /// # Delta-cycle invariant
+    ///
+    /// Every decrease of [`Self::cluster_in_flight`] within a step sets
+    /// `step_freed_slot`, and a set `step_freed_slot` forbids time advance.
+    /// The caller's step loop is therefore the outer delta loop: this function
+    /// unrolls the fixpoint exactly once per call, and the caller supplies the
+    /// remaining rounds. A cascade at a single instant — an admission whose
+    /// pass is rejected inline, freeing another slot at the same `now_ms` —
+    /// cannot diverge for that reason: it holds the instant like any other
+    /// terminal, and the next call resumes at the same `now_ms`.
+    ///
+    /// The `debug_assert!` below is the belt. `step_freed_slot` is set at the
+    /// terminal rather than at the accounting, so a future decrement path that
+    /// bypasses the terminal would break the invariant silently instead of
+    /// failing a test.
+    pub(crate) fn step_dynamic_until(&mut self, until_ms: f64) -> Result<f64> {
+        if until_ms.is_nan() || until_ms < self.now_ms {
+            bail!(
+                "disaggregated step deadline {until_ms}ms precedes runtime time {}ms",
+                self.now_ms
+            );
+        }
+        self.step_freed_slot = false;
+        let entry_in_flight = self.cluster_in_flight();
+        if self.drive_pending {
+            self.drive_pending = false;
+            self.drain_current_timestamp()?;
+        } else if self.evaluate_completions_and_maybe_defer()? {
+            return Ok(self.now_ms);
+        }
+
+        // Hold the instant whenever this step surfaced anything the caller must
+        // react to. A freed slot counts even when it produced no token: the
+        // delta cycle's guarantee is that a step which frees a slot returns
+        // before the freed pipeline is committed to its next pass.
+        if self.step_tokens.is_empty()
+            && !self.step_freed_slot
+            && let Some(next_ms) = self.next_timestamp()
+        {
+            debug_assert!(
+                self.cluster_in_flight() >= entry_in_flight,
+                "in-flight fell from {entry_in_flight} to {} without setting \
+                 step_freed_slot; a step that frees a slot must hold its instant",
+                self.cluster_in_flight()
+            );
+            if next_ms <= until_ms {
+                self.advance_now_ms(next_ms);
+                if self.evaluate_completions_and_maybe_defer()? {
+                    return Ok(self.now_ms);
+                }
+            } else if until_ms.is_finite() {
+                self.advance_now_ms(until_ms);
+            }
+        }
+        Ok(self.now_ms)
+    }
+
+    /// Drain the accumulated measurements into a report stamped with `wall_ms`,
+    /// leaving this runtime's collector empty.
+    pub(crate) fn take_report_dynamic(
+        &mut self,
+        wall_ms: f64,
+    ) -> anyhow::Result<crate::replay::ReplayReport> {
+        anyhow::ensure!(wall_ms.is_finite(), "replay report wall_ms must be finite");
+        anyhow::ensure!(
+            self.is_workload_done(),
+            "replay report requires an idle runtime"
+        );
+        anyhow::ensure!(
+            self.flow
+                .requests
+                .values()
+                .all(|state| !state.counted_in_flight && state.coordinator.is_complete()),
+            "replay report requires completed disaggregated requests"
+        );
+        self.collector
+            .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
+        let report = self.collector.take_report().with_wall_time_ms(wall_ms);
+        self.flow.requests.clear();
+        Ok(report)
+    }
+}
