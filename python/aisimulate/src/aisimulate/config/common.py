@@ -115,7 +115,7 @@ class ResourceConfig(StrictModel):
     cpu_limit: PositiveStrictInt | Literal["auto"] = "auto"
     reserve_memory_gib: float = Field(default=2.0, strict=True, ge=0, allow_inf_nan=False)
     reserve_memory_fraction: float = Field(default=0.1, strict=True, ge=0, lt=1, allow_inf_nan=False)
-    available_memory_fraction: float = Field(default=0.5, strict=True, gt=0, le=1, allow_inf_nan=False)
+    available_memory_fraction: float = Field(default=0.9, strict=True, gt=0, le=1, allow_inf_nan=False)
 
 
 class ExecutionConfig(StrictModel):
