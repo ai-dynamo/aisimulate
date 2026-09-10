@@ -595,6 +595,14 @@ def _parse_llama4_vision_config(
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise ValueError(f"Llama 4 vision_config.{key} must be a positive integer, got {value!r}")
 
+    hidden = int(vision_cfg["hidden_size"])
+    num_heads = int(vision_cfg["num_attention_heads"])
+    if hidden % num_heads != 0:
+        raise ValueError(
+            "Llama 4 vision_config.hidden_size must be divisible by num_attention_heads: "
+            f"hidden_size={hidden}, num_attention_heads={num_heads}"
+        )
+
     processor_required = ("max_patches", "resize_to_max_canvas", "add_global_tile")
     if not isinstance(image_processor_cfg, dict):
         raise TypeError(
@@ -643,7 +651,6 @@ def _parse_llama4_vision_config(
     if spatial_merge_size <= 0 or abs(float(ratio) * spatial_merge_size - 1.0) > 1e-9:
         raise ValueError(f"Llama 4 pixel_shuffle_ratio must have an integral reciprocal, got {ratio!r}")
 
-    hidden = int(vision_cfg["hidden_size"])
     merge_dim = hidden * spatial_merge_size**2
     if merge_dim != vision_cfg["intermediate_size"]:
         raise ValueError(
@@ -662,7 +669,7 @@ def _parse_llama4_vision_config(
     return VisionEncoderConfig(
         depth=int(vision_cfg["num_hidden_layers"]),
         hidden_size=hidden,
-        num_heads=int(vision_cfg["num_attention_heads"]),
+        num_heads=num_heads,
         intermediate_size=int(vision_cfg["intermediate_size"]),
         patch_size=int(vision_cfg["patch_size"]),
         temporal_patch_size=1,

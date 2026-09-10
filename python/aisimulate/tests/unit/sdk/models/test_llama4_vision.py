@@ -159,6 +159,20 @@ def test_llama4_parser_rejects_invalid_integer_vision_fields(field, value):
         _parse_hf_config_json(raw)
 
 
+@pytest.mark.parametrize("model_id", LLAMA4_MODEL_IDS)
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("num_heads", [3, 15, 17])
+def test_llama4_rejects_incompatible_attention_geometry(tmp_path, model_id, language_only, num_heads):
+    raw = deepcopy(get_model_config_from_model_path(model_id)["raw_config"])
+    processor = raw.pop("image_processor_config")
+    raw["vision_config"]["num_attention_heads"] = num_heads
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    (tmp_path / "preprocessor_config.json").write_text(json.dumps(processor))
+
+    with pytest.raises(ValueError, match="hidden_size must be divisible by num_attention_heads"):
+        get_model(str(tmp_path), _model_config(language_only=language_only), "trtllm")
+
+
 def _model_config(**overrides):
     values = {
         "tp_size": 1,
