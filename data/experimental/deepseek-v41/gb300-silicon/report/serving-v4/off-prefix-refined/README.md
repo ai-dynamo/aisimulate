@@ -179,7 +179,7 @@ The adjacent compressed comparison results retain per-cohort observations/predic
 
 `closure-receipt.json` records the checkpoint, immutable image, installed packages, actual scheduler configuration, runtime strategy, counts and source revisions. `artifact-provenance.json` records original/decompressed bytes and the portable configs, whose only change is making `systems_path` relative to the repository root. `measurement.json` binds the privately retained full native audit.
 
-The source adapters used for this report are pinned in `closure-receipt.json` under `source.fpm_tools_commit`: `data/experimental/deepseek-v41/verification-plan/compare_e2e.py` and `compare_trace.py` in that revision. Full prediction replay also requires the bound native audit and client/scheduler receipts; those private runtime artifacts are not replaced by this public summary. Plot/table reproduction needs only Python 3.13, Matplotlib, and the adjacent compressed results:
+The source adapters used for this report are pinned in `closure-receipt.json` under `source.fpm_tools_commit`: `data/experimental/deepseek-v41/verification-plan/compare_e2e.py` and `compare_trace.py` in that revision. Full prediction replay also requires the bound native audit and client/scheduler receipts; those private runtime artifacts are not replaced by this public summary. Plot/table reproduction uses Python 3.13, Matplotlib, and this checked-out report tree, including the shared `../../descriptive_metrics.py`, adjacent compressed comparisons, `descriptive-inputs.json` and `original-artifact-hashes.json`:
 
 ```sh
 python write_readme.py --directory .
