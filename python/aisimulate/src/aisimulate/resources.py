@@ -9,6 +9,7 @@ capacity. They are conservative planning estimates, not promises about peak RSS.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from collections.abc import Mapping
@@ -99,6 +100,8 @@ def _cgroup_directories(proc: Path, root: Path) -> list[tuple[Path, str]]:
                 relative = Path(member.lstrip("/"))
                 if ".." in relative.parts:
                     raise ResourceLimitError("container resource membership is outside its visible namespace") from None
+            if ".." in relative.parts:
+                raise ResourceLimitError("container resource membership is outside its visible namespace")
             directory = mount_point / relative
             while directory.is_relative_to(mount_point):
                 result.append((directory, kind))
@@ -191,14 +194,33 @@ def workload_bounds(config: Any) -> dict[str, Any]:
     raw = traffic.model_dump(mode="python", exclude_none=True)
     source, load, stop = raw["source"], raw["load"], raw.get("stop", {})
     if source["type"] == "trace":
-        return {"source_type": "trace", "trace_paths": source["paths"], "trace_format": source["format"]}
+        return {
+            "source_type": "trace",
+            "trace_paths": source["paths"],
+            "trace_format": source["format"],
+            "trace_block_size": source.get("block_size", 512),
+            "agentic_lanes": load.get("agentic_lanes", 1),
+        }
     session = source["type"] == "synthetic-session"
     count = stop.get("sessions" if session else "requests")
     ratio = stop.get("sessions_per_load_unit" if session else "requests_per_load_unit", 0)
     concurrency = _upper(load.get("concurrency"), 0)
     rate = _upper(load.get("requests_per_second", load.get("sessions_per_second")), 0)
     if count is None and load["type"] == "kv_capacity_fraction":
-        return {"source_type": source["type"], "unresolved_resource_count": True}
+        engine = config.engine.model_dump(mode="python", exclude_none=True)
+        capacities = []
+        for role in engine.get("workers", {}).values():
+            cache = role.get("kv_cache") or {}
+            capacity = cache.get("capacity") or {}
+            if capacity.get("type") != "fixed" or cache.get("block_size") is None:
+                return {"source_type": source["type"], "unresolved_resource_count": True}
+            capacities.append(int(_upper(capacity["blocks"], 0)) * int(_upper(cache["block_size"], 0)))
+        gpus = getattr(getattr(config, "optimization", None), "constraints", None)
+        if not capacities or gpus is None:
+            return {"source_type": source["type"], "unresolved_resource_count": True}
+        # Each physical GPU can contribute at most one replica's fixed token
+        # capacity. Ignoring prompt length deliberately overbounds concurrency.
+        concurrency = max(1, math.ceil(max(capacities) * gpus.max_candidate_gpus * _upper(load["fraction"], 1)))
     count = count if count is not None else max(1, round(ratio * (concurrency or rate)))
     return {
         "source_type": source["type"],
@@ -210,12 +232,118 @@ def workload_bounds(config: Any) -> dict[str, Any]:
     }
 
 
+def _estimate_trace(workload: Mapping[str, Any], *, stack: str) -> ResourceEstimate:
+    """Inspect bounded JSON metadata, never synthesize prompt/output arrays."""
+    unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
+    format_name = workload.get("trace_format", "mooncake")
+    if stack not in {"engine", "dynamo"} or format_name not in {
+        "mooncake",
+        "mooncake-delta",
+        "agentic_mooncake",
+        "applied_compute_agentic",
+        "dynamo",
+        "weka",
+    }:
+        return unqualified("trace format or runner has no qualified allocation model")
+    length_keys = {
+        "in",
+        "out",
+        "input_length",
+        "output_length",
+        "input_tokens",
+        "output_tokens",
+        "input_prompt_length",
+        "assistant_response_length",
+        "tool_call_output_length",
+        "final_assistant_response_length",
+        "max_output_tokens",
+        "tool_tokens",
+        "system_tokens",
+    }
+    token_keys = {"input_token_ids", "output_token_ids", "prompt_token_ids"}
+    hash_keys = {"hash_ids", "input_sequence_hashes"}
+    total_bytes = tokens = hashes = records = turns = 0
+    block_size = int(workload.get("trace_block_size") or 512)
+
+    def visit(value: Any) -> None:
+        nonlocal tokens, hashes, records, turns, block_size
+        if isinstance(value, dict):
+            if length_keys.intersection(value) or token_keys.intersection(value):
+                records += 1
+            for key, item in value.items():
+                if key in length_keys:
+                    values = item if isinstance(item, list) else [item]
+                    if any(type(number) is not int or number < 0 for number in values):
+                        raise ValueError("trace token lengths must be nonnegative integers")
+                    tokens += sum(values)
+                elif key in token_keys and isinstance(item, list):
+                    tokens += len(item)
+                elif key in hash_keys and isinstance(item, list):
+                    hashes += len(item)
+                elif key in {"block_size", "trace_block_size"} and type(item) is int:
+                    block_size = max(block_size, item)
+                elif key == "num_turns" and type(item) is int:
+                    turns += item + 1
+                else:
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    paths = workload.get("trace_paths") or [workload["trace_path"]]
+    file_count = scanned_bytes = 0
+    try:
+        for raw_path in paths:
+            source = Path(raw_path)
+            files = source.rglob("*") if source.is_dir() else (source,)
+            for path in files:
+                file_count += 1
+                if file_count > 1024:
+                    return unqualified("trace metadata exceeds the bounded 1024-path inspection limit")
+                if path.is_symlink():
+                    return unqualified("trace symlinks have no stable resource identity")
+                if not path.is_file() or (format_name == "weka" and path.suffix.lower() not in {".json", ".jsonl"}):
+                    continue
+                total_bytes += path.stat().st_size
+                if file_count > 1024 or total_bytes > 16 * MIB:
+                    return unqualified("trace metadata exceeds the bounded 16 MiB / 1024-file inspection limit")
+                with path.open(encoding="utf-8") as stream:
+                    if format_name == "weka" and path.suffix.lower() == ".json":
+                        document = stream.read(256 * 1024 + 1)
+                        if len(document) > 256 * 1024:
+                            return unqualified("trace JSON document exceeds the bounded 256 KiB inspection limit")
+                        scanned_bytes += len(document.encode("utf-8"))
+                        if scanned_bytes > 16 * MIB:
+                            return unqualified("trace grew beyond the bounded inspection limit")
+                        visit(json.loads(document))
+                    else:
+                        while line := stream.readline(256 * 1024 + 1):
+                            if len(line) > 256 * 1024:
+                                return unqualified("trace JSON record exceeds the bounded 256 KiB inspection limit")
+                            scanned_bytes += len(line.encode("utf-8"))
+                            if scanned_bytes > 16 * MIB:
+                                return unqualified("trace grew beyond the bounded inspection limit")
+                            if line.strip():
+                                visit(json.loads(line))
+    except (OSError, ValueError, RecursionError) as exc:
+        return unqualified(f"cannot inspect trace metadata: {exc}")
+    if records == 0:
+        return unqualified("trace metadata contains no recognized request token lengths")
+    total_bytes = max(total_bytes, scanned_bytes)
+    tokens += hashes * block_size
+    count = max(records, turns)
+    # Delta and tool-turn sources can accumulate every preceding turn's tokens.
+    cumulative = count if format_name in {"mooncake-delta", "applied_compute_agentic"} else 1
+    lanes = int(workload.get("agentic_lanes") or 1)
+    peak = WORKER_BASELINE_BYTES + 128 * total_bytes + lanes * (32 * tokens * cumulative + 65536 * count)
+    return ResourceEstimate(
+        "trace-json-metadata-v1", None, 0, 0, peak, "bounded metadata estimate; runtime trace validation still required"
+    )
+
+
 def estimate_workload(workload: Mapping[str, Any], *, stack: str, concurrency: int | None = None) -> ResourceEstimate:
     if workload.get("trace_paths") or workload.get("trace_path"):
-        # On-disk size is not an upper bound for expanded token arrays or graphs.
-        return ResourceEstimate(
-            "trace-unqualified-v1", None, 0, 0, None, "trace expansion has no qualified memory bound"
-        )
+        return _estimate_trace(workload, stack=stack)
     load = concurrency or workload.get("concurrency") or workload.get("request_rate")
     count = workload.get("request_count")
     if count is None:
@@ -284,7 +412,7 @@ def build_plan(
         "estimate": asdict(estimate),
         "requested_parallelism": requested_parallelism,
         "effective_parallelism": workers,
-        "reason": estimate.reason or ("" if workers else "candidate exceeds the host memory budget"),
+        "reason": estimate.reason if peak is None else ("" if workers else "candidate exceeds the host memory budget"),
     }
 
 

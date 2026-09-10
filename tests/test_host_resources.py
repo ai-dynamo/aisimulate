@@ -303,3 +303,50 @@ def test_missing_container_mount_probe_fails_closed(tmp_path, host):
     (proc / "self/cgroup").write_text("0::/\n")
     with pytest.raises(ResourceLimitError, match="membership and mounts"):
         constrain_to_cgroups(host, proc=proc, root=tmp_path)
+
+
+def test_trace_scalar_lengths_are_counted_before_token_expansion(tmp_path, host):
+    trace = tmp_path / "large.jsonl"
+    trace.write_text(json.dumps({"input_length": 10**12, "output_length": 1, "hash_ids": [1]}) + "\n")
+    plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["estimated_peak_bytes"] > 32 * 10**12
+
+
+def test_trace_inspection_refuses_oversized_record_before_json_parse(tmp_path, host, monkeypatch):
+    trace = tmp_path / "large.jsonl"
+    trace.write_text(" " * (256 * 1024 + 1))
+    monkeypatch.setattr(resources.json, "loads", lambda _: pytest.fail("record must be bounded before JSON parsing"))
+    plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
+    assert plan["estimate"]["estimated_peak_bytes"] is None
+    assert "256 KiB" in plan["reason"]
+
+
+def test_delta_trace_accounts_for_cumulative_prompts(tmp_path):
+    trace = tmp_path / "delta.jsonl"
+    trace.write_text((json.dumps({"input_length": 100, "output_length": 10, "hash_ids": [1]}) + "\n") * 5)
+    base = {"trace_path": str(trace), "trace_block_size": 4}
+    ordinary = estimate_workload({**base, "trace_format": "mooncake"}, stack="engine")
+    delta = estimate_workload({**base, "trace_format": "mooncake-delta"}, stack="engine")
+    assert delta.estimated_peak_bytes > ordinary.estimated_peak_bytes
+
+
+def test_fixed_capacity_kv_domain_has_a_conservative_count_bound(host):
+    raw = _config()
+    raw["traffic"]["load"] = {"type": "kv_capacity_fraction", "fraction": {"choices": [0.5, 1.5]}}
+    raw["engine"]["workers"]["aggregated"]["kv_cache"] = {
+        "block_size": 64,
+        "capacity": {"type": "fixed", "blocks": 256},
+    }
+    bounds = workload_bounds(CoreRecommendationConfig.model_validate(raw))
+    assert bounds["concurrency"] == 256 * 64 * 72 * 1.5
+    assert bounds["request_count"] == bounds["concurrency"] * 100
+
+
+def test_cgroup_parent_components_never_escape_a_root_mount(tmp_path, host):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text("0::/../outside\n")
+    (proc / "self/mountinfo").write_text("42 30 0:27 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
+    with pytest.raises(ResourceLimitError, match="outside its visible namespace"):
+        constrain_to_cgroups(host, proc=proc, root=tmp_path)

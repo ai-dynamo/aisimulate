@@ -77,9 +77,12 @@ API automatically changes the adapter's allocation behavior.
 
 An estimate is a planning heuristic, not a hard RSS limit. An unavoidable lower
 bound can prove a candidate does not fit; it cannot prove that execution fits.
-Trace expansion, unresolved KV-relative request counts and unrecognized runner
-models currently have no qualified built-in envelope and are refused by the
-new guarded public paths. They need a runner estimate before admission. The
+Supported JSON traces receive bounded metadata inspection (at most 16 MiB,
+1024 files and 256 KiB per JSON document/record), including scalar token lengths,
+hash expansion and cumulative delta/tool turns. Larger or unknown formats need
+a runner estimate before admission. Fixed-capacity KV-relative recommendation
+domains use a conservative token-capacity bound; other unresolved KV-relative
+counts and unrecognized runner models remain unqualified and are refused. The
 low-level Runner protocol itself remains an execution primitive.
 
 This preflight increment does not enforce native thread counts, supervise RSS,
