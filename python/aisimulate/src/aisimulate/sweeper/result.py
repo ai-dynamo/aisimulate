@@ -20,9 +20,9 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr, model_validator
 
 from .config import Candidate, SmartSearchConfig
 from .replay import ReplaySpec, canonical_json, validate_json_value
@@ -219,6 +219,13 @@ class SweepResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    _execution_resources: dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    @property
+    def execution_resources(self) -> dict[str, Any]:
+        """Host-specific supervision evidence, separate from portable result identity."""
+        return deepcopy(self._execution_resources)
+
     schema_version: Literal["1.0"] = RESULT_SCHEMA_VERSION
     candidate_retention: CandidateRetention = CandidateRetention.ALL
     counts: SweepCounts
@@ -322,7 +329,9 @@ class SweepResult(BaseModel):
         )
         payload = self.model_dump(mode="python")
         payload.update(candidates=candidates, views=views)
-        return type(self).model_validate(payload)
+        result = type(self).model_validate(payload)
+        result._execution_resources = deepcopy(self._execution_resources)
+        return result
 
     def to_json(self, *, indent: int | None = 2) -> str:
         """Serialize the lossless canonical representation using strict JSON."""

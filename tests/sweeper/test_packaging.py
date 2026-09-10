@@ -81,7 +81,7 @@ def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():
     }
     assert scripts == {
         "aiconfigurator": "aiconfigurator.main:main",
-        "aisimulate": "aisimulate.main:main",
+        "aisimulate": "aisimulate.supervision:main",
     }
 
 

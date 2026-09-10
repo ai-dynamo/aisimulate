@@ -75,6 +75,84 @@ def test_budget_reserves_headroom_and_leaves_cpu(host):
     assert resolve_budget(ResourceConfig(), HostResources(32 * GIB, 16 * GIB, 0.5))["cpu_limit"] == 1
 
 
+def test_wave_admission_sums_candidates_and_refreshes_host_headroom(monkeypatch):
+    from types import SimpleNamespace
+
+    import aisimulate.supervision as supervision
+
+    current = HostResources(32 * GIB, 16 * GIB, 8, GIB)
+    monkeypatch.setattr(resources, "discover_host", lambda: current)
+    monkeypatch.setattr(supervision, "checkpoint", lambda *args: None)
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": 123,
+                "memory_limit_bytes": 8 * GIB,
+                "cpu_limit": 4,
+                "reserved_host_memory_bytes": 3 * GIB,
+            }
+        ),
+    )
+
+    class Process:
+        def __init__(self, *args):
+            pass
+
+        def memory_info(self):
+            return SimpleNamespace(rss=GIB)
+
+        def children(self, **kwargs):
+            return [Process()]
+
+    class Factory:
+        def estimate_host_resources(self, workload, **kwargs):
+            return ResourceEstimate("fixture-v1", 1, 0, 0, workload["peak"])
+
+    monkeypatch.setattr(resources.psutil, "Process", Process)
+    factory = resources.GuardedRunnerFactory(Factory(), "fixture", ResourceConfig())
+    specs = [SimpleNamespace(workload={"peak": value * GIB}, concurrency=1) for value in (1, 2)]
+    plan = factory.admit_wave(specs)
+    assert plan["status"] == "admitted"
+    assert plan["required_bytes"] == 3 * GIB
+    assert plan["owned_descendant_rss_bytes"] == GIB
+    # Each candidate fits individually, but their combined reservations do not.
+    with pytest.raises(ResourceLimitError, match="candidate wave"):
+        factory.admit_wave(specs * 2)
+    # The fixed budget remains unchanged when another application consumes RAM.
+    current = HostResources(32 * GIB, 4 * GIB, 8, GIB)
+    with pytest.raises(ResourceLimitError, match="candidate wave"):
+        factory.admit_wave(specs)
+
+
+def test_refused_wave_never_submits_a_replay(monkeypatch):
+    from pathlib import Path
+
+    from aisimulate.recommend import _run_recommendation
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper.search import ProcessPoolExecutor
+
+    def refuse(*args):
+        raise ResourceLimitError("wave admission refused")
+
+    def unexpected_submit(*args, **kwargs):
+        pytest.fail("refused wave reached worker submission")
+
+    monkeypatch.setattr(resources.GuardedRunnerFactory, "admit_wave", refuse)
+    monkeypatch.setattr(ProcessPoolExecutor, "submit", unexpected_submit)
+    raw = yaml.safe_load(
+        Path("tests/e2e/configs/unified_cli/recommend/engine/01-default-preset-throughput.yaml").read_text()
+    )
+    raw["optimizer"].update(max_trials=1, parallelism=1)
+    with pytest.raises(ResourceLimitError, match="wave admission refused"):
+        _run_recommendation(
+            CoreRecommendationConfig.model_validate(raw),
+            stack="engine",
+            runner_factory=EngineReplayRunnerFactory(),
+            show_progress=False,
+        )
+
+
 def test_low_memory_never_falls_back_to_one_worker():
     host = HostResources(8 * GIB, GIB, 4)
     plan = build_plan({"isl": 8, "osl": 2, "request_count": 1}, stack="engine", host=host)
@@ -186,7 +264,7 @@ def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command,
     config.write_text(yaml.safe_dump(raw))
     out = tmp_path / "result"
     args = [command, "--stack", "dynamo", "--config", str(config), "--output-dir", str(out)]
-    assert cli.main(args + (["--dry-run"] if dry_run else [])) == 3
+    assert cli._main(args + (["--dry-run"] if dry_run else [])) == 3
     report = json.loads((out / "resource-plan.json").read_text())
     assert report["status"] == "resource_limited"
     assert report["estimate"]["input_token_bytes"] == 264_241_152_000
@@ -213,7 +291,7 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
             return "result"
 
     monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
-    assert recommendation.run_recommendation(config, stack="engine", runner_factory=object()) == "result"
+    assert recommendation._run_recommendation(config, stack="engine", runner_factory=object()) == "result"
     assert seen[0].parallel_evals == 2
     assert seen[0].candidates_per_round == 8
     assert seen[0].max_trials == 256
@@ -262,7 +340,7 @@ def test_error_diagnostic_preserves_existing_output(tmp_path, monkeypatch, host)
     output.mkdir()
     evidence = output / "resource-plan.json"
     evidence.write_text("existing evidence")
-    assert cli.main(["recommend", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)]) == 3
+    assert cli._main(["recommend", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)]) == 3
     assert evidence.read_text() == "existing evidence"
 
 

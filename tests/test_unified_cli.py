@@ -154,7 +154,7 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(runner))
 
     assert (
-        cli.main(
+        cli._main(
             [
                 "predict",
                 "--config",
@@ -217,7 +217,7 @@ def test_predict_online_is_forwarded_through_replay_spec(
     )
 
     assert (
-        cli.main(
+        cli._main(
             [
                 "predict",
                 "--online",
@@ -257,7 +257,7 @@ def test_predict_online_rejects_runner_without_online_capability(
     )
 
     with pytest.raises(SystemExit, match="2"):
-        cli.main(["predict", "--online", "--config", str(config_path)])
+        cli._main(["predict", "--online", "--config", str(config_path)])
 
     assert "runner does not support execution mode 'online'" in capsys.readouterr().err
 
@@ -268,7 +268,7 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
 
     monkeypatch.setattr(cli, "resolve_runner_factory", unavailable)
     try:
-        cli.main(["predict", "--stack", "missing", "--config", "/does/not/exist"])
+        cli._main(["predict", "--stack", "missing", "--config", "/does/not/exist"])
     except SystemExit as exc:
         assert exc.code == 2
     else:
@@ -312,7 +312,7 @@ def test_recommend_runner_incompatibility_is_cli_config_error(
     )
 
     with pytest.raises(SystemExit, match="2"):
-        cli.main(
+        cli._main(
             [
                 "recommend",
                 "--config",
@@ -356,7 +356,7 @@ def test_set_adapter_path_is_validated_and_materialized_by_adapter(
     monkeypatch.setattr(cli, "resolve_config_adapters", resolve)
 
     assert (
-        cli.main(
+        cli._main(
             [
                 "predict",
                 "--config",
@@ -407,7 +407,7 @@ def test_engine_stack_rejects_explicit_unavailable_component(
     monkeypatch.setattr(cli, "resolve_config_adapters", unavailable)
 
     with pytest.raises(SystemExit, match="2"):
-        cli.main(["predict", "--config", str(config_path)])
+        cli._main(["predict", "--config", str(config_path)])
     assert "engine.router" in capsys.readouterr().err
 
 
@@ -480,7 +480,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     monkeypatch.setattr(cli, "resolve_config_adapters", resolve)
 
     assert (
-        cli.main(
+        cli._main(
             [
                 "recommend",
                 "--config",
@@ -509,7 +509,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
 
     prediction_output = tmp_path / "predict-output"
     assert (
-        cli.main(
+        cli._main(
             [
                 "predict",
                 "--config",
@@ -606,13 +606,13 @@ def test_recommendation_outputs_each_concrete_prediction_once(
         cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
     )
     monkeypatch.setattr(
-        "aisimulate.recommend.run_recommendation",
+        "aisimulate.recommend._run_recommendation",
         lambda *args, **kwargs: _RecommendationResult(candidates),
     )
 
     output = tmp_path / "out"
     assert (
-        cli.main(
+        cli._main(
             [
                 "recommend",
                 "--config",
@@ -676,7 +676,7 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(
     monkeypatch.setattr(cli, "_resolve_section_adapters", lambda sections, stack: {})
     monkeypatch.setattr(
         recommendation_module,
-        "run_recommendation",
+        "_run_recommendation",
         lambda *args, **kwargs: _RecommendationResult([], failed=1),
     )
     monkeypatch.setattr(cli, "_resource_plan", lambda *args: {"status": "admitted"})

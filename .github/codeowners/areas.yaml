@@ -137,6 +137,14 @@ shared:
     owners: [replay, sweeper, maintainers]
   - glob: python/aisimulate/src/aisimulate/resources.py
     owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/supervision.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/resource_worker.py
+    owners: [replay, sweeper, maintainers]
+  - glob: python/aisimulate/src/aisimulate/cli_args.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_resource_supervision.py
+    owners: [replay, sweeper, maintainers]
   - glob: tests/test_host_resources.py
     owners: [replay, sweeper, maintainers]
   - glob: docs/local-resources.md

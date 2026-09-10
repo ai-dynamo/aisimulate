@@ -315,7 +315,7 @@ def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
     assert candidates == []
     assert len(pools) > 1
     assert all(pool.shutdown_called for pool in pools)
-    assert all(False in pool.shutdown_waits for pool in pools[:-1])
+    assert all(True in pool.shutdown_waits for pool in pools[:-1])
     assert pools[-1].shutdown_waits == [True]
     assert all(
         result[0] == "infeasible" and "exceed runtime" in result[1]
@@ -361,7 +361,7 @@ def test_broken_worker_pool_is_friendly_and_always_cleaned_up(monkeypatch):
         )
 
     assert pools[0].shutdown_called
-    assert pools[0].shutdown_waits == [False]
+    assert pools[0].shutdown_waits == [True]
 
 
 def test_over_budget_candidates_are_observed_infeasible(monkeypatch):

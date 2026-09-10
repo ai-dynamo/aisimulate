@@ -85,9 +85,57 @@ domains use a conservative token-capacity bound; other unresolved KV-relative
 counts and unrecognized runner models remain unqualified and are refused. The
 low-level Runner protocol itself remains an execution primitive.
 
-This preflight increment does not enforce native thread counts, supervise RSS,
-or contain allocations during adapter initialization and report serialization.
-The companion worker-supervision change adds runtime protection. macOS offers
-no portable hard RSS cap; preallocation checks remain necessary even with a
-watchdog. Do not describe a successful resource plan as proof that the original
-OS panic is resolved.
+Preflight checks complement the supervised execution below; neither is a proof
+that an operating-system panic cannot occur.
+
+## Supervised execution
+
+The CLI now starts a supervised child before importing stack runtimes. The
+public `run_recommendation` Python function uses the same process boundary;
+custom factories/providers must support Python's spawn/pickle contract. Keep
+script entrypoints behind `if __name__ == "__main__":` as with multiprocessing.
+Low-level Runner and Sweeper objects remain explicit execution primitives.
+
+`optimizer.parallelism` defaults to `auto`. Its historical suggestion batch
+size stays 16; an existing integer remains both the suggestion batch size and
+an upper limit on concurrent evaluations. The host budget can reduce execution
+parallelism without changing suggestions, seeds, trial budgets or traffic.
+Supervised sweep workers retire after each candidate to release retained runtime
+memory, at the cost of repeated worker startup. Before each wave, the coordinator
+sums concrete candidate estimates and rechecks current owned RSS and host
+headroom. A wave that no longer fits is refused before dispatch. Timeout recovery terminates,
+escalates to kill and joins old workers before replacing the pool. Normal pool
+shutdown also has a bounded grace period.
+
+Worker environments set supported OpenMP, BLAS, Rayon, Polars and TensorFlow
+thread limits to one before imports. Linux execution also inherits a restricted
+CPU affinity set; macOS uses thread settings and reduced scheduling priority.
+These are execution controls, not a portable hard CPU quota for arbitrary
+third-party runtimes. Initialization is limited to 60 seconds by default via
+`execution.resources.initialization_timeout_seconds`. Direct prediction shutdown
+has a separate five-second `shutdown_timeout_seconds` limit.
+
+The parent samples its RSS, owned descendant RSS and current host/container
+headroom every 50 ms. A budget/headroom breach stops the run and terminates its
+owned process group and observed descendants. The direct child is reaped before
+returning; timeout replacement separately joins every pool worker. macOS RSS
+polling remains best effort and can miss a fast allocation burst, so the
+preallocation checks remain active. An estimate or watchdog is not proof that
+an OS panic cannot occur.
+
+The CLI writes `resource-runtime.json` with requested limits, the resolved
+budget, observed peak RSS, terminal status and cleanup evidence. It also writes
+`execution-events.jsonl`, preserving normalized requested configurations,
+resource plans, started waves and completed-candidate records. A partial final
+line is discarded after interruption. Resource failures exit 3; cancellation
+exits 130, and supervisor timeouts exit 124. An interrupted run does not publish
+normal completed-run recommendations. Its completed-candidate events are
+partial evidence and must be read with the runtime status.
+
+Checkpoints are bounded to 1 MiB per record and 64 MiB per run. CLI configuration
+parsing is limited to 1 MiB. These bounds prevent diagnostics and parent-side
+configuration handling from becoming a new unbounded allocation path. The SDK
+bounds result transfer before parsing, exposes successful runtime evidence as
+`result.execution_resources`, and raises `ResourceLimitError` with runtime and
+bounded partial-event evidence in `.plan` on a memory refusal. Host evidence is
+separate from the portable result JSON and its input fingerprint.

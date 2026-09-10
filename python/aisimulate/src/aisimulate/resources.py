@@ -151,6 +151,16 @@ def discover_host() -> HostResources:
 
 
 def resolve_budget(policy: ResourceConfig, host: HostResources) -> dict[str, Any]:
+    inherited = os.environ.get("_AISIMULATE_SUPERVISED_BUDGET")
+    if inherited:
+        budget = json.loads(inherited)
+        supervisor_rss = psutil.Process(budget["supervisor_pid"]).memory_info().rss
+        return {
+            "memory_limit_bytes": budget["memory_limit_bytes"],
+            "cpu_limit": budget["cpu_limit"],
+            "reserved_host_memory_bytes": budget["reserved_host_memory_bytes"],
+            "coordinator_memory_bytes": host.process_memory_bytes + supervisor_rss + COORDINATOR_RESERVE_BYTES,
+        }
     reserve = max(int(policy.reserve_memory_gib * GIB), int(policy.reserve_memory_fraction * host.total_memory_bytes))
     headroom = max(0, host.available_memory_bytes - reserve)
     if policy.memory_limit_gib == "auto":
@@ -472,3 +482,54 @@ class GuardedRunnerFactory:
 
     def create(self, worker_id):
         return GuardedRunner(self.factory.create(worker_id), self.stack, self.policy, self.factory)
+
+    def admit_wave(self, specs) -> dict[str, Any]:
+        """Reserve the whole wave against current coordinator and host headroom."""
+        host = discover_host()
+        budget = resolve_budget(self.policy, host)
+        try:
+            descendant_rss = 0
+            for process in psutil.Process().children(recursive=True):
+                try:
+                    descendant_rss += process.memory_info().rss
+                except psutil.NoSuchProcess:
+                    pass
+        except psutil.Error as exc:
+            raise ResourceLimitError(f"cannot inspect workers before admission: {exc}") from exc
+        plans = [
+            build_plan(
+                spec.workload,
+                stack=self.stack,
+                concurrency=spec.concurrency,
+                policy=self.policy,
+                host=host,
+                factory=self.factory,
+            )
+            for spec in specs
+        ]
+        for plan in plans:
+            require_plan(plan)
+        required = sum(plan["estimate"]["estimated_peak_bytes"] for plan in plans)
+        available = max(
+            0,
+            min(
+                budget["memory_limit_bytes"] - budget["coordinator_memory_bytes"] - descendant_rss,
+                host.available_memory_bytes - budget["reserved_host_memory_bytes"] - COORDINATOR_RESERVE_BYTES,
+            ),
+        )
+        plan = {
+            "schema_version": 1,
+            "status": "admitted" if required <= available else "resource_limited",
+            "reason": "" if required <= available else "candidate wave exceeds current host headroom",
+            "required_bytes": required,
+            "available_bytes": available,
+            "owned_descendant_rss_bytes": descendant_rss,
+            "candidate_estimates": [plan["estimate"] for plan in plans],
+            "budget": budget,
+        }
+        from .supervision import checkpoint
+
+        checkpoint("wave_resource_plan", plan)
+        if plan["status"] == "resource_limited":
+            raise ResourceLimitError(plan["reason"], plan=plan)
+        return plan

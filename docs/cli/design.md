@@ -993,7 +993,7 @@ mapping; every candidate uses its single hardware identifier.
 optimizer:
   algorithm: bayesian
   max_trials: 320
-  parallelism: 16
+  parallelism: auto
   candidate_timeout_seconds: 600
   seed: 42
 ```
@@ -1002,7 +1002,7 @@ optimizer:
 |---|---:|---|---|---|
 | `optimizer.algorithm` | `bayesian` | `x` | `-` | `bayesian` or `random`. |
 | `optimizer.max_trials` | `320` | `x` | `-` | Positive total trial budget. |
-| `optimizer.parallelism` | `16` | `x` | `-` | Positive. |
+| `optimizer.parallelism` | `auto` | `x` | `-` | `auto` or a positive integer. Host RAM/CPU limits cap concurrent evaluations; `auto` preserves a suggestion batch of 16. |
 | `optimizer.candidate_timeout_seconds` | `600` | `x` | `-` | Positive wall-clock limit per candidate. |
 | `optimizer.seed` | `42` | `x` | `-` | Nonnegative. |
 
