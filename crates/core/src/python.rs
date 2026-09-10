@@ -202,6 +202,7 @@ impl AicTimingConfig {
 
 struct AicTimingModel {
     engine: Py<PyAny>,
+    decoder_replay: bool,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
 }
@@ -275,6 +276,7 @@ impl AicTimingModel {
         })?;
         Ok(Self {
             engine,
+            decoder_replay: config.decoder_replay,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
         })
@@ -282,6 +284,17 @@ impl AicTimingModel {
 }
 
 impl TimingModel for AicTimingModel {
+    fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
+        if self.decoder_replay {
+            ensure!(
+                requests.windows(2).all(|pair| pair[0] == pair[1]),
+                "decoder replay requires identical per-request new-token and cached-prefix lengths; \
+                 heterogeneous prefill cannot be represented by the mean-based replay timing API"
+            );
+        }
+        Ok(())
+    }
+
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -330,14 +343,17 @@ impl TimingModel for AicTimingModel {
         }
 
         let batch_size = checked_u32(batch_size, "decode batch size")?;
-        let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
+        // Both scheduler implementations include the current input token in
+        // their sequence length before sampling the next token. The op API's
+        // isl is past KV; osl=2 adds the current token exactly once.
+        let mean_past_kv = mean_context_length
+            .checked_sub(1)
+            .context("mean decode context must include the current input token")?;
+        let mean_past_kv = checked_u32(mean_past_kv, "mean past KV length")?;
         Python::with_gil(|py| {
             self.engine
                 .bind(py)
-                .call_method1(
-                    "predict_decode_latency",
-                    (batch_size, mean_context_length, 2),
-                )?
+                .call_method1("predict_decode_latency", (batch_size, mean_past_kv, 2))?
                 .extract::<f64>()
         })
         .map_err(|error| anyhow!("AIC decode prediction failed: {error}"))
@@ -1202,6 +1218,7 @@ assert captured['strict_provenance'] is True
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
         let timing = AicTimingModel {
             engine,
+            decoder_replay: false,
             use_fpm_decode_totals: true,
             fpm_decode_kv_ceiling: None,
         };
@@ -1219,6 +1236,7 @@ assert captured['strict_provenance'] is True
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
         let timing = AicTimingModel {
             engine,
+            decoder_replay: false,
             use_fpm_decode_totals: true,
             fpm_decode_kv_ceiling: None,
         };
@@ -1231,11 +1249,12 @@ assert captured['strict_provenance'] is True
     }
 
     #[test]
-    fn op_level_decode_timing_keeps_legacy_mean_coordinate() {
+    fn op_level_decode_timing_converts_inclusive_mean_to_past_kv() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
         let timing = AicTimingModel {
             engine,
+            decoder_replay: false,
             use_fpm_decode_totals: false,
             fpm_decode_kv_ceiling: None,
         };
@@ -1244,7 +1263,38 @@ assert captured['strict_provenance'] is True
             .predict_decode_ms(35, 546_081, 15_602, 546_048)
             .unwrap();
 
-        assert_eq!(latency, 546_105.0);
+        assert_eq!(latency, 546_070.0);
+        for inclusive_length in [1, 128, 129, 2049] {
+            assert_eq!(
+                timing
+                    .predict_decode_ms(2, 2 * inclusive_length, inclusive_length, 8192)
+                    .unwrap(),
+                (2 * inclusive_length) as f64,
+            );
+        }
+        assert!(timing.predict_decode_ms(1, 0, 0, 8192).is_err());
+    }
+
+    #[test]
+    fn bounded_replay_rejects_heterogeneous_actual_prefill_geometry() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let mut timing = AicTimingModel {
+            engine,
+            decoder_replay: true,
+            use_fpm_decode_totals: false,
+            fpm_decode_kv_ceiling: None,
+        };
+        for geometry in [vec![], vec![(3, 1536)], vec![(129, 128), (129, 128)]] {
+            timing.validate_prefill_batch(&geometry).unwrap();
+        }
+        for geometry in [vec![(127, 128), (129, 128)], vec![(3, 128), (3, 1536)]] {
+            let error = timing.validate_prefill_batch(&geometry).unwrap_err();
+            assert!(error.to_string().contains("heterogeneous prefill"));
+            timing.decoder_replay = false;
+            timing.validate_prefill_batch(&geometry).unwrap();
+            timing.decoder_replay = true;
+        }
     }
 
     #[test]
