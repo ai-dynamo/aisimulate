@@ -1,0 +1,121 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# DSv4 AgentX 440845: FPM off/on comparison
+
+Both cases use one B300 node, the same FPM-fixed image, c32 and HiCache disabled.
+
+| Metric | FPM off | FPM on | On/off change |
+| --- | ---: | ---: | ---: |
+| total_tokens_per_s_per_gpu | 17630.24130890112 | 17515.051972863577 | -0.65% |
+| output_tokens_per_s_per_gpu | 116.14489635043282 | 115.57255274549385 | -0.49% |
+| ttft_p50_ms | 1398.7585339999998 | 1428.5710569999999 | 2.13% |
+| ttft_p90_ms | 3379.677352600001 | 3468.2661072000005 | 2.62% |
+| itl_p90_ms | 23.7107358286802 | 23.588519077551116 | -0.52% |
+| request_latency_p90_ms | 40983.593544600015 | 42678.6789258 | 4.14% |
+| requests | 3423.0 | 3399.0 | -0.70% |
+| response_prompt_cache_hit_fraction | 0.9687417283514648 | 0.9673733532421864 | -0.14% |
+
+Validity and collection:
+
+- Submission valid: off=True, on=True.
+- Profiling cancellations: off=3, on=4.
+- Exported warmup error requests: off=1.0, on=None.
+
+One ordered pair, off then on; warmed compilation cache and fresh engine/KV plus warmup per case. Closed-loop requests may differ; no statistical overhead claim.
+
+FPM rank coverage, counter gaps, request validity and cancellations are retained in comparison.json.
+
+Job: `4209414`. Final Slurm accounting:
+
+```text
+4209414|COMPLETED|0:0|umb-b300-dp-127|03:14:09
+4209414.batch|COMPLETED|0:0|umb-b300-dp-127|03:14:09
+4209414.extern|COMPLETED|0:0|umb-b300-dp-127|03:14:09
+4209414.0|COMPLETED|0:0|umb-b300-dp-127|03:12:03
+4209414.1|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.2|COMPLETED|0:0|umb-b300-dp-127|00:00:05
+4209414.3|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.4|COMPLETED|0:0|umb-b300-dp-127|00:00:05
+4209414.5|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.6|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.7|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.8|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.9|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.10|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.11|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.12|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.13|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.14|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.15|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.16|FAILED|124:0|umb-b300-dp-127|00:00:06
+4209414.17|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.18|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.19|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.20|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.21|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.22|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.23|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.24|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.25|FAILED|1:0|umb-b300-dp-127|00:00:00
+4209414.26|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.27|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.28|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.29|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.30|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.31|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.32|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.33|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.34|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.35|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.36|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.37|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.38|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.39|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.40|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.41|COMPLETED|0:0|umb-b300-dp-127|00:00:03
+4209414.42|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.43|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.44|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.45|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.46|COMPLETED|0:0|umb-b300-dp-127|00:00:08
+4209414.47|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.48|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.49|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.50|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.51|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.52|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.53|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.54|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.55|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.56|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.57|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.58|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.59|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.60|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.61|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.62|COMPLETED|0:0|umb-b300-dp-127|00:00:07
+4209414.63|COMPLETED|0:0|umb-b300-dp-127|00:00:00
+4209414.64|COMPLETED|0:0|umb-b300-dp-127|00:00:01
+4209414.65|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+4209414.66|COMPLETED|0:0|umb-b300-dp-127|00:00:06
+```
+
+Raw artifacts: `/home/scratch.hongkuanz_gpu/agentx-dsv4-results/job-4209414/`.
+
+No active allocation remained in squeue when this report was collected.
+
+Campaign status:
+
+```json
+{
+  "status": "complete",
+  "completed_at_ns": 1789014599091525744,
+  "cases": [
+    "off",
+    "on"
+  ]
+}
+```

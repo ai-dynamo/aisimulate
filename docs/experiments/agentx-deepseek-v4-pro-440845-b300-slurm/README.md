@@ -9,7 +9,7 @@ This experiment targets [AgentX point 440845](https://inferencex.semianalysis.co
 DeepSeek-V4-Pro FP4 with MTP, attention DP8 and DRAM HiCache at concurrency 32.
 It is a hardware reproduction for subsequent AISimulate validation.
 **Execution authorized: FPM-off, then FPM-on with raw capture; both runs disable
-HiCache. No local B300 measurement or parity result exists yet.**
+HiCache. See the latest execution record below for measured status; parity is not assumed.**
 See [preparation log](preparation-2026-09-09.md) for checkpoint download status,
 Computelab resource discovery and remaining work.
 
@@ -171,3 +171,7 @@ The existing [GLM-5.2 B200 baseline](../agentx-glm-5.2-440958-b200-slurm/README.
 and [GLM-5.2 GB200 HiCache experiment](../agentx-glm-5.2-440082-gb200-hicache/README.md)
 remain separate experiments. Directory names include model and AgentX ID so results
 cannot be confused across reference points.
+
+## Latest execution
+
+See [job 4209414](results-job-4209414.md) for the measured pair or recorded failure.
