@@ -194,3 +194,35 @@ def test_output_profile_binding_rejects_mixed_campaigns(tmp_path):
     bind_output_profile(destination, "full")
     with pytest.raises(ValueError, match="separate output tables"):
         bind_output_profile(destination, "decoder_bounded")
+
+
+def test_registry_provenance_covers_execution_and_geometry_dependencies(tmp_path):
+    from collector import provenance
+    from collector.op_catalog import family_for_perf_file, load_family_map
+
+    package_root = Path(__file__).resolve().parents[3]
+    module = "collector.sglang.collect_dsv41_module"
+    closures = provenance.load_closures(package_root / "collector/hash_closures.yaml")
+    assert module in provenance.enumerate_provenance_modules()
+    assert family_for_perf_file("dsv41_module_perf.parquet", load_family_map()) == "dsv41"
+    # Use the real closure, then change the executed runner and model geometry
+    # independently: either must invalidate the collector identity.
+    dependencies = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE}
+    dependencies.update(provenance._expand_closure_files(package_root, closures[module]))
+    for relative in dependencies:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(package_root / relative, target)
+    baseline = provenance.collector_hash(module, tmp_path, closures)
+    for relative in (
+        "collector/sglang/dsv41_native_runner.py",
+        "collector/sglang/dsv41_workloads.py",
+        "src/aiconfigurator_core/sdk/models/deepseek_v41.py",
+        "src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json",
+    ):
+        target = tmp_path / relative
+        original = target.read_bytes()
+        target.write_bytes(original + b"\n ")
+        assert provenance.collector_hash(module, tmp_path, closures) != baseline, relative
+        target.write_bytes(original)
+    assert provenance.collector_hash(module, tmp_path, closures) == baseline
