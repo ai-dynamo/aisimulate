@@ -58,6 +58,8 @@ use crate::replay::protocol::{DirectRequest, OutputSignal};
 use crate::replay::{OfflineDisaggReplayConfig, ReplayTerminalStatus, TraceCollector};
 use crate::replay::{ReplayCaptureOptions, ReplayRequestPool};
 
+const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DisaggTransition {
@@ -2268,6 +2270,7 @@ where
 
     fn settle_internal_work(&mut self) -> Result<bool> {
         let mut changed = false;
+        let mut consecutive_internal_steps = 0usize;
         loop {
             let prefill_effects = self.prefill_engine.process_internal_work(self.now_ms)?;
             let decode_effects = self.decode_engine.process_internal_work(self.now_ms)?;
@@ -2287,6 +2290,15 @@ where
             changed |= made_progress;
             if !made_progress {
                 return Ok(changed);
+            }
+            consecutive_internal_steps = consecutive_internal_steps
+                .checked_add(1)
+                .context("internal-work convergence counter overflow")?;
+            if consecutive_internal_steps >= MAX_CONSECUTIVE_INTERNAL_STEPS {
+                bail!(
+                    "offline replay detected non-converging engine internal work at {} ms",
+                    self.now_ms
+                );
             }
         }
     }
@@ -3515,6 +3527,15 @@ where
         self.apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })?;
         self.drive_pending_actions()?;
         self.step_freed_slot = true;
+        if self.cluster_in_flight() == 0
+            && CoreAdmissionSource::is_drained(&self.admission)
+            && self.prefill_engine.is_drained()
+            && self.decode_engine.is_drained()
+            && self.flow.action_queues.is_empty()
+            && self.flow.requests_by_handoff.is_empty()
+        {
+            self.drive_pending = false;
+        }
         Ok(Some(ReplayTerminalStatus::Canceled))
     }
 

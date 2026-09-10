@@ -769,6 +769,10 @@ mod tests {
         let mut single_worker =
             SteppableEngine::new(ReplayEngineConfig::default(), &factory).unwrap();
         assert_canceled(&mut single_worker, 11);
+
+        let mut disaggregated =
+            SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 1, 1).unwrap();
+        assert_canceled(&mut disaggregated, 13);
     }
 
     #[test]
