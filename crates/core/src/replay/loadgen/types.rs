@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -154,6 +156,11 @@ pub struct AgenticDependency {
 pub struct AgenticMooncakeRow {
     pub request_id: String,
     pub play_id: String,
+    /// Zero-based source corpus order for this play. When present, every play
+    /// must provide one unique contiguous ordinal. This keeps scheduling order
+    /// independent of producer-generated play IDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_play_ordinal: Option<usize>,
     pub session_id: String,
     pub model: String,
     #[serde(default, alias = "input_tokens")]
@@ -165,6 +172,11 @@ pub struct AgenticMooncakeRow {
     #[serde(default)]
     pub hash_ids: Option<Vec<u64>>,
     pub not_before_ms: f64,
+    /// Source-recorded API service time. This is provenance for snapshot
+    /// reconstruction; replay completion continues to be driven by the
+    /// configured engine timing model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_api_time_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,6 +224,8 @@ pub struct TurnTrace {
 pub struct AgenticNode {
     pub(super) request_id: String,
     pub(super) play_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) source_play_ordinal: Option<usize>,
     pub(super) session_id: String,
     pub(super) model: String,
     pub(super) input_length: usize,
@@ -220,6 +234,8 @@ pub struct AgenticNode {
     pub(super) replay_key: Option<String>,
     pub(super) hash_ids: Vec<u64>,
     pub(super) not_before_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) recorded_api_time_ms: Option<f64>,
     pub(super) priority: i32,
     pub(super) strict_priority: u32,
     pub(super) policy_class: Option<String>,
@@ -229,6 +245,8 @@ pub struct AgenticNode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgenticPlay {
     pub(super) play_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) source_play_ordinal: Option<usize>,
     pub(super) root_nodes: Vec<usize>,
     pub(super) nodes: Vec<usize>,
 }
@@ -265,6 +283,13 @@ impl ValidatedAgenticGraph {
             block_size: self.block_size,
             node_count: self.nodes.len(),
             play_count: self.plays.len(),
+            source_models: self
+                .nodes
+                .iter()
+                .map(|node| node.model.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
         }
     }
 }
@@ -278,8 +303,28 @@ impl AgenticNode {
         &self.play_id
     }
 
+    pub fn source_play_ordinal(&self) -> Option<usize> {
+        self.source_play_ordinal
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    pub fn input_length(&self) -> usize {
+        self.input_length
+    }
+
+    pub fn max_output_tokens(&self) -> usize {
+        self.max_output_tokens
+    }
+
+    pub fn hash_ids(&self) -> &[u64] {
+        &self.hash_ids
     }
 
     pub fn dependencies(&self) -> &[AgenticDependency] {
@@ -288,6 +333,10 @@ impl AgenticNode {
 
     pub fn not_before_ms(&self) -> f64 {
         self.not_before_ms
+    }
+
+    pub fn recorded_api_time_ms(&self) -> Option<f64> {
+        self.recorded_api_time_ms
     }
 }
 
@@ -305,6 +354,10 @@ pub struct AgenticGraphIdentity {
     pub block_size: usize,
     pub node_count: usize,
     pub play_count: usize,
+    /// Sorted source model labels retained as workload provenance. The replay
+    /// execution boundary separately declares how these labels map to the
+    /// configured target timing model.
+    pub source_models: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
