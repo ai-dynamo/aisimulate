@@ -126,7 +126,31 @@ def _validate_token_streams(payload: dict[str, Any], path: Path) -> None:
     if hashlib.sha256(raw).hexdigest() != manifest.get("sha256"):
         raise ValueError(f"V4.1 token-stream manifest SHA mismatch: {path}")
     lines = raw.splitlines()
-    if manifest.get("records") != len(lines) or len(lines) != len(payload["results"]):
+    schema = manifest.get("schema_version", 1)
+    if type(schema) is not int or schema not in (1, 2):
+        raise ValueError(f"V4.1 token-stream schema is unsupported: {path}")
+    warmups = payload.get("warmup_results", [])
+    if not isinstance(warmups, list) or (schema == 1 and warmups):
+        raise ValueError(f"V4.1 warmup histories require token-stream schema 2: {path}")
+    measured = payload["results"]
+    warmup_ids = set()
+    for row in warmups:
+        point = row.get("point", {})
+        benchmark_id = point.get("benchmark_id")
+        if (
+            type(benchmark_id) is not int
+            or benchmark_id <= len(measured)
+            or benchmark_id in warmup_ids
+            or "eager_warmup" not in point.get("sample_reasons", [])
+        ):
+            raise ValueError(f"V4.1 warmup point is not a distinct native eager replica: {path}")
+        warmup_ids.add(benchmark_id)
+    if schema == 2 and manifest.get("warmup_benchmark_ids") != sorted(warmup_ids):
+        raise ValueError(f"V4.1 native eager warmup coverage mismatch: {path}")
+    if any("eager_warmup" in row["point"].get("sample_reasons", []) for row in measured):
+        raise ValueError(f"V4.1 warmup timing cannot enter measured results: {path}")
+    all_results = measured + warmups
+    if manifest.get("records") != len(lines) or len(lines) != len(all_results):
         raise ValueError(f"V4.1 token-stream coverage mismatch: {path}")
     streams = {}
     for line in lines:
@@ -134,8 +158,13 @@ def _validate_token_streams(payload: dict[str, Any], path: Path) -> None:
         benchmark_id = stream.get("benchmark_id")
         if type(benchmark_id) is not int or benchmark_id in streams:
             raise ValueError(f"V4.1 token-stream benchmark ID is invalid or duplicated: {path}")
+        expected_role = "warmup" if benchmark_id in warmup_ids else "measurement"
+        if schema == 2 and stream.get("sampling_role") != expected_role:
+            raise ValueError(f"V4.1 token-stream sampling role mismatch: {path}")
         streams[benchmark_id] = (stream, hashlib.sha256(line).hexdigest())
-    for row in payload["results"]:
+    if set(streams) != {row["point"]["benchmark_id"] for row in all_results}:
+        raise ValueError(f"V4.1 token-stream point identity coverage mismatch: {path}")
+    for row in all_results:
         point = row["point"]
         witness = row.get("real_kv_witness")
         stream, digest = streams.get(point["benchmark_id"], ({}, None))
@@ -349,12 +378,11 @@ def validate_native_collection(
             _validate_token_streams(payload, path)
         if input_provenance is None:
             input_provenance = evidence
-        elif (
-            {k: v for k, v in evidence.items() if k != "token_stream_manifest"}
-            != {k: v for k, v in input_provenance.items() if k != "token_stream_manifest"}
-            or {k: v for k, v in evidence["token_stream_manifest"].items() if k != "file"}
-            != {k: v for k, v in input_provenance["token_stream_manifest"].items() if k != "file"}
-        ):
+        elif {k: v for k, v in evidence.items() if k != "token_stream_manifest"} != {
+            k: v for k, v in input_provenance.items() if k != "token_stream_manifest"
+        } or {k: v for k, v in evidence["token_stream_manifest"].items() if k != "file"} != {
+            k: v for k, v in input_provenance["token_stream_manifest"].items() if k != "file"
+        }:
             raise ValueError(f"native DP ranks disagree on input provenance: {path}")
         if (
             payload.get("schema_version") != FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION

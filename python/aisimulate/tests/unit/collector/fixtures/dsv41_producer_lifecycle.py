@@ -112,6 +112,7 @@ for name in ["dynamo", "dynamo.vllm", "vllm", "vllm.v1", "vllm.v1.core", "vllm.v
 module(
     "dynamo.vllm.instrumented_scheduler",
     InstrumentedScheduler=Base,
+    EAGER_WARMUP_REASON="eager_warmup",
     _BenchPhase=SimpleNamespace(DECODE_SWEEP="decode", DONE="done"),
 )
 module("vllm.sampling_params", SamplingParams=lambda **kw: SimpleNamespace(**kw))
@@ -146,6 +147,8 @@ def scheduler(pt):
     obj._real_tokens = [3, 8, 27, 42, 11, 79, 14]
     obj._real_token_streams = []
     obj._real_witnesses = {}
+    obj._real_warmup_results = []
+    obj._real_expected_warmup_ids = []
     obj._bench_point_result_timeout_seconds = 30
     obj._bench_seq = 0
     obj._bench_block_hasher = None
@@ -266,6 +269,24 @@ class RealKVTests(unittest.TestCase):
         worker.finish()
         obj._real_step("prefill")
         self.assertEqual(obj.saved[0][1], ["measure"])
+
+    def test_native_eager_warmup_keeps_a_separate_history_role(self):
+        pt = point("prefill", context=0)
+        pt.benchmark_id = 5
+        pt.sample_reasons = ["eager_warmup"]
+        obj = scheduler(pt)
+        obj._real_validate_grid()
+        worker = Driver(obj)
+        worker.submit(obj._real_step("prefill"))
+        worker.finish()
+        obj._real_step("prefill")
+        stream = json.loads(obj._real_token_streams[0])
+        self.assertEqual(stream["sampling_role"], "warmup")
+        self.assertEqual(stream["benchmark_id"], 5)
+        self.assertEqual(obj._real_warmup_results[0]["point"]["benchmark_id"], 5)
+        self.assertEqual(obj._real_warmup_results[0]["real_kv_witness"], obj._real_witnesses[5])
+        self.assertEqual(obj._real_warmup_results[0]["fpms"], ["measure"])
+        self.assertEqual(obj._real_expected_warmup_ids, [5])
 
     def test_allocation_failure_has_no_fallback(self):
         obj = scheduler(point("decode"))

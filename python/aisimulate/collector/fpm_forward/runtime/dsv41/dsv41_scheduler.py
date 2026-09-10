@@ -52,6 +52,8 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
         self._real_deadline = 0.0
         self._real_token_streams = []
         self._real_witnesses = {}
+        self._real_warmup_results = []
+        self._real_expected_warmup_ids = []
         self._real_seed_tokens = 0
         self._real_input = None
         self._real_identity = None
@@ -144,6 +146,9 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
             self._real_validate_grid()
 
     def _real_validate_grid(self):
+        self._real_expected_warmup_ids = sorted(
+            point.benchmark_id for point in self._bench_grid if native.EAGER_WARMUP_REASON in point.sample_reasons
+        )
         for point in self._bench_grid:
             prefix, suffix = self._real_lengths(point)
             if (
@@ -322,6 +327,9 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
                 raise RuntimeError("real KV point did not yield the exact native FPM count")
             stream = {
                 "benchmark_id": self._bench_current_point.benchmark_id,
+                "sampling_role": "warmup"
+                if native.EAGER_WARMUP_REASON in self._bench_current_point.sample_reasons
+                else "measurement",
                 "requests": [
                     {
                         "request_index": index,
@@ -341,6 +349,29 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
                 "allocated_fake_tokens": 0,
                 "token_stream_sha256": hashlib.sha256(stream_bytes).hexdigest(),
             }
+            if stream["sampling_role"] == "warmup":
+                # Native 5496017 prepends eager replicas with IDs after the
+                # measured range and discards them at save time (2376-2500,
+                # 4225-4243). Preserve their real histories under an explicit
+                # role, while only measured rows enter calibration curves.
+                point = self._bench_current_point
+                self._real_warmup_results.append(
+                    {
+                        "point": {
+                            name: getattr(point, name)
+                            for name in (
+                                "benchmark_id",
+                                "point_type",
+                                "batch_size",
+                                "total_prefill_tokens",
+                                "total_kv_read_tokens",
+                                "sample_reasons",
+                            )
+                        },
+                        "real_kv_witness": dict(self._real_witnesses[point.benchmark_id]),
+                        "fpms": list(self._bench_current_fpms),
+                    }
+                )
             self._bench_save_current_point()
             self._bench_cleanup_requests()
             self._real_stage = None
@@ -411,10 +442,13 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
         os.replace(stream_tmp, stream_path)
         output["input_provenance"] = dict(self._real_input or {})
         output["input_provenance"]["token_stream_manifest"] = {
+            "schema_version": 2,
+            "warmup_benchmark_ids": self._real_expected_warmup_ids,
             "file": stream_path.name,
             "sha256": hashlib.sha256(stream_bytes).hexdigest(),
             "records": len(self._real_token_streams),
         }
+        output["warmup_results"] = self._real_warmup_results
         output["execution_identity"] = self._real_identity
         output["execution_mode"] = "eager"
         output["kvwarm"] = {

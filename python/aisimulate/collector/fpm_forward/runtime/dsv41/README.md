@@ -103,11 +103,23 @@ identity, as well as separate calibration and validation. The earlier graph
 startup attempt is retained as runtime qualification evidence only.
 
 Native benchmark warmup_iterations must be 0. Native per-shape eager warmups remain
-in place and run through the same real-forward path. An explicit native point
+in place and run through the same real-forward path. The token-stream sidecar's
+schema 2 labels each history as `warmup` or `measurement`, records the frozen
+native warmup IDs, and keeps completed warmup witnesses separately in
+`warmup_results`. Only the native measured `results` enter calibration tables.
+The reader requires exact coverage of both sets and rejects leaked warmup
+timings or unclassified extra histories. This mirrors the eager-replica identity
+and save boundaries in [Dynamo's pinned scheduler](https://github.com/ai-dynamo/dynamo/blob/54960177085413259859c88bd34ed0734d4c2ea9/components/src/dynamo/vllm/instrumented_scheduler.py#L2376).
+The first eager canary's original mixed sidecar remains failed qualification
+evidence; its extra warmup records must not be silently removed.
+
+An explicit native point
 manifest is accepted. For an automatic native grid, use max_model_len<=2050,
-max_num_seqs<=2 and max_num_batched_tokens<=512 (2048/2/512 is suitable). Every grid
-point is checked against batch<=2, per-request KV context<=2048, and prefill new
-length<=512. Unsupported points fail the run instead of being silently removed.
+max_num_seqs<=2 and max_num_batched_tokens<=512. The complete study requires
+2050/2/512 and enough native page capacity. Every grid point is checked against
+batch<=2, decode past KV<=2048, prefill prefix-plus-new<=2048 per request, and
+total newly scheduled prefill tokens<=512. Unsupported points fail the run
+instead of being silently removed.
 A native decode point with context<2 fails instead of being relabeled.
 
 ## State and timing contract

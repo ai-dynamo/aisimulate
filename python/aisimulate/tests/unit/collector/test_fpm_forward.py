@@ -2521,6 +2521,56 @@ def test_v41_real_token_stream_validation_rejects_broken_witness(tmp_path, corru
         _validate_token_streams(payload, path)
 
 
+@pytest.mark.parametrize(
+    "corruption", [None, "role", "missing_result", "missing_expected", "measured_warmup", "legacy"]
+)
+def test_v41_eager_warmup_histories_are_preserved_but_not_measured(tmp_path, corruption):
+    from copy import deepcopy
+
+    from collector.fpm_forward.native_artifact import _validate_token_streams
+
+    _plan, _cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    path = next((cell_dir / "raw").glob("*/benchmark*.json"))
+    payload = json.loads(path.read_text())
+    payload["input_provenance"] = {}
+    warmup = deepcopy(payload["results"][0])
+    warmup_id = len(payload["results"]) + 1
+    warmup["point"].update(benchmark_id=warmup_id, sample_reasons=["eager_warmup"])
+    payload["results"].append(warmup)
+    _write_v41_token_streams(payload, path)
+    payload["warmup_results"] = [payload["results"].pop()]
+    manifest = payload["input_provenance"]["token_stream_manifest"]
+    manifest.update(schema_version=2, warmup_benchmark_ids=[warmup_id])
+    sidecar = path.with_name(manifest["file"])
+    all_rows = payload["results"] + payload["warmup_results"]
+    encoded = []
+    for line, row in zip(sidecar.read_bytes().splitlines(), all_rows, strict=True):
+        stream = json.loads(line)
+        stream["sampling_role"] = "warmup" if stream["benchmark_id"] == warmup_id else "measurement"
+        if corruption == "role" and stream["benchmark_id"] == warmup_id:
+            stream["sampling_role"] = "measurement"
+        changed = json.dumps(stream, sort_keys=True, separators=(",", ":")).encode()
+        encoded.append(changed)
+        row["real_kv_witness"]["token_stream_sha256"] = hashlib.sha256(changed).hexdigest()
+    raw = b"\n".join(encoded) + b"\n"
+    sidecar.write_bytes(raw)
+    manifest["sha256"] = hashlib.sha256(raw).hexdigest()
+    if corruption == "missing_result":
+        payload["warmup_results"] = []
+    elif corruption == "missing_expected":
+        manifest["warmup_benchmark_ids"] = []
+    elif corruption == "measured_warmup":
+        payload["results"].append(payload["warmup_results"].pop())
+    elif corruption == "legacy":
+        manifest["schema_version"] = 1
+    if corruption is None:
+        _validate_token_streams(payload, path)
+        assert len(payload["results"]) + 1 == manifest["records"]
+    else:
+        with pytest.raises(ValueError, match="V4.1"):
+            _validate_token_streams(payload, path)
+
+
 @pytest.mark.parametrize("phase", ["prefill", "decode"])
 @pytest.mark.parametrize("smoke", [False, True])
 def test_v41_native_grid_bounds_reach_both_runtime_phases(phase, smoke):
