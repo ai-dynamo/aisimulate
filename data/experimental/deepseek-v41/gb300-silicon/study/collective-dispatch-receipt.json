@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "runtime_digest": "sha256:800cc9adea5be1e18f48185451220c4bc487c545b7095c720d2ccc9ba9bb3b5d",
+  "evidence_level": "actual image source plus explicit invocation flags; no per-invocation library tracer",
+  "direct_baseline": {
+    "api": "torch.distributed.all_reduce",
+    "torch_nccl_version": "2.29.7",
+    "table_category": "half",
+    "payload_dtype": "bfloat16",
+    "table_message_size_axis": "elements; physical bytes divided by 2"
+  },
+  "additional_initialized_library": {
+    "api": "sglang PyNcclCommunicator",
+    "logged_nccl_version": "2.30.7"
+  },
+  "qualified_execution_contract": {
+    "decode_cuda_graph": "disabled",
+    "prefill_cuda_graph": "disabled",
+    "disable_custom_all_reduce": true,
+    "enforce_disable_flashinfer_allreduce_fusion": true,
+    "enable_symm_mem": "False source default; no CLI override or V41 auto-enable source path"
+  },
+  "source_dispatch_inference": {
+    "selected_eager_path": "torch.distributed.all_reduce(input_, group=self.device_group)",
+    "basis": [
+      "PyNcclCommunicator initializes disabled=True after its own warmup (pynccl.py:134-137).",
+      "GroupCoordinator describes PyNccl disabled outside graph (parallel_state.py:617-620).",
+      "Symmetric-memory override requires enable_symm_mem (parallel_state.py:735-743 and pynccl_allocator.py:158-162).",
+      "The actual server argument defaults enable_symm_mem to False (server_args.py:1959-1966); the frozen invocation does not enable it.",
+      "The in-place fallback calls torch.distributed.all_reduce when PyNccl is disabled and Torch symmetric-memory acceleration is absent (parallel_state.py:1017-1030)."
+    ],
+    "limitation": "Source and flag reasoning supports the eager dispatch path; startup version logs alone do not identify the library used by every forward collective."
+  },
+  "actual_image_source_sha256": {
+    "parallel_state.py": "1930ee1f79d10a33c7016612aba9277561a3f8baf91fb941438fa5e39aa382dc",
+    "device_communicators/pynccl.py": "9e0be65f31ea0f2a2192c897b0025af10c8f0b36b018cd533ba8ccfb2c87014f",
+    "device_communicators/pynccl_allocator.py": "67881bc7f1bb495c5525c26219bfcb0c4febd8097a1569d472064f9032e45377",
+    "server_args.py": "ebf54cd7a325b7e2bea506cc42185314e07ee08ead1ae9f9a556a403d29dde60"
+  },
+  "source_snapshot": "https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt",
+  "source_identity_note": "Hashes are checked against the original v1 source manifest. The reference snapshot is adjacent source provenance; actual image hashes are authoritative."
+}

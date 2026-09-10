@@ -6,6 +6,7 @@ import argparse
 import gzip
 import json
 import shutil
+import statistics
 import tempfile
 from pathlib import Path
 
@@ -70,6 +71,41 @@ def verify(profile):
         forward = forward_admission_report(heldout)
         assert forward["status"] == "accepted" and forward["case_count"] == 38
         assert forward == json.loads((root / "heldout/forward-results.json").read_text())
+        precision_root = root / "precision-v2"
+        if precision_root.exists():
+            precision_raw = scratch / "precision-v2"
+            unpack_evidence(precision_root / "evidence", precision_raw)
+            precision = forward_admission_report(precision_raw)
+            assert precision["status"] == "accepted" and precision["case_count"] == 38
+            assert precision["iterations"] == 10 and precision["warmup"] == 1
+            assert precision == json.loads((precision_root / "forward-results.json").read_text())
+            for key in (
+                "source_sha256",
+                "plan_sha256",
+                "input_provenance",
+                "timing_boundary",
+                "component_recorder",
+                "used_cuda_graph",
+                "execution_profile",
+            ):
+                assert precision[key] == forward[key]
+            comparison = json.loads((precision_root / "comparison-to-v1.json").read_text())
+            assert comparison["case_count"] == 38 and comparison["profile"] == profile
+            assert comparison["original_repeats"] == 3 and comparison["precision_repeats"] == 10
+            assert comparison["calibration_unchanged"] and comparison["original_observations_retained"]
+            assert comparison["pooling"] is False and comparison["plan_sha256"] == forward["plan_sha256"]
+            assert len(comparison["cases"]) == 38
+            for old, new, row in zip(forward["cases"], precision["cases"], comparison["cases"], strict=True):
+                geometry = {k: v for k, v in old.items() if k not in ("rank_max_ms", "median_ms")}
+                assert geometry == {k: v for k, v in new.items() if k not in ("rank_max_ms", "median_ms")}
+                assert all(row[k] == value for k, value in geometry.items())
+                for label, result in (("original", old), ("precision", new)):
+                    assert row[f"{label}_rank_max_ms"] == result["rank_max_ms"]
+                    assert row[f"{label}_median_ms"] == statistics.median(result["rank_max_ms"])
+                    assert row[f"{label}_cv_percent"] == (
+                        100 * statistics.stdev(result["rank_max_ms"]) / statistics.mean(result["rank_max_ms"])
+                    )
+                assert row["median_change_percent"] == 100 * (new["median_ms"] / old["median_ms"] - 1)
     database = PerfDatabase(
         "gb300",
         "sglang",

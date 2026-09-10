@@ -47,23 +47,47 @@ The three repetitions are an initial precision check. Bounded case
 548.985, 379.867 and 187.826 ms after a roughly 181.9 ms warmup. All ranks
 show the variation and pass the source, finite-logit and completion checks;
 the available evidence does not establish its cause. These observations are
-retained. A separate uniform ten-repeat followup for all 38 cases in both
-profiles is planned; it must not replace selected observations or change the
-frozen calibration.
+retained. A separate uniform ten-repeat followup has now completed all 38 cases
+in each profile, with one warmup per case. It uses the same producer, source,
+checkpoint, input and geometry. The new observations are in
+`<profile>/precision-v2/`, alongside exact comparisons with the original attempt;
+neither attempt is pooled or replaced. Each profile preserves 380 measured
+model invocations and 418 warmup/measured progress records per rank.
+
+| Precision attempt | Median within-point CV | Maximum within-point CV |
+| --- | ---: | ---: |
+| `full`, ten repeats | 0.404% | 3.570% |
+| `decoder_bounded`, ten repeats | 0.408% | 7.857% |
+
+CV is sample standard deviation divided by the mean of the ten rank maxima.
+These statistics describe within-attempt repeatability, not an accuracy bound
+or confidence interval. The formerly unstable bounded `prefill-0017` now has a
+187.947 ms median and 0.353% CV; its original 379.867 ms median remains recorded.
+The largest new bounded CV is `prefill-0004` (batch 1, query 48, prefix 128):
+nine repetitions are 192.527–194.363 ms and the tenth is 242.580 ms. All ten are
+retained. The median signed change in per-case medians between attempts is
+−5.284% for `full` and +1.936% for `decoder_bounded`; additional repetitions do
+not eliminate between-attempt variation or identify its cause. Frozen
+calibration-table hashes and the unchanged original observation hashes are in
+[`precision-v2-receipt.json`](precision-v2-receipt.json).
 
 Both phases explicitly disable custom all-reduce and FlashInfer all-reduce
 fusion, disable shared-expert fusion, and disable prefill/decode CUDA graphs.
 Shared and routed experts follow the native serial eager path. Engram tables
 remain TP-sharded in HBM. The runtime, checkpoint, corpus and source hashes match
 the earlier pilot; capacity and communication flags are recorded explicitly.
+The direct baseline uses Torch NCCL 2.29.7. The image also initializes PyNccl
+2.30.7; those version labels must not be conflated. The explicit eager flags
+and source dispatch support the Torch collective path, as documented in
+[`collective-dispatch-receipt.json`](collective-dispatch-receipt.json).
 The pilot is retained separately and is not silently merged into this study.
 
 ## Admission and prediction comparison
 
 All 1666 module table points reproduce their measured latency through the
 strict native SILICON reader. Raw observations rebuild every emitted module and
-baseline table. Both sets of 38 independent forward holdouts pass rank,
-repetition, warmup, finite-logit, source, input and execution-contract checks.
+baseline table. Both original and precision-v2 sets of 38 independent forward holdouts pass
+rank, repetition, warmup, finite-logit, source, input and execution-contract checks.
 These checks establish artifact integrity, not prediction accuracy.
 
 The frozen key analysis predicts full interpolation coverage for 38/38 `full`
