@@ -466,6 +466,11 @@ impl SteppableReplay for SteppableDisagg {
         {
             anyhow::bail!("steppable replay request {uuid} is already live");
         }
+        if let Some(uuid) = request.uuid
+            && self.runtime.collector().contains_request(uuid)
+        {
+            anyhow::bail!("steppable replay request {uuid} is already retained");
+        }
         let uuid = self.runtime.submit_dynamic(request)?;
         self.live.insert(uuid);
         Ok(uuid)
@@ -879,6 +884,23 @@ mod tests {
     }
 
     #[test]
+    fn disaggregated_report_duration_includes_trailing_idle_time() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        engine.submit(request(43, 128, 1)).unwrap();
+        drain(&mut engine);
+        engine.advance_now_ms(engine.now_ms() + 1_000.0);
+
+        let report = engine.take_report(0.0).unwrap();
+        assert!((report.throughput.duration_ms - engine.now_ms()).abs() < 1e-9);
+    }
+
+    #[test]
     fn empty_report_epochs_include_idle_time_without_request_rates() {
         let mut engine =
             SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new())
@@ -996,6 +1018,28 @@ mod tests {
     }
 
     #[test]
+    fn disaggregated_replay_rejects_a_completed_request_id_before_reporting() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        let uuid = engine.submit(request(44, 128, 1)).unwrap();
+        drain(&mut engine);
+
+        let error = engine.submit(request(44, 128, 1)).unwrap_err();
+        assert!(error.to_string().contains("already retained"), "{error}");
+        assert_eq!(engine.in_flight(), 0);
+
+        let report = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(report.request_counts.num_requests, 1);
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(uuid, Uuid::from_u128(44));
+    }
+
+    #[test]
     fn aggregated_report_drain_preserves_collector_configuration() {
         let mut engine = SteppableAgg::new(
             ReplayEngineConfig::default(),
@@ -1092,7 +1136,7 @@ mod tests {
         engine.cancel(uuid).unwrap();
 
         let error = engine.submit(request(34, 128, 8)).unwrap_err();
-        assert!(error.to_string().contains("already active"), "{error}");
+        assert!(error.to_string().contains("already retained"), "{error}");
         assert_eq!(engine.in_flight(), 0);
         assert_eq!(
             engine
