@@ -19,3 +19,6 @@ On September 9, 2026, `agentx-b200-slurm` was renamed to
 `agentx-glm-5.2-440958-b200-slurm`, and `agentx-gb200-hicache` was renamed to
 `agentx-glm-5.2-440082-gb200-hicache`. Existing result files, launcher behavior,
 remote artifact paths and deployed resource names were preserved.
+
+[Fixed 8K/1K SGLang FPM concurrency sweep](sglang-fpm-fixed-8k1k/README.md)
+measures repeated off/on gaps at concurrency1/32/128, separately from AgentX replay.
