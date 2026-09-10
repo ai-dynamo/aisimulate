@@ -1,0 +1,92 @@
+{
+  "records": 808721,
+  "sha256": "bf0f277dbd74a8276e0ed8021a882a199a0a394f18132fded80c3e6fa2df2614",
+  "sha256_verified": true,
+  "raw_bytes": 445560968,
+  "gzip_bytes": 32900290,
+  "ranks": {
+    "2": {
+      "records": 101091,
+      "active": 84833,
+      "positive_active": 84833,
+      "zero_active": 0,
+      "measured_active": 84592,
+      "measured_gpu_time_mean_ms": 26.78505852523679,
+      "measured_gpu_time_p50_ms": 24.105791091918945,
+      "measured_gpu_time_p90_ms": 26.721376419067383
+    },
+    "4": {
+      "records": 101096,
+      "active": 93367,
+      "positive_active": 93367,
+      "zero_active": 0,
+      "measured_active": 91461,
+      "measured_gpu_time_mean_ms": 27.20399898405137,
+      "measured_gpu_time_p50_ms": 24.19718360900879,
+      "measured_gpu_time_p90_ms": 26.721311569213867
+    },
+    "5": {
+      "records": 101087,
+      "active": 86657,
+      "positive_active": 86657,
+      "zero_active": 0,
+      "measured_active": 85522,
+      "measured_gpu_time_mean_ms": 26.49912777896213,
+      "measured_gpu_time_p50_ms": 24.15235137939453,
+      "measured_gpu_time_p90_ms": 26.75436782836914
+    },
+    "1": {
+      "records": 101088,
+      "active": 68240,
+      "positive_active": 68240,
+      "zero_active": 0,
+      "measured_active": 66524,
+      "measured_gpu_time_mean_ms": 26.109182911551112,
+      "measured_gpu_time_p50_ms": 24.418367385864258,
+      "measured_gpu_time_p90_ms": 26.895263671875
+    },
+    "0": {
+      "records": 101088,
+      "active": 52078,
+      "positive_active": 52078,
+      "zero_active": 0,
+      "measured_active": 50508,
+      "measured_gpu_time_mean_ms": 27.741635977537435,
+      "measured_gpu_time_p50_ms": 24.24608039855957,
+      "measured_gpu_time_p90_ms": 26.611167907714844
+    },
+    "6": {
+      "records": 101091,
+      "active": 91679,
+      "positive_active": 91679,
+      "zero_active": 0,
+      "measured_active": 90000,
+      "measured_gpu_time_mean_ms": 26.494544367599488,
+      "measured_gpu_time_p50_ms": 24.106752395629883,
+      "measured_gpu_time_p90_ms": 26.70195198059082
+    },
+    "7": {
+      "records": 101090,
+      "active": 76805,
+      "positive_active": 76805,
+      "zero_active": 0,
+      "measured_active": 76711,
+      "measured_gpu_time_mean_ms": 27.061770282665847,
+      "measured_gpu_time_p50_ms": 24.27564811706543,
+      "measured_gpu_time_p90_ms": 26.841184616088867
+    },
+    "3": {
+      "records": 101090,
+      "active": 74490,
+      "positive_active": 74490,
+      "zero_active": 0,
+      "measured_active": 74080,
+      "measured_gpu_time_mean_ms": 26.738262596243658,
+      "measured_gpu_time_p50_ms": 24.329055786132812,
+      "measured_gpu_time_p90_ms": 26.87993621826172
+    }
+  },
+  "measured_window_start_ns": 1789010817758554880,
+  "measured_window_end_ns": 1789014417758554880,
+  "window_basis": "recorder receive timestamps; first3600seconds of exported profiling start, excludes drain"
+}

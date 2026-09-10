@@ -8,8 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 This experiment targets [AgentX point 440845](https://inferencex.semianalysis.com/inference/agentic/440845):
 DeepSeek-V4-Pro FP4 with MTP, attention DP8 and DRAM HiCache at concurrency 32.
 It is a hardware reproduction for subsequent AISimulate validation.
-**Execution authorized: FPM-off, then FPM-on with raw capture; both runs disable
-HiCache. See the latest execution record below for measured status; parity is not assumed.**
+**Completed: one FPM-off and one FPM-on run, both with HiCache disabled.**
+[Job 4209414 results](results-job-4209414.md) include the client comparison,
+validated eight-rank FPM capture and download instructions.
 See [preparation log](preparation-2026-09-09.md) for checkpoint download status,
 Computelab resource discovery and remaining work.
 
@@ -83,8 +84,8 @@ omits it. Our shared FPM image is an intentional runtime difference from that
 reference. Preserve DSv4's c32, TP8/EP8 and attention DP8 settings;
 do not inherit the GLM baseline's model-specific launch arguments.
 
-DSv4/MegaMoE/HiCache GPU compatibility still needs smoke validation with this
-image. CPU CLI preflight found that this newer engine removed the reference
+DSv4/MegaMoE GPU execution is validated by the completed no-HiCache pair.
+HiCache GPU compatibility was not exercised. CPU CLI preflight found that this newer engine removed the reference
 `--prefill-decode-interval 20` option. Both local runs omit it and retain
 `--enable-prefill-delayer`; no equivalence between the removed interval and the
 current scheduling policy is assumed. Record any required image change explicitly. Synthetic speculative

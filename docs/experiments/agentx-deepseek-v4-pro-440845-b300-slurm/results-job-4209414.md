@@ -9,26 +9,89 @@ Both cases use one B300 node, the same FPM-fixed image, c32 and HiCache disabled
 
 | Metric | FPM off | FPM on | On/off change |
 | --- | ---: | ---: | ---: |
-| total_tokens_per_s_per_gpu | 17630.24130890112 | 17515.051972863577 | -0.65% |
-| output_tokens_per_s_per_gpu | 116.14489635043282 | 115.57255274549385 | -0.49% |
-| ttft_p50_ms | 1398.7585339999998 | 1428.5710569999999 | 2.13% |
-| ttft_p90_ms | 3379.677352600001 | 3468.2661072000005 | 2.62% |
-| itl_p90_ms | 23.7107358286802 | 23.588519077551116 | -0.52% |
-| request_latency_p90_ms | 40983.593544600015 | 42678.6789258 | 4.14% |
-| requests | 3423.0 | 3399.0 | -0.70% |
-| response_prompt_cache_hit_fraction | 0.9687417283514648 | 0.9673733532421864 | -0.14% |
+| Total tokens/s/GPU | 17630.24 | 17515.05 | -0.65% |
+| Output tokens/s/GPU | 116.145 | 115.573 | -0.49% |
+| TTFT p50, seconds | 1.399 | 1.429 | +2.13% |
+| TTFT p90, seconds | 3.380 | 3.468 | +2.62% |
+| ITL p90, milliseconds | 23.711 | 23.589 | -0.52% |
+| Request latency p90, seconds | 40.984 | 42.679 | +4.14% |
+| Completed requests | 3423 | 3399 | -0.70% |
+| Response-reported prompt reuse | 96.874% | 96.737% | -0.14% relative |
 
 Validity and collection:
 
 - Submission valid: off=True, on=True.
 - Profiling cancellations: off=3, on=4.
-- Exported warmup error requests: off=1.0, on=None.
+- Off warmup export: 353 successful and one empty-content response error,
+  although the phase progress log counted all 354 as completed with zero errors.
+  On warmup exported 354 successful requests and omitted the error-count metric.
 
 One ordered pair, off then on; warmed compilation cache and fresh engine/KV plus warmup per case. Closed-loop requests may differ; no statistical overhead claim.
 
-FPM rank coverage, counter gaps, request validity and cancellations are retained in comparison.json.
+FPM rank coverage, counter gaps, request validity and cancellations are retained
+in [the machine-readable comparison](job-4209414-comparison.json).
 
-Job: `4209414`. Final Slurm accounting:
+## Native FPM evidence
+
+The full capture contains **808721 records**, including 628149 active records
+and 622479 decode records. All eight DP ranks have active/decode coverage;
+validation found **zero invalid records, zero counter gaps and zero resets**.
+A full local audit also confirmed positive GPU timing for every active record.
+
+- Raw: 445560968 bytes; gzip: 32900290 bytes.
+- Raw SHA256: `bf0f277dbd74a8276e0ed8021a882a199a0a394f18132fded80c3e6fa2df2614`.
+- [Timing and checksum audit](job-4209414-fpm-audit.json) includes per-rank
+  statistics for the 3600-second measured window using recorder receive times.
+  The complete raw capture also includes setup, smoke, warmup and drain.
+
+Download the compressed capture from Computelab, then verify its decompressed
+contents against the SHA256 above:
+
+```bash
+scp computelab-sc-01:/home/scratch.hongkuanz_gpu/agentx-dsv4-results/job-4209414/on/fpm.jsonl.gz .
+gzip -dc fpm.jsonl.gz | sha256sum
+```
+
+Both raw and compressed copies, `fpm.sha256`, `fpm-validation.json` and
+`fpm-audit.json` remain in that scratch `on/` directory.
+
+## Collection limitations
+
+Both measured exports report `submission_valid=true` and no request errors or
+output-length mismatches. The runs reached the sending duration, then used the
+30-second grace period and a further 10-second cancellation-credit timeout;
+profiling cancellations were three and four. Preserve these exported windows
+instead of renormalizing throughput to exactly 3600 seconds.
+
+Each setup needed the guarded forkserver recovery documented in the preparation
+log. The on-case recovery occurred promptly after reconstruction; no serving or
+client source changed. Optional persistent mmap-cache population failed with
+ENOSPC, but the complete 6386608130-byte runtime mmap was built and replay ran.
+
+The on-case Prometheus export reported counter-reset warnings across several
+series. Their precise cause is unresolved; affected Prometheus delta/rate
+statistics should not be used to substantiate this performance comparison.
+The table uses client request exports, and native FPM independently has continuous
+per-rank counters with no resets. Preserve the warnings in `on/client.log`.
+
+## Comparison with the published point
+
+[AgentX 440845](https://inferencex.semianalysis.com/inference/agentic/440845)
+reports 17480.42 total tokens/s/GPU, 114.984 output tokens/s/GPU, TTFT p90
+7.727 seconds and ITL p90 19.5 milliseconds. Our FPM-off baseline has similar
+aggregate throughput, lower TTFT and approximately 21.6% higher p90 ITL.
+This is not strict parity: our runtime differs, HiCache is disabled and the
+reference prefill/decode interval option was removed in our newer engine.
+Do not attribute the TTFT difference solely to HiCache or the sub-1% paired
+throughput difference solely to FPM from this single ordered pair.
+
+Job: `4209414`, node `umb-b300-dp-127`: the allocation and campaign step
+completed 0:0. Diagnostic step `.16` is the deliberately timed-out strace and
+`.25` is a failed host-path probe before locating the capture inside the container;
+neither is a benchmark failure.
+
+<details>
+<summary>Full Slurm accounting, including monitoring and diagnostic steps</summary>
 
 ```text
 4209414|COMPLETED|0:0|umb-b300-dp-127|03:14:09
@@ -102,6 +165,8 @@ Job: `4209414`. Final Slurm accounting:
 4209414.65|COMPLETED|0:0|umb-b300-dp-127|00:00:06
 4209414.66|COMPLETED|0:0|umb-b300-dp-127|00:00:06
 ```
+
+</details>
 
 Raw artifacts: `/home/scratch.hongkuanz_gpu/agentx-dsv4-results/job-4209414/`.
 
