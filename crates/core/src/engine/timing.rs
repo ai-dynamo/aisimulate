@@ -34,6 +34,13 @@ pub enum TimingModelConfig {
 /// Implementations may call AIC, interpolate profiler data, or use another
 /// provider without adding that dependency to `aisimulate-core`.
 pub trait TimingModel: Send + Sync {
+    /// Validate actual (new tokens, cached prefix) pairs before a scheduler
+    /// reduces them to means. Providers with nonlinear per-request execution
+    /// policies may reject batches that their aggregate API cannot represent.
+    fn validate_prefill_batch(&self, _requests: &[(usize, usize)]) -> Result<()> {
+        Ok(())
+    }
+
     /// Predict one prefill batch's latency in milliseconds.
     fn predict_prefill_ms(
         &self,
