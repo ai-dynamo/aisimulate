@@ -143,3 +143,17 @@ def test_native_sol_replay_decode_and_short_extend_contract():
     # intentionally does not read the pre-existing ring prefix.
     assert replay.predict_prefill_latency(1, 4099, 4096) > 0
     assert replay.mixed_step_latency(2048, 1, 1024, 2) > 0
+
+
+def test_native_block32_shared_projections_have_distinct_perf_identity():
+    import json
+
+    model = _build_model()
+    first_layer = next(
+        json.loads(op._spec_json())["Dsv41Stage"]
+        for op in model.context_ops
+        if "Dsv41Stage" in json.loads(op._spec_json())
+    )
+    linears = [c["Dsv41Linear"] for c in first_layer["children"] if "Dsv41Linear" in c]
+    assert {(op["n"], op["k"]) for op in linears} == {(1152, 5120), (5120, 576)}
+    assert all(c["Gemm"]["quant_mode"] == "bfloat16" for c in first_layer["children"] if "Gemm" in c)

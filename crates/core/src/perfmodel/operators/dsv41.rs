@@ -365,6 +365,43 @@ impl Dsv41EngramOp {
     }
 }
 
+/// Checkpoint-native dense projection. V41's FP8 block is 32x32, so it
+/// must not query the legacy 128x128 FP8Block GEMM table.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Dsv41LinearOp {
+    pub name: String,
+    pub n: u32,
+    pub k: u32,
+    pub quant_mode: GemmQuantMode,
+}
+impl Dsv41LinearOp {
+    pub fn weight_bytes(&self) -> f64 {
+        let elements = self.n as f64 * self.k as f64;
+        elements * self.quant_mode.mapping().memory
+            + if self.quant_mode == GemmQuantMode::Fp8Block {
+                self.n.div_ceil(32) as f64 * self.k.div_ceil(32) as f64
+            } else {
+                0.0
+            }
+    }
+    pub fn sol(&self, spec: &SystemSpec, tokens: f64) -> Result<PerformanceResult, AicError> {
+        if tokens <= 0.0 {
+            return Ok(zero());
+        }
+        let rate = quant_tc_flops(spec, self.quant_mode.mapping())?;
+        Ok(leaf(
+            spec,
+            2.0 * tokens * self.n as f64 * self.k as f64,
+            self.weight_bytes() + tokens * (self.n + self.k) as f64 * 2.0,
+            rate,
+        ))
+    }
+    pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
+        analytic_mode(db, "32x32 dense projection")?;
+        self.sol(&db.system_spec, tokens as f64)
+    }
+}
+
 /// A decoder layer's token domain. All resident weights stay present when its
 /// late-layer prefill inputs are shortened. Decoder replay never shortens decode.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

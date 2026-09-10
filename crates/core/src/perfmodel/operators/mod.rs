@@ -44,7 +44,7 @@ pub use base::{PerformanceResult, Source};
 pub use communication::{CustomAllReduceOp, NcclOp, P2POp};
 pub use dsa::DsaModuleOp;
 pub use dsv4::{Dsv4MegaMoeOp, Dsv4ModuleOp};
-pub use dsv41::{Dsv41AttentionOp, Dsv41MhcOp, Dsv41EngramOp, Dsv41StageOp};
+pub use dsv41::{Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp};
 pub use elementwise::ElementwiseOp;
 pub use embedding::EmbeddingOp;
 pub use fpm_forward::{FpmForwardOp, FpmPhase};

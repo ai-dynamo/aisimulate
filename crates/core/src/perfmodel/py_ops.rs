@@ -163,7 +163,12 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         // FpmForward has no family class: FPMForwardOp stays a Python class
         // (callable slot + pinned signature) whose spec adapter converts to a
         // BASE-wrapped engine op for list assembly.
-        Op::FpmForward(_) | Op::Dsv41Attention(_) | Op::Dsv41Mhc(_) | Op::Dsv41Engram(_) | Op::Dsv41Stage(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
+        Op::FpmForward(_)
+        | Op::Dsv41Attention(_)
+        | Op::Dsv41Mhc(_)
+        | Op::Dsv41Engram(_)
+        | Op::Dsv41Stage(_)
+        | Op::Dsv41Linear(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
         // Vision is never wrapped: compile decomposes it into child ops.
         other => Err(PyTypeError::new_err(format!(
             "no Python class wrapper for engine op variant {:?}",

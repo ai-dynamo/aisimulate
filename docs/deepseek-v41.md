@@ -68,8 +68,8 @@ runtime allocator measurements are still required to qualify capacity.
 ## Result provenance
 
 SOL returns analytical bounds. HYBRID may combine existing measured/empirical
-GEMM, MoE, and collective data with **SOL** contributions for CSA2, Engram, and
-single-pass mHC; those new components are uncalibrated. SILICON fails for missing
+BF16 GEMM, MoE, and collective data with **SOL** contributions for CSA2, Engram,
+single-pass mHC, and 32x32-block FP8 shared-expert projections; those new components are uncalibrated. SILICON fails for missing
 V4.1 data and never substitutes V4 attention or mHC tables. EMPIRICAL similarly
 requires a V4.1 anchor. Measured support is a separate dependent change.
 

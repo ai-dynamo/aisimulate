@@ -165,11 +165,11 @@ mod tests {
     use crate::operators::op::{FallbackOp, OverlapOp};
     use crate::operators::{
         ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp,
-        Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp,
-        EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp, GenerationAttentionOp, GenerationMlaOp,
-        KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp, MoeAllToAllOp,
-        MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp, WideEpContextMlaOp,
-        WideEpGenerationMlaOp,
+        Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp,
+        ElementwiseOp, EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp, GenerationAttentionOp,
+        GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
+        MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp,
+        WideEpContextMlaOp, WideEpGenerationMlaOp,
     };
     use crate::perf_database::dsv4::AttnKind;
     use crate::{
@@ -737,6 +737,12 @@ mod tests {
                 hc_mult: 4,
                 tp_size: 4,
             }),
+            OpSpec::Dsv41Linear(Dsv41LinearOp {
+                name: "v41_linear".into(),
+                n: 1152,
+                k: 5120,
+                quant_mode: GemmQuantMode::Fp8Block,
+            }),
             OpSpec::Dsv41Stage(Dsv41StageOp {
                 name: "v41_stage".into(),
                 is_context: true,
@@ -789,7 +795,8 @@ mod tests {
                 | OpSpec::Dsv41Attention(_)
                 | OpSpec::Dsv41Mhc(_)
                 | OpSpec::Dsv41Engram(_)
-                | OpSpec::Dsv41Stage(_) => {}
+                | OpSpec::Dsv41Stage(_)
+                | OpSpec::Dsv41Linear(_) => {}
             }
         }
         ops
@@ -869,11 +876,15 @@ mod tests {
         // Existing variants remain adjacent; the four V41 variants append
         // after them without shifting any persisted index.
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
-        for (offset, op) in all_op_variants().iter().skip(35).enumerate() {
-            assert_eq!(index_of(op), 35 + offset as u32, "V41 appended index moved");
-        }
+        let mut appended: Vec<_> = all_op_variants().iter().skip(35).map(index_of).collect();
+        appended.sort();
         assert_eq!(
-            MOE_EXPERT_COMPUTE_INDEX as usize + 5,
+            appended,
+            vec![35, 36, 37, 38, 39],
+            "V41 appended indices moved"
+        );
+        assert_eq!(
+            MOE_EXPERT_COMPUTE_INDEX as usize + 6,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );

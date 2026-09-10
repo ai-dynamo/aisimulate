@@ -161,9 +161,21 @@ class DeepSeekV41Model(BaseModel):
             )
             local_inter = self._moe_inter_size * d.n_shared_experts // tp
             shared = [
-                ops.GEMM(f"{phase}_shared_gate_up_gemm", 1, 2 * local_inter, h, model_config.gemm_quant_mode),
+                _native(
+                    "Dsv41Linear",
+                    name=f"{phase}_shared_gate_up_gemm",
+                    n=2 * local_inter,
+                    k=h,
+                    quant_mode=model_config.gemm_quant_mode.name,
+                ),
                 ops.ElementWise(f"{phase}_shared_act_gate", 1, 2 * local_inter, local_inter, 0.8),
-                ops.GEMM(f"{phase}_shared_ffn2_gemm", 1, h, local_inter, model_config.gemm_quant_mode),
+                _native(
+                    "Dsv41Linear",
+                    name=f"{phase}_shared_ffn2_gemm",
+                    n=h,
+                    k=local_inter,
+                    quant_mode=model_config.gemm_quant_mode.name,
+                ),
             ]
             routed = [ops.GEMM(f"{phase}_router_gemm", 1, self._num_experts, h, common.GEMMQuantMode.bfloat16)]
             for pre in (True, False):
