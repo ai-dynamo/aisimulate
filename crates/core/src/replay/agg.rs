@@ -684,6 +684,9 @@ where
             }
             changed = true;
             self.handle_engine_effects(effects)?;
+            if self.defer_drive && self.step_freed_slot {
+                return Ok(changed);
+            }
         }
     }
 
@@ -837,7 +840,15 @@ where
             }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.release_ready_arrivals()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.drive_ready_workers()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             let removed = self
                 .engine
                 .try_remove_drained()
@@ -1617,12 +1628,16 @@ where
     /// correlates the request with later measurements.
     pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
         let arrival_time_ms = self.now_ms;
-        self.assign_request(
+        let uuid = self.assign_request(
             ReplayRequestPayload::materialized(request),
             arrival_time_ms,
             Metadata::from_hashes(None),
             None,
-        )
+        )?;
+        if self.defer_drive {
+            self.drive_pending = true;
+        }
+        Ok(uuid)
     }
 
     /// Cancel a dynamically admitted request and return its terminal status
@@ -1684,6 +1699,12 @@ where
         self.step_freed_slot = true;
         let placements = self.placement.request_terminal(uuid, self.now_ms)?;
         self.dispatch_placements(placements)?;
+        if self.cluster_in_flight() == 0
+            && CoreAdmissionSource::is_drained(&self.admission)
+            && self.engine.is_drained()
+        {
+            self.drive_pending = false;
+        }
         Ok(Some(ReplayTerminalStatus::Canceled))
     }
 
@@ -1775,11 +1796,19 @@ where
 
     /// Drain the accumulated measurements into a report stamped with `wall_ms`,
     /// leaving this runtime's collector empty.
-    pub(crate) fn take_report_dynamic(&mut self, wall_ms: f64) -> crate::replay::ReplayReport {
+    pub(crate) fn take_report_dynamic(
+        &mut self,
+        wall_ms: f64,
+    ) -> anyhow::Result<crate::replay::ReplayReport> {
+        anyhow::ensure!(wall_ms.is_finite(), "replay report wall_ms must be finite");
+        anyhow::ensure!(
+            self.is_workload_done(),
+            "replay report requires an idle runtime"
+        );
         self.collector
             .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
-        std::mem::take(&mut self.collector)
+        Ok(std::mem::take(&mut self.collector)
             .finish()
-            .with_wall_time_ms(wall_ms)
+            .with_wall_time_ms(wall_ms))
     }
 }

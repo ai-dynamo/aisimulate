@@ -28,7 +28,7 @@
 //! land their replacement one step late, which is the exact failure this seam
 //! exists to remove.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use uuid::Uuid;
 
@@ -155,7 +155,7 @@ pub trait SteppableReplay {
 
     /// Drain the accumulated measurements into a report stamped with `wall_ms`,
     /// leaving the runtime's collector empty.
-    fn take_report(&mut self, wall_ms: f64) -> ReplayReport;
+    fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport>;
 }
 
 /// Concrete aggregated runtime behind the steppable seam.
@@ -170,22 +170,15 @@ fn steppable_mode() -> ReplayMode {
     }
 }
 
-/// Tracks which submitted requests are still live so a step can report the
-/// terminals reached during it.
-///
-/// The runtimes classify a terminal at several places — ordinary completion,
-/// scheduler rejection, and handoff failure. Rather than fan an event out of
-/// each, the seam asks the collector which of the requests it is still
-/// following have acquired a terminal status. The set is bounded by the
-/// caller's own concurrency, so each step costs one lookup per live request.
+/// Tracks submitted requests until a terminal event removes them.
 #[derive(Default)]
 struct LiveRequests {
-    uuids: Vec<Uuid>,
+    uuids: HashSet<Uuid>,
 }
 
 impl LiveRequests {
     fn insert(&mut self, uuid: Uuid) {
-        self.uuids.push(uuid);
+        self.uuids.insert(uuid);
     }
 
     fn contains(&self, uuid: Uuid) -> bool {
@@ -260,7 +253,7 @@ impl SteppableReplay for SteppableAgg {
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
         let status = self.runtime.cancel_dynamic(uuid)?;
         if status.is_some() {
-            self.live.uuids.retain(|candidate| *candidate != uuid);
+            self.live.uuids.remove(&uuid);
         }
         Ok(status.map(|status| EngineEvent::terminal(uuid, status)))
     }
@@ -273,7 +266,7 @@ impl SteppableReplay for SteppableAgg {
             .map(|(uuid, token_id)| EngineEvent::token(uuid, token_id))
             .collect::<Vec<_>>();
         for (uuid, status) in self.runtime.take_step_terminals() {
-            self.live.uuids.retain(|candidate| *candidate != uuid);
+            self.live.uuids.remove(&uuid);
             events.push(EngineEvent::terminal(uuid, status));
         }
         Ok(StepOutcome { end_ms, events })
@@ -313,7 +306,7 @@ impl SteppableReplay for SteppableAgg {
         self.runtime.collector().actual_output_length(uuid)
     }
 
-    fn take_report(&mut self, wall_ms: f64) -> ReplayReport {
+    fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport> {
         self.runtime.take_report_dynamic(wall_ms)
     }
 }
@@ -386,7 +379,7 @@ impl SteppableReplay for SteppableEngine {
         self.inner.actual_output_length(uuid)
     }
 
-    fn take_report(&mut self, wall_ms: f64) -> ReplayReport {
+    fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport> {
         self.inner.take_report(wall_ms)
     }
 }
@@ -438,7 +431,7 @@ mod tests {
             Some(Some(ReplayTerminalStatus::Completed))
         );
         assert_eq!(engine.in_flight(), 0);
-        let report = engine.take_report(engine.now_ms());
+        let report = engine.take_report(engine.now_ms()).unwrap();
         assert_eq!(report.request_counts.completed_requests, 1);
         assert_eq!(report.request_counts.total_output_tokens, 16);
         assert_eq!(uuid, Uuid::from_u128(1));
@@ -500,6 +493,72 @@ mod tests {
     }
 
     #[test]
+    fn a_cascade_terminal_is_surfaced_at_the_held_instant() {
+        let mut config = ReplayEngineConfig::default();
+        config.rank.max_model_len = Some(256);
+        let mut engine = SteppableAgg::new(config, &ReplayEngineFactory::new(), 1).unwrap();
+        engine.submit(request(40, 128, 16)).unwrap();
+        loop {
+            if engine
+                .step()
+                .unwrap()
+                .events
+                .iter()
+                .any(|event| event.terminal_status.is_some())
+            {
+                break;
+            }
+        }
+
+        engine.submit(request(41, 4096, 16)).unwrap();
+        let replacement = engine.submit(request(42, 128, 16)).unwrap();
+        let outcome = loop {
+            let outcome = engine.step().unwrap();
+            if outcome
+                .events
+                .iter()
+                .any(|event| event.terminal_status == Some(ReplayTerminalStatus::Rejected))
+            {
+                break outcome;
+            }
+        };
+
+        assert!(
+            outcome
+                .events
+                .iter()
+                .any(|event| { event.terminal_status == Some(ReplayTerminalStatus::Rejected) })
+        );
+        assert_eq!(outcome.end_ms, engine.now_ms());
+        assert!(engine.request_admission(replacement).is_some());
+    }
+
+    #[test]
+    fn report_rejects_non_finite_wall_time() {
+        let mut engine = SteppableAgg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+        )
+        .unwrap();
+
+        assert!(engine.take_report(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn report_requires_an_idle_engine() {
+        let mut engine = SteppableAgg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+        )
+        .unwrap();
+        engine.submit(request(19, 128, 16)).unwrap();
+
+        assert!(engine.take_report(0.0).is_err());
+    }
+
+    #[test]
     fn non_finite_clock_advance_is_ignored() {
         let mut engine = SteppableAgg::new(
             ReplayEngineConfig::default(),
@@ -509,6 +568,21 @@ mod tests {
         .unwrap();
         engine.advance_now_ms(f64::INFINITY);
         assert_eq!(engine.now_ms(), 0.0);
+    }
+
+    #[test]
+    fn submission_exposes_the_current_timestamp_as_the_next_event() {
+        let mut engine = SteppableAgg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+        )
+        .unwrap();
+        let now_ms = engine.now_ms();
+
+        engine.submit(request(20, 128, 16)).unwrap();
+
+        assert_eq!(engine.next_event_ms(), Some(now_ms));
     }
 
     #[test]
@@ -522,11 +596,17 @@ mod tests {
             );
             assert_eq!(engine.in_flight(), 0);
             assert!(engine.cancel(uuid).unwrap().is_none());
+            assert!(engine.is_idle());
+            assert_eq!(engine.next_event_ms(), None);
         }
 
         let factory = ReplayEngineFactory::new();
         let mut aggregated = SteppableAgg::new(ReplayEngineConfig::default(), &factory, 1).unwrap();
         assert_canceled(&mut aggregated, 10);
+
+        let mut multi_worker =
+            SteppableAgg::new(ReplayEngineConfig::default(), &factory, 2).unwrap();
+        assert_canceled(&mut multi_worker, 12);
 
         let mut single_worker =
             SteppableEngine::new(ReplayEngineConfig::default(), &factory).unwrap();
