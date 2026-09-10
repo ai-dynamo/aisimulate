@@ -182,7 +182,7 @@ impl Dsv41AttentionOp {
         };
         if self.role == "full" {
             let mult = if self.compress_ratio > 1 { 2.0 } else { 1.0 };
-            result = result.plus(mm(h, d, tokens * mult, 2.0, bf16));
+            result = result.plus(mm(h, d, tokens, 2.0, bf16).scaled(mult));
             let produced = if self.is_context {
                 (end / ratio).floor() - (prefix / ratio).floor()
             } else {
@@ -243,10 +243,24 @@ impl Dsv41AttentionOp {
         } else {
             batch * compressed_len.min(self.index_topk as f64)
         };
+        // SOL assumes ideal reuse of overlapping window entries across
+        // queries. Pair count determines arithmetic, but HBM sees each
+        // unique window KV row once. Irregular compressed top-k selections
+        // retain their per-query traffic; no such reuse is guaranteed there.
+        let window_rows = if self.is_context {
+            batch
+                * (s + if self.bounded_prefill {
+                    0.0
+                } else {
+                    prefix.min((self.window_size as f64 - 1.0).max(0.0))
+                })
+        } else {
+            batch * end.min(self.window_size as f64)
+        };
         result = result.plus(leaf(
             spec,
             4.0 * n * d * (wp + cp),
-            (wp * d + cp * d * 0.5625) + tokens * n * d * 4.0,
+            (window_rows * d + cp * d * 0.5625) + tokens * n * d * 4.0,
             attn,
         ));
         Ok(result)
@@ -456,6 +470,232 @@ impl Dsv41StageOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::enums::TransferPolicy;
+    use std::path::PathBuf;
+
+    fn test_db(mode: DatabaseMode) -> PerfDatabase {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aiconfigurator_core/systems");
+        PerfDatabase::load(&root, "gb300", "sglang", "0.5.14")
+            .unwrap()
+            .with_mode(mode, TransferPolicy::ALL)
+    }
+
+    fn unit_spec() -> SystemSpec {
+        let mut spec = test_db(DatabaseMode::Sol).system_spec.clone();
+        spec.gpu.mem_bw = 1e6;
+        spec.gpu.bfloat16_tc_flops = Some(1e9);
+        spec.gpu.fp8_tc_flops = Some(1e9);
+        spec.gpu.fp4_tc_flops = Some(1e9);
+        spec.gpu.fp32_flops = Some(1e9);
+        spec
+    }
+
+    fn attention(role: &str, ratio: u32) -> Dsv41AttentionOp {
+        Dsv41AttentionOp {
+            name: "attention".into(),
+            is_context: true,
+            role: role.into(),
+            compress_ratio: ratio,
+            hidden_size: 8,
+            num_heads: 2,
+            head_dim: 4,
+            q_lora_rank: 4,
+            o_lora_rank: 2,
+            o_groups: 1,
+            index_n_heads: 4,
+            index_head_dim: 2,
+            index_topk: 3,
+            window_size: 128,
+            candidate_limit: 0,
+            is_candidate_source: false,
+            bounded_prefill: false,
+            gemm_quant_mode: GemmQuantMode::Bfloat16,
+            fmha_quant_mode: FmhaQuantMode::Bfloat16,
+        }
+    }
+
+    fn assert_components(result: PerformanceResult, flops: f64, bytes: f64) {
+        let components = result.sol.unwrap();
+        assert!((components.math_ms - flops / 1e6).abs() < 1e-10);
+        assert!((components.mem_ms - bytes / 1e3).abs() < 1e-10);
+        assert_eq!(result.source, Source::Sol);
+    }
+
+    #[test]
+    fn all_attention_roles_have_independent_numeric_rooflines_and_weights() {
+        // Hand-expanded B=1,Q=4,P=0 ledger. Base projections: 1024 FLOPs,
+        // 704 bytes; the SWA kernel has 10 causal pairs but four KV rows.
+        // Full ratio-two owns TWO 8x4 BF16 compressor matrices, not one.
+        for (role, ratio, weights, flops, bytes) in [
+            ("swa", 0, 280.0, 1344.0, 848.0),
+            ("reuse", 2, 280.0, 1472.0, 857.0),
+            ("reindex", 2, 408.0, 2112.0, 1308.125),
+            ("full", 2, 552.0, 2656.0, 1690.75),
+            ("full", 1, 488.0, 2720.0, 1654.75),
+        ] {
+            let op = attention(role, ratio);
+            assert_eq!(op.weight_bytes(), weights, "{role}, ratio={ratio}");
+            assert_components(op.sol(&unit_spec(), 1.0, 4.0, 0.0).unwrap(), flops, bytes);
+        }
+    }
+
+    #[test]
+    fn window_flops_use_pairs_but_hbm_uses_unique_rows() {
+        let spec = unit_spec();
+        let mut op = attention("swa", 0);
+        let short = op.sol(&spec, 1.0, 4.0, 0.0).unwrap().sol.unwrap();
+        let prefix = op.sol(&spec, 1.0, 4.0, 1000.0).unwrap().sol.unwrap();
+        // Four queries now attend 512 pairs, but load just 127 additional rows.
+        assert!((prefix.math_ms - short.math_ms - 32.0 * (512.0 - 10.0) / 1e6).abs() < 1e-12);
+        assert!((prefix.mem_ms - short.mem_ms - 127.0 * 4.0 / 1e3).abs() < 1e-12);
+        op.bounded_prefill = true;
+        assert_eq!(op.sol(&spec, 1.0, 4.0, 1000.0).unwrap().sol.unwrap(), short);
+        // Remove heads/projections so this isolates the 4096-row SWA traffic.
+        op.hidden_size = 0;
+        op.q_lora_rank = 0;
+        op.o_lora_rank = 0;
+        op.num_heads = 0;
+        op.o_groups = 0;
+        op.head_dim = 512;
+        // The empty hidden->KV projection writes each KV row in BF16;
+        // attention then reads each row once in FP8: (2+1)*4096*512 bytes.
+        assert_components(op.sol(&spec, 1.0, 4096.0, 0.0).unwrap(), 0.0, 6_291_456.0);
+    }
+
+    #[test]
+    fn mhc_prices_both_residual_sites_at_scalar_fp32_rate() {
+        let op = Dsv41MhcOp {
+            name: "mhc".into(),
+            hidden_size: 5120,
+            hc_mult: 4,
+            sinkhorn_iters: 20,
+        };
+        assert_eq!(op.weight_bytes(), 3_932_376.0);
+        assert_components(op.sol(&unit_spec(), 2.0).unwrap(), 4_753_280.0, 4_260_440.0);
+        let mut spec = unit_spec();
+        for rate in [
+            None,
+            Some(0.0),
+            Some(-1.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            spec.gpu.fp32_flops = rate;
+            assert!(matches!(
+                op.sol(&spec, 1.0),
+                Err(AicError::MissingSystemFlops(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn engram_production_weights_include_exact_tables_and_replicated_projections() {
+        for (tp_size, expected) in [
+            (1, 203_073_076_240.0),
+            (4, 51_004_552_072.0),
+            (8, 25_659_798_088.0),
+        ] {
+            let total: f64 = [384_006_168, 384_016_682]
+                .into_iter()
+                .map(|num_embeddings| {
+                    Dsv41EngramOp {
+                        name: "engram".into(),
+                        num_embeddings,
+                        head_dim: 256,
+                        hash_columns: 24,
+                        hidden_size: 5120,
+                        hc_mult: 4,
+                        tp_size,
+                    }
+                    .weight_bytes()
+                })
+                .sum();
+            assert_eq!(total, expected);
+        }
+        let op = Dsv41EngramOp {
+            name: "small".into(),
+            num_embeddings: 64,
+            head_dim: 32,
+            hash_columns: 2,
+            hidden_size: 8,
+            hc_mult: 4,
+            tp_size: 4,
+        };
+        assert_eq!(op.weight_bytes(), 3218.5);
+        // Lookup 289 bytes + projection 2978.5 bytes + gate 512 bytes.
+        assert_components(op.sol(&unit_spec(), 2.0).unwrap(), 10240.0, 3779.5);
+    }
+
+    #[test]
+    fn block32_linear_counts_partial_scale_tiles_and_numeric_roofline() {
+        let op = Dsv41LinearOp {
+            name: "linear".into(),
+            n: 33,
+            k: 65,
+            quant_mode: GemmQuantMode::Fp8Block,
+        };
+        assert_eq!(op.weight_bytes(), 2151.0); // 2145 weights + 2*3 scale bytes
+        assert_components(op.sol(&unit_spec(), 2.0).unwrap(), 8580.0, 2543.0);
+    }
+
+    #[test]
+    fn new_operators_reject_unmeasured_modes_and_empty_work_is_zero() {
+        let attn = attention("full", 2);
+        let mhc = Dsv41MhcOp {
+            name: "mhc".into(),
+            hidden_size: 8,
+            hc_mult: 4,
+            sinkhorn_iters: 20,
+        };
+        let engram = Dsv41EngramOp {
+            name: "engram".into(),
+            num_embeddings: 64,
+            head_dim: 32,
+            hash_columns: 2,
+            hidden_size: 8,
+            hc_mult: 4,
+            tp_size: 4,
+        };
+        let linear = Dsv41LinearOp {
+            name: "linear".into(),
+            n: 32,
+            k: 32,
+            quant_mode: GemmQuantMode::Fp8Block,
+        };
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Empirical] {
+            let db = test_db(mode);
+            let ctx = RuntimeContext {
+                batch_size: 1,
+                s: 4,
+                prefix: 0,
+                num_tokens: 4,
+                ..RuntimeContext::default()
+            };
+            for result in [
+                attn.query(&db, &ctx),
+                mhc.query(&db, 4),
+                engram.query(&db, 4),
+                linear.query(&db, 4),
+            ] {
+                match mode {
+                    DatabaseMode::Silicon => {
+                        assert!(matches!(result, Err(AicError::PerfDatabase(_))))
+                    }
+                    _ => assert!(matches!(result, Err(AicError::EmpiricalNotImplemented(_)))),
+                }
+            }
+        }
+        let spec = unit_spec();
+        for result in [
+            attn.sol(&spec, 1.0, 0.0, 0.0),
+            mhc.sol(&spec, 0.0),
+            engram.sol(&spec, 0.0),
+            linear.sol(&spec, 0.0),
+        ] {
+            assert_eq!(result.unwrap().latency_ms, 0.0);
+        }
+    }
     #[test]
     fn bounded_scope_preserves_absolute_position() {
         let stage = Dsv41StageOp {

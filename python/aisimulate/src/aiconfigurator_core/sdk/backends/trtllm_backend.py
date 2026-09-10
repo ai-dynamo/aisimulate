@@ -49,6 +49,7 @@ class TRTLLMBackend(BaseBackend):
         "DEEPSEEK": {1: 22, 2: 13, 4: 10, 8: 10},
         "DEEPSEEKV32": {1: 22, 2: 13, 4: 10, 8: 10},
         "DEEPSEEKV4": {1: 22, 2: 13, 4: 10, 8: 10},
+        "DEEPSEEKV41": {1: 22, 2: 13, 4: 10, 8: 10},
         "KIMIK25": {1: 22, 2: 13, 4: 10, 8: 10},
         # 4+6/TP, fp8 will have relatively low act, but ignore here. need more experiments
         "default": {1: 10, 2: 6, 4: 5, 8: 5},

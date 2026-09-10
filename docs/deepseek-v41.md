@@ -45,7 +45,31 @@ index scoring/selection, and sparse-attention work remain explicit in the
 analytical module. Single-pass mHC uses the system's scalar `fp32_flops` field;
 BF16 compressor projections use tensor-core throughput. GB200 and GB300 provide
 an explicit nominal FP32 rate. A missing rate is an error rather than a BF16
-substitution.
+substitution. HGX B200 and HGX B300 use 75 TFLOPS per GPU, from the
+[NVIDIA HGX specification](https://www.nvidia.com/en-us/data-center/hgx/)'s
+600 TFLOPS FP32 for each eight-GPU baseboard (accessed September 10, 2026).
+
+The indexer is replicated across attention TP: every rank owns all 32 index
+heads, their projections and the full scoring/selection workload. This matches
+[SGLang's pinned V4.1 indexer](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/layers/attention/dsv4/dsv41_sparse.py#L203).
+The [DeepSeek reference](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/fb2764a5cf321eaa5070ca8f9e892818f477c16d/inference/model.py#L507)
+instead shards index heads and all-reduces their scores before selection.
+Those two execution strategies must not be mixed. The TRT-LLM graph currently
+uses the same replicated analytical baseline; runtime qualification is pending.
+
+SWA arithmetic counts causal query-key pairs. Its SOL HBM traffic counts unique
+window KV rows with ideal reuse across queries: `Q + min(P, W-1)` rows per
+prefill request, or `min(S, W)` for decode. Bounded decoder prefill uses `P=0`
+for this local window. Actual kernel tiling and cache misses can read more;
+this is a lower-bound assumption. Compressed sparse reads retain per-query
+traffic because selected positions can differ. Both independent BF16 compressor
+matrices are read by ratio-two Full owners.
+
+The V4.1 graph explicitly prices attention output reduction and omits its
+redundant pre-MLP dispatch under the required DP=CP=1 topology. Shared
+`MoEDispatch` behavior is unchanged: Qwen3.5's SGLang attention-DP path retains
+the folded TP reduce-scatter plus DP all-gather, and its unqualified TRT-LLM
+path retains the previously documented collective behavior.
 
 Main compressed KV uses 288 bytes per entry (FP4 plus one scale per 16
 channels); index KV uses 68 bytes (MXFP4 plus one scale per 32). Three half-rate
@@ -63,7 +87,9 @@ traffic assumes uniformly distributed hash ownership; hotspots and cache reuse
 need measurement. Replicated projection/gate weights, mHC weights, MoE MXFP4
 scales, dispatch workspace, expanded residual buffers, and Engram temporary
 buffers are included. Backend activation coefficients remain heuristic, and
-runtime allocator measurements are still required to qualify capacity.
+runtime allocator measurements are still required to qualify capacity. V4.1
+uses the existing MoE coefficient family (SGLang TP4: 13; vLLM/TRT-LLM TP4: 10),
+with the mHC and Engram buffers added separately, rather than the dense default.
 
 ## Result provenance
 
