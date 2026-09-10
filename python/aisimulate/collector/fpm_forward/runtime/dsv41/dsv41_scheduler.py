@@ -437,3 +437,10 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
         temporary = destination.with_suffix(destination.suffix + ".real.tmp")
         temporary.write_text(json.dumps(output, indent=2))
         os.replace(temporary, destination)
+
+
+# Spawned workers may import this class by its defining module before the
+# configured native scheduler path. Publish only after class creation so the
+# lazy source-checking hook can complete either import order without recursion.
+if os.environ.get("DYN_FPM_DSV41_REAL_KV") == "1":
+    native.InstrumentedScheduler = DeepseekV41RealKVScheduler

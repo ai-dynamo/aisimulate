@@ -38,6 +38,12 @@ if os.environ.get("DYN_FPM_DSV41_REAL_KV") == "1":
             try:
                 _verify_sources()
                 self.original.exec_module(module)
+                adapter = sys.modules.get("dsv41_scheduler")
+                if adapter is not None and not hasattr(adapter, "DeepseekV41RealKVScheduler"):
+                    # A spawned worker may unpickle the adapter class first.
+                    # Its import needs this native base before it can finish;
+                    # the adapter publishes its completed class at module end.
+                    return
                 from dsv41_scheduler import DeepseekV41RealKVScheduler
 
                 module.InstrumentedScheduler = DeepseekV41RealKVScheduler

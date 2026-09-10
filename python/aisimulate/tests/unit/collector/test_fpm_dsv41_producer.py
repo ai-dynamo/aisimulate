@@ -33,7 +33,8 @@ def test_real_kv_producer_lifecycle():
 
 
 @pytest.mark.parametrize("valid_source", [False, True])
-def test_bootstrap_is_lazy_in_helpers_and_fail_closed_at_scheduler_import(tmp_path, valid_source):
+@pytest.mark.parametrize("adapter_first", [False, True])
+def test_bootstrap_is_lazy_in_helpers_and_fail_closed_at_scheduler_import(tmp_path, valid_source, adapter_first):
     runtime = Path(__file__).resolve().parents[3] / "collector/fpm_forward/runtime/dsv41"
     shutil.copy2(runtime / "sitecustomize.py", tmp_path / "sitecustomize.py")
     module = tmp_path / "dynamo/vllm/instrumented_scheduler.py"
@@ -47,8 +48,9 @@ def test_bootstrap_is_lazy_in_helpers_and_fail_closed_at_scheduler_import(tmp_pa
         "class InstrumentedScheduler: pass\n"
     )
     (tmp_path / "dsv41_scheduler.py").write_text(
-        "from dynamo.vllm.instrumented_scheduler import InstrumentedScheduler\n"
-        "class DeepseekV41RealKVScheduler(InstrumentedScheduler): pass\n"
+        "import dynamo.vllm.instrumented_scheduler as native\n"
+        "class DeepseekV41RealKVScheduler(native.InstrumentedScheduler): pass\n"
+        "native.InstrumentedScheduler = DeepseekV41RealKVScheduler\n"
     )
     (tmp_path / "runtime-source-sha256.json").write_text(
         json.dumps(
@@ -66,8 +68,9 @@ def test_bootstrap_is_lazy_in_helpers_and_fail_closed_at_scheduler_import(tmp_pa
         [
             sys.executable,
             "-c",
-            "from dynamo.vllm.instrumented_scheduler import InstrumentedScheduler; "
-            "assert InstrumentedScheduler.__name__ == 'DeepseekV41RealKVScheduler'",
+            ("import dsv41_scheduler; " if adapter_first else "")
+            + "from dynamo.vllm.instrumented_scheduler import InstrumentedScheduler; "
+            + "assert InstrumentedScheduler.__name__ == 'DeepseekV41RealKVScheduler'",
         ],
         env=environment,
         capture_output=True,
