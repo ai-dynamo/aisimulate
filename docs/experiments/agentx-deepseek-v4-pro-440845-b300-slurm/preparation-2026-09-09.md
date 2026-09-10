@@ -154,3 +154,23 @@ The local submission record is
 A GPT-5.6 Luna agent monitors the controller, queue, execution and artifact
 validation; the primary task remains waiting and handles actionable failures.
 No B300 performance result is available at submission time.
+
+## Off-case dataset setup recovery
+
+Job `4209414` started on `umb-b300-dp-127` at 18:15:56 PDT. The engine loaded
+successfully and the smoke request returned 200. Before warmup, AIPerf completed
+393/393 trace reconstructions at 01:38:28 UTC but stalled in worker cleanup.
+
+At approximately 01:55 UTC, `py-spy` showed the dataset-manager executor waiting
+in `_shutdown_pool -> pool.terminate -> _terminate_pool -> join`. Its forkserver
+had SIGCHLD both blocked and pending; all sixteen reconstruction children were
+zombies. No measured requests had been sent. After checking process ownership,
+Slurm cgroup, completed reconstruction and all child states, the primary task
+terminated only that forkserver. AIPerf resumed at 01:56:17 UTC with
+`workers finished ...; assembling Conversation objects`.
+
+The image, model, serving settings and client source were unchanged. This is a
+pre-measurement harness recovery, retained separately from performance results.
+Evidence on scratch: `off/dataset-stack.txt` and `off/forkserver-recovery.json`
+under the job result root. The monitor checks for the same setup failure during
+the later FPM-on case so it can be addressed promptly if it recurs.
