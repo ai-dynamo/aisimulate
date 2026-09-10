@@ -5,6 +5,11 @@ Both decoder replay profiles completed native prefill, cached extension and
 real-KV decode. These tables qualify the listed component samples; they do not
 establish whole-serving accuracy or broader workload coverage.
 
+The subsequent [frozen calibration and independent forward study](study/README.md)
+contains 126 calibration configurations and 38 separate native forward holdouts
+per profile. Use its `study/<profile>/systems` overlays for that larger domain;
+the original pilot tables below remain unchanged.
+
 ## Runtime and provenance
 
 - Checkpoint: `deepseek-ai/DeepSeek-V4.1-Flash`, revision
@@ -90,8 +95,8 @@ predictions; independent E2E/FPM comparison is pending and will be recorded in P
 The shared Engram hash/history update and framework metadata preparation are
 outside the timed module boundary and are not modeled explicitly. Embedding,
 norm/activation and other memory operations retain the existing empirical
-formulas; stage totals consequently include `source=mixed`. Graph-enabled serving's mHC/shared-expert overlap and fused communication can
-differ from this eager graph.
+formulas; stage totals consequently include `source=mixed`. Native mHC stream overlap and graph-enabled shared-expert overlap can differ
+from the component sum, as can fused communication.
 Long KV, candidate saturation, larger batches, other TP/EP layouts, additional
 content/routing distributions and CUDA graphs remain unqualified.
 
