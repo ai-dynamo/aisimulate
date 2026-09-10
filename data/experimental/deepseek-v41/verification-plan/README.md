@@ -9,8 +9,11 @@ workloads. Keep actual coverage and failed attempts alongside this plan.
 
 The first common domain is one node, TP4/EP1/DP1/PP1/CP1, text autoregression,
 DSpark off, Engram in GPU memory, batch 1–2, at most 512 newly scheduled tokens
-per iteration and at most 2048 KV tokens per request. Runtime limits may include
-two extra positions needed to qualify native decode. Eager execution is a
+per iteration, prefill `prefix + new <= 2048`, and decode **past KV <= 2048**
+per request. The measured decode's inclusive sequence length is past KV + 1;
+native bookkeeping needs one further slot, so the maximum model length is
+2050. Native allocator/page capacity must accommodate that padding for both
+requests. Eager execution is a
 separate identity from CUDA graph execution.
 
 The supported runtime profiles are GB200/vLLM/decoder OFF and
@@ -74,6 +77,12 @@ lengths; aggregate-only telemetry that cannot represent those tails is an
 unsupported prediction case, not a passed homogeneous substitute.
 
 ## Repetitions and uncertainty
+
+Run one complete warm-up suite before each runtime profile's pilot, exercising
+all serving shapes and real decode while retaining its separate warm-up role
+and timing/failure receipts. This excludes first-use JIT from the steady-serving
+target without deleting pilot outliers after observing them. Continue clearing
+KV before every designated cold cohort.
 
 Collect ten independent pilot trials per E2E scenario. A trial is the unit of
 replication: TP ranks and successive decode callbacks within one request are

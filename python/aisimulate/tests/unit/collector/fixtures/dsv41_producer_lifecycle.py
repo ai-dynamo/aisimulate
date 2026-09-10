@@ -304,11 +304,20 @@ class RealKVTests(unittest.TestCase):
             point("decode", context=2049),
             point("decode", context=1),
             point("prefill", new=513),
+            point("prefill", batch=2, new=257),
+            point("prefill", context=2000, new=128),
         ]:
             with self.subTest(point=pt):
                 obj = scheduler(pt)
                 with self.assertRaises(ValueError):
                     obj._real_validate_grid()
+        for pt in [
+            point("decode", context=2048),
+            point("prefill", batch=1, context=1536, new=512),
+            point("prefill", batch=2, context=1536, new=256),
+        ]:
+            with self.subTest(boundary=pt):
+                scheduler(pt)._real_validate_grid()
 
     def test_native_ring_capacity_semantics_are_used(self):
         obj = scheduler(point("decode"))

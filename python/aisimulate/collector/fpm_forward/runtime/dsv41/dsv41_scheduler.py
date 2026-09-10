@@ -151,8 +151,11 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
                 or max(prefix, default=0) + int(point.point_type == "decode") > MAX_CONTEXT
             ):
                 raise ValueError("V4.1 canary point exceeds batch/context bound")
-            if point.point_type == "prefill" and max(suffix) > MAX_NEW:
-                raise ValueError("V4.1 canary prefill exceeds new-token bound")
+            if point.point_type == "prefill":
+                if sum(suffix) > MAX_NEW:
+                    raise ValueError("V4.1 canary prefill exceeds total new-token bound")
+                if any(p + q > MAX_CONTEXT for p, q in zip(prefix, suffix, strict=True)):
+                    raise ValueError("V4.1 canary prefill exceeds prefix plus new-token context bound")
             if point.point_type == "decode" and min(prefix) < 1:
                 raise ValueError("V4.1 real decode requires context >=2; no coordinate clamping")
 
