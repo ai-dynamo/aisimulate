@@ -1,0 +1,42 @@
+{
+  "schema": "dsv41.supplemental.scope-admission.v1",
+  "run_id": "1f38337b-d40e-433c-b982-007ba1a8e811",
+  "corpus": "field-notes",
+  "bundle_sha256": "df1b4c0402b270bdf81922ad5d07996d9e302fb1a024f48c3774fe5da151014d",
+  "resource_addendum_sha256": "fede083c26ed38d011dd2b3b390e44f4cd0dbf2357257f80f925d0f8cea337c1",
+  "forecast_sha256": "591de4404654d7f898a9c6383afc176e7af7acb0e9702156f883aa0bc00748a3",
+  "forecast": {
+    "checked_unix_ns": 1789064971731211781,
+    "client_deadline_unix_seconds": 1789070881.0,
+    "controller_source_sha256": "2696be77c3a31890c973adbb90f8664623300e5adb02912e536ee758204eec51",
+    "corpus_role": "field-notes",
+    "execution_receipt_sha256": "422fbda7b11ada18f2c030c4f3fce3d674692483b6feec161858ff0a0b55afb0",
+    "failure_policy": "preserve pilot and frozen budget; no main, sample-size change, or silent pilot resampling",
+    "fixed_drain_reserve_seconds": 180.0,
+    "forecast_main_seconds": 963.558918,
+    "forecast_multiplier": 1.5,
+    "frozen_main_trials": 30,
+    "lifecycle_deadline_unix_seconds": 1789071061.0,
+    "main_admitted": true,
+    "main_budget_sha256": "f1f05c8ce56990366fe90e1022132b791641b6119405fbca2cf5cd9e923c1f9d",
+    "physical_run_id": "1f38337b-d40e-433c-b982-007ba1a8e811",
+    "pilot_finished_unix_ns": 1789064971672842453,
+    "pilot_plan_sha256": "8ffdc9082c353bab94ba2828c7434143d52e7552e46cbddb783cbc5ae0928ac2",
+    "pilot_started_unix_ns": 1789064757548638453,
+    "pilot_statistics_sha256": "fd2c89ecb27f4309a45dade7907ae6905539bb5f33d8fa80095efd4610a9adb7",
+    "pilot_trials": 10,
+    "pilot_whole_stage_wall_seconds": 214.124204,
+    "qualification": "resource forecast; not statistical accuracy or a guaranteed deadline bound",
+    "remaining_seconds": 6089.2687883377075,
+    "required_remaining_seconds": 1143.558918,
+    "schema": "dsv41.supplemental.main-resource-forecast.v1"
+  },
+  "frozen_normalizer_sha256": "414c79b528bd5c11cf56006f767ad52a31bc7c988acaca8efa103adc90cd6f31",
+  "scope_validator_sha256": "c6d1a58617f81256ec5756817312dfa8b50b1d7c5b117c911426fac0a881601f",
+  "closed_lifetime_admission_required": true,
+  "qualified_output_sha256": {
+    "audit.json": "e96196dd05891b834509dd550c1cff5f407b291a70d1fb8768f07d93ad8c776d",
+    "measurement.json": "ffe857b94d15b7a25347dc9240ada62a4ff23e61dcff8f12dffdb9b38bba3837",
+    "normalization-receipt.json": "1bec202fe886c66fa9024a06a00a1ee0d99ad6f7613c75c8dff2e79559e20489"
+  }
+}
