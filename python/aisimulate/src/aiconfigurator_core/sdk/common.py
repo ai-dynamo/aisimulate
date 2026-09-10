@@ -176,7 +176,8 @@ class VisionEncoderConfig:
         projector_dims (tuple[tuple[int, int], ...]): Per-layer (in_dim, out_dim) pairs
             for the vision-to-LLM projector MLP. Empty tuple means no projector.
             Dimensions are absolute (unsharded); build_encoder_ops applies the
-            encoder parallelism (TP sharding, or full replicas under encoder DP).
+            encoder parallelism (TP sharding, or full replicas under encoder DP
+            or when projector_replicated is set).
         projector_n_instances (int): Number of projector instances to model (e.g.,
             1 + len(deepstack_visual_indexes) for Qwen3VL deepstack variants).
         partial_rotary_factor (float): Engine-side rotary-table parameter, not a
@@ -195,6 +196,13 @@ class VisionEncoderConfig:
             zero means unbounded by the model contract.
         projector_post_norm (bool): Whether to normalize the final projector output.
         encoder_type (str): Architecture-specific encoder contract tag.
+        resize_mode (str): Processor geometry; Qwen nearest-stride or Kimi resize/pad.
+        image_max_patches (int): Kimi image patch budget before padding.
+        video_max_patches (int): Kimi per-frame patch budget before padding.
+        max_patches_per_side (int): Kimi maximum patches along each image side.
+        max_video_frames (int): Maximum modeled processor video chunk; zero is unbounded.
+        projector_replicated (bool): Keep projector weights replicated under encoder TP.
+        projector_pre_norm (bool): Normalize inputs before the projector's pixel shuffle.
     """
 
     depth: int
@@ -219,6 +227,13 @@ class VisionEncoderConfig:
     max_temporal_patches: int = 0
     projector_post_norm: bool = False
     encoder_type: str = ""
+    resize_mode: str = "qwen"
+    image_max_patches: int = 0
+    video_max_patches: int = 0
+    max_patches_per_side: int = 0
+    max_video_frames: int = 0
+    projector_replicated: bool = False
+    projector_pre_norm: bool = True
 
 
 @dataclass(frozen=True)

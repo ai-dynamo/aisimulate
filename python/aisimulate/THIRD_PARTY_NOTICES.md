@@ -48,7 +48,7 @@ https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
 
 The Kimi K3 vision-tower topology and pooled PatchMergerV2 adapter modeled in
 `src/aiconfigurator_core/sdk/models/blocks/vit.py` and parsed in
-`src/aiconfigurator_core/sdk/utils.py` follow the MoonViT3D implementation that
+`src/aiconfigurator_core/sdk/utils.py`, with topology regression tests in `tests/unit/sdk/models/test_kimi_k3_vision.py`, are modified adaptations of the MoonViT3D implementation that
 Kimi K3 reuses from Kimi K2.5 in vLLM at commit
 `d2906091bfc579cebefe3d8e8fb9077397ce9882`:
 
@@ -411,7 +411,7 @@ https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/models
 
 The MoonViT3D spatial-temporal vision tower and temporal-pooling behavior used
 by Kimi K3 in `src/aiconfigurator_core/sdk/models/blocks/vit.py` and
-`src/aiconfigurator_core/sdk/utils.py` follow Hugging Face Transformers at
+`src/aiconfigurator_core/sdk/utils.py`, processor resize/pad in `src/aiconfigurator_core/sdk/backends/base_backend.py`, and synthetic processor fixtures and shape expectations in `tests/unit/sdk/models/test_kimi_k3_vision.py` are modified adaptations of Hugging Face Transformers at
 commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
 
 - https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/modeling_kimi_k25.py
@@ -420,6 +420,10 @@ commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
 
 The upstream license at that revision is available at:
 https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE
+
+Copyright 2026 the HuggingFace Inc. team. All rights reserved.
+
+Copyright 2026 the HuggingFace Team. All rights reserved.
 
 The Transformers `LICENSE` file at tag `v4.57.1` is reproduced verbatim below:
 

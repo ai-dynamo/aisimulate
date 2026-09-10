@@ -1,9 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified processor/topology test derivatives (Apache-2.0), copyright 2026
+# the HuggingFace Inc. team and HuggingFace Team, and copyright contributors
+# to the vLLM project. Processor override dictionaries are synthetic fixtures.
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+# https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
 
 """Kimi K3 image/video encoder parsing, construction, and runtime tests."""
 
 import dataclasses
+import json
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -15,6 +22,7 @@ from aiconfigurator.sdk.backends.base_backend import BaseBackend
 from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
 from aiconfigurator.sdk.models import get_model
 from aiconfigurator.sdk.models.vit_ops import build_kimi_k3_encoder_ops
+from aiconfigurator.sdk.perf_database import get_database_view
 from aiconfigurator.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
@@ -158,6 +166,8 @@ def test_encoder_qkv_and_projector_shapes_match_checkpoint(kimi_k3_model):
         ("final_norm", False),
         ("pool_temporal", False),
         ("projector_post_norm", False),
+        ("projector_replicated", False),
+        ("projector_pre_norm", True),
         ("video_attention_type", ""),
         ("qkv_hidden_size", 0),
         ("max_temporal_patches", 0),
@@ -183,7 +193,11 @@ def test_encoder_parallelism_models_required_communication():
     tp_ops = {op._name: op for op in tp_model.encoder_ops}
     assert tp_ops["encoder_ar_1"]._tp_size == 2
     assert tp_ops["encoder_ar_2"]._tp_size == 2
-    assert tp_ops["encoder_projector_ar"]._tp_size == 2
+    assert "encoder_projector_ar" not in tp_ops
+    assert "encoder_merger_norm" not in tp_ops
+    assert (tp_ops["encoder_projector_fc0_gemm"]._n, tp_ops["encoder_projector_fc0_gemm"]._k) == (4096, 4096)
+    assert (tp_ops["encoder_projector_fc1_gemm"]._n, tp_ops["encoder_projector_fc1_gemm"]._k) == (7168, 4096)
+    assert "encoder_projector_post_norm" in tp_ops
 
 
 def test_video_temporal_pooling_keeps_context_spatial_and_attention_joint():
@@ -209,6 +223,138 @@ def test_video_rejects_more_frames_than_temporal_embedding():
 
     with pytest.raises(ValueError, match="supports at most 4 temporal patches"):
         BaseBackend._encoder_pre_merge_per_visual(runtime, vision)
+
+
+@pytest.mark.parametrize(
+    ("height", "width", "video", "expected"),
+    [
+        (448, 449, False, (272, 1088, 1)),
+        (449, 448, False, (272, 1088, 1)),
+        (4000, 4000, False, (4225, 16900, 1)),
+        (1024, 1024, True, (1089, 17424, 1)),
+        (1, 1, False, (1, 4, 1)),
+    ],
+)
+def test_kimi_processor_geometry_reaches_context_and_encoder(kimi_k3_model, height, width, video, expected):
+    # Pinned Transformers navit_resize: 448x449 pads to 448x476; 4000²
+    # resizes then pads to 1820². Video's 4096 patch budget yields 924².
+    visual_fields = (
+        dict(num_images_per_request=0, video_height=height, video_width=width, video_frames=4, num_videos_per_request=1)
+        if video
+        else dict(image_height=height, image_width=width)
+    )
+    runtime = config.RuntimeConfig(isl=128, osl=1, **visual_fields)
+    backend = BaseBackend()
+    assert backend._encoder_pre_merge_per_visual(runtime, kimi_k3_model.encoder_config) == expected
+    assert backend._visual_context_tokens(kimi_k3_model, runtime) == expected[0]
+
+
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+def test_processor_sidecar_limits_reach_loaded_kimi_model(tmp_path, monkeypatch, remote, native):
+    from aiconfigurator_core.sdk import utils as utils_module
+
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    processor = (
+        {"max_patches": 1024, "size": {"max_height": 16, "max_width": 16}}
+        if native
+        else {
+            "media_proc_cfg": {"in_patch_limit": 1024, "in_patch_limit_each_frame": 64, "patch_limit_on_one_side": 16}
+        }
+    )
+    files = {"config.json": raw, "preprocessor_config.json": processor}
+    if native:
+        files["video_preprocessor_config.json"] = {"max_patches": 64}
+    if remote:
+        path = f"synthetic-kimi-k3/processor-{native}"
+        monkeypatch.setattr(utils_module, "_download_hf_config", lambda model_path: raw)
+        monkeypatch.setattr(
+            utils_module, "_download_hf_json", lambda model_path, filename, **kwargs: files.get(filename)
+        )
+    else:
+        for filename, content in files.items():
+            (tmp_path / filename).write_text(json.dumps(content))
+        path = str(tmp_path)
+    model = get_model(path, _model_config(), "sglang")
+    image_runtime = config.RuntimeConfig(image_height=448, image_width=448)
+    video_runtime = config.RuntimeConfig(
+        num_images_per_request=0, num_videos_per_request=1, video_height=448, video_width=448, video_frames=4
+    )
+    # Synthetic processor settings cap each image side at 16 patches and
+    # each video frame at 64 patches, before the 2x2 merge.
+    assert BaseBackend._encoder_pre_merge_per_visual(image_runtime, model.encoder_config) == (64, 256, 1)
+    assert BaseBackend._encoder_pre_merge_per_visual(video_runtime, model.encoder_config) == (16, 256, 1)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "1024", None])
+def test_kimi_processor_rejects_invalid_budget(value):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["preprocessor_config"] = {"max_patches": value}
+    with pytest.raises(ValueError, match="positive integer"):
+        _parse_hf_config_json(raw)
+
+
+def test_token_override_cannot_bypass_kimi_video_temporal_limit(kimi_k3_model):
+    runtime = config.RuntimeConfig(
+        num_images_per_request=0, num_videos_per_request=1, video_frames=5, num_video_tokens=272
+    )
+    with pytest.raises(ValueError, match="supports at most 4 temporal patches"):
+        BaseBackend._visual_context_tokens(kimi_k3_model, runtime)
+
+
+@pytest.mark.parametrize("video", [False, True])
+def test_kimi_rust_runtime_keeps_projector_replicated_and_accounts_for_weights(video):
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    backend = TRTLLMBackend()
+    results = []
+    for encoder_dp, batch in ((True, 4), (False, 2)):
+        model = get_model("moonshotai/Kimi-K3", _model_config(tp_size=2, enable_encoder_dp=encoder_dp), "trtllm")
+        runtime = config.RuntimeConfig(
+            batch_size=batch,
+            isl=128,
+            osl=1,
+            image_height=0 if video else 448,
+            image_width=0 if video else 449,
+            num_images_per_request=0 if video else 1,
+            num_videos_per_request=1 if video else 0,
+            video_height=448 if video else 0,
+            video_width=449 if video else 0,
+            video_frames=4 if video else 0,
+            engine_step_backend="rust",
+        )
+        summary = backend.run_static(model, database, runtime, mode="static_ctx")
+        latency = summary.get_encoder_latency_dict()
+        memory = summary.get_encoder_memory()
+        results.append(latency)
+        assert backend._visual_context_tokens(model, runtime) == 272
+        assert latency["encoder_attention"] > 0
+        assert "encoder_projector_ar" not in latency
+        assert "encoder_merger_norm" not in latency
+        assert latency["encoder_projector_post_norm"] > 0
+        assert summary.get_result_dict()["ttft"] > sum(latency.values())
+        # Independent BF16 parameter count: input projection, 27 transformer
+        # blocks (QKV width 1536, tower width 1024), two replicated linears.
+        tower_tp = 1 if encoder_dp else 2
+        expected_weights = 2 * (
+            1024 * 3 * 14**2 + 27 * (4 * 1024 * 1536 + 2 * 1024 * 4096) // tower_tp + 4096**2 + 4096 * 7168
+        )
+        assert memory["weights"] == pytest.approx(expected_weights / (1 << 30))
+        override = deepcopy(runtime)
+        override.image_height = override.image_width = override.video_height = override.video_width = 0
+        if video:
+            override.num_video_tokens = 272
+        else:
+            override.num_image_tokens = 272
+        override_summary = backend.run_static(model, database, override, mode="static_ctx")
+        assert override_summary.get_encoder_latency_dict() == latency
+        assert override_summary.get_encoder_memory() == memory
+        assert override_summary.get_result_dict() == summary.get_result_dict()
+    # Both configurations process two visuals per rank, so replicated
+    # projector work is identical even when the tower uses TP.
+    for name in ("encoder_projector_fc0_gemm", "encoder_projector_fc1_gemm", "encoder_projector_post_norm"):
+        assert results[0][name] == pytest.approx(results[1][name])
+    assert "encoder_dp_all_gather" in results[0]
+    assert results[1]["encoder_ar_1"] > 0
 
 
 def test_image_and_video_encoder_work_reaches_static_summary(kimi_k3_model, monkeypatch):

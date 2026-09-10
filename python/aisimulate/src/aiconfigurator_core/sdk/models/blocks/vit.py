@@ -29,7 +29,7 @@ For a ViT with depth D and projector_dims with P (in, out) pairs::
     encoder_rope_apply    ElementWise  (only if partial_rotary_factor > 0;
                                         replaces the attention-internal RoPE term)
 
-  _projector_ops  →  P GEMMs + (P-1) activations + 1 norm + 1 AR
+  _projector_ops  →  P GEMMs + (P-1) activations + optional norms / AR
                      (or 0 ops if projector_dims is empty):
     encoder_merger_norm          ElementWise pre-pixel-shuffle LayerNorm
     encoder_projector_fc{i}_gemm  GEMM
@@ -55,6 +55,7 @@ receives a full (un-sharded) first-layer input.  For a two-layer projector
 For P = 1 the single layer is row-parallel (M = out // tp, K = in) followed by
 the AllReduce.  For P > 2 intermediate layers also receive sharded inputs; callers
 are responsible for choosing a projector_dims layout that is TP-correct.
+Replicated projectors retain the full linear dimensions and omit this AllReduce.
 """
 
 from __future__ import annotations
@@ -185,7 +186,10 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
       - Non-final layers: row-parallel (M = out // tp, K = in; output sharded) + activation
       - Final layer: column-parallel if P > 1 (M = out, K = in // tp; input sharded)
                      row-parallel if P == 1 (M = out // tp, K = in; full input)
-      - Always ends with a CustomAllReduce over the final output dimension.
+      - Ends with a CustomAllReduce unless the projector is replicated.
+
+    Replicated projectors use full dimensions in all layers. Input and output
+    normalization follow the architecture's projector flags.
 
     Returns [] if projector_dims is empty.
     """
@@ -196,20 +200,26 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
     n_inst = enc_cfg.projector_n_instances
     vit_gemm_mode = common.GEMMQuantMode.bfloat16
     n_layers = len(dims)
+    # Kimi PatchMergerV2 has replicated linears and only a final RMSNorm.
+    # Modified adaptation (Apache-2.0), copyright contributors to vLLM:
+    # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+    if enc_cfg.projector_replicated:
+        tp_size = 1
 
     result = []
     # The final merger normalizes hidden_size before pixel shuffle. Deepstack
     # mergers normalize merger_dim after shuffle, but the inverse token-count
     # change preserves the same total hidden_size traffic per pre-merge patch.
-    result.append(
-        ops.ElementWise(
-            "encoder_merger_norm",
-            n_inst,
-            enc_cfg.hidden_size,
-            enc_cfg.hidden_size,
-            0.8,
+    if enc_cfg.projector_pre_norm:
+        result.append(
+            ops.ElementWise(
+                "encoder_merger_norm",
+                n_inst,
+                enc_cfg.hidden_size,
+                enc_cfg.hidden_size,
+                0.8,
+            )
         )
-    )
     for i, (in_d, out_d) in enumerate(dims):
         is_last = i == n_layers - 1
         # Final layer in a multi-layer projector takes sharded input from the previous
@@ -232,7 +242,8 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
                 )
             )
 
-    result.append(ops.CustomAllReduce("encoder_projector_ar", n_inst, dims[-1][1], tp_size))
+    if not enc_cfg.projector_replicated:
+        result.append(ops.CustomAllReduce("encoder_projector_ar", n_inst, dims[-1][1], tp_size))
     if enc_cfg.projector_post_norm:
         result.append(ops.ElementWise("encoder_projector_post_norm", n_inst, dims[-1][1], dims[-1][1], 0.8))
     return result
@@ -304,6 +315,8 @@ def build_kimi_k3_encoder_ops(
         raise ValueError(f"Expected Kimi K3 encoder config, got {enc_cfg.encoder_type!r}")
     if not (enc_cfg.final_norm and enc_cfg.pool_temporal and enc_cfg.projector_post_norm):
         raise ValueError("Kimi K3 requires complete MoonViT3D and PatchMergerV2 operation semantics")
+    if not enc_cfg.projector_replicated or enc_cfg.projector_pre_norm:
+        raise ValueError("Kimi K3 PatchMergerV2 requires replicated projections and only a final normalization")
     if enc_cfg.video_attention_type != "spatial_temporal":
         raise ValueError("Kimi K3 requires spatial_temporal vision attention")
     if enc_cfg.qkv_hidden_size <= 0 or enc_cfg.max_temporal_patches <= 0:
