@@ -56,7 +56,7 @@ satisfies the Collector's native FPM contract. The ordinary preflight must pass.
 
 Engram makes token history part of the workload. Qualification therefore needs
 a reproducible tokenizer-generated text corpus and real model-computed KV for
-both cached prefills and decode. V4.1 decode publication rejects `fake_fallback`,
+both cached prefills and decode. V4.1 cached-prefill and decode publication reject `fake_fallback`,
 legacy, and skipped-warm provenance; the consumer rejects them too. A producer
 must earn the `real_kv` marker through execution. The initial canary should use
 small batch/context limits, then expand the matrix only after native artifacts,

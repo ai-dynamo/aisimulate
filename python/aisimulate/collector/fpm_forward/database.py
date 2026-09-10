@@ -170,7 +170,7 @@ def aggregate_cell(
     approved_skip_reasons = {"moe_tp_balanced_by_construction"}
 
     def _kv_seed_regime(point: dict[str, Any], phase: str) -> str:
-        if phase == "prefill":
+        if phase == "prefill" and (not cell.execution_identity[0] or int(point["total_kv_read_tokens"]) == 0):
             return "n/a"
         if kvwarm_meta is None:
             return "legacy"
@@ -195,8 +195,12 @@ def aggregate_cell(
         batch = int(point["batch_size"])
         total_prefill = int(point["total_prefill_tokens"])
         total_kv = int(point["total_kv_read_tokens"])
-        if cell.execution_identity[0] and phase == "decode" and _kv_seed_regime(point, phase) != "real_kv":
-            raise ValueError("DeepSeek-V4.1 decode publication requires real_kv measurements")
+        if (
+            cell.execution_identity[0]
+            and (phase == "decode" or total_kv > 0)
+            and _kv_seed_regime(point, phase) != "real_kv"
+        ):
+            raise ValueError("DeepSeek-V4.1 cached prefill/decode publication requires real_kv measurements")
         rows.append(
             {
                 "cell_id": cell.cell_id,
@@ -554,6 +558,8 @@ def write_formal_database(
         # as null instead.
         for row in merged:
             row.setdefault("kv_seed_regime", None)
+            for field in ("input_text_sha256", "input_token_ids_sha256", "input_tokenizer_revision"):
+                row.setdefault(field, None)
 
         temporary = _temporary_path(parquet_path)
         temporary_metadata = _temporary_path(metadata_path)

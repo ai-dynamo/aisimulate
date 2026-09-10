@@ -40,7 +40,9 @@ class SlurmCellRunner:
         if not re.fullmatch(r"[0-9]+", self.job_id):
             raise ValueError("Slurm FPM must run inside an existing sbatch/salloc allocation")
         self.step_name = f"fpm-{hashlib.sha256(str(self.cell_dir).encode()).hexdigest()[:20]}"
-        self.owner_path = self.cell_dir / "slurm-owner.json"
+        # Keep ownership outside the replaceable cell payload so a fresh
+        # invocation can tear down an abandoned allocation's named steps.
+        self.owner_path = self.cell_dir.parent / ".slurm-owners" / f"{self.step_name}.json"
         self.hosts: list[str] = []
 
     def _command(self, args: list[str], *, timeout: int = 60, check: bool = True):
@@ -52,6 +54,7 @@ class SlurmCellRunner:
         for executable in ("srun", "scontrol", "squeue", "scancel"):
             if not shutil.which(executable):
                 raise RuntimeError(f"Slurm FPM requires {executable}")
+        self.owner_path.parent.mkdir(parents=True, exist_ok=True)
         self.owner_path.write_text(json.dumps({"job_id": self.job_id, "step_name": self.step_name}) + "\n")
 
     def wait_ready(self, expected_nodes: int, timeout_seconds: int = 900) -> list[str]:

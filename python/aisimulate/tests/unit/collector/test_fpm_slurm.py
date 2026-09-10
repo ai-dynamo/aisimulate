@@ -57,6 +57,7 @@ def test_slurm_stage_and_argv_keep_shared_result_unit_identity(runner, monkeypat
 
 
 def test_slurm_cleanup_cancels_only_receipted_steps_and_verifies_exit(runner, monkeypatch):
+    runner.owner_path.parent.mkdir(parents=True, exist_ok=True)
     runner.owner_path.write_text(json.dumps({"job_id": "1233", "step_name": runner.step_name}))
     commands = []
     snapshots = iter(

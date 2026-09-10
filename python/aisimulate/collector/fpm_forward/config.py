@@ -201,6 +201,7 @@ class FPMCollectionOptions:
     vllm_max_model_len: int = VLLM_AUTO_FIT_MAX_MODEL_LEN
     max_prefill_isl: int = FPM_MAX_PREFILL_ISL
     max_prefill_batch_size: int | None = None
+    max_decode_batch_size: int | None = None
     max_prefill_cudagraph_size: int = FPM_MAX_PREFILL_CUDAGRAPH_SIZE
     decoder_replay: bool = False
     executor: str = "kubernetes"
@@ -259,6 +260,10 @@ class FPMCollectionOptions:
         if executor != "slurm" and (image or mounts):
             raise ValueError("Slurm container options require --fpm-executor slurm")
 
+        model_len = getattr(args, "fpm_max_model_len", None)
+        if model_len is not None and model_len != -1 and model_len < 1:
+            raise ValueError("--fpm-max-model-len must be positive or -1 for auto-fit")
+
         return cls(
             max_gpus=max_gpus,
             gpu_counts=tuple(counts),
@@ -283,6 +288,8 @@ class FPMCollectionOptions:
                 if getattr(args, "fpm_warmup_iterations", None) is None
                 else args.fpm_warmup_iterations
             ),
+            vllm_max_model_len=model_len if model_len is not None else VLLM_AUTO_FIT_MAX_MODEL_LEN,
+            max_decode_batch_size=getattr(args, "fpm_max_decode_batch_size", None),
             max_prefill_isl=getattr(args, "fpm_max_prefill_isl", None) or FPM_MAX_PREFILL_ISL,
             max_prefill_batch_size=getattr(args, "fpm_max_prefill_batch_size", None),
             max_prefill_cudagraph_size=(
@@ -318,6 +325,7 @@ class FPMCollectionOptions:
             "cp_sizes": list(self.cp_sizes) if self.cp_sizes is not None else None,
             "global_warmup_iterations": self.warmup_iterations,
             "vllm_max_model_len": self.vllm_max_model_len,
+            "max_decode_batch_size": self.max_decode_batch_size,
             "warmup_repeats": 0,
             "measurement_repeats": FPM_MEASUREMENT_REPEATS,
             "point_source": "dynamo_native_self_benchmark",
@@ -337,6 +345,15 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         default=None,
         help="Use true bounded decoder replay; requires verified runtime support.",
+    )
+    group.add_argument(
+        "--fpm-max-model-len", type=int, default=None, help="vLLM context limit; positive or -1 for runtime auto-fit."
+    )
+    group.add_argument(
+        "--fpm-max-decode-batch-size",
+        type=_positive_int,
+        default=None,
+        help="Optional native decode max-num-seqs bound.",
     )
     group.add_argument(
         "--fpm-max-gpus",
@@ -575,6 +592,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_max_prefill_batch_size",
         "fpm_max_prefill_cudagraph_size",
         "fpm_artifact_root",
+        "fpm_max_model_len",
+        "fpm_max_decode_batch_size",
         "fpm_decoder_replay",
         "fpm_executor",
         "fpm_slurm_container_image",

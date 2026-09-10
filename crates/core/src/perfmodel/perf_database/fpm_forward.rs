@@ -734,11 +734,11 @@ fn load_pair(
         // the duplicate/collision checks.
         let kv_seed_regime = row.str_optional(kv_seed_col)?.unwrap_or("");
         if !match_identity[15].is_empty()
-            && workload_kind == "decode"
+            && (workload_kind == "decode" || total_kv_read_tokens > 0)
             && kv_seed_regime != FPM_KV_SEED_REAL_KV
         {
             return Err(structural(format!(
-                "FPM row {index}: config-bound decode requires real_kv provenance"
+                "FPM row {index}: config-bound cached prefill/decode requires real_kv provenance"
             )));
         }
         let fake_fallback = kv_seed_regime == FPM_KV_SEED_FAKE_FALLBACK;
@@ -1504,6 +1504,23 @@ pub(crate) mod tests {
         );
         identity[16] = "decoder_bounded".to_string();
         assert!(table.select_cell(&identity, "org/model-a").is_err());
+        let prefill_rows: Vec<RowSpec> = default_rows()
+            .into_iter()
+            .filter(|r| r.workload_kind == "prefill")
+            .map(|mut r| {
+                r.execution = Some(execution);
+                r.kv_seed_regime = Some("fake_fallback");
+                r
+            })
+            .collect();
+        write_pair(tmp.path(), &prefill_rows);
+        assert!(
+            loaded_table(tmp.path())
+                .cells()
+                .unwrap_err()
+                .to_string()
+                .contains("requires real_kv")
+        );
         for row in &mut rows {
             row.kv_seed_regime = Some("fake_fallback");
         }

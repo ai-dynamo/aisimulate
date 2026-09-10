@@ -2372,3 +2372,44 @@ def test_missing_perf_data_stays_runnable_under_memory_admission(monkeypatch):
 
     assert len(plan.topologies) == 3
     assert {decision.disposition for decision in plan.topology_memory_admission} == {"unknown"}
+
+
+@pytest.mark.parametrize("marker", ["kvwarm_real_kv", "kvwarm_fake_fallback", None])
+def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
+    from dataclasses import replace
+
+    from aiconfigurator_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+    cell = replace(cell, execution_identity=identity, input_text_sha256="a" * 64)
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        payload["execution_identity"] = dict(zip(EXECUTION_COLUMNS, identity, strict=True))
+        payload["input_provenance"] = {
+            "source": "tokenizer_text",
+            "text_sha256": "a" * 64,
+            "token_ids_sha256": "b" * 64,
+            "tokenizer_revision": "pinned",
+            "token_count": 100,
+            "unique_token_count": 20,
+        }
+        payload["kvwarm"] = {"enabled": True, "warm_eligible": True, "skip_reason": None}
+
+        def mark(value):
+            if isinstance(value, dict):
+                if "point_type" in value:
+                    value["sample_reasons"] = [marker] if marker else []
+                for child in value.values():
+                    mark(child)
+            elif isinstance(value, list):
+                for child in value:
+                    mark(child)
+
+        mark(payload)
+        path.write_text(json.dumps(payload))
+    if marker == "kvwarm_real_kv":
+        assert aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]["kv_seed_regime"] == "real_kv"
+    else:
+        with pytest.raises(ValueError, match="requires real_kv"):
+            aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")

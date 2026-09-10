@@ -99,6 +99,8 @@ def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path:
         value = evidence.get(field)
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ValueError(f"V4.1 native result has invalid {field}: {path}")
+    if cell.input_text_sha256 and evidence["text_sha256"] != cell.input_text_sha256:
+        raise ValueError(f"V4.1 native input text differs from the frozen corpus: {path}")
     if not isinstance(evidence.get("tokenizer_revision"), str) or not evidence["tokenizer_revision"]:
         raise ValueError(f"V4.1 native result has no tokenizer revision: {path}")
     counts = [evidence.get(field) for field in ("token_count", "unique_token_count")]

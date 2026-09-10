@@ -447,11 +447,13 @@ class FPMCell:
     comm_quant_mode: str | None = None
     fmha_resolution: str | None = None
     execution_identity: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY
+    input_text_sha256: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
             "cell_id": self.cell_id,
             "execution_identity": dict(zip(EXECUTION_COLUMNS, self.execution_identity, strict=True)),
+            "input_text_sha256": self.input_text_sha256,
             "workload_kind": self.workload_kind,
             "point_source": "dynamo_native_self_benchmark",
             "topology": self.topology.to_dict(),
@@ -552,6 +554,7 @@ def _cell_id(
     kv_cache_dtype: str,
     policy: BackendPolicy,
     execution: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY,
+    input_text_sha256: str = "",
 ) -> str:
     payload = {
         "backend": backend,
@@ -563,6 +566,7 @@ def _cell_id(
         "kv_cache_dtype": kv_cache_dtype,
         **backend_identity_columns(policy),
         **dict(zip(EXECUTION_COLUMNS, execution, strict=True)),
+        "input_text_sha256": input_text_sha256,
         "point_source": "dynamo_native_self_benchmark",
     }
     return f"fpm-{_canonical_hash(payload)[:16]}"
@@ -601,6 +605,11 @@ def build_collection_plan(
     )
     execution = execution_identity(
         capability.model_config.payload, decoder_replay=options.decoder_replay, backend=backend
+    )
+    input_text_sha256 = (
+        hashlib.sha256((Path(__file__).parent / "runtime" / "fpm_text.txt").read_bytes()).hexdigest()
+        if execution[0]
+        else ""
     )
     candidate_topologies = enumerate_fpm_topologies(
         backend=backend,
@@ -656,8 +665,10 @@ def build_collection_plan(
                 kv_cache_dtype=kv_cache_dtype,
                 policy=policy,
                 execution=execution,
+                input_text_sha256=input_text_sha256,
             ),
             execution_identity=execution,
+            input_text_sha256=input_text_sha256,
             workload_kind=phase,
             topology=topology,
             weight_quantization=weight_quantization,

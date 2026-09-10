@@ -926,6 +926,8 @@ def _cell_generator_overrides(
         "--max-model-len",
         str(plan.options.vllm_max_model_len),
     ]
+    if cell.workload_kind == "decode" and getattr(plan.options, "max_decode_batch_size", None):
+        scheduler_args.extend(["--max-num-seqs", str(plan.options.max_decode_batch_size)])
     if cell.workload_kind == "prefill" and not smoke:
         profile = plan.options.prefill_sampling
         compilation_config = {
@@ -984,6 +986,16 @@ def _cell_generator_overrides(
         {"name": FPM_ENGINE_BENCHMARK_OUTPUT_ENV, "value": f"{FPM_RESULTS_DIR}/benchmark.json"},
         {"name": FPM_RUN_ID_ENV, "value": cell.cell_id},
     ]
+    if architecture == "DeepseekV41ForCausalLM":
+        from aiconfigurator_core.sdk.deepseek_v41 import MODEL_REVISION
+
+        env.extend(
+            [
+                {"name": "DYN_FPM_DSV41_REAL_KV", "value": "1"},
+                {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
+                {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISION},
+            ]
+        )
     total_gpus = cell.topology.total_gpus
     generated = {
         "ServiceConfig": service,
@@ -1599,6 +1611,31 @@ def _run_collection_impl(
             continue
 
         cell_dir = root / "cells" / cell.cell_id
+        if getattr(plan.options, "executor", "kubernetes") == "slurm":
+            abandoned_manifest = cell_dir / FPM_MANIFEST_FILENAME
+            if abandoned_manifest.exists():
+                # Shared result mounts stay writable until the old step exits.
+                # Verify teardown before replacing any part of that directory.
+                try:
+                    _cell_runner(plan, cell, abandoned_manifest, cell_dir).cleanup()
+                except Exception as error:
+                    checkpoint["cells"][cell.cell_id] = {
+                        **previous,
+                        "status": "cleanup_failed",
+                        "cleanup_error": str(error),
+                        "artifact_dir": str(cell_dir),
+                    }
+                    errors.append(
+                        {
+                            "module": "fpm_forward",
+                            "cell_id": cell.cell_id,
+                            "error_type": type(error).__name__,
+                            "error_message": str(error),
+                            "classification": "resource_cleanup_failed",
+                        }
+                    )
+                    _atomic_json(checkpoint_path, checkpoint)
+                    continue
         if cell_dir.exists() and not resume:
             shutil.rmtree(cell_dir)
         cell_dir.mkdir(parents=True, exist_ok=True)
@@ -1666,6 +1703,7 @@ def _run_collection_impl(
                     env_script,
                     runtime_exec,
                     runtime_preflight,
+                    *([runtime_preflight.parent / "fpm_text.txt"] if cell.execution_identity[0] else []),
                 ],
             )
             resource.prepare_attempt(

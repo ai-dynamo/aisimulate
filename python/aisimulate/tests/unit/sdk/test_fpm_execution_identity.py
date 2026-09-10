@@ -42,7 +42,7 @@ def test_native_v41_requires_measured_execution_and_text_evidence():
     from collector.fpm_forward.native_artifact import _validate_execution_provenance
 
     identity = execution_identity(config())
-    cell = SimpleNamespace(execution_identity=identity)
+    cell = SimpleNamespace(execution_identity=identity, input_text_sha256="a" * 64)
     fields = ("model_config_sha256", "execution_profile", "engram_residency", "input_modality")
     payload = {
         "execution_identity": dict(zip(fields, identity, strict=True)),
@@ -66,7 +66,7 @@ def test_native_v41_requires_measured_execution_and_text_evidence():
         _validate_execution_provenance(cell, corrupt, Path("artifact"))
     assert (
         _validate_execution_provenance(
-            SimpleNamespace(execution_identity=LEGACY_EXECUTION_IDENTITY), {}, Path("legacy")
+            SimpleNamespace(execution_identity=LEGACY_EXECUTION_IDENTITY, input_text_sha256=""), {}, Path("legacy")
         )
         is None
     )
