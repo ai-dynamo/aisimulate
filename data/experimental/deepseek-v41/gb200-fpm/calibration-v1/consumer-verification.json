@@ -1,0 +1,2155 @@
+{
+  "schema": "dsv41.fpm.calibration.consumer.v1",
+  "valid": true,
+  "role": "calibration_consumer_roundtrip",
+  "formal_accuracy_claim": false,
+  "points": [
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 2,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 750.6382842548192,
+      "native_consumer_ms": 750.6382842548192
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 3,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 696.0285580717027,
+      "native_consumer_ms": 696.0285580717027
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 8,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 730.0327238626778,
+      "native_consumer_ms": 730.0327238626778
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 32,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 780.0172599963844,
+      "native_consumer_ms": 780.0172599963844
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 64,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 758.006707765162,
+      "native_consumer_ms": 758.006707765162
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 127,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 744.711427949369,
+      "native_consumer_ms": 744.711427949369
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 128,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 742.8840668871999,
+      "native_consumer_ms": 742.8840668871999
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 129,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 743.9466589130461,
+      "native_consumer_ms": 743.9466589130461
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 256,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 754.4711520895362,
+      "native_consumer_ms": 754.4711520895362
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 512,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 803.6567741073668,
+      "native_consumer_ms": 803.6567741073668
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 1024,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 766.4598692208529,
+      "native_consumer_ms": 766.4598692208529
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 1536,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 770.321249961853,
+      "native_consumer_ms": 770.321249961853
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 2048,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 777.3744100704789,
+      "native_consumer_ms": 777.3744100704789
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 4,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 739.4145899452269,
+      "native_consumer_ms": 739.4145899452269
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 6,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 741.2898251786828,
+      "native_consumer_ms": 741.2898251786828
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 16,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 772.8605479933321,
+      "native_consumer_ms": 772.8605479933321
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 64,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 787.6142919994891,
+      "native_consumer_ms": 787.6142919994891
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 128,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 808.5727798752487,
+      "native_consumer_ms": 808.5727798752487
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 254,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 782.7887833118439,
+      "native_consumer_ms": 782.7887833118439
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 256,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 770.8561304025352,
+      "native_consumer_ms": 770.8561304025352
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 258,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 777.0569049753249,
+      "native_consumer_ms": 777.0569049753249
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 512,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 765.2348428964615,
+      "native_consumer_ms": 765.2348428964615
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 1024,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 760.8406632207334,
+      "native_consumer_ms": 760.8406632207334
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 2048,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 757.4278912506998,
+      "native_consumer_ms": 757.4278912506998
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 3072,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 744.277155958116,
+      "native_consumer_ms": 744.277155958116
+    },
+    {
+      "phase": "decode",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 4096,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 745.9973176009953,
+      "native_consumer_ms": 745.9973176009953
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 1,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 745.9122519940138,
+      "native_consumer_ms": 745.9122519940138
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 1,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 764.6550559438765,
+      "native_consumer_ms": 764.6550559438765
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 1,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 802.7679938822985,
+      "native_consumer_ms": 802.7679938822985
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 1,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 830.9255908243358,
+      "native_consumer_ms": 830.9255908243358
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 2,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 779.313855804503,
+      "native_consumer_ms": 779.313855804503
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 2,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 778.1209591776133,
+      "native_consumer_ms": 778.1209591776133
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 2,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 889.6242459304631,
+      "native_consumer_ms": 889.6242459304631
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 2,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 829.9248865805566,
+      "native_consumer_ms": 829.9248865805566
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 3,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 834.4327951781452,
+      "native_consumer_ms": 834.4327951781452
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 3,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 771.2424551136792,
+      "native_consumer_ms": 771.2424551136792
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 3,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 825.4462899640203,
+      "native_consumer_ms": 825.4462899640203
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 3,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 868.1401591747999,
+      "native_consumer_ms": 868.1401591747999
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 4,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 755.0698616541922,
+      "native_consumer_ms": 755.0698616541922
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 4,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 796.5694898739457,
+      "native_consumer_ms": 796.5694898739457
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 4,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 817.5414497964084,
+      "native_consumer_ms": 817.5414497964084
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 4,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 834.676539991051,
+      "native_consumer_ms": 834.676539991051
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 8,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 767.9954119957983,
+      "native_consumer_ms": 767.9954119957983
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 8,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 839.3844477832317,
+      "native_consumer_ms": 839.3844477832317
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 8,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 869.2525760270655,
+      "native_consumer_ms": 869.2525760270655
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 8,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 808.1542709842324,
+      "native_consumer_ms": 808.1542709842324
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 16,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 823.7843681126833,
+      "native_consumer_ms": 823.7843681126833
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 16,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 800.7694310508668,
+      "native_consumer_ms": 800.7694310508668
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 16,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 816.4361361414194,
+      "native_consumer_ms": 816.4361361414194
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 16,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 855.9552831575274,
+      "native_consumer_ms": 855.9552831575274
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 32,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 862.1167931705713,
+      "native_consumer_ms": 862.1167931705713
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 32,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 786.1549193039536,
+      "native_consumer_ms": 786.1549193039536
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 32,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 802.3925051093102,
+      "native_consumer_ms": 802.3925051093102
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 32,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 812.5376040115952,
+      "native_consumer_ms": 812.5376040115952
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 64,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 792.8180950693786,
+      "native_consumer_ms": 792.8180950693786
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 64,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 840.4064327478409,
+      "native_consumer_ms": 840.4064327478409
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 64,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 847.2966491244733,
+      "native_consumer_ms": 847.2966491244733
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 64,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 865.7508450560272,
+      "native_consumer_ms": 865.7508450560272
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 127,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 851.0102517902851,
+      "native_consumer_ms": 851.0102517902851
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 127,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 778.4399040974677,
+      "native_consumer_ms": 778.4399040974677
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 127,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 852.8149263001978,
+      "native_consumer_ms": 852.8149263001978
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 127,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 820.6818047910929,
+      "native_consumer_ms": 820.6818047910929
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 128,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 784.0882292948663,
+      "native_consumer_ms": 784.0882292948663
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 128,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 783.8127091526985,
+      "native_consumer_ms": 783.8127091526985
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 128,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 779.2592970654368,
+      "native_consumer_ms": 779.2592970654368
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 128,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 793.8581919297576,
+      "native_consumer_ms": 793.8581919297576
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 129,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 778.6767999641597,
+      "native_consumer_ms": 778.6767999641597
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 129,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 849.5986028574407,
+      "native_consumer_ms": 849.5986028574407
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 129,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 796.2287543341517,
+      "native_consumer_ms": 796.2287543341517
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 129,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 864.0088271349669,
+      "native_consumer_ms": 864.0088271349669
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 256,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 797.9091401211917,
+      "native_consumer_ms": 797.9091401211917
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 256,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 783.7996850721538,
+      "native_consumer_ms": 783.7996850721538
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 256,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 868.7778227031231,
+      "native_consumer_ms": 868.7778227031231
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 256,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 811.262883245945,
+      "native_consumer_ms": 811.262883245945
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 512,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 759.0989219024777,
+      "native_consumer_ms": 759.0989219024777
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 512,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 853.4793430007994,
+      "native_consumer_ms": 853.4793430007994
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 512,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 790.7077572308481,
+      "native_consumer_ms": 790.7077572308481
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 512,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 846.2504716590047,
+      "native_consumer_ms": 846.2504716590047
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 2,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 733.475408051163,
+      "native_consumer_ms": 733.475408051163
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 2,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 732.8440146520734,
+      "native_consumer_ms": 732.8440146520734
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 2,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 795.1938100159168,
+      "native_consumer_ms": 795.1938100159168
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 2,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 793.4634401462972,
+      "native_consumer_ms": 793.4634401462972
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 4,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 768.3286932297051,
+      "native_consumer_ms": 768.3286932297051
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 4,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 768.4279889799654,
+      "native_consumer_ms": 768.4279889799654
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 4,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 816.0891928710043,
+      "native_consumer_ms": 816.0891928710043
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 4,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 799.4210151955485,
+      "native_consumer_ms": 799.4210151955485
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 6,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 836.4058858714998,
+      "native_consumer_ms": 836.4058858714998
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 6,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 835.3075487539172,
+      "native_consumer_ms": 835.3075487539172
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 6,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 803.6294989287853,
+      "native_consumer_ms": 803.6294989287853
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 6,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 847.6822827942669,
+      "native_consumer_ms": 847.6822827942669
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 8,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 761.4690382033587,
+      "native_consumer_ms": 761.4690382033587
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 8,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 785.1121993735433,
+      "native_consumer_ms": 785.1121993735433
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 8,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 788.329258095473,
+      "native_consumer_ms": 788.329258095473
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 8,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 805.2958371117711,
+      "native_consumer_ms": 805.2958371117711
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 16,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 748.39545506984,
+      "native_consumer_ms": 748.39545506984
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 16,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 790.5724602751434,
+      "native_consumer_ms": 790.5724602751434
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 16,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 800.860888324678,
+      "native_consumer_ms": 800.860888324678
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 16,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 870.689186733216,
+      "native_consumer_ms": 870.689186733216
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 32,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 811.1835550516844,
+      "native_consumer_ms": 811.1835550516844
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 32,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 795.3470577485859,
+      "native_consumer_ms": 795.3470577485859
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 32,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 804.0262362919748,
+      "native_consumer_ms": 804.0262362919748
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 32,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 835.9833261929452,
+      "native_consumer_ms": 835.9833261929452
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 64,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 765.125457663089,
+      "native_consumer_ms": 765.125457663089
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 64,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 815.2856072410941,
+      "native_consumer_ms": 815.2856072410941
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 64,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 800.8530479855835,
+      "native_consumer_ms": 800.8530479855835
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 64,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 858.2973978482187,
+      "native_consumer_ms": 858.2973978482187
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 128,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 767.3403713852167,
+      "native_consumer_ms": 767.3403713852167
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 128,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 774.1519948467612,
+      "native_consumer_ms": 774.1519948467612
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 128,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 811.9251560419798,
+      "native_consumer_ms": 811.9251560419798
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 128,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 800.7511291652918,
+      "native_consumer_ms": 800.7511291652918
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 254,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 846.6201038099825,
+      "native_consumer_ms": 846.6201038099825
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 254,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 783.2520049996674,
+      "native_consumer_ms": 783.2520049996674
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 254,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 788.4091618470848,
+      "native_consumer_ms": 788.4091618470848
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 254,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 810.7814439572394,
+      "native_consumer_ms": 810.7814439572394
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 256,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 777.5030708871782,
+      "native_consumer_ms": 777.5030708871782
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 256,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 835.8044130727649,
+      "native_consumer_ms": 835.8044130727649
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 256,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 793.662257026881,
+      "native_consumer_ms": 793.662257026881
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 256,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 853.574289008975,
+      "native_consumer_ms": 853.574289008975
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 258,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 750.6928341463208,
+      "native_consumer_ms": 750.6928341463208
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 258,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 763.448815792799,
+      "native_consumer_ms": 763.448815792799
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 258,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 782.9368049278855,
+      "native_consumer_ms": 782.9368049278855
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 258,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 806.6986869089305,
+      "native_consumer_ms": 806.6986869089305
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 512,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 820.9795327857137,
+      "native_consumer_ms": 820.9795327857137
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 512,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 760.6041729450226,
+      "native_consumer_ms": 760.6041729450226
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 512,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 786.131049040705,
+      "native_consumer_ms": 786.131049040705
+    },
+    {
+      "phase": "prefill",
+      "metrics": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 512,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "measured_table_ms": 850.2127178944647,
+      "native_consumer_ms": 850.2127178944647
+    }
+  ],
+  "table_sha256": "2edc7f78efe54b58009151f77591d2ed2dd42246f0e8a228ddebe5df1b6a816e",
+  "native_extension_sha256": "8a356bc00743b61f11de75908d97259d0aa0b27194b28ac9499c7c1328f1bb24",
+  "verification_source_sha256": "b1de7c36d283bb50521d87fa6f59f136e0a9b1d91e4ff3f2f04e75e740a9890f",
+  "wrong_fmha_rejected": "PerfDataNotAvailableError",
+  "decode_axis": "whole-forward past KV; current query is not added"
+}
