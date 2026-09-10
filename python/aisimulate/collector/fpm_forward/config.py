@@ -202,6 +202,10 @@ class FPMCollectionOptions:
     max_prefill_isl: int = FPM_MAX_PREFILL_ISL
     max_prefill_batch_size: int | None = None
     max_prefill_cudagraph_size: int = FPM_MAX_PREFILL_CUDAGRAPH_SIZE
+    decoder_replay: bool = False
+    executor: str = "kubernetes"
+    slurm_container_image: str = ""
+    slurm_container_mounts: tuple[str, ...] = ()
 
     @property
     def prefill_sampling(self) -> PrefillSamplingProfile:
@@ -247,6 +251,14 @@ class FPMCollectionOptions:
         if {"pp", "cp"}.intersection(requested_axes):
             raise ValueError("FPM typical-matrix V1 does not vary PP or CP")
 
+        executor = getattr(args, "fpm_executor", None) or "kubernetes"
+        image = getattr(args, "fpm_slurm_container_image", None) or ""
+        mounts = tuple(getattr(args, "fpm_slurm_container_mount", None) or ())
+        if executor == "slurm" and not image:
+            raise ValueError("--fpm-executor slurm requires --fpm-slurm-container-image")
+        if executor != "slurm" and (image or mounts):
+            raise ValueError("Slurm container options require --fpm-executor slurm")
+
         return cls(
             max_gpus=max_gpus,
             gpu_counts=tuple(counts),
@@ -276,10 +288,18 @@ class FPMCollectionOptions:
             max_prefill_cudagraph_size=(
                 getattr(args, "fpm_max_prefill_cudagraph_size", None) or FPM_MAX_PREFILL_CUDAGRAPH_SIZE
             ),
+            decoder_replay=bool(getattr(args, "fpm_decoder_replay", False)),
+            executor=executor,
+            slurm_container_image=image,
+            slurm_container_mounts=mounts,
         )
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "decoder_replay": self.decoder_replay,
+            "executor": self.executor,
+            "slurm_container_image": self.slurm_container_image,
+            "slurm_container_mounts": list(self.slurm_container_mounts),
             "max_gpus": self.max_gpus,
             "gpu_counts": list(self.gpu_counts),
             "parallel_presets": list(self.parallel_presets),
@@ -311,6 +331,12 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group(
         "FPM forward collection",
         "Whole-model forward-pass planning, execution, and publication.",
+    )
+    group.add_argument(
+        "--fpm-decoder-replay",
+        action="store_true",
+        default=None,
+        help="Use true bounded decoder replay; requires verified runtime support.",
     )
     group.add_argument(
         "--fpm-max-gpus",
@@ -466,6 +492,23 @@ def add_fpm_generator_arguments(parser: argparse.ArgumentParser) -> None:
 
     group = parser.add_argument_group("FPM deployment inputs")
     group.add_argument(
+        "--fpm-executor",
+        choices=["kubernetes", "slurm"],
+        default=None,
+        help="Execution transport; Slurm runs inside an existing allocation.",
+    )
+    group.add_argument(
+        "--fpm-slurm-container-image",
+        default=None,
+        help="Immutable Pyxis image reference or staged squashfs for Slurm.",
+    )
+    group.add_argument(
+        "--fpm-slurm-container-mount",
+        action="append",
+        default=None,
+        help="Pyxis SOURCE:TARGET mount; repeat for checkpoint/runtime/cache paths.",
+    )
+    group.add_argument(
         "--generator-config",
         default=None,
         help="Deployment-only YAML containing supported K8sConfig fields.",
@@ -532,6 +575,10 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_max_prefill_batch_size",
         "fpm_max_prefill_cudagraph_size",
         "fpm_artifact_root",
+        "fpm_decoder_replay",
+        "fpm_executor",
+        "fpm_slurm_container_image",
+        "fpm_slurm_container_mount",
         "fpm_database_root",
         "fpm_publish_partial",
         # Deployment-only Generator inputs are registered unconditionally on

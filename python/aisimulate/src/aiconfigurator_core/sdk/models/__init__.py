@@ -59,7 +59,7 @@ del _SKIP
 _FORWARD_MODELS = ("op_level", "fpm")
 
 
-def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
+def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> BaseModel:
     """Centralized fpm rewrite: each phase list becomes exactly one whole-model
     op. No model class rewrites its own lists; metadata, parallelism, and the
     public model type are unchanged."""
@@ -83,13 +83,22 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
     # time) and as the weight-bytes inventory for memory estimation.
     context_ops = list(model.context_ops)
     generation_ops = list(model.generation_ops)
-    weight_bytes = float(sum(op.get_weights() for op in context_ops))
+    weight_bytes = float(model.get_resident_weights_bytes())
     model.context_ops = [
         FPMForwardOp("prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes)
     ]
     model.generation_ops = [
         FPMForwardOp("decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes)
     ]
+    from aiconfigurator_core.sdk.fpm_identity import execution_identity
+
+    identity = execution_identity(
+        getattr(model, "raw_config", {}),
+        decoder_replay=getattr(model.config, "decoder_replay", False),
+        backend=backend_name,
+    )
+    for op in (*model.context_ops, *model.generation_ops):
+        op._match_identity = (*op._match_identity[:15], *identity)
     model.forward_model = "fpm"
     return model
 
@@ -170,7 +179,7 @@ def get_model(
 
     model = cls.create(model_info, model_config, backend_name)
     if forward_model == "fpm":
-        model = _apply_forward_model_fpm(model)
+        model = _apply_forward_model_fpm(model, backend_name)
     return model
 
 

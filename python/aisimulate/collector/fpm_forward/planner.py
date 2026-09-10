@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from aiconfigurator_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, execution_identity
+
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
 from .config import FPMCollectionOptions
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
@@ -444,10 +446,12 @@ class FPMCell:
     fmha_quant_mode: str | None = None
     comm_quant_mode: str | None = None
     fmha_resolution: str | None = None
+    execution_identity: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY
 
     def to_dict(self) -> dict[str, object]:
         return {
             "cell_id": self.cell_id,
+            "execution_identity": dict(zip(EXECUTION_COLUMNS, self.execution_identity, strict=True)),
             "workload_kind": self.workload_kind,
             "point_source": "dynamo_native_self_benchmark",
             "topology": self.topology.to_dict(),
@@ -485,7 +489,7 @@ class FPMCollectionPlan:
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_name": "aic_fpm_collection_plan",
-            "schema_version": 10,
+            "schema_version": 11,
             "backend": self.backend,
             "model_path": self.model_path,
             "system": self.system,
@@ -547,6 +551,7 @@ def _cell_id(
     weight_quantization: str,
     kv_cache_dtype: str,
     policy: BackendPolicy,
+    execution: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY,
 ) -> str:
     payload = {
         "backend": backend,
@@ -557,6 +562,7 @@ def _cell_id(
         "weight_quantization": weight_quantization,
         "kv_cache_dtype": kv_cache_dtype,
         **backend_identity_columns(policy),
+        **dict(zip(EXECUTION_COLUMNS, execution, strict=True)),
         "point_source": "dynamo_native_self_benchmark",
     }
     return f"fpm-{_canonical_hash(payload)[:16]}"
@@ -592,6 +598,9 @@ def build_collection_plan(
         database_version=(
             str(collector_config["aic_database_version"]) if "aic_database_version" in collector_config else None
         ),
+    )
+    execution = execution_identity(
+        capability.model_config.payload, decoder_replay=options.decoder_replay, backend=backend
     )
     candidate_topologies = enumerate_fpm_topologies(
         backend=backend,
@@ -646,7 +655,9 @@ def build_collection_plan(
                 weight_quantization=weight_quantization,
                 kv_cache_dtype=kv_cache_dtype,
                 policy=policy,
+                execution=execution,
             ),
+            execution_identity=execution,
             workload_kind=phase,
             topology=topology,
             weight_quantization=weight_quantization,

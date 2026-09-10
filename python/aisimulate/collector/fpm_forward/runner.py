@@ -969,6 +969,12 @@ def _cell_generator_overrides(
             )
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
+    if architecture == "DeepseekV41ForCausalLM":
+        if plan.options.decoder_replay:
+            raise NotImplementedError("vLLM DeepSeek-V4.1 true decoder replay is not verified")
+        model_args.extend(
+            ["--language-model-only", "--tokenizer-mode=deepseek_v41", '--engram-config={"cpu_offload":false}']
+        )
     if architecture == "GlmMoeDsaForCausalLM":
         # This is the serving path validated by the pinned GLM-5.2 vLLM image.
         # The parser does not alter FPM scheduling, but keeping the model's
@@ -1241,7 +1247,24 @@ def _runtime_timing_summary(raw_root: Path) -> dict[str, int | float]:
     }
 
 
-def _salvage_artifacts(resource: KubernetesCellRunner, cell_id: str) -> None:
+def _cell_runner(plan: FPMCollectionPlan, cell: FPMCell, manifest: Path, cell_dir: Path):
+    executor = getattr(plan.options, "executor", "kubernetes")
+    if executor == "slurm":
+        from .slurm import SlurmCellRunner
+
+        return SlurmCellRunner(
+            manifest,
+            cell_dir,
+            image=plan.options.slurm_container_image,
+            mounts=plan.options.slurm_container_mounts,
+            total_gpus=cell.topology.total_gpus,
+        )
+    if executor != "kubernetes":
+        raise ValueError(f"unknown FPM executor {executor!r}")
+    return KubernetesCellRunner(manifest, cell_dir)
+
+
+def _salvage_artifacts(resource, cell_id: str) -> None:
     """Best-effort artifact salvage after a failed or interrupted attempt.
 
     kubectl-exec disconnects do not stop pod processes, so the runtime may
@@ -1342,7 +1365,7 @@ def _recover_completed_attempt(
             )
             return None
         try:
-            KubernetesCellRunner(manifest, cell_dir).cleanup()
+            _cell_runner(plan, cell, manifest, cell_dir).cleanup()
         except Exception as error:
             logger.warning(
                 "FPM cell %s recovery refused: teardown of the abandoned workload failed: %s",
@@ -1620,7 +1643,7 @@ def _run_collection_impl(
                     f"Generator FPM target did not emit {FPM_MANIFEST_FILENAME}, "
                     f"{FPM_ENV_FILENAME}, and {FPM_RUN_SCRIPT_FILENAME}"
                 )
-            resource = KubernetesCellRunner(manifest, cell_dir)
+            resource = _cell_runner(plan, cell, manifest, cell_dir)
             # A prior invocation may have left the same-named workload alive
             # (cleanup timeout, killed collector host) even when THIS
             # checkpoint has no record of the cell: workload names derive

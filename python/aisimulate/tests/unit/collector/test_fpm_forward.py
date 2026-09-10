@@ -264,7 +264,7 @@ def test_plan_contains_only_cell_matrix_and_native_point_contract():
     assert {cell.workload_kind for cell in first.cells} == {"prefill", "decode"}
     assert {cell.parallel_strategy for cell in first.cells} == {"dep"}
     payload = first.to_dict()
-    assert payload["schema_version"] == 10
+    assert payload["schema_version"] == 11
     assert payload["capability"]["model_config"]["source_kind"] == "aic_cache"
     assert len(payload["capability"]["model_config"]["sha256"]) == 64
     assert payload["capability"]["model_config"]["payload"]["architectures"] == ["GlmMoeDsaForCausalLM"]
@@ -1326,7 +1326,7 @@ def test_native_validation_rejects_sub_batch_token_totals(tmp_path):
         _expected_scheduled(decode_point)
 
 
-def test_formal_database_uses_schema_v6_and_rejects_conflicts(tmp_path):
+def test_formal_database_uses_schema_v7_and_rejects_conflicts(tmp_path):
     plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
     parquet, metadata, skipped = write_formal_database(plan, rows, systems_root=tmp_path / "systems")
@@ -1334,7 +1334,7 @@ def test_formal_database_uses_schema_v6_and_rejects_conflicts(tmp_path):
 
     assert parquet.exists()
     metadata_payload = json.loads(metadata.read_text())
-    assert metadata_payload["schema_version"] == 6
+    assert metadata_payload["schema_version"] == 7
     assert metadata_payload["coordinate_system"] == "iteration_totals_balanced_v1"
     assert metadata_payload["backend_version"] == "0.24.0"
     assert metadata_payload["collector_attempt_ids"] == ["attempt"]
@@ -1374,14 +1374,14 @@ def test_formal_database_first_publisher_wins_on_rerun_overlap(tmp_path):
     assert parquet2.read_bytes() == sealed
 
 
-def test_formal_database_commit_validation_accepts_sealed_schema_v6_pair(tmp_path):
+def test_formal_database_commit_validation_accepts_sealed_schema_v7_pair(tmp_path):
     plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
     parquet, metadata, _skipped = write_formal_database(plan, rows, systems_root=tmp_path / "systems")
 
     commit = validate_formal_database_commit(parquet, metadata, plan)
 
-    assert commit["schema_version"] == 6
+    assert commit["schema_version"] == 7
     assert commit["row_count"] == len(rows)
 
 
@@ -1755,7 +1755,7 @@ def test_formal_database_merge_gate_names_missing_row_key_columns(tmp_path):
     parquet_path = destination / "fpm_forward_perf.parquet"
     pq.write_table(pa.Table.from_pylist(stale_rows), parquet_path)
     (destination / "fpm_forward_perf.metadata.json").write_text(
-        json.dumps({"parquet_sha256": hashlib.sha256(parquet_path.read_bytes()).hexdigest()})
+        json.dumps({"schema_version": 7, "parquet_sha256": hashlib.sha256(parquet_path.read_bytes()).hexdigest()})
     )
 
     with pytest.raises(ValueError, match=r"missing columns: \['weight_quantization'\]"):

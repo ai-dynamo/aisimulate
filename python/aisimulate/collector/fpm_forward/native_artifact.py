@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from aiconfigurator.fpm_contract import (
     FPM_BENCHMARK_RESULT_GLOB,
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
 )
+from aiconfigurator_core.sdk.fpm_identity import EXECUTION_COLUMNS
 
 from .planner import FPMCell
 from .types import KVWARM_STRATEGIES
@@ -80,6 +82,31 @@ class NativeCollection:
     # Engine-reported KV warm-up envelope (warm_eligible/skip_reason/...);
     # None only for artifacts predating the kvwarm-enabled runtime.
     kvwarm_meta: dict[str, Any] | None = None
+    input_provenance: dict[str, Any] | None = None
+
+
+def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
+    """Config-bound curves require engine evidence for execution and real input."""
+    if not cell.execution_identity[0]:
+        return None
+    expected = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))
+    if payload.get("execution_identity") != expected:
+        raise ValueError(f"native execution identity differs from the frozen V4.1 cell: {path}")
+    evidence = payload.get("input_provenance")
+    if not isinstance(evidence, dict) or evidence.get("source") != "tokenizer_text":
+        raise ValueError(f"V4.1 native result requires tokenizer-generated text provenance: {path}")
+    for field in ("text_sha256", "token_ids_sha256"):
+        value = evidence.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError(f"V4.1 native result has invalid {field}: {path}")
+    if not isinstance(evidence.get("tokenizer_revision"), str) or not evidence["tokenizer_revision"]:
+        raise ValueError(f"V4.1 native result has no tokenizer revision: {path}")
+    counts = [evidence.get(field) for field in ("token_count", "unique_token_count")]
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 2 for value in counts):
+        raise ValueError(f"V4.1 native input corpus must contain multiple tokenizer-generated tokens: {path}")
+    if counts[1] > counts[0]:
+        raise ValueError(f"V4.1 native input corpus token counts are inconsistent: {path}")
+    return evidence
 
 
 def _validate_collector_provenance(
@@ -251,10 +278,16 @@ def validate_native_collection(
     run_identity: tuple[str, str] | None = None
     kvwarm_meta: dict[str, Any] | None = None
     kvwarm_seen: object = _KVWARM_UNSEEN
+    input_provenance: dict[str, Any] | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
     rank_timings: list[tuple[int, float, float]] = []
 
     for path, payload in rank_payloads:
+        evidence = _validate_execution_provenance(cell, payload, path)
+        if input_provenance is None:
+            input_provenance = evidence
+        elif evidence != input_provenance:
+            raise ValueError(f"native DP ranks disagree on input provenance: {path}")
         if (
             payload.get("schema_version") != FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION
             or payload.get("artifact_type") != "rank"
@@ -439,4 +472,5 @@ def validate_native_collection(
         runtime_run_id=run_identity[0],
         runtime_grid_digest=run_identity[1],
         kvwarm_meta=kvwarm_meta,
+        input_provenance=input_provenance,
     )

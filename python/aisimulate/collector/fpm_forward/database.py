@@ -19,6 +19,7 @@ from typing import Any
 import yaml
 
 from aiconfigurator.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
+from aiconfigurator_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
 from .native_artifact import validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan, backend_identity_columns
@@ -47,6 +48,7 @@ _ROW_KEY = (
     "attention_backend",
     "enable_wideep",
     "enable_eplb",
+    *EXECUTION_COLUMNS,
     "workload_kind",
     "batch_size",
     "total_prefill_tokens",
@@ -193,6 +195,8 @@ def aggregate_cell(
         batch = int(point["batch_size"])
         total_prefill = int(point["total_prefill_tokens"])
         total_kv = int(point["total_kv_read_tokens"])
+        if cell.execution_identity[0] and phase == "decode" and _kv_seed_regime(point, phase) != "real_kv":
+            raise ValueError("DeepSeek-V4.1 decode publication requires real_kv measurements")
         rows.append(
             {
                 "cell_id": cell.cell_id,
@@ -215,6 +219,7 @@ def aggregate_cell(
                 "moe_ep": cell.topology.moe_ep,
                 "cp": cell.topology.cp,
                 **backend_identity_columns(cell.backend_policy),
+                **dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True)),
                 "workload_kind": phase,
                 "batch_size": batch,
                 "total_prefill_tokens": total_prefill,
@@ -234,6 +239,9 @@ def aggregate_cell(
                 "collector_attempt_id": collection.collector_attempt_id,
                 "runtime_run_id": collection.runtime_run_id,
                 "runtime_grid_digest": collection.runtime_grid_digest,
+                "input_text_sha256": (collection.input_provenance or {}).get("text_sha256"),
+                "input_token_ids_sha256": (collection.input_provenance or {}).get("token_ids_sha256"),
+                "input_tokenizer_revision": (collection.input_provenance or {}).get("tokenizer_revision"),
             }
         )
     return rows
@@ -281,7 +289,7 @@ def validate_formal_database_commit(
         raise TypeError(f"FPM database commit record must be a mapping: {metadata_path}")
     expected = {
         "schema_name": "aic_fpm_forward_perf",
-        "schema_version": 6,
+        "schema_version": 7,
         "system": plan.system,
         "backend": plan.backend,
     }
@@ -303,7 +311,7 @@ def validate_formal_database_commit(
     required = {*_ROW_KEY, *_RUN_IDENTITY_FIELDS}
     missing = sorted(required - set(parquet.schema_arrow.names))
     if missing:
-        raise ValueError(f"committed FPM database is missing schema-v6 columns: {missing}")
+        raise ValueError(f"committed FPM database is missing schema-v7 columns: {missing}")
     row_count = payload.get("row_count")
     if not isinstance(row_count, int) or row_count < 1 or parquet.metadata.num_rows != row_count:
         raise ValueError(
@@ -482,13 +490,21 @@ def write_formal_database(
             # list turns schema drift into a bare KeyError instead of this
             # actionable error, and silently rots when _ROW_KEY grows.
             required = {*_ROW_KEY, *_RUN_IDENTITY_FIELDS}
+            if committed.get("schema_version") == 6:
+                required -= set(EXECUTION_COLUMNS)
+            elif committed.get("schema_version") != 7:
+                raise ValueError("existing FPM database has unsupported schema version")
             missing = sorted(required - set(table.column_names))
             if missing:
                 raise ValueError(
-                    "existing FPM database does not satisfy the attempt-bound schema-v6 row-key "
+                    "existing FPM database does not satisfy the attempt-bound schema-v7 row-key "
                     f"contract (missing columns: {missing}); publish to a clean destination: {parquet_path}"
                 )
-            merged.extend(table.to_pylist())
+            existing_rows = table.to_pylist()
+            if committed.get("schema_version") == 6:
+                for row in existing_rows:
+                    row.update(zip(EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, strict=True))
+            merged.extend(existing_rows)
         existing_versions = {str(row.get("backend_version") or "") for row in merged}
         if existing_versions and existing_versions != {version}:
             raise ValueError(
@@ -545,7 +561,7 @@ def write_formal_database(
             pq.write_table(pa.Table.from_pylist(merged), temporary, compression="zstd")
             metadata = {
                 "schema_name": "aic_fpm_forward_perf",
-                "schema_version": 6,
+                "schema_version": 7,
                 "coordinate_system": "iteration_totals_balanced_v1",
                 "measurement_policy": "dynamo_native_single_sample_v1",
                 "warmup_repeats": 0,

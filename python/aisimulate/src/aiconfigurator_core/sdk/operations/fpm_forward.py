@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+from aiconfigurator_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 from aiconfigurator_core.sdk.operations.base import PythonOperation
 
 _PHASES = ("prefill", "decode")
@@ -36,7 +37,7 @@ _PHASES = ("prefill", "decode")
 # handled separately (exact-match, never borrowed); ``weight_quantization``
 # is redundant with ``gemm_quant_mode`` (the collector falls one back to the
 # other) so only ``gemm_quant_mode`` participates in matching. The Rust
-# loader's cell keying mirrors this order and arity (15).
+# loader's cell keying mirrors this order and arity (19), with schema-6 default execution identity.
 _CELL_MATCH_COLUMNS = (
     "gemm_quant_mode",
     "moe_quant_mode",
@@ -58,6 +59,7 @@ _CELL_MATCH_COLUMNS = (
     "attention_backend",
     "enable_wideep",
     "enable_eplb",
+    *EXECUTION_COLUMNS,
 )
 
 
@@ -142,6 +144,7 @@ class FPMForwardOp(PythonOperation):
             _norm_identity(bool(getattr(model_config, "enable_wideep", False))),
             _norm_identity(bool(getattr(model_config, "enable_eplb", False))),
         )
+        self._match_identity += LEGACY_EXECUTION_IDENTITY
         self._sol_ops = list(sol_ops)
 
     def get_weights(self, **kwargs) -> float:
