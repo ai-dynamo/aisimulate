@@ -124,6 +124,14 @@ struct AicTimingConfig {
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
+    #[serde(default)]
+    decoder_replay: bool,
+    #[serde(default)]
+    database_mode: Option<String>,
+    #[serde(default, alias = "shared_layer")]
+    enable_shared_layer: Option<bool>,
+    #[serde(default)]
+    strict_provenance: Option<bool>,
 }
 
 const fn one() -> u32 {
@@ -239,6 +247,10 @@ impl AicTimingModel {
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
             kwargs.set_item("forward_model", config.forward_model.as_deref())?;
+            kwargs.set_item("decoder_replay", config.decoder_replay)?;
+            kwargs.set_item("database_mode", config.database_mode.as_deref())?;
+            kwargs.set_item("shared_layer", config.enable_shared_layer)?;
+            kwargs.set_item("strict_provenance", config.strict_provenance)?;
             let spec = sdk.getattr("compile_engine")?.call(
                 (
                     config.model.as_str(),
@@ -999,6 +1011,10 @@ mod tests {
             cuda_graph_reserved_bytes: 0,
             systems_path: None,
             forward_model: None,
+            decoder_replay: false,
+            database_mode: None,
+            enable_shared_layer: None,
+            strict_provenance: None,
         }
     }
 
@@ -1098,6 +1114,86 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+    }
+
+    #[test]
+    fn timing_policy_reaches_actual_compile_call() {
+        pyo3::prepare_freethreaded_python();
+        for replay in [false, true] {
+            let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+                "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1,
+                "decoder_replay": replay, "database_mode": "SILICON",
+                "enable_shared_layer": false, "strict_provenance": true
+            }))
+            .unwrap();
+            Python::with_gil(|py| {
+                let scope = PyDict::new(py);
+                py.run(
+                    &std::ffi::CString::new(
+                        r#"
+import sys, types
+names = ('aiconfigurator_core.sdk.engine', 'aiconfigurator_core')
+saved = {name: sys.modules.get(name) for name in names}
+captured = {}
+engine_module = types.ModuleType(names[0])
+def compile_engine(*args, **kwargs):
+    captured.update(kwargs)
+    return b'unused-spec'
+engine_module.compile_engine = compile_engine
+core_module = types.ModuleType(names[1])
+core_module.AicEngine = type('AicEngine', (), {'from_spec': staticmethod(lambda *args: object())})
+sys.modules[names[0]] = engine_module
+sys.modules[names[1]] = core_module
+"#,
+                    )
+                    .unwrap(),
+                    Some(&scope),
+                    None,
+                )
+                .unwrap();
+                let built = AicTimingModel::build(config);
+                // Restore Python imports before asserting, including on a build failure.
+                py.run(
+                    &std::ffi::CString::new(
+                        r#"
+for name, module in saved.items():
+    if module is None:
+        sys.modules.pop(name, None)
+    else:
+        sys.modules[name] = module
+"#,
+                    )
+                    .unwrap(),
+                    Some(&scope),
+                    None,
+                )
+                .unwrap();
+                built.unwrap();
+                scope.set_item("expected_replay", replay).unwrap();
+                py.run(
+                    &std::ffi::CString::new(
+                        r#"
+assert captured['decoder_replay'] is expected_replay
+assert captured['database_mode'] == 'SILICON'
+assert captured['shared_layer'] is False
+assert captured['strict_provenance'] is True
+"#,
+                    )
+                    .unwrap(),
+                    Some(&scope),
+                    None,
+                )
+                .unwrap();
+            });
+        }
+        let defaults = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+            "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1
+        }))
+        .unwrap();
+        assert!(!defaults.decoder_replay);
+        assert!(defaults.database_mode.is_none());
+        assert!(defaults.enable_shared_layer.is_none());
+        assert!(defaults.strict_provenance.is_none());
     }
 
     #[test]
