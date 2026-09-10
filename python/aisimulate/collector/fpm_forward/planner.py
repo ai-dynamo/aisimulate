@@ -489,6 +489,9 @@ class FPMCollectionPlan:
     sha256: str
 
     def to_dict(self) -> dict[str, object]:
+        explicit_points = (
+            json.loads(self.options.benchmark_points_json) if self.options.benchmark_points_json is not None else None
+        )
         return {
             "schema_name": "aic_fpm_collection_plan",
             "schema_version": 11,
@@ -503,6 +506,8 @@ class FPMCollectionPlan:
             "point_generation": {
                 "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
                 "method": "native_self_benchmark",
+                "source": "frozen_explicit_manifest" if explicit_points is not None else "native_auto_grid",
+                "manifest_sha256": self.options.benchmark_points_sha256,
                 "coordinates": [
                     "batch_size",
                     "total_prefill_tokens",
@@ -512,7 +517,11 @@ class FPMCollectionPlan:
                 "point_admission": "dynamo_live_scheduler",
                 "precondition": "vllm_engine_initialized",
                 "prefill_sampling": self.options.prefill_sampling.to_dict(),
-                "planned_point_count": None,
+                "planned_point_count": (
+                    sum(len(explicit_points.get(phase, [])) for phase in ("prefill", "decode"))
+                    if explicit_points is not None
+                    else None
+                ),
             },
             "topologies": [
                 {
@@ -606,6 +615,10 @@ def build_collection_plan(
     execution = execution_identity(
         capability.model_config.payload, decoder_replay=options.decoder_replay, backend=backend
     )
+    if execution[0] and not options.enforce_eager:
+        raise ValueError("V4.1 FPM collection currently requires --fpm-enforce-eager; graph timing is not qualified")
+    if options.enforce_eager and not execution[0]:
+        raise ValueError("explicit eager FPM collection is currently qualified only for DeepSeek V4.1")
     input_text_sha256 = (
         hashlib.sha256((Path(__file__).parent / "runtime" / "fpm_text.txt").read_bytes()).hexdigest()
         if execution[0]

@@ -1,7 +1,11 @@
 # DeepSeek V4.1 native FPM canary producer
 
-Status: CPU lifecycle tests pass. GPU runtime/import validation and numerical or
-latency qualification are still required. This is a bounded collection extension,
+Status: CPU lifecycle, lazy import, full worker/frontend import and native runtime
+initialization checks pass on the pinned ARM64 image with the composite Dynamo
+runtime below. Four GB200 workers loaded the model and selected
+`FLASHINFER_TRTLLM_MXFP4_MXFP8`; the subsequent graph compilation was terminated by
+the allocation time limit. No completed calibration points from that attempt are
+qualified. Numerical and latency qualification remain required. This is a bounded collection extension,
 not a replacement serving scheduler for general workloads.
 
 `dsv41_scheduler.py` extends the native Dynamo `InstrumentedScheduler`. It keeps
@@ -39,7 +43,8 @@ Engram DP group in that case, and gather_engram_hashes returns its input unchang
 The exported parallel config confirms num_ubatches=0 for this canary. The actual
 ModelConfig preflight passed with outer/text model_type=deepseek_v41, architecture
 DeepseekV41ForCausalLM, and resolved Engram cpu_offload=false. Full producer import
-and GPU numerical/latency validation remain pending. Do not substitute the package version string for source verification.
+passes with the composite runtime below; GPU numerical/latency validation remains
+pending. Do not substitute the package version string for source verification.
 Artifacts report vllm_revision=null, the actual package version, the inspected API
 revision, and the source-manifest digest rather than inventing a global git revision.
 
@@ -49,8 +54,24 @@ after changing either notice.
 
 ## Runtime
 
-Stage this directory on PYTHONPATH, together with the unmodified pinned Dynamo
-components and its actual runtime dependencies. Install the matching AISimulate
+Stage this directory on PYTHONPATH with Python `ai-dynamo==1.4.2` and matching
+`ai-dynamo-runtime==1.4.2`, then overlay these four unchanged files from Dynamo
+`54960177085413259859c88bd34ed0734d4c2ea9`:
+
+- `components/src/dynamo/vllm/instrumented_scheduler.py`
+- `components/src/dynamo/vllm/benchmark_points.py`
+- `components/src/dynamo/vllm/gc_policy.py`
+- `components/src/dynamo/common/forward_pass_metrics.py` (already identical in 1.4.2)
+
+Keep both distributions' licenses and the source manifest. This is a composite
+Python runtime: the instrumentation revision is not the revision of the entire
+worker. Using all Python modules from that newer commit with native runtime 1.4.2
+failed worker import at `update_model_taints`. The verified composition passes
+frontend help, worker help, native runtime initialization/shutdown and the
+source-checked scheduler import. Generator 1.3/0.24 metadata selects a supported
+launch template; it does not describe the deployed backend versions.
+
+Install the matching AISimulate
 wheel, including its native extension, so the shared execution_identity helper
 can import. A source-only Python path is insufficient. The image must provide
 the pinned vLLM source and native GPU dependencies.
@@ -61,15 +82,25 @@ Set:
 - DYN_FPM_INPUT_TEXT=/staged/path/fpm_text.txt
 - DYN_FPM_TOKENIZER_REVISION=fb2764a5cf321eaa5070ca8f9e892818f477c16d
 
-Use the native Dynamo scheduler class; sitecustomize verifies exact source hashes
-then replaces that class with this subclass. An activation failure exits 78,
-because Python normally continues after a sitecustomize exception. Do not enable
-this variable for installation/helper Python commands before staging dependencies.
+Use the native Dynamo scheduler class. The lightweight `sitecustomize` hook
+defers source verification and subclass activation until that exact scheduler
+module is imported. Compiler/helper interpreters do not import Dynamo or vLLM
+through this hook. Both native-first and adapter-first imports are tested. An
+activation failure exits 78 because Python normally continues after a
+sitecustomize exception.
 
 Runtime gates require a local pinned V4.1 checkpoint, TP4, DP1, PP1, no EP, no
 speculation/DSpark, no ubatching/DBO or context parallelism, no KV or encoder connector, and explicit Engram cpu_offload=false.
 The last requirement matters: the preview defaults to CPU UVA offload. All requests
 are text-only; no vision inputs or decoder replay are injected.
+
+This first V4.1 dataset contract supports eager execution only. Pass
+`--fpm-enforce-eager`; the frozen plan and rendered arguments record it, the
+producer checks the actual model configuration, and the native reader requires
+the producer's `execution_mode=eager` evidence. Graph data cannot be published
+under this contract. Supporting graph execution later requires a distinct query
+identity, as well as separate calibration and validation. The earlier graph
+startup attempt is retained as runtime qualification evidence only.
 
 Native benchmark warmup_iterations must be 0. Native per-shape eager warmups remain
 in place and run through the same real-forward path. An explicit native point
@@ -123,7 +154,7 @@ from the calibration grid and its published curves.
 
 The pinned Linux ARM64 image is
 `vllm/vllm-openai@sha256:d84a123255b822fc22508635218000187221794f59c0694c33b0650d1e377d58`.
-Mount the unmodified pinned Dynamo source tree at `/opt/dsv41-dynamo` read-only.
+Mount the verified composite Dynamo tree at `/opt/dsv41-dynamo` read-only.
 Install the matching AISimulate wheel, including its native extension, in the
 runtime image. Importing its shared SDK identity through a source-only Python
 path is insufficient: the package loads the native extension at import time.

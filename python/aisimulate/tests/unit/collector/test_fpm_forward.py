@@ -233,12 +233,18 @@ def test_pure_tp_requires_explicit_model_runtime_capability():
         enumerate_fpm_topologies(backend="vllm", is_moe=True, options=options)
 
 
-def test_plan_contains_only_cell_matrix_and_native_point_contract():
+@pytest.mark.parametrize("explicit", [False, True])
+def test_plan_contains_only_cell_matrix_and_native_point_contract(tmp_path, explicit):
+    points_file = tmp_path / "points.json"
+    points_file.write_text(
+        json.dumps({"schema_version": 3, "prefill": [{"batch_size": 1, "total_prefill_tokens": 128}], "decode": []})
+    )
     options = FPMCollectionOptions.from_args(
         _args(
             fpm_parallel_axes=["dp", "moe_ep"],
             fpm_dp_sizes=[4],
             fpm_moe_ep_sizes=[4],
+            fpm_benchmark_points_file=str(points_file) if explicit else None,
         )
     )
     kwargs = {
@@ -273,11 +279,13 @@ def test_plan_contains_only_cell_matrix_and_native_point_contract():
     assert point_generation == {
         "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
         "method": "native_self_benchmark",
+        "source": "frozen_explicit_manifest" if explicit else "native_auto_grid",
+        "manifest_sha256": options.benchmark_points_sha256,
         "coordinates": ["batch_size", "total_prefill_tokens", "total_kv_read_tokens"],
         "partition_policy": "balanced_v1",
         "point_admission": "dynamo_live_scheduler",
         "precondition": "vllm_engine_initialized",
-        "planned_point_count": None,
+        "planned_point_count": 1 if explicit else None,
     }
     assert prefill_sampling["cudagraph_capture_size_count"] == 99
     assert prefill_sampling["new_token_axis_point_count"] == 199
@@ -2427,6 +2435,7 @@ def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
     for path in (cell_dir / "raw").glob("*/benchmark*.json"):
         payload = json.loads(path.read_text())
         payload["execution_identity"] = dict(zip(EXECUTION_COLUMNS, identity, strict=True))
+        payload["execution_mode"] = "eager"
         payload["input_provenance"] = {
             "source": "tokenizer_text",
             "text_sha256": "a" * 64,
@@ -2455,6 +2464,34 @@ def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
     else:
         with pytest.raises(ValueError, match="requires real_kv"):
             aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+@pytest.mark.parametrize("mode", [None, "PIECEWISE", "FULL", False])
+def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path, mode):
+    from collector.fpm_forward.native_artifact import _validate_execution_provenance
+
+    from aiconfigurator_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+    cell = SimpleNamespace(execution_identity=identity)
+    payload = {"execution_identity": dict(zip(EXECUTION_COLUMNS, identity, strict=True)), "execution_mode": mode}
+    with pytest.raises(ValueError, match="verified eager"):
+        _validate_execution_provenance(cell, payload, tmp_path / "rank.json")
+
+
+@pytest.mark.parametrize("v41,eager", [(True, False), (False, True)])
+def test_explicit_eager_collection_admission(v41, eager, monkeypatch):
+    from collector.fpm_forward import planner
+
+    monkeypatch.setattr(planner, "execution_identity", lambda *args, **kwargs: ("c" * 64 if v41 else "",))
+    with pytest.raises(ValueError, match="eager"):
+        build_collection_plan(
+            backend="vllm",
+            model_path="nvidia/GLM-5.2-NVFP4",
+            system="b200_sxm",
+            selected_ops={"dsa_context_module", "dsa_generation_module"},
+            options=FPMCollectionOptions.from_args(_args(fpm_enforce_eager=eager)),
+        )
 
 
 @pytest.mark.parametrize("corruption", ["missing", "tampered", "fake", "seed", "path", "coverage"])

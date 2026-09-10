@@ -93,6 +93,8 @@ def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path:
     expected = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))
     if payload.get("execution_identity") != expected:
         raise ValueError(f"native execution identity differs from the frozen V4.1 cell: {path}")
+    if payload.get("execution_mode") != "eager":
+        raise ValueError(f"V4.1 native data requires verified eager execution: {path}")
     evidence = payload.get("input_provenance")
     if not isinstance(evidence, dict) or evidence.get("source") != "tokenizer_text":
         raise ValueError(f"V4.1 native result requires tokenizer-generated text provenance: {path}")

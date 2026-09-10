@@ -400,6 +400,8 @@ class RealKVTests(unittest.TestCase):
             obj._bench_write_results()
             payload = json.loads(path.read_text())
             self.assertIsNone(payload["producer"]["vllm_revision"])
+            self.assertIsNone(payload["producer"]["dynamo_revision"])
+            self.assertEqual(payload["producer"]["instrumentation_revision"], impl.DYNAMO_SHA)
             self.assertEqual(payload["producer"]["vllm_package_version"], "test-runtime")
             cell = SimpleNamespace(
                 execution_identity=tuple(obj._real_identity.values()),

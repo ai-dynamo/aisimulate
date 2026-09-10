@@ -58,6 +58,8 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
         super()._bench_init(config)
         if not self._bench_active:
             raise ValueError("V4.1 canary overlay requires native benchmark mode")
+        if config.model_config.enforce_eager is not True:
+            raise ValueError("V4.1 real-KV collection requires enforce_eager=true; graph timing is not qualified")
         parallel = config.parallel_config
         if (parallel.tensor_parallel_size, parallel.pipeline_parallel_size, parallel.data_parallel_size) != (4, 1, 1):
             raise ValueError("V4.1 canary requires pure TP4 / PP1 / DP1")
@@ -411,6 +413,7 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
             "records": len(self._real_token_streams),
         }
         output["execution_identity"] = self._real_identity
+        output["execution_mode"] = "eager"
         output["kvwarm"] = {
             "enabled": True,
             "warm_eligible": True,
@@ -420,7 +423,8 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
             "max_context": MAX_CONTEXT,
         }
         output["producer"] = {
-            "dynamo_revision": DYNAMO_SHA,
+            "instrumentation_revision": DYNAMO_SHA,
+            "dynamo_revision": None,
             "vllm_revision": None,
             "vllm_package_version": __import__("vllm").__version__,
             "reviewed_scheduler_api_revision": VLLM_SHA,
