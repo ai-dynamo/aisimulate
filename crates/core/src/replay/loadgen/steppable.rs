@@ -27,6 +27,13 @@
 //! advance on tokens alone would let those terminals slip past their instant and
 //! land their replacement one step late, which is the exact failure this seam
 //! exists to remove.
+//!
+//! Only a terminal frees this externally visible admission boundary. A
+//! nonterminal token can commit the next pass before [`SteppableReplay::step`]
+//! returns, so a request submitted at that same timestamp can join a later batch
+//! than it would in [`crate::replay::Replayer::run`]. A caller that needs that
+//! batch composition must submit its known same-timestamp arrivals before it
+//! advances the steppable runtime.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -616,6 +623,61 @@ mod tests {
         let mut single_worker =
             SteppableEngine::new(ReplayEngineConfig::default(), &factory).unwrap();
         assert_canceled(&mut single_worker, 11);
+    }
+
+    #[test]
+    fn canceling_a_started_final_pass_retires_engine_ownership() {
+        let mut engine =
+            SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new())
+                .unwrap();
+        let uuid = engine.submit(request(13, 128, 1)).unwrap();
+
+        engine.step_until(0.0).unwrap();
+        engine.cancel(uuid).unwrap();
+        engine.step().unwrap();
+
+        assert_eq!(engine.in_flight(), 0);
+        assert!(engine.is_idle());
+        assert_eq!(engine.next_event_ms(), None);
+        assert!(engine.take_report(engine.now_ms()).is_ok());
+    }
+
+    #[test]
+    fn failed_dynamic_submission_does_not_retain_the_request() {
+        let mut engine =
+            SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new())
+                .unwrap();
+        let mut invalid = request(14, 128, 1);
+        invalid.preferred_dp_rank = Some(1);
+
+        assert!(engine.submit(invalid).is_err());
+        assert_eq!(engine.in_flight(), 0);
+        assert!(engine.cancel(Uuid::from_u128(14)).unwrap().is_none());
+
+        engine.submit(request(14, 128, 1)).unwrap();
+        drain(&mut engine);
+        let report = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(report.request_counts.num_requests, 1);
+        assert_eq!(report.request_counts.completed_requests, 1);
+    }
+
+    #[test]
+    fn report_duration_starts_at_the_previous_report_boundary() {
+        let mut engine =
+            SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new())
+                .unwrap();
+        engine.submit(request(15, 128, 1)).unwrap();
+        drain(&mut engine);
+        let first_end_ms = engine.now_ms();
+        engine.take_report(first_end_ms).unwrap();
+
+        engine.advance_now_ms(first_end_ms + 1_000.0);
+        engine.submit(request(16, 128, 1)).unwrap();
+        drain(&mut engine);
+        let second_end_ms = engine.now_ms();
+        let report = engine.take_report(second_end_ms).unwrap();
+
+        assert!((report.throughput.duration_ms - (second_end_ms - first_end_ms)).abs() < 1e-9);
     }
 
     #[test]

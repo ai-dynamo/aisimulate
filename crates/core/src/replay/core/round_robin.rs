@@ -280,7 +280,6 @@ impl AggregatedRoundRobin {
             return Err(anyhow!("no active workers for round-robin placement"));
         }
         let index = self.next_worker % active_workers.len();
-        self.next_worker = index + 1;
         let worker_id = active_workers
             .nth(index)
             .expect("active round-robin worker must exist at the selected index");
@@ -293,15 +292,21 @@ impl AggregatedRoundRobin {
             }
             Some(rank) => rank,
             None => {
-                let next_rank = self.next_rank_by_worker.entry(worker_id).or_default();
-                let rank = *next_rank % self.dp_size;
-                *next_rank = rank + 1;
-                rank
+                self.next_rank_by_worker
+                    .get(&worker_id)
+                    .copied()
+                    .unwrap_or_default()
+                    % self.dp_size
             }
         };
-        rank_id(worker_id, rank).ok_or_else(|| {
+        let scheduler_id = rank_id(worker_id, rank).ok_or_else(|| {
             anyhow!("logical worker {worker_id} does not expose preferred attention-DP rank {rank}")
-        })
+        })?;
+        self.next_worker = index + 1;
+        if preferred_rank.is_none() {
+            self.next_rank_by_worker.insert(worker_id, rank + 1);
+        }
+        Ok(scheduler_id)
     }
 
     pub(crate) fn worker_removed(&mut self, worker_id: usize) {

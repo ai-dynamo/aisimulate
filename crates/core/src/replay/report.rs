@@ -746,6 +746,9 @@ impl SlaThresholds {
 #[derive(Debug, Default)]
 pub struct TraceCollector {
     requests: FxHashMap<Uuid, TraceRequestStats>,
+    /// Simulated timestamp at which this reporting epoch began. Request
+    /// timestamps remain absolute; aggregate rates use elapsed epoch time.
+    report_start_ms: f64,
     /// Global per-token distributions are folded in as requests terminate, so
     /// completed requests no longer retain one timestamp per emitted token.
     itl_distribution: StreamingDistribution,
@@ -863,6 +866,12 @@ impl TraceRequestStats {
 impl TraceCollector {
     pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
         self.requests.contains_key(&uuid)
+    }
+
+    /// Start the next report epoch at an absolute simulated timestamp.
+    pub(crate) fn set_report_start_ms(&mut self, report_start_ms: f64) {
+        debug_assert!(report_start_ms.is_finite());
+        self.report_start_ms = report_start_ms;
     }
 
     /// Defer token-timeline folding until the entire replay has ended.
@@ -1408,6 +1417,7 @@ impl TraceCollector {
             Vec::new()
         };
         let sla = self.sla;
+        let report_start_ms = self.report_start_ms;
         let static_worker_count = self.static_worker_count;
         let accumulated_prefill_worker_seconds = self.prefill_worker_seconds;
         let accumulated_decode_worker_seconds = self.decode_worker_seconds;
@@ -1463,7 +1473,7 @@ impl TraceCollector {
             total_output_tokens += output_length;
             total_reused_tokens += stats.reused_input_tokens;
             total_first_admission_reused_tokens += stats.first_admission_reused_input_tokens;
-            duration_ms = duration_ms.max(terminal_time_ms);
+            duration_ms = duration_ms.max((terminal_time_ms - report_start_ms).max(0.0));
 
             let (Some(first_token_ms), Some(last_token_ms)) =
                 (stats.first_token_ms(), stats.last_token_ms())

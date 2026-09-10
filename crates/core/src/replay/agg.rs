@@ -324,16 +324,15 @@ where
             request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
         }
 
+        let effects = self
+            .placement
+            .place(&request, metadata, session_id, self.now_ms)?;
         self.collector
             .on_arrival(uuid, arrival_time_ms, input_length, output_length);
         if let Some(context) = request.metadata().replay_context.as_ref() {
             self.collector.on_request_context(uuid, context);
         }
         self.traffic.on_arrival();
-
-        let effects = self
-            .placement
-            .place(&request, metadata, session_id, self.now_ms)?;
         match effects.decision {
             PlacementDecision::Immediate(placement) => {
                 if placement.request_id != uuid {
@@ -1807,6 +1806,8 @@ where
         );
         self.collector
             .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
-        Ok(self.collector.take_report().with_wall_time_ms(wall_ms))
+        let report = self.collector.take_report().with_wall_time_ms(wall_ms);
+        self.collector.set_report_start_ms(self.now_ms);
+        Ok(report)
     }
 }
