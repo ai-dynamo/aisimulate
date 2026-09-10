@@ -597,7 +597,35 @@ def _parse_llama4_vision_config(
 
     processor_required = ("max_patches", "resize_to_max_canvas", "add_global_tile")
     if not isinstance(image_processor_cfg, dict):
-        raise TypeError("Llama 4 config must preserve image_processor_config metadata")
+        raise TypeError(
+            "Llama 4 config must preserve image_processor_config metadata or provide preprocessor_config.json"
+        )
+    if "image_processor_type" in image_processor_cfg:
+        if image_processor_cfg["image_processor_type"] not in ("Llama4ImageProcessor", "Llama4ImageProcessorFast"):
+            raise ValueError(
+                f"Unsupported Llama 4 image_processor_type: {image_processor_cfg['image_processor_type']!r}"
+            )
+        # Processor defaults and conditional global tile adapted from Transformers:
+        # https://github.com/huggingface/transformers/blob/0720e206c6ba28887e4d60ef60a6a089f6c1cc76/src/transformers/models/llama4/image_processing_llama4_fast.py
+        # Copyright 2025 HuggingFace Inc. team. All rights reserved.
+        # Apache-2.0; modified to normalize metadata without loading image tensors.
+        image_processor_cfg = {
+            "max_patches": 16,
+            "resize_to_max_canvas": False,
+            "add_global_tile": True,
+            "size": {"height": 336, "width": 336},
+            **image_processor_cfg,
+        }
+    if "size" in image_processor_cfg:
+        size = image_processor_cfg["size"]
+        if (
+            not isinstance(size, dict)
+            or any(
+                not isinstance(size.get(axis), int) or isinstance(size.get(axis), bool) for axis in ("height", "width")
+            )
+            or size != {"height": vision_cfg["image_size"], "width": vision_cfg["image_size"]}
+        ):
+            raise ValueError("Llama 4 image processor size must match the square vision_config.image_size")
     processor_missing = [key for key in processor_required if key not in image_processor_cfg]
     if processor_missing:
         raise ValueError("Llama 4 image_processor_config is missing required fields: " + ", ".join(processor_missing))
@@ -1439,6 +1467,25 @@ def _attach_hf_quant_config(raw_config: dict, hf_quant_config: dict | None) -> d
     return raw_config
 
 
+def _attach_llama4_processor_config(raw_config: dict, model_path: str) -> dict:
+    """Load Llama 4's separate processor metadata, retaining bundled inline configs."""
+    if (raw_config.get("architectures") or [None])[0] != "Llama4ForConditionalGeneration":
+        return raw_config
+    if "image_processor_config" in raw_config:
+        return raw_config
+    if os.path.isdir(model_path):
+        processor_path = Path(model_path) / "preprocessor_config.json"
+        processor_config = _load_json_with_infinity(processor_path) if processor_path.exists() else None
+    elif model_path in DefaultHFModels:
+        processor_path = _get_model_config_path() / f"{model_path.replace('/', '--')}_preprocessor_config.json"
+        processor_config = _load_json_with_infinity(processor_path) if processor_path.exists() else None
+    else:
+        processor_config = _download_hf_json(model_path, "preprocessor_config.json", raise_on_404=False)
+    if processor_config is not None:
+        raw_config["image_processor_config"] = processor_config
+    return raw_config
+
+
 @cache
 def _load_model_config_from_model_path(model_path: str) -> dict:
     """
@@ -1460,17 +1507,17 @@ def _load_model_config_from_model_path(model_path: str) -> dict:
     """
     # Check if it's a local path
     if os.path.isdir(model_path):
-        config = _load_local_config(model_path)
+        config = _attach_llama4_processor_config(_load_local_config(model_path), model_path)
         return _attach_inferred_quant_fields(_attach_hf_quant_config(config, _load_local_quant_config(model_path)))
 
     # Otherwise treat as HuggingFace path
     if model_path in DefaultHFModels:
-        config = _load_pre_downloaded_hf_config(model_path)
+        config = _attach_llama4_processor_config(_load_pre_downloaded_hf_config(model_path), model_path)
         return _attach_inferred_quant_fields(
             _attach_hf_quant_config(config, _load_pre_downloaded_hf_quant_config(model_path))
         )
 
-    config = _download_hf_config(model_path)
+    config = _attach_llama4_processor_config(_download_hf_config(model_path), model_path)
     try:
         hf_quant_config = _download_hf_json(model_path, "hf_quant_config.json", raise_on_404=False)
     except Exception as exc:  # best-effort for optional quant config

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from aiconfigurator.sdk import common, config
+from aiconfigurator.sdk import utils as utils_module
 from aiconfigurator.sdk.backends import base_backend as base_backend_module
 from aiconfigurator.sdk.backends.base_backend import BaseBackend
 from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
@@ -23,6 +24,116 @@ LLAMA4_CHECKPOINTS = (
     ("meta-llama/Llama-4-Maverick-17B-128E-Instruct", 128, 24, 24),
 )
 LLAMA4_MODEL_IDS = tuple(checkpoint[0] for checkpoint in LLAMA4_CHECKPOINTS)
+
+
+@pytest.mark.parametrize("model_id", LLAMA4_MODEL_IDS)
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("source", ["local", "remote", "cached"])
+@pytest.mark.parametrize("max_patches,expected_tokens", [(1, 147), (2, 437)])
+def test_llama4_loads_separate_processor_metadata(
+    tmp_path, monkeypatch, model_id, language_only, source, max_patches, expected_tokens
+):
+    raw = deepcopy(get_model_config_from_model_path(model_id)["raw_config"])
+    raw.pop("image_processor_config")
+    # Synthetic sidecar with the standard Transformers layout. The processor
+    # supplies resize_to_max_canvas=False and the conditional global tile;
+    # add_global_tile is not a serialized Transformers processor option.
+    processor = {"image_processor_type": "Llama4ImageProcessorFast", "max_patches": max_patches}
+    requested_files = []
+    if source == "local":
+        (tmp_path / "config.json").write_text(json.dumps(raw))
+        (tmp_path / "preprocessor_config.json").write_text(json.dumps(processor))
+        model_path = str(tmp_path)
+    elif source == "cached":
+        model_path = f"test/{tmp_path.name}"
+        (tmp_path / f"{model_path.replace('/', '--')}_config.json").write_text(json.dumps(raw))
+        (tmp_path / f"{model_path.replace('/', '--')}_preprocessor_config.json").write_text(json.dumps(processor))
+        monkeypatch.setattr(utils_module, "DefaultHFModels", {model_path})
+        monkeypatch.setattr(utils_module, "_get_model_config_path", lambda: tmp_path)
+    else:
+        model_path = f"test/{tmp_path.name}"
+
+        def download(hf_id, filename, *, raise_on_404=True):
+            assert hf_id == model_path
+            requested_files.append(filename)
+            return {"config.json": raw, "preprocessor_config.json": processor}.get(filename)
+
+        monkeypatch.setattr(utils_module, "_download_hf_json", download)
+
+    model = get_model(model_path, _model_config(language_only=language_only), "trtllm")
+    runtime = RuntimeConfig(isl=128, osl=1, image_height=336, image_width=672)
+    backend = BaseBackend()
+
+    # One local tile gives 144 embeddings + 3 markers. Two local tiles also
+    # get one global tile: 3 * 144 embeddings + 3 markers + 2 tile markers.
+    assert backend._visual_context_tokens(model, runtime) == expected_tokens
+    assert backend.effective_prefill_isl(model_path, runtime) == 128 + expected_tokens
+    assert bool(model.encoder_ops) is (not language_only)
+    assert model.context_ops and model.generation_ops
+    assert model.encoder_config.max_num_tiles == max_patches
+    # Both parsed and raw config caches must preserve the sidecar metadata.
+    get_model_config_from_model_path.cache_clear()
+    assert get_model_config_from_model_path(model_path)["extra_params"].vision_config == model.encoder_config
+    if source == "remote":
+        assert requested_files.count("preprocessor_config.json") == 1
+
+
+@pytest.mark.parametrize(
+    "processor,error,match",
+    [
+        ([], TypeError, "image_processor_config"),
+        ({}, ValueError, "missing required fields"),
+        ({"image_processor_type": "OtherProcessor"}, ValueError, "image_processor_type"),
+        ({"image_processor_type": "Llama4ImageProcessorFast", "max_patches": True}, ValueError, "max_patches"),
+        (
+            {"image_processor_type": "Llama4ImageProcessorFast", "resize_to_max_canvas": "false"},
+            TypeError,
+            "resize_to_max_canvas",
+        ),
+        (
+            {"image_processor_type": "Llama4ImageProcessorFast", "size": {"height": 224, "width": 224}},
+            ValueError,
+            "size",
+        ),
+    ],
+)
+def test_llama4_rejects_malformed_processor_sidecars(tmp_path, processor, error, match):
+    raw = deepcopy(get_model_config_from_model_path(LLAMA4_MODEL_IDS[0])["raw_config"])
+    raw.pop("image_processor_config")
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    (tmp_path / "preprocessor_config.json").write_text(json.dumps(processor))
+
+    with pytest.raises(error, match=match):
+        get_model(str(tmp_path), _model_config(), "trtllm")
+
+
+def test_llama4_standard_processor_defaults(tmp_path):
+    raw = deepcopy(get_model_config_from_model_path(LLAMA4_MODEL_IDS[0])["raw_config"])
+    raw.pop("image_processor_config")
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    (tmp_path / "preprocessor_config.json").write_text(json.dumps({"image_processor_type": "Llama4ImageProcessorFast"}))
+
+    model = get_model(str(tmp_path), _model_config(), "trtllm")
+
+    assert model.encoder_config.max_num_tiles == 16
+    assert model.encoder_config.add_global_tile
+    assert not model.encoder_config.resize_to_max_canvas
+    assert BaseBackend._visual_context_tokens(model, RuntimeConfig(image_height=336, image_width=672)) == 437
+
+
+def test_llama4_remote_processor_errors_are_not_silently_ignored(tmp_path, monkeypatch):
+    raw = deepcopy(get_model_config_from_model_path(LLAMA4_MODEL_IDS[0])["raw_config"])
+    raw.pop("image_processor_config")
+    monkeypatch.setattr(utils_module, "_download_hf_config", lambda _: raw)
+
+    def download(hf_id, filename, *, raise_on_404=True):
+        assert filename == "preprocessor_config.json"
+        raise utils_module.HuggingFaceDownloadError("processor access denied")
+
+    monkeypatch.setattr(utils_module, "_download_hf_json", download)
+
+    with pytest.raises(utils_module.HuggingFaceDownloadError, match="processor access denied"):
+        get_model(f"test/{tmp_path.name}", _model_config(), "trtllm")
 
 
 @pytest.mark.parametrize(

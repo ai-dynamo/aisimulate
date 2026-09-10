@@ -356,7 +356,7 @@ def build_llama4_encoder_ops(
     and post-shuffle image tokens for adaptor/connector operations.
 
     The tensor-parallel sharding topology follows vLLM v0.8.5, commit
-    ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d, model_executor/models/llama4.py.
+    ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d, model_executor/models/mllama4.py.
     """
     if enc_cfg.image_size <= 0:
         raise ValueError("Llama 4 vision_config.image_size must be positive")

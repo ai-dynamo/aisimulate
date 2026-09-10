@@ -51,7 +51,7 @@ The Llama 4 encoder operation topology in
 implementation at tag `v0.8.5` (commit
 `ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d`):
 
-https://github.com/vllm-project/vllm/blob/ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d/vllm/model_executor/models/llama4.py
+https://github.com/vllm-project/vllm/blob/ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d/vllm/model_executor/models/mllama4.py
 
 The upstream license at that revision is available at:
 https://github.com/vllm-project/vllm/blob/ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d/LICENSE
@@ -480,8 +480,10 @@ Transformers project at tag `v4.57.1`:
 https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/models/llama/modeling_llama.py#L109-L113
 
 The fixed-tile canvas and global-tile logic in
-`src/aiconfigurator_core/sdk/backends/base_backend.py` follows the Llama 4 image
-processor at tag `v4.51.0` (commit
+`src/aiconfigurator_core/sdk/backends/base_backend.py`, and the processor metadata
+normalization in `src/aiconfigurator_core/sdk/utils.py`, are modified adaptations
+of the Llama 4 image processor (Copyright 2025 HuggingFace Inc. team. All rights
+reserved.) at tag `v4.51.0` (commit
 `0720e206c6ba28887e4d60ef60a6a089f6c1cc76`):
 
 https://github.com/huggingface/transformers/blob/0720e206c6ba28887e4d60ef60a6a089f6c1cc76/src/transformers/models/llama4/image_processing_llama4_fast.py
