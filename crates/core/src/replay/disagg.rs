@@ -3659,9 +3659,7 @@ where
         );
         self.collector
             .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
-        let report = std::mem::take(&mut self.collector)
-            .finish()
-            .with_wall_time_ms(wall_ms);
+        let report = self.collector.take_report().with_wall_time_ms(wall_ms);
         self.flow.requests.clear();
         Ok(report)
     }
