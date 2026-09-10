@@ -170,6 +170,7 @@ def main():
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     (output / "calibration-plan.json").write_text(json.dumps(calibration, indent=2, sort_keys=True) + "\n")
+    (output / "heldout-plan.json").write_text(json.dumps(heldout, indent=2, sort_keys=True) + "\n")
     tokens = baseline_tokens(calibration["cases"])
     seed_count = sum(c["prefix"] > 0 for c in calibration["cases"])
     report = {

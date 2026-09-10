@@ -16,6 +16,7 @@ import json
 import time
 from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 if __package__:
     from .dsv41_workloads import baseline_tokens, coordinates, freeze_workloads
@@ -324,6 +325,46 @@ def run_workload(runner, recorder, bench, token_ids, case, execute, *, decode_st
     runner.cleanup(batch)
 
 
+def validate_forward_contract(runner, manifest):
+    """Check the serving layout without altering any model or stream method."""
+    layers = [m for m in runner.model.modules() if type(m).__name__ == "DeepseekV4DecoderLayer"]
+    if len(layers) != 40:
+        raise RuntimeError("forward-only benchmark requires the 40-layer text backbone")
+    for layer_id, layer in enumerate(layers):
+        expected = [e for e in manifest["phases"]["context"] if e["layer"] == layer_id]
+        geometry = json.loads(next(e["geometry"] for e in expected if e["component"] == "attention"))
+        for field, attribute in (
+            ("num_heads", "n_local_heads"),
+            ("o_groups", "n_local_groups"),
+            ("head_dim", "head_dim"),
+            ("q_lora_rank", "q_lora_rank"),
+            ("o_lora_rank", "o_lora_rank"),
+            ("compress_ratio", "compress_ratio"),
+        ):
+            if int(getattr(layer.self_attn, attribute)) != geometry[field]:
+                raise RuntimeError(f"forward-only attention layout differs at layer {layer_id}")
+        if not layer.hc_pre_from_prev_sublayer:
+            raise RuntimeError("forward-only benchmark requires native predecessor mHC")
+        shared = layer.mlp.shared_experts
+        if shared is None or getattr(layer.mlp, "_shared_expert_tp1", False):
+            raise RuntimeError("forward-only benchmark requires TP-sharded shared experts")
+        for module in (shared.gate_up_proj, shared.down_proj):
+            if tuple(module.quant_method.quant_config.weight_block_size) != (32, 32):
+                raise RuntimeError("forward-only shared projection must retain FP8 block32")
+        engram = getattr(layer, "engram", None)
+        if engram is not None and (engram.embed.host_table is not None or engram.embed._shared):
+            raise RuntimeError("forward-only Engram must use TP-sharded GPU tables")
+
+
+def timed_native_forward(runner, call):
+    """Use one_batch.py:793-799/827-843's native synchronized wall boundary."""
+    runner.synchronize()
+    start = time.perf_counter()
+    result = call()
+    runner.synchronize()
+    return result, (time.perf_counter() - start) * 1000
+
+
 def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
     import torch
     import torch.distributed as dist
@@ -372,7 +413,11 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
     Fp8Config.get_quant_method = observe_selector
     runner, tokenizer = bench.load_model(server_args, port_args, gpu_id, tp_rank)
     Fp8Config.get_quant_method = original_selector
-    recorder = ComponentRecorder(runner.torch_runner, manifest)
+    if options.forward_only:
+        validate_forward_contract(runner.torch_runner, manifest)
+        recorder = SimpleNamespace(active=False, phase="context", trace=False)
+    else:
+        recorder = ComponentRecorder(runner.torch_runner, manifest)
     package_root = Path(bench.__file__).resolve().parents[1]
     sources = {
         str(p.relative_to(package_root)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -425,22 +470,48 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
             if recorder.trace
             else None
         )
-        forward_start, forward_end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-        forward_start.record()
-        with profile if profile is not None else nullcontext():
-            result = call()
-        forward_end.record()
+        if options.forward_only:
+            result, native_forward_ms = timed_native_forward(runner, call)
+        else:
+            forward_start, forward_end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            forward_start.record()
+            with profile if profile is not None else nullcontext():
+                result = call()
+            forward_end.record()
         if profile is not None:
             profile.export_chrome_trace(str(raw_path.parent / f"canary-{phase}.trace.json"))
             kernels = sorted(
                 {event.name for event in profile.events() if event.device_type == torch.autograd.DeviceType.CUDA}
             )
             (raw_path.parent / f"canary-{phase}.kernels.json").write_text(json.dumps(kernels))
-        rows = recorder.finish(batch_size, query, prefix, real_kv)
+        rows = [] if options.forward_only else recorder.finish(batch_size, query, prefix, real_kv)
         logits = result[1]
         if not torch.isfinite(logits).all().item():
             raise RuntimeError("native forward produced nonfinite logits")
-        if recorder.active:
+        if recorder.active and options.forward_only:
+            with (raw_path.parent / f"forward-rank-{tp_rank}.jsonl").open("a") as out:
+                out.write(
+                    json.dumps(
+                        {
+                            "invocation": invocation,
+                            "sample": sample,
+                            "tp_rank": tp_rank,
+                            "phase": phase,
+                            "batch_size": batch_size,
+                            "query": query,
+                            "prefix": prefix,
+                            "real_kv": real_kv,
+                            "finite_logits": True,
+                            "native_benchmark_forward_ms": native_forward_ms,
+                            "timing_boundary": "sglang_one_batch_synchronized_wall_including_prepare_forward_sample",
+                            "component_recorder": False,
+                            "used_cuda_graph": False,
+                            **provenance,
+                        }
+                    )
+                    + "\n"
+                )
+        elif recorder.active:
             with (raw_path.parent / f"invocations-rank-{tp_rank}.jsonl").open("a") as out:
                 out.write(
                     json.dumps(
@@ -516,7 +587,7 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
     if dist.is_initialized():
         dist.barrier()
     if tp_rank == 0:
-        (raw_path.parent / "COMPLETE").write_text("native component collection completed\n")
+        (raw_path.parent / "COMPLETE").write_text("native workload collection completed\n")
 
 
 def main():
@@ -538,6 +609,11 @@ def main():
     parser.add_argument("--decode-steps", type=int, default=2)
     parser.add_argument("--profile-canary", action="store_true")
     parser.add_argument("--collect-baselines", action="store_true")
+    parser.add_argument(
+        "--forward-only",
+        action="store_true",
+        help="Native synchronized benchmark wall timing, without component interception",
+    )
     options, rest = parser.parse_known_args()
     if options.warmup < 0 or options.iterations < 1 or options.decode_steps < 0:
         raise ValueError("warmup/decode steps must be nonnegative and iterations positive")
@@ -546,9 +622,17 @@ def main():
         if payload != freeze_workloads(payload["source_payload"]):
             raise ValueError("workload plan differs from its frozen source points")
         options.workload_plan = payload
+    if options.forward_only and (options.workload_plan is None or options.collect_baselines or options.profile_canary):
+        raise ValueError("forward-only requires an explicit plan and excludes component baselines/profiling")
     output = Path(options.output)
     output.mkdir(parents=True, exist_ok=True)
-    owned_files = ("COMPLETE", "source_hashes.json", "input_provenance.json", "workload-plan.json")
+    owned_files = (
+        "COMPLETE",
+        "source_hashes.json",
+        "input_provenance.json",
+        "workload-plan.json",
+        "execution-contract.json",
+    )
     if (
         any((output / name).exists() for name in owned_files)
         or any(output.glob("*-rank-*.jsonl"))
@@ -561,6 +645,31 @@ def main():
     bench.ServerArgs.add_cli_args(native)
     bench.BenchArgs.add_cli_args(native)
     args = native.parse_args(rest)
+    if options.forward_only and not all(
+        getattr(args, name, False)
+        for name in (
+            "disable_custom_all_reduce",
+            "enforce_disable_flashinfer_allreduce_fusion",
+            "disable_shared_experts_fusion",
+        )
+    ):
+        raise ValueError("forward-only requires unfused NCCL and sharded shared-expert execution flags")
+    (output / "execution-contract.json").write_text(
+        json.dumps(
+            {
+                "mode": "native_benchmark_forward" if options.forward_only else "local_components",
+                "native_cli_args": rest,
+                "component_recorder": not options.forward_only,
+                "warmup": options.warmup,
+                "iterations": options.iterations,
+                "timing_boundary": "sglang_one_batch_synchronized_wall_including_prepare_forward_sample"
+                if options.forward_only
+                else "cuda_events_local_components",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
     server_args, bench_args = bench.ServerArgs.from_cli_args(args), bench.BenchArgs.from_cli_args(args)
     bench_args.dsv41_options = options
     bench.latency_test = run_worker

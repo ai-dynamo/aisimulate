@@ -100,3 +100,21 @@ curves across native kernel regimes, including the 128-token cutoff, first
 compressed publication, sparse selection saturation, and coarse candidate
 limits. CSA role, compression ratio, batch, execution profile and runtime
 provenance remain exact dimensions. This proposal is not implemented here.
+
+## Independent native forward hold-outs
+
+`study-plan/heldout-plan.json` freezes the 38 disjoint configurations. The
+runner's `--forward-only` mode never constructs `ComponentRecorder`, changes
+mHC streams, or intercepts attention output reductions. It refuses component
+baselines and profiler timing. Use one warmup and at least three measured
+repetitions with the two unfused communication flags and TP-sharded shared
+experts. Its separate `forward-rank-*.jsonl` records cannot be published as
+module rows.
+
+The boundary matches the pinned native SGLang `one_batch.py`: synchronize,
+wall-clock start, native `extend`/`decode`, synchronize, wall-clock stop. This
+includes batch preparation, all model layers and shared Engram hashing, and
+sampling. It is independent benchmark-forward ground truth, distinct from the
+HTTP E2E and GPU-timed Dynamo FPM measurements. Source/input hashes, exact
+coordinates, timing-boundary label and runtime arguments accompany each run.
+Neither the held-out latency values nor their module timings enter calibration.

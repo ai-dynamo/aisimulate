@@ -147,3 +147,87 @@ def test_checked_in_calibration_keeps_all_points_and_exposes_bounded_holes():
         assert computed == profile
         assert profile["projected_calibration_module_points"] == expected_points
         assert profile["heldout_with_missing_curves"] == expected_missing
+
+
+def test_native_benchmark_wall_boundary_synchronizes_before_and_after(monkeypatch):
+    import collector.sglang.dsv41_native_runner as native
+
+    events = []
+    ticks = iter([1.0, 1.125])
+    monkeypatch.setattr(native.time, "perf_counter", lambda: next(ticks))
+    runner = SimpleNamespace(synchronize=lambda: events.append("sync"))
+    result, elapsed = native.timed_native_forward(runner, lambda: (events.append("native-call"), "logits"))
+    assert result == (None, "logits")
+    assert elapsed == 125.0
+    assert events == ["sync", "native-call", "sync"]
+
+
+def test_forward_only_cli_freezes_plan_and_excludes_component_scope(tmp_path, monkeypatch):
+    import sys
+
+    import collector.sglang.dsv41_native_runner as native
+
+    plan = freeze_workloads(_payload())
+    plan_path = tmp_path / "input-plan.json"
+    plan_path.write_text(json.dumps(plan))
+    output = tmp_path / "output"
+    flags = [
+        "--disable-custom-all-reduce",
+        "--enforce-disable-flashinfer-allreduce-fusion",
+        "--disable-shared-experts-fusion",
+    ]
+
+    class ServerArgs:
+        @staticmethod
+        def add_cli_args(parser):
+            for flag in flags:
+                parser.add_argument(flag, action="store_true")
+
+        @staticmethod
+        def from_cli_args(args):
+            return args
+
+    class BenchArgs:
+        @staticmethod
+        def add_cli_args(parser):
+            pass
+
+        @staticmethod
+        def from_cli_args(args):
+            return SimpleNamespace()
+
+    def execute(server_args, bench_args):
+        assert bench_args.dsv41_options.forward_only is True
+        assert bench_args.dsv41_options.workload_plan == plan
+        (output / "COMPLETE").write_text("fixture completes transport only")
+
+    bench = SimpleNamespace(ServerArgs=ServerArgs, BenchArgs=BenchArgs, main=execute)
+    monkeypatch.setitem(sys.modules, "sglang", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "sglang.benchmark", SimpleNamespace(one_batch=bench))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runner",
+            "--manifest",
+            "unused.json",
+            "--runtime-digest",
+            "sha256:" + "a" * 64,
+            "--prompt-file",
+            "unused.txt",
+            "--output",
+            str(output),
+            "--workload-plan",
+            str(plan_path),
+            "--forward-only",
+            *flags,
+        ],
+    )
+    native.main()
+    assert json.loads((output / "workload-plan.json").read_text()) == plan
+    receipt = json.loads((output / "execution-contract.json").read_text())
+    assert receipt["component_recorder"] is False
+    assert receipt["timing_boundary"] == "sglang_one_batch_synchronized_wall_including_prepare_forward_sample"
+    assert not list(output.glob("rank-*.jsonl"))
+    with pytest.raises(RuntimeError, match="prior raw records"):
+        native.main()
