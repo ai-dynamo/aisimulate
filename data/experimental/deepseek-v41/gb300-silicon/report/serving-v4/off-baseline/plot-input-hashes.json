@@ -16,5 +16,5 @@
   "trace-hybrid.json.gz": "505bd754e3fb86fd48e9911eaa5f457fd3598016bff94b5aa23563ba2cdf1cdd",
   "trace-silicon.json.gz": "5952d1d03fde90af798a5e45223e918bb66d35ff0ced140f7ef281f52e6ca080",
   "trace-sol.json.gz": "d46a82766dcb53652f0932548c617c2070edfc2b4bdd96cbb0a49b54ece924ef",
-  "render_report.py": "3718204fbf066a0f3cceb66839ec83f4217927fc03807fdb04ff84e0c7ed23da"
+  "render_report.py": "efb137da5dae2baaf7e6c1076a537382b014344690117090b623da840d0a1aa9"
 }

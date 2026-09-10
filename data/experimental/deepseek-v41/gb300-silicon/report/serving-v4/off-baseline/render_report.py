@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Render frozen serving comparisons without changing observations or predictions."""
 
@@ -185,7 +185,7 @@ def main():
     inventory = {
         p.name: hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(root.glob("*.json*"))
-        if p.name != "plot-input-hashes.json"
+        if p.name not in {"plot-input-hashes.json", "artifact-hashes.json"}
     }
     inventory["render_report.py"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     (root / "plot-input-hashes.json").write_text(json.dumps(inventory, indent=2) + "\n")
