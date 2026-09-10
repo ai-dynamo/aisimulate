@@ -982,6 +982,50 @@ def test_encoder_worker_candidates_gated_by_gpu_memory(monkeypatch):
     assert [r["bs"] for r in rows] == [1]
 
 
+@pytest.mark.parametrize("model_path", ["moonshotai/Kimi-K3", "Qwen/Qwen3-VL-8B-Instruct"])
+def test_encoder_worker_candidates_with_real_vision_config(model_path):
+    from aiconfigurator.sdk.perf_database import get_database_view
+
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    rows = sweep._get_encoder_worker_candidates(
+        model_path=model_path,
+        tp_list=[1, 2, 4],
+        b_list=[1],
+        runtime_config=config.RuntimeConfig(
+            batch_size=1, isl=128, osl=2, image_height=224, image_width=224, engine_step_backend="rust"
+        ),
+        database=database,
+        backend_name="trtllm",
+        latency_correction=1.0,
+    )
+
+    assert [row["tp"] for row in rows] == [1, 2, 4]
+    for row in rows:
+        assert row["num_total_gpus"] == row["tp"]
+        assert row["bs"] == 1
+        assert row["encoder_latency"] > 0
+        assert row["seq/s"] > 0
+        assert 0 < row["memory"] < database.system_spec["gpu"]["mem_capacity"] / (1 << 30)
+
+
+def test_encoder_worker_candidates_keep_llama4_specialized_tower_unsupported():
+    from aiconfigurator.sdk.perf_database import get_database_view
+
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    with pytest.raises(ValueError, match="has no vision encoder"):
+        sweep._get_encoder_worker_candidates(
+            model_path="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            tp_list=[1],
+            b_list=[1],
+            runtime_config=config.RuntimeConfig(
+                batch_size=1, isl=128, osl=2, image_height=224, image_width=224, engine_step_backend="rust"
+            ),
+            database=database,
+            backend_name="trtllm",
+            latency_correction=1.0,
+        )
+
+
 def _encoder_candidates_env(monkeypatch, *, latency: float = 50.0):
     """Fixture env for _get_encoder_worker_candidates: real encoder ops,
     mocked perf query, nccl_mem table with keys {1, 2} only."""

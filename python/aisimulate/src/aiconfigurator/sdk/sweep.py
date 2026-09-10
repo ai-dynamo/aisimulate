@@ -58,7 +58,11 @@ from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, mer
 from aiconfigurator.sdk.picking import parallel_dim, worker_gpus
 from aiconfigurator.sdk.predict import predict_agg_worker, predict_disagg_worker
 from aiconfigurator.sdk.speculative import SpeculativeDecodingProfile
-from aiconfigurator.sdk.utils import enumerate_ttft_tpot_constraints, get_model_config_from_model_path
+from aiconfigurator.sdk.utils import (
+    enumerate_ttft_tpot_constraints,
+    get_model_config_from_model_path,
+    get_vision_encoder_config_from_model_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -856,7 +860,12 @@ def _get_encoder_worker_candidates(
     power_w / power_coverage``.
     """
     backend = get_backend(backend_name)
-    enc_cfg = get_model_config_from_model_path(model_path).get("extra_params")
+    model_info = get_model_config_from_model_path(model_path)
+    enc_cfg = model_info.get("extra_params")
+    if isinstance(enc_cfg, common.KimiK3Config):
+        # K3 nests its generic ViT config alongside the language geometry.
+        # Other nested families may need specialized encoder builders.
+        enc_cfg = get_vision_encoder_config_from_model_info(model_info)
     if not isinstance(enc_cfg, common.VisionEncoderConfig):
         # Not a VL model -> EPD cannot apply (config error, not a type bug).
         raise ValueError(f"EPD (encoder disaggregation) requested but model {model_path!r} has no vision encoder.")

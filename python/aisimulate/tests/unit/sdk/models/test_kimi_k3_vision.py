@@ -127,7 +127,7 @@ def test_kimi_k3_parser_rejects_invalid_vision_head_count(heads):
 
 
 @pytest.mark.parametrize("language_only", [False, True])
-@pytest.mark.parametrize("vision_metadata", [True, 1, 1.5, "vision", [1]])
+@pytest.mark.parametrize("vision_metadata", [True, False, 1, 0, 0.0, 1.5, "vision", "", [1], []])
 def test_local_checkpoint_rejects_non_object_kimi_vision_metadata(tmp_path, language_only, vision_metadata):
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
     raw["vision_config"] = vision_metadata
