@@ -1,0 +1,32 @@
+{
+  "files_sha256": {
+    "README.md": "20ec77d8d1e12f5f8f88923ab193a32a9d42199d9a55874963ddeac7f8c4459a",
+    "decoder_bounded-hybrid-config.json": "1f191314464b9112e733f5079416fae4d65be52757c5fb80f599bc478c9fb844",
+    "decoder_bounded-hybrid-results.json": "331121a6ef30fac884ffc9c22201624b81c359f75f5967ecedb2d69357951337",
+    "decoder_bounded-silicon-config.json": "d6d36db96e10c53e9ee25eb5426606cc3d335198e3514ece016ec57a3a3dcdc9",
+    "decoder_bounded-silicon-results.json": "cff2ef688a1207aafd8e3ca04b5042079f8b4c8ba30cb68da97d251cb5886002",
+    "decoder_bounded-sol-config.json": "0c2fbee5128f463646732168f2065de887561573f57f413abe79e37a6d3331a8",
+    "decoder_bounded-sol-results.json": "8a2e7aa1c68619ecbce3146949e17ced124ca86ebf1ccc7e777d52f4c488e634",
+    "forward-comparison.pdf": "89e2c3e10647b4856cb51592305b68a4f1d3787c90bdf5db0c8eba81769e1fe7",
+    "forward-comparison.png": "41e119a39c2dff123497fdf4f137e08d57be9a44db18817982b1aa1b71e082ac",
+    "full-hybrid-config.json": "eae98ec14cd2fc58d75210e33b55a8883636adccac31401e680e14aaa4f1e13e",
+    "full-hybrid-results.json": "37adab5b33feb04f71113641fc3867cc671cae82f0edaf648335411bec0d5880",
+    "full-silicon-config.json": "7f31038f04f6e15e84cb8fae871390343b10407fda1bda47841bd86455225280",
+    "full-silicon-results.json": "80f04ab13c4948a3283afd543d15ee4aed06bf474b9da657488def6a2eea13e3",
+    "full-sol-config.json": "d8ecd5393a85a02d13a178620a286ca0a564040b3cdc8bdc7c9c04c416058736",
+    "full-sol-results.json": "8ee8929ea7f0e22d1959108e1fbb821311d99711711a0f803dba517f26501b48",
+    "render_report.py": "d8c7c36de00de03192a79ba0b8c2c7e97dd81469d838472c40f4f4938191f4fa"
+  },
+  "prediction_rows_checked": 276,
+  "source_hashes": {
+    "axis_normalization_sha256": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9",
+    "comparison_analysis_sha256": "a9e629d7d4a69566cdeaec4f0b40fe25ca3df036d5175839027542134a951938",
+    "engine_python_sha256": "ad688d85cf558e69fb01ad3fc9fdf85afb50bcd4b231772a7d21f04b4cc44221",
+    "model_python_sha256": "d3d7994816e9a4a52abbf27500b22d7445c376f429cd955e3fc444eee80f33b1",
+    "model_resolution_sha256": "8c939016c56b5602f6f8564b895fb1cf035b4a2b518063371388a2f4fd758113",
+    "native_extension_sha256": "3e4de42a013ff5f37cdc7b5df7f7fdd70b8d70840f8c3c8cc2dcb968109451b4",
+    "prediction_adapter_sha256": "a40f19c3ebb47b3630b162b62dda6a191484bd23771682f80469dc859f935717",
+    "statistics_analysis_sha256": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7"
+  },
+  "status": "passed"
+}
