@@ -22,8 +22,8 @@ use super::core::NoEngineEvents;
 #[cfg(test)]
 use super::core::round_robin::PoolRoundRobinPlacement;
 use super::core::{
-    AdmissionSource as CoreAdmissionSource, Placement, PlacementDecision, PlacementPolicy,
-    ReadyArrival, WorkerTopology,
+    AdmissionSource as CoreAdmissionSource, EngineEventBatch, Placement, PlacementDecision,
+    PlacementPolicy, ReadyArrival, WorkerTopology,
 };
 use super::events::{SimulationEvent, SimulationWorkerStage, WorkerCompletionPayload};
 use super::evidence::{
@@ -1697,13 +1697,6 @@ where
                     self.acknowledge_action(uuid, issued, HandoffActionOutcome::Noop)?;
                     return Ok(ActionExecution::Applied);
                 };
-                if self.prefill_engine.worker_is_busy(worker_idx)? {
-                    return Ok(ActionExecution::Deferred {
-                        action: issued,
-                        stage: SimulationWorkerStage::Prefill,
-                        worker_idx,
-                    });
-                }
                 let effects = self.prefill_engine.apply_command(
                     worker_idx,
                     Command::CancelSource { handoff_id },
@@ -1723,13 +1716,6 @@ where
                     self.acknowledge_action(uuid, issued, HandoffActionOutcome::Noop)?;
                     return Ok(ActionExecution::Applied);
                 };
-                if self.decode_engine.worker_is_busy(worker_idx)? {
-                    return Ok(ActionExecution::Deferred {
-                        action: issued,
-                        stage: SimulationWorkerStage::Decode,
-                        worker_idx,
-                    });
-                }
                 let effects = self.decode_engine.apply_command(
                     worker_idx,
                     Command::CancelDestination { handoff_id },
@@ -2048,6 +2034,7 @@ where
 
     /// Process one decode output signal, including decode router frees and request completion.
     fn process_decode_signal(&mut self, signal: OutputSignal) -> Result<()> {
+        let suppress_step_event = self.state(signal.uuid)?.terminal_status().is_some();
         if let Some(token_id) = signal.token_id {
             CoreAdmissionSource::on_output_token(&mut self.admission, signal.uuid, token_id)?;
             // Generalized-engine completion effects become visible at the
@@ -2055,7 +2042,7 @@ where
             // preserves the old EngineComponent::align_pass_token_times
             // semantics without giving the engine ownership of report state.
             self.collector.on_token(signal.uuid, self.now_ms);
-            if self.defer_drive {
+            if self.defer_drive && !suppress_step_event {
                 self.step_tokens.push((signal.uuid, token_id));
             }
         }
@@ -2130,6 +2117,8 @@ where
     fn apply_worker_completions(&mut self) -> Result<bool> {
         let mut changed = false;
         while let Some(completion) = pop_ready_worker_completions(&mut self.events, self.now_ms) {
+            let stage = completion.stage;
+            let worker_id = completion.worker_id;
             let payloads = match completion.stage {
                 SimulationWorkerStage::Prefill => self
                     .prefill_engine
@@ -2141,6 +2130,7 @@ where
                     bail!("disaggregated replay received an aggregated completion")
                 }
             };
+            self.wake_deferred_actions(stage, worker_id);
             for payload in payloads {
                 self.process_worker_completion_payload(payload)?;
             }
@@ -2155,7 +2145,6 @@ where
     ) -> Result<()> {
         match payload.stage {
             SimulationWorkerStage::Prefill => {
-                self.wake_deferred_actions(SimulationWorkerStage::Prefill, payload.worker_idx);
                 if self.collect_fpm
                     && let Some(fpm) = payload.fpm
                 {
@@ -2170,7 +2159,6 @@ where
                 )
             }
             SimulationWorkerStage::Decode => {
-                self.wake_deferred_actions(SimulationWorkerStage::Decode, payload.worker_idx);
                 if self.collect_fpm
                     && let Some(fpm) = payload.fpm
                 {
@@ -2250,6 +2238,9 @@ where
             }
             changed = true;
             self.handle_prefill_engine_effects(effects)?;
+            if self.defer_drive && self.step_freed_slot {
+                return Ok(changed);
+            }
         }
     }
 
@@ -2269,6 +2260,34 @@ where
             }
             changed = true;
             self.handle_decode_engine_effects(effects)?;
+            if self.defer_drive && self.step_freed_slot {
+                return Ok(changed);
+            }
+        }
+    }
+
+    fn settle_internal_work(&mut self) -> Result<bool> {
+        let mut changed = false;
+        loop {
+            let prefill_effects = self.prefill_engine.process_internal_work(self.now_ms)?;
+            let decode_effects = self.decode_engine.process_internal_work(self.now_ms)?;
+            let made_progress = prefill_effects.made_progress || decode_effects.made_progress;
+            if !prefill_effects.engine_events.is_empty() {
+                self.apply_prefill_observations(
+                    prefill_effects.engine_events,
+                    KvIngestBoundary::OffloadTick,
+                )?;
+            }
+            if !decode_effects.engine_events.is_empty() {
+                self.apply_decode_observations(
+                    decode_effects.engine_events,
+                    KvIngestBoundary::OffloadTick,
+                )?;
+            }
+            changed |= made_progress;
+            if !made_progress {
+                return Ok(changed);
+            }
         }
     }
 
@@ -2491,13 +2510,34 @@ where
         }
         loop {
             let mut changed = self.prune_stale_transfer_events();
+            changed |= self.settle_internal_work()?;
             changed |= self.apply_worker_completions()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.release_ready_arrivals()?;
             changed |= self.drive_pending_actions()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.drive_prefill_workers()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.drive_decode_workers()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             let removed_prefill = self
                 .prefill_engine
                 .try_remove_drained()

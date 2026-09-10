@@ -461,7 +461,7 @@ impl SteppableReplay for SteppableDisagg {
         let status = self.runtime.cancel_dynamic(uuid)?;
         if status.is_some() {
             self.runtime.discard_step_terminal(uuid);
-            self.live.uuids.retain(|candidate| *candidate != uuid);
+            self.live.uuids.remove(&uuid);
         }
         Ok(status.map(|status| EngineEvent::terminal(uuid, status)))
     }
@@ -474,7 +474,7 @@ impl SteppableReplay for SteppableDisagg {
             .map(|(uuid, token_id)| EngineEvent::token(uuid, token_id))
             .collect::<Vec<_>>();
         for (uuid, status) in self.runtime.take_step_terminals() {
-            self.live.uuids.retain(|candidate| *candidate != uuid);
+            self.live.uuids.remove(&uuid);
             events.push(EngineEvent::terminal(uuid, status));
         }
         Ok(StepOutcome { end_ms, events })
@@ -873,6 +873,48 @@ mod tests {
                 .events
                 .iter()
                 .all(|event| event.terminal_status.is_none())
+        );
+    }
+
+    #[test]
+    fn disaggregated_cancellation_suppresses_busy_worker_output() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        let uuid = engine.submit(request(33, 128, 8)).unwrap();
+
+        let outcome = engine.step().unwrap();
+        assert!(
+            outcome.events.is_empty(),
+            "the first step should only start the pipeline: {outcome:?}"
+        );
+        assert_eq!(
+            engine
+                .cancel(uuid)
+                .unwrap()
+                .and_then(|event| event.terminal_status),
+            Some(ReplayTerminalStatus::Canceled)
+        );
+
+        let mut events = Vec::new();
+        for _ in 0..32 {
+            if engine.is_idle() {
+                break;
+            }
+            events.extend(engine.step().unwrap().events);
+        }
+        assert!(
+            events.iter().all(|event| event.uuid != uuid),
+            "canceled request emitted later worker output: {events:?}"
+        );
+        assert!(
+            engine.is_idle(),
+            "canceled replay did not drain; next event: {:?}",
+            engine.next_event_ms()
         );
     }
 }
