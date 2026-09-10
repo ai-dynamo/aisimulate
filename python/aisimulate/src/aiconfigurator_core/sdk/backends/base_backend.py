@@ -53,6 +53,14 @@ def _kimi_resized_spatial_tokens(
     stride = patch * enc_cfg.spatial_merge_size
     padded_height = -(-resized_height // stride) * stride
     padded_width = -(-resized_width // stride) * stride
+    # Kimi K3's fixed rotary lookup: modified adaptation, Apache-2.0,
+    # copyright contributors to the vLLM project.
+    # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+    if enc_cfg.encoder_type == "kimi_k3_moonvit3d_patchmergerv2" and max(padded_height, padded_width) // patch > 512:
+        raise ValueError(
+            "Kimi K3 supports at most 512 spatial patches per side after processor padding, "
+            f"got {padded_height // patch}x{padded_width // patch}"
+        )
     return (padded_height // stride) * (padded_width // stride), (padded_height // patch) * (padded_width // patch)
 
 
@@ -446,6 +454,13 @@ class BaseBackend:
             if has_video_override and (video_height > 0) != (video_width > 0):
                 raise ValueError("Video height and width must either both be provided or both be omitted.")
         has_videos = has_any_video_input
+        if has_videos:
+            temporal_patches = -(-video_frames // enc_cfg.temporal_patch_size)
+            if enc_cfg.max_temporal_patches and temporal_patches > enc_cfg.max_temporal_patches:
+                raise ValueError(
+                    f"{enc_cfg.encoder_type or 'vision encoder'} supports at most "
+                    f"{enc_cfg.max_temporal_patches} temporal patches; got {temporal_patches}."
+                )
         if has_videos and enc_cfg.max_video_frames and video_frames > enc_cfg.max_video_frames:
             raise ValueError(
                 f"Kimi video modeling supports at most {enc_cfg.max_video_frames} sampled frames per video; "
@@ -562,7 +577,6 @@ class BaseBackend:
             if has_video_dims:
                 # Qwen pads a short final temporal group by repeating its last
                 # frame, so a partial group still produces one temporal patch.
-                temporal_patches = -(-video_frames // enc_cfg.temporal_patch_size)
                 spatial_post_merge, spatial_pre_merge = _smart_resized_spatial_tokens(
                     video_height, video_width, is_video=True
                 )
@@ -571,7 +585,6 @@ class BaseBackend:
                 )
                 pre_merge_per_visual = temporal_patches * spatial_pre_merge
             else:
-                temporal_patches = -(-video_frames // enc_cfg.temporal_patch_size)
                 tokens_per_visual = video_token_override
                 if not enc_cfg.pool_temporal and tokens_per_visual % temporal_patches != 0:
                     raise ValueError(
@@ -654,7 +667,8 @@ class BaseBackend:
         # stays Python-side; only the per-op values may come from the
         # compiled engine below). Projector ops and the DP exit AllGather run
         # on post-merge tokens. ViT attention uses cu_seqlens: each image tile
-        # or temporal patch is an independent transformer sequence.
+        # or non-pooled temporal patch is an independent transformer sequence;
+        # pooled Kimi video uses one spatial-temporal sequence per video.
 
         def _encoder_shape(op) -> tuple[int, int]:
             name = op._name
@@ -1566,8 +1580,12 @@ class BaseBackend:
                 # language-space embeddings coexist at the adapter boundary.
                 activations += 2 * embed_tokens * (2 * enc_cfg.hidden_size + enc_cfg.out_hidden_size)
             else:
-                # ~3x hidden_size per patch covers QKV, attention output, and FFN intermediates (bfloat16)
-                activations = 2 * num_tokens * enc_cfg.hidden_size * 3
+                # Retain the legacy live-activation estimate, but never budget
+                # less than the actual per-rank BF16 QKV output buffer. This is
+                # an analytical lower bound, not a calibrated peak-memory model.
+                encoder_tp = 1 if model.config.enable_encoder_dp else model.config.tp_size
+                qkv_width = 3 * (enc_cfg.qkv_hidden_size or enc_cfg.hidden_size) // encoder_tp
+                activations = 2 * num_tokens * max(3 * enc_cfg.hidden_size, qkv_width)
                 # Projected embeddings (all projector instances concatenated along hidden)
                 activations += 2 * embed_tokens * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
             activations = max(activations, 32 * 1024 * 1024)  # 32 MiB minimum

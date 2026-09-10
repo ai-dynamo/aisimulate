@@ -41,7 +41,7 @@ For a ViT with depth D and projector_dims with P (in, out) pairs::
     encoder_rope_apply    ElementWise  (only if partial_rotary_factor > 0;
                                         replaces the attention-internal RoPE term)
 
-  _projector_ops  →  P GEMMs + (P-1) activations + 1 norm + 1 AR
+  _projector_ops  →  P GEMMs + (P-1) activations + optional norms / AR
                      (or 0 ops if projector_dims is empty):
     encoder_merger_norm          ElementWise pre-pixel-shuffle LayerNorm
     encoder_projector_fc{i}_gemm  GEMM
@@ -105,7 +105,10 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
     h_vit = enc_cfg.hidden_size
     n_vit = enc_cfg.num_heads
     inter_vit = enc_cfg.intermediate_size
-    head_size_vit = h_vit // n_vit
+    qkv_hidden = enc_cfg.qkv_hidden_size or h_vit
+    if qkv_hidden % n_vit != 0:
+        raise ValueError(f"ViT qkv_hidden_size ({qkv_hidden}) must be divisible by num_heads ({n_vit})")
+    head_size_vit = qkv_hidden // n_vit
 
     if tp_size > 1:
         if n_vit % tp_size != 0:
@@ -122,7 +125,7 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         ops.GEMM(
             "encoder_qkv_gemm",
             depth,
-            3 * n_vit * head_size_vit // tp_size,
+            3 * qkv_hidden // tp_size,
             h_vit,
             vit_gemm_mode,
         ),
@@ -138,7 +141,7 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
             "encoder_proj_gemm",
             depth,
             h_vit,
-            n_vit * head_size_vit // tp_size,
+            qkv_hidden // tp_size,
             vit_gemm_mode,
             low_precision_input=True,
         ),
@@ -173,7 +176,7 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         # the attention op's internal RoPE term is disabled in exchange (partial_rotary_factor=0.0).
         # partial_rotary_factor gates the op but does not shrink it: the eager kernel
         # duplicates the half-dim cos/sin table to full head_dim and rotates all of Q/K.
-        rope_dim = 6 * (n_vit // tp_size) * head_size_vit
+        rope_dim = 6 * qkv_hidden // tp_size
         result.append(ops.ElementWise("encoder_rope_apply", depth, rope_dim, rope_dim, 0.8))
 
     if enc_cfg.final_norm:
@@ -219,15 +222,16 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
     # The final merger normalizes hidden_size before pixel shuffle. Deepstack
     # mergers normalize merger_dim after shuffle, but the inverse token-count
     # change preserves the same total hidden_size traffic per pre-merge patch.
-    result.append(
-        ops.ElementWise(
-            "encoder_merger_norm",
-            n_inst,
-            enc_cfg.hidden_size,
-            enc_cfg.hidden_size,
-            0.8,
+    if enc_cfg.projector_pre_norm:
+        result.append(
+            ops.ElementWise(
+                "encoder_merger_norm",
+                n_inst,
+                enc_cfg.hidden_size,
+                enc_cfg.hidden_size,
+                0.8,
+            )
         )
-    )
     for i, (in_d, out_d) in enumerate(dims):
         is_last = i == n_layers - 1
         # Final layer in a multi-layer projector takes sharded input from the previous
@@ -252,6 +256,8 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
 
     if not enc_cfg.projector_replicated:
         result.append(ops.CustomAllReduce("encoder_projector_ar", n_inst, dims[-1][1], tp_size))
+    if enc_cfg.projector_post_norm:
+        result.append(ops.ElementWise("encoder_projector_post_norm", n_inst, dims[-1][1], dims[-1][1], 0.8))
     return result
 
 
@@ -625,3 +631,22 @@ def build_llama4_encoder_ops(
             )
         )
     return result
+
+
+def build_kimi_k3_encoder_ops(
+    enc_cfg: common.VisionEncoderConfig,
+    tp_size: int,
+    enable_encoder_dp: bool = True,
+) -> list:
+    """Build the complete MoonViT3D + PatchMergerV2 graph for Kimi K3."""
+    if enc_cfg.encoder_type != "kimi_k3_moonvit3d_patchmergerv2":
+        raise ValueError(f"Expected Kimi K3 encoder config, got {enc_cfg.encoder_type!r}")
+    if not (enc_cfg.final_norm and enc_cfg.pool_temporal and enc_cfg.projector_post_norm):
+        raise ValueError("Kimi K3 requires complete MoonViT3D and PatchMergerV2 operation semantics")
+    if not enc_cfg.projector_replicated or enc_cfg.projector_pre_norm:
+        raise ValueError("Kimi K3 PatchMergerV2 requires replicated projections and only a final normalization")
+    if enc_cfg.video_attention_type != "spatial_temporal":
+        raise ValueError("Kimi K3 requires spatial_temporal vision attention")
+    if enc_cfg.qkv_hidden_size <= 0 or enc_cfg.max_temporal_patches <= 0:
+        raise ValueError("Kimi K3 requires explicit QKV and temporal-position geometry")
+    return build_encoder_ops(enc_cfg, tp_size, enable_encoder_dp)

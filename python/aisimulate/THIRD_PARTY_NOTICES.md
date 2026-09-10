@@ -63,10 +63,14 @@ Copyright 2025 Google Inc. HuggingFace Inc. team. All rights reserved.
 
 This material is licensed under the Apache License 2.0.
 
-The Kimi K2.5 vision-tower topology and pooled multimodal adapter modeled in
+The Kimi K2.5 and Kimi K3 vision-tower topology, pooled PatchMerger, and
+PatchMergerV2 adapters modeled in
 `src/aiconfigurator_core/sdk/models/blocks/vit.py` and parsed in
-`src/aiconfigurator_core/sdk/utils.py`, with regression derivatives in
-`tests/unit/sdk/models/test_kimi_k25_vision.py`, are modified adaptations of vLLM at commit
+`src/aiconfigurator_core/sdk/utils.py`, with Kimi K3 rotary-grid validation in
+`src/aiconfigurator_core/sdk/backends/base_backend.py` and regression derivatives in
+`tests/unit/sdk/models/test_kimi_k25_vision.py` and
+`tests/unit/sdk/models/test_kimi_k3_vision.py`, are modified adaptations of the
+MoonViT3D implementation that Kimi K3 reuses from Kimi K2.5 in vLLM at commit
 `d2906091bfc579cebefe3d8e8fb9077397ce9882`:
 
 - https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25.py
@@ -528,10 +532,11 @@ Upstream sources:
 Copyright 2026 the HuggingFace Team. All rights reserved.
 This Gemma 4 material is licensed under the Apache License 2.0.
 
-The Kimi K2.5 spatial-temporal vision-tower, processor, and temporal-pooling
+The Kimi K2.5 and Kimi K3 spatial-temporal vision-tower, processor, and temporal-pooling
 behavior in `src/aiconfigurator_core/sdk/models/blocks/vit.py`,
 `src/aiconfigurator_core/sdk/utils.py`, and `src/aiconfigurator_core/sdk/backends/base_backend.py`,
-with regression derivatives in `tests/unit/sdk/models/test_kimi_k25_vision.py`,
+with regression derivatives in `tests/unit/sdk/models/test_kimi_k25_vision.py`
+and `tests/unit/sdk/models/test_kimi_k3_vision.py`,
 are modified adaptations of Hugging Face Transformers at
 commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
 

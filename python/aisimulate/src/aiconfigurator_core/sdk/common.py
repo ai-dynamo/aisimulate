@@ -5,7 +5,7 @@ import csv
 import json
 import math
 from collections import namedtuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from functools import cache
 from importlib import resources as pkg_resources
@@ -189,6 +189,13 @@ class VisionEncoderConfig:
             the encoder_rope_apply op; 0.0 means no RoPE.
         in_channels (int): Number of image/video input channels consumed by the
             patch embedding projection.
+        qkv_hidden_size (int): Optional QKV projection width before the three-way
+            split. Zero means the vision hidden size.
+        max_temporal_patches (int): Maximum supported temporal position count;
+            zero means unbounded by the model contract.
+        projector_post_norm (bool): Whether to normalize the final projector output.
+        encoder_type (str): Architecture-specific encoder contract tag.
+        projector_pre_norm (bool): Normalize inputs before the projector's pixel shuffle.
         image_size (int): Fixed square image-tile size in pixels. Zero denotes
             a dynamic-resolution encoder such as Qwen3-VL.
         has_cls_token (bool): Whether each tile appends a CLS token before the
@@ -245,6 +252,13 @@ class VisionEncoderConfig:
     max_video_frames: int = 0
     # Some towers use replicated projector linear layers even with encoder TP.
     projector_replicated: bool = False
+    # Keyword-only additions preserve positional callers of this config and
+    # existing subclasses such as Gemma4VisionEncoderConfig.
+    qkv_hidden_size: int = field(default=0, kw_only=True)
+    max_temporal_patches: int = field(default=0, kw_only=True)
+    projector_post_norm: bool = field(default=False, kw_only=True)
+    encoder_type: str = field(default="", kw_only=True)
+    projector_pre_norm: bool = field(default=True, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -359,6 +373,9 @@ class KimiK3Config:
     (7168 -> 3584 down proj, experts at 3584/3072, 3584 -> 7168 up proj); the
     num_shared_experts shared experts run in the full hidden space.
     attn_res_block_size: AttnRes cross-layer residual block size (elementwise only).
+    vision_config: optional MoonViT3D and PatchMergerV2 geometry. Retained for
+                   visual context sizing on language-only workers, which omit
+                   encoder execution and memory allocation.
     """
 
     layer_types: tuple[str, ...]  # per-layer: "linear_attention" (KDA) or "full_attention" (MLA)
@@ -378,6 +395,7 @@ class KimiK3Config:
     first_k_dense_replace: int = 0
     dense_inter_size: int = 0
     attn_res_block_size: int = 0
+    vision_config: VisionEncoderConfig | None = None
 
 
 @dataclass(frozen=True)
