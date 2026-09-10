@@ -180,3 +180,17 @@ adds frontend, network and queueing. Report these as separate observed targets.
 
 Run the adjacent `test_analyze_e2e.py` and `test_normalize_fpm.py` with pytest to
 check statistical independence, missing coverage and KV-axis conversions.
+
+`compare_forward.py` consumes the SILICON collector's admitted independent
+forward observations and the frozen holdout manifest. Run it with that
+checkout's source and rebuilt extension available, supplying an explicit native
+prediction configuration. It calls the shared Rust forward estimator without
+tuning, validates geometry and decoder profile, preserves every missing
+prediction, and records the actual loaded model, engine and binary hashes.
+Run separate SOL, HYBRID and strict SILICON comparisons; a supported subset's
+error must always be accompanied by its prediction coverage. Three measured
+repetitions establish a point median, not an E2E confidence interval.
+
+The [original corpus strata](corpora/README.md) add English narrative and mixed
+Chinese/English technical prose at fixed geometry. Their prepared inputs are
+separate from actual collected coverage.
