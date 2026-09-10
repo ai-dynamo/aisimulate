@@ -702,184 +702,236 @@
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 2,
       "case_id": "decode-0000",
+      "native_inclusive_kv": 3,
       "phase": "generation",
-      "prefix": 1,
+      "prefix": 2,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 3,
       "case_id": "decode-0001",
+      "native_inclusive_kv": 4,
       "phase": "generation",
-      "prefix": 2,
+      "prefix": 3,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 8,
       "case_id": "decode-0002",
+      "native_inclusive_kv": 9,
       "phase": "generation",
-      "prefix": 7,
+      "prefix": 8,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 32,
       "case_id": "decode-0003",
+      "native_inclusive_kv": 33,
       "phase": "generation",
-      "prefix": 31,
+      "prefix": 32,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 64,
       "case_id": "decode-0004",
+      "native_inclusive_kv": 65,
       "phase": "generation",
-      "prefix": 63,
+      "prefix": 64,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 127,
       "case_id": "decode-0005",
-      "phase": "generation",
-      "prefix": 126,
-      "query": 1
-    },
-    {
-      "batch_size": 1,
-      "case_id": "decode-0006",
+      "native_inclusive_kv": 128,
       "phase": "generation",
       "prefix": 127,
       "query": 1
     },
     {
       "batch_size": 1,
-      "case_id": "decode-0007",
+      "canonical_past_kv": 128,
+      "case_id": "decode-0006",
+      "native_inclusive_kv": 129,
       "phase": "generation",
       "prefix": 128,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 129,
+      "case_id": "decode-0007",
+      "native_inclusive_kv": 130,
+      "phase": "generation",
+      "prefix": 129,
+      "query": 1
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 256,
       "case_id": "decode-0008",
+      "native_inclusive_kv": 257,
       "phase": "generation",
-      "prefix": 255,
+      "prefix": 256,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 512,
       "case_id": "decode-0009",
+      "native_inclusive_kv": 513,
       "phase": "generation",
-      "prefix": 511,
+      "prefix": 512,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 1024,
       "case_id": "decode-0010",
+      "native_inclusive_kv": 1025,
       "phase": "generation",
-      "prefix": 1023,
+      "prefix": 1024,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 1536,
       "case_id": "decode-0011",
+      "native_inclusive_kv": 1537,
       "phase": "generation",
-      "prefix": 1535,
+      "prefix": 1536,
       "query": 1
     },
     {
       "batch_size": 1,
+      "canonical_past_kv": 2048,
       "case_id": "decode-0012",
+      "native_inclusive_kv": 2049,
       "phase": "generation",
-      "prefix": 2047,
+      "prefix": 2048,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 2,
       "case_id": "decode-0013",
-      "phase": "generation",
-      "prefix": 1,
-      "query": 1
-    },
-    {
-      "batch_size": 2,
-      "case_id": "decode-0014",
+      "native_inclusive_kv": 3,
       "phase": "generation",
       "prefix": 2,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 3,
+      "case_id": "decode-0014",
+      "native_inclusive_kv": 4,
+      "phase": "generation",
+      "prefix": 3,
+      "query": 1
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 8,
       "case_id": "decode-0015",
+      "native_inclusive_kv": 9,
       "phase": "generation",
-      "prefix": 7,
+      "prefix": 8,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 32,
       "case_id": "decode-0016",
+      "native_inclusive_kv": 33,
       "phase": "generation",
-      "prefix": 31,
+      "prefix": 32,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 64,
       "case_id": "decode-0017",
+      "native_inclusive_kv": 65,
       "phase": "generation",
-      "prefix": 63,
+      "prefix": 64,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 127,
       "case_id": "decode-0018",
-      "phase": "generation",
-      "prefix": 126,
-      "query": 1
-    },
-    {
-      "batch_size": 2,
-      "case_id": "decode-0019",
+      "native_inclusive_kv": 128,
       "phase": "generation",
       "prefix": 127,
       "query": 1
     },
     {
       "batch_size": 2,
-      "case_id": "decode-0020",
+      "canonical_past_kv": 128,
+      "case_id": "decode-0019",
+      "native_inclusive_kv": 129,
       "phase": "generation",
       "prefix": 128,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 129,
+      "case_id": "decode-0020",
+      "native_inclusive_kv": 130,
+      "phase": "generation",
+      "prefix": 129,
+      "query": 1
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 256,
       "case_id": "decode-0021",
+      "native_inclusive_kv": 257,
       "phase": "generation",
-      "prefix": 255,
+      "prefix": 256,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 512,
       "case_id": "decode-0022",
+      "native_inclusive_kv": 513,
       "phase": "generation",
-      "prefix": 511,
+      "prefix": 512,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 1024,
       "case_id": "decode-0023",
+      "native_inclusive_kv": 1025,
       "phase": "generation",
-      "prefix": 1023,
+      "prefix": 1024,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 1536,
       "case_id": "decode-0024",
+      "native_inclusive_kv": 1537,
       "phase": "generation",
-      "prefix": 1535,
+      "prefix": 1536,
       "query": 1
     },
     {
       "batch_size": 2,
+      "canonical_past_kv": 2048,
       "case_id": "decode-0025",
+      "native_inclusive_kv": 2049,
       "phase": "generation",
-      "prefix": 2047,
+      "prefix": 2048,
       "query": 1
     }
   ],

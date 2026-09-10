@@ -9,7 +9,7 @@ uses, is absent from the current `{0,256}` grid and must be reported as missing.
 ## Common bounded calibration and hold-out domain
 
 For the common GB200/GB300 text domain, fix TP4/EP1, batch 1–2, total new tokens
-per iteration at most 512, per-request KV end at most 2048, and eager execution.
+per iteration at most 512, per-request past KV at most 2048 (native decode includes the current token, up to 2049), and eager execution.
 The proposed explicit point manifest has the following independently checked
 counts **per execution profile**:
 
@@ -70,8 +70,8 @@ original native point payload. `collector.sglang.dsv41_workloads` generates
 that plan plus `study-plan/coverage-projection.json`; the latter is a CPU
 projection, not measured data. The native module runner accepts the frozen
 plan through `--workload-plan`. Explicit context cases measure only that
-extension; explicit decode cases seed K-1 real tokens on the same request,
-then measure one decode at exactly K. No held-out timing enters this plan.
+extension; explicit decode cases seed K real tokens on the same request,
+then measure one decode at native inclusive K+1. No held-out timing enters this plan.
 
 With one warmup and three measured repetitions per configuration, each profile
 executes 908 native forwards including the 404 prefix/real-KV setup forwards,
@@ -118,3 +118,11 @@ sampling. It is independent benchmark-forward ground truth, distinct from the
 HTTP E2E and GPU-timed Dynamo FPM measurements. Source/input hashes, exact
 coordinates, timing-boundary label and runtime arguments accompany each run.
 Neither the held-out latency values nor their module timings enter calibration.
+
+The native point manifest's decode axis is **past KV**, while SGLang attention
+keys include the current token. Plans and forward records therefore retain
+both `canonical_past_kv=K` and `native_inclusive_kv=K+1`; the runner seeds K
+real tokens. At batch 2 and past KV 2048 the decode needs 4098 logical token
+slots before page rounding. The next canary uses 8192 allocator slots and a
+4096-token prefill setup capacity, while preserving every measured geometry.
+These are capacity settings, not an expansion of the statistical study domain.

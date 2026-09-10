@@ -58,11 +58,11 @@ def freeze_workloads(payload: dict) -> dict:
                 ):
                     raise ValueError("explicit rows must exactly match homogeneous request totals")
             else:
-                # The measured decode inserts one new token. Seed K-1 real
-                # tokens so its attention reads exactly the requested K.
-                query, prefix = 1, total_kv // batch - 1
+                # Dynamo's manifest axis is past KV. Seed exactly K real
+                # tokens; the measured native decode reads inclusive K+1.
+                query, prefix = 1, total_kv // batch
                 if prefix < 1:
-                    raise ValueError("real-KV decode collection requires KV length >= 2")
+                    raise ValueError("real-KV decode collection requires positive past KV")
             case = {
                 "case_id": f"{phase}-{index:04d}",
                 "phase": "context" if phase == "prefill" else "generation",
@@ -70,6 +70,8 @@ def freeze_workloads(payload: dict) -> dict:
                 "query": query,
                 "prefix": prefix,
             }
+            if phase == "decode":
+                case.update(canonical_past_kv=prefix, native_inclusive_kv=prefix + 1)
             cases.append(case)
     if not cases:
         raise ValueError("empty module workload manifest")

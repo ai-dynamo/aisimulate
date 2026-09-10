@@ -501,6 +501,11 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
                             "query": query,
                             "prefix": prefix,
                             "real_kv": real_kv,
+                            **(
+                                {"canonical_past_kv": prefix, "native_inclusive_kv": prefix + 1}
+                                if phase == "generation"
+                                else {}
+                            ),
                             "finite_logits": True,
                             "native_benchmark_forward_ms": native_forward_ms,
                             "timing_boundary": "sglang_one_batch_synchronized_wall_including_prepare_forward_sample",
@@ -524,6 +529,11 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
                             "query": query,
                             "prefix": prefix,
                             "real_kv": real_kv,
+                            **(
+                                {"canonical_past_kv": prefix, "native_inclusive_kv": prefix + 1}
+                                if phase == "generation"
+                                else {}
+                            ),
                             "finite_logits": True,
                             "instrumented_forward_ms": forward_start.elapsed_time(forward_end),
                             **provenance,

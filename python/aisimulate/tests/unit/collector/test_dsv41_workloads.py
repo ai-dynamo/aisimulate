@@ -28,7 +28,15 @@ def test_exact_homogeneous_points_freeze_without_rounding_or_extra_decode():
     frozen = freeze_workloads(_payload())
     assert frozen["cases"] == [
         {"case_id": "prefill-0000", "phase": "context", "batch_size": 2, "query": 3, "prefix": 128},
-        {"case_id": "decode-0000", "phase": "generation", "batch_size": 2, "query": 1, "prefix": 2047},
+        {
+            "case_id": "decode-0000",
+            "phase": "generation",
+            "batch_size": 2,
+            "query": 1,
+            "prefix": 2048,
+            "canonical_past_kv": 2048,
+            "native_inclusive_kv": 2049,
+        },
     ]
     assert baseline_tokens(frozen["cases"]) == [2, 6]
     assert frozen["source_payload"] == _payload()
@@ -113,12 +121,12 @@ def test_cached_prefill_keeps_original_request_and_measures_only_suffix():
     assert measured == [("context", 2, 3, 128, True)]
 
 
-def test_decode_seeds_exact_k_minus_one_and_measures_one_generation():
+def test_decode_seeds_exact_past_k_and_measures_one_inclusive_generation():
     case = freeze_workloads(_payload())["cases"][1]
     events, measured = _lifecycle(case)
-    assert events == [("clear",), ("prepare", 2, 2047, 2047), ("extend",), ("decode",), ("cleanup", True)]
-    assert measured == [("generation", 2, 1, 2047, True)]
-    assert coordinates("attention", {}, "generation", 2, 1, 2047) == (2, 0, 2048)
+    assert events == [("clear",), ("prepare", 2, 2048, 2048), ("extend",), ("decode",), ("cleanup", True)]
+    assert measured == [("generation", 2, 1, 2048, True)]
+    assert coordinates("attention", {}, "generation", 2, 1, 2048) == (2, 0, 2049)
 
 
 def test_bounded_coordinate_preserves_long_prefix_and_short_actual_extension():
@@ -138,11 +146,7 @@ def test_checked_in_calibration_keeps_all_points_and_exposes_bounded_holes():
     assert projection["baseline_points"] == 80
     for replay, expected_points, expected_missing in [(False, 836, 0), (True, 830, 10)]:
         profile = projection["profiles"][int(replay)]
-        heldout = {
-            "cases": [
-                {k: row[k] for k in ("case_id", "phase", "batch_size", "query", "prefix")} for row in profile["heldout"]
-            ]
-        }
+        heldout = json.loads((root / "heldout-plan.json").read_text())
         computed = coverage_report(build_manifest(4, replay), calibration, heldout)
         assert computed == profile
         assert profile["projected_calibration_module_points"] == expected_points
