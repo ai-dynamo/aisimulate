@@ -52,6 +52,14 @@
 //! `x % scale_num_tokens != 0`. This is the SAME approximation the silicon
 //! engine-step path already ships; the error is bounded by one token's bytes
 //! and is negligible against the whole-model roofline.
+//!
+//! A second known approximation: the DSA arms round `batch`, `s`, and
+//! `prefix` to `i64` (`b.round().max(1.0) as i64`, see
+//! `dsa_context_module_sol` / `dsa_generation_module_sol`) because
+//! `perf_database::dsa`'s SOL ports take integer coordinates (the triangular
+//! `total_kv_pairs` sum, `perf_database/dsa.rs:824-832`, is integer-only);
+//! the error is bounded by one token per coordinate and only arises when
+//! `batch` does not divide the FPM totals.
 
 use crate::common::enums::{BackendKind, GemmQuantMode};
 use crate::common::error::AicError;
@@ -342,7 +350,7 @@ fn dsa_context_module_sol(
             flops,
         )
     };
-    let w = op.full_frac.clamp(0.0, 1.0);
+    let w = op.full_frac;
     let ms = if w >= 1.0 {
         sol(false)
     } else {

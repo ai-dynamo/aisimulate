@@ -205,7 +205,7 @@ impl FpmForwardOp {
         // Every curve bound comes from a real row, so resolving
         // (row, curve_min) is an exact leaf and never invokes SOL. Keeping the
         // no-SOL closure explicit makes this policy independent of model SOL
-        // support (important for GLM-5.2's currently unported DSA family).
+        // support (important for MiniMax-M3's currently unported MSA family).
         let no_sol = |_coords: &[f64]| f64::NAN;
         let cfg = interp_config(FpmPhase::Decode, &no_sol);
         let row_floor = |row: u32| -> Result<f64, AicError> {
@@ -282,7 +282,7 @@ impl FpmForwardOp {
         // above it — there the measured ceiling row is rescaled by the
         // whole-model SOL ratio between the true and clamped shapes (LOO:
         // median 4.5% / p90 13%), and ONLY when this model's SOL is usable:
-        // an unported roofline (DSA/MSA) answers nothing rather than
+        // an unported roofline (MSA) answers nothing rather than
         // something half-modeled (the batch coordinate then fails the
         // domain gate below).
         const MAX_KV_PRESSURE: f64 = 2.0;
@@ -358,9 +358,9 @@ impl FpmForwardOp {
         // SOL support is checked LAZILY, mirroring Python: exact hits and
         // in-curve lerps never invoke the roofline (Python's SOL view answers
         // every op family; `_oplevel_sol_fn` is only called on transfer/hold
-        // paths). A family the Rust SOL port does not cover yet (DSA / MSA /
-        // MLA modules — e.g. GLM-5.2's DSA attention) therefore only fails
-        // the sol-dependent resolution paths, and the error names the op.
+        // paths). A family the Rust SOL port does not cover yet (MSA / MLA
+        // modules) therefore only fails the sol-dependent resolution paths,
+        // and the error names the op.
         let sol_failure: std::cell::RefCell<Option<AicError>> = std::cell::RefCell::new(None);
         let sol = |sol_coords: &[f64]| -> f64 {
             match sol_total(&self.sol_ops, self.phase, db, sol_coords) {
@@ -1179,9 +1179,9 @@ mod tests {
     }
 
     /// SOL support is lazy (mirrors Python, whose SOL view answers every op
-    /// family): an unported family (e.g. GLM-5.2's DSA modules) must NOT
-    /// block exact hits or in-curve lerps — only sol-dependent resolution
-    /// paths fail, naming the unported op.
+    /// family): an unported family (e.g. the MLA-BMM module used below)
+    /// must NOT block exact hits or in-curve lerps — only sol-dependent
+    /// resolution paths fail, naming the unported op.
     #[test]
     fn unsupported_sol_family_is_lazy() {
         let tmp = tempfile::tempdir().unwrap();
