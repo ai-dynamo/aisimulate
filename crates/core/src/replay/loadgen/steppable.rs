@@ -35,10 +35,13 @@ use uuid::Uuid;
 use crate::replay::agg::AggRuntimeImpl;
 use crate::replay::components::{AdmissionQueue, NoReplayMetadata, ReplayMode};
 use crate::replay::core::NoEngineEvents;
-use crate::replay::core::round_robin::AggregatedRoundRobinPlacement;
+use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
+use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
 use crate::replay::protocol::DirectRequest;
-use crate::replay::{ReplayReport, ReplayTerminalStatus, SlaThresholds, WorkerStage};
+use crate::replay::{
+    OfflineDisaggReplayConfig, ReplayReport, ReplayTerminalStatus, SlaThresholds, WorkerStage,
+};
 
 /// One per-request event produced by a [`SteppableReplay`] step.
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +164,8 @@ pub trait SteppableReplay {
 /// Concrete aggregated runtime behind the steppable seam.
 type SteppableAggRuntime =
     AggRuntimeImpl<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
+type SteppableDisaggRuntime =
+    DisaggRuntimeImpl<PoolRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
 
 /// Externally clocked replay admits every request the caller submits; the
 /// caller owns whatever concurrency limit it wants to impose.
@@ -389,6 +394,122 @@ impl SteppableReplay for SteppableEngine {
     }
 }
 
+/// Disaggregated prefill/decode topology as a [`SteppableReplay`].
+pub struct SteppableDisagg {
+    runtime: SteppableDisaggRuntime,
+    live: LiveRequests,
+}
+
+impl SteppableDisagg {
+    /// Build round-robin prefill and decode pools.
+    pub fn new(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        prefill_workers: usize,
+        decode_workers: usize,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(prefill_workers > 0, "num_prefill_workers must be positive");
+        anyhow::ensure!(decode_workers > 0, "num_decode_workers must be positive");
+        let config = OfflineDisaggReplayConfig {
+            prefill_factory: factory.role_factory(&engine, WorkerStage::Prefill, false)?,
+            decode_factory: factory.role_factory(&engine, WorkerStage::Decode, false)?,
+            prefill_startup_time_ms: None,
+            decode_startup_time_ms: None,
+            num_prefill_workers: prefill_workers,
+            num_decode_workers: decode_workers,
+            handoff_latency_ms: 0.0,
+        };
+        let runtime = SteppableDisaggRuntime::new_composed(
+            &config,
+            AdmissionQueue::new_requests(VecDeque::new(), steppable_mode()),
+            false,
+            |_, prefill, _, decode| {
+                Ok((
+                    PoolRoundRobinPlacement::new(prefill),
+                    PoolRoundRobinPlacement::new(decode),
+                ))
+            },
+        )?
+        .into_steppable();
+        Ok(Self {
+            runtime,
+            live: LiveRequests::default(),
+        })
+    }
+}
+
+impl SteppableReplay for SteppableDisagg {
+    fn now_ms(&self) -> f64 {
+        self.runtime.now_ms()
+    }
+    fn advance_now_ms(&mut self, now_ms: f64) {
+        if now_ms.is_finite() && now_ms > self.runtime.now_ms() {
+            self.runtime.advance_now_ms(now_ms);
+        }
+    }
+    fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+        if let Some(uuid) = request.uuid
+            && self.live.contains(uuid)
+        {
+            anyhow::bail!("steppable replay request {uuid} is already live");
+        }
+        let uuid = self.runtime.submit_dynamic(request)?;
+        self.live.insert(uuid);
+        Ok(uuid)
+    }
+    fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
+        let status = self.runtime.cancel_dynamic(uuid)?;
+        if status.is_some() {
+            self.runtime.discard_step_terminal(uuid);
+            self.live.uuids.retain(|candidate| *candidate != uuid);
+        }
+        Ok(status.map(|status| EngineEvent::terminal(uuid, status)))
+    }
+    fn step_until(&mut self, until_ms: f64) -> anyhow::Result<StepOutcome> {
+        let end_ms = self.runtime.step_dynamic_until(until_ms)?;
+        let mut events = self
+            .runtime
+            .take_step_tokens()
+            .into_iter()
+            .map(|(uuid, token_id)| EngineEvent::token(uuid, token_id))
+            .collect::<Vec<_>>();
+        for (uuid, status) in self.runtime.take_step_terminals() {
+            self.live.uuids.retain(|candidate| *candidate != uuid);
+            events.push(EngineEvent::terminal(uuid, status));
+        }
+        Ok(StepOutcome { end_ms, events })
+    }
+    fn next_event_ms(&mut self) -> Option<f64> {
+        self.runtime.next_timestamp()
+    }
+    fn is_idle(&self) -> bool {
+        self.runtime.is_workload_done()
+    }
+    fn in_flight(&self) -> usize {
+        self.live.len()
+    }
+    fn set_capture_per_request(&mut self, capture: bool) {
+        self.runtime
+            .collector_mut()
+            .set_capture_per_request(capture);
+    }
+    fn set_sla_thresholds(&mut self, sla: SlaThresholds) {
+        self.runtime.collector_mut().set_sla_thresholds(sla);
+    }
+    fn request_latencies(&self, uuid: Uuid) -> Option<(f64, f64)> {
+        self.runtime.collector().request_latencies(uuid)
+    }
+    fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> {
+        self.runtime.collector().request_admission(uuid)
+    }
+    fn actual_output_length(&self, uuid: Uuid) -> Option<usize> {
+        self.runtime.collector().actual_output_length(uuid)
+    }
+    fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport> {
+        self.runtime.take_report_dynamic(wall_ms)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,14 +661,23 @@ mod tests {
 
     #[test]
     fn report_rejects_non_finite_wall_time() {
-        let mut engine = SteppableAgg::new(
+        let mut aggregated = SteppableAgg::new(
             ReplayEngineConfig::default(),
             &ReplayEngineFactory::new(),
             1,
         )
         .unwrap();
 
-        assert!(engine.take_report(f64::NAN).is_err());
+        assert!(aggregated.take_report(f64::NAN).is_err());
+
+        let mut disaggregated = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        assert!(disaggregated.take_report(f64::NAN).is_err());
     }
 
     #[test]
@@ -694,5 +824,55 @@ mod tests {
         let factory = ReplayEngineFactory::new();
 
         assert!(SteppableAgg::new(ReplayEngineConfig::default(), &factory, 0).is_err());
+        assert!(SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 0, 1).is_err());
+        assert!(SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 1, 0).is_err());
+    }
+
+    #[test]
+    fn disaggregated_replay_delivers_one_terminal_per_submission() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        engine.submit(request(31, 128, 8)).unwrap();
+        let events = drain(&mut engine);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.terminal_status.is_some())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn disaggregated_cancellation_is_not_reported_again_when_stepped() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        let uuid = engine.submit(request(32, 128, 8)).unwrap();
+
+        assert_eq!(
+            engine
+                .cancel(uuid)
+                .unwrap()
+                .and_then(|event| event.terminal_status),
+            Some(ReplayTerminalStatus::Canceled)
+        );
+        assert!(
+            engine
+                .step_until(f64::INFINITY)
+                .unwrap()
+                .events
+                .iter()
+                .all(|event| event.terminal_status.is_none())
+        );
     }
 }
