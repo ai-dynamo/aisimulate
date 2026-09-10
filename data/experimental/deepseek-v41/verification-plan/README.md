@@ -140,3 +140,34 @@ layouts, vision and DSpark need separate qualified campaigns. Current Engram
 module measurements omit the shared model-entry hash/history work; default
 fused collectives also differ from an explicitly unfused NCCL execution policy.
 These gaps belong in the error report and coverage table.
+
+## Analysis and measurement boundaries
+
+`analyze_e2e.py --plan pilot-plan.json --progress client/progress.json --output summary.json`
+checks each planned cohort and reports client coverage. It freezes a main-stage
+budget only after all ten pilot trials and required metrics are available.
+For `sampling_role=main`, it computes percentile bootstrap intervals for the
+mean using whole independent trial observations. It averages requests equally
+within each trial; many correlated token gaps do not increase the trial count.
+The script does not replace closed-run, transport or producer qualification.
+Throughput here is output tokens over the complete finite cohort duration,
+including prefill and queueing; it is not a saturation-throughput measurement.
+
+`normalize_fpm.py` preserves raw telemetry and returns a separate prediction
+input plus an explicit conversion receipt. The inspected SGLang producer uses
+decode sequence length including the current query; Dynamo/vLLM's inspected
+scheduler uses already computed past KV. The op graph's decode `s` includes the
+current query, while `predict_decode_latency_total` and the collected whole-FPM
+curve use past KV. Convert once via canonical past KV, adjusting by the number
+of decode requests, and leave prefill/queued fields unchanged. Pin producer
+source before selecting this bridge; test 127/128/129 boundaries so a one-token
+semantic mismatch cannot masquerade as prediction error.
+
+The vLLM FPM observation includes CPU schedule/output or adjacent-output timing.
+The corrected SGLang FPM observation uses the existing GPU event interval.
+SGLang native benchmark forward-only holdouts use its existing synchronized
+wall-clock boundary, which includes batch preparation and sampling. HTTP E2E
+adds frontend, network and queueing. Report these as separate observed targets.
+
+Run the adjacent `test_analyze_e2e.py` and `test_normalize_fpm.py` with pytest to
+check statistical independence, missing coverage and KV-axis conversions.

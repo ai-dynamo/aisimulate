@@ -399,6 +399,8 @@ def _backend_policies(
 
     extra_cli_args: list[str] = []
     expected_markers: dict[str, str] = {}
+    if options.enforce_eager:
+        expected_markers["config.engine_args.enforce_eager"] = "True"
     if moe != "auto":
         extra_cli_args += ["--kernel-config", json.dumps({"moe_backend": moe})]
         expected_markers["config.engine_args.kernel_config.moe_backend"] = moe
