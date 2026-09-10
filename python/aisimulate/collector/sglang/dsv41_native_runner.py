@@ -181,6 +181,114 @@ class ComponentRecorder:
         return rows
 
 
+def collect_native_baselines(runner, options, tp_rank, provenance):
+    """Benchmark loaded native kernels with explicit uniform synthetic routing.
+
+    This separate op sweep does not change real-request routing or KV state.
+    All ranks use the same seeded input and expert IDs. Communication calls
+    use the actual NCCL process group rather than framework custom all-reduce.
+    """
+    import torch
+    import torch.distributed as dist
+    from sglang.srt.layers.moe.topk import StandardTopKOutput
+
+    layers = [m for m in runner.model.modules() if type(m).__name__ == "DeepseekV4DecoderLayer"]
+    experts = layers[2].mlp.experts
+    gate = layers[2].mlp.gate
+    lm_head = runner.model.lm_head
+    if tuple(gate.weight.shape) != (384, 5120) or tuple(lm_head.weight.shape) != (32320, 5120):
+        raise RuntimeError("native baseline GEMM physical padding differs from TP4 graph")
+    if type(experts.quant_method).__name__ != "Mxfp4FlashinferTrtllmMoEMethod":
+        raise RuntimeError("native baseline MoE requires verified MXFP4 TRTLLM dispatch")
+    if experts.quant_method.flashinfer_mxfp4_moe_precision != "default":
+        raise RuntimeError("native baseline MoE requires MXFP8 activations")
+    if getattr(experts, "reduce_results", False):
+        raise RuntimeError("native expert kernel unexpectedly owns a collective")
+    recorder_path = Path(options.output) / f"baseline-rank-{tp_rank}.jsonl"
+    token_counts = sorted({1, 2, *(b * n for b in options.batches for n in options.lengths)})
+    generator = torch.Generator().manual_seed(20260910)
+    with recorder_path.open("w") as stream:
+        for tokens in token_counts:
+            hidden = torch.randn(tokens, 5120, generator=generator, dtype=torch.bfloat16).cuda()
+            logits = torch.rand(tokens, 384, generator=generator, dtype=torch.float32).cuda()
+            ids = logits.topk(6, dim=-1).indices.to(torch.int32)
+            weights = torch.full((tokens, 6), 1 / 6, dtype=torch.float32, device=hidden.device)
+            topk = StandardTopKOutput(topk_weights=weights, topk_ids=ids, router_logits=logits)
+            routing_histogram = torch.bincount(ids.flatten().long(), minlength=384).cpu().tolist()
+            cases = [
+                (
+                    "gemm",
+                    {"gemm_dtype": "bfloat16", "m": tokens, "n": 384, "k": 5120},
+                    lambda: gate(hidden),
+                    _dispatch(gate, "forward"),
+                ),
+                (
+                    "gemm",
+                    {"gemm_dtype": "bfloat16", "m": tokens, "n": 32320, "k": 5120},
+                    lambda: lm_head.quant_method.apply(lm_head, hidden),
+                    _dispatch(lm_head, "quant_method.apply"),
+                ),
+                (
+                    "moe",
+                    {
+                        "moe_dtype": "w4a8_mxfp4_mxfp8",
+                        "num_tokens": tokens,
+                        "hidden_size": 5120,
+                        "inter_size": 2304,
+                        "topk": 6,
+                        "num_experts": 384,
+                        "moe_tp_size": 4,
+                        "moe_ep_size": 1,
+                        "distribution": "uniform",
+                    },
+                    lambda: experts(hidden, topk),
+                    "sglang_mxfp4_flashinfer_trtllm_moe",
+                ),
+            ]
+            for width in (5120, 6144):
+                payload = torch.zeros(tokens, width, dtype=torch.bfloat16, device=hidden.device)
+                cases.append(
+                    (
+                        "nccl",
+                        {
+                            "op_name": "all_reduce",
+                            "nccl_dtype": "half",
+                            "num_gpus": 4,
+                            "message_size": 2 * tokens * width,
+                        },
+                        lambda payload=payload: dist.all_reduce(payload),
+                        "torch.distributed.nccl.all_reduce",
+                    )
+                )
+            for kind, key, call, dispatch in cases:
+                for sample in range(2 + options.iterations):
+                    torch.cuda.synchronize()
+                    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+                    start.record()
+                    call()
+                    end.record()
+                    torch.cuda.synchronize()
+                    if sample >= 2:
+                        stream.write(
+                            json.dumps(
+                                {
+                                    "kind": kind,
+                                    **key,
+                                    "latency": start.elapsed_time(end),
+                                    "sample": sample,
+                                    "tp_rank": tp_rank,
+                                    "kernel_source": dispatch,
+                                    "used_cuda_graph": False,
+                                    "routing_seed": 20260910,
+                                    "routing_histogram": routing_histogram if kind == "moe" else None,
+                                    "physical_local_intermediate": int(experts.w2_weight.shape[-1]) * 2,
+                                    **provenance,
+                                }
+                            )
+                            + "\n"
+                        )
+
+
 def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
     import torch
     import torch.distributed as dist
@@ -331,6 +439,9 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
                             sample,
                         )
                     runner.cleanup(batch)
+    if options.collect_baselines:
+        recorder.active = False
+        collect_native_baselines(runner.torch_runner, options, tp_rank, provenance)
     if dist.is_initialized():
         dist.barrier()
     if tp_rank == 0:
@@ -352,6 +463,7 @@ def main():
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--decode-steps", type=int, default=2)
     parser.add_argument("--profile-canary", action="store_true")
+    parser.add_argument("--collect-baselines", action="store_true")
     options, rest = parser.parse_known_args()
     output = Path(options.output)
     output.mkdir(parents=True, exist_ok=True)

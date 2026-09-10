@@ -87,6 +87,78 @@ def aggregate_rank_records(paths: list[Path], tp_size: int) -> list[dict]:
     return output
 
 
+def aggregate_baseline_records(paths: list[Path], tp_size: int) -> dict[str, list[dict]]:
+    """Admit measured native baselines only after every rank/sample agrees."""
+    import math
+
+    if {p.name for p in paths} != {f"baseline-rank-{rank}.jsonl" for rank in range(tp_size)}:
+        raise ValueError("missing baseline rank files")
+    columns = {
+        "gemm": ("gemm_dtype", "m", "n", "k"),
+        "moe": (
+            "moe_dtype",
+            "num_tokens",
+            "hidden_size",
+            "inter_size",
+            "topk",
+            "num_experts",
+            "moe_tp_size",
+            "moe_ep_size",
+            "distribution",
+        ),
+        "nccl": ("op_name", "nccl_dtype", "num_gpus", "message_size"),
+    }
+    groups = defaultdict(list)
+    for path in paths:
+        for line in path.read_text().splitlines():
+            row = json.loads(line)
+            kind = row["kind"]
+            if kind not in columns or not math.isfinite(row["latency"]) or row["latency"] <= 0:
+                raise ValueError("invalid native baseline observation")
+            key = (kind, *(row[c] for c in columns[kind]))
+            groups[key].append(row)
+    result = defaultdict(list)
+    for key, rows in groups.items():
+        signatures = {
+            tuple(
+                r[k]
+                for k in (
+                    "source_sha256",
+                    "config_sha256",
+                    "runtime_digest",
+                    "used_cuda_graph",
+                    "kernel_source",
+                    "execution_profile",
+                )
+            )
+            for r in rows
+        }
+        if len(signatures) != 1:
+            raise ValueError("mixed baseline provenance")
+        samples = defaultdict(dict)
+        for row in rows:
+            sample = samples[row["sample"]]
+            if row["tp_rank"] in sample:
+                raise ValueError("duplicate baseline rank/sample")
+            sample[row["tp_rank"]] = row["latency"]
+        if any(set(sample) != set(range(tp_size)) for sample in samples.values()):
+            raise ValueError("incomplete baseline rank/sample")
+        if key[0] == "moe":
+            histograms = {tuple(r["routing_histogram"]) for r in rows}
+            if len(histograms) != 1 or len(next(iter(histograms))) != rows[0]["num_experts"]:
+                raise ValueError("baseline uniform routing differs between ranks")
+            if sum(next(iter(histograms))) != rows[0]["num_tokens"] * rows[0]["topk"]:
+                raise ValueError("baseline routing does not cover every token slot")
+        measured = {c: rows[0][c] for c in columns[key[0]]}
+        measured.update(
+            latency=statistics.median(max(s.values()) for s in samples.values()),
+            kernel_source=rows[0]["kernel_source"],
+            sample_count=len(samples),
+        )
+        result[key[0]].append(measured)
+    return dict(result)
+
+
 def run_dsv41_module_worker(
     model_path: str, tp_size: int, execution_profile: str, sweep: dict, *, perf_filename: str, device: str = "cuda:0"
 ) -> None:
@@ -120,6 +192,10 @@ def run_dsv41_module_worker(
         os.environ["DSV41_CHECKPOINT"],
         "--tp-size",
         str(tp_size),
+        "--moe-runner-backend",
+        "flashinfer_mxfp4",
+        "--moe-a2a-backend",
+        "none",
         "--disable-shared-experts-fusion",
         "--cuda-graph-backend-decode",
         "disabled",
