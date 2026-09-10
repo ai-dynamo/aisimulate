@@ -198,7 +198,7 @@ def test_run_single_test_propagates_hardware_preflight_failures(monkeypatch):
         (
             "google/gemma-4-26B-A4B",
             "sglang",
-            "0.5.10",
+            "0.5.14",
             "Failed to query context attention data for b=1, s=128.0, prefix=128.0",
         ),
         (
