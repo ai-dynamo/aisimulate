@@ -308,6 +308,12 @@ SGLang's serving architecture at immutable commit
 - `python/sglang/srt/layers/engram.py`
 - `python/sglang/srt/layers/attention/dsv4/compressor.py`
 - `python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py`
+- `python/sglang/benchmark/one_batch.py`
+
+The original integration adapter
+`collector/sglang/dsv41_native_runner.py` calls that pinned benchmark's model
+builder and request lifecycle. Its component boundaries are modified from
+the serving contracts above; it does not copy framework metadata builders.
 
 Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
 Copyright SGLang contributors. Licensed under Apache-2.0; its terms are
