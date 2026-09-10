@@ -1,0 +1,11 @@
+Reference SGLang PR: https://github.com/sgl-project/sglang/pull/38711
+PR revision: ed18d64951b93ac252d921ee037ce0d3327eda1f
+Runtime base: 71de97b264b04dcd514cf904003028aefe9775c8
+Image: nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:9fb6f18c1b224a5651f4482cdc20efc27b2916cd14f92173da3c349b8412f308
+AMD64 manifest: sha256:f856a45537f82e1900ea7607edcbaa7f77fbb2e70220eae522d1d50d0046727e
+Compatibility port: identical fpm_timing.py and DeviceTimer, equivalent reporter and pre-settlement length snapshot; result fields adapted to old layout. PP timing metadata included but this experiment is TP8/PP1. No oracle D2H or boundary events. No runtime source patching during the benchmark.
+Recorder: ai-dynamo/dynamo 1926d6ec765fcf7e86fc000a1b6a15b2b107e607
+Client: SemiAnalysisAI/aiperf 754356e9a39acc6cc6afb242d123bb57c3fb6f75; use image /opt/agentx-aiperf, archive pip freeze. New transitive dependency resolution differs from historical baseline; paired runs share the same environment.
+Model: nvidia/GLM-5.2-NVFP4 53e0691e21895a3863a606dfd12910c69eba94ab
+Protocol: one FPM-on recording run, 3600s measured AgentX c4; compare against historical FPM-off job4187044. No new FPM-off run, per user direction. This is not a same-node paired overhead experiment; report runtime, client dependency, hardware and workload differences with the comparison.
+Limits: compatibility-port experiment, not full PR head integration. No perf conclusion until artifacts and request errors/counter diagnostics checked.

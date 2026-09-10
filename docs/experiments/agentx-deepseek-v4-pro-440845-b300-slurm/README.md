@@ -3,16 +3,11 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AgentX 440845: DeepSeek-V4-Pro on one B300 Slurm node
+# DeepSeek-V4-Pro / AgentX 440845 — B300 reproduction and results
 
-This experiment targets [AgentX point 440845](https://inferencex.semianalysis.com/inference/agentic/440845):
-DeepSeek-V4-Pro FP4 with MTP, attention DP8 and DRAM HiCache at concurrency 32.
-It is a hardware reproduction for subsequent AISimulate validation.
-**Completed: one FPM-off and one FPM-on run, both with HiCache disabled.**
-[Job 4209414 results](results-job-4209414.md) include the client comparison,
-validated eight-rank FPM capture and download instructions.
-See [preparation log](preparation-2026-09-09.md) for checkpoint download status,
-Computelab resource discovery and remaining work.
+Completed job `4209414` on `umb-b300-dp-127`: one ordered FPM-off/on pair,
+same eight-GPU node and fixed runtime, c32, HiCache disabled. Campaign and
+allocation completed 0:0 and the allocation is released.
 
 ## Reference identity
 
@@ -51,128 +46,191 @@ when preparing execution; neither is vendored here.
 The selected model revision appears in the reference client's config/tokenizer
 HTTP requests. The server loaded a local directory and reported `revision=None`;
 this does not prove the exact revision of its weight files. Preserve this distinction
-when reporting reproduction fidelity. The client dependency revision and full replay
-arguments still need to be pinned from the reference workflow before execution.
+when reporting reproduction fidelity. Our client is pinned to SemiAnalysisAI/aiperf `754356e9a39acc6cc6afb242d123bb57c3fb6f75`; exact arguments are in campaign.py.
 
-## Planned local runtime: shared FPM-fixed x86 image
 
-Use the **same linux/amd64 FPM-fixed image as the B200 GLM AgentX job
-`4207957`**, with FPM disabled for the first run and enabled explicitly with recording for
-the second run. Its submission pins this
-multi-architecture index:
+## Reproduce
 
-```text
-nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:9fb6f18c1b224a5651f4482cdc20efc27b2916cd14f92173da3c349b8412f308
+Use the shared FPM-fixed amd64 manifest
+`nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:f856a45537f82e1900ea7607edcbaa7f77fbb2e70220eae522d1d50d0046727e`.
+It backports SGLang PR#38711 at `ed18d64951b93ac252d921ee037ce0d3327eda1f`
+onto `71de97b264b04dcd514cf904003028aefe9775c8`, with isolated AIPerf in
+`/opt/agentx-aiperf`. This differs from SA's runtime. The local pair disables
+HiCache and omits the removed `--prefill-decode-interval 20` option, retaining
+prefill delayer; no equivalence to the old scheduling policy is assumed.
+Synthetic acceptance is a performance setting, not a quality test.
+
+1. Reuse the verified model snapshot under
+   `/home/scratch.hongkuanz_gpu/models/hub/models--deepseek-ai--DeepSeek-V4-Pro/snapshots/b5968e9190ef611bbf34a7229255be88a0e937c1`.
+   Verification reports are in `agentx-dsv4-pro-440845-checkpoint/` on that scratch.
+   Required:91 files,64 safetensors shards,864739856856 total bytes,
+   `download-result.json` status=complete with no errors, and `manifest.json`.
+   Preserve HF backing blobs. Downloads/builds must run inside compute allocations.
+2. Reuse `images/sglang-agentx-fpm-f856a455-amd64.sqsh` on scratch.
+   Its SHA256 is `2a75f79d921933731c2220845e8680ae25c50af2a52addd31ac07bd3e3048987`.
+   Enroot3.5 uses `docker://nvcr.io#nvidian/dynamo-dev/sglang-agentx:sha256:f856a45537f82e1900ea7607edcbaa7f77fbb2e70220eae522d1d50d0046727e`
+   when importing a new cache inside a compute allocation.
+3. Stage [campaign.py](campaign.py), [record_fpm.py](record_fpm.py),
+   [compare.py](compare.py), [submit.sh](submit.sh) and [provenance.txt](provenance.txt)
+   in `/home/scratch.hongkuanz_gpu/agentx-dsv4-440845-ab-20260909/`.
+   Preserve that bundle's `image-squashfs.sha256` (matching the cache above) and
+   `deepseek_v4_thinking.jinja` from the pinned InferenceX revision linked above,
+   with its license/provenance. Neither template nor weights are vendored here.
+   Adapt scratch/account/partition paths for other users.
+4. Discover an available eight-GPU B300 partition, then submit:
+
+```bash
+ssh hongkuanz@computelab-sc-01 \
+  'sbatch /home/scratch.hongkuanz_gpu/agentx-dsv4-440845-ab-20260909/submit.sh'
 ```
 
-The linux/amd64 child is:
+The script requests eight GPUs,112 CPUs, an exclusive node, all host RAM and four
+hours, with a termination warning three minutes before the limit. The campaign
+checks hardware, image imports and checkpoint validation before serving.
+It starts native SGLang plus DP-aware consistent-hashing SGLang router (not a
+Dynamo frontend), then runs off followed by on, each with fresh engine/KV,
+the same warmup and3600s measurement. Compilation caches may be reused.
+The recorder subscribes to all eight rank-local IPC endpoints and copies buffered
+capture to scratch before teardown. The comparison script runs after the pair.
 
-```text
-nvcr.io/nvidian/dynamo-dev/sglang-agentx@sha256:f856a45537f82e1900ea7607edcbaa7f77fbb2e70220eae522d1d50d0046727e
+### Dataset setup safeguard
+
+The completed pair needed manual recovery before each measured phase:
+dataset reconstruction finished, but executor cleanup stalled with its forkserver
+waiting for children. This is not automatically repaired by campaign.py.
+Before any intervention, verify the exact owned Slurm cgroup, completed393/393
+reconstruction, stack waiting in pool termination/join, blocked/pending SIGCHLD,
+and all sixteen reconstruction children already zombies. Only then was that
+specific forkserver terminated to allow assembly to resume; never kill a generic
+Python/forkserver process or interrupt unfinished reconstruction. If the checks
+do not hold, stop and diagnose rather than applying this workaround.
+No engine/client source or serving setting was changed during that recovery.
+
+## Table 1: SA versus our FPM-off and FPM-on performance
+
+SA values are the recorded [AgentX 440845](https://inferencex.semianalysis.com/inference/agentic/440845)
+row from the [published benchmark API](https://inferencex.semianalysis.com/api/v1/benchmarks?model=DeepSeek-V4-Pro),
+retrieved September 9, 2026. Our columns use final measured-phase client exports.
+All three configurations use eight B300 GPUs, TP8/EP8, attention DP8 and c32;
+SA enables HiCache, while both of our cases disable it and use the shared
+FPM-fixed runtime described above.
+
+Changes are `100 * (new / baseline - 1)` using unrounded values. Higher
+throughput and lower latency are preferable. Missing reference fields remain
+unreported; the two cache-hit aggregations are deliberately shown separately.
+
+| Metric | SA 440845 | Ours FPM off | Ours FPM on | Off vs SA | On vs off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Total throughput, tokens/s | 139,843.35 | 141,041.93 | 140,120.42 | +0.86% | -0.65% |
+| Total throughput, tokens/s/GPU | 17,480.42 | 17,630.24 | 17,515.05 | +0.86% | -0.65% |
+| Output throughput, tokens/s | 919.875 | 929.159 | 924.580 | +1.01% | -0.49% |
+| Output throughput, tokens/s/GPU | 114.984 | 116.145 | 115.573 | +1.01% | -0.49% |
+| TTFT mean, s | 3.642 | 1.909 | 2.021 | -47.58% | +5.84% |
+| TTFT p50, s | 1.836 | 1.399 | 1.429 | -23.80% | +2.13% |
+| TTFT p90, s | 7.727 | 3.380 | 3.468 | -56.26% | +2.62% |
+| TTFT p95, s | 13.308 | 4.254 | 4.674 | -68.04% | +9.88% |
+| ITL mean, ms | 13.940 | 17.104 | 17.310 | +22.70% | +1.20% |
+| ITL p50, ms | 12.890 | 13.155 | 13.208 | +2.06% | +0.41% |
+| ITL p90, ms | 19.500 | 23.711 | 23.589 | +21.59% | -0.52% |
+| ITL p95, ms | 21.120 | 29.514 | 29.354 | +39.74% | -0.54% |
+| Request latency mean, s | 17.961 | 17.204 | 17.463 | -4.21% | +1.51% |
+| Request latency p50, s | 8.784 | 7.877 | 8.014 | -10.33% | +1.74% |
+| Request latency p90, s | 42.797 | 40.984 | 42.679 | -4.24% | +4.14% |
+| Request latency p95, s | 65.066 | 65.079 | 66.381 | +0.02% | +2.00% |
+| Completed measured requests | 3,410 | 3,423 | 3,399 | +0.38% | -0.70% |
+| Mean input tokens/request | 147,841.71 | 148,996.19 | 149,066.32 | +0.78% | +0.05% |
+| Mean output tokens/request | 978.93 | 988.06 | 990.14 | +0.93% | +0.21% |
+| Exported window including drain, s | 3,628.906 | 3,640.000 | 3,640.001 | +0.31% | +0.00% |
+| Measured request errors | Not reported in cited API row | 0 | 0 | — | — |
+| Profiling cancellations | Not reported in cited API row | 3 | 4 | — | — |
+| Output-length mismatches | Not reported in cited API row | 0 | 0 | — | — |
+| Submission valid | Not reported in cited API row | true | true | — | — |
+| Response-reported prompt reuse | Not reported in cited API row | 96.874% | 96.737% | — | -0.137 percentage points |
+| Server-reported GPU cache hit fraction | 95.871% | Not used (see telemetry caveat) | Not used (see telemetry caveat) | — | — |
+
+Validity and collection:
+
+- Submission valid: off=True, on=True.
+- Profiling cancellations: off=3, on=4.
+- Off warmup export: 353 successful and one empty-content response error,
+  although the phase progress log counted all 354 as completed with zero errors.
+  On warmup exported 354 successful requests and omitted the error-count metric.
+
+One ordered pair, off then on; warmed compilation cache and fresh engine/KV plus warmup per case. Closed-loop requests may differ; no statistical overhead claim.
+
+FPM rank coverage, counter gaps, request validity and cancellations are retained
+in [the machine-readable comparison](job-4209414-comparison.json).
+
+## Table 2: FPM details
+
+Counts cover the **complete capture**, including startup, smoke, warmup,
+measurement and drain. Each DP rank's record counts separately; these are not
+deduplicated global iterations. Classification uses the scheduled-request
+prefill/decode counts, not the timing value. No-request records can include idle
+heartbeats and ranks with no scheduled work; they are not counted as active
+iterations. [Machine-readable type counts](job-4209414-fpm-iteration-counts.json)
+include the per-rank breakdown.
+
+| FPM detail | Value | Definition / scope |
+| --- | ---: | --- |
+| Total records | 808,721 | All eight ranks and all capture phases |
+| Active iteration records | 628,149 | At least one scheduled prefill or decode request |
+| Pure prefill iterations | 5,670 | Prefill request count > 0; decode count = 0 |
+| Pure decode iterations | 622,479 | Decode request count > 0; prefill count = 0 |
+| Mixed iterations | 0 | Both prefill and decode request counts > 0 |
+| No-scheduled-request records | 180,572 | Both counts = 0; excluded from active iterations |
+| DP ranks covered | 8 (0–7) | Every rank has active and decode records |
+| Active records with positive GPU timing | 628,149 / 628,149 | Checked across the complete capture |
+| Invalid records | 0 | Schema, wire counter, timing and decode-length checks |
+| Observed counter gaps / resets | 0 / 0 | Checked separately for each rank |
+| Raw JSONL size | 445,560,968 bytes (445.56 MB; 424.92 MiB) | `on/fpm.jsonl` |
+| gzip size | 32,900,290 bytes (32.90 MB; 31.38 MiB) | `on/fpm.jsonl.gz` |
+| Compression ratio | 13.54:1 | Raw size divided by gzip size |
+
+Raw SHA256, verified against the local copy:
+`bf0f277dbd74a8276e0ed8021a882a199a0a394f18132fded80c3e6fa2df2614`.
+The [timing and checksum audit](job-4209414-fpm-audit.json) separately includes
+per-rank timing statistics for the 3600-second measured window using recorder
+receive timestamps; Table 2's counts and sizes cover the full file.
+
+Download the compressed capture from Computelab, then verify its decompressed
+contents against the SHA256 above:
+
+```bash
+scp computelab-sc-01:/home/scratch.hongkuanz_gpu/agentx-dsv4-results/job-4209414/on/fpm.jsonl.gz .
+gzip -dc fpm.jsonl.gz | sha256sum
 ```
 
-See the [shared FPM image build record](../agentx-glm-5.2-440082-gb200-hicache/fpm-image-2026-09-09.md).
-It backports SGLang PR #38711 at `ed18d64951b93ac252d921ee037ce0d3327eda1f`,
-including timing fixes and immutable decode-length statistics, onto engine base
-`71de97b264b04dcd514cf904003028aefe9775c8`. It also includes the FPM disk recorder
-and isolated AIPerf environment. The production backport adds no D2H or timing
-synchronization; performance overhead remains to be measured.
+Both raw and compressed copies, `fpm.sha256`, `fpm-validation.json` and
+`fpm-audit.json` remain in that scratch `on/` directory.
 
-The reference image in the table above describes the published AgentX run,
-not our planned runtime. Its API tag includes `cu13`, while its server log tag
-omits it. Our shared FPM image is an intentional runtime difference from that
-reference. Preserve DSv4's c32, TP8/EP8 and attention DP8 settings;
-do not inherit the GLM baseline's model-specific launch arguments.
+## Collection limitations
 
-DSv4/MegaMoE GPU execution is validated by the completed no-HiCache pair.
-HiCache GPU compatibility was not exercised. CPU CLI preflight found that this newer engine removed the reference
-`--prefill-decode-interval 20` option. Both local runs omit it and retain
-`--enable-prefill-delayer`; no equivalence between the removed interval and the
-current scheduling policy is assumed. Record any required image change explicitly. Synthetic speculative
-acceptance makes this a performance experiment, not a model quality evaluation.
+Both measured exports report `submission_valid=true` and no request errors or
+output-length mismatches. The runs reached the sending duration, then used the
+30-second grace period and a further 10-second cancellation-credit timeout;
+profiling cancellations were three and four. Preserve these exported windows
+instead of renormalizing throughput to exactly 3600 seconds.
 
-## Published comparison targets
+Each setup needed the guarded forkserver recovery described above. No serving or
+client source changed. Optional persistent mmap-cache population failed with
+ENOSPC, but the complete 6386608130-byte runtime mmap was built and replay ran.
 
-| Metric | Reference |
-| --- | ---: |
-| Total tokens/s/GPU | 17480.41899 |
-| Output tokens/s/GPU | 114.98434 |
-| TTFT p50 / p90, seconds | 1.83555 / 7.72655 |
-| ITL p90, milliseconds | 19.5 |
-| Request latency p90, seconds | 42.79698 |
-| Completed requests | 3410 |
-| Exported duration, seconds | 3628.90598 |
-| GPU cache hit fraction | 0.958711019592267 |
-| Reported KV cache pool, tokens | 10646528 |
-| Reported allocated CPU DRAM, GB | 2849 |
+The on-case Prometheus export reported counter-reset warnings across several
+series. Their precise cause is unresolved; affected Prometheus delta/rate
+statistics should not be used to substantiate this performance comparison.
+The table uses client request exports, and native FPM independently has continuous
+per-rank counters with no resets. Preserve the warnings in `on/client.log`.
 
-The API also contains `num_prefill_gpu=64` and `num_decode_gpu=64`. These fields
-conflict with the single-node TP8/EP8 launch and with total throughput divided by
-per-GPU throughput, which gives eight. Do not use those fields to request 64 GPUs
-or normalize this point's measurements.
 
-Total throughput includes reused prompt tokens. Preserve the exported duration,
-request errors, cancellations, output-length checks and warmup separation; do not
-reinterpret the reported throughput as uncached GPU compute throughput.
+## Saved results and completion checks
 
-## Computelab constraints and next steps
-
-SC-01 exposes both DGX B300 (8 GPUs, 256 logical CPUs) and B300 NVL8
-(8 GPUs, 224 logical CPUs), each with approximately 2 TB host RAM. The September 9
-query found no unreserved idle eight-GPU node for `hongkuanz`.
-
-The user selected **HiCache disabled in both cases**, given no CPU cache hits
-in the reference point. This also removes the reference host-tier memory burden
-from the approximately 2 TB Computelab nodes. Preserve GPU radix caching and
-measure GPU hit rate and cache capacity; absence of reference CPU hits alone
-does not prove that disabling HiCache is performance-neutral.
-
-## Execution protocol
-
-[campaign.py](campaign.py) runs two cases in order in one exclusive B300 node
-allocation, using one immutable image and the same model, client and settings:
-
-1. **off**: FPM disabled, no recorder; 3600 seconds of measured AgentX c32.
-2. Stop the engine and router, then launch fresh instances and repeat the same
-   smoke/warmup procedure. GPU KV starts fresh; compilation caches can be reused.
-3. **on**: FPM enabled, [record_fpm.py](record_fpm.py) subscribes to all eight
-   native SGLang DP-rank IPC endpoints; another 3600-second measurement.
-4. Validate rank coverage, finite timing/length statistics, and counter gaps;
-   [compare.py](compare.py) compares throughput, TTFT, ITL, request latency,
-   request counts, cache hits and validity evidence.
-
-Both cases use native SGLang serving and the DP-aware SGLang router inside the
-shared image. This preserves the reference routing path while collecting native
-SGLang FPM directly; no Dynamo frontend is added to this pair. The runtime-only
-thinking chat template comes from the pinned reference commit, with its license
-and provenance retained on scratch; it is not vendored in this directory.
-
-The recorder writes buffered JSONL on node-local disk throughout startup, smoke,
-warmup and measurement. At shutdown it flushes and copies the complete capture
-and SHA256 to scratch. Keep AIPerf phase timestamps to select the measured window.
-Counter gaps remain visible diagnostics; the recorder does not invent missing
-samples. The GPU time comes from the repaired engine instrumentation.
-
-[submit.sh](submit.sh) requests eight GPUs, one exclusive node and a four-hour
-limit, covering both measurements plus loading, compilation and warmup. Submission
-is gated on the pinned checkpoint's successful shard verification and the CPU
-image/CLI preflight. Hardware identity is checked before model loading.
-
-Artifacts live at `/home/scratch.hongkuanz_gpu/agentx-dsv4-results/job-<job-id>/`:
-`off/` and `on/` each retain commands, environment, server/router/client logs,
-AIPerf raw exports and lifecycle timestamps. `on/fpm.jsonl`, `on/fpm.sha256` and
-`on/fpm-validation.json` retain the FPM capture and diagnostics. The root contains
-hardware/topology, pinned model/image identity and `comparison.json`/`.md`.
-
-This is one ordered off/on pair. Startup effects and different closed-loop
-request sets limit causal overhead claims. Compare this pair first, then compare
-against point 440845 separately with the no-HiCache and runtime differences clear.
-
-The existing [GLM-5.2 B200 baseline](../agentx-glm-5.2-440958-b200-slurm/README.md)
-and [GLM-5.2 GB200 HiCache experiment](../agentx-glm-5.2-440082-gb200-hicache/README.md)
-remain separate experiments. Directory names include model and AgentX ID so results
-cannot be confused across reference points.
-
-## Latest execution
-
-See [job 4209414](results-job-4209414.md) for the measured pair or recorded failure.
+Raw artifacts: `/home/scratch.hongkuanz_gpu/agentx-dsv4-results/job-4209414/`.
+Retain off/on client exports, commands/environment, engine/router logs and
+phase timestamps; on also retains FPM JSONL/gzip, checksum and validation.
+Machine-readable final results are linked in the tables above; hardware identity
+is [job-4209414-hardware.csv](job-4209414-hardware.csv), and final campaign state is
+[job-4209414-campaign-result.json](job-4209414-campaign-result.json).
+Check request validity, rank coverage, final campaign exit and absence from
+squeue before declaring a reproduction complete. Diagnostic probes are not
+benchmark cases; their exit codes do not override the successful campaign result.
