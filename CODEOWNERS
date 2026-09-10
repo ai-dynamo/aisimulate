@@ -140,6 +140,7 @@
 /python/aisimulate/pytest.ini                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_stack_discovery.py                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_host_offload_cli.py                      @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
+/data/experimental/deepseek-v41/                     @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.dockerignore                     @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /.github/workflows/codeowners.yml                    @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/engine/timing.rs                    @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
