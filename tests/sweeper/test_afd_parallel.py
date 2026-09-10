@@ -112,6 +112,7 @@ def test_topology_derives_workers_batch_and_gpu_accounting():
     assert topology.total_batch_size == 260
     assert topology.total_microbatch_size == 88
     assert topology.provenance()["gpu_accounting"]["afd_total_gpus"] == 40
+    assert "source" not in topology.provenance()
     assert topology.provenance()["topology"]["comm_overhead_factor"] == 1.0
     assert topology.provenance()["topology"]["is_moe"] is False
     assert topology.provenance()["topology"]["num_experts"] == 0
@@ -227,6 +228,38 @@ def test_search_candidate_types_are_strict():
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "values"),
+    [
+        ("tp_a_candidates", (2, 2)),
+        ("a_batch_size_candidates", (64, 64)),
+        ("f_moe_ep_size_candidates", (1, 1)),
+        ("microbatch_candidates", (3, 3)),
+        ("pipeline_model_candidates", ("serial", "serial")),
+    ],
+)
+def test_search_rejects_duplicate_explicit_candidates(field, values):
+    with pytest.raises(AFDInfeasible, match=f"{field} must not contain duplicates"):
+        AFDSearchConfig(
+            total_gpus=16,
+            gpus_per_node=8,
+            is_moe=field == "f_moe_ep_size_candidates",
+            **{field: values},
+        )
+
+
+def test_search_rejects_nondivisible_explicit_tp_candidate():
+    with pytest.raises(AFDInfeasible, match="tp_a_candidates must divide gpus_per_node") as error:
+        AFDSearchConfig(
+            total_gpus=16,
+            gpus_per_node=8,
+            is_moe=False,
+            tp_a_candidates=(2, 3),
+        )
+
+    assert error.value.provenance["invalid_candidates"] == [3]
+
+
 def test_pinned_domain_is_lossless_and_honors_budget():
     pinned = _topology(n_a_nodes=1, n_f_nodes=2)
     result = enumerate_afd_topologies(
@@ -240,6 +273,8 @@ def test_pinned_domain_is_lossless_and_honors_budget():
     )
     assert result.candidates == (pinned,)
     assert result.provenance["domain"] == "pinned"
+    assert result.provenance["source"] == "AFDSearchConfig.pinned_topologies"
+    assert "candidate_order" not in result.provenance
 
     with pytest.raises(AFDInfeasible) as budget_error:
         enumerate_afd_topologies(
@@ -300,3 +335,44 @@ def test_search_requires_two_node_minimum_with_actionable_budget_reason():
         enumerate_afd_topologies(AFDSearchConfig(total_gpus=8, gpus_per_node=8, is_moe=False))
     assert error.value.category is AFDReasonCategory.GPU_BUDGET
     assert "at least 16 GPUs" in error.value.detail
+
+
+def test_generated_domain_applies_minimum_budget_and_inclusive_af_ratio():
+    result = enumerate_afd_topologies(
+        AFDSearchConfig(
+            total_gpus=32,
+            min_gpu_budget=24,
+            gpus_per_node=8,
+            is_moe=False,
+            tp_a_candidates=(8,),
+            a_batch_size_candidates=(1,),
+            microbatch_candidates=(3,),
+            pipeline_model_candidates=("serial",),
+            max_af_ratio=1.0,
+        )
+    )
+
+    node_pairs = {(item.n_a_nodes, item.n_f_nodes) for item in result.candidates}
+    assert (1, 1) not in node_pairs
+    assert (2, 2) in node_pairs
+    assert all(item.total_gpus >= 24 for item in result.candidates)
+    assert all(item.af_node_ratio <= 1.0 for item in result.candidates)
+    assert result.rejection_counts[AFDReasonCategory.GPU_BUDGET.value] == 1
+    assert result.rejection_counts["af_ratio"] == 2
+
+
+def test_generated_domain_treats_total_gpus_as_an_upper_bound():
+    result = enumerate_afd_topologies(
+        AFDSearchConfig(
+            total_gpus=20,
+            gpus_per_node=8,
+            is_moe=False,
+            tp_a_candidates=(8,),
+            a_batch_size_candidates=(1,),
+            microbatch_candidates=(3,),
+            pipeline_model_candidates=("serial",),
+        )
+    )
+
+    assert {item.total_gpus for item in result.candidates} == {16}
+    assert result.provenance["complete"] is True
