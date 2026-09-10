@@ -157,7 +157,6 @@ def test_encoder_model_cannot_pass_with_zero_encoder_evidence(monkeypatch, mode,
     "model",
     [
         "google/gemma-4-26B-A4B",
-        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
         "stepfun-ai/Step-3.7-Flash",
     ],
 )

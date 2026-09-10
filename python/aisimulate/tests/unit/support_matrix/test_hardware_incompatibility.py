@@ -204,7 +204,7 @@ def test_run_single_test_propagates_hardware_preflight_failures(monkeypatch):
         (
             "meta-llama/Llama-4-Scout-17B-16E-Instruct",
             "trtllm",
-            "1.3.0rc10",
+            "1.3.0rc20",
             "Failed to query moe data for num_tokens=128.0, hidden_size=5120",
         ),
     ],
