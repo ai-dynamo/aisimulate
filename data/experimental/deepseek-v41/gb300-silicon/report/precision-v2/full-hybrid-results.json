@@ -1,0 +1,1806 @@
+{
+  "schema": "dsv41.forward.comparison.v1",
+  "observed_target": "sglang_one_batch_synchronized_wall_including_prepare_forward_sample",
+  "prediction_input_origin": "frozen logical workload manifest, not observed FPM timing",
+  "execution_profile": "full",
+  "database_mode": "HYBRID",
+  "forward_model": "op_level",
+  "correction_fitting": false,
+  "observation_sha256": "bba94171de00a88bdd05230de1f9fad0b1fda491eaf5b3c6c29cf39392f0f25c",
+  "heldout_plan_sha256": "a24566f90e0e36296c31795711ec504d3bab8b7d66ae2bf4aefc24085c96f60e",
+  "prediction_config_sha256": "372185cc1241bce769f9fe05c5b28957d9b6225928ab7c631cb3da81e9039dfa",
+  "prediction_sources": {
+    "model_python_sha256": "d3d7994816e9a4a52abbf27500b22d7445c376f429cd955e3fc444eee80f33b1",
+    "engine_python_sha256": "ad688d85cf558e69fb01ad3fc9fdf85afb50bcd4b231772a7d21f04b4cc44221",
+    "native_extension_sha256": "3e4de42a013ff5f37cdc7b5df7f7fdd70b8d70840f8c3c8cc2dcb968109451b4",
+    "prediction_adapter_sha256": "a40f19c3ebb47b3630b162b62dda6a191484bd23771682f80469dc859f935717",
+    "model_resolution_sha256": "8c939016c56b5602f6f8564b895fb1cf035b4a2b518063371388a2f4fd758113",
+    "comparison_analysis_sha256": "a41f2d3531b312c86346644ed24e4ecdb1f6055b400bb5f5429d61727d414d75",
+    "statistics_analysis_sha256": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7",
+    "axis_normalization_sha256": "96458b3d3021b4a505816c28fcec475840c6500e2da0e1c920ac6e91987c3ee9"
+  },
+  "resolved_model_identity": {
+    "checkpoint_config_file_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+    "checkpoint_config_canonical_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+    "resolved_config_canonical_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+    "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides"
+  },
+  "systems_identity": {
+    "inventory_scope": "complete explicit systems overlay; includes unused files",
+    "system_spec_sha256": "1d42e13d04c03ad21d1f1ce632036e40d5b283f60e7fe119780addc4d26b1406",
+    "data_dir": "data/gb300",
+    "files_sha256": {
+      "data/gb300/comm/nccl/2.29.7/collection_meta.yaml": "3d6b7a4124508d4033efb8ed1c54175435ca7775346c9d8e101b1d8a3c0833fd",
+      "data/gb300/comm/nccl/2.29.7/nccl_perf.parquet": "c6958ef654a145b1bbdc0d1fd996ce46843e24f3e495ed716aa508ea62c20995",
+      "data/gb300/dsv41/sglang/0.0.0.dev0/collection_meta.yaml": "f98b49c4ad5195db93b662b7d438b6eda4f7341b43be730149d71ede1583f086",
+      "data/gb300/dsv41/sglang/0.0.0.dev0/dsv41_module_perf.parquet": "a1f17a5159e19b890f8380a502802c84955c0980d900d6d3b6e229b3ad159da8",
+      "data/gb300/gemm/sglang/0.0.0.dev0/collection_meta.yaml": "a8afe694b425cb67a930ba593eee672984c5b5c6412a4884b2a439e5c053a96a",
+      "data/gb300/gemm/sglang/0.0.0.dev0/gemm_perf.parquet": "71bf573f133dbce52f46eabe521049ccedccf740e72c9137c6542d3229b9bd67",
+      "data/gb300/moe/sglang/0.0.0.dev0/collection_meta.yaml": "139e853d0dc54212e46d05da0872513f60fbfb740a4dd79ae2d159af51069547",
+      "data/gb300/moe/sglang/0.0.0.dev0/moe_perf.parquet": "98e5ba79521ae76f902224f80bc2281defccd007fa8f8a23f14b7edd214bb663",
+      "gb300.yaml": "1d42e13d04c03ad21d1f1ce632036e40d5b283f60e7fe119780addc4d26b1406"
+    },
+    "inventory_sha256": "81b8c64236808ce82a5692709d1acf8a98309a8f83c3ce9d4f958a6d733ed3b3"
+  },
+  "summary": {
+    "planned_points": 38,
+    "predicted_points": 38,
+    "weighting": "signed/APE statistics: equal logical configurations; WAPE: observed-latency weighted; observed median of rank maxima",
+    "mean_signed_error_percent": 0.573802187314301,
+    "median_absolute_error_percent": 7.091272182035979,
+    "p90_absolute_error_percent_across_configurations": 13.172602758617236,
+    "wape_percent": 7.089859131945762
+  },
+  "by_phase": {
+    "context": {
+      "planned_points": 28,
+      "predicted_points": 28,
+      "weighting": "signed/APE statistics: equal logical configurations; WAPE: observed-latency weighted; observed median of rank maxima",
+      "mean_signed_error_percent": 5.341410584660299,
+      "median_absolute_error_percent": 5.5687042576845425,
+      "p90_absolute_error_percent_across_configurations": 10.924443375565016,
+      "wape_percent": 5.397473864503678
+    },
+    "generation": {
+      "planned_points": 10,
+      "predicted_points": 10,
+      "weighting": "signed/APE statistics: equal logical configurations; WAPE: observed-latency weighted; observed median of rank maxima",
+      "mean_signed_error_percent": -12.775501325254492,
+      "median_absolute_error_percent": 12.947070315060184,
+      "p90_absolute_error_percent_across_configurations": 13.732764084072455,
+      "wape_percent": 12.773438189843517
+    }
+  },
+  "cases": [
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0000",
+      "phase": "context",
+      "prefix": 0,
+      "query": 48,
+      "rank_max_ms": [
+        199.63081099558622,
+        193.15478100907058,
+        191.47834100294858,
+        191.37622800190002,
+        192.5073160091415,
+        192.41269095800817,
+        192.68053502310067,
+        191.63959193974733,
+        191.5118780452758,
+        194.15626802947372
+      ],
+      "median_ms": 192.46000348357484,
+      "observed_ms": 192.46000348357484,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 48,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 201.373951451425,
+      "signed_error_percent": 4.631584644344522
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0001",
+      "phase": "context",
+      "prefix": 0,
+      "query": 96,
+      "rank_max_ms": [
+        205.46305505558848,
+        201.47278893273324,
+        198.25021491851658,
+        198.53677903302014,
+        198.43485800083727,
+        198.8589600659907,
+        197.76569597888738,
+        197.80620909295976,
+        198.64401302766055,
+        198.0674610240385
+      ],
+      "median_ms": 198.4858185169287,
+      "observed_ms": 198.4858185169287,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 230.24512342283856,
+      "signed_error_percent": 16.00079297514201
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0002",
+      "phase": "context",
+      "prefix": 0,
+      "query": 192,
+      "rank_max_ms": [
+        199.20366897713393,
+        198.65774107165635,
+        198.71204590890557,
+        198.67098901886493,
+        197.9321950348094,
+        198.43725790269673,
+        197.50025193206966,
+        197.8254090063274,
+        198.12323700170964,
+        197.3869069479406
+      ],
+      "median_ms": 198.28024745220318,
+      "observed_ms": 198.28024745220318,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 217.01137126820421,
+      "signed_error_percent": 9.446792636526391
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0003",
+      "phase": "context",
+      "prefix": 0,
+      "query": 384,
+      "rank_max_ms": [
+        203.93442502245307,
+        201.0645909467712,
+        200.62052097637206,
+        201.6228709835559,
+        201.71202498022467,
+        202.02975696884096,
+        204.05330590438098,
+        201.12932892516255,
+        201.5008860034868,
+        202.2912970278412
+      ],
+      "median_ms": 201.6674479818903,
+      "observed_ms": 201.6674479818903,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 217.367010740807,
+      "signed_error_percent": 7.784876992307899
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0004",
+      "phase": "context",
+      "prefix": 128,
+      "query": 48,
+      "rank_max_ms": [
+        193.4652499621734,
+        197.45231501292437,
+        197.47634802479297,
+        201.77804201375693,
+        195.92928502243012,
+        193.55459499638528,
+        194.11527505144477,
+        192.46945902705193,
+        197.68822309561074,
+        195.67078596446663
+      ],
+      "median_ms": 195.80003549344838,
+      "observed_ms": 195.80003549344838,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 48,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 200.1431346102995,
+      "signed_error_percent": 2.2181298925231685
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0005",
+      "phase": "context",
+      "prefix": 128,
+      "query": 96,
+      "rank_max_ms": [
+        198.27668007928878,
+        202.28880096692592,
+        202.79018499422818,
+        198.4544419683516,
+        210.33125300891697,
+        195.47231891192496,
+        193.31446394789964,
+        190.1883709942922,
+        189.28579799830914,
+        188.0617799470201
+      ],
+      "median_ms": 196.87449949560687,
+      "observed_ms": 196.87449949560687,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 210.2906128059607,
+      "signed_error_percent": 6.814551069196861
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0006",
+      "phase": "context",
+      "prefix": 128,
+      "query": 192,
+      "rank_max_ms": [
+        188.6593559756875,
+        188.09618102386594,
+        188.3562169969082,
+        190.51170290913433,
+        188.22594301309437,
+        188.10901301912963,
+        187.0807739906013,
+        187.05014896113425,
+        187.0785659411922,
+        187.8561129560694
+      ],
+      "median_ms": 188.1025970214978,
+      "observed_ms": 188.1025970214978,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 209.12716813833822,
+      "signed_error_percent": 11.177182797979967
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0007",
+      "phase": "context",
+      "prefix": 128,
+      "query": 384,
+      "rank_max_ms": [
+        189.5590820349753,
+        189.31271007750183,
+        189.84468595590442,
+        189.0119700692594,
+        189.9207510286942,
+        189.39319194760174,
+        190.12997101526707,
+        189.02096198871732,
+        189.17219596914947,
+        189.7161400411278
+      ],
+      "median_ms": 189.4761369912885,
+      "observed_ms": 189.4761369912885,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 128,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 210.13214650588267,
+      "signed_error_percent": 10.901641675090644
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0008",
+      "phase": "context",
+      "prefix": 512,
+      "query": 48,
+      "rank_max_ms": [
+        184.3864310067147,
+        184.97629603371024,
+        183.03985195234418,
+        183.63762099761516,
+        183.575859060511,
+        182.96871497295797,
+        183.17380594089627,
+        183.01255500409752,
+        183.31291200593114,
+        182.44934699032456
+      ],
+      "median_ms": 183.2433589734137,
+      "observed_ms": 183.2433589734137,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 48,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 196.74471737587874,
+      "signed_error_percent": 7.367993294875097
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0009",
+      "phase": "context",
+      "prefix": 512,
+      "query": 96,
+      "rank_max_ms": [
+        186.73913704697043,
+        187.33773799613118,
+        187.24832800216973,
+        192.1565589727834,
+        188.55343491304666,
+        186.197241069749,
+        185.59019302483648,
+        185.40049402508885,
+        185.52948790602386,
+        185.14132197014987
+      ],
+      "median_ms": 186.4681890583597,
+      "observed_ms": 186.4681890583597,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 206.93800926069625,
+      "signed_error_percent": 10.977647343338548
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0010",
+      "phase": "context",
+      "prefix": 512,
+      "query": 192,
+      "rank_max_ms": [
+        184.89811895415187,
+        184.81542996596545,
+        186.2215290311724,
+        185.56696106679738,
+        185.44631800614297,
+        185.356204980053,
+        185.62302505597472,
+        185.6686898972839,
+        186.18559394963086,
+        184.69581194221973
+      ],
+      "median_ms": 185.50663953647017,
+      "observed_ms": 185.50663953647017,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 205.28348418497797,
+      "signed_error_percent": 10.660990193086706
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0011",
+      "phase": "context",
+      "prefix": 512,
+      "query": 384,
+      "rank_max_ms": [
+        188.24383104220033,
+        186.73481699079275,
+        188.17455007229,
+        186.94093194790184,
+        188.03573190234601,
+        186.05192797258496,
+        187.8705460112542,
+        187.85630504135042,
+        187.1312380535528,
+        187.64974200166762
+      ],
+      "median_ms": 187.75302352150902,
+      "observed_ms": 187.75302352150902,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 512,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 205.30419269042247,
+      "signed_error_percent": 9.348008804184605
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0012",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 48,
+      "rank_max_ms": [
+        181.89554696436971,
+        181.17060896474868,
+        181.3289790879935,
+        180.8175799669698,
+        181.84348300565034,
+        182.15667095500976,
+        181.22161796782166,
+        181.66107998695225,
+        181.91298795863986,
+        180.9619659325108
+      ],
+      "median_ms": 181.49502953747287,
+      "observed_ms": 181.49502953747287,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 48,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.6344459220213,
+      "signed_error_percent": 2.8317119194095186
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0013",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 96,
+      "rank_max_ms": [
+        185.58436899911612,
+        185.20602700300515,
+        186.16357690189034,
+        185.75432302895933,
+        186.05208699591458,
+        185.22996304091066,
+        185.95935008488595,
+        185.01693604048342,
+        184.50268905144185,
+        184.67037100344896
+      ],
+      "median_ms": 185.4071660200134,
+      "observed_ms": 185.4071660200134,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 195.94490611035883,
+      "signed_error_percent": 5.683566777137394
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0014",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 192,
+      "rank_max_ms": [
+        185.75934693217278,
+        185.5492639588192,
+        185.28634798713028,
+        185.00000797212124,
+        186.02277501486242,
+        185.5760490288958,
+        185.4664150159806,
+        186.219641007483,
+        185.96942990552634,
+        184.84570097643882
+      ],
+      "median_ms": 185.5626564938575,
+      "observed_ms": 185.5626564938575,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 195.47206170272773,
+      "signed_error_percent": 5.34019365539653
+    },
+    {
+      "batch_size": 1,
+      "case_id": "prefill-0015",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 384,
+      "rank_max_ms": [
+        186.5479659754783,
+        186.1229359637946,
+        187.99272296018898,
+        186.89683498814702,
+        183.2083660410717,
+        186.76902493461967,
+        185.08548103272915,
+        186.46550097037107,
+        185.879060998559,
+        186.21298600919545
+      ],
+      "median_ms": 186.33924348978326,
+      "observed_ms": 186.33924348978326,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 1,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 1536,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 196.50189092593425,
+      "signed_error_percent": 5.453841738231691
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0016",
+      "phase": "context",
+      "prefix": 0,
+      "query": 48,
+      "rank_max_ms": [
+        187.0195569936186,
+        186.02171901147813,
+        184.29593392647803,
+        184.6657310379669,
+        186.2301379442215,
+        185.6393130728975,
+        185.7196349883452,
+        184.4919049181044,
+        184.29318198468536,
+        185.19338697660714
+      ],
+      "median_ms": 185.41635002475232,
+      "observed_ms": 185.41635002475232,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 196.8221690748487,
+      "signed_error_percent": 6.151463475887509
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0017",
+      "phase": "context",
+      "prefix": 0,
+      "query": 96,
+      "rank_max_ms": [
+        185.79787609633058,
+        187.94680200517178,
+        187.97070696018636,
+        186.84851401485503,
+        186.54326198156923,
+        185.87326898705214,
+        186.7914570029825,
+        184.75546000991017,
+        185.12068199925125,
+        185.71403506211936
+      ],
+      "median_ms": 186.2082654843107,
+      "observed_ms": 186.2082654843107,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 196.8552037914692,
+      "signed_error_percent": 5.71775816689275
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0018",
+      "phase": "context",
+      "prefix": 0,
+      "query": 192,
+      "rank_max_ms": [
+        188.37887304835021,
+        187.6027979888022,
+        186.04043894447386,
+        186.4617889514193,
+        187.36442597582936,
+        187.06579797435552,
+        190.7376900780946,
+        192.34325003344566,
+        188.10795608442277,
+        188.1135570583865
+      ],
+      "median_ms": 187.85537703661248,
+      "observed_ms": 187.85537703661248,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 198.69747952139545,
+      "signed_error_percent": 5.771515649866044
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0019",
+      "phase": "context",
+      "prefix": 128,
+      "query": 48,
+      "rank_max_ms": [
+        185.14877802226692,
+        185.2497720392421,
+        185.31185202300549,
+        185.88962103240192,
+        185.80059602390975,
+        185.41847798042,
+        185.23249204736203,
+        185.5260640149936,
+        186.04194407816976,
+        185.60904101468623
+      ],
+      "median_ms": 185.4722709977068,
+      "observed_ms": 185.4722709977068,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.79388118727545,
+      "signed_error_percent": 0.712564839185581
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0020",
+      "phase": "context",
+      "prefix": 128,
+      "query": 96,
+      "rank_max_ms": [
+        186.52646197006106,
+        184.45123196579516,
+        185.5253599351272,
+        185.39729295298457,
+        185.5403999798,
+        185.99899904802442,
+        186.8400980019942,
+        185.12848997488618,
+        186.40780402347445,
+        186.4959659287706
+      ],
+      "median_ms": 185.7696995139122,
+      "observed_ms": 185.7696995139122,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.47051557871112,
+      "signed_error_percent": 0.37724993184178324
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0021",
+      "phase": "context",
+      "prefix": 128,
+      "query": 192,
+      "rank_max_ms": [
+        188.35122394375503,
+        187.6283020246774,
+        187.94564995914698,
+        188.86438303161412,
+        188.10549296904355,
+        188.077652011998,
+        187.9309619544074,
+        187.92277108877897,
+        187.9053940065205,
+        187.0816380251199
+      ],
+      "median_ms": 187.93830595677719,
+      "observed_ms": 187.93830595677719,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 256,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 188.13332862855196,
+      "signed_error_percent": 0.10376951669428536
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0022",
+      "phase": "context",
+      "prefix": 512,
+      "query": 48,
+      "rank_max_ms": [
+        186.44751701503992,
+        185.5780640617013,
+        185.76517095789313,
+        186.11736898310483,
+        186.1566649749875,
+        184.7759720403701,
+        185.0925530306995,
+        185.43674994725734,
+        186.2322500674054,
+        185.71480305399746
+      ],
+      "median_ms": 185.7399870059453,
+      "observed_ms": 185.7399870059453,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.290664980248,
+      "signed_error_percent": 0.2964778792006184
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0023",
+      "phase": "context",
+      "prefix": 512,
+      "query": 96,
+      "rank_max_ms": [
+        186.10924005042762,
+        186.5491180215031,
+        186.61027192138135,
+        187.0085489936173,
+        186.0755110392347,
+        186.68905599042773,
+        186.08559109270573,
+        186.73644901718944,
+        186.59407901577652,
+        187.347273924388
+      ],
+      "median_ms": 186.60217546857893,
+      "observed_ms": 186.60217546857893,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.59909224340856,
+      "signed_error_percent": -0.0016522986201139567
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0024",
+      "phase": "context",
+      "prefix": 512,
+      "query": 192,
+      "rank_max_ms": [
+        188.14226100221276,
+        188.3700720500201,
+        188.3786809630692,
+        187.90267396252602,
+        188.19448607973754,
+        188.39823303278536,
+        188.37663298472762,
+        188.2239900296554,
+        188.45164205413312,
+        188.27771907672286
+      ],
+      "median_ms": 188.32389556337148,
+      "observed_ms": 188.32389556337148,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 1024,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 188.04472625463288,
+      "signed_error_percent": -0.14823891992222782
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0025",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 48,
+      "rank_max_ms": [
+        185.8337160665542,
+        184.50243305414915,
+        184.00716106407344,
+        183.44702606555074,
+        183.72357403859496,
+        183.76187793910503,
+        183.4510579938069,
+        182.87751299794763,
+        183.5360829718411,
+        183.09645995032042
+      ],
+      "median_ms": 183.62982850521803,
+      "observed_ms": 183.62982850521803,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 96,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.55064923508505,
+      "signed_error_percent": 1.5906025473328977
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0026",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 96,
+      "rank_max_ms": [
+        183.1717260647565,
+        183.0764280166477,
+        183.23790305294096,
+        182.95706692151725,
+        183.4270569961518,
+        185.59444905258715,
+        188.23311000596732,
+        185.7606910634786,
+        185.93813304323703,
+        184.54672198276967
+      ],
+      "median_ms": 183.98688948946074,
+      "observed_ms": 183.98688948946074,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 192,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 186.7505252495742,
+      "signed_error_percent": 1.5020829841638106
+    },
+    {
+      "batch_size": 2,
+      "case_id": "prefill-0027",
+      "phase": "context",
+      "prefix": 1536,
+      "query": 192,
+      "rank_max_ms": [
+        188.80857503972948,
+        188.84806300047785,
+        186.50406098458916,
+        187.0310769882053,
+        186.4124130224809,
+        186.42991594970226,
+        186.43500504549593,
+        187.5528129749,
+        186.62873504217714,
+        186.80761801078916
+      ],
+      "median_ms": 186.71817652648315,
+      "observed_ms": 186.71817652648315,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 2,
+          "sum_prefill_tokens": 384,
+          "sum_prefill_kv_tokens": 3072,
+          "num_decode_requests": 0,
+          "sum_decode_kv_tokens": 0,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 0,
+        "native_decode_kv_sum": 0,
+        "canonical_past_kv_sum": 0,
+        "prediction_decode_kv_sum": 0,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 188.2985520571356,
+      "signed_error_percent": 0.8463961891938654
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 96,
+      "case_id": "decode-0000",
+      "native_inclusive_kv": 97,
+      "phase": "generation",
+      "prefix": 96,
+      "query": 1,
+      "rank_max_ms": [
+        158.9906089939177,
+        156.3535799505189,
+        155.59971297625452,
+        157.33205806463957,
+        156.76996903494,
+        157.64105401467532,
+        169.188771978952,
+        158.31456799060106,
+        163.39246497955173,
+        158.10848399996758
+      ],
+      "median_ms": 157.87476900732145,
+      "observed_ms": 157.87476900732145,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 97,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 97,
+        "canonical_past_kv_sum": 96,
+        "prediction_decode_kv_sum": 97,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 134.56353156088613,
+      "signed_error_percent": -14.76565102391647
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 192,
+      "case_id": "decode-0001",
+      "native_inclusive_kv": 193,
+      "phase": "generation",
+      "prefix": 192,
+      "query": 1,
+      "rank_max_ms": [
+        156.95758804213256,
+        155.91235703323036,
+        154.70238798297942,
+        155.59907304123044,
+        155.7022740598768,
+        155.46547097619623,
+        155.37794900592417,
+        154.84469395596534,
+        156.1244879849255,
+        155.11359390802681
+      ],
+      "median_ms": 155.53227200871333,
+      "observed_ms": 155.53227200871333,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 193,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 193,
+        "canonical_past_kv_sum": 192,
+        "prediction_decode_kv_sum": 193,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 135.08845611452907,
+      "signed_error_percent": -13.144420530961543
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 384,
+      "case_id": "decode-0002",
+      "native_inclusive_kv": 385,
+      "phase": "generation",
+      "prefix": 384,
+      "query": 1,
+      "rank_max_ms": [
+        155.9910780051723,
+        155.51081602461636,
+        155.44326300732791,
+        154.9244070192799,
+        156.02538303937763,
+        155.83741199225187,
+        155.8947879821062,
+        156.3068910036236,
+        155.9053169330582,
+        156.33639495354146
+      ],
+      "median_ms": 155.9000524575822,
+      "observed_ms": 155.9000524575822,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 385,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 385,
+        "canonical_past_kv_sum": 384,
+        "prediction_decode_kv_sum": 385,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 134.66958507786438,
+      "signed_error_percent": -13.617998868534231
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 768,
+      "case_id": "decode-0003",
+      "native_inclusive_kv": 769,
+      "phase": "generation",
+      "prefix": 768,
+      "query": 1,
+      "rank_max_ms": [
+        155.4317739792168,
+        155.39238194469362,
+        155.90115706436336,
+        155.43724596500397,
+        155.44956701342016,
+        154.96808697935194,
+        154.48705607559532,
+        155.04434506874532,
+        155.88541293982416,
+        154.3146069161594
+      ],
+      "median_ms": 155.41207796195522,
+      "observed_ms": 155.41207796195522,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 769,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 769,
+        "canonical_past_kv_sum": 768,
+        "prediction_decode_kv_sum": 769,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 134.83806559334442,
+      "signed_error_percent": -13.238361289813849
+    },
+    {
+      "batch_size": 1,
+      "canonical_past_kv": 1792,
+      "case_id": "decode-0004",
+      "native_inclusive_kv": 1793,
+      "phase": "generation",
+      "prefix": 1792,
+      "query": 1,
+      "rank_max_ms": [
+        154.95429502334446,
+        154.67749198433012,
+        155.01516009680927,
+        154.27966101560742,
+        154.53131403774023,
+        155.29461996629834,
+        156.66644799057394,
+        155.26908391620964,
+        158.1307250307873,
+        155.6992660043761
+      ],
+      "median_ms": 155.14212200650945,
+      "observed_ms": 155.14212200650945,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 1,
+          "sum_decode_kv_tokens": 1793,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 1,
+        "native_decode_kv_sum": 1793,
+        "canonical_past_kv_sum": 1792,
+        "prediction_decode_kv_sum": 1793,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 134.93702462206528,
+      "signed_error_percent": -13.023605145478424
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 96,
+      "case_id": "decode-0005",
+      "native_inclusive_kv": 97,
+      "phase": "generation",
+      "prefix": 96,
+      "query": 1,
+      "rank_max_ms": [
+        160.66954599227756,
+        159.8042210098356,
+        159.25163705833256,
+        159.37368595041335,
+        158.92708802130073,
+        160.20678693894297,
+        159.32699898257852,
+        158.9191519888118,
+        159.0137779712677,
+        159.66703498270363
+      ],
+      "median_ms": 159.35034246649593,
+      "observed_ms": 159.35034246649593,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 194,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 194,
+        "canonical_past_kv_sum": 192,
+        "prediction_decode_kv_sum": 194,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 138.8411000944471,
+      "signed_error_percent": -12.870535484641943
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 192,
+      "case_id": "decode-0006",
+      "native_inclusive_kv": 193,
+      "phase": "generation",
+      "prefix": 192,
+      "query": 1,
+      "rank_max_ms": [
+        159.23144505359232,
+        161.19188896846026,
+        160.29565292410553,
+        159.23637303058058,
+        159.4019749900326,
+        159.60508305579424,
+        158.9659049641341,
+        158.8077590567991,
+        159.24642095342278,
+        170.82940402906388
+      ],
+      "median_ms": 159.3241979717277,
+      "observed_ms": 159.3241979717277,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 386,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 386,
+        "canonical_past_kv_sum": 384,
+        "prediction_decode_kv_sum": 386,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 139.30182552110608,
+      "signed_error_percent": -12.567063073604556
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 384,
+      "case_id": "decode-0007",
+      "native_inclusive_kv": 385,
+      "phase": "generation",
+      "prefix": 384,
+      "query": 1,
+      "rank_max_ms": [
+        157.87936199922115,
+        157.76252804789692,
+        157.3019128991291,
+        157.73462399374694,
+        158.12442090827972,
+        157.8708819579333,
+        157.73785498458892,
+        158.11056504026055,
+        158.02448301110417,
+        157.53465297166258
+      ],
+      "median_ms": 157.8167050029151,
+      "observed_ms": 157.8167050029151,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 770,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 770,
+        "canonical_past_kv_sum": 768,
+        "prediction_decode_kv_sum": 770,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 139.49834161582072,
+      "signed_error_percent": -11.607366524827667
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 768,
+      "case_id": "decode-0008",
+      "native_inclusive_kv": 769,
+      "phase": "generation",
+      "prefix": 768,
+      "query": 1,
+      "rank_max_ms": [
+        157.42741897702217,
+        157.17810299247503,
+        157.77564805466682,
+        157.57862094324082,
+        157.59993402753025,
+        157.33618510421365,
+        157.24872902501374,
+        156.90920304041356,
+        157.86467399448156,
+        156.99554095044732
+      ],
+      "median_ms": 157.3818020406179,
+      "observed_ms": 157.3818020406179,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 1538,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 1538,
+        "canonical_past_kv_sum": 1536,
+        "prediction_decode_kv_sum": 1538,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 139.44869440379222,
+      "signed_error_percent": -11.394651353780683
+    },
+    {
+      "batch_size": 2,
+      "canonical_past_kv": 1792,
+      "case_id": "decode-0009",
+      "native_inclusive_kv": 1793,
+      "phase": "generation",
+      "prefix": 1792,
+      "query": 1,
+      "rank_max_ms": [
+        157.5327969621867,
+        158.13574905041605,
+        157.07989409565926,
+        157.388826017268,
+        157.38258603960276,
+        157.05755806993693,
+        157.29532099794596,
+        158.88619201723486,
+        157.78150397818536,
+        158.12253300100565
+      ],
+      "median_ms": 157.46081148972735,
+      "observed_ms": 157.46081148972735,
+      "prediction_input": {
+        "version": 1,
+        "scheduled_requests": {
+          "num_prefill_requests": 0,
+          "sum_prefill_tokens": 0,
+          "sum_prefill_kv_tokens": 0,
+          "num_decode_requests": 2,
+          "sum_decode_kv_tokens": 3586,
+          "var_prefill_length": 0.0,
+          "var_decode_kv_tokens": 0.0
+        }
+      },
+      "axis_bridge": {
+        "producer_semantics": "sglang_inclusive_query",
+        "target_axis": "op_level_inclusive_query",
+        "decode_requests": 2,
+        "native_decode_kv_sum": 3586,
+        "canonical_past_kv_sum": 3584,
+        "prediction_decode_kv_sum": 3586,
+        "delta": 0
+      },
+      "status": "predicted",
+      "predicted_ms": 139.3128861743458,
+      "signed_error_percent": -11.525359956985548
+    }
+  ]
+}
