@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # AgentX DSv4 rerun after the fixed-workload FPM sweep
 
-Job `4227233` targets one eight-GPU B300 NVL8 node. The completed
+Retry job `4228907` targets one eight-GPU B300 NVL8 node. The completed
 [fixed8K/1K experiment](../../sglang-fpm-fixed-8k1k/README.md) used `umb-b300-dp-142`. The fixed sweep
 showed small throughput gaps; this rerun checks whether AgentX reproduces its
 prior gap and whether request context/cache distributions explain it.
@@ -32,7 +32,7 @@ change the engine or the authored trace. Startup wait is bounded at3600s.
 Files are staged at `/home/scratch.hongkuanz_gpu/agentx-dsv4-rerun-20260910/` with
 the pinned thinking template/license and existing image-squashfs checksum.
 `submit.sh` requests one exclusive8B300node for at most2.5hours. Raw results:
-`/home/scratch.hongkuanz_gpu/agentx-dsv4-rerun-results/job-4227233/`.
+`/home/scratch.hongkuanz_gpu/agentx-dsv4-rerun-results/job-4228907/`.
 
 After both runs, inspect final client validity/errors/cancellations and FPM
 integrity, then compare matched source-request keys and distributions of total
@@ -69,3 +69,17 @@ requests. Across all successful measured requests, average uncached input was
 an observed workload difference. Matched-source context/cache strata are preserved
 in [original4209414 request analysis](original-4209414-request-analysis.json).
 This is observational evidence, not a causal attribution of the gap to cache hits.
+
+## NVLink failure and retry
+
+Attempt4227233 on `umb-b300-dp-148` failed during the first warmup prefill,
+with `uncorrectable NVLink error detected during the execution` from DSv4's
+`main_norm_rope.cuh:430` on all eight scheduler ranks. HTTP/metrics processes
+remained alive while the GPU schedulers exited, leaving all34 warmup requests
+waiting. No measured phase started; this is not an FPM performance result.
+
+The primary task saved the server tracebacks and an NVIDIA status dump, cancelled
+that allocation, and submitted retry4228907 with node148 excluded. The launcher
+now detects scheduler exceptions incrementally in server logs and fails promptly
+rather than relying only on the surviving HTTP parent. Model/image/workload
+settings remain the same. Failed-attempt evidence stays in the job4227233 root.

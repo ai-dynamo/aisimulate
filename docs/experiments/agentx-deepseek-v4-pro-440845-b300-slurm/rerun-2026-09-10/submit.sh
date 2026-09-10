@@ -5,6 +5,7 @@
 #SBATCH --qos=batch-short
 #SBATCH --partition=b300@ts4/b300-nvl8@ts3/8gpu-224cpu-2048gb,b300@ts5/b300-nvl8@ts5/8gpu-224cpu-2048gb,b300@ts8/b300-nvl8@cr+mp/8gpu-224cpu-2048gb,b300@qs1/b300-nvl8@cr+mp/8gpu-224cpu-2048gb,b300@ts7/b300-nvl8@ts7/8gpu-224cpu-2048gb
 #SBATCH --nodes=1
+#SBATCH --exclude=umb-b300-dp-148
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=112
 #SBATCH --exclusive

@@ -112,7 +112,19 @@ def run_case(case, env):
         p = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT, env=env, start_new_session=True)
         processes[name] = p
         return p
+    server_log_offset = 0
+    server_log_tail = ''
     def health():
+        nonlocal server_log_offset, server_log_tail
+        log_path = out / 'server.log'
+        if log_path.exists():
+            with log_path.open(errors='replace') as stream:
+                stream.seek(server_log_offset)
+                new_text = server_log_tail + stream.read()
+                server_log_offset = stream.tell()
+            server_log_tail = new_text[-128:]
+            if 'Scheduler hit an exception:' in new_text:
+                raise RuntimeError(f'{case}: scheduler exception; see server.log')
         for name, p in processes.items():
             if name != 'client' and p.poll() is not None:
                 raise RuntimeError(f'{case}: {name} exited {p.returncode}; see {out}')
