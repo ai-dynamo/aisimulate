@@ -1825,9 +1825,7 @@ class BaseBackend:
                 ``max_num_tokens`` budget that already caps total per-forward tokens
                 (draft tokens included), so re-multiplying would double-count.
         """
-        weights = 0.0
-        for op in model.context_ops:
-            weights += op.get_weights()
+        weights = model.get_resident_weights_bytes()
         # count weights on a single GPU
         weights /= model.config.pp_size
 

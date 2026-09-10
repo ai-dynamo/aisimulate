@@ -136,6 +136,14 @@ class BaseModel:
     def activation_hidden_size(self) -> int:
         return self._num_heads * self._head_size
 
+    def get_resident_weights_bytes(self) -> float:
+        """Resident per-TP/EP-rank weights, before the backend's PP division.
+
+        Models with phase-dependent execution can override this inventory;
+        skipping token work must never remove resident decoder weights.
+        """
+        return float(sum(op.get_weights() for op in self.context_ops))
+
     # ------------------------------------------------------------------
     # Context parallelism (CP) declaration + comm factory (1145-style).
     # GLM-5 DSA does NOT use these -- it handles CP inside ContextDSAModule.

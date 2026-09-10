@@ -124,6 +124,8 @@ class ModelConfig:
     # Internal system identity used by phase/quantization-specific communication
     # dtype selection.  It travels with ModelConfig through sweep replacements.
     system: str | None = None
+    # DeepSeek-V4.1 text AR: use the backend-verified bounded decoder replay profile.
+    decoder_replay: bool = False
 
     def __post_init__(self) -> None:
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
