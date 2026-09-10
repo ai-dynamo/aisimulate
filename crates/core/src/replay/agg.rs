@@ -30,6 +30,7 @@ use super::{
     },
     state::AggRequestState,
 };
+use crate::engine::{Command, CommandResult};
 use crate::replay::engine::ReplayRoleFactory;
 use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::protocol::{DirectRequest, ForwardPassSnapshot, OutputSignal};
@@ -83,6 +84,21 @@ where
     /// Whether to retain the latest FPM snapshot per worker/rank. Only the planner
     /// consumes them, so the plain `run()` path leaves this `false`.
     collect_fpm: bool,
+    /// Output tokens observed since the last steppable step, in emission order.
+    /// Only the steppable seam drains this; `run()` leaves it empty.
+    step_tokens: Vec<(Uuid, u32)>,
+    step_terminals: Vec<(Uuid, ReplayTerminalStatus)>,
+    /// Whether a terminal settled during the current steppable step, freeing an
+    /// in-flight slot. `step_tokens` alone cannot carry this fact: a terminal
+    /// signal may carry no token — an admission rejection, or a terminal whose
+    /// last token was emitted by an earlier signal — and the caller must still
+    /// get that instant back to submit a replacement before time advances.
+    step_freed_slot: bool,
+    /// Whether the steppable seam's evaluate/commit delta cycle is in use.
+    defer_drive: bool,
+    /// Set between the halves of that delta cycle: the next step commits the
+    /// admissions and worker drives the previous step deferred.
+    drive_pending: bool,
 }
 
 impl<PlacementPolicyImpl, Observation, Metadata>
@@ -140,6 +156,11 @@ where
             scaling_policy: None,
             telemetry: None,
             collect_fpm: false,
+            step_tokens: Vec::new(),
+            step_terminals: Vec::new(),
+            step_freed_slot: false,
+            defer_drive: false,
+            drive_pending: false,
         })
     }
 
@@ -207,7 +228,7 @@ where
     }
 
     /// Count all requests currently consuming cluster capacity, including router-queued ones.
-    fn cluster_in_flight(&self) -> usize {
+    pub(crate) fn cluster_in_flight(&self) -> usize {
         self.engine.in_flight() + self.placement.pending_count()
     }
 
@@ -281,7 +302,7 @@ where
                 .ok_or_else(|| {
                     anyhow::anyhow!("offline replay missing queued request state for {uuid}")
                 })?
-                .take_queued_request(uuid)?;
+                .take_queued_request(uuid, placement.scheduler_id)?;
             self.dispatch_to_worker(request, uuid, placement.scheduler_id)?;
         }
         Ok(())
@@ -343,7 +364,11 @@ where
                 );
                 self.requests.insert(
                     uuid,
-                    AggRequestState::new_running(input_length, output_length),
+                    AggRequestState::new_running(
+                        input_length,
+                        output_length,
+                        placement.scheduler_id,
+                    ),
                 );
                 self.dispatch_to_worker(
                     request.into_direct_request(),
@@ -375,8 +400,9 @@ where
     /// Return true once the request workload is complete, even if `WorkerReady`
     /// or control-tick events remain in the queue. Lingering startup events for
     /// workers that will never receive requests should not block completion.
-    fn is_workload_done(&self) -> bool {
-        self.cluster_in_flight() == 0
+    pub(crate) fn is_workload_done(&self) -> bool {
+        !self.drive_pending
+            && self.cluster_in_flight() == 0
             && CoreAdmissionSource::is_drained(&self.admission)
             && self.engine.is_drained()
             && self.only_idle_events_remain()
@@ -400,6 +426,16 @@ where
     /// timestamp that can advance replay semantics. Independently modeled
     /// engine work, such as host transfers, is semantic for both views.
     fn next_timestamps(&mut self) -> (Option<f64>, Option<f64>) {
+        // A step that freed an in-flight slot holds the instant so an
+        // external caller can interleave a same-`now_ms` submission before
+        // the freed worker commits to its next pass (the delta-cycle
+        // invariant documented on `step_dynamic_until`). When the caller has
+        // nothing to submit, this deadline is what tells it to call the
+        // stepper again at the same instant rather than treating a stale
+        // "no next event" reading as the end of the run.
+        if self.drive_pending {
+            return (Some(self.now_ms), Some(self.now_ms));
+        }
         let next_arrival_ms = CoreAdmissionSource::next_ready_time_ms(&mut self.admission);
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
@@ -444,6 +480,9 @@ where
         if let Some(token_id) = signal.token_id {
             CoreAdmissionSource::on_output_token(&mut self.admission, signal.uuid, token_id)?;
             self.collector.on_token(signal.uuid, self.now_ms);
+            if self.defer_drive {
+                self.step_tokens.push((signal.uuid, token_id));
+            }
         }
         if signal.completed {
             let status = if signal.rejected {
@@ -452,6 +491,10 @@ where
                 ReplayTerminalStatus::Completed
             };
             self.collector.on_terminal(signal.uuid, self.now_ms, status);
+            if self.defer_drive {
+                self.step_freed_slot = true;
+                self.step_terminals.push((signal.uuid, status));
+            }
             let placements = self.placement.request_terminal(signal.uuid, self.now_ms)?;
             let removed_state = self.requests.remove(&signal.uuid).ok_or_else(|| {
                 anyhow::anyhow!("offline replay missing request state for {}", signal.uuid)
@@ -1042,7 +1085,7 @@ where
     /// active + starting-up + draining workers, so this captures the startup
     /// ramp and the scale-down drain tail. Aggregated replay has no separate
     /// prefill pool, so it reports through the decode role (prefill = 0).
-    fn advance_now_ms(&mut self, new_now_ms: f64) {
+    pub(crate) fn advance_now_ms(&mut self, new_now_ms: f64) {
         let dt_ms = (new_now_ms - self.now_ms).max(0.0);
         if dt_ms > 0.0 {
             let decode_worker_seconds = self.engine.worker_count() as f64 * dt_ms / 1000.0;
@@ -1522,5 +1565,221 @@ mod host_offload_tests {
         assert_eq!(released.decode_worker_idx, Some(1));
         assert_eq!(released.first_admit_ms, Some(5.0));
         assert_eq!(released.terminal_status, ReplayTerminalStatus::Completed);
+    }
+}
+
+impl<PlacementPolicyImpl, Observation, Metadata>
+    AggRuntimeImpl<PlacementPolicyImpl, Observation, Metadata>
+where
+    Observation: ReplayEngineObservation,
+    Metadata: ReplayAdmissionMetadata,
+    PlacementPolicyImpl: PlacementPolicy<ReplayRequestPayload, Metadata = Metadata, Observation = Observation::Batch>,
+{
+    /// Put this runtime under external control: the caller owns the clock and
+    /// the loop, and the drain splits into an evaluate half and a commit half
+    /// (see [`Self::step_dynamic_until`]).
+    pub(crate) fn into_steppable(mut self) -> Self {
+        self.defer_drive = true;
+        self
+    }
+
+    /// Current simulated time in milliseconds.
+    pub(crate) fn now_ms(&self) -> f64 {
+        self.now_ms
+    }
+
+    /// Pick the next canonical logical timestamp (excluding pure-telemetry
+    /// ticks), for the external steppable driver.
+    pub(crate) fn next_timestamp(&mut self) -> Option<f64> {
+        self.next_timestamps().1
+    }
+
+    /// Shared read access to the accumulating measurements.
+    pub(crate) fn collector(&self) -> &TraceCollector {
+        &self.collector
+    }
+
+    /// Mutable access for the steppable seam's capture and SLA configuration.
+    pub(crate) fn collector_mut(&mut self) -> &mut TraceCollector {
+        &mut self.collector
+    }
+
+    /// Drain the output tokens observed since the previous call.
+    pub(crate) fn take_step_tokens(&mut self) -> Vec<(Uuid, u32)> {
+        std::mem::take(&mut self.step_tokens)
+    }
+
+    pub(crate) fn take_step_terminals(&mut self) -> Vec<(Uuid, ReplayTerminalStatus)> {
+        std::mem::take(&mut self.step_terminals)
+    }
+
+    /// Admit `request` at the current simulated time. The returned id
+    /// correlates the request with later measurements.
+    pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+        let arrival_time_ms = self.now_ms;
+        self.assign_request(
+            ReplayRequestPayload::materialized(request),
+            arrival_time_ms,
+            Metadata::from_hashes(None),
+            None,
+        )
+    }
+
+    /// Cancel a dynamically admitted request and return its terminal status
+    /// when it was still owned by this replay.
+    pub(crate) fn cancel_dynamic(
+        &mut self,
+        uuid: Uuid,
+    ) -> anyhow::Result<Option<ReplayTerminalStatus>> {
+        let Some((phase, scheduler_id)) = self
+            .requests
+            .get(&uuid)
+            .map(|state| (state.phase, state.scheduler_id()))
+        else {
+            return Ok(None);
+        };
+
+        match phase {
+            super::state::AggRequestPhase::QueuedAtRouter => {
+                if !self.placement.cancel_pending(uuid) {
+                    bail!("offline replay queued request {uuid} was absent from its router");
+                }
+            }
+            super::state::AggRequestPhase::Running => {
+                let scheduler_id = scheduler_id.ok_or_else(|| {
+                    anyhow::anyhow!("offline replay running request {uuid} has no scheduler")
+                })?;
+                let effects = self.engine.apply_command(
+                    scheduler_id,
+                    Command::CancelRequest {
+                        request_id: uuid,
+                        discard_pending_output: true,
+                    },
+                    self.now_ms,
+                )?;
+                if !matches!(effects.result, CommandResult::Applied | CommandResult::Noop) {
+                    bail!(
+                        "offline replay cancellation for {uuid} returned an unexpected scheduler result"
+                    );
+                }
+                self.apply_engine_observations(
+                    effects.engine_events,
+                    KvIngestBoundary::SchedulerCommand,
+                )?;
+            }
+        }
+
+        self.collector
+            .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
+        self.requests.remove(&uuid).ok_or_else(|| {
+            anyhow::anyhow!("offline replay lost request state while canceling {uuid}")
+        })?;
+        CoreAdmissionSource::on_terminal(
+            &mut self.admission,
+            uuid,
+            self.now_ms,
+            ReplayTerminalStatus::Canceled,
+        )?;
+        self.progress.inc_completed();
+        self.step_freed_slot = true;
+        let placements = self.placement.request_terminal(uuid, self.now_ms)?;
+        self.dispatch_placements(placements)?;
+        Ok(Some(ReplayTerminalStatus::Canceled))
+    }
+
+    /// Completion-only slice of [`Self::drain_current_timestamp`]: settle every
+    /// worker completion ready at the current instant without admitting
+    /// arrivals or starting new passes.
+    fn drain_completions(&mut self) -> anyhow::Result<()> {
+        while self.apply_worker_completions()? {}
+        Ok(())
+    }
+
+    /// Evaluate half of the delta cycle. Settle completions first; if one freed
+    /// an in-flight slot, arm the commit half and return `true` so the caller
+    /// sees the terminal and can submit a replacement at this same instant,
+    /// before the freed worker is committed to its next pass. That reproduces
+    /// `run()`'s in-drain admission, where `release_ready_arrivals` runs inside
+    /// the same drain. Otherwise complete the full drain here.
+    fn evaluate_completions_and_maybe_defer(&mut self) -> anyhow::Result<bool> {
+        let before_in_flight = self.cluster_in_flight();
+        self.drain_completions()?;
+        if self.cluster_in_flight() < before_in_flight {
+            self.drive_pending = true;
+            return Ok(true);
+        }
+        self.drain_current_timestamp()?;
+        Ok(false)
+    }
+
+    /// Advance at most through `until_ms`, returning the simulated time the
+    /// step ended at. A non-finite `until_ms` runs to the next event whenever
+    /// one exists.
+    ///
+    /// # Delta-cycle invariant
+    ///
+    /// Every decrease of [`Self::cluster_in_flight`] within a step sets
+    /// `step_freed_slot`, and a set `step_freed_slot` forbids time advance.
+    /// The caller's step loop is therefore the outer delta loop: this function
+    /// unrolls the fixpoint exactly once per call, and the caller supplies the
+    /// remaining rounds. A cascade at a single instant — an admission whose
+    /// pass is rejected inline, freeing another slot at the same `now_ms` —
+    /// cannot diverge for that reason: it holds the instant like any other
+    /// terminal, and the next call resumes at the same `now_ms`.
+    ///
+    /// The `debug_assert!` below is the belt. `step_freed_slot` is set at the
+    /// terminal rather than at the accounting, so a future decrement path that
+    /// bypasses the terminal would break the invariant silently instead of
+    /// failing a test.
+    pub(crate) fn step_dynamic_until(&mut self, until_ms: f64) -> anyhow::Result<f64> {
+        if until_ms.is_nan() || until_ms < self.now_ms {
+            bail!(
+                "aggregated step deadline {until_ms}ms precedes runtime time {}ms",
+                self.now_ms
+            );
+        }
+        self.step_freed_slot = false;
+        let entry_in_flight = self.cluster_in_flight();
+        if self.drive_pending {
+            self.drive_pending = false;
+            self.drain_current_timestamp()?;
+        } else if self.evaluate_completions_and_maybe_defer()? {
+            return Ok(self.now_ms);
+        }
+
+        // Hold the instant whenever this step surfaced anything the caller must
+        // react to. A freed slot counts even when it produced no token: the
+        // delta cycle's guarantee is that a step which frees a slot returns
+        // before the freed worker is committed to its next pass.
+        if self.step_tokens.is_empty()
+            && !self.step_freed_slot
+            && let Some(next_ms) = self.next_timestamp()
+        {
+            debug_assert!(
+                self.cluster_in_flight() >= entry_in_flight,
+                "in-flight fell from {entry_in_flight} to {} without setting \
+                 step_freed_slot; a step that frees a slot must hold its instant",
+                self.cluster_in_flight()
+            );
+            if next_ms <= until_ms {
+                self.advance_now_ms(next_ms);
+                if self.evaluate_completions_and_maybe_defer()? {
+                    return Ok(self.now_ms);
+                }
+            } else if until_ms.is_finite() {
+                self.advance_now_ms(until_ms);
+            }
+        }
+        Ok(self.now_ms)
+    }
+
+    /// Drain the accumulated measurements into a report stamped with `wall_ms`,
+    /// leaving this runtime's collector empty.
+    pub(crate) fn take_report_dynamic(&mut self, wall_ms: f64) -> crate::replay::ReplayReport {
+        self.collector
+            .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
+        std::mem::take(&mut self.collector)
+            .finish()
+            .with_wall_time_ms(wall_ms)
     }
 }

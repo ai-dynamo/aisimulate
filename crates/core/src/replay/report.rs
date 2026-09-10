@@ -1339,6 +1339,17 @@ impl TraceCollector {
             .map(TraceRequestStats::actual_output_length)
     }
 
+    /// Terminal classification for `uuid` once it has reached one, else `None`.
+    ///
+    /// First scheduler admission `(at_ms, reused_input_tokens)` for `uuid`.
+    pub(crate) fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> {
+        let stats = self.requests.get(&uuid)?;
+        Some((
+            stats.first_admit_ms?,
+            stats.first_admission_reused_input_tokens,
+        ))
+    }
+
     pub fn finish(mut self) -> ReplayReport {
         let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {
