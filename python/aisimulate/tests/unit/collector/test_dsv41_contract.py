@@ -123,3 +123,36 @@ def test_writer_to_native_silicon_query_roundtrip(tmp_path):
     result = _evaluate_single_op(database, operation, is_context=False, batch_size=1, s=129, x=1)
     assert float(result) == pytest.approx(0.125)
     assert result.source == "silicon"
+
+
+def test_baseline_rank_admission_converts_nccl_bytes_to_elements(tmp_path):
+    from collector.sglang.collect_dsv41_module import aggregate_baseline_records
+
+    paths = []
+    for rank in range(2):
+        path = tmp_path / f"baseline-rank-{rank}.jsonl"
+        point = {
+            "kind": "nccl",
+            "nccl_dtype": "half",
+            "num_gpus": 2,
+            "op_name": "all_reduce",
+            "message_size": 10240,
+            "latency": rank + 1.0,
+            "sample": 2,
+            "tp_rank": rank,
+            "source_sha256": "a" * 64,
+            "config_sha256": "b" * 64,
+            "runtime_digest": "sha256:" + "c" * 64,
+            "used_cuda_graph": False,
+            "kernel_source": "torch.distributed.nccl.all_reduce",
+            "execution_profile": "decoder_bounded",
+        }
+        path.write_text(json.dumps(point) + "\n")
+        paths.append(path)
+    result = aggregate_baseline_records(paths, 2)["nccl"][0]
+    assert result["message_size"] == 5120
+    assert result["wire_dtype"] == "bfloat16"
+    assert result["latency"] == 2.0
+    paths[0].write_text(paths[0].read_text() * 2)
+    with pytest.raises(ValueError, match="duplicate baseline rank/sample"):
+        aggregate_baseline_records(paths, 2)

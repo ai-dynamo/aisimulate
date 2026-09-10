@@ -150,6 +150,13 @@ def aggregate_baseline_records(paths: list[Path], tp_size: int) -> dict[str, lis
             if sum(next(iter(histograms))) != rows[0]["num_tokens"] * rows[0]["topk"]:
                 raise ValueError("baseline routing does not cover every token slot")
         measured = {c: rows[0][c] for c in columns[key[0]]}
+        if key[0] == "nccl":
+            # Native raw evidence records physical bytes. NcclOp and the
+            # existing nccl-tests collector key their table by ELEMENTS.
+            if measured["message_size"] % 2:
+                raise ValueError("16-bit NCCL payload must contain whole elements")
+            measured["message_size"] //= 2
+            measured["wire_dtype"] = "bfloat16"
         measured.update(
             latency=statistics.median(max(s.values()) for s in samples.values()),
             kernel_source=rows[0]["kernel_source"],
