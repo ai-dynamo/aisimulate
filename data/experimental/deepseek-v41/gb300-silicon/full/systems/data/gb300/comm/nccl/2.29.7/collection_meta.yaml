@@ -1,0 +1,15 @@
+schema_version: 1
+runtime:
+  framework: nccl
+  version: 2.29.7
+  image: lmsysorg/sglang
+  image_digest: sha256:800cc9adea5be1e18f48185451220c4bc487c545b7095c720d2ccc9ba9bb3b5d
+tables:
+  nccl_perf:
+    collector_ref: fb9d31f179347a43c347da55ec2ed90ba153521a
+    collector_hash: sha256:4888e233bad48a87632c7f3f1ccb59cdf008ad5dcda57a2e5e97441a54908f49
+    case_plan_hash: sha256:a0b4fa498e331644bc33084041918f3bac92ccdc59686e6f6522469fc56df86c
+    collected_at: '2026-09-10'
+    rows: 18
+    status: complete
+    data_sha256: 2c1e8e1987aeb40a83f0f529091ad11d3ef3583ec722e643e42151fa2f3dc9d9

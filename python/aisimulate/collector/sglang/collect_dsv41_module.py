@@ -25,10 +25,15 @@ def get_dsv41_module_test_cases() -> list[dict]:
     sweep = get_base_common_case_values("dsv41_module")
     if not sweep:
         raise ValueError("missing V4.1 workload sweep")
+    selected_profile = os.environ.get("DSV41_EXECUTION_PROFILE")
+    if selected_profile not in (None, "full", "decoder_bounded"):
+        raise ValueError("DSV41_EXECUTION_PROFILE must be full or decoder_bounded")
     cases = []
     for value in values:
         for tp in value["tensor_parallel_sizes"]:
             for profile in value["execution_profiles"]:
+                if selected_profile is not None and selected_profile != profile:
+                    continue
                 cases.append(
                     {
                         "id": f"dsv41_{profile}_tp{tp}_{value['model_path'].replace('/', '_')}",
@@ -166,6 +171,16 @@ def aggregate_baseline_records(paths: list[Path], tp_size: int) -> dict[str, lis
     return dict(result)
 
 
+def bind_output_profile(perf_filename: str, execution_profile: str) -> None:
+    """Called under the GPU/output lock; never mix profiles in one table."""
+    destination = Path(perf_filename)
+    marker = destination.parent / f".{destination.name}.dsv41-profile.json"
+    identity = {"execution_profile": execution_profile}
+    if marker.exists() and json.loads(marker.read_text()) != identity:
+        raise ValueError("V4.1 profiles require separate output tables; select DSV41_EXECUTION_PROFILE")
+    marker.write_text(json.dumps(identity))
+
+
 def run_dsv41_module_worker(
     model_path: str, tp_size: int, execution_profile: str, sweep: dict, *, perf_filename: str, device: str = "cuda:0"
 ) -> None:
@@ -223,6 +238,7 @@ def run_dsv41_module_worker(
     # owns the visible GPU group, so serialize these grouped workers locally.
     with (Path(perf_filename).parent / ".dsv41-native-gpus.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        bind_output_profile(perf_filename, execution_profile)
         with (output / "native.log").open("w") as log:
             subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT)
     if not (output / "COMPLETE").is_file():

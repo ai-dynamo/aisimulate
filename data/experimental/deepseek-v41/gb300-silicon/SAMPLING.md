@@ -1,0 +1,64 @@
+# Independent sampling assessment
+
+The current 32 profile/workload cells qualify implementation paths. Three
+repetitions estimate within-cell noise; they do not add architectural coverage.
+The 618 module keys and 45 baseline keys are derived operator geometries, not
+independent full-model cases. Prefix 128, which independent serving verification
+uses, is absent from the current `{0,256}` grid and must be reported as missing.
+
+## Common bounded calibration and hold-out domain
+
+For the common GB200/GB300 text domain, fix TP4/EP1, batch 1–2, total new tokens
+per iteration at most 512, per-request KV end at most 2048, and eager execution.
+The proposed explicit point manifest has the following independently checked
+counts **per execution profile**:
+
+| Purpose | Grid and constraint | Points |
+|---|---|---:|
+| Prefill calibration | B `{1,2}`, per-request Q `{1,2,3,4,8,16,32,64,127,128,129,256,512}`, P `{0,128,512,1536}`; `B*Q<=512`, `P+Q<=2048` | 100 |
+| Decode calibration | B `{1,2}`, KV `{2,3,8,32,64,127,128,129,256,512,1024,1536,2048}` | 26 |
+| Prefill hold-out | same B/P, Q `{48,96,192,384}`, same constraints | 28 |
+| Decode hold-out | B `{1,2}`, KV `{96,192,384,768,1792}` | 10 |
+| Total | calibration + disjoint hold-out points | **126 + 38 = 164** |
+
+For SGLang replay OFF and ON this is 252 calibration and 76 held-out forward
+configurations. vLLM's verified full profile needs one set. These counts exclude
+warmup, statistical repetitions, content variants, and actual prefix-building
+forwards. The current prefix-256 samples remain evidence but do not substitute
+for an exact prefix-128/512/1536 bucket.
+
+This is a reasonable bounded first calibration design, not a universal minimum
+or a statistical sufficiency guarantee. Powers-of-two token anchors sample
+launch, GEMM and routing regimes; 1/2/3 distinguish very small launches and
+half-rate odd/even publication; 127/128/129 bracket SWA and bounded replay.
+Prefix 1536 crosses the 512-entry sparse-index selection limit for both full-
+and half-rate owners. Prefix is an exact table dimension, so each claimed
+prefix/batch bucket needs its own attention curve.
+
+Hold-out queries must remain out of the fitted tables. If they fail the
+predeclared error threshold, add calibration points around the observed
+transition and select fresh hold-outs. Determine repeat count from observed
+noise/confidence; additional repetitions do not repair missing shapes. The
+combined validation report specifies the adaptive repetition rule.
+
+## Separate semantic and extended-domain challenges
+
+Use at least two additional tokenized corpora with different repetition/locality
+at four representative cells per profile: 16 further SGLang E2E observations.
+Preserve input hashes and actual expert histograms. One uniform-routing baseline
+cannot establish Engram locality or expert-popularity accuracy.
+
+Test heterogeneous extensions separately, including a short extension on a long
+cached prefix paired with a longer uncached request. Aggregate FPM telemetry
+cannot recover all per-request tail lengths; replay-enabled heterogeneous
+telemetry remains rejected until its contract represents the actual requests.
+Homogeneous substitutes must not be counted as passing those cases.
+
+Prefix 4096 and real-KV decode near 8192/16384/32768 need separately qualified
+runtime capacity. The coarse candidate budget is 2048 blocks × 8 entries;
+frontier tests must straddle its different full-/half-rate context thresholds.
+Neither the bounded common grid nor short-context extrapolation qualifies those
+branches. Larger batches, other parallel layouts, CUDA graphs, DSpark and vision
+also require separate qualification. There is no defensible fixed point count
+for all of these unbounded extensions before their domain and error target are
+specified.

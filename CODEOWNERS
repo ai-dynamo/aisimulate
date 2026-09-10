@@ -44,6 +44,7 @@
 /crates/tests/public-api/                            @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /crates/core/src/perfmodel/                          @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /crates/core/tests/perfmodel/                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners
+/data/experimental/deepseek-v41/                     @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /crates/core/parity_tests/perfmodel/                 @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /python/aisimulate/src/aisimulate/aic.py             @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 

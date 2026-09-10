@@ -215,6 +215,11 @@ class DeepSeekV41Model(BaseModel):
             # The post-expert reduction consumes both routed and shared
             # partials, and therefore follows the optional compute overlap.
             combine = routed.pop()
+            if ep == 1:
+                # The text TP baseline uses an explicit NCCL collective,
+                # consistently with attention/Engram and its measured comm
+                # table. Serving validation disables custom all-reduce.
+                combine = ops.NCCL(f"{phase}_moe_post_dispatch", 1, "all_reduce", h, mtp, common.CommQuantMode.half)
             if context:
                 children.extend(shared + routed)
             else:

@@ -44,7 +44,9 @@ attention `x` is query length in prefill and absolute sequence length in decode;
 all other components use total processed tokens with batch 1 and prefix 0.
 Integer Parquet columns are INT64 constrained to uint32. Latency is float64 ms.
 
-Replay profiles are distinct campaign outputs. The bounded profile executes
+Replay profiles are distinct campaign outputs. Set `DSV41_EXECUTION_PROFILE`
+to `full` or `decoder_bounded` for a collector invocation. A locked output
+marker rejects a second profile targeting the same table. The bounded profile executes
 the native last-min(current-extend,128) tail for each request after layer 20;
 the absolute context remains unchanged. Full and bounded raw observations may
 not be silently combined under duplicate physical keys. The table writer

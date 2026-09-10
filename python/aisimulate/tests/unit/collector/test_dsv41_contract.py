@@ -156,3 +156,41 @@ def test_baseline_rank_admission_converts_nccl_bytes_to_elements(tmp_path):
     paths[0].write_text(paths[0].read_text() * 2)
     with pytest.raises(ValueError, match="duplicate baseline rank/sample"):
         aggregate_baseline_records(paths, 2)
+
+
+def test_checked_in_gb300_tables_support_complete_strict_tp_forward():
+    from aiconfigurator_core.sdk.engine import EngineHandle
+
+    root = Path(__file__).resolve().parents[5] / "data/experimental/deepseek-v41/gb300-silicon"
+    assert root.is_dir()
+    for profile in ("full", "decoder_bounded"):
+        systems = root / profile / "systems"
+        assert not list(systems.rglob("custom_allreduce_perf.parquet"))
+        handle = EngineHandle.compile(
+            "deepseek-ai/DeepSeek-V4.1-Flash",
+            "gb300",
+            "sglang",
+            backend_version="0.0.0.dev0",
+            tp_size=4,
+            moe_tp_size=4,
+            moe_ep_size=1,
+            decoder_replay=profile == "decoder_bounded",
+            systems_path=str(systems),
+            database_mode="SILICON",
+            shared_layer=False,
+            strict_provenance=True,
+        )
+        context, generation = handle.run_static_per_op(batch_size=2, isl=385, prefix=256, osl=2)
+        assert sum(item[1] for item in context) > 0
+        assert sum(item[1] for item in generation) > 0
+        assert any(item[3] == "mixed" for item in context)
+
+
+def test_output_profile_binding_rejects_mixed_campaigns(tmp_path):
+    from collector.sglang.collect_dsv41_module import bind_output_profile
+
+    destination = str(tmp_path / "dsv41_module_perf.txt")
+    bind_output_profile(destination, "full")
+    bind_output_profile(destination, "full")
+    with pytest.raises(ValueError, match="separate output tables"):
+        bind_output_profile(destination, "decoder_bounded")

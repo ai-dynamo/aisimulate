@@ -30,6 +30,7 @@ areas:
       - crates/core/perfmodel/
       - crates/tests/public-api/
       - python/aisimulate/
+      - data/experimental/deepseek-v41/
       - python/aisimulate/src/aisimulate/aic.py
       - tests/test_aic.py
   - label: sweeper
