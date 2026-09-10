@@ -62,3 +62,41 @@ branches. Larger batches, other parallel layouts, CUDA graphs, DSpark and vision
 also require separate qualification. There is no defensible fixed point count
 for all of these unbounded extensions before their domain and error target are
 specified.
+
+## Executable expansion plan and predicted key coverage
+
+`study-plan/calibration-plan.json` freezes all 126 configurations and their
+original native point payload. `collector.sglang.dsv41_workloads` generates
+that plan plus `study-plan/coverage-projection.json`; the latter is a CPU
+projection, not measured data. The native module runner accepts the frozen
+plan through `--workload-plan`. Explicit context cases measure only that
+extension; explicit decode cases seed K-1 real tokens on the same request,
+then measure one decode at exactly K. No held-out timing enters this plan.
+
+With one warmup and three measured repetitions per configuration, each profile
+executes 908 native forwards including the 404 prefix/real-KV setup forwards,
+and records 378 measured forwards. The baseline axis expands from 9 to 16 token
+counts, producing 80 GEMM/MoE/NCCL keys. This is 4.05 times the pilot's 224
+forward calls per profile before accounting for longer contexts, new JIT
+shapes, model load and baseline work. A two-hour sequential GPU reservation is
+a campaign budget, not a measured completion-time estimate; record actual
+startup and per-case elapsed time before scheduling any subsequent repetition.
+Original pilot evidence and tables remain separate.
+
+The projected full-profile table has 836 physical module points and brackets
+all 38 held-out module queries. The bounded-profile table has 830 points;
+28 held-out configurations have complete interpolation domains, while **10
+have missing attention curves**. For extensions beyond 128, current strict
+keys use `effective_prefix = P + Q - 128` and `x = 128`; held-out Q values can
+therefore need a prefix absent from calibration even when the original P
+bucket exists. These are explicit missing strict-SILICON predictions. Any
+Hybrid fallback must retain its SOL source label and is not a measured match.
+
+A future bounded-attention contract could retain original P as the exact
+bucket and original Q as a continuous axis, while computing the same native
+tail scope internally. That requires stage/query metadata and a versioned
+axis identity; existing rows must not be relabeled. It also needs separate
+curves across native kernel regimes, including the 128-token cutoff, first
+compressed publication, sparse selection saturation, and coarse candidate
+limits. CSA role, compression ratio, batch, execution profile and runtime
+provenance remain exact dimensions. This proposal is not implemented here.

@@ -13,8 +13,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import time
 from contextlib import nullcontext
 from pathlib import Path
+
+if __package__:
+    from .dsv41_workloads import baseline_tokens, coordinates, freeze_workloads
+else:
+    from dsv41_workloads import baseline_tokens, coordinates, freeze_workloads
 
 
 def _dispatch(module, method):
@@ -157,19 +163,14 @@ class ComponentRecorder:
         rows = []
         for (component, geometry_json), (latency, sources) in grouped.items():
             geometry = json.loads(geometry_json)
-            q, p = query, prefix
-            if component == "attention" and geometry["is_context"] and geometry["bounded_prefill"]:
-                q = min(query, geometry["window_size"])
-                p += query - q
+            b, p, x = coordinates(component, geometry, self.phase, batch, query, prefix)
             rows.append(
                 {
                     "component": component,
                     "geometry": geometry_json,
-                    "batch_size": batch if component == "attention" else 1,
-                    "prefix": p if component == "attention" and self.phase == "context" else 0,
-                    "x": (q if self.phase == "context" else query + prefix)
-                    if component == "attention"
-                    else batch * query,
+                    "batch_size": b,
+                    "prefix": p,
+                    "x": x,
                     "latency": latency,
                     "kernel_source": "+".join(sorted(sources)),
                     "measurement_scope": "local_compute",
@@ -205,7 +206,11 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
     if getattr(experts, "reduce_results", False):
         raise RuntimeError("native expert kernel unexpectedly owns a collective")
     recorder_path = Path(options.output) / f"baseline-rank-{tp_rank}.jsonl"
-    token_counts = sorted({1, 2, *(b * n for b in options.batches for n in options.lengths)})
+    token_counts = (
+        baseline_tokens(options.workload_plan["cases"])
+        if options.workload_plan is not None
+        else sorted({1, 2, *(b * n for b in options.batches for n in options.lengths)})
+    )
     generator = torch.Generator().manual_seed(20260910)
     with recorder_path.open("w") as stream:
         for tokens in token_counts:
@@ -289,6 +294,36 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                         )
 
 
+def run_workload(runner, recorder, bench, token_ids, case, execute, *, decode_steps=0):
+    """Create real state on one request and measure only its declared forward."""
+    batch_size, query, prefix = case["batch_size"], case["query"], case["prefix"]
+    runner.clear()
+    recorder.active = False
+    recorder.phase = "context"
+    initial = prefix or query
+    reqs = bench.prepare_synthetic_inputs_for_latency_test(
+        batch_size, initial, [token_ids[:initial] for _ in range(batch_size)]
+    )
+    if case["phase"] == "generation":
+        next_ids, _, batch = runner.extend(reqs)
+        execute(lambda: runner.decode(next_ids, batch), "generation", batch_size, 1, prefix, True)
+    else:
+        if prefix:
+            runner.extend(reqs)
+            bench.prepare_extend_inputs_for_correctness_test(
+                argparse.Namespace(cut_len=prefix),
+                [token_ids[: prefix + query] for _ in reqs],
+                reqs,
+                runner.torch_runner,
+            )
+        next_ids, _, batch = execute(lambda: runner.extend(reqs), "context", batch_size, query, prefix, bool(prefix))
+        for step in range(decode_steps):
+            next_ids, _ = execute(
+                lambda: runner.decode(next_ids, batch), "generation", batch_size, 1, prefix + query + step, True
+            )
+    runner.cleanup(batch)
+
+
 def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
     import torch
     import torch.distributed as dist
@@ -352,7 +387,12 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
     }
     text = Path(options.prompt_file).read_text()
     token_ids = tokenizer.encode(text)
-    if len(token_ids) < max(options.lengths) + max(options.prefixes):
+    required_tokens = (
+        max(c["query"] + c["prefix"] for c in options.workload_plan["cases"])
+        if options.workload_plan is not None
+        else max(options.lengths) + max(options.prefixes)
+    )
+    if len(token_ids) < required_tokens:
         raise RuntimeError("tokenized input corpus is too short for requested workloads")
     raw_path = Path(options.output) / f"rank-{tp_rank}.jsonl"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -385,8 +425,11 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
             if recorder.trace
             else None
         )
+        forward_start, forward_end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        forward_start.record()
         with profile if profile is not None else nullcontext():
             result = call()
+        forward_end.record()
         if profile is not None:
             profile.export_chrome_trace(str(raw_path.parent / f"canary-{phase}.trace.json"))
             kernels = sorted(
@@ -398,6 +441,25 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
         if not torch.isfinite(logits).all().item():
             raise RuntimeError("native forward produced nonfinite logits")
         if recorder.active:
+            with (raw_path.parent / f"invocations-rank-{tp_rank}.jsonl").open("a") as out:
+                out.write(
+                    json.dumps(
+                        {
+                            "invocation": invocation,
+                            "sample": sample,
+                            "tp_rank": tp_rank,
+                            "phase": phase,
+                            "batch_size": batch_size,
+                            "query": query,
+                            "prefix": prefix,
+                            "real_kv": real_kv,
+                            "finite_logits": True,
+                            "instrumented_forward_ms": forward_start.elapsed_time(forward_end),
+                            **provenance,
+                        }
+                    )
+                    + "\n"
+                )
             with raw_path.open("a") as out:
                 for row in rows:
                     out.write(
@@ -408,37 +470,46 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
                     )
         return result
 
-    for batch_size in options.batches:
-        for prefix in options.prefixes:
-            for length in options.lengths:
-                for sample in range(options.warmup + options.iterations):
-                    runner.clear()
-                    recorder.active = False
-                    initial = prefix or length
-                    reqs = bench.prepare_synthetic_inputs_for_latency_test(
-                        batch_size, initial, [token_ids[:initial] for _ in range(batch_size)]
-                    )
-                    if prefix:
-                        recorder.phase = "context"
-                        runner.extend(reqs)
-                        temporary = argparse.Namespace(cut_len=prefix)
-                        bench.prepare_extend_inputs_for_correctness_test(
-                            temporary, [token_ids[: prefix + length] for _ in reqs], reqs, runner.torch_runner
-                        )
-                    next_ids, _, batch = execute(
-                        lambda: runner.extend(reqs), "context", batch_size, length, prefix, bool(prefix), sample
-                    )
-                    for step in range(options.decode_steps):
-                        next_ids, _ = execute(
-                            lambda: runner.decode(next_ids, batch),
-                            "generation",
-                            batch_size,
-                            1,
-                            prefix + length + step,
-                            True,
-                            sample,
-                        )
-                    runner.cleanup(batch)
+    if options.workload_plan is not None:
+        cases = options.workload_plan["cases"]
+    else:
+        cases = [
+            {"phase": "context", "batch_size": b, "query": q, "prefix": p}
+            for b in options.batches
+            for p in options.prefixes
+            for q in options.lengths
+        ]
+    for case_index, case in enumerate(cases):
+        for sample in range(options.warmup + options.iterations):
+            started = time.monotonic()
+            progress = {
+                **case,
+                "case_index": case_index,
+                "sample": sample,
+                "tp_rank": tp_rank,
+                "measured": sample >= options.warmup,
+            }
+            try:
+                run_workload(
+                    runner,
+                    recorder,
+                    bench,
+                    token_ids,
+                    case,
+                    lambda call, phase, batch, query, prefix, real_kv: execute(
+                        call, phase, batch, query, prefix, real_kv, sample
+                    ),
+                    decode_steps=options.decode_steps if options.workload_plan is None else 0,
+                )
+            except BaseException as error:
+                progress.update(status="failed", error_type=type(error).__name__, error=str(error))
+                raise
+            else:
+                progress["status"] = "passed"
+            finally:
+                progress["elapsed_seconds"] = time.monotonic() - started
+                with (raw_path.parent / f"workloads-rank-{tp_rank}.jsonl").open("a") as out:
+                    out.write(json.dumps(progress) + "\n")
     if options.collect_baselines:
         recorder.active = False
         collect_native_baselines(runner.torch_runner, options, tp_rank, provenance)
@@ -456,6 +527,9 @@ def main():
     parser.add_argument("--runtime-digest", required=True)
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--workload-plan", help="Frozen explicit module workload plan; replaces the legacy cartesian grid"
+    )
     parser.add_argument("--lengths", type=int, nargs="+", default=[3, 128, 129, 256])
     parser.add_argument("--prefixes", type=int, nargs="+", default=[0, 256])
     parser.add_argument("--batches", type=int, nargs="+", default=[1, 2])
@@ -465,10 +539,24 @@ def main():
     parser.add_argument("--profile-canary", action="store_true")
     parser.add_argument("--collect-baselines", action="store_true")
     options, rest = parser.parse_known_args()
+    if options.warmup < 0 or options.iterations < 1 or options.decode_steps < 0:
+        raise ValueError("warmup/decode steps must be nonnegative and iterations positive")
+    if options.workload_plan is not None:
+        payload = json.loads(Path(options.workload_plan).read_text())
+        if payload != freeze_workloads(payload["source_payload"]):
+            raise ValueError("workload plan differs from its frozen source points")
+        options.workload_plan = payload
     output = Path(options.output)
     output.mkdir(parents=True, exist_ok=True)
-    if (output / "COMPLETE").exists() or list(output.glob("rank-*.jsonl")):
+    owned_files = ("COMPLETE", "source_hashes.json", "input_provenance.json", "workload-plan.json")
+    if (
+        any((output / name).exists() for name in owned_files)
+        or any(output.glob("*-rank-*.jsonl"))
+        or any(output.glob("rank-*.jsonl"))
+    ):
         raise RuntimeError("output has prior raw records; use a fresh attempt directory")
+    if options.workload_plan is not None:
+        (output / "workload-plan.json").write_text(json.dumps(options.workload_plan, sort_keys=True) + "\n")
     native = argparse.ArgumentParser()
     bench.ServerArgs.add_cli_args(native)
     bench.BenchArgs.add_cli_args(native)
