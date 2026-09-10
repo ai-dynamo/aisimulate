@@ -977,6 +977,10 @@ def _cell_generator_overrides(
         model_args.extend(
             ["--language-model-only", "--tokenizer-mode=deepseek_v41", '--engram-config={"cpu_offload":false}']
         )
+        if cell.workload_kind == "decode" or smoke:
+            model_args.extend(["--max-num-batched-tokens", str(plan.options.max_prefill_isl)])
+        if cell.workload_kind == "prefill" and smoke and plan.options.max_prefill_batch_size:
+            model_args.extend(["--max-num-seqs", str(plan.options.max_prefill_batch_size)])
     if architecture == "GlmMoeDsaForCausalLM":
         # This is the serving path validated by the pinned GLM-5.2 vLLM image.
         # The parser does not alter FPM scheduling, but keeping the model's

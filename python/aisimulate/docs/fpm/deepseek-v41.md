@@ -66,3 +66,22 @@ Record the immutable checkpoint/image/instrumentation revisions, corpus hash,
 resolved engine settings, native artifacts and measured coverage with the data.
 Keep internal cluster names, account names, filesystem paths, and raw operational
 logs in private campaign storage.
+
+
+The pinned producer is packaged under
+`collector/fpm_forward/runtime/dsv41/`. It executes seed chunks on the same
+request and block tables as the measured step, retaining Engram history and
+compressor ring state. Source hashes cover the installed ARM vLLM files and
+Dynamo scheduler/point/FPM definitions. `ai-dynamo-runtime==1.4.2` has passed
+an actual import check with Dynamo source `54960177085413259859c88bd34ed0734d4c2ea9`.
+This import check does not establish GPU numerical or timing correctness.
+
+Its initial native grid is bounded to batch 2, per-request context 2048, total
+scheduled prefill tokens 512, and global benchmark warmup 0. Use model limit
+2050 to include the native decode context-2048 endpoint. Every completed point
+archives actual prompt/output tokens in an adjacent JSONL file; the Collector
+checks the file checksum, point coverage, per-request computed counts, and
+completed seed witness. Unsupported or incomplete points fail the campaign.
+The original mixed English/Chinese fixture is reproducible and is not a
+representative production workload; Engram locality and routing sensitivity
+remain limits on generalizing any resulting curve.
