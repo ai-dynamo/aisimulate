@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictBool, field_validator, model_validator
 
 from .common import Choices, IntegerRange, NumericRange, StrictModel
 
@@ -131,6 +131,10 @@ class EnginePredictionConfig(StrictModel):
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
+    decoder_replay: StrictBool = False
+    database_mode: Literal["SILICON", "SOL", "HYBRID", "EMPIRICAL"] | None = None
+    enable_shared_layer: StrictBool | None = None
+    strict_provenance: StrictBool | None = None
     context_length: PositiveInt | Literal["max"] = "max"
     workers: WorkersPredictionConfig
     kv_transfer: KvTransferConfig | None = None
