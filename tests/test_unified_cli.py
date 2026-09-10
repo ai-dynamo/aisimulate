@@ -679,11 +679,13 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(
         "run_recommendation",
         lambda *args, **kwargs: _RecommendationResult([], failed=1),
     )
+    monkeypatch.setattr(cli, "_resource_plan", lambda *args: {"status": "admitted"})
     output = tmp_path / "empty-result"
 
     status = cli._recommend(
         SimpleNamespace(
             stack="engine",
+            dry_run=False,
             format="json",
             output_dir=str(output),
             overwrite=False,

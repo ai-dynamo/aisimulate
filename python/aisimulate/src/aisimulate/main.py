@@ -37,6 +37,13 @@ from .output import (
     write_recommendations,
     write_requests,
 )
+from .resources import (
+    GuardedRunnerFactory,
+    ResourceLimitError,
+    build_plan,
+    require_plan,
+    workload_bounds,
+)
 from .stack import StackResolutionError, resolve_runner_factory
 from .sweeper.provider import AdapterReplaySpec
 from .sweeper.replay import ReplayOutputRequirements
@@ -70,6 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--output-dir", default="./aisimulate-output")
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
+        child.add_argument(
+            "--dry-run", action="store_true", help="validate core configuration and plan host resources without replay"
+        )
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
     subparsers.choices["predict"].add_argument(
         "--online",
@@ -154,6 +164,11 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    plan = _resource_plan(args, config, factory)
+    if args.dry_run:
+        return _write_resource_plan(args, plan)
+    require_plan(plan)
+    factory = GuardedRunnerFactory(factory, args.stack, config.execution.resources)
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     adapter_specs = _compile_prediction_adapters(
         adapter_raw,
@@ -178,7 +193,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                     capture_per_request=args.capture_per_request,
                 ),
             )
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, ResourceLimitError):
             raise
         except Exception as exc:
             raise _CliExecutionError(f"{type(exc).__name__}: {exc}") from exc
@@ -224,6 +239,10 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
+    plan = _resource_plan(args, config, factory)
+    if args.dry_run:
+        return _write_resource_plan(args, plan)
+    require_plan(plan)
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     result = run_recommendation(
         config,
@@ -288,6 +307,23 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     return 0
 
 
+def _resource_plan(args, config, factory) -> dict[str, Any]:
+    return build_plan(
+        workload_bounds(config),
+        stack=args.stack,
+        policy=config.execution.resources,
+        requested_parallelism=config.optimizer.parallelism if isinstance(config, CoreRecommendationConfig) else 1,
+        factory=factory,
+    )
+
+
+def _write_resource_plan(args, plan: dict[str, Any]) -> int:
+    root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
+    (root / "resource-plan.json").write_text(json.dumps(plan, indent=2, allow_nan=False) + "\n")
+    sys.stdout.write(json.dumps(plan, indent=2, allow_nan=False) + "\n")
+    return 3 if plan["status"] == "resource_limited" else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
@@ -311,6 +347,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"{args.config}: {exc}")
     except KeyboardInterrupt:
         return 130
+    except ResourceLimitError as exc:
+        sys.stderr.write(f"aisimulate {args.command}: {exc}\n")
+        try:
+            _write_resource_plan(args, exc.plan)
+        except (OSError, ValueError) as output_error:
+            sys.stderr.write(f"could not save resource plan: {output_error}\n")
+        return 3
     except _CliExecutionError as exc:
         sys.stderr.write(f"aisimulate {args.command} failed: {exc}\n")
         return 1

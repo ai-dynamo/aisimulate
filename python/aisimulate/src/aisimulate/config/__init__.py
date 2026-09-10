@@ -4,6 +4,7 @@
 """Typed CLI configuration owned by AISimulate core."""
 
 from .cli import CorePredictionConfig, CoreRecommendationConfig
+from .common import ExecutionConfig, ResourceConfig
 from .engine import EnginePredictionConfig, EngineRecommendationConfig
 from .traffic import TrafficPredictionConfig, TrafficRecommendationConfig
 
@@ -12,6 +13,8 @@ __all__ = [
     "CoreRecommendationConfig",
     "EnginePredictionConfig",
     "EngineRecommendationConfig",
+    "ExecutionConfig",
+    "ResourceConfig",
     "TrafficPredictionConfig",
     "TrafficRecommendationConfig",
 ]
