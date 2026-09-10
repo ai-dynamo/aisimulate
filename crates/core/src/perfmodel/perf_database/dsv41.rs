@@ -94,7 +94,10 @@ fn validate_geometry(component: &str, encoded: &str) -> Result<Value, AicError> 
         return Err(invalid("V41 geometry must use canonical sorted JSON"));
     }
     for (key, value) in object {
-        if value.is_number() && value.as_u64() == Some(0) && key != "compress_ratio" {
+        if value.is_number()
+            && value.as_u64() == Some(0)
+            && !matches!(key.as_str(), "compress_ratio" | "candidate_limit")
+        {
             return Err(invalid(format!("V41 geometry {key} must be positive")));
         }
     }
@@ -677,6 +680,25 @@ mod tests {
                 .to_string()
                 .contains("bounded prefill")
         );
+    }
+
+    #[test]
+    fn early_attention_geometry_allows_no_candidate_list() {
+        // The production graph has no candidate-list limit through layer 20.
+        // Layers 0/1 additionally use uncompressed SWA; full sources use 2.
+        for (role, ratio) in [("swa", 0), ("full", 2), ("reuse", 2), ("reindex", 2)] {
+            let mut op = attention();
+            op.role = role.into();
+            op.compress_ratio = ratio;
+            op.candidate_limit = 0;
+            let (_root, table) = table(&attention_fixture(&op, 0, "real_kv"));
+            assert!(
+                table
+                    .query("attention", &op, 1, 0, 10, &|x| Ok(x))
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 
     #[test]
