@@ -3,7 +3,6 @@
 """Unequal-duration cases distinguish MAPE from WAPE on the same supported set."""
 
 import pytest
-
 from compare_e2e import paired_summary
 from compare_forward import error_summary
 from compare_fpm_holdout import statistics_for

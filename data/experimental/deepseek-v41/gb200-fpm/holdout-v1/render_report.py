@@ -122,7 +122,8 @@ def write_readme(directory, reports):
         "Missing predictions stay in the coverage denominator; error statistics use supported pairs. "
         "Signed/APE statistics weight each configuration equally. WAPE divides total absolute latency "
         "error by total observed latency. MAPE is the mean per-configuration absolute percentage error; "
-        "both metrics use the same supported pairs. p90 APE is a percentile of prediction errors, not p90 serving latency. "
+        "both metrics use the same supported pairs. p90 APE is a percentile of prediction errors, "
+        "not p90 serving latency. "
         "No correction factor, outlier removal, replacement sample, or fitting to these holdouts is applied.",
         "",
         "MAPE is an additive report statistic computed from the original observed/predicted pairs. "

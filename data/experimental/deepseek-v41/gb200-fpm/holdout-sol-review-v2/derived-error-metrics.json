@@ -70,6 +70,9 @@
       }
     }
   },
-  "renderer_sha256": "f8c892770f9a3846a5d901ab78bb1be377add7e3453d09ecaaed964e3a433bc3",
+  "renderer_dependency_sha256": {
+    "../holdout-v1/render_report.py": "4f5b5a1b4719943afb4d49f8417b7463c54e11af1085a011a38f90ff553b4db0"
+  },
+  "renderer_sha256": "33a3f3c9ea1bd61f0ebfbccd4cfc3ad99ba2856ff5b25694ed223964169ba2f7",
   "schema": "dsv41.derived-error-metrics.v1"
 }

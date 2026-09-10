@@ -164,6 +164,7 @@ def render(directory):
         "schema": "dsv41.derived-error-metrics.v1",
         "derivation": "Add MAPE to the same supported pairs; original prediction result bytes unchanged",
         "renderer_sha256": sha(Path(__file__)),
+        "renderer_dependency_sha256": {"../holdout-v1/render_report.py": sha(old / "render_report.py")},
         "inputs_sha256": {
             f"{mode.lower()}-results.json.gz": sha(directory / f"{mode.lower()}-results.json.gz") for mode in current
         },

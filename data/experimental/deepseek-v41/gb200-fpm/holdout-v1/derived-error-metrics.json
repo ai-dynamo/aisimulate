@@ -70,6 +70,6 @@
       }
     }
   },
-  "renderer_sha256": "4c8be06bfad01431470a56275332b69d6bb5137f1e92cef5b987fab122e25c5d",
+  "renderer_sha256": "4f5b5a1b4719943afb4d49f8417b7463c54e11af1085a011a38f90ff553b4db0",
   "schema": "dsv41.derived-error-metrics.v1"
 }
