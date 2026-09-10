@@ -24,4 +24,3 @@ srun --ntasks=1 \
   --container-image="$BASE/images/sglang-agentx-fpm-f856a455-amd64.sqsh" \
   --container-mounts="$BASE:/scratch" --container-remap-root \
   python3 /scratch/sglang-fpm-fixed-8k1k-20260910/campaign.py
-
