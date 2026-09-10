@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from tools.forward_perf_gate import PROTOCOL_VERSION, cases, compare, worker
 
 pytestmark = pytest.mark.unit
@@ -152,6 +151,30 @@ def test_data_miss_status_semantics(
     result = compare.compare_raw(raw)
     assert {point["classification"] for point in result["points"]} == {classification}
     assert result["blocking"] is blocking
+
+
+@pytest.mark.parametrize("missing_sides", [("base",), ("head",), ("base", "head")])
+@pytest.mark.parametrize("failed_rounds", [1, 5])
+def test_coverage_loss_after_successful_prewarm_is_blocking(missing_sides: tuple[str, ...], failed_rounds: int) -> None:
+    raw = _raw([1.0] * 5)
+    case = raw["cases"][0]["case"]
+    raw["prewarm"] = [
+        {"case_id": case["case_id"], "base": _response(case), "head": _response(case), "disposition": "COMPARE"}
+    ]
+    for paired in raw["cases"][0]["rounds"][:failed_rounds]:
+        for side in missing_sides:
+            paired[side] = _response(case, status="DATA_MISS")
+
+    result = compare.compare_raw(raw)
+    assert result["blocking"] is True
+    for point in result["points"]:
+        assert point["classification"] == "INVALID_COMPARISON"
+        for round_number in range(1, failed_rounds + 1):
+            for side in missing_sides:
+                assert any(
+                    f"round {round_number}:" in reason and f"{side} status is DATA_MISS" in reason
+                    for reason in point["invalid_reasons"]
+                )
 
 
 def test_data_miss_skip_reason_includes_priming_failure() -> None:

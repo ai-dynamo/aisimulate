@@ -18,12 +18,6 @@ from pathlib import Path
 PYTHON_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PYTHON_ROOT))
 
-from aiconfigurator.sdk.errors import (
-    EmpiricalNotImplementedError,
-    MissingSystemFlopsError,
-    PerfDataNotAvailableError,
-    SolNotImplementedError,
-)
 from tools.forward_perf_gate import PROTOCOL_VERSION
 from tools.forward_perf_gate.measurement import (
     BenchmarkCase,
@@ -34,6 +28,13 @@ from tools.forward_perf_gate.measurement import (
     phase_call,
     priming_runtime_config,
     redirect_output,
+)
+
+from aiconfigurator.sdk.errors import (
+    EmpiricalNotImplementedError,
+    MissingSystemFlopsError,
+    PerfDataNotAvailableError,
+    SolNotImplementedError,
 )
 
 CASE_KEYS = {

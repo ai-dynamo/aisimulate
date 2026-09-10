@@ -10,6 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tools.forward_perf_gate import PROTOCOL_VERSION, cases, measurement, worker
+from tools.forward_perf_gate import run as gate_run
+from tools.prediction_regression_gate import grid
 
 from aiconfigurator.sdk.errors import (
     EmpiricalNotImplementedError,
@@ -17,9 +20,6 @@ from aiconfigurator.sdk.errors import (
     PerfDataNotAvailableError,
     SolNotImplementedError,
 )
-from tools.forward_perf_gate import PROTOCOL_VERSION, cases, measurement, worker
-from tools.forward_perf_gate import run as gate_run
-from tools.prediction_regression_gate import grid
 
 pytestmark = pytest.mark.unit
 
@@ -295,13 +295,17 @@ def test_cold_is_unseen_query_after_steady_state_setup(monkeypatch: pytest.Monke
 
 
 @pytest.mark.parametrize(
-    ("phase", "points"),
-    [("context", grid.PREFILL_POINTS), ("generation", grid.DECODE_POINTS)],
+    ("phase", "points", "expected_osl"),
+    [("context", grid.PREFILL_POINTS, 8), ("generation", grid.DECODE_POINTS, 256)],
 )
-def test_phase_priming_query_is_outside_the_measured_matrix(phase: str, points: list[tuple[int, int]]) -> None:
-    runtime = measurement.config.RuntimeConfig(batch_size=1, isl=1024, osl=8)
+def test_phase_priming_query_is_outside_the_measured_matrix(
+    monkeypatch: pytest.MonkeyPatch, phase: str, points: list[tuple[int, int]], expected_osl: int
+) -> None:
+    monkeypatch.setattr(grid, "CTX_OSL", 16)
+    monkeypatch.setattr(grid, "GEN_OSL", 512)
+    runtime = measurement.config.RuntimeConfig(batch_size=1, isl=1024, osl=8, prefix=128)
     prime = measurement.priming_runtime_config(runtime, phase=phase)
-    assert (prime.batch_size, prime.isl) == (2, 2048)
+    assert (prime.batch_size, prime.isl, prime.osl, prime.prefix) == (2, 2048, expected_osl, 0)
     assert (prime.batch_size, prime.isl) not in points
 
 

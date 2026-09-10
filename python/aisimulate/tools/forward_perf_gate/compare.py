@@ -120,7 +120,14 @@ def _point_identity(case: dict, metric: str) -> dict:
     }
 
 
-def compare_point(case: dict, rounds: list[dict], metric: str, *, skip_reason: str | None = None) -> dict:
+def compare_point(
+    case: dict,
+    rounds: list[dict],
+    metric: str,
+    *,
+    skip_reason: str | None = None,
+    availability_succeeded: bool = False,
+) -> dict:
     threshold = THRESHOLDS[metric]
     result = {**_point_identity(case, metric), "rounds": []}
     if skip_reason is not None:
@@ -140,6 +147,13 @@ def compare_point(case: dict, rounds: list[dict], metric: str, *, skip_reason: s
     for paired in rounds:
         base, head = paired.get("base"), paired.get("head")
         disposition, reason = pair_disposition(case["case_id"], base, head)
+        if disposition == "SKIP" and availability_succeeded:
+            disposition = "INVALID"
+            reason = "; ".join(
+                f"{side} status is DATA_MISS after successful availability: {_error_text(response)}"
+                for side, response in (("base", base), ("head", head))
+                if response["status"] == "DATA_MISS"
+            )
         if disposition == "INVALID":
             invalid_reasons.append(f"round {paired.get('round')}: {reason}")
             continue
@@ -300,6 +314,7 @@ def _validate_case_set(raw: dict) -> list[str]:
 def compare_raw(raw: dict) -> dict:
     run_errors = [str(error) for error in raw.get("run_errors", [])]
     run_errors.extend(_validate_case_set(raw))
+    available_cases = {entry["case_id"] for entry in raw.get("prewarm", []) if entry.get("disposition") == "COMPARE"}
     points = []
     for entry in raw.get("cases", []):
         if not isinstance(entry, dict) or not isinstance(entry.get("case"), dict):
@@ -311,6 +326,7 @@ def compare_raw(raw: dict) -> dict:
                     entry.get("rounds", []),
                     metric,
                     skip_reason=entry.get("skip_reason"),
+                    availability_succeeded=entry["case"]["case_id"] in available_cases,
                 )
             )
     blocking = bool(run_errors) or any(

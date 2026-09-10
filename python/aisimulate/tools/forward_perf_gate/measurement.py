@@ -16,7 +16,6 @@ from aiconfigurator.sdk.backends.factory import get_backend
 from aiconfigurator.sdk.errors import PerfDataNotAvailableError
 from aiconfigurator.sdk.inference_session import InferenceSession
 from aiconfigurator.sdk.models import get_model
-from tools.prediction_regression_gate import grid
 
 _perf_counter_ns = time.perf_counter_ns
 
@@ -161,12 +160,12 @@ def priming_runtime_config(
     *,
     phase: str,
 ) -> config.RuntimeConfig:
-    """Return one supported off-matrix query that initializes a prediction phase."""
+    """Return the protocol-v1 priming query; coordinate changes require a version bump."""
     return replace(
         runtime_config,
         batch_size=2,
         isl=2048,
-        osl={"context": grid.CTX_OSL, "generation": grid.GEN_OSL}[phase],
+        osl={"context": 8, "generation": 256}[phase],
         prefix=0,
     )
 

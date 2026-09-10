@@ -10,8 +10,11 @@ new process for each measured round. Within that process, cases are grouped by
 model and database mode. Before each group, the worker releases the prior
 objects, clears the prediction caches, and builds one model, database view,
 session, and Rust engine. It initializes each measured phase with one
-unrecorded `(batch_size=2, ISL=2048)` query that is outside the benchmark
-matrix. It then runs every target point in the group. The first prediction for
+unrecorded `(batch_size=2, ISL=2048, prefix=0)` query that is outside the benchmark
+matrix, with OSL 8 for context and OSL 256 for generation. These coordinates
+are fixed within protocol v1; changing them requires a protocol-version change.
+Priming stride comes from the shared, hashed case request.
+It then runs every target point in the group. The first prediction for
 each distinct target is the `cold` sample: a new query against a steady-state
 engine. Ten unrecorded repeats of that target follow, then 100 repeats produce
 the `warm` median. Thus `cold` means a cold query, not a cold process or empty
@@ -46,6 +49,8 @@ The default comparison requires four of five paired rounds to exceed both a
 an 80% quorum. A data miss on the base side has no timing baseline and is
 reported as skipped. A working base case that stops working, a malformed
 worker response, or an incomplete run remains an invalid, blocking comparison.
+A successful availability pair establishes coverage for both revisions. Any
+later measured data miss on either revision is invalid and blocks the comparison.
 The worker treats missing silicon data, unavailable empirical data, missing
 system FLOPS, and unavailable SOL models as data misses.
 The controller alternates which revision runs first and reverses the case order
