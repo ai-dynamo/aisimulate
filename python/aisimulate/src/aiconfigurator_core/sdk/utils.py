@@ -1062,8 +1062,17 @@ def _parse_hf_config_json(config: dict) -> dict:
             # for Kimi K2.5. Sources: Transformers commit
             # cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55 and vLLM commit
             # d2906091bfc579cebefe3d8e8fb9077397ce9882.
-            merge_kernel = tuple(vision_cfg.get("merge_kernel_size") or ())
-            if len(merge_kernel) != 2 or any(not isinstance(value, int) or value <= 0 for value in merge_kernel):
+            def positive_int(value, name):
+                if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                    raise ValueError(f"Kimi K3 vision_config.{name} must be a positive integer")
+                return value
+
+            merge_kernel = vision_cfg.get("merge_kernel_size")
+            if (
+                not isinstance(merge_kernel, (list, tuple))
+                or len(merge_kernel) != 2
+                or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in merge_kernel)
+            ):
                 raise ValueError("Kimi K3 vision_config.merge_kernel_size must contain two positive integers")
             if merge_kernel[0] != merge_kernel[1]:
                 raise ValueError(f"Kimi K3 requires a square merge_kernel_size, got {merge_kernel!r}")
@@ -1077,38 +1086,36 @@ def _parse_hf_config_json(config: dict) -> dict:
                     f"got {vision_cfg.get('mm_projector_type')!r}"
                 )
 
-            vision_hidden = int(vision_cfg["vt_hidden_size"])
-            vision_heads = vision_cfg["vt_num_attention_heads"]
-            if not isinstance(vision_heads, int) or isinstance(vision_heads, bool) or vision_heads <= 0:
-                raise ValueError("Kimi K3 vision vt_num_attention_heads must be a positive integer")
-            qkv_hidden = int(vision_cfg.get("qkv_hidden_size") or vision_hidden)
+            vision_hidden = positive_int(vision_cfg.get("vt_hidden_size"), "vt_hidden_size")
+            vision_heads = positive_int(vision_cfg.get("vt_num_attention_heads"), "vt_num_attention_heads")
+            vision_depth = positive_int(vision_cfg.get("vt_num_hidden_layers"), "vt_num_hidden_layers")
+            vision_intermediate = positive_int(vision_cfg.get("vt_intermediate_size"), "vt_intermediate_size")
+            patch_size = positive_int(vision_cfg.get("patch_size"), "patch_size")
+            # The upstream attention layer defaults only absent/null QKV width
+            # to the tower width; zero and other falsy values are malformed.
+            qkv_hidden = vision_cfg.get("qkv_hidden_size")
+            qkv_hidden = vision_hidden if qkv_hidden is None else positive_int(qkv_hidden, "qkv_hidden_size")
             if qkv_hidden % vision_heads != 0:
                 raise ValueError(
                     f"Kimi K3 qkv_hidden_size ({qkv_hidden}) must be divisible by "
                     f"vt_num_attention_heads ({vision_heads})"
                 )
-            if int(vision_cfg["mm_hidden_size"]) != vision_hidden:
+            if positive_int(vision_cfg.get("mm_hidden_size"), "mm_hidden_size") != vision_hidden:
                 raise ValueError("Kimi K3 PatchMergerV2 requires mm_hidden_size to match vt_hidden_size")
-            out_hidden = int(vision_cfg["text_hidden_size"])
+            out_hidden = positive_int(vision_cfg.get("text_hidden_size"), "text_hidden_size")
             if out_hidden != hidden_size:
                 raise ValueError(
                     f"Kimi K3 vision text_hidden_size ({out_hidden}) must match "
                     f"the language hidden_size ({hidden_size})"
                 )
-            max_temporal_patches = vision_cfg.get("init_pos_emb_time")
-            if (
-                not isinstance(max_temporal_patches, int)
-                or isinstance(max_temporal_patches, bool)
-                or max_temporal_patches <= 0
-            ):
-                raise ValueError("Kimi K3 vision_config.init_pos_emb_time must be a positive integer")
+            max_temporal_patches = positive_int(vision_cfg.get("init_pos_emb_time"), "init_pos_emb_time")
             merger_dim = vision_hidden * merge_kernel[0] * merge_kernel[1]
             kimi_vision_config = VisionEncoderConfig(
-                depth=int(vision_cfg["vt_num_hidden_layers"]),
+                depth=vision_depth,
                 hidden_size=vision_hidden,
                 num_heads=vision_heads,
-                intermediate_size=int(vision_cfg["vt_intermediate_size"]),
-                patch_size=int(vision_cfg["patch_size"]),
+                intermediate_size=vision_intermediate,
+                patch_size=patch_size,
                 temporal_patch_size=1,
                 spatial_merge_size=merge_kernel[0],
                 out_hidden_size=out_hidden,

@@ -126,6 +126,124 @@ def test_kimi_k3_parser_rejects_invalid_vision_head_count(heads):
         _parse_hf_config_json(raw)
 
 
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "vt_num_hidden_layers",
+        "vt_hidden_size",
+        "vt_num_attention_heads",
+        "vt_intermediate_size",
+        "patch_size",
+        "mm_hidden_size",
+        "text_hidden_size",
+        "init_pos_emb_time",
+    ],
+)
+@pytest.mark.parametrize("value", [True, False, 0, -1, None, 1.5, "1", "missing"])
+def test_local_checkpoint_rejects_invalid_kimi_geometry(tmp_path, language_only, field, value):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    if value == "missing":
+        raw["vision_config"].pop(field)
+    else:
+        raw["vision_config"][field] = value
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_config = _model_config()
+    model_config.language_only = language_only
+
+    # Both the public loader and model construction must reject corrupt geometry,
+    # even on language-only workers that still consume visual context metadata.
+    with pytest.raises(ValueError, match=rf"{field} must be a positive integer"):
+        get_model_config_from_model_path(str(tmp_path))
+    with pytest.raises(ValueError, match=rf"{field} must be a positive integer"):
+        get_model(str(tmp_path), model_config, "sglang")
+
+
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("value", [True, False, 0, -1, 1536.5, "1536"])
+def test_local_checkpoint_rejects_invalid_kimi_qkv_width(tmp_path, language_only, value):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["vision_config"]["qkv_hidden_size"] = value
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_config = _model_config()
+    model_config.language_only = language_only
+
+    with pytest.raises(ValueError, match="qkv_hidden_size must be a positive integer"):
+        get_model_config_from_model_path(str(tmp_path))
+    with pytest.raises(ValueError, match="qkv_hidden_size must be a positive integer"):
+        get_model(str(tmp_path), model_config, "sglang")
+
+
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("index", [0, 1])
+@pytest.mark.parametrize("value", [True, False, 0, -1, None, 2.5, "2"])
+def test_local_checkpoint_rejects_invalid_kimi_merge_geometry(tmp_path, language_only, index, value):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["vision_config"]["merge_kernel_size"][index] = value
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_config = _model_config()
+    model_config.language_only = language_only
+
+    with pytest.raises(ValueError, match="merge_kernel_size must contain two positive integers"):
+        get_model_config_from_model_path(str(tmp_path))
+    with pytest.raises(ValueError, match="merge_kernel_size must contain two positive integers"):
+        get_model(str(tmp_path), model_config, "sglang")
+
+
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("qkv", ["checkpoint", "missing", None])
+def test_local_checkpoint_preserves_valid_kimi_geometry_and_qkv_default(tmp_path, language_only, qkv):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    if qkv != "checkpoint":
+        # The upstream layer defaults absent/null QKV width to tower width.
+        # Use a compatible head count for this synthetic optional-field case.
+        raw["vision_config"]["vt_num_attention_heads"] = 16
+        if qkv == "missing":
+            raw["vision_config"].pop("qkv_hidden_size")
+        else:
+            raw["vision_config"]["qkv_hidden_size"] = None
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_config = _model_config()
+    model_config.language_only = language_only
+    info = get_model_config_from_model_path(str(tmp_path))
+    model = get_model(str(tmp_path), model_config, "sglang")
+
+    assert model.encoder_config == info["extra_params"].vision_config
+    assert model.encoder_config.depth == 27
+    assert model.encoder_config.hidden_size == 1024
+    assert model.encoder_config.qkv_hidden_size == (1536 if qkv == "checkpoint" else 1024)
+    assert bool(model.encoder_ops) is (not language_only)
+    if not language_only:
+        qkv_op = next(op for op in model.encoder_ops if op._name == "encoder_qkv_gemm")
+        assert qkv_op._n == 3 * model.encoder_config.qkv_hidden_size
+
+
+@pytest.mark.parametrize("language_only", [False, True])
+def test_local_checkpoint_accepts_positive_kimi_geometry_boundaries(tmp_path, language_only):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["vision_config"].update(
+        vt_num_hidden_layers=1,
+        vt_hidden_size=4,
+        vt_num_attention_heads=1,
+        qkv_hidden_size=4,
+        vt_intermediate_size=1,
+        patch_size=1,
+        mm_hidden_size=4,
+        merge_kernel_size=[1, 1],
+        init_pos_emb_time=1,
+    )
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    (tmp_path / "preprocessor_config.json").write_text(json.dumps({"merge_size": 1}))
+    (tmp_path / "video_preprocessor_config.json").write_text(json.dumps({"merge_size": 1}))
+    model_config = _model_config()
+    model_config.language_only = language_only
+    model = get_model(str(tmp_path), model_config, "sglang")
+
+    assert model.encoder_config.depth == model.encoder_config.intermediate_size == model.encoder_config.patch_size == 1
+    assert model.encoder_config.max_temporal_patches == model.encoder_config.spatial_merge_size == 1
+    assert bool(model.encoder_ops) is (not language_only)
+
+
 @pytest.fixture
 def kimi_k3_model():
     return get_model("moonshotai/Kimi-K3", _model_config(), "sglang")
@@ -522,6 +640,78 @@ def test_kimi_rust_runtime_keeps_projector_replicated_and_accounts_for_weights(v
         assert results[0][name] == pytest.approx(results[1][name])
     assert "encoder_dp_all_gather" in results[0]
     assert results[1]["encoder_ar_1"] > 0
+
+
+@pytest.mark.parametrize(("tp_size", "encoder_dp", "batch"), [(16, True, 1), (2, True, 3), (2, False, 3)])
+@pytest.mark.parametrize("qkv_width", [1536, 3072])
+def test_kimi_encoder_memory_covers_native_qkv_buffer(tmp_path, tp_size, encoder_dp, batch, qkv_width):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["vision_config"]["qkv_hidden_size"] = qkv_width
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+
+    class ObserveBackend(TRTLLMBackend):
+        def _run_encoder_phase_with_rust(self, model, database, shape_of, *, include_energy):
+            qkv_op = next(op for op in model.encoder_ops if op._name == "encoder_qkv_gemm")
+            self.qkv_shape = (*shape_of(qkv_op), qkv_op._n)
+            return super()._run_encoder_phase_with_rust(model, database, shape_of, include_energy=include_energy)
+
+    runtime = config.RuntimeConfig(
+        batch_size=batch,
+        isl=128,
+        osl=2,
+        num_images_per_request=0,
+        num_videos_per_request=1,
+        video_height=896,
+        video_width=896,
+        video_frames=4,
+        engine_step_backend="rust",
+    )
+    local_visuals = -(-batch // tp_size) if encoder_dp else batch
+    # Four 64x64 patch grids enter attention; temporal and 2x2 spatial pooling
+    # produce 1024 projected embeddings per video, held for the full batch.
+    patch_rows = 4 * 64**2
+    embedding_bytes = 2 * batch * 1024 * 7168
+    colocated_summaries = {}
+    for language_only in (False, True):
+        model_config = _model_config(tp_size, enable_encoder_dp=encoder_dp)
+        model_config.language_only = language_only
+        model = get_model(str(tmp_path), model_config, "trtllm")
+        for surface in ("static", "aggregate"):
+            # Aggregate caches are scoped to one model/configuration.
+            backend = ObserveBackend()
+            summary = (
+                backend.run_static(model, database, runtime, mode="static_ctx")
+                if surface == "static"
+                else backend.run_agg(model, database, runtime, ctx_tokens=1024)
+            )
+            memory = summary.get_encoder_memory()
+            if language_only:
+                assert memory == {}
+                assert not summary.get_encoder_latency_dict()
+                colocated = colocated_summaries[surface]
+                assert colocated.get_memory()["total"] - summary.get_memory()["total"] == pytest.approx(
+                    colocated.get_encoder_memory()["total"]
+                )
+                continue
+            colocated_summaries[surface] = summary
+            assert backend.qkv_shape[:2] == (local_visuals, patch_rows)
+            expected_rank_width = 3 * qkv_width // (1 if encoder_dp else tp_size)
+            assert backend.qkv_shape[2] == expected_rank_width
+            # Derive the lower bound from the actual native operation's output
+            # shape, independently of the memory helper's config arithmetic.
+            qkv_bytes = 2 * backend.qkv_shape[0] * backend.qkv_shape[1] * backend.qkv_shape[2]
+            legacy_bytes = 2 * local_visuals * patch_rows * 3 * 1024
+            activation_bytes = memory["activations"] * (1 << 30)
+            assert activation_bytes >= qkv_bytes + embedding_bytes
+            assert activation_bytes == max(legacy_bytes, qkv_bytes) + embedding_bytes
+            assert summary.get_result_dict()["encoder_memory"] == memory["total"]
+
+
+def test_kimi_encoder_memory_retains_minimum_allocation(kimi_k3_model):
+    runtime = config.RuntimeConfig(image_height=28, image_width=28)
+    memory = BaseBackend()._get_encoder_component_memory_for_runtime(kimi_k3_model, runtime, 1)
+    assert memory["activations"] * (1 << 30) == 32 * 1024**2
 
 
 def test_image_and_video_encoder_work_reaches_static_summary(kimi_k3_model, monkeypatch):

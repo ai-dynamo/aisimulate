@@ -373,6 +373,9 @@ class KimiK3Config:
     (7168 -> 3584 down proj, experts at 3584/3072, 3584 -> 7168 up proj); the
     num_shared_experts shared experts run in the full hidden space.
     attn_res_block_size: AttnRes cross-layer residual block size (elementwise only).
+    vision_config: optional MoonViT3D and PatchMergerV2 geometry. Retained for
+                   visual context sizing on language-only workers, which omit
+                   encoder execution and memory allocation.
     """
 
     layer_types: tuple[str, ...]  # per-layer: "linear_attention" (KDA) or "full_attention" (MLA)

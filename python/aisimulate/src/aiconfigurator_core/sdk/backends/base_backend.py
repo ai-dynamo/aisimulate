@@ -1572,8 +1572,12 @@ class BaseBackend:
                 # language-space embeddings coexist at the adapter boundary.
                 activations += 2 * embed_tokens * (2 * enc_cfg.hidden_size + enc_cfg.out_hidden_size)
             else:
-                # ~3x hidden_size per patch covers QKV, attention output, and FFN intermediates (bfloat16)
-                activations = 2 * num_tokens * enc_cfg.hidden_size * 3
+                # Retain the legacy live-activation estimate, but never budget
+                # less than the actual per-rank BF16 QKV output buffer. This is
+                # an analytical lower bound, not a calibrated peak-memory model.
+                encoder_tp = 1 if model.config.enable_encoder_dp else model.config.tp_size
+                qkv_width = 3 * (enc_cfg.qkv_hidden_size or enc_cfg.hidden_size) // encoder_tp
+                activations = 2 * num_tokens * max(3 * enc_cfg.hidden_size, qkv_width)
                 # Projected embeddings (all projector instances concatenated along hidden)
                 activations += 2 * embed_tokens * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
             activations = max(activations, 32 * 1024 * 1024)  # 32 MiB minimum
