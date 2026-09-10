@@ -3,7 +3,10 @@
 
 """Run producer state-machine stubs in an isolated process."""
 
+import hashlib
+import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -27,3 +30,52 @@ def test_real_kv_producer_lifecycle():
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.parametrize("valid_source", [False, True])
+def test_bootstrap_is_lazy_in_helpers_and_fail_closed_at_scheduler_import(tmp_path, valid_source):
+    runtime = Path(__file__).resolve().parents[3] / "collector/fpm_forward/runtime/dsv41"
+    shutil.copy2(runtime / "sitecustomize.py", tmp_path / "sitecustomize.py")
+    module = tmp_path / "dynamo/vllm/instrumented_scheduler.py"
+    module.parent.mkdir(parents=True)
+    # A scheduler can spawn compiler/helper interpreters that inherit the same
+    # environment; those children must not recursively import the scheduler.
+    helper = "import sys; assert 'dynamo.vllm.instrumented_scheduler' not in sys.modules"
+    module.write_text(
+        "import subprocess,sys\n"
+        f"subprocess.run([sys.executable, '-c', {helper!r}], check=True, timeout=5)\n"
+        "class InstrumentedScheduler: pass\n"
+    )
+    (tmp_path / "dsv41_scheduler.py").write_text(
+        "from dynamo.vllm.instrumented_scheduler import InstrumentedScheduler\n"
+        "class DeepseekV41RealKVScheduler(InstrumentedScheduler): pass\n"
+    )
+    (tmp_path / "runtime-source-sha256.json").write_text(
+        json.dumps(
+            {
+                "dynamo/vllm/instrumented_scheduler.py": hashlib.sha256(module.read_bytes()).hexdigest()
+                if valid_source
+                else "0" * 64
+            }
+        )
+    )
+    environment = dict(os.environ, PYTHONPATH=str(tmp_path), DYN_FPM_DSV41_REAL_KV="1")
+    child = subprocess.run([sys.executable, "-c", helper], env=environment, capture_output=True, text=True, timeout=10)
+    assert child.returncode == 0, child.stderr
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from dynamo.vllm.instrumented_scheduler import InstrumentedScheduler; "
+            "assert InstrumentedScheduler.__name__ == 'DeepseekV41RealKVScheduler'",
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if valid_source:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 78
+        assert "pinned source mismatch" in result.stderr
