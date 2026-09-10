@@ -10,7 +10,7 @@ import statistics
 from collections import Counter
 from pathlib import Path
 
-from render_report import METRICS, load_reports
+from render_report import METRICS, descriptive, load_reports
 
 
 def quantile(values, fraction):
@@ -22,13 +22,13 @@ def quantile(values, fraction):
 
 def summary(pairs):
     if not pairs:
-        return "— | — | — | —"
+        return "— | — | — | — | —"
     errors = [100 * (p / o - 1) for o, p in pairs]
     absolute = [abs(e) for e in errors]
     wape = 100 * sum(abs(p - o) for o, p in pairs) / sum(o for o, _ in pairs)
     return (
         f"{statistics.mean(errors):+.2f}% | {statistics.median(absolute):.2f}% | "
-        f"{quantile(absolute, 0.9):.2f}% | {wape:.2f}%"
+        f"{quantile(absolute, 0.9):.2f}% | {statistics.mean(absolute):.2f}% | {wape:.2f}%"
     )
 
 
@@ -49,6 +49,7 @@ def main():
     args = parser.parse_args()
     root = args.directory.resolve()
     reports = load_reports(root)
+    descriptive.serving(root, reports, METRICS)
     if not args.diagnostic and any(not r["complete_requested_study"] for pair in reports.values() for r in pair):
         raise ValueError("partial studies require explicit diagnostic labeling")
     first, trace_first = next(iter(reports.values()))
@@ -94,18 +95,24 @@ def main():
         "model binary are identical. New ON calibration and 92 fresh profile/configuration holdouts belong "
         "to the separate [refinement forward report](../../prefix-refinement-v1/README.md).",
         "",
+        "![Descriptive MAPE and WAPE](descriptive-error-comparison.png)",
+        "",
+        "[Descriptive metric receipt](descriptive-metrics.json) pins the unchanged comparisons and the added analysis. "
+        "Original prediction/source identities and conditional confidence intervals remain unchanged.",
+        "",
         "## HTTP serving errors",
         "",
         "Rows below are descriptive across scenario/trial observations, equally weighted per "
         "cohort. They do not represent a production traffic mixture. "
         "Mean signed error is `(prediction / observation - 1) * 100`; WAPE is total absolute "
-        "error divided by total observed value. "
+        "error divided by total observed value. MAPE is `100 * mean(abs(prediction / observation - 1))` "
+        "on the identical supported cohort or native-interval pairs, with equal weight per pair. "
         "p90 APE is a percentile of prediction errors, not p90 request latency. "
         "Time per output token is the HTTP request-level mean; coalesced frames do not "
         "establish exact individual token gaps or tail ITL.",
         "",
-        "| Mode | Metric | Predicted / observed cohorts | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Mode | Metric | Predicted / observed cohorts | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     supported = [
         set(c["cohort_id"] for c in pair[0]["cohorts"] if c["status"] == "predicted") for pair in reports.values()
@@ -120,8 +127,8 @@ def main():
         "",
         f"### Same supported subset: {len(common)} cohorts",
         "",
-        "| Mode | Metric | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|",
+        "| Mode | Metric | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|",
     ]
     for mode, (e2e, _) in reports.items():
         for metric, (label, _) in METRICS.items():
@@ -192,8 +199,8 @@ def main():
         "All attributed native work, including unreturned overlap output, is retained. "
         "Interval statistics below are descriptive because consecutive intervals are correlated.",
         "",
-        "| Mode | Phase | Predicted / observed intervals | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Mode | Phase | Predicted / observed intervals | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for mode, (_, trace) in reports.items():
         rows = [r for c in trace["cohorts"] for r in c["intervals"]]
@@ -247,8 +254,8 @@ def main():
         "",
         f"### Same native supported subset: {len(common_intervals)} intervals",
         "",
-        "| Mode | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---:|---:|---:|---:|",
+        "| Mode | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for mode, (_, trace) in reports.items():
         pairs = [
@@ -319,6 +326,8 @@ def main():
         "matched_observed_mean",
         "predicted_mean",
         "ratio_error_percent",
+        "mape_percent",
+        "wape_percent",
         "ratio_error_ci95_low",
         "ratio_error_ci95_high",
     ]
@@ -334,6 +343,12 @@ def main():
                         if c["purpose"] == purpose and metric in c["observed"]
                     ]
                     stats = point["metrics"].get(metric, {})
+                    pairs = [
+                        (c["observed"][metric], c["prediction"][metric])
+                        for c in e2e["cohorts"]
+                        if c["purpose"] == purpose and c["status"] == "predicted" and metric in c["observed"]
+                    ]
+                    descriptive_values = descriptive.paired(pairs, len(observed))
                     ci = stats.get("paired_ratio_error_percent_bootstrap_ci95", [None, None])
                     writer.writerow(
                         {
@@ -349,6 +364,8 @@ def main():
                             "ratio_error_percent": 100 * (stats["predicted_mean"] / stats["observed_mean"] - 1)
                             if stats
                             else None,
+                            "mape_percent": descriptive_values.get("mape_percent"),
+                            "wape_percent": descriptive_values.get("wape_percent"),
                             "ratio_error_ci95_low": ci[0],
                             "ratio_error_ci95_high": ci[1],
                         }

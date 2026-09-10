@@ -3,6 +3,7 @@
 """Render immutable forward comparisons; never fit or recompute predictions."""
 
 import hashlib
+import importlib.util
 import json
 import statistics
 from pathlib import Path
@@ -19,13 +20,19 @@ MODES = {"sol": "SOL", "hybrid": "HYBRID", "silicon": "SILICON"}
 COLORS = {"sol": "#9271B1", "hybrid": "#D88320", "silicon": "#157A8C"}
 
 
+REPORT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "descriptive_metrics.py").is_file())
+_metrics_spec = importlib.util.spec_from_file_location(
+    "dsv41_descriptive_metrics", REPORT_ROOT / "descriptive_metrics.py"
+)
+descriptive = importlib.util.module_from_spec(_metrics_spec)
+_metrics_spec.loader.exec_module(descriptive)
+
+
 def quantile(values, fraction):
     values = sorted(values)
     index = (len(values) - 1) * fraction
     lower = int(index)
-    return values[lower] + (values[min(lower + 1, len(values) - 1)] - values[lower]) * (
-        index - lower
-    )
+    return values[lower] + (values[min(lower + 1, len(values) - 1)] - values[lower]) * (index - lower)
 
 
 def summary(rows):
@@ -34,20 +41,16 @@ def summary(rows):
     return [
         len(rows),
         statistics.mean(signed),
+        statistics.mean(absolute),
         statistics.median(absolute),
         quantile(absolute, 0.9),
-        100
-        * sum(abs(r["predicted_ms"] - r["observed_ms"]) for r in rows)
-        / sum(r["observed_ms"] for r in rows),
+        100 * sum(abs(r["predicted_ms"] - r["observed_ms"]) for r in rows) / sum(r["observed_ms"] for r in rows),
     ]
 
 
 def main():
-    reports = {
-        (p, m): json.loads((ROOT / f"{p}-{m}-results.json").read_bytes())
-        for p in PROFILES
-        for m in MODES
-    }
+    reports = {(p, m): json.loads((ROOT / f"{p}-{m}-results.json").read_bytes()) for p in PROFILES for m in MODES}
+    descriptive.forward(ROOT, reports)
     lines = [
         "# GB300 independent native forward comparison",
         "",
@@ -61,19 +64,21 @@ def main():
         "Each observation is the median of ten independently invoked forwards, after "
         "taking the maximum of all four TP ranks for each invocation. One warmup per "
         "configuration is retained and excluded. Error is `(prediction / observation - 1) * 100`. "
-        "Configurations have equal weight for signed bias and APE percentiles; WAPE is "
+        "Configurations have equal weight for signed bias, MAPE and APE percentiles. MAPE is "
+        "`mean(abs(prediction / observation - 1)) * 100`; WAPE is "
         "`sum(abs(prediction - observation)) / sum(observation)`. The p90 column describes "
         "errors across configurations, not request tail latency.",
         "",
-        "| Profile | Mode | Predicted / measured | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Profile | Mode | Predicted / measured | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for (profile, mode), report in reports.items():
         s = report["summary"]
         lines.append(
             f"| {PROFILES[profile]} | {MODES[mode]} | {s['predicted_points']}/38 | "
             f"{s['mean_signed_error_percent']:+.2f}% | {s['median_absolute_error_percent']:.2f}% | "
-            f"{s['p90_absolute_error_percent_across_configurations']:.2f}% | {s['wape_percent']:.2f}% |"
+            f"{s['p90_absolute_error_percent_across_configurations']:.2f}% | "
+            f"{s['mape_percent']:.2f}% | {s['wape_percent']:.2f}% |"
         )
     lines += [
         "",
@@ -91,37 +96,31 @@ def main():
         "",
         "## Phase breakdown",
         "",
-        "| Profile | Mode | Phase | Coverage | Mean signed error | Median APE | WAPE |",
-        "|---|---|---|---:|---:|---:|---:|",
+        "| Profile | Mode | Phase | Coverage | Mean signed error | Median APE | MAPE | WAPE |",
+        "|---|---|---|---:|---:|---:|---:|---:|",
     ]
     for (profile, mode), report in reports.items():
         for phase, s in report["by_phase"].items():
             lines.append(
                 f"| {PROFILES[profile]} | {MODES[mode]} | {'Prefill' if phase == 'context' else 'Decode'} | "
                 f"{s['predicted_points']}/{s['planned_points']} | {s['mean_signed_error_percent']:+.2f}% | "
-                f"{s['median_absolute_error_percent']:.2f}% | {s['wape_percent']:.2f}% |"
+                f"{s['median_absolute_error_percent']:.2f}% | {s['mape_percent']:.2f}% | {s['wape_percent']:.2f}% |"
             )
     lines += [
         "",
         "Compare modes on the same supported subset as well: a smaller coverage set can otherwise conceal hard cases.",
         "",
-        "| Profile | Mode | Common strict subset | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Profile | Mode | Common strict subset | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for profile in PROFILES:
-        common = {
-            r["case_id"]
-            for r in reports[profile, "silicon"]["cases"]
-            if r["status"] == "predicted"
-        }
+        common = {r["case_id"] for r in reports[profile, "silicon"]["cases"] if r["status"] == "predicted"}
         for mode in MODES:
-            rows = [
-                r for r in reports[profile, mode]["cases"] if r["case_id"] in common
-            ]
-            n, bias, median, p90, wape = summary(rows)
+            rows = [r for r in reports[profile, mode]["cases"] if r["case_id"] in common]
+            n, bias, mape, median, p90, wape = summary(rows)
             lines.append(
                 f"| {PROFILES[profile]} | {MODES[mode]} | {n}/38 | "
-                f"{bias:+.2f}% | {median:.2f}% | {p90:.2f}% | {wape:.2f}% |"
+                f"{bias:+.2f}% | {median:.2f}% | {p90:.2f}% | {mape:.2f}% | {wape:.2f}% |"
             )
     lines += [
         "",
@@ -132,10 +131,7 @@ def main():
     ]
     for profile in PROFILES:
         rows = reports[profile, "silicon"]["cases"]
-        cvs = [
-            statistics.stdev(r["rank_max_ms"]) / statistics.mean(r["rank_max_ms"])
-            for r in rows
-        ]
+        cvs = [statistics.stdev(r["rank_max_ms"]) / statistics.mean(r["rank_max_ms"]) for r in rows]
         worst = rows[max(range(len(rows)), key=lambda i: cvs[i])]
         times = ", ".join(f"{v:.3f}" for v in worst["rank_max_ms"])
         lines.append(
@@ -155,7 +151,8 @@ def main():
         "## Coverage and limitations",
         "",
         "The frozen calibration contains 126 configurations per profile (100 prefill, "
-        "26 decode); the separate holdout contains 38 (28 prefill, 10 decode). Calibration has one warmup and three measured repetitions per configuration. "
+        "26 decode); the separate holdout contains 38 (28 prefill, 10 decode). Calibration has one "
+        "warmup and three measured repetitions per configuration. "
         "This separate precision holdout has one warmup and ten measured repetitions. Per profile "
         "that is 378 calibration and 380 precision holdout measured invocations, each requiring four "
         "rank records. TP ranks and component keys are not independent workloads. "
@@ -178,9 +175,7 @@ def main():
     ]
     for r in reports["decoder_bounded", "silicon"]["cases"]:
         if r["status"] != "predicted":
-            lines.append(
-                f"| {r['case_id']} | {r['batch_size']} | {r['query']} | {r['prefix']} |"
-            )
+            lines.append(f"| {r['case_id']} | {r['batch_size']} | {r['query']} | {r['prefix']} |")
     lines += [
         "",
         "The observation boundary is the native SGLang synchronized wall time around "
@@ -219,7 +214,8 @@ def main():
         "3. For each profile/mode, run `compare_forward.py --observations "
         "data/experimental/deepseek-v41/gb300-silicon/study/<profile>/precision-v2/forward-results.json "
         "--heldout-plan <FPM-checkout>/data/experimental/deepseek-v41/verification-plan/heldout.json "
-        "--prediction-config data/experimental/deepseek-v41/gb300-silicon/report/precision-v2/<profile>-<mode>-config.json "
+        "--prediction-config "
+        "data/experimental/deepseek-v41/gb300-silicon/report/precision-v2/<profile>-<mode>-config.json "
         "--output <new-results-file.json>`. The utility refuses to overwrite results.",
         "4. Run `render_report.py` to regenerate this document and PNG/PDF figures from "
         "the six stored comparison files. [SHA-256 receipt](artifact-hashes.json) pins "
@@ -237,23 +233,23 @@ def main():
         "between separately launched native forward attempts. The following comparison "
         "keeps the original results visible rather than selecting the better error.",
         "",
-        "| Profile | Mode | Original 3-repeat median APE | Precision 10-repeat median APE | Original WAPE | Precision WAPE |",
-        "|---|---|---:|---:|---:|---:|",
+        "| Profile | Mode | Original 3-repeat median APE | Precision 10-repeat median APE | "
+        "Original MAPE | Precision MAPE | Original WAPE | Precision WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for (profile, mode), report in reports.items():
-        previous = json.loads(
-            (ROOT.parent / f"{profile}-{mode}-results.json").read_bytes()
-        )
-        assert [
-            (r["case_id"], r.get("predicted_ms"), r["status"])
-            for r in previous["cases"]
-        ] == [
+        previous = json.loads((ROOT.parent / f"{profile}-{mode}-results.json").read_bytes())
+        assert [(r["case_id"], r.get("predicted_ms"), r["status"]) for r in previous["cases"]] == [
             (r["case_id"], r.get("predicted_ms"), r["status"]) for r in report["cases"]
         ]
         a, b = previous["summary"], report["summary"]
+        a["mape_percent"] = statistics.mean(
+            abs(r["signed_error_percent"]) for r in previous["cases"] if r["status"] == "predicted"
+        )
         lines.append(
             f"| {PROFILES[profile]} | {MODES[mode]} | "
             f"{a['median_absolute_error_percent']:.2f}% | {b['median_absolute_error_percent']:.2f}% | "
+            f"{a['mape_percent']:.2f}% | {b['mape_percent']:.2f}% | "
             f"{a['wape_percent']:.2f}% | {b['wape_percent']:.2f}% |"
         )
     lines += [
@@ -267,16 +263,12 @@ def main():
     ]
     (ROOT / "README.md").write_text("\n".join(lines) + "\n")
 
-    plt.rcParams.update(
-        {"font.size": 10, "axes.spines.top": False, "axes.spines.right": False}
-    )
+    plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
     fig, axes = plt.subplots(2, 3, figsize=(13, 8), layout="constrained")
     for i, profile in enumerate(PROFILES):
         for j, mode in enumerate(MODES):
             ax = axes[i, j]
-            rows = [
-                r for r in reports[profile, mode]["cases"] if r["status"] == "predicted"
-            ]
+            rows = [r for r in reports[profile, mode]["cases"] if r["status"] == "predicted"]
             for phase, marker in [("context", "o"), ("generation", "^")]:
                 selected = [r for r in rows if r["phase"] == phase]
                 measured = [r["observed_ms"] for r in selected]
@@ -296,16 +288,16 @@ def main():
                     label="Prefill" if phase == "context" else "Decode",
                 )
             low = min(min(min(r["rank_max_ms"]), r["predicted_ms"]) for r in rows) * 0.8
-            high = (
-                max(max(max(r["rank_max_ms"]), r["predicted_ms"]) for r in rows) * 1.1
-            )
+            high = max(max(max(r["rank_max_ms"]), r["predicted_ms"]) for r in rows) * 1.1
             ax.plot([low, high], [low, high], "--", color="#78818C", linewidth=1)
             ax.set(
                 xscale="log" if mode == "sol" else "linear",
                 yscale="log" if mode == "sol" else "linear",
                 xlim=(low, high),
                 ylim=(low, high),
-                title=f"{PROFILES[profile]} · {MODES[mode]} · {len(rows)}/38",
+                title=f"{PROFILES[profile]} · {MODES[mode]} · {len(rows)}/38\n"
+                f"MAPE {reports[profile, mode]['summary']['mape_percent']:.2f}% · "
+                f"WAPE {reports[profile, mode]['summary']['wape_percent']:.2f}%",
                 xlabel="Observed native forward (ms)",
                 ylabel="Prediction (ms)",
             )
@@ -324,13 +316,9 @@ def main():
         metadata={"CreationDate": None, "ModDate": None},
     )
     plt.close(fig)
-    sources = sorted(
-        p for p in ROOT.iterdir() if p.is_file() and p.name != "artifact-hashes.json"
-    )
+    sources = sorted(p for p in ROOT.iterdir() if p.is_file() and p.name != "artifact-hashes.json")
     receipt = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
-    (ROOT / "artifact-hashes.json").write_text(
-        json.dumps(receipt, indent=2, sort_keys=True) + "\n"
-    )
+    (ROOT / "artifact-hashes.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":

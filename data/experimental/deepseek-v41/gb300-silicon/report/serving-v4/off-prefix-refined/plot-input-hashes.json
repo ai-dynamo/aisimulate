@@ -1,6 +1,8 @@
 {
   "artifact-provenance.json": "c1ef1432f98745ccfa1936f954339d0b5961a64ba06154927e64c00b4807b53b",
   "closure-receipt.json": "63ecda2d0d52e55cd6bcca7675bffa33cb00127a13d7a1704db8553ca29d4fc8",
+  "descriptive-inputs.json": "efcaff56d882be48beb8165fb0438d8490957f57370e3c459459d3ab265836be",
+  "descriptive-metrics.json": "72117bb1dbdd6b96d2fb9147552b9079ef42882f806f34f2fb03c6a24bbe7e0f",
   "e2e-hybrid.json.gz": "31968c79c699dec2b2cd5e6e32e694feae980386255a36cd45f49b115aaf10f4",
   "e2e-silicon.json.gz": "21e69ee1350e8ae93a76ebc9de9290a01510d666cc562860832b7bf10d3061ff",
   "e2e-sol.json.gz": "af44db64aad3ab5251c9bcfa60d7ea310d9c8e4a06e7ac1b9b506927eff3c8e9",
@@ -9,6 +11,7 @@
   "main-plan.json.gz": "180a94fd1b8bc78bcce67d520f940a97ae01a1a16017de28e51c5b533b15d35a",
   "main-statistics.json": "b13459f964a123e617f12cf6f2b68d088d4ff1b06438a96edce9b649d9654330",
   "measurement.json": "fcf212e5defb6057378be47560347f6c2610f3a435c7b9234e7246c894cf191e",
+  "original-artifact-hashes.json": "6f449aea341179b1f22efd661efec5b14bc22345ac4997dd6e712b4b3320ae38",
   "pilot-plan.json.gz": "3cc9648fdce4c546b0d7fa32c42795135005906a4c3b3da02f30cbd8276c3fba",
   "pilot-statistics.json": "31eb0cc6088d6aedeeacb03435800152e86e52e8d0f9e06fdd7d8b13c8ec0ed8",
   "refinement-comparison.json": "39d74d4d68f0730489be53da2d0d7daabd7ad93c93291810e28dcfa9e73b6ad2",
@@ -17,5 +20,5 @@
   "trace-hybrid.json.gz": "3fb55a76b9ac8c5287a95409e8fbf54ee4b37a144659a65e0ed4f75c33d87a5e",
   "trace-silicon.json.gz": "3f32c12eb938ad43565e101cbf674266adcaea88074a1f5a19dc167a2d758ddb",
   "trace-sol.json.gz": "4c1ec759c53833fc95d3b3b2ba3c1b39d77d8e9f0b0eeec4db80464d7aee9428",
-  "render_report.py": "efb137da5dae2baaf7e6c1076a537382b014344690117090b623da840d0a1aa9"
+  "render_report.py": "9eccfc5940fd0770c4ad94668e53d8ad0ff0d6156e336c6fb53f2fdd675e7da2"
 }

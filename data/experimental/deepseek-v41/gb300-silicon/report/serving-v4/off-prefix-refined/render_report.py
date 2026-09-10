@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 
@@ -24,6 +25,14 @@ METRICS = {
     "last_token_latency_ms": ("Time to last output token", "ms"),
     "exact_itl_ms": ("Mean inter-token latency", "ms"),
 }
+
+
+REPORT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "descriptive_metrics.py").is_file())
+_metrics_spec = importlib.util.spec_from_file_location(
+    "dsv41_descriptive_metrics", REPORT_ROOT / "descriptive_metrics.py"
+)
+descriptive = importlib.util.module_from_spec(_metrics_spec)
+_metrics_spec.loader.exec_module(descriptive)
 
 
 def load_reports(root):
@@ -72,7 +81,8 @@ def finish(fig, root, name, title, footer):
     fig.text(0.5, 0.012, footer, ha="center", fontsize=9, color="#444444")
     fig.tight_layout(rect=(0, 0.055, 1, 0.96), w_pad=2.5, h_pad=3)
     for suffix in ("png", "pdf"):
-        fig.savefig(root / f"{name}.{suffix}", dpi=180, bbox_inches="tight")
+        metadata = {"CreationDate": None, "ModDate": None} if suffix == "pdf" else None
+        fig.savefig(root / f"{name}.{suffix}", dpi=180, bbox_inches="tight", metadata=metadata)
     plt.close(fig)
 
 
@@ -83,6 +93,7 @@ def main():
     args = parser.parse_args()
     root = args.directory.resolve()
     reports = load_reports(root)
+    descriptive.serving(root, reports, METRICS)
     if not args.diagnostic and any(not r["complete_requested_study"] for pair in reports.values() for r in pair):
         raise ValueError("incomplete observations may only render with an explicit diagnostic label")
     first = next(iter(reports.values()))[0]
@@ -110,7 +121,14 @@ def main():
                     if not point:
                         continue
                     x, y = point["observed_mean"], point["predicted_mean"]
-                    scatter.scatter(x, y, s=28, c=color, alpha=0.8, label=mode.upper() if i == 0 else None)
+                    scatter.scatter(
+                        x,
+                        y,
+                        s=28,
+                        c=color,
+                        alpha=0.8,
+                        label=mode.upper() if i == 0 else None,
+                    )
                     values.extend((x, y))
                     center = 100 * (y / x - 1)
                     error_point(
@@ -124,13 +142,20 @@ def main():
                 extent = [min(values) / 1.3, max(values) * 1.3]
                 scatter.plot(extent, extent, "--", color="#555555", lw=1)
                 scatter.set(xscale="log", yscale="log", xlim=extent, ylim=extent)
-            scatter.set(title=label, xlabel=f"Real silicon mean ({unit})", ylabel=f"Prediction mean ({unit})")
+            scatter.set(
+                title=label,
+                xlabel=f"Real silicon mean ({unit})",
+                ylabel=f"Prediction mean ({unit})",
+            )
             scatter.grid(True, alpha=0.15)
             if column == 0:
                 scatter.legend(fontsize=8)
             forest.axvline(0, color="#555555", lw=1)
             forest.set(
-                yticks=range(len(purposes)), yticklabels=purposes, xlabel="Ratio of means error (%)", xscale="symlog"
+                yticks=range(len(purposes)),
+                yticklabels=purposes,
+                xlabel="Ratio of means error (%)",
+                xscale="symlog",
             )
             forest.invert_yaxis()
             forest.grid(True, axis="x", alpha=0.2)
@@ -143,20 +168,32 @@ def main():
             "Missing predictions remain in coverage tables; SOL is an analytical lower bound.",
         )
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 7))
-    scatter, bias, wape = axes
+    fig, axes = plt.subplots(1, 4, figsize=(23, 7))
+    scatter, bias, mape, wape = axes
     values = []
     for mode, (_, trace) in reports.items():
         color = COLORS.get(mode, "#333333")
         rows = [r for c in trace["cohorts"] for r in c["intervals"] if r["status"] == "predicted"]
         if rows:
             x, y = [r["observed_ms"] for r in rows], [r["predicted_ms"] for r in rows]
-            scatter.scatter(x, y, color=color, s=4, alpha=0.18, rasterized=True, label=f"{mode.upper()} ({len(rows)})")
+            scatter.scatter(
+                x,
+                y,
+                color=color,
+                s=4,
+                alpha=0.18,
+                rasterized=True,
+                label=f"{mode.upper()} ({len(rows)})",
+            )
             values.extend((min(x), max(x), min(y), max(y)))
         for i, purpose in enumerate(purposes):
             point = trace.get("independent_trial_summary", {}).get(purpose, {})
             ci = point.get("whole_trial_bootstrap_ci95", {})
-            for axis, key in ((bias, "mean_trial_total_forward_signed_error_percent"), (wape, "interval_wape_percent")):
+            for axis, key in (
+                (bias, "mean_trial_total_forward_signed_error_percent"),
+                (mape, "interval_mape_percent"),
+                (wape, "interval_wape_percent"),
+            ):
                 if key in point:
                     error_point(axis, point[key], ci.get(key), i + offset[mode], color=color)
     if values:
@@ -164,11 +201,17 @@ def main():
         scatter.plot(extent, extent, "--", color="#555555", lw=1)
         scatter.set(xscale="log", yscale="log", xlim=extent, ylim=extent)
     scatter.set(
-        title="Every predicted native interval", xlabel="Real silicon forward (ms)", ylabel="Prediction forward (ms)"
+        title="Every predicted native interval",
+        xlabel="Real silicon forward (ms)",
+        ylabel="Prediction forward (ms)",
     )
     scatter.grid(True, alpha=0.15)
     scatter.legend(fontsize=8, markerscale=2)
-    for axis, label in ((bias, "Mean trial total-forward bias (%)"), (wape, "Interval WAPE (%)")):
+    for axis, label in (
+        (bias, "Mean trial total-forward bias (%)"),
+        (mape, "Interval MAPE (%) / descriptive"),
+        (wape, "Interval WAPE (%)"),
+    ):
         axis.set(yticks=range(len(purposes)), yticklabels=purposes, xlabel=label)
         axis.invert_yaxis()
         axis.axvline(0, color="#555555", lw=1)
@@ -180,7 +223,7 @@ def main():
         title,
         "Native intervals within a trial are correlated. Bars resample entire trials, "
         "including unreturned native overlap work. "
-        "Partial prediction coverage receives no final interval.",
+        "MAPE is descriptive on the same fully predicted trial subset as WAPE; no new CI is inferred.",
     )
     inventory = {
         p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -189,6 +232,12 @@ def main():
     }
     inventory["render_report.py"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     (root / "plot-input-hashes.json").write_text(json.dumps(inventory, indent=2) + "\n")
+    artifact_hashes = {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(root.iterdir())
+        if p.is_file() and p.name != "artifact-hashes.json"
+    }
+    (root / "artifact-hashes.json").write_text(json.dumps(artifact_hashes, indent=2, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":

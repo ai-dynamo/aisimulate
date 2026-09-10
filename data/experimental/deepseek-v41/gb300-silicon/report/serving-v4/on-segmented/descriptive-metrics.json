@@ -1,0 +1,627 @@
+{
+  "analysis_source_sha256": "6623e6e2a35d28f6088f8884389379c3741d96c1c468b1dc07c01264cdb4b5f3",
+  "definitions": {
+    "coverage": "Missing predictions remain in the observed denominator; no missing prediction is assigned a value.",
+    "mape_percent": "100 * mean(abs(predicted / observed - 1)) on supported pairs",
+    "prediction_identity": "Comparison files and their original predictor/source identities remain byte-identical.",
+    "uncertainty": "Descriptive addition only; original confidence intervals and their trial/lifecycle boundaries are unchanged.",
+    "wape_percent": "100 * sum(abs(predicted - observed)) / sum(observed) on the same supported pairs"
+  },
+  "original_inputs": {
+    "comparison_files_sha256": {
+      "comparison-hybrid.json.gz": "64cb1fe9291d2369542629f82fb7aeedcf105a11f29ff09eded8726b0c172eeb",
+      "comparison-silicon.json.gz": "54352f69086d47f1c4a0c747cf139e51729484fb65ca53576f13c1e5685bef73",
+      "comparison-sol.json.gz": "0beb9e418132d106061b98716ee6e7b51afda4995bbbcecea6dbd8a22e7b551d"
+    },
+    "original_artifact_hashes_sha256": "54047fcc13d69bb763139f0f72d0245ebb65e8b30893cf44a1451143a2624feb",
+    "purpose": "Add descriptive MAPE and WAPE from frozen supported observed/predicted pairs; no prediction recomputation or confidence interval change.",
+    "schema": "dsv41.descriptive.metrics.inputs.v1"
+  },
+  "schema": "dsv41.descriptive.metrics.v1",
+  "statistics": {
+    "common_http_cohorts": 1400,
+    "common_native_intervals": 36093,
+    "http": {
+      "hybrid": {
+        "average_tpot_ms": {
+          "mape_percent": 6.282031342412614,
+          "mean_signed_error_percent": -6.282031342412614,
+          "median_ape_percent": 6.42843366383572,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.40337022905417,
+          "predicted": 1400,
+          "wape_percent": 6.338443095309455
+        },
+        "exact_itl_ms": {
+          "mape_percent": 6.282031342412614,
+          "mean_signed_error_percent": -6.282031342412614,
+          "median_ape_percent": 6.428433663835725,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.40337022905417,
+          "predicted": 1400,
+          "wape_percent": 6.338443095309455
+        },
+        "last_token_latency_ms": {
+          "mape_percent": 5.138960379206917,
+          "mean_signed_error_percent": -5.0895441801961,
+          "median_ape_percent": 5.461977772338527,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.088292043437551,
+          "predicted": 1400,
+          "wape_percent": 4.88434355380022
+        },
+        "output_tokens_per_second": {
+          "mape_percent": 5.20224969040104,
+          "mean_signed_error_percent": 4.967402184828065,
+          "median_ape_percent": 5.302030551201742,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.627276106550274,
+          "predicted": 1400,
+          "wape_percent": 4.431567615590276
+        },
+        "request_latency_ms": {
+          "mape_percent": 5.149776420614349,
+          "mean_signed_error_percent": -5.101264406214626,
+          "median_ape_percent": 5.473957056499195,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.098667248647473,
+          "predicted": 1400,
+          "wape_percent": 4.894114225206322
+        },
+        "ttft_ms": {
+          "mape_percent": 14.38808361626976,
+          "mean_signed_error_percent": 9.501393471011479,
+          "median_ape_percent": 6.533594792248165,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 40.28513262989504,
+          "predicted": 1400,
+          "wape_percent": 14.598197031995781
+        }
+      },
+      "silicon": {
+        "average_tpot_ms": {
+          "mape_percent": 6.282031342412614,
+          "mean_signed_error_percent": -6.282031342412614,
+          "median_ape_percent": 6.42843366383572,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.40337022905417,
+          "predicted": 1400,
+          "wape_percent": 6.338443095309455
+        },
+        "exact_itl_ms": {
+          "mape_percent": 6.282031342412614,
+          "mean_signed_error_percent": -6.282031342412614,
+          "median_ape_percent": 6.428433663835725,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.40337022905417,
+          "predicted": 1400,
+          "wape_percent": 6.338443095309455
+        },
+        "last_token_latency_ms": {
+          "mape_percent": 5.138960379206917,
+          "mean_signed_error_percent": -5.0895441801961,
+          "median_ape_percent": 5.461977772338527,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.088292043437551,
+          "predicted": 1400,
+          "wape_percent": 4.88434355380022
+        },
+        "output_tokens_per_second": {
+          "mape_percent": 5.20224969040104,
+          "mean_signed_error_percent": 4.967402184828065,
+          "median_ape_percent": 5.302030551201742,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.627276106550274,
+          "predicted": 1400,
+          "wape_percent": 4.431567615590276
+        },
+        "request_latency_ms": {
+          "mape_percent": 5.149776420614349,
+          "mean_signed_error_percent": -5.101264406214626,
+          "median_ape_percent": 5.473957056499195,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 7.098667248647473,
+          "predicted": 1400,
+          "wape_percent": 4.894114225206322
+        },
+        "ttft_ms": {
+          "mape_percent": 14.38808361626976,
+          "mean_signed_error_percent": 9.501393471011479,
+          "median_ape_percent": 6.533594792248165,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 40.28513262989504,
+          "predicted": 1400,
+          "wape_percent": 14.598197031995781
+        }
+      },
+      "sol": {
+        "average_tpot_ms": {
+          "mape_percent": 99.59810521801255,
+          "mean_signed_error_percent": -99.59810521801255,
+          "median_ape_percent": 99.65385532556638,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 99.6608112342406,
+          "predicted": 1400,
+          "wape_percent": 99.59702895069927
+        },
+        "exact_itl_ms": {
+          "mape_percent": 99.59810521801255,
+          "mean_signed_error_percent": -99.59810521801255,
+          "median_ape_percent": 99.65385532556638,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 99.6608112342406,
+          "predicted": 1400,
+          "wape_percent": 99.59702895069927
+        },
+        "last_token_latency_ms": {
+          "mape_percent": 99.3278947695295,
+          "mean_signed_error_percent": -99.3278947695295,
+          "median_ape_percent": 99.32493715796423,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 99.48080839652556,
+          "predicted": 1400,
+          "wape_percent": 99.3250151770309
+        },
+        "output_tokens_per_second": {
+          "mape_percent": 14825.266558862151,
+          "mean_signed_error_percent": 14825.266558862151,
+          "median_ape_percent": 14451.679998312033,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 18948.36941763978,
+          "predicted": 1400,
+          "wape_percent": 14287.452674177342
+        },
+        "request_latency_ms": {
+          "mape_percent": 99.32797949725862,
+          "mean_signed_error_percent": -99.32797949725862,
+          "median_ape_percent": 99.32502550286176,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 99.4808409033982,
+          "predicted": 1400,
+          "wape_percent": 99.32509267645727
+        },
+        "ttft_ms": {
+          "mape_percent": 96.73054326503598,
+          "mean_signed_error_percent": -96.73054326503598,
+          "median_ape_percent": 96.91264869170803,
+          "missing": 100,
+          "observed": 1500,
+          "p90_ape_percent": 97.17024768245497,
+          "predicted": 1400,
+          "wape_percent": 96.71819795296723
+        }
+      }
+    },
+    "http_common_support": {
+      "hybrid": {
+        "average_tpot_ms": {
+          "mape_percent": 6.282031342412614,
+          "mean_signed_error_percent": -6.282031342412614,
+          "median_ape_percent": 6.42843366383572,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.40337022905417,
+          "predicted": 1400,
+          "wape_percent": 6.338443095309455
+        },
+        "exact_itl_ms": {
+          "mape_percent": 6.282031342412614,
+          "mean_signed_error_percent": -6.282031342412614,
+          "median_ape_percent": 6.428433663835725,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.40337022905417,
+          "predicted": 1400,
+          "wape_percent": 6.338443095309455
+        },
+        "last_token_latency_ms": {
+          "mape_percent": 5.138960379206917,
+          "mean_signed_error_percent": -5.0895441801961,
+          "median_ape_percent": 5.461977772338527,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.088292043437551,
+          "predicted": 1400,
+          "wape_percent": 4.88434355380022
+        },
+        "output_tokens_per_second": {
+          "mape_percent": 5.20224969040104,
+          "mean_signed_error_percent": 4.967402184828065,
+          "median_ape_percent": 5.302030551201742,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.627276106550274,
+          "predicted": 1400,
+          "wape_percent": 4.431567615590276
+        },
+        "request_latency_ms": {
+          "mape_percent": 5.149776420614349,
+          "mean_signed_error_percent": -5.101264406214626,
+          "median_ape_percent": 5.473957056499195,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.098667248647473,
+          "predicted": 1400,
+          "wape_percent": 4.894114225206322
+        },
+        "ttft_ms": {
+          "mape_percent": 14.38808361626976,
+          "mean_signed_error_percent": 9.501393471011479,
+          "median_ape_percent": 6.533594792248165,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 40.28513262989504,
+          "predicted": 1400,
+          "wape_percent": 14.598197031995781
+        }
+      },
+      "silicon": {
+        "average_tpot_ms": {
+          "mape_percent": 6.282031342412614,
+          "mean_signed_error_percent": -6.282031342412614,
+          "median_ape_percent": 6.42843366383572,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.40337022905417,
+          "predicted": 1400,
+          "wape_percent": 6.338443095309455
+        },
+        "exact_itl_ms": {
+          "mape_percent": 6.282031342412614,
+          "mean_signed_error_percent": -6.282031342412614,
+          "median_ape_percent": 6.428433663835725,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.40337022905417,
+          "predicted": 1400,
+          "wape_percent": 6.338443095309455
+        },
+        "last_token_latency_ms": {
+          "mape_percent": 5.138960379206917,
+          "mean_signed_error_percent": -5.0895441801961,
+          "median_ape_percent": 5.461977772338527,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.088292043437551,
+          "predicted": 1400,
+          "wape_percent": 4.88434355380022
+        },
+        "output_tokens_per_second": {
+          "mape_percent": 5.20224969040104,
+          "mean_signed_error_percent": 4.967402184828065,
+          "median_ape_percent": 5.302030551201742,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.627276106550274,
+          "predicted": 1400,
+          "wape_percent": 4.431567615590276
+        },
+        "request_latency_ms": {
+          "mape_percent": 5.149776420614349,
+          "mean_signed_error_percent": -5.101264406214626,
+          "median_ape_percent": 5.473957056499195,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 7.098667248647473,
+          "predicted": 1400,
+          "wape_percent": 4.894114225206322
+        },
+        "ttft_ms": {
+          "mape_percent": 14.38808361626976,
+          "mean_signed_error_percent": 9.501393471011479,
+          "median_ape_percent": 6.533594792248165,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 40.28513262989504,
+          "predicted": 1400,
+          "wape_percent": 14.598197031995781
+        }
+      },
+      "sol": {
+        "average_tpot_ms": {
+          "mape_percent": 99.59810521801255,
+          "mean_signed_error_percent": -99.59810521801255,
+          "median_ape_percent": 99.65385532556638,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 99.6608112342406,
+          "predicted": 1400,
+          "wape_percent": 99.59702895069927
+        },
+        "exact_itl_ms": {
+          "mape_percent": 99.59810521801255,
+          "mean_signed_error_percent": -99.59810521801255,
+          "median_ape_percent": 99.65385532556638,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 99.6608112342406,
+          "predicted": 1400,
+          "wape_percent": 99.59702895069927
+        },
+        "last_token_latency_ms": {
+          "mape_percent": 99.3278947695295,
+          "mean_signed_error_percent": -99.3278947695295,
+          "median_ape_percent": 99.32493715796423,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 99.48080839652556,
+          "predicted": 1400,
+          "wape_percent": 99.3250151770309
+        },
+        "output_tokens_per_second": {
+          "mape_percent": 14825.266558862151,
+          "mean_signed_error_percent": 14825.266558862151,
+          "median_ape_percent": 14451.679998312033,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 18948.36941763978,
+          "predicted": 1400,
+          "wape_percent": 14287.452674177342
+        },
+        "request_latency_ms": {
+          "mape_percent": 99.32797949725862,
+          "mean_signed_error_percent": -99.32797949725862,
+          "median_ape_percent": 99.32502550286176,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 99.4808409033982,
+          "predicted": 1400,
+          "wape_percent": 99.32509267645727
+        },
+        "ttft_ms": {
+          "mape_percent": 96.73054326503598,
+          "mean_signed_error_percent": -96.73054326503598,
+          "median_ape_percent": 96.91264869170803,
+          "missing": 0,
+          "observed": 1400,
+          "p90_ape_percent": 97.17024768245497,
+          "predicted": 1400,
+          "wape_percent": 96.71819795296723
+        }
+      }
+    },
+    "trace": {
+      "hybrid": {
+        "all": {
+          "mape_percent": 8.534158080405264,
+          "mean_signed_error_percent": -7.504927972658596,
+          "median_ape_percent": 4.944186994638966,
+          "missing": 100,
+          "observed": 39393,
+          "p90_ape_percent": 8.151500678891754,
+          "predicted": 39293,
+          "wape_percent": 8.885633437205685
+        },
+        "decode": {
+          "mape_percent": 8.374483807367488,
+          "mean_signed_error_percent": -8.374481431361065,
+          "median_ape_percent": 4.961806153233761,
+          "missing": 0,
+          "observed": 37600,
+          "p90_ape_percent": 6.826490695479365,
+          "predicted": 37600,
+          "wape_percent": 8.70805863998329
+        },
+        "mixed": {
+          "missing": 0,
+          "observed": 0,
+          "predicted": 0
+        },
+        "prefill": {
+          "mape_percent": 12.08037938354785,
+          "mean_signed_error_percent": 11.807068511223767,
+          "median_ape_percent": 2.5115198837895703,
+          "missing": 100,
+          "observed": 1793,
+          "p90_ape_percent": 27.143362256426116,
+          "predicted": 1693,
+          "wape_percent": 12.287110653080441
+        }
+      },
+      "silicon": {
+        "all": {
+          "mape_percent": 5.05478959615768,
+          "mean_signed_error_percent": -3.9343081004745883,
+          "median_ape_percent": 4.812138311915448,
+          "missing": 3300,
+          "observed": 39393,
+          "p90_ape_percent": 5.943814939281458,
+          "predicted": 36093,
+          "wape_percent": 5.392346330652992
+        },
+        "decode": {
+          "mape_percent": 4.709024377842228,
+          "mean_signed_error_percent": -4.709021780811952,
+          "median_ape_percent": 4.834423933914216,
+          "missing": 3200,
+          "observed": 37600,
+          "p90_ape_percent": 5.894935994530945,
+          "predicted": 34400,
+          "wape_percent": 4.998386460888341
+        },
+        "mixed": {
+          "missing": 0,
+          "observed": 0,
+          "predicted": 0
+        },
+        "prefill": {
+          "mape_percent": 12.08037938354785,
+          "mean_signed_error_percent": 11.807068511223767,
+          "median_ape_percent": 2.5115198837895703,
+          "missing": 100,
+          "observed": 1793,
+          "p90_ape_percent": 27.143362256426116,
+          "predicted": 1693,
+          "wape_percent": 12.287110653080441
+        }
+      },
+      "sol": {
+        "all": {
+          "mape_percent": 99.38658363958994,
+          "mean_signed_error_percent": -99.38658363958994,
+          "median_ape_percent": 99.57991993927045,
+          "missing": 100,
+          "observed": 39393,
+          "p90_ape_percent": 99.6542977100755,
+          "predicted": 39293,
+          "wape_percent": 99.35394737695995
+        },
+        "decode": {
+          "mape_percent": 99.6047225915348,
+          "mean_signed_error_percent": -99.6047225915348,
+          "median_ape_percent": 99.58230347045529,
+          "missing": 0,
+          "observed": 37600,
+          "p90_ape_percent": 99.65437294151293,
+          "predicted": 37600,
+          "wape_percent": 99.60530583685431
+        },
+        "mixed": {
+          "missing": 0,
+          "observed": 0,
+          "predicted": 0
+        },
+        "prefill": {
+          "mape_percent": 94.54191465369121,
+          "mean_signed_error_percent": -94.54191465369121,
+          "median_ape_percent": 94.53090293294453,
+          "missing": 100,
+          "observed": 1793,
+          "p90_ape_percent": 94.85538748493163,
+          "predicted": 1693,
+          "wape_percent": 94.53913081671789
+        }
+      }
+    },
+    "trace_common_support": {
+      "hybrid": {
+        "all": {
+          "mape_percent": 5.05478959615768,
+          "mean_signed_error_percent": -3.9343081004745883,
+          "median_ape_percent": 4.812138311915448,
+          "missing": 0,
+          "observed": 36093,
+          "p90_ape_percent": 5.943814939281458,
+          "predicted": 36093,
+          "wape_percent": 5.392346330652992
+        },
+        "decode": {
+          "mape_percent": 4.709024377842228,
+          "mean_signed_error_percent": -4.709021780811952,
+          "median_ape_percent": 4.834423933914216,
+          "missing": 0,
+          "observed": 34400,
+          "p90_ape_percent": 5.894935994530945,
+          "predicted": 34400,
+          "wape_percent": 4.998386460888341
+        },
+        "mixed": {
+          "missing": 0,
+          "observed": 0,
+          "predicted": 0
+        },
+        "prefill": {
+          "mape_percent": 12.08037938354785,
+          "mean_signed_error_percent": 11.807068511223767,
+          "median_ape_percent": 2.5115198837895703,
+          "missing": 0,
+          "observed": 1693,
+          "p90_ape_percent": 27.143362256426116,
+          "predicted": 1693,
+          "wape_percent": 12.287110653080441
+        }
+      },
+      "silicon": {
+        "all": {
+          "mape_percent": 5.05478959615768,
+          "mean_signed_error_percent": -3.9343081004745883,
+          "median_ape_percent": 4.812138311915448,
+          "missing": 0,
+          "observed": 36093,
+          "p90_ape_percent": 5.943814939281458,
+          "predicted": 36093,
+          "wape_percent": 5.392346330652992
+        },
+        "decode": {
+          "mape_percent": 4.709024377842228,
+          "mean_signed_error_percent": -4.709021780811952,
+          "median_ape_percent": 4.834423933914216,
+          "missing": 0,
+          "observed": 34400,
+          "p90_ape_percent": 5.894935994530945,
+          "predicted": 34400,
+          "wape_percent": 4.998386460888341
+        },
+        "mixed": {
+          "missing": 0,
+          "observed": 0,
+          "predicted": 0
+        },
+        "prefill": {
+          "mape_percent": 12.08037938354785,
+          "mean_signed_error_percent": 11.807068511223767,
+          "median_ape_percent": 2.5115198837895703,
+          "missing": 0,
+          "observed": 1693,
+          "p90_ape_percent": 27.143362256426116,
+          "predicted": 1693,
+          "wape_percent": 12.287110653080441
+        }
+      },
+      "sol": {
+        "all": {
+          "mape_percent": 99.37752516569473,
+          "mean_signed_error_percent": -99.37752516569473,
+          "median_ape_percent": 99.6402354611517,
+          "missing": 0,
+          "observed": 36093,
+          "p90_ape_percent": 99.65444467693082,
+          "predicted": 36093,
+          "wape_percent": 99.34173594716363
+        },
+        "decode": {
+          "mape_percent": 99.61551029932328,
+          "mean_signed_error_percent": -99.61551029932328,
+          "median_ape_percent": 99.64347947390377,
+          "missing": 0,
+          "observed": 34400,
+          "p90_ape_percent": 99.65453085480999,
+          "predicted": 34400,
+          "wape_percent": 99.616151953751
+        },
+        "mixed": {
+          "missing": 0,
+          "observed": 0,
+          "predicted": 0
+        },
+        "prefill": {
+          "mape_percent": 94.54191465369121,
+          "mean_signed_error_percent": -94.54191465369121,
+          "median_ape_percent": 94.53090293294453,
+          "missing": 0,
+          "observed": 1693,
+          "p90_ape_percent": 94.85538748493163,
+          "predicted": 1693,
+          "wape_percent": 94.53913081671789
+        }
+      }
+    }
+  }
+}

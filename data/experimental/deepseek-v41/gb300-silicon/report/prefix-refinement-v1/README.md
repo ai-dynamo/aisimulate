@@ -8,27 +8,27 @@ Points compare the median native forward with prediction. Horizontal whiskers sp
 
 ## Accuracy and common support
 
-| Profile | Mode | Coverage | Mean signed error | Median APE | p90 APE | WAPE |
-|---|---|---:|---:|---:|---:|---:|
-| Decoder OFF | SOL | 46/46 | -96.14% | 95.02% | 99.61% | 96.02% |
-| Decoder OFF | HYBRID | 46/46 | +1.37% | 6.67% | 15.38% | 7.23% |
-| Decoder OFF | SILICON | 46/46 | +1.37% | 6.67% | 15.38% | 7.23% |
-| Decoder ON | SOL | 46/46 | -96.14% | 95.02% | 99.64% | 96.07% |
-| Decoder ON | HYBRID | 46/46 | -4.38% | 2.29% | 11.48% | 4.85% |
-| Decoder ON | SILICON | 46/46 | -4.38% | 2.29% | 11.48% | 4.85% |
+| Profile | Mode | Coverage | Mean signed error | Median APE | p90 APE | MAPE | WAPE |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Decoder OFF | SOL | 46/46 | -96.14% | 95.02% | 99.61% | 96.14% | 96.02% |
+| Decoder OFF | HYBRID | 46/46 | +1.37% | 6.67% | 15.38% | 7.37% | 7.23% |
+| Decoder OFF | SILICON | 46/46 | +1.37% | 6.67% | 15.38% | 7.37% | 7.23% |
+| Decoder ON | SOL | 46/46 | -96.14% | 95.02% | 99.64% | 96.14% | 96.07% |
+| Decoder ON | HYBRID | 46/46 | -4.38% | 2.29% | 11.48% | 4.84% | 4.85% |
+| Decoder ON | SILICON | 46/46 | -4.38% | 2.29% | 11.48% | 4.84% | 4.85% |
 
-All three modes share the same 46 supported configurations per profile; the common-support statistics therefore equal the table above. No missing point was dropped from a denominator. Strict SILICON disables shared-source fallback. Existing empirical embedding, normalization, activation and memory operations remain empirical, so a successful strict query is not a claim that every forward cost was measured. SOL's roughly 96% underprediction against this native wall interval is shown explicitly; it is not a validated wall-latency forecast.
+All three modes share the same 46 supported configurations per profile; the common-support statistics therefore equal the table above. MAPE is `100 * mean(abs(prediction / observation - 1))`; WAPE is `100 * sum(abs(prediction - observation)) / sum(observation)` on the same pairs. No missing point was dropped from a denominator. Strict SILICON disables shared-source fallback. Existing empirical embedding, normalization, activation and memory operations remain empirical, so a successful strict query is not a claim that every forward cost was measured. SOL's roughly 96% underprediction against this native wall interval is shown explicitly; it is not a validated wall-latency forecast.
 
-| Profile | Phase | Mode | Coverage | Mean signed error | Median APE | WAPE |
-|---|---|---|---:|---:|---:|---:|
-| Decoder OFF | Prefill | SOL | 36/36 | -95.17% | 94.86% | 95.19% |
-| Decoder OFF | Prefill | HYBRID / SILICON | 36/36 | +5.06% | 3.56% | 6.15% |
-| Decoder OFF | Decode | SOL | 10/10 | -99.61% | 99.61% | 99.61% |
-| Decoder OFF | Decode | HYBRID / SILICON | 10/10 | -11.91% | 11.98% | 11.91% |
-| Decoder ON | Prefill | SOL | 36/36 | -95.17% | 94.82% | 95.19% |
-| Decoder ON | Prefill | HYBRID / SILICON | 36/36 | -2.74% | 1.15% | 3.49% |
-| Decoder ON | Decode | SOL | 10/10 | -99.64% | 99.64% | 99.63% |
-| Decoder ON | Decode | HYBRID / SILICON | 10/10 | -10.28% | 10.32% | 10.31% |
+| Profile | Phase | Mode | Coverage | Mean signed error | Median APE | MAPE | WAPE |
+|---|---|---|---:|---:|---:|---:|---:|
+| Decoder OFF | Prefill | SOL | 36/36 | -95.17% | 94.86% | 95.17% | 95.19% |
+| Decoder OFF | Prefill | HYBRID / SILICON | 36/36 | +5.06% | 3.56% | 6.11% | 6.15% |
+| Decoder OFF | Decode | SOL | 10/10 | -99.61% | 99.61% | 99.61% | 99.61% |
+| Decoder OFF | Decode | HYBRID / SILICON | 10/10 | -11.91% | 11.98% | 11.91% | 11.91% |
+| Decoder ON | Prefill | SOL | 36/36 | -95.17% | 94.82% | 95.17% | 95.19% |
+| Decoder ON | Prefill | HYBRID / SILICON | 36/36 | -2.74% | 1.15% | 3.34% | 3.49% |
+| Decoder ON | Decode | SOL | 10/10 | -99.64% | 99.64% | 99.64% | 99.63% |
+| Decoder ON | Decode | HYBRID / SILICON | 10/10 | -10.28% | 10.32% | 10.28% | 10.31% |
 
 The 36 prefill and 10 decode points are also reported separately: decode is underpredicted by about 10-12% despite the smaller combined WAPE. Signed error is `100*(prediction/observation-1)`. APE percentiles weight each logical configuration equally; WAPE is `100*sum(abs(prediction-observation))/sum(observation)`. The p90 column is a percentile across configurations, not request tail latency. Each observation is the median of ten invocation times, each invocation first taking the maximum across four TP ranks. There is no fitted correction.
 
@@ -57,7 +57,7 @@ The target is the original SGLang synchronized one-batch wall interval, includin
 
 The domain remains homogeneous B1/B2, at most 512 total new prefill tokens and native context at most 2048. This does not qualify heterogeneous/B3 requests, arbitrary exact-prefix buckets, longer contexts, new corpora, different kernels, scheduling or repeated-text cache semantics. No model formula or correction was changed for these results.
 
-Every result JSON binds the observed attempt, frozen point manifest, configuration, checkpoint, resolved model, actual source files and complete system-overlay hashes. The renderer independently checks all 276 predictions against admitted observations and plan geometry, recomputes statistics, checks source and data hashes, and verifies original artifact preservation. `artifact-hashes.json` binds this review and its outputs. To regenerate with the source-verified FPM comparison tools from the companion PR available at `$ANALYSIS_DIR`:
+Every result JSON binds the observed attempt, frozen point manifest, configuration, checkpoint, resolved model, actual source files and complete system-overlay hashes. The renderer independently checks all 276 predictions against admitted observations and plan geometry, recomputes statistics, checks source and data hashes, and verifies original artifact preservation. `artifact-hashes.json` binds this review and its outputs. The separate descriptive MAPE addition validates byte-pinned comparisons and preserves the original audit in `original-artifact-hashes.json`; it does not revalidate a newer predictor. Use `render_report.py --frozen-comparisons` for that descriptive rendering. To reproduce the original full audit with its exact original predictor and FPM tools from the companion PR available at `$ANALYSIS_DIR`:
 
 ```bash
 export PYTHONPATH=python/aisimulate/src:python/aisimulate

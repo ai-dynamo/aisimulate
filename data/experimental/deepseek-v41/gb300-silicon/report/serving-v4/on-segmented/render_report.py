@@ -9,6 +9,7 @@ import collections
 import csv
 import gzip
 import hashlib
+import importlib.util
 import json
 import math
 import re
@@ -25,6 +26,14 @@ METRICS = {
     "last_token_latency_ms": "Time to last output token",
     "exact_itl_ms": "Mean inter-token latency",
 }
+
+
+REPORT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "descriptive_metrics.py").is_file())
+_metrics_spec = importlib.util.spec_from_file_location(
+    "dsv41_descriptive_metrics", REPORT_ROOT / "descriptive_metrics.py"
+)
+descriptive_update = importlib.util.module_from_spec(_metrics_spec)
+_metrics_spec.loader.exec_module(descriptive_update)
 
 
 def require(condition, reason):
@@ -49,13 +58,24 @@ def quantile(values, q):
 
 
 def descriptive(pairs, observed_count):
-    require(type(observed_count) is int and observed_count >= len(pairs), "invalid coverage denominator")
-    result = {"observed": observed_count, "predicted": len(pairs), "missing": observed_count - len(pairs)}
+    require(
+        type(observed_count) is int and observed_count >= len(pairs),
+        "invalid coverage denominator",
+    )
+    result = {
+        "observed": observed_count,
+        "predicted": len(pairs),
+        "missing": observed_count - len(pairs),
+    }
     if not pairs:
         return result
-    require(all(math.isfinite(v) and v > 0 for pair in pairs for v in pair), "invalid metric value")
+    require(
+        all(math.isfinite(v) and v > 0 for pair in pairs for v in pair),
+        "invalid metric value",
+    )
     errors = [100 * (p / o - 1) for o, p in pairs]
     result.update(
+        mape_percent=statistics.mean(abs(e) for e in errors),
         mean_signed_error_percent=statistics.mean(errors),
         median_ape_percent=statistics.median(abs(e) for e in errors),
         p90_ape_percent=quantile([abs(e) for e in errors], 0.9),
@@ -306,10 +326,16 @@ def table_line(mode, metric, value):
     cols += (
         [
             f"{value[key]:+.2f}%" if key == "mean_signed_error_percent" else f"{value[key]:.2f}%"
-            for key in ("mean_signed_error_percent", "median_ape_percent", "p90_ape_percent", "wape_percent")
+            for key in (
+                "mean_signed_error_percent",
+                "median_ape_percent",
+                "p90_ape_percent",
+                "mape_percent",
+                "wape_percent",
+            )
         ]
         if value["predicted"]
-        else ["unavailable"] * 4
+        else ["unavailable"] * 5
     )
     return "| " + " | ".join(cols) + " |"
 
@@ -499,16 +525,22 @@ def markdown(reports, plan, budget, summary, paired_outputs=None, content_contro
     lines += runtime_continuity_lines(first["segments"])
     lines += [
         "",
+        "![Descriptive MAPE and WAPE](descriptive-error-comparison.png)",
+        "",
+        "[Descriptive metric receipt](descriptive-metrics.json) binds the unchanged comparison files. "
+        "These additions do not change conditional lifecycle confidence intervals or create a pooled interval.",
+        "",
         "## HTTP serving errors",
         "",
-        "Descriptive statistics weight observed scenario/trial cohorts equally. WAPE is total absolute "
+        "Descriptive MAPE is `100 * mean(abs(prediction / observation - 1))`, weighting supported "
+        "scenario/trial cohorts equally. WAPE uses the same supported pairs and is total absolute "
         "error divided by total observed value. p90 APE is a percentile of prediction errors, not p90 "
         "request latency. Error values use available predictions; missing predictions remain in the "
         "coverage denominator. The common-support table compares identical predicted cohorts across modes. "
         "HTTP mean inter-token latency does not establish exact per-token or tail gaps.",
         "",
-        "| Mode | Metric | Predicted / observed | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Mode | Metric | Predicted / observed | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for mode in MODES:
         for metric, label in METRICS.items():
@@ -517,8 +549,8 @@ def markdown(reports, plan, budget, summary, paired_outputs=None, content_contro
         "",
         f"### Same supported subset: {summary['common_http_cohorts']} cohorts",
         "",
-        "| Mode | Metric | Predicted / observed | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Mode | Metric | Predicted / observed | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for mode in MODES:
         for metric, label in METRICS.items():
@@ -532,8 +564,8 @@ def markdown(reports, plan, budget, summary, paired_outputs=None, content_contro
         "overlap output, is retained. The table is descriptive over correlated intervals; per-scenario "
         "conditional whole-trial intervals are retained separately in each segment result.",
         "",
-        "| Mode | Phase | Predicted / observed | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Mode | Phase | Predicted / observed | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for mode in MODES:
         for phase, value in summary["trace"][mode].items():
@@ -546,8 +578,8 @@ def markdown(reports, plan, budget, summary, paired_outputs=None, content_contro
         "physical-run / cohort / dispatch intervals in all modes, without dropping missing rows from "
         "the full-coverage table above.",
         "",
-        "| Mode | Phase | Predicted / observed | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Mode | Phase | Predicted / observed | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for mode in MODES:
         for phase, value in summary["trace_common_support"][mode].items():
@@ -722,7 +754,10 @@ def main():
         budget["stage_trials"] == plan["requested_trials"] and budget["required_trials"] > budget["stage_trials"],
         "frozen capped budget differs",
     )
+    descriptive_update.validate_frozen(root)
     summary = summarize(reports)
+    descriptive_update.write(root, {k: v for k, v in summary.items() if k != "missing"})
+    descriptive_update.plot_serving(root, summary)
     (root / "descriptive-statistics.json").write_text(
         json.dumps({k: v for k, v in summary.items() if k != "missing"}, indent=2) + "\n"
     )
@@ -748,6 +783,8 @@ def main():
                 "predicted_trials",
                 "observed_mean",
                 "predicted_mean",
+                "mape_percent",
+                "wape_percent",
                 "ratio_error_ci95_low",
                 "ratio_error_ci95_high",
             ]
@@ -756,6 +793,19 @@ def main():
             for segment in report["segments"]:
                 for purpose, values in segment["statistics"]["complete_trial_e2e"].items():
                     for metric, point in values["metrics"].items():
+                        indices = set(segment["statistics"]["complete_same_lifecycle_trial_indices"])
+                        selected = [
+                            r
+                            for r in segment["e2e_cases"]
+                            if r["purpose"] == purpose
+                            and r["trial_index"] in indices
+                            and r["status"] == "predicted"
+                            and metric in r["observed"]
+                        ]
+                        pair_values = descriptive(
+                            [(r["observed"][metric], r["prediction"][metric]) for r in selected],
+                            len(selected),
+                        )
                         interval = point.get("paired_ratio_error_percent_bootstrap_ci95", [None, None])
                         writer.writerow(
                             [
@@ -767,6 +817,8 @@ def main():
                                 values["coverage"]["predicted_trials"],
                                 point["observed_mean"],
                                 point["predicted_mean"],
+                                pair_values.get("mape_percent"),
+                                pair_values.get("wape_percent"),
                                 *interval,
                             ]
                         )

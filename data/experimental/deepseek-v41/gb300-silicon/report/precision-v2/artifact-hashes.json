@@ -1,18 +1,21 @@
 {
-  "README.md": "48f0e732baf94eb3c7a62c88f417cd0cb4eb56ca232c83e40e9fc0d78831118d",
+  "README.md": "4ef7011384aabccd224c779b19a81594dc5e45c3e914c9b8799dc92ab5051d46",
   "decoder_bounded-hybrid-config.json": "44bd961baf73a9ab73c57697755b00d00f22d220b4c83bf0d8f2d50643915239",
   "decoder_bounded-hybrid-results.json": "44a76d480759389eaaf4b90132dbf8e26b03dea806850806cbc4d77a2abab122",
   "decoder_bounded-silicon-config.json": "57ed57314a87c012394039b2fe2f72e419a02cbb2e0390b14bd86bfcfcc77922",
   "decoder_bounded-silicon-results.json": "3dba32a0da0042c7dc41cc84d4d0dd31ca5a4f9b921b7093214d97ec4e118da4",
   "decoder_bounded-sol-config.json": "8cb9c155ddd3984fea702a1e16909a49e49f2f3015b9d986a9093bda67150762",
   "decoder_bounded-sol-results.json": "7e4972fa066378f5cd2664efdbcf66c24590cc083ac0351354d0a2c11a3f93c5",
-  "forward-comparison.pdf": "23a17c1d17e55a08b32f755e6d305ce1c30955581dd70f9ac390d579e8884118",
-  "forward-comparison.png": "fa6943f08faea324474e1c6e4358298db483ed8380d45d0f1d541e39e47b6c41",
+  "descriptive-inputs.json": "d46f74da72d67f497c32a3315be0e0bd2a66dd66ca7e276cc8c6bb8d2d536d8a",
+  "descriptive-metrics.json": "4d5beb6688302996ee92c1b76c69a84448c57f7fb156809668d5dbeb2f192415",
+  "forward-comparison.pdf": "486f692b4262d8493aea5939d85b4e149108ed07dc2b36d67c67b4d286cb96fa",
+  "forward-comparison.png": "b4991e1768f0e4f8a0164e370bea584787363e72788c0adf820747b6796c52b7",
   "full-hybrid-config.json": "372185cc1241bce769f9fe05c5b28957d9b6225928ab7c631cb3da81e9039dfa",
   "full-hybrid-results.json": "2f4a822d3db49709ea189e72e6f4ea7f5451c3d317cc94a6bf76d792516a5ba0",
   "full-silicon-config.json": "1fb02c76f43c5e46d8dcdfc7b0f368e20820d9db6ffabd505f6bc2f0a3abbbd9",
   "full-silicon-results.json": "36f4cb7b5d07d1918a1744f741f0193311f6b609b9671955cf7622c665510c71",
   "full-sol-config.json": "f120a3effabdea10218e58b0268f3053b6c19640e2afcf81e3b81335d77b2c07",
   "full-sol-results.json": "bfaa36f25ce507e55a8d341771f70ff21ce45fdb2a266b9cb98a4698b213fe56",
-  "render_report.py": "d23aa51accd824e113f9d8d0ad9cacd9f33ccfbde19d11e2a30a6e6f1c78b89c"
+  "original-artifact-hashes.json": "072e535c90648eed7f83ce864b7cd0055d59ef32963046f28098606504be0dd4",
+  "render_report.py": "1ab018dadbaeb75ecadade29e30a594fd55dd546b4bc2ba4dba265c94d520852"
 }

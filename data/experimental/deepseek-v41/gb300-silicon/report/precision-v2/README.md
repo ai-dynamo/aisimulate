@@ -4,16 +4,16 @@ The complete fixed holdout contains 38 configurations per Decoder profile. SILIC
 
 ## Observed versus predicted
 
-Each observation is the median of ten independently invoked forwards, after taking the maximum of all four TP ranks for each invocation. One warmup per configuration is retained and excluded. Error is `(prediction / observation - 1) * 100`. Configurations have equal weight for signed bias and APE percentiles; WAPE is `sum(abs(prediction - observation)) / sum(observation)`. The p90 column describes errors across configurations, not request tail latency.
+Each observation is the median of ten independently invoked forwards, after taking the maximum of all four TP ranks for each invocation. One warmup per configuration is retained and excluded. Error is `(prediction / observation - 1) * 100`. Configurations have equal weight for signed bias, MAPE and APE percentiles. MAPE is `mean(abs(prediction / observation - 1)) * 100`; WAPE is `sum(abs(prediction - observation)) / sum(observation)`. The p90 column describes errors across configurations, not request tail latency.
 
-| Profile | Mode | Predicted / measured | Mean signed error | Median APE | p90 APE | WAPE |
-|---|---|---:|---:|---:|---:|---:|
-| Decoder OFF | SOL | 38/38 | -96.19% | 94.99% | 99.65% | 96.04% |
-| Decoder OFF | HYBRID | 38/38 | +0.57% | 7.09% | 13.17% | 7.09% |
-| Decoder OFF | SILICON | 38/38 | +0.57% | 7.09% | 13.17% | 7.09% |
-| Decoder ON | SOL | 38/38 | -96.26% | 95.04% | 99.66% | 96.13% |
-| Decoder ON | HYBRID | 38/38 | -9.89% | 7.39% | 20.97% | 10.04% |
-| Decoder ON | SILICON | 28/38 | -5.69% | 6.80% | 8.61% | 5.66% |
+| Profile | Mode | Predicted / measured | Mean signed error | Median APE | p90 APE | MAPE | WAPE |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Decoder OFF | SOL | 38/38 | -96.19% | 94.99% | 99.65% | 96.19% | 96.04% |
+| Decoder OFF | HYBRID | 38/38 | +0.57% | 7.09% | 13.17% | 7.31% | 7.09% |
+| Decoder OFF | SILICON | 38/38 | +0.57% | 7.09% | 13.17% | 7.31% | 7.09% |
+| Decoder ON | SOL | 38/38 | -96.26% | 95.04% | 99.66% | 96.26% | 96.13% |
+| Decoder ON | HYBRID | 38/38 | -9.89% | 7.39% | 20.97% | 9.89% | 10.04% |
+| Decoder ON | SILICON | 28/38 | -5.69% | 6.80% | 8.61% | 5.69% | 5.66% |
 
 SILICON enforces measured V4.1 table coverage with shared-layer reuse disabled. Generic embedding, normalization, activation and memory operations still use the existing empirical models; a stage total is not entirely measured. SOL is the analytical lower-bound model and its large negative bias is reported explicitly. No correction factor was fitted to these holdouts.
 
@@ -23,31 +23,31 @@ Horizontal whiskers show the minimum and maximum of the ten measured repetitions
 
 ## Phase breakdown
 
-| Profile | Mode | Phase | Coverage | Mean signed error | Median APE | WAPE |
-|---|---|---|---:|---:|---:|---:|
-| Decoder OFF | SOL | Prefill | 28/28 | -94.97% | 94.83% | 94.97% |
-| Decoder OFF | SOL | Decode | 10/10 | -99.61% | 99.61% | 99.61% |
-| Decoder OFF | HYBRID | Prefill | 28/28 | +5.34% | 5.57% | 5.40% |
-| Decoder OFF | HYBRID | Decode | 10/10 | -12.78% | 12.95% | 12.77% |
-| Decoder OFF | SILICON | Prefill | 28/28 | +5.34% | 5.57% | 5.40% |
-| Decoder OFF | SILICON | Decode | 10/10 | -12.78% | 12.95% | 12.77% |
-| Decoder ON | SOL | Prefill | 28/28 | -95.06% | 94.93% | 95.06% |
-| Decoder ON | SOL | Decode | 10/10 | -99.62% | 99.62% | 99.62% |
-| Decoder ON | HYBRID | Prefill | 28/28 | -10.89% | 8.18% | 10.94% |
-| Decoder ON | HYBRID | Decode | 10/10 | -7.10% | 7.11% | 7.10% |
-| Decoder ON | SILICON | Prefill | 18/28 | -4.91% | 3.82% | 4.98% |
-| Decoder ON | SILICON | Decode | 10/10 | -7.10% | 7.11% | 7.10% |
+| Profile | Mode | Phase | Coverage | Mean signed error | Median APE | MAPE | WAPE |
+|---|---|---|---:|---:|---:|---:|---:|
+| Decoder OFF | SOL | Prefill | 28/28 | -94.97% | 94.83% | 94.97% | 94.97% |
+| Decoder OFF | SOL | Decode | 10/10 | -99.61% | 99.61% | 99.61% | 99.61% |
+| Decoder OFF | HYBRID | Prefill | 28/28 | +5.34% | 5.57% | 5.35% | 5.40% |
+| Decoder OFF | HYBRID | Decode | 10/10 | -12.78% | 12.95% | 12.78% | 12.77% |
+| Decoder OFF | SILICON | Prefill | 28/28 | +5.34% | 5.57% | 5.35% | 5.40% |
+| Decoder OFF | SILICON | Decode | 10/10 | -12.78% | 12.95% | 12.78% | 12.77% |
+| Decoder ON | SOL | Prefill | 28/28 | -95.06% | 94.93% | 95.06% | 95.06% |
+| Decoder ON | SOL | Decode | 10/10 | -99.62% | 99.62% | 99.62% | 99.62% |
+| Decoder ON | HYBRID | Prefill | 28/28 | -10.89% | 8.18% | 10.89% | 10.94% |
+| Decoder ON | HYBRID | Decode | 10/10 | -7.10% | 7.11% | 7.10% | 7.10% |
+| Decoder ON | SILICON | Prefill | 18/28 | -4.91% | 3.82% | 4.91% | 4.98% |
+| Decoder ON | SILICON | Decode | 10/10 | -7.10% | 7.11% | 7.10% | 7.10% |
 
 Compare modes on the same supported subset as well: a smaller coverage set can otherwise conceal hard cases.
 
-| Profile | Mode | Common strict subset | Mean signed error | Median APE | p90 APE | WAPE |
-|---|---|---:|---:|---:|---:|---:|
-| Decoder OFF | SOL | 38/38 | -96.19% | 94.99% | 99.65% | 96.04% |
-| Decoder OFF | HYBRID | 38/38 | +0.57% | 7.09% | 13.17% | 7.09% |
-| Decoder OFF | SILICON | 38/38 | +0.57% | 7.09% | 13.17% | 7.09% |
-| Decoder ON | SOL | 28/38 | -96.82% | 95.76% | 99.66% | 96.67% |
-| Decoder ON | HYBRID | 28/38 | -5.69% | 6.80% | 8.61% | 5.66% |
-| Decoder ON | SILICON | 28/38 | -5.69% | 6.80% | 8.61% | 5.66% |
+| Profile | Mode | Common strict subset | Mean signed error | Median APE | p90 APE | MAPE | WAPE |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Decoder OFF | SOL | 38/38 | -96.19% | 94.99% | 99.65% | 96.19% | 96.04% |
+| Decoder OFF | HYBRID | 38/38 | +0.57% | 7.09% | 13.17% | 7.31% | 7.09% |
+| Decoder OFF | SILICON | 38/38 | +0.57% | 7.09% | 13.17% | 7.31% | 7.09% |
+| Decoder ON | SOL | 28/38 | -96.82% | 95.76% | 99.66% | 96.82% | 96.67% |
+| Decoder ON | HYBRID | 28/38 | -5.69% | 6.80% | 8.61% | 5.69% | 5.66% |
+| Decoder ON | SILICON | 28/38 | -5.69% | 6.80% | 8.61% | 5.69% | 5.66% |
 
 ## Repeat stability
 
@@ -96,13 +96,13 @@ Use the [pinned runtime, kernel and input evidence](../../study/README.md). The 
 
 The model and calibration tables are unchanged. All 228 profile/mode predictions and availability decisions exactly match the original report; these are 76 unique profile/configuration pairs, not 228 independent measurements. Observations changed between separately launched native forward attempts. The following comparison keeps the original results visible rather than selecting the better error.
 
-| Profile | Mode | Original 3-repeat median APE | Precision 10-repeat median APE | Original WAPE | Precision WAPE |
-|---|---|---:|---:|---:|---:|
-| Decoder OFF | SOL | 95.32% | 94.99% | 96.26% | 96.04% |
-| Decoder OFF | HYBRID | 4.13% | 7.09% | 6.38% | 7.09% |
-| Decoder OFF | SILICON | 4.13% | 7.09% | 6.38% | 7.09% |
-| Decoder ON | SOL | 95.30% | 95.04% | 96.22% | 96.13% |
-| Decoder ON | HYBRID | 5.61% | 7.39% | 12.41% | 10.04% |
-| Decoder ON | SILICON | 4.73% | 6.80% | 9.29% | 5.66% |
+| Profile | Mode | Original 3-repeat median APE | Precision 10-repeat median APE | Original MAPE | Precision MAPE | Original WAPE | Precision WAPE |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Decoder OFF | SOL | 95.32% | 94.99% | 96.42% | 96.19% | 96.26% | 96.04% |
+| Decoder OFF | HYBRID | 4.13% | 7.09% | 6.88% | 7.31% | 6.38% | 7.09% |
+| Decoder OFF | SILICON | 4.13% | 7.09% | 6.88% | 7.31% | 6.38% | 7.09% |
+| Decoder ON | SOL | 95.30% | 95.04% | 96.32% | 96.26% | 96.22% | 96.13% |
+| Decoder ON | HYBRID | 5.61% | 7.39% | 10.87% | 9.89% | 12.41% | 10.04% |
+| Decoder ON | SILICON | 4.73% | 6.80% | 7.31% | 5.69% | 9.29% | 5.66% |
 
 The prediction receipt pins the resolved checkpoint configuration and inferred precision, the selected system specification and complete table overlay inventory, the native extension, and all comparison/axis/statistics sources. The native extension was rebuilt from source 8a4caf9c; its SHA is 3e4de42a013ff5f37cdc7b5df7f7fdd70b8d70840f8c3c8cc2dcb968109451b4. Its predictions were checked against the original binary on all configurations.

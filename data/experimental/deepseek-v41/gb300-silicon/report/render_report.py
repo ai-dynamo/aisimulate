@@ -3,6 +3,7 @@
 """Render immutable forward comparisons; never fit or recompute predictions."""
 
 import hashlib
+import importlib.util
 import json
 import statistics
 from pathlib import Path
@@ -19,6 +20,14 @@ MODES = {"sol": "SOL", "hybrid": "HYBRID", "silicon": "SILICON"}
 COLORS = {"sol": "#9271B1", "hybrid": "#D88320", "silicon": "#157A8C"}
 
 
+REPORT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "descriptive_metrics.py").is_file())
+_metrics_spec = importlib.util.spec_from_file_location(
+    "dsv41_descriptive_metrics", REPORT_ROOT / "descriptive_metrics.py"
+)
+descriptive = importlib.util.module_from_spec(_metrics_spec)
+_metrics_spec.loader.exec_module(descriptive)
+
+
 def quantile(values, fraction):
     values = sorted(values)
     index = (len(values) - 1) * fraction
@@ -32,6 +41,7 @@ def summary(rows):
     return [
         len(rows),
         statistics.mean(signed),
+        statistics.mean(absolute),
         statistics.median(absolute),
         quantile(absolute, 0.9),
         100 * sum(abs(r["predicted_ms"] - r["observed_ms"]) for r in rows) / sum(r["observed_ms"] for r in rows),
@@ -40,6 +50,7 @@ def summary(rows):
 
 def main():
     reports = {(p, m): json.loads((ROOT / f"{p}-{m}-results.json").read_bytes()) for p in PROFILES for m in MODES}
+    descriptive.forward(ROOT, reports)
     lines = [
         "# GB300 independent native forward comparison",
         "",
@@ -53,19 +64,21 @@ def main():
         "Each observation is the median of three independently invoked forwards, after "
         "taking the maximum of all four TP ranks for each invocation. One warmup per "
         "configuration is retained and excluded. Error is `(prediction / observation - 1) * 100`. "
-        "Configurations have equal weight for signed bias and APE percentiles; WAPE is "
+        "Configurations have equal weight for signed bias, MAPE and APE percentiles. MAPE is "
+        "`mean(abs(prediction / observation - 1)) * 100`; WAPE is "
         "`sum(abs(prediction - observation)) / sum(observation)`. The p90 column describes "
         "errors across configurations, not request tail latency.",
         "",
-        "| Profile | Mode | Predicted / measured | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Profile | Mode | Predicted / measured | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for (profile, mode), report in reports.items():
         s = report["summary"]
         lines.append(
             f"| {PROFILES[profile]} | {MODES[mode]} | {s['predicted_points']}/38 | "
             f"{s['mean_signed_error_percent']:+.2f}% | {s['median_absolute_error_percent']:.2f}% | "
-            f"{s['p90_absolute_error_percent_across_configurations']:.2f}% | {s['wape_percent']:.2f}% |"
+            f"{s['p90_absolute_error_percent_across_configurations']:.2f}% | "
+            f"{s['mape_percent']:.2f}% | {s['wape_percent']:.2f}% |"
         )
     lines += [
         "",
@@ -83,31 +96,31 @@ def main():
         "",
         "## Phase breakdown",
         "",
-        "| Profile | Mode | Phase | Coverage | Mean signed error | Median APE | WAPE |",
-        "|---|---|---|---:|---:|---:|---:|",
+        "| Profile | Mode | Phase | Coverage | Mean signed error | Median APE | MAPE | WAPE |",
+        "|---|---|---|---:|---:|---:|---:|---:|",
     ]
     for (profile, mode), report in reports.items():
         for phase, s in report["by_phase"].items():
             lines.append(
                 f"| {PROFILES[profile]} | {MODES[mode]} | {'Prefill' if phase == 'context' else 'Decode'} | "
                 f"{s['predicted_points']}/{s['planned_points']} | {s['mean_signed_error_percent']:+.2f}% | "
-                f"{s['median_absolute_error_percent']:.2f}% | {s['wape_percent']:.2f}% |"
+                f"{s['median_absolute_error_percent']:.2f}% | {s['mape_percent']:.2f}% | {s['wape_percent']:.2f}% |"
             )
     lines += [
         "",
         "Compare modes on the same supported subset as well: a smaller coverage set can otherwise conceal hard cases.",
         "",
-        "| Profile | Mode | Common strict subset | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Profile | Mode | Common strict subset | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for profile in PROFILES:
         common = {r["case_id"] for r in reports[profile, "silicon"]["cases"] if r["status"] == "predicted"}
         for mode in MODES:
             rows = [r for r in reports[profile, mode]["cases"] if r["case_id"] in common]
-            n, bias, median, p90, wape = summary(rows)
+            n, bias, mape, median, p90, wape = summary(rows)
             lines.append(
                 f"| {PROFILES[profile]} | {MODES[mode]} | {n}/38 | "
-                f"{bias:+.2f}% | {median:.2f}% | {p90:.2f}% | {wape:.2f}% |"
+                f"{bias:+.2f}% | {median:.2f}% | {p90:.2f}% | {mape:.2f}% | {wape:.2f}% |"
             )
     lines += [
         "",
@@ -241,7 +254,9 @@ def main():
                 yscale="log" if mode == "sol" else "linear",
                 xlim=(low, high),
                 ylim=(low, high),
-                title=f"{PROFILES[profile]} · {MODES[mode]} · {len(rows)}/38",
+                title=f"{PROFILES[profile]} · {MODES[mode]} · {len(rows)}/38\n"
+                f"MAPE {reports[profile, mode]['summary']['mape_percent']:.2f}% · "
+                f"WAPE {reports[profile, mode]['summary']['wape_percent']:.2f}%",
                 xlabel="Observed native forward (ms)",
                 ylabel="Prediction (ms)",
             )
@@ -250,9 +265,15 @@ def main():
                 ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
             ax.grid(alpha=0.18, which="both")
             ax.legend(loc="upper left", fontsize=8)
-    fig.suptitle("DeepSeek V4.1 Flash · GB300 TP4 · independent fixed forward holdouts", fontsize=15)
+    fig.suptitle(
+        "DeepSeek V4.1 Flash · GB300 TP4 · independent fixed forward holdouts",
+        fontsize=15,
+    )
     fig.savefig(ROOT / "forward-comparison.png", dpi=180)
-    fig.savefig(ROOT / "forward-comparison.pdf", metadata={"CreationDate": None, "ModDate": None})
+    fig.savefig(
+        ROOT / "forward-comparison.pdf",
+        metadata={"CreationDate": None, "ModDate": None},
+    )
     plt.close(fig)
     sources = sorted(p for p in ROOT.iterdir() if p.is_file() and p.name != "artifact-hashes.json")
     receipt = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}

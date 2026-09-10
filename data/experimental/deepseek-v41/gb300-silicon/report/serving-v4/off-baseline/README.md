@@ -6,53 +6,57 @@ The frozen main plan requests **40 independent trials per scenario**. The closed
 
 The adjacent `main-budget.json` and original pilot/main statistics retain the sample-size decision. The rule takes the largest required N across TTFT, mean time per token, and throughput: at least 20, rounded up to a multiple of 10 from `(1.96 * pilot_CV / 0.05)^2`, capped at 100. Each corpus/profile uses independent pilot and main seeds. Achieved uncertainty is reported below; the budget is an estimate, not a precision guarantee.
 
+![Descriptive MAPE and WAPE](descriptive-error-comparison.png)
+
+[Descriptive metric receipt](descriptive-metrics.json) pins the unchanged comparisons and the added analysis. Original prediction/source identities and conditional confidence intervals remain unchanged.
+
 ## HTTP serving errors
 
-Rows below are descriptive across scenario/trial observations, equally weighted per cohort. They do not represent a production traffic mixture. Mean signed error is `(prediction / observation - 1) * 100`; WAPE is total absolute error divided by total observed value. p90 APE is a percentile of prediction errors, not p90 request latency. Time per output token is the HTTP request-level mean; coalesced frames do not establish exact individual token gaps or tail ITL.
+Rows below are descriptive across scenario/trial observations, equally weighted per cohort. They do not represent a production traffic mixture. Mean signed error is `(prediction / observation - 1) * 100`; WAPE is total absolute error divided by total observed value. MAPE is `100 * mean(abs(prediction / observation - 1))` on the identical supported cohort or native-interval pairs, with equal weight per pair. p90 APE is a percentile of prediction errors, not p90 request latency. Time per output token is the HTTP request-level mean; coalesced frames do not establish exact individual token gaps or tail ITL.
 
-| Mode | Metric | Predicted / observed cohorts | Mean signed error | Median APE | p90 APE | WAPE |
-|---|---|---:|---:|---:|---:|---:|
-| HYBRID | TTFT | 600/600 | +20.07% | 13.55% | 48.79% | 21.98% |
-| HYBRID | Mean time per output token | 600/600 | -15.12% | 13.18% | 17.62% | 15.21% |
-| HYBRID | Finite-cohort throughput | 600/600 | +14.14% | 11.96% | 15.42% | 16.27% |
-| HYBRID | Request completion latency | 600/600 | -12.10% | 10.70% | 13.77% | 12.40% |
-| HYBRID | Time to last output token | 600/600 | -12.09% | 10.70% | 13.76% | 12.38% |
-| HYBRID | Mean inter-token latency | 600/600 | -15.12% | 13.18% | 17.62% | 15.21% |
-| SILICON | TTFT | 520/600 | +18.57% | 8.14% | 48.82% | 20.71% |
-| SILICON | Mean time per output token | 520/600 | -13.09% | 13.11% | 14.05% | 13.14% |
-| SILICON | Finite-cohort throughput | 520/600 | +11.21% | 11.86% | 14.66% | 10.11% |
-| SILICON | Request completion latency | 520/600 | -10.32% | 10.62% | 12.80% | 10.01% |
-| SILICON | Time to last output token | 520/600 | -10.31% | 10.61% | 12.79% | 10.00% |
-| SILICON | Mean inter-token latency | 520/600 | -13.09% | 13.11% | 14.05% | 13.14% |
-| SOL | TTFT | 600/600 | -96.49% | 96.55% | 97.13% | 96.46% |
-| SOL | Mean time per output token | 600/600 | -99.58% | 99.65% | 99.66% | 99.58% |
-| SOL | Finite-cohort throughput | 600/600 | +14158.15% | 13993.44% | 18335.68% | 13433.29% |
-| SOL | Request completion latency | 600/600 | -99.29% | 99.30% | 99.46% | 99.28% |
-| SOL | Time to last output token | 600/600 | -99.29% | 99.30% | 99.46% | 99.28% |
-| SOL | Mean inter-token latency | 600/600 | -99.58% | 99.65% | 99.66% | 99.58% |
+| Mode | Metric | Predicted / observed cohorts | Mean signed error | Median APE | p90 APE | MAPE | WAPE |
+|---|---|---:|---:|---:|---:|---:|---:|
+| HYBRID | TTFT | 600/600 | +20.07% | 13.55% | 48.79% | 21.48% | 21.98% |
+| HYBRID | Mean time per output token | 600/600 | -15.12% | 13.18% | 17.62% | 15.12% | 15.21% |
+| HYBRID | Finite-cohort throughput | 600/600 | +14.14% | 11.96% | 15.42% | 14.14% | 16.27% |
+| HYBRID | Request completion latency | 600/600 | -12.10% | 10.70% | 13.77% | 12.10% | 12.40% |
+| HYBRID | Time to last output token | 600/600 | -12.09% | 10.70% | 13.76% | 12.09% | 12.38% |
+| HYBRID | Mean inter-token latency | 600/600 | -15.12% | 13.18% | 17.62% | 15.12% | 15.21% |
+| SILICON | TTFT | 520/600 | +18.57% | 8.14% | 48.82% | 20.19% | 20.71% |
+| SILICON | Mean time per output token | 520/600 | -13.09% | 13.11% | 14.05% | 13.09% | 13.14% |
+| SILICON | Finite-cohort throughput | 520/600 | +11.21% | 11.86% | 14.66% | 11.21% | 10.11% |
+| SILICON | Request completion latency | 520/600 | -10.32% | 10.62% | 12.80% | 10.32% | 10.01% |
+| SILICON | Time to last output token | 520/600 | -10.31% | 10.61% | 12.79% | 10.31% | 10.00% |
+| SILICON | Mean inter-token latency | 520/600 | -13.09% | 13.11% | 14.05% | 13.09% | 13.14% |
+| SOL | TTFT | 600/600 | -96.49% | 96.55% | 97.13% | 96.49% | 96.46% |
+| SOL | Mean time per output token | 600/600 | -99.58% | 99.65% | 99.66% | 99.58% | 99.58% |
+| SOL | Finite-cohort throughput | 600/600 | +14158.15% | 13993.44% | 18335.68% | 14158.15% | 13433.29% |
+| SOL | Request completion latency | 600/600 | -99.29% | 99.30% | 99.46% | 99.29% | 99.28% |
+| SOL | Time to last output token | 600/600 | -99.29% | 99.30% | 99.46% | 99.29% | 99.28% |
+| SOL | Mean inter-token latency | 600/600 | -99.58% | 99.65% | 99.66% | 99.58% | 99.58% |
 
 ### Same supported subset: 520 cohorts
 
-| Mode | Metric | Mean signed error | Median APE | p90 APE | WAPE |
-|---|---|---:|---:|---:|---:|
-| HYBRID | TTFT | +18.57% | 8.14% | 48.82% | 20.71% |
-| HYBRID | Mean time per output token | -13.09% | 13.11% | 14.05% | 13.14% |
-| HYBRID | Finite-cohort throughput | +11.21% | 11.86% | 14.66% | 10.11% |
-| HYBRID | Request completion latency | -10.32% | 10.62% | 12.80% | 10.01% |
-| HYBRID | Time to last output token | -10.31% | 10.61% | 12.79% | 10.00% |
-| HYBRID | Mean inter-token latency | -13.09% | 13.11% | 14.05% | 13.14% |
-| SILICON | TTFT | +18.57% | 8.14% | 48.82% | 20.71% |
-| SILICON | Mean time per output token | -13.09% | 13.11% | 14.05% | 13.14% |
-| SILICON | Finite-cohort throughput | +11.21% | 11.86% | 14.66% | 10.11% |
-| SILICON | Request completion latency | -10.32% | 10.62% | 12.80% | 10.01% |
-| SILICON | Time to last output token | -10.31% | 10.61% | 12.79% | 10.00% |
-| SILICON | Mean inter-token latency | -13.09% | 13.11% | 14.05% | 13.14% |
-| SOL | TTFT | -96.61% | 96.85% | 97.14% | 96.59% |
-| SOL | Mean time per output token | -99.60% | 99.65% | 99.66% | 99.60% |
-| SOL | Finite-cohort throughput | +14541.31% | 14472.70% | 18369.25% | 13997.63% |
-| SOL | Request completion latency | -99.31% | 99.32% | 99.46% | 99.31% |
-| SOL | Time to last output token | -99.31% | 99.32% | 99.46% | 99.31% |
-| SOL | Mean inter-token latency | -99.60% | 99.65% | 99.66% | 99.60% |
+| Mode | Metric | Mean signed error | Median APE | p90 APE | MAPE | WAPE |
+|---|---|---:|---:|---:|---:|---:|
+| HYBRID | TTFT | +18.57% | 8.14% | 48.82% | 20.19% | 20.71% |
+| HYBRID | Mean time per output token | -13.09% | 13.11% | 14.05% | 13.09% | 13.14% |
+| HYBRID | Finite-cohort throughput | +11.21% | 11.86% | 14.66% | 11.21% | 10.11% |
+| HYBRID | Request completion latency | -10.32% | 10.62% | 12.80% | 10.32% | 10.01% |
+| HYBRID | Time to last output token | -10.31% | 10.61% | 12.79% | 10.31% | 10.00% |
+| HYBRID | Mean inter-token latency | -13.09% | 13.11% | 14.05% | 13.09% | 13.14% |
+| SILICON | TTFT | +18.57% | 8.14% | 48.82% | 20.19% | 20.71% |
+| SILICON | Mean time per output token | -13.09% | 13.11% | 14.05% | 13.09% | 13.14% |
+| SILICON | Finite-cohort throughput | +11.21% | 11.86% | 14.66% | 11.21% | 10.11% |
+| SILICON | Request completion latency | -10.32% | 10.62% | 12.80% | 10.32% | 10.01% |
+| SILICON | Time to last output token | -10.31% | 10.61% | 12.79% | 10.31% | 10.00% |
+| SILICON | Mean inter-token latency | -13.09% | 13.11% | 14.05% | 13.09% | 13.14% |
+| SOL | TTFT | -96.61% | 96.85% | 97.14% | 96.61% | 96.59% |
+| SOL | Mean time per output token | -99.60% | 99.65% | 99.66% | 99.60% | 99.60% |
+| SOL | Finite-cohort throughput | +14541.31% | 14472.70% | 18369.25% | 14541.31% | 13997.63% |
+| SOL | Request completion latency | -99.31% | 99.32% | 99.46% | 99.31% | 99.31% |
+| SOL | Time to last output token | -99.31% | 99.32% | 99.46% | 99.31% | 99.31% |
+| SOL | Mean inter-token latency | -99.60% | 99.65% | 99.66% | 99.60% | 99.60% |
 
 ![HTTP means and paired errors](e2e-comparison.png)
 
@@ -120,17 +124,17 @@ Observed-mean precision target: 45/45 required scenario/metric pairs achieve a 9
 
 Observed timing target: `sglang_existing_gpu_event_interval`. This differs from HTTP E2E and from the synchronized prepare/forward/sample component-study holdouts. All attributed native work, including unreturned overlap output, is retained. Interval statistics below are descriptive because consecutive intervals are correlated.
 
-| Mode | Phase | Predicted / observed intervals | Mean signed error | Median APE | p90 APE | WAPE |
-|---|---|---:|---:|---:|---:|---:|
-| HYBRID | all | 15756/15756 | -11.80% | 11.64% | 42.43% | 16.08% |
-| HYBRID | prefill | 716/716 | +41.24% | 23.20% | 73.24% | 41.79% |
-| HYBRID | decode | 15040/15040 | -14.32% | 11.60% | 13.10% | 14.62% |
-| SILICON | all | 14476/15756 | -8.96% | 11.56% | 12.57% | 13.59% |
-| SILICON | prefill | 716/716 | +41.24% | 23.20% | 73.24% | 41.79% |
-| SILICON | decode | 13760/15040 | -11.57% | 11.52% | 12.38% | 11.84% |
-| SOL | all | 15756/15756 | -99.36% | 99.57% | 99.65% | 99.31% |
-| SOL | prefill | 716/716 | -94.21% | 94.35% | 94.90% | 94.21% |
-| SOL | decode | 15040/15040 | -99.60% | 99.58% | 99.65% | 99.60% |
+| Mode | Phase | Predicted / observed intervals | Mean signed error | Median APE | p90 APE | MAPE | WAPE |
+|---|---|---:|---:|---:|---:|---:|---:|
+| HYBRID | all | 15756/15756 | -11.80% | 11.64% | 42.43% | 15.56% | 16.08% |
+| HYBRID | prefill | 716/716 | +41.24% | 23.20% | 73.24% | 41.43% | 41.79% |
+| HYBRID | decode | 15040/15040 | -14.32% | 11.60% | 13.10% | 14.32% | 14.62% |
+| SILICON | all | 14476/15756 | -8.96% | 11.56% | 12.57% | 13.05% | 13.59% |
+| SILICON | prefill | 716/716 | +41.24% | 23.20% | 73.24% | 41.43% | 41.79% |
+| SILICON | decode | 13760/15040 | -11.57% | 11.52% | 12.38% | 11.57% | 11.84% |
+| SOL | all | 15756/15756 | -99.36% | 99.57% | 99.65% | 99.36% | 99.31% |
+| SOL | prefill | 716/716 | -94.21% | 94.35% | 94.90% | 94.21% | 94.21% |
+| SOL | decode | 15040/15040 | -99.60% | 99.58% | 99.65% | 99.60% | 99.60% |
 
 ![Native interval and whole-trial errors](forward-trace-comparison.png)
 
@@ -149,11 +153,11 @@ Observed timing target: `sglang_existing_gpu_event_interval`. This differs from 
 
 ### Same native supported subset: 14476 intervals
 
-| Mode | Mean signed error | Median APE | p90 APE | WAPE |
-|---|---:|---:|---:|---:|
-| HYBRID | -8.96% | 11.56% | 12.57% | 13.59% |
-| SILICON | -8.96% | 11.56% | 12.57% | 13.59% |
-| SOL | -99.34% | 99.64% | 99.65% | 99.30% |
+| Mode | Mean signed error | Median APE | p90 APE | MAPE | WAPE |
+|---|---:|---:|---:|---:|---:|
+| HYBRID | -8.96% | 11.56% | 12.57% | 13.05% | 13.59% |
+| SILICON | -8.96% | 11.56% | 12.57% | 13.05% | 13.59% |
+| SOL | -99.34% | 99.64% | 99.65% | 99.34% | 99.30% |
 
 Frozen planned coverage roles: `{'coverage_candidate': 280, 'stress_or_extrapolation': 320}`. A coverage candidate is not proof of interpolation for every actual geometry. Lookup coverage and cache-semantics agreement are separate findings. Cache disagreements remain in timing error statistics; missing predictions remain in the coverage denominator. Error statistics use supported pairs.
 

@@ -4,6 +4,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import statistics
@@ -19,6 +20,14 @@ REPO = next(p for p in ROOT.parents if (p / "Cargo.toml").is_file())
 DATA = ROOT.parent.parent / "prefix-refinement-v1"
 PROFILES = {"full": "Decoder OFF", "decoder_bounded": "Decoder ON"}
 MODES = ("sol", "hybrid", "silicon")
+
+
+REPORT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "descriptive_metrics.py").is_file())
+_metrics_spec = importlib.util.spec_from_file_location(
+    "dsv41_descriptive_metrics", REPORT_ROOT / "descriptive_metrics.py"
+)
+descriptive = importlib.util.module_from_spec(_metrics_spec)
+_metrics_spec.loader.exec_module(descriptive)
 
 
 def sha(path):
@@ -61,9 +70,10 @@ def audit(analysis_dir):
     checkpoint_path = utils._get_model_config_path() / f"{model_name.replace('/', '--')}_config.json"
     checkpoint = read(checkpoint_path)
     resolved = utils.get_model_config_from_model_path(model_name)["raw_config"]
-    canonical_sha = lambda value: hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+
+    def canonical_sha(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
     actual_model = {
         "checkpoint_config_file_sha256": sha(checkpoint_path),
         "checkpoint_config_canonical_sha256": canonical_sha(checkpoint),
@@ -91,7 +101,12 @@ def audit(analysis_dir):
     for profile in PROFILES:
         observation_path = DATA / profile / "heldout/forward-results.json"
         observed = read(observation_path)
-        if (observed["status"], observed["case_count"], observed["iterations"], observed["warmup"]) != (
+        if (
+            observed["status"],
+            observed["case_count"],
+            observed["iterations"],
+            observed["warmup"],
+        ) != (
             "accepted",
             46,
             10,
@@ -190,7 +205,10 @@ def audit(analysis_dir):
                     raise ValueError("decode off-by-one")
                 if row["status"] != "predicted" or not math.isfinite(row["predicted_ms"]) or row["predicted_ms"] <= 0:
                     raise ValueError("a prediction is missing or invalid")
-                close(row["signed_error_percent"], 100 * (row["predicted_ms"] / row["observed_ms"] - 1))
+                close(
+                    row["signed_error_percent"],
+                    100 * (row["predicted_ms"] / row["observed_ms"] - 1),
+                )
                 checked += 1
             for key, value in summarize(report["cases"]).items():
                 close(report["summary"][key], value)
@@ -198,9 +216,17 @@ def audit(analysis_dir):
                 for key, value in summarize([r for r in report["cases"] if r["phase"] == phase]).items():
                     close(report["by_phase"][phase][key], value)
             reports[profile, mode] = report
-        for left, right in zip(reports[profile, "hybrid"]["cases"], reports[profile, "silicon"]["cases"], strict=True):
+        for left, right in zip(
+            reports[profile, "hybrid"]["cases"],
+            reports[profile, "silicon"]["cases"],
+            strict=True,
+        ):
             close(left["predicted_ms"], right["predicted_ms"])
-    return reports, {"status": "passed", "prediction_rows_checked": checked, "source_hashes": source_hashes}
+    return reports, {
+        "status": "passed",
+        "prediction_rows_checked": checked,
+        "source_hashes": source_hashes,
+    }
 
 
 def figure(reports):
@@ -230,7 +256,11 @@ def figure(reports):
             color="#8961AE",
             label="SOL",
         )
-        end = 1.06 * max(max(x), max(r["predicted_ms"] for r in measured), max(max(r["rank_max_ms"]) for r in measured))
+        end = 1.06 * max(
+            max(x),
+            max(r["predicted_ms"] for r in measured),
+            max(max(r["rank_max_ms"]) for r in measured),
+        )
         axis.plot([0, end], [0, end], "--", color="#9BA3AC", linewidth=1)
         axis.set(
             xlim=(0, end),
@@ -242,23 +272,36 @@ def figure(reports):
         axis.grid(alpha=0.15)
         axis.legend(loc="upper left", frameon=False)
     axis = axes[1, 0]
-    for i, (profile, label) in enumerate(PROFILES.items()):
-        values = [reports[profile, "silicon"]["by_phase"][phase]["wape_percent"] for phase in ("context", "generation")]
-        bars = axis.bar([i * 3, i * 3 + 1], values, color=["#147D92", "#D08634"])
-        axis.bar_label(bars, fmt="%.2f%%", padding=4)
+    groups = [(profile, phase) for profile in PROFILES for phase in ("context", "generation")]
+    for offset, key, label, color in (
+        (-0.18, "mape_percent", "MAPE", "#D08634"),
+        (0.18, "wape_percent", "WAPE", "#147D92"),
+    ):
+        values = [reports[profile, "silicon"]["by_phase"][phase][key] for profile, phase in groups]
+        bars = axis.bar([i + offset for i in range(4)], values, width=0.34, color=color, label=label)
+        axis.bar_label(bars, fmt="%.2f", padding=3, fontsize=8)
     axis.set(
-        xticks=[0, 1, 3, 4],
+        xticks=range(4),
         xticklabels=["OFF prefill", "OFF decode", "ON prefill", "ON decode"],
-        ylabel="WAPE (%)",
-        ylim=(0, 15),
+        ylabel="Absolute error (%)",
         title="Phase errors: HYBRID = SILICON",
     )
+    axis.margins(y=0.22)
+    axis.legend(frameon=False)
     axis.spines[["top", "right"]].set_visible(False)
     axis = axes[1, 1]
     rows = reports["full", "silicon"]["cases"]
-    worst = max(rows, key=lambda r: statistics.stdev(r["rank_max_ms"]) / statistics.mean(r["rank_max_ms"]))
+    worst = max(
+        rows,
+        key=lambda r: statistics.stdev(r["rank_max_ms"]) / statistics.mean(r["rank_max_ms"]),
+    )
     axis.plot(range(1, 11), worst["rank_max_ms"], "o-", color="#BB573F", markersize=4)
-    axis.axhline(worst["observed_ms"], linestyle="--", color="#596677", label=f"Median {worst['observed_ms']:.2f} ms")
+    axis.axhline(
+        worst["observed_ms"],
+        linestyle="--",
+        color="#596677",
+        label=f"Median {worst['observed_ms']:.2f} ms",
+    )
     axis.set(
         xlabel="Measured repetition",
         ylabel="Native forward (ms)",
@@ -267,9 +310,16 @@ def figure(reports):
     )
     axis.legend(frameon=False)
     axis.grid(alpha=0.15)
-    fig.suptitle("DeepSeek V4.1 Flash · GB300 TP4 · Prefix refinement v1", fontsize=15, fontweight="bold")
+    fig.suptitle(
+        "DeepSeek V4.1 Flash · GB300 TP4 · Prefix refinement v1",
+        fontsize=15,
+        fontweight="bold",
+    )
     fig.savefig(ROOT / "forward-comparison.png", dpi=180)
-    fig.savefig(ROOT / "forward-comparison.pdf", metadata={"CreationDate": None, "ModDate": None})
+    fig.savefig(
+        ROOT / "forward-comparison.pdf",
+        metadata={"CreationDate": None, "ModDate": None},
+    )
     plt.close(fig)
 
 
@@ -290,28 +340,31 @@ def write_readme(reports):
         "",
         "## Accuracy and common support",
         "",
-        "| Profile | Mode | Coverage | Mean signed error | Median APE | p90 APE | WAPE |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Profile | Mode | Coverage | Mean signed error | Median APE | p90 APE | MAPE | WAPE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for (profile, mode), report in reports.items():
         s = report["summary"]
         lines.append(
             f"| {PROFILES[profile]} | {mode.upper()} | {s['predicted_points']}/{s['planned_points']} | "
             f"{s['mean_signed_error_percent']:+.2f}% | {s['median_absolute_error_percent']:.2f}% | "
-            f"{s['p90_absolute_error_percent_across_configurations']:.2f}% | {s['wape_percent']:.2f}% |"
+            f"{s['p90_absolute_error_percent_across_configurations']:.2f}% | "
+            f"{s['mape_percent']:.2f}% | {s['wape_percent']:.2f}% |"
         )
     lines.extend(
         [
             "",
             "All three modes share the same 46 supported configurations per profile; the common-support "
-            "statistics therefore equal the table above. No missing point was dropped from a denominator. "
+            "statistics therefore equal the table above. MAPE is `100 * mean(abs(prediction / observation - 1))`; "
+            "WAPE is `100 * sum(abs(prediction - observation)) / sum(observation)` on the same pairs. "
+            "No missing point was dropped from a denominator. "
             "Strict SILICON disables shared-source fallback. Existing empirical embedding, normalization, "
             "activation and memory operations remain empirical, so a successful strict query is not a claim "
             "that every forward cost was measured. SOL's roughly 96% underprediction against this native "
             "wall interval is shown explicitly; it is not a validated wall-latency forecast.",
             "",
-            "| Profile | Phase | Mode | Coverage | Mean signed error | Median APE | WAPE |",
-            "|---|---|---|---:|---:|---:|---:|",
+            "| Profile | Phase | Mode | Coverage | Mean signed error | Median APE | MAPE | WAPE |",
+            "|---|---|---|---:|---:|---:|---:|---:|",
         ]
     )
     for profile in PROFILES:
@@ -322,7 +375,7 @@ def write_readme(reports):
                 lines.append(
                     f"| {PROFILES[profile]} | {'Prefill' if phase == 'context' else 'Decode'} | {label} | "
                     f"{s['predicted_points']}/{s['planned_points']} | {s['mean_signed_error_percent']:+.2f}% | "
-                    f"{s['median_absolute_error_percent']:.2f}% | {s['wape_percent']:.2f}% |"
+                    f"{s['median_absolute_error_percent']:.2f}% | {s['mape_percent']:.2f}% | {s['wape_percent']:.2f}% |"
                 )
     lines.extend(
         [
@@ -404,7 +457,10 @@ def write_readme(reports):
             "resolved model, actual source files and complete system-overlay hashes. The renderer independently "
             "checks all 276 predictions against admitted observations and plan geometry, recomputes statistics, "
             "checks source and data hashes, and verifies original artifact preservation. `artifact-hashes.json` "
-            "binds this review and its outputs. To regenerate with the source-verified FPM comparison tools "
+            "binds this review and its outputs. The separate descriptive MAPE addition validates byte-pinned "
+            "comparisons and preserves the original audit in `original-artifact-hashes.json`; it does not "
+            "revalidate a newer predictor. Use `render_report.py --frozen-comparisons` for that descriptive "
+            "rendering. To reproduce the original full audit with its exact original predictor and FPM tools "
             "from the companion PR available at `$ANALYSIS_DIR`:",
             "",
             "```bash",
@@ -420,16 +476,41 @@ def write_readme(reports):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--analysis-dir", type=Path, required=True)
+    parser.add_argument("--analysis-dir", type=Path)
+    parser.add_argument(
+        "--frozen-comparisons",
+        action="store_true",
+        help="Render byte-pinned historical predictions without revalidating a different current predictor",
+    )
     args = parser.parse_args()
-    reports, result = audit(args.analysis_dir)
+    if args.frozen_comparisons:
+        descriptive.validate_frozen(ROOT)
+        reports = {(p, m): read(ROOT / f"{p}-{m}-results.json") for p in PROFILES for m in MODES}
+        result = {
+            "status": "descriptive_update_only",
+            "prediction_rows_checked": 0,
+            "original_prediction_audit": "original-artifact-hashes.json",
+            "scope": "Frozen comparison bytes verified; original predictor identity and audit retained, not rerun.",
+        }
+    else:
+        if args.analysis_dir is None:
+            parser.error("--analysis-dir is required for an actual predictor/source audit")
+        reports, result = audit(args.analysis_dir)
+    descriptive.forward(ROOT, reports)
     figure(reports)
     write_readme(reports)
     result["files_sha256"] = {
         p.name: sha(p) for p in sorted(ROOT.iterdir()) if p.is_file() and p.name != "artifact-hashes.json"
     }
     (ROOT / "artifact-hashes.json").write_text(json.dumps(result, sort_keys=True, indent=2) + "\n")
-    print(json.dumps({"status": result["status"], "prediction_rows_checked": result["prediction_rows_checked"]}))
+    print(
+        json.dumps(
+            {
+                "status": result["status"],
+                "prediction_rows_checked": result["prediction_rows_checked"],
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,206 @@
+{
+  "analysis_source_sha256": "6623e6e2a35d28f6088f8884389379c3741d96c1c468b1dc07c01264cdb4b5f3",
+  "definitions": {
+    "coverage": "Missing predictions remain in the observed denominator; no missing prediction is assigned a value.",
+    "mape_percent": "100 * mean(abs(predicted / observed - 1)) on supported pairs",
+    "prediction_identity": "Comparison files and their original predictor/source identities remain byte-identical.",
+    "uncertainty": "Descriptive addition only; original confidence intervals and their trial/lifecycle boundaries are unchanged.",
+    "wape_percent": "100 * sum(abs(predicted - observed)) / sum(observed) on the same supported pairs"
+  },
+  "original_inputs": {
+    "comparison_files_sha256": {
+      "decoder_bounded-hybrid-results.json": "6986d35d7a920b6370245980514308afc5e89882d9f189915dabb3f4f222f5df",
+      "decoder_bounded-silicon-results.json": "4edadd7fa5ec7a7e6b6e64fac6a17f8acecbf6aaeea1f869769079c64d9eab36",
+      "decoder_bounded-sol-results.json": "3314ce48611ab3eedc7ac6b3ab66b071732fe6f2d4868743f840fa9c3fc45737",
+      "full-hybrid-results.json": "5a65a95dd5055f43327617197468e293e895eb15c1e5de6e713cc421f77da006",
+      "full-silicon-results.json": "2817807a35bd346d58951aed69ca343241433908fcb88653cd6de594fe37c2ca",
+      "full-sol-results.json": "d49e09e50f46fca260fa8169823ee324708896e304e1050da34f644526e5e4e2"
+    },
+    "original_artifact_hashes_sha256": "9f7088d91967c026ff779c2c5041b4446860741162120c4043daff17e597b411",
+    "purpose": "Add descriptive MAPE and WAPE from frozen supported observed/predicted pairs; no prediction recomputation or confidence interval change.",
+    "schema": "dsv41.descriptive.metrics.inputs.v1"
+  },
+  "schema": "dsv41.descriptive.metrics.v1",
+  "statistics": {
+    "decoder_bounded-hybrid": {
+      "all": {
+        "mape_percent": 10.872765053913282,
+        "missing": 0,
+        "observed": 38,
+        "predicted": 38,
+        "wape_percent": 12.411903793702946
+      },
+      "common_support": {
+        "mape_percent": 7.305481617876258,
+        "missing": 0,
+        "observed": 28,
+        "predicted": 28,
+        "wape_percent": 9.285112221003008
+      },
+      "context": {
+        "mape_percent": 13.038219082384538,
+        "missing": 0,
+        "observed": 28,
+        "predicted": 28,
+        "wape_percent": 14.583112078353802
+      },
+      "generation": {
+        "mape_percent": 4.809493774193767,
+        "missing": 0,
+        "observed": 10,
+        "predicted": 10,
+        "wape_percent": 4.813253179936086
+      }
+    },
+    "decoder_bounded-silicon": {
+      "all": {
+        "mape_percent": 7.305481617876258,
+        "missing": 10,
+        "observed": 38,
+        "predicted": 28,
+        "wape_percent": 9.285112221003008
+      },
+      "common_support": {
+        "mape_percent": 7.305481617876258,
+        "missing": 0,
+        "observed": 28,
+        "predicted": 28,
+        "wape_percent": 9.285112221003008
+      },
+      "context": {
+        "mape_percent": 8.692141531033197,
+        "missing": 10,
+        "observed": 28,
+        "predicted": 18,
+        "wape_percent": 11.221278612292664
+      },
+      "generation": {
+        "mape_percent": 4.809493774193767,
+        "missing": 0,
+        "observed": 10,
+        "predicted": 10,
+        "wape_percent": 4.813253179936086
+      }
+    },
+    "decoder_bounded-sol": {
+      "all": {
+        "mape_percent": 96.32128523626486,
+        "missing": 0,
+        "observed": 38,
+        "predicted": 38,
+        "wape_percent": 96.21904375102706
+      },
+      "common_support": {
+        "mape_percent": 96.92522036602375,
+        "missing": 0,
+        "observed": 28,
+        "predicted": 28,
+        "wape_percent": 96.78298945018462
+      },
+      "context": {
+        "mape_percent": 95.14556484607888,
+        "missing": 0,
+        "observed": 28,
+        "predicted": 28,
+        "wape_percent": 95.24935266121855
+      },
+      "generation": {
+        "mape_percent": 99.61330232878557,
+        "missing": 0,
+        "observed": 10,
+        "predicted": 10,
+        "wape_percent": 99.61270425187686
+      }
+    },
+    "full-hybrid": {
+      "all": {
+        "mape_percent": 6.879383831127815,
+        "missing": 0,
+        "observed": 38,
+        "predicted": 38,
+        "wape_percent": 6.382581495549925
+      },
+      "common_support": {
+        "mape_percent": 6.879383831127815,
+        "missing": 0,
+        "observed": 38,
+        "predicted": 38,
+        "wape_percent": 6.382581495549925
+      },
+      "context": {
+        "mape_percent": 3.2511565208097815,
+        "missing": 0,
+        "observed": 28,
+        "predicted": 28,
+        "wape_percent": 3.244589530426953
+      },
+      "generation": {
+        "mape_percent": 17.03842030001831,
+        "missing": 0,
+        "observed": 10,
+        "predicted": 10,
+        "wape_percent": 17.03597953664544
+      }
+    },
+    "full-silicon": {
+      "all": {
+        "mape_percent": 6.879383831127815,
+        "missing": 0,
+        "observed": 38,
+        "predicted": 38,
+        "wape_percent": 6.382581495549925
+      },
+      "common_support": {
+        "mape_percent": 6.879383831127815,
+        "missing": 0,
+        "observed": 38,
+        "predicted": 38,
+        "wape_percent": 6.382581495549925
+      },
+      "context": {
+        "mape_percent": 3.2511565208097815,
+        "missing": 0,
+        "observed": 28,
+        "predicted": 28,
+        "wape_percent": 3.244589530426953
+      },
+      "generation": {
+        "mape_percent": 17.03842030001831,
+        "missing": 0,
+        "observed": 10,
+        "predicted": 10,
+        "wape_percent": 17.03597953664544
+      }
+    },
+    "full-sol": {
+      "all": {
+        "mape_percent": 96.41730634625098,
+        "missing": 0,
+        "observed": 38,
+        "predicted": 38,
+        "wape_percent": 96.26121880432804
+      },
+      "common_support": {
+        "mape_percent": 96.41730634625098,
+        "missing": 0,
+        "observed": 38,
+        "predicted": 38,
+        "wape_percent": 96.26121880432804
+      },
+      "context": {
+        "mape_percent": 95.26917366167092,
+        "missing": 0,
+        "observed": 28,
+        "predicted": 28,
+        "wape_percent": 95.26846573448339
+      },
+      "generation": {
+        "mape_percent": 99.63207786307514,
+        "missing": 0,
+        "observed": 10,
+        "predicted": 10,
+        "wape_percent": 99.63158868644476
+      }
+    }
+  }
+}

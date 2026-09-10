@@ -1,0 +1,13 @@
+{
+  "comparison_files_sha256": {
+    "e2e-hybrid.json.gz": "31968c79c699dec2b2cd5e6e32e694feae980386255a36cd45f49b115aaf10f4",
+    "e2e-silicon.json.gz": "21e69ee1350e8ae93a76ebc9de9290a01510d666cc562860832b7bf10d3061ff",
+    "e2e-sol.json.gz": "af44db64aad3ab5251c9bcfa60d7ea310d9c8e4a06e7ac1b9b506927eff3c8e9",
+    "trace-hybrid.json.gz": "3fb55a76b9ac8c5287a95409e8fbf54ee4b37a144659a65e0ed4f75c33d87a5e",
+    "trace-silicon.json.gz": "3f32c12eb938ad43565e101cbf674266adcaea88074a1f5a19dc167a2d758ddb",
+    "trace-sol.json.gz": "4c1ec759c53833fc95d3b3b2ba3c1b39d77d8e9f0b0eeec4db80464d7aee9428"
+  },
+  "original_artifact_hashes_sha256": "6f449aea341179b1f22efd661efec5b14bc22345ac4997dd6e712b4b3320ae38",
+  "purpose": "Add descriptive MAPE and WAPE from frozen supported observed/predicted pairs; no prediction recomputation or confidence interval change.",
+  "schema": "dsv41.descriptive.metrics.inputs.v1"
+}
