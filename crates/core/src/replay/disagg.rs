@@ -1561,8 +1561,22 @@ where
         self.flow.action_queues.wake_worker_waiters(stage);
     }
 
-    fn wake_deferred_actions(&mut self, stage: SimulationWorkerStage, worker_idx: usize) {
-        self.flow.action_queues.wake_deferred(stage, worker_idx);
+    fn wake_deferred_actions(
+        &mut self,
+        stage: SimulationWorkerStage,
+        worker_id: usize,
+    ) -> Result<()> {
+        let scheduler_ids = match stage {
+            SimulationWorkerStage::Prefill => self.prefill_engine.scheduler_ids(worker_id)?,
+            SimulationWorkerStage::Decode => self.decode_engine.scheduler_ids(worker_id)?,
+            SimulationWorkerStage::Aggregated => {
+                bail!("disaggregated replay completed an aggregated worker")
+            }
+        };
+        for &scheduler_id in scheduler_ids {
+            self.flow.action_queues.wake_deferred(stage, scheduler_id);
+        }
+        Ok(())
     }
 
     fn execute_action(
@@ -2132,7 +2146,7 @@ where
                     bail!("disaggregated replay received an aggregated completion")
                 }
             };
-            self.wake_deferred_actions(stage, worker_id);
+            self.wake_deferred_actions(stage, worker_id)?;
             for payload in payloads {
                 self.process_worker_completion_payload(payload)?;
             }
