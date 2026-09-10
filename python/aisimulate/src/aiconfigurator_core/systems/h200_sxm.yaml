@@ -15,7 +15,6 @@ gpu:
 
 node:
   # Reference network: https://inferencex.semianalysis.com/chips/h200
-  # Deployment scope and units: docs/SYSTEM_NETWORK_SPECS.md in the Python project.
   num_gpus_per_node: 8
   inter_node_bw: 50000000000  # Byte/s per GPU, single direction; CX7 NDR 400Gb/s InfiniBand reference
   intra_node_bw: 450000000000  # Byte/s per gpu, single direction

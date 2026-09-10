@@ -18,7 +18,6 @@ gpu:
 
 node:
   # Reference network: https://inferencex.semianalysis.com/chips/b300
-  # Deployment scope and units: docs/SYSTEM_NETWORK_SPECS.md in the Python project.
   num_gpus_per_node: 8
   inter_node_bw: 100000000000  # Byte/s per GPU, single direction; CX8 2x400GbE RoCEv2, both ports usable
   intra_node_bw: 900000000000  # Byte/s per gpu, single direction (1.8 TB/s NVLink bidir / 2)

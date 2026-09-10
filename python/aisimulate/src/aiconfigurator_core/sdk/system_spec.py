@@ -25,14 +25,9 @@ class SystemSpec(dict):
         Three-tier selection:
 
         - ``num_gpus <= num_gpus_per_node``: ``intra_node_bw`` (NVLink within node)
-        - ``num_gpus <= num_gpus_per_rack``: ``inter_node_bw`` (NVLink within an
-          NVL72 rack; scale-out networking for systems without a rack tier)
-        - ``num_gpus > num_gpus_per_rack``: ``inter_rack_bw`` (scale-out networking),
+        - ``num_gpus <= num_gpus_per_rack``: ``inter_node_bw`` (NVSwitch within rack)
+        - ``num_gpus > num_gpus_per_rack``: ``inter_rack_bw`` (InfiniBand between racks),
           falling back to ``inter_node_bw`` when ``inter_rack_bw`` is unset.
-
-        Scale-out may use InfiniBand or RoCE; this bandwidth selector does not
-        encode the transport. See ``docs/SYSTEM_NETWORK_SPECS.md`` in the Python
-        project for the reference deployments and one-direction bandwidth units.
 
         Raises ``KeyError`` for misconfigured specs that lack required keys —
         same loud-failure behavior as the original ``_get_p2p_bandwidth``.

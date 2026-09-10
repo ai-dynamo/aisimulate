@@ -18,7 +18,7 @@ gpu:
 
 node:
   # NVL72 reference: https://inferencex.semianalysis.com/chips/gb200-nvl72
-  # It does not specify cross-rack NICs; see docs/SYSTEM_NETWORK_SPECS.md in the Python project.
+  # The reference does not specify cross-rack NICs.
   num_gpus_per_node: 4  # 4 GPUs per physical node (2 Grace CPUs x 2 GPUs each)
   num_gpus_per_rack: 72  # 72 GPUs per rack (18 compute trays x 4 GPUs each)
   inter_rack_bw: 100000000000  # Byte/s per GPU, single direction; legacy assumption, TODO verify per deployment
