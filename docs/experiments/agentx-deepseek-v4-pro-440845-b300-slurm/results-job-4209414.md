@@ -7,16 +7,47 @@ SPDX-License-Identifier: Apache-2.0
 
 Both cases use one B300 node, the same FPM-fixed image, c32 and HiCache disabled.
 
-| Metric | FPM off | FPM on | On/off change |
-| --- | ---: | ---: | ---: |
-| Total tokens/s/GPU | 17630.24 | 17515.05 | -0.65% |
-| Output tokens/s/GPU | 116.145 | 115.573 | -0.49% |
-| TTFT p50, seconds | 1.399 | 1.429 | +2.13% |
-| TTFT p90, seconds | 3.380 | 3.468 | +2.62% |
-| ITL p90, milliseconds | 23.711 | 23.589 | -0.52% |
-| Request latency p90, seconds | 40.984 | 42.679 | +4.14% |
-| Completed requests | 3423 | 3399 | -0.70% |
-| Response-reported prompt reuse | 96.874% | 96.737% | -0.14% relative |
+## Table 1: SA versus our FPM-off and FPM-on performance
+
+SA values are the recorded [AgentX 440845](https://inferencex.semianalysis.com/inference/agentic/440845)
+row from the [published benchmark API](https://inferencex.semianalysis.com/api/v1/benchmarks?model=DeepSeek-V4-Pro),
+retrieved September 9, 2026. Our columns use final measured-phase client exports.
+All three configurations use eight B300 GPUs, TP8/EP8, attention DP8 and c32;
+SA enables HiCache, while both of our cases disable it and use the shared
+FPM-fixed runtime described in [the runbook](README.md).
+
+Changes are `100 * (new / baseline - 1)` using unrounded values. Higher
+throughput and lower latency are preferable. Missing reference fields remain
+unreported; the two cache-hit aggregations are deliberately shown separately.
+
+| Metric | SA 440845 | Ours FPM off | Ours FPM on | Off vs SA | On vs off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Total throughput, tokens/s | 139,843.35 | 141,041.93 | 140,120.42 | +0.86% | -0.65% |
+| Total throughput, tokens/s/GPU | 17,480.42 | 17,630.24 | 17,515.05 | +0.86% | -0.65% |
+| Output throughput, tokens/s | 919.875 | 929.159 | 924.580 | +1.01% | -0.49% |
+| Output throughput, tokens/s/GPU | 114.984 | 116.145 | 115.573 | +1.01% | -0.49% |
+| TTFT mean, s | 3.642 | 1.909 | 2.021 | -47.58% | +5.84% |
+| TTFT p50, s | 1.836 | 1.399 | 1.429 | -23.80% | +2.13% |
+| TTFT p90, s | 7.727 | 3.380 | 3.468 | -56.26% | +2.62% |
+| TTFT p95, s | 13.308 | 4.254 | 4.674 | -68.04% | +9.88% |
+| ITL mean, ms | 13.940 | 17.104 | 17.310 | +22.70% | +1.20% |
+| ITL p50, ms | 12.890 | 13.155 | 13.208 | +2.06% | +0.41% |
+| ITL p90, ms | 19.500 | 23.711 | 23.589 | +21.59% | -0.52% |
+| ITL p95, ms | 21.120 | 29.514 | 29.354 | +39.74% | -0.54% |
+| Request latency mean, s | 17.961 | 17.204 | 17.463 | -4.21% | +1.51% |
+| Request latency p50, s | 8.784 | 7.877 | 8.014 | -10.33% | +1.74% |
+| Request latency p90, s | 42.797 | 40.984 | 42.679 | -4.24% | +4.14% |
+| Request latency p95, s | 65.066 | 65.079 | 66.381 | +0.02% | +2.00% |
+| Completed measured requests | 3,410 | 3,423 | 3,399 | +0.38% | -0.70% |
+| Mean input tokens/request | 147,841.71 | 148,996.19 | 149,066.32 | +0.78% | +0.05% |
+| Mean output tokens/request | 978.93 | 988.06 | 990.14 | +0.93% | +0.21% |
+| Exported window including drain, s | 3,628.906 | 3,640.000 | 3,640.001 | +0.31% | +0.00% |
+| Measured request errors | Not reported in cited API row | 0 | 0 | — | — |
+| Profiling cancellations | Not reported in cited API row | 3 | 4 | — | — |
+| Output-length mismatches | Not reported in cited API row | 0 | 0 | — | — |
+| Submission valid | Not reported in cited API row | true | true | — | — |
+| Response-reported prompt reuse | Not reported in cited API row | 96.874% | 96.737% | — | -0.137 percentage points |
+| Server-reported GPU cache hit fraction | 95.871% | Not used (see telemetry caveat) | Not used (see telemetry caveat) | — | — |
 
 Validity and collection:
 
@@ -31,18 +62,37 @@ One ordered pair, off then on; warmed compilation cache and fresh engine/KV plus
 FPM rank coverage, counter gaps, request validity and cancellations are retained
 in [the machine-readable comparison](job-4209414-comparison.json).
 
-## Native FPM evidence
+## Table 2: FPM details
 
-The full capture contains **808721 records**, including 628149 active records
-and 622479 decode records. All eight DP ranks have active/decode coverage;
-validation found **zero invalid records, zero counter gaps and zero resets**.
-A full local audit also confirmed positive GPU timing for every active record.
+Counts cover the **complete capture**, including startup, smoke, warmup,
+measurement and drain. Each DP rank's record counts separately; these are not
+deduplicated global iterations. Classification uses the scheduled-request
+prefill/decode counts, not the timing value. No-request records can include idle
+heartbeats and ranks with no scheduled work; they are not counted as active
+iterations. [Machine-readable type counts](job-4209414-fpm-iteration-counts.json)
+include the per-rank breakdown.
 
-- Raw: 445560968 bytes; gzip: 32900290 bytes.
-- Raw SHA256: `bf0f277dbd74a8276e0ed8021a882a199a0a394f18132fded80c3e6fa2df2614`.
-- [Timing and checksum audit](job-4209414-fpm-audit.json) includes per-rank
-  statistics for the 3600-second measured window using recorder receive times.
-  The complete raw capture also includes setup, smoke, warmup and drain.
+| FPM detail | Value | Definition / scope |
+| --- | ---: | --- |
+| Total records | 808,721 | All eight ranks and all capture phases |
+| Active iteration records | 628,149 | At least one scheduled prefill or decode request |
+| Pure prefill iterations | 5,670 | Prefill request count > 0; decode count = 0 |
+| Pure decode iterations | 622,479 | Decode request count > 0; prefill count = 0 |
+| Mixed iterations | 0 | Both prefill and decode request counts > 0 |
+| No-scheduled-request records | 180,572 | Both counts = 0; excluded from active iterations |
+| DP ranks covered | 8 (0–7) | Every rank has active and decode records |
+| Active records with positive GPU timing | 628,149 / 628,149 | Checked across the complete capture |
+| Invalid records | 0 | Schema, wire counter, timing and decode-length checks |
+| Observed counter gaps / resets | 0 / 0 | Checked separately for each rank |
+| Raw JSONL size | 445,560,968 bytes (445.56 MB; 424.92 MiB) | `on/fpm.jsonl` |
+| gzip size | 32,900,290 bytes (32.90 MB; 31.38 MiB) | `on/fpm.jsonl.gz` |
+| Compression ratio | 13.54:1 | Raw size divided by gzip size |
+
+Raw SHA256, verified against the local copy:
+`bf0f277dbd74a8276e0ed8021a882a199a0a394f18132fded80c3e6fa2df2614`.
+The [timing and checksum audit](job-4209414-fpm-audit.json) separately includes
+per-rank timing statistics for the 3600-second measured window using recorder
+receive timestamps; Table 2's counts and sizes cover the full file.
 
 Download the compressed capture from Computelab, then verify its decompressed
 contents against the SHA256 above:

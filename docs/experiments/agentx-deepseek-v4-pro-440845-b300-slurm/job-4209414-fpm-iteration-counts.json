@@ -1,0 +1,60 @@
+{
+  "scope": "Complete capture, all phases; one record per DP rank, not deduplicated global iterations",
+  "counts": {
+    "prefill_only": 5670,
+    "decode_only": 622479,
+    "mixed": 0,
+    "no_scheduled_requests": 180572
+  },
+  "total_records": 808721,
+  "per_rank": {
+    "0": {
+      "prefill_only": 545,
+      "decode_only": 51533,
+      "mixed": 0,
+      "no_scheduled_requests": 49010
+    },
+    "1": {
+      "prefill_only": 500,
+      "decode_only": 67740,
+      "mixed": 0,
+      "no_scheduled_requests": 32848
+    },
+    "2": {
+      "prefill_only": 696,
+      "decode_only": 84137,
+      "mixed": 0,
+      "no_scheduled_requests": 16258
+    },
+    "3": {
+      "prefill_only": 605,
+      "decode_only": 73885,
+      "mixed": 0,
+      "no_scheduled_requests": 26600
+    },
+    "4": {
+      "prefill_only": 1109,
+      "decode_only": 92258,
+      "mixed": 0,
+      "no_scheduled_requests": 7729
+    },
+    "5": {
+      "prefill_only": 728,
+      "decode_only": 85929,
+      "mixed": 0,
+      "no_scheduled_requests": 14430
+    },
+    "6": {
+      "prefill_only": 783,
+      "decode_only": 90896,
+      "mixed": 0,
+      "no_scheduled_requests": 9412
+    },
+    "7": {
+      "prefill_only": 704,
+      "decode_only": 76101,
+      "mixed": 0,
+      "no_scheduled_requests": 24285
+    }
+  }
+}
