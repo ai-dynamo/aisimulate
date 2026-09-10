@@ -2482,3 +2482,26 @@ def test_v41_real_token_stream_validation_rejects_broken_witness(tmp_path, corru
         manifest["records"] += 1
     with pytest.raises(ValueError, match="V4.1"):
         _validate_token_streams(payload, path)
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("smoke", [False, True])
+def test_v41_native_grid_bounds_reach_both_runtime_phases(phase, smoke):
+    from collector.fpm_forward.runner import _cell_generator_overrides
+
+    plan = _args_plan()
+    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+    plan.options = FPMCollectionOptions.from_args(
+        _args(
+            fpm_max_prefill_isl=64,
+            fpm_max_prefill_batch_size=1,
+            fpm_max_decode_batch_size=1,
+            fpm_max_model_len=258,
+            fpm_warmup_iterations=0,
+        )
+    )
+    generated = _cell_generator_overrides(plan, _args_cell(phase, "pure_tp"), {}, smoke=smoke)
+    args = generated["params"]["agg"]["extra_cli_args"]
+    assert args[args.index("--max-num-batched-tokens") + 1] == "64"
+    assert args[args.index("--max-num-seqs") + 1] == "1"
+    assert '--engram-config={"cpu_offload":false}' in args

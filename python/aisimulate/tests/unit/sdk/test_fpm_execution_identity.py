@@ -70,3 +70,25 @@ def test_native_v41_requires_measured_execution_and_text_evidence():
         )
         is None
     )
+
+
+@pytest.mark.parametrize("replay,backend", [(False, "vllm"), (True, "sglang")])
+def test_v41_fpm_wrap_retains_resident_inventory_and_serialized_stages(replay, backend):
+    from aiconfigurator_core.sdk.config import ModelConfig
+    from aiconfigurator_core.sdk.deepseek_v41 import MODEL_PATH
+    from aiconfigurator_core.sdk.engine import build_ops_json
+    from aiconfigurator_core.sdk.models import get_model
+
+    kwargs = dict(tp_size=4, pp_size=1, attention_dp_size=1, moe_tp_size=4, moe_ep_size=1, decoder_replay=replay)
+    granular = get_model(MODEL_PATH, ModelConfig(**kwargs), backend)
+    wrapped = get_model(MODEL_PATH, ModelConfig(**kwargs, forward_model="fpm"), backend)
+    for ops in (wrapped.context_ops, wrapped.generation_ops):
+        assert len(ops) == 1
+        assert ops[0].get_weights() == granular.get_resident_weights_bytes()
+        assert ops[0]._match_identity[-4:] == execution_identity(config(), decoder_replay=replay, backend=backend)
+        native = json.loads(build_ops_json(ops))[0]["FpmForward"]
+        assert len(native["match_identity"]) == 19
+        stages = [item["Dsv41Stage"] for item in native["sol_ops"] if "Dsv41Stage" in item]
+        assert len(stages) == 40
+        assert all(stage["decoder_replay"] == replay for stage in stages)
+        assert '"Dsv41Linear"' in json.dumps(native["sol_ops"])
