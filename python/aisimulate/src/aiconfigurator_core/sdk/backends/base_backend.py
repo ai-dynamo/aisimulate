@@ -53,6 +53,14 @@ def _kimi_resized_spatial_tokens(
     stride = patch * enc_cfg.spatial_merge_size
     padded_height = -(-resized_height // stride) * stride
     padded_width = -(-resized_width // stride) * stride
+    # Kimi K3's fixed rotary lookup: modified adaptation, Apache-2.0,
+    # copyright contributors to the vLLM project.
+    # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+    if enc_cfg.encoder_type == "kimi_k3_moonvit3d_patchmergerv2" and max(padded_height, padded_width) // patch > 512:
+        raise ValueError(
+            "Kimi K3 supports at most 512 spatial patches per side after processor padding, "
+            f"got {padded_height // patch}x{padded_width // patch}"
+        )
     return (padded_height // stride) * (padded_width // stride), (padded_height // patch) * (padded_width // patch)
 
 

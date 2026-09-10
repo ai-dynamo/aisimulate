@@ -219,16 +219,64 @@ def test_local_checkpoint_preserves_valid_kimi_geometry_and_qkv_default(tmp_path
 
 
 @pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize(
+    ("geometry", "message"),
+    [
+        ({"qkv_hidden_size": 1560}, "attention head dimension must be divisible by 4"),
+        ({"vt_hidden_size": 1025, "mm_hidden_size": 1025}, "vt_hidden_size must be even"),
+    ],
+)
+def test_local_checkpoint_rejects_invalid_kimi_position_geometry(tmp_path, language_only, geometry, message):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["vision_config"].update(geometry)
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_config = _model_config()
+    model_config.language_only = language_only
+
+    with pytest.raises(ValueError, match=message):
+        get_model_config_from_model_path(str(tmp_path))
+    with pytest.raises(ValueError, match=message):
+        get_model(str(tmp_path), model_config, "sglang")
+
+
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("head_dim", [128, 132])
+@pytest.mark.parametrize("tower_width", [1024, 1026])
+def test_local_checkpoint_accepts_valid_kimi_position_geometry(tmp_path, language_only, head_dim, tower_width):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["vision_config"].update(qkv_hidden_size=12 * head_dim, vt_hidden_size=tower_width, mm_hidden_size=tower_width)
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_config = _model_config()
+    model_config.language_only = language_only
+    info = get_model_config_from_model_path(str(tmp_path))
+    model = get_model(str(tmp_path), model_config, "trtllm")
+
+    assert model.encoder_config == info["extra_params"].vision_config
+    assert model.encoder_config.hidden_size == tower_width
+    assert model.encoder_config.qkv_hidden_size == 12 * head_dim
+    if not language_only:
+        attention = next(op for op in model.encoder_ops if op._name == "encoder_attention")
+        assert attention._head_size == head_dim
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    runtime = config.RuntimeConfig(
+        batch_size=1, isl=128, osl=1, image_height=448, image_width=448, engine_step_backend="rust"
+    )
+    summary = TRTLLMBackend().run_static(model, database, runtime, mode="static_ctx")
+    assert bool(summary.get_encoder_latency_dict()) is (not language_only)
+    assert bool(summary.get_encoder_memory()) is (not language_only)
+
+
+@pytest.mark.parametrize("language_only", [False, True])
 def test_local_checkpoint_accepts_positive_kimi_geometry_boundaries(tmp_path, language_only):
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
     raw["vision_config"].update(
         vt_num_hidden_layers=1,
-        vt_hidden_size=4,
+        vt_hidden_size=2,
         vt_num_attention_heads=1,
         qkv_hidden_size=4,
         vt_intermediate_size=1,
         patch_size=1,
-        mm_hidden_size=4,
+        mm_hidden_size=2,
         merge_kernel_size=[1, 1],
         init_pos_emb_time=1,
     )
@@ -242,6 +290,62 @@ def test_local_checkpoint_accepts_positive_kimi_geometry_boundaries(tmp_path, la
     assert model.encoder_config.depth == model.encoder_config.intermediate_size == model.encoder_config.patch_size == 1
     assert model.encoder_config.max_temporal_patches == model.encoder_config.spatial_merge_size == 1
     assert bool(model.encoder_ops) is (not language_only)
+
+
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("video", [False, True])
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize(
+    ("side_limit", "merge_size", "height", "width", "expected_grid"),
+    [
+        (1024, 2, 28, 14336, None),  # The override admits 1024 patches on one side.
+        (512, 3, 42, 7168, None),  # Merge padding raises the 512-patch side to 513.
+        (512, 2, 28, 14336, (2, 512)),  # Default processor caps the same large input.
+        (1024, 2, 28, 7168, (2, 512)),  # A larger ceiling can still yield a valid grid.
+        (1024, 2, 448, 448, (32, 32)),
+        (512, 3, 42, 7140, (3, 510)),
+    ],
+)
+def test_kimi_spatial_rotary_limit_after_processor_padding(
+    tmp_path, language_only, video, transpose, side_limit, merge_size, height, width, expected_grid
+):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["vision_config"]["merge_kernel_size"] = [merge_size, merge_size]
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    (tmp_path / "preprocessor_config.json").write_text(
+        json.dumps({"media_proc_cfg": {"patch_limit_on_one_side": side_limit, "merge_kernel_size": merge_size}})
+    )
+    (tmp_path / "video_preprocessor_config.json").write_text(json.dumps({"merge_size": merge_size}))
+    model_config = _model_config()
+    model_config.language_only = language_only
+    info = get_model_config_from_model_path(str(tmp_path))
+    model = get_model(str(tmp_path), model_config, "trtllm")
+    assert info["extra_params"].vision_config.max_patches_per_side == side_limit
+    if transpose:
+        height, width = width, height
+    visual_fields = (
+        dict(num_images_per_request=0, num_videos_per_request=1, video_frames=4, video_height=height, video_width=width)
+        if video
+        else dict(image_height=height, image_width=width)
+    )
+    runtime = config.RuntimeConfig(batch_size=1, isl=128, osl=2, engine_step_backend="rust", **visual_fields)
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    if expected_grid is None:
+        with pytest.raises(ValueError, match="at most 512 spatial patches per side"):
+            BaseBackend.effective_prefill_isl(str(tmp_path), runtime)
+        with pytest.raises(ValueError, match="at most 512 spatial patches per side"):
+            TRTLLMBackend().run_static(model, database, runtime, mode="static_ctx")
+        with pytest.raises(ValueError, match="at most 512 spatial patches per side"):
+            TRTLLMBackend().run_agg(model, database, runtime, ctx_tokens=1024)
+    else:
+        pooled_tokens = (expected_grid[0] // merge_size) * (expected_grid[1] // merge_size)
+        assert BaseBackend.effective_prefill_isl(str(tmp_path), runtime) == 128 + pooled_tokens
+        for summary in (
+            TRTLLMBackend().run_static(model, database, runtime, mode="static_ctx"),
+            TRTLLMBackend().run_agg(model, database, runtime, ctx_tokens=1024),
+        ):
+            assert bool(summary.get_encoder_latency_dict()) is (not language_only)
+            assert bool(summary.get_encoder_memory()) is (not language_only)
 
 
 @pytest.fixture

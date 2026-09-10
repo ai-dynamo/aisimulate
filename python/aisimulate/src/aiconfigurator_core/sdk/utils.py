@@ -1087,6 +1087,9 @@ def _parse_hf_config_json(config: dict) -> dict:
                 )
 
             vision_hidden = positive_int(vision_cfg.get("vt_hidden_size"), "vt_hidden_size")
+            # The patch embedder constructs a temporal sin/cos table even for images.
+            if vision_hidden % 2 != 0:
+                raise ValueError("Kimi K3 vision_config.vt_hidden_size must be even for temporal position embeddings")
             vision_heads = positive_int(vision_cfg.get("vt_num_attention_heads"), "vt_num_attention_heads")
             vision_depth = positive_int(vision_cfg.get("vt_num_hidden_layers"), "vt_num_hidden_layers")
             vision_intermediate = positive_int(vision_cfg.get("vt_intermediate_size"), "vt_intermediate_size")
@@ -1100,6 +1103,8 @@ def _parse_hf_config_json(config: dict) -> dict:
                     f"Kimi K3 qkv_hidden_size ({qkv_hidden}) must be divisible by "
                     f"vt_num_attention_heads ({vision_heads})"
                 )
+            if (qkv_hidden // vision_heads) % 4 != 0:
+                raise ValueError("Kimi K3 attention head dimension must be divisible by 4 for 2D rotary embeddings")
             if positive_int(vision_cfg.get("mm_hidden_size"), "mm_hidden_size") != vision_hidden:
                 raise ValueError("Kimi K3 PatchMergerV2 requires mm_hidden_size to match vt_hidden_size")
             out_hidden = positive_int(vision_cfg.get("text_hidden_size"), "text_hidden_size")

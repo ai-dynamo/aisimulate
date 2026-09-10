@@ -66,7 +66,8 @@ This material is licensed under the Apache License 2.0.
 The Kimi K2.5 and Kimi K3 vision-tower topology, pooled PatchMerger, and
 PatchMergerV2 adapters modeled in
 `src/aiconfigurator_core/sdk/models/blocks/vit.py` and parsed in
-`src/aiconfigurator_core/sdk/utils.py`, with regression derivatives in
+`src/aiconfigurator_core/sdk/utils.py`, with Kimi K3 rotary-grid validation in
+`src/aiconfigurator_core/sdk/backends/base_backend.py` and regression derivatives in
 `tests/unit/sdk/models/test_kimi_k25_vision.py` and
 `tests/unit/sdk/models/test_kimi_k3_vision.py`, are modified adaptations of the
 MoonViT3D implementation that Kimi K3 reuses from Kimi K2.5 in vLLM at commit
