@@ -237,6 +237,21 @@ def test_no_interval_for_partial_or_too_few_trials_and_paired_resampling():
         paired_summary(rows + rows[:1], final=True)
 
 
+def test_cache_disagreement_is_reported_without_discarding_timing():
+    from compare_e2e import attach_cache_comparison
+
+    result = {
+        "status": "predicted",
+        "prediction": {"ttft_ms": 100},
+        "requests": [{"request_id": "r", "reused_input_tokens": 256}],
+    }
+    audited = {"native_request_proof": {"requests": [{"request_id": "r", "initial_cross_request_cached_tokens": 0}]}}
+    attach_cache_comparison(result, audited)
+    assert result["cache_semantics_match"] is False
+    assert result["prediction"] == {"ttft_ms": 100}
+    assert result["requests"][0]["native_initial_cached_tokens"] == 0
+
+
 def test_native_nonterminal_output_cannot_be_a_comparison():
     with pytest.raises(ValueError, match="complete"):
         predicted_metrics(

@@ -365,6 +365,25 @@ def predicted_metrics(report, request_ids, cohort_start_ms):
     ]
 
 
+def attach_cache_comparison(result, audited_cohort):
+    """Expose scheduling/cache disagreement without removing its timing error."""
+    observed = {
+        r["request_id"]: r["initial_cross_request_cached_tokens"]
+        for r in audited_cohort["native_request_proof"]["requests"]
+    }
+    result["native_initial_cached_tokens"] = observed
+    result["cache_semantics_match"] = None
+    if result["status"] == "predicted":
+        matches = []
+        for request in result["requests"]:
+            request["native_initial_cached_tokens"] = observed[request["request_id"]]
+            request["cache_reuse_matches_native"] = (
+                request["reused_input_tokens"] == request["native_initial_cached_tokens"]
+            )
+            matches.append(request["cache_reuse_matches_native"])
+        result["cache_semantics_match"] = all(matches)
+
+
 def compare_cohort(engine, cohort, observed, native_replay, *, seed_cohort=None, seed_observed=None):
     spec, offset = replay_spec(engine, cohort, observed, seed_cohort=seed_cohort, seed_observed=seed_observed)
     result = {
@@ -523,16 +542,16 @@ def main():
                 }
             )
             continue
-        results.append(
-            compare_cohort(
-                engine,
-                cohort,
-                observed[key],
-                native.run_replay_json,
-                seed_cohort=planned.get(seed),
-                seed_observed=observed.get(seed),
-            )
+        result = compare_cohort(
+            engine,
+            cohort,
+            observed[key],
+            native.run_replay_json,
+            seed_cohort=planned.get(seed),
+            seed_observed=observed.get(seed),
         )
+        attach_cache_comparison(result, audited[key])
+        results.append(result)
     if system_identity != systems_identity(config):
         raise ValueError("prediction tables changed during replay")
     if hashes != {k: file_hash(getattr(args, k)) for k in fields}:
