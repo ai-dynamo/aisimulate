@@ -8,8 +8,10 @@ import argparse
 import hashlib
 import json
 import math
+import random
 import re
 import statistics
+from collections import defaultdict
 from pathlib import Path
 
 import analyze_e2e
@@ -378,6 +380,61 @@ def trace_summary(rows):
     return result
 
 
+def independent_trial_summary(cohorts, *, final, seed=94051000, resamples=5000):
+    """Resample complete trials, preserving every correlated native interval."""
+    groups = defaultdict(list)
+    seen = set()
+    for cohort in cohorts:
+        identity = (cohort["purpose"], cohort["trial_index"])
+        if identity in seen:
+            raise ValueError("duplicate independent trace trial within scenario")
+        seen.add(identity)
+        groups[cohort["purpose"]].append(cohort)
+    output = {}
+    for purpose, group in sorted(groups.items()):
+        if len({c["trial_seed"] for c in group}) != len(group):
+            raise ValueError("duplicate independent trace seed within scenario")
+        trials = []
+        for cohort in group:
+            rows = cohort["intervals"]
+            if not rows or any(r["status"] != "predicted" for r in rows):
+                continue
+            observed = sum(r["observed_ms"] for r in rows)
+            predicted = sum(r["predicted_ms"] for r in rows)
+            absolute = sum(abs(r["predicted_ms"] - r["observed_ms"]) for r in rows)
+            trials.append((observed, absolute, 100 * (predicted / observed - 1)))
+        result = {
+            "observed_trials": len(group),
+            "fully_predicted_trials": len(trials),
+            "missing_prediction_trial_indices": [
+                c["trial_index"]
+                for c in group
+                if not c["intervals"] or any(r["status"] != "predicted" for r in c["intervals"])
+            ],
+            "weighting": "equal trials for total-forward bias; observed-latency weighted interval WAPE",
+        }
+        if trials:
+
+            def metrics(sample):
+                return {
+                    "mean_trial_total_forward_signed_error_percent": statistics.mean(t[2] for t in sample),
+                    "interval_wape_percent": 100 * sum(t[1] for t in sample) / sum(t[0] for t in sample),
+                }
+
+            result.update(metrics(trials))
+            if final and len(trials) >= 20 and len(trials) == len(group):
+                rng = random.Random(seed)
+                samples = [metrics(rng.choices(trials, k=len(trials))) for _ in range(resamples)]
+                result["whole_trial_bootstrap_ci95"] = {
+                    key: [analyze_e2e.quantile([s[key] for s in samples], q) for q in (0.025, 0.975)]
+                    for key in samples[0]
+                }
+                result["bootstrap_resamples"] = resamples
+                result["bootstrap_seed"] = seed
+        output[purpose] = result
+    return output
+
+
 def compare_cohorts(audit, plan, cohorts, predictor, *, backend, forward_model, decoder_replay):
     locations = {(r["file"], r["line"]): r for r in audit["active_rows"]}
     results = []
@@ -402,6 +459,8 @@ def compare_cohorts(audit, plan, cohorts, predictor, *, backend, forward_model, 
                 "purpose": case["purpose"],
                 "trial_index": case["trial_index"],
                 "trial_seed": case["trial_seed"],
+                "declared_coverage_role": case.get("coverage_role", "unspecified"),
+                "corpus_role": case.get("corpus_role", "unspecified"),
                 "summary": trace_summary(rows),
                 "intervals": rows,
             }
@@ -492,7 +551,7 @@ def main():
         if measurement["backend"] == "sglang"
         else "vllm_cpu_schedule_output_or_adjacent_output_interval",
         "scope": "covered main primary cohorts; all attributed work including unreturned overlap output",
-        "uncertainty": "correlated intervals; independent trial uncertainty belongs in the E2E report",
+        "uncertainty": "whole-trial bootstrap within each scenario; intervals are never independent replicates",
         "measurement_identity": {
             key: measurement[key]
             for key in (
@@ -527,6 +586,7 @@ def main():
             }.items()
         },
         "summary": trace_summary(rows),
+        "independent_trial_summary": independent_trial_summary(results, final=not args.diagnostic),
         "cohorts": results,
     }
     with args.output.open("x") as output:

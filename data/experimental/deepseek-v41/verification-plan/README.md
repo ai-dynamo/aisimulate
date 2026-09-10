@@ -202,7 +202,13 @@ overlap work and unsupported predictions. vLLM's original prompt-length
 variance remains in native evidence; op-level prediction receives a separate
 query-length variance with an explicit bridge. Whole-FPM retains its native
 variance convention. Per-interval statistics are descriptive because intervals
-within a trial are correlated.
+within a trial are correlated. A separate summary resamples complete independent
+trials within each scenario for total-forward signed bias and interval WAPE.
+Every native interval, including unreturned overlap work, stays with its trial.
+The final 95% intervals require at least twenty complete trials with complete
+prediction coverage; a trial missing any prediction remains visible and prevents
+that scenario from receiving a final interval. This uncertainty is conditional
+on the frozen model and calibration, not variation across runtime lifecycles.
 
 `compare_e2e.py` replays the actual input token IDs, output lengths and HTTP
 submit offsets through the native scheduler and independent timing provider.
@@ -214,6 +220,12 @@ TTFT/mean ITL/throughput comparison includes whole-trial paired bootstrap error
 intervals only for complete main stages with at least twenty trials and complete
 prediction coverage. Actual request ID/token hashes and successful cold-cache
 acknowledgements are required, including the prefix seed.
+Observed and predicted initial cached-token counts remain side by side for every
+request; a disagreement is reported without dropping its timing error. Both
+comparison tools retain the original plan's coverage and corpus roles. A declared
+coverage candidate is not proof that every actual native geometry is interpolated.
+Each comparison consumes one frozen main plan from one corpus stratum; separate
+corpora retain separate trial budgets and uncertainty.
 
 Both tools require source bindings to the exact audit/plan/execution/worker
 artifacts and analysis source. E2E additionally binds the original HTTP summary

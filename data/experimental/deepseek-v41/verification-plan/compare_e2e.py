@@ -391,6 +391,8 @@ def compare_cohort(engine, cohort, observed, native_replay, *, seed_cohort=None,
         "purpose": cohort["purpose"],
         "trial_index": cohort["trial_index"],
         "trial_seed": cohort["trial_seed"],
+        "declared_coverage_role": cohort.get("coverage_role", "unspecified"),
+        "corpus_role": cohort.get("corpus_role", "unspecified"),
         "observed": trial_metrics(observed),
         "replay_spec_sha256": hashlib.sha256(canonical(spec).encode()).hexdigest(),
     }
@@ -449,6 +451,7 @@ def paired_summary(rows, *, final, seed=94051000):
             }
             if final and len(pairs) >= 20 and len(pairs) == counts[purpose]["planned_trials"]:
                 rng = random.Random(seed)
+                value.update(bootstrap_resamples=5000, bootstrap_seed=seed)
                 draws = [rng.choices(pairs, k=len(pairs)) for _ in range(5000)]
                 for name, fn in (
                     (
@@ -535,6 +538,8 @@ def main():
                     "purpose": cohort["purpose"],
                     "trial_index": cohort["trial_index"],
                     "trial_seed": cohort["trial_seed"],
+                    "declared_coverage_role": cohort.get("coverage_role", "unspecified"),
+                    "corpus_role": cohort.get("corpus_role", "unspecified"),
                     "observed": trial_metrics(observed[key]),
                     "status": "prediction_unavailable",
                     "failure_type": "CapacityQualificationError",

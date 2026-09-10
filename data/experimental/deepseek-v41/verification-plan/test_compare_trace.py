@@ -11,11 +11,70 @@ from compare_trace import (
     compare_cohorts,
     compare_interval,
     digest,
+    independent_trial_summary,
     qualify_inputs,
     qualify_prediction_config,
     systems_identity,
     trace_summary,
 )
+
+
+def trial_rows(count=20):
+    return [
+        {
+            "purpose": "short",
+            "trial_index": i,
+            "trial_seed": 9000 + i,
+            "intervals": [{"status": "predicted", "observed_ms": 10.0, "predicted_ms": 11.0 if i % 2 else 9.0}],
+        }
+        for i in range(count)
+    ]
+
+
+def test_trace_uncertainty_keeps_correlated_intervals_in_their_independent_trial():
+    rows = trial_rows()
+    first = independent_trial_summary(rows, final=True, resamples=200)["short"]
+    for row in rows:
+        row["intervals"] *= 100
+    repeated = independent_trial_summary(rows, final=True, resamples=200)["short"]
+    assert repeated == first
+    assert first["fully_predicted_trials"] == 20
+    assert first["interval_wape_percent"] == pytest.approx(10)
+    assert first["whole_trial_bootstrap_ci95"]["mean_trial_total_forward_signed_error_percent"][0] < 0
+    assert first["whole_trial_bootstrap_ci95"]["mean_trial_total_forward_signed_error_percent"][1] > 0
+
+
+@pytest.mark.parametrize("reason", ["diagnostic", "short", "missing_prediction"])
+def test_trace_final_interval_requires_complete_independent_trials(reason):
+    rows = trial_rows(19 if reason == "short" else 20)
+    if reason == "missing_prediction":
+        rows[0]["intervals"].append({"status": "prediction_unavailable", "observed_ms": 20.0})
+    result = independent_trial_summary(rows, final=reason != "diagnostic")["short"]
+    assert "whole_trial_bootstrap_ci95" not in result
+    if reason == "missing_prediction":
+        assert result["fully_predicted_trials"] == 19
+        assert result["observed_trials"] == 20
+        assert result["missing_prediction_trial_indices"] == [0]
+
+
+@pytest.mark.parametrize("field", ["trial_index", "trial_seed"])
+def test_trace_duplicate_trial_identity_cannot_inflate_confidence(field):
+    rows = trial_rows()
+    rows[1][field] = rows[0][field]
+    with pytest.raises(ValueError, match="duplicate independent trace"):
+        independent_trial_summary(rows, final=True)
+
+
+def test_trace_interval_wape_does_not_cancel_opposite_errors_within_a_trial():
+    rows = trial_rows()
+    for row in rows:
+        row["intervals"] = [
+            {"status": "predicted", "observed_ms": 10.0, "predicted_ms": 12.0},
+            {"status": "predicted", "observed_ms": 10.0, "predicted_ms": 8.0},
+        ]
+    result = independent_trial_summary(rows, final=True, resamples=200)["short"]
+    assert result["mean_trial_total_forward_signed_error_percent"] == 0
+    assert result["interval_wape_percent"] == 20
 
 
 def fixture(*, backend="sglang", replay=False, diagnostic=False):
