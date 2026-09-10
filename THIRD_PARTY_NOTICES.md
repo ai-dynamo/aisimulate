@@ -47,11 +47,13 @@ Upstream source:
 https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
 
 The Llama 4 encoder operation topology in
-`src/aiconfigurator_core/sdk/models/blocks/vit.py` follows vLLM's Llama 4
+`src/aiconfigurator_core/sdk/models/blocks/vit.py` is adapted (modified) from vLLM's Llama 4
 implementation at tag `v0.8.5` (commit
 `ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d`):
 
 https://github.com/vllm-project/vllm/blob/ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d/vllm/model_executor/models/mllama4.py
+
+Copyright 2025 the LLAMA4, Meta Inc., vLLM, and HuggingFace Inc. team. All rights reserved.
 
 The upstream license at that revision is available at:
 https://github.com/vllm-project/vllm/blob/ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d/LICENSE

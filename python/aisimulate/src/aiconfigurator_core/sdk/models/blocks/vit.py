@@ -355,8 +355,10 @@ def build_llama4_encoder_ops(
     lengths: raw patches for patch embedding, raw patches + CLS for the ViT,
     and post-shuffle image tokens for adaptor/connector operations.
 
-    The tensor-parallel sharding topology follows vLLM v0.8.5, commit
+    The tensor-parallel sharding topology is adapted (modified) from vLLM v0.8.5, commit
     ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d, model_executor/models/mllama4.py.
+    Copyright 2025 the LLAMA4, Meta Inc., vLLM, and HuggingFace Inc. team.
+    All rights reserved. Licensed under the Apache License, Version 2.0.
     """
     if enc_cfg.image_size <= 0:
         raise ValueError("Llama 4 vision_config.image_size must be positive")
