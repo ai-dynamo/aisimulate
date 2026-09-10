@@ -203,6 +203,9 @@ mod tests {
         assert_eq!(spec.gpu.sm_version, Some(100));
         assert_eq!(spec.node.num_gpus_per_node, 8);
         assert!(spec.node.num_gpus_per_rack.is_none()); // b200_sxm has no rack tier
+        // InferenceX CX7 400GbE reference; see Python docs/SYSTEM_NETWORK_SPECS.md.
+        assert_eq!(spec.get_p2p_bandwidth(8), 900_000_000_000.0);
+        assert_eq!(spec.get_p2p_bandwidth(16), 50_000_000_000.0);
         assert_eq!(spec.misc.nccl_mem.get(&8), Some(&411_041_792));
         assert_eq!(spec.misc.nccl_version.as_deref(), Some("2.27.3"));
     }

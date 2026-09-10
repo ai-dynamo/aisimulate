@@ -17,8 +17,10 @@ gpu:
   sm_version: 103
 
 node:
+  # Reference network: https://inferencex.semianalysis.com/chips/b300
+  # Deployment scope and units: docs/SYSTEM_NETWORK_SPECS.md in the Python project.
   num_gpus_per_node: 8
-  inter_node_bw: 100000000000  # Byte/s per GPU, single direction, 1:1 CX8 XDR 800Gb/s per node
+  inter_node_bw: 100000000000  # Byte/s per GPU, single direction; CX8 2x400GbE RoCEv2, both ports usable
   intra_node_bw: 900000000000  # Byte/s per gpu, single direction (1.8 TB/s NVLink bidir / 2)
   pcie_bw: 128000000000  # Byte/s, single direction, PCIe Gen6 (256 GB/s bidir / 2)
   p2p_latency: 0.00001  # 10us some nonofficial correction based on observations, you should try to modify based on your own observations
