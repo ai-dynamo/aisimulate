@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 FPM_FORWARD_OP = "fpm_forward"
 FPM_WARMUP_ITERATIONS = 5
@@ -47,6 +50,31 @@ def _optional_size_list(values: list[int] | None) -> tuple[int, ...] | None:
     if values is None:
         return None
     return tuple(sorted(set(values)))
+
+
+def _freeze_benchmark_points(path: str) -> tuple[str, str]:
+    """Freeze transport content; native Dynamo owns point/row admission."""
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate benchmark-points field: {key}")
+            result[key] = value
+        return result
+
+    payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "prefill", "decode"}:
+        raise ValueError("benchmark-points manifest requires schema_version, prefill and decode")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] not in (1, 2, 3):
+        raise ValueError("benchmark-points schema_version must be 1, 2 or 3")
+    for phase in ("prefill", "decode"):
+        if not isinstance(payload[phase], list) or any(not isinstance(point, dict) for point in payload[phase]):
+            raise ValueError(f"benchmark-points {phase} must be a list of point objects")
+    if not payload["prefill"] and not payload["decode"]:
+        raise ValueError("benchmark-points manifest must contain at least one point")
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _powers_of_two_up_to(limit: int) -> tuple[int, ...]:
@@ -204,6 +232,8 @@ class FPMCollectionOptions:
     max_decode_batch_size: int | None = None
     max_prefill_cudagraph_size: int = FPM_MAX_PREFILL_CUDAGRAPH_SIZE
     decoder_replay: bool = False
+    benchmark_points_json: str | None = None
+    benchmark_points_sha256: str | None = None
     executor: str = "kubernetes"
     slurm_container_image: str = ""
     slurm_container_mounts: tuple[str, ...] = ()
@@ -264,7 +294,16 @@ class FPMCollectionOptions:
         if model_len is not None and model_len != -1 and model_len < 1:
             raise ValueError("--fpm-max-model-len must be positive or -1 for auto-fit")
 
+        points_path = getattr(args, "fpm_benchmark_points_file", None)
+        points_json = points_sha256 = None
+        if points_path is not None:
+            if getattr(args, "smoke", False):
+                raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
+            points_json, points_sha256 = _freeze_benchmark_points(points_path)
+
         return cls(
+            benchmark_points_json=points_json,
+            benchmark_points_sha256=points_sha256,
             max_gpus=max_gpus,
             gpu_counts=tuple(counts),
             parallel_presets=requested_presets,
@@ -302,7 +341,7 @@ class FPMCollectionOptions:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "decoder_replay": self.decoder_replay,
             "executor": self.executor,
             "slurm_container_image": self.slurm_container_image,
@@ -331,6 +370,12 @@ class FPMCollectionOptions:
             "point_source": "dynamo_native_self_benchmark",
             "prefill_sampling": self.prefill_sampling.to_dict(),
         }
+        if self.benchmark_points_json is not None:
+            payload["benchmark_points"] = {
+                "payload": json.loads(self.benchmark_points_json),
+                "sha256": self.benchmark_points_sha256,
+            }
+        return payload
 
 
 def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
@@ -339,6 +384,12 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group(
         "FPM forward collection",
         "Whole-model forward-pass planning, execution, and publication.",
+    )
+    group.add_argument(
+        "--fpm-benchmark-points-file",
+        metavar="PATH",
+        default=None,
+        help="Freeze a native Dynamo point manifest into the plan; cannot be combined with --smoke.",
     )
     group.add_argument(
         "--fpm-decoder-replay",

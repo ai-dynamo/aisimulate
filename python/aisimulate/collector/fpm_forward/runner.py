@@ -890,6 +890,85 @@ class KubernetesCellRunner:
             time.sleep(CLEANUP_PROBE_INTERVAL_SECONDS)
 
 
+POINTS_FILENAME = "benchmark-points.json"
+POINTS_RECEIPT_FILENAME = "point_manifest_receipt.json"
+
+
+def _frozen_points(plan: FPMCollectionPlan) -> str | None:
+    canonical = getattr(plan.options, "benchmark_points_json", None)
+    if canonical is None:
+        return None
+    expected = getattr(plan.options, "benchmark_points_sha256", None)
+    if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != expected:
+        raise ValueError("frozen benchmark-points payload and SHA256 disagree")
+    return canonical
+
+
+def _stage_points_file(plan: FPMCollectionPlan, cell_dir: Path) -> list[Path]:
+    canonical = _frozen_points(plan)
+    if canonical is None:
+        return []
+    path = cell_dir / POINTS_FILENAME
+    path.write_bytes(canonical.encode("utf-8"))
+    return [path]
+
+
+def _record_points_receipts(resource, pods, plan, cell, attempt_id: str, *, phase: str) -> None:
+    if _frozen_points(plan) is None:
+        return
+    payload = json.dumps(
+        {
+            "plan_sha256": plan.sha256,
+            "cell_id": cell.cell_id,
+            "attempt_id": attempt_id,
+            "sha256": plan.options.benchmark_points_sha256,
+            "phase": phase,
+        },
+        sort_keys=True,
+    )
+    # The same check runs inside Kubernetes and Slurm containers, before and
+    # after native execution. It does not modify Generator's emitted scripts.
+    script = (
+        "import hashlib,json,pathlib,sys; receipt=json.loads(sys.argv[1]); "
+        "actual=hashlib.sha256(pathlib.Path(sys.argv[2]).read_bytes()).hexdigest()\n"
+        "if actual != receipt['sha256']: raise ValueError('runtime benchmark-points SHA256 mismatch')\n"
+        "pathlib.Path(sys.argv[3]).write_text(json.dumps(receipt,sort_keys=True))"
+    )
+    execute = getattr(resource, "_exec_checked", None) or resource._exec
+    for pod in pods:
+        execute(
+            pod,
+            [
+                "python3",
+                "-c",
+                script,
+                payload,
+                f"{REMOTE_WORKDIR}/{POINTS_FILENAME}",
+                f"{FPM_RESULTS_DIR}/{POINTS_RECEIPT_FILENAME}",
+            ],
+            timeout=300,
+        )
+
+
+def _validate_points_receipts(plan, cell, raw_root: Path, attempt_id: str) -> None:
+    if _frozen_points(plan) is None:
+        return
+    owners = sorted(raw_root.rglob(COLLECTOR_PROVENANCE_FILENAME))
+    if not owners:
+        raise ValueError("explicit benchmark points have no runtime receipt owners")
+    expected = {
+        "plan_sha256": plan.sha256,
+        "cell_id": cell.cell_id,
+        "attempt_id": attempt_id,
+        "sha256": plan.options.benchmark_points_sha256,
+        "phase": "after",
+    }
+    for owner in owners:
+        path = owner.parent / POINTS_RECEIPT_FILENAME
+        if json.loads(path.read_text()) != expected:
+            raise ValueError(f"runtime benchmark-points receipt mismatch: {path}")
+
+
 def _cell_generator_overrides(
     plan: FPMCollectionPlan,
     cell: FPMCell,
@@ -897,6 +976,9 @@ def _cell_generator_overrides(
     *,
     smoke: bool = False,
 ) -> dict[str, Any]:
+    explicit_points = _frozen_points(plan)
+    if explicit_points is not None and smoke:
+        raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
     unsupported_base = set(base) - {"K8sConfig", "generator_dynamo_version"}
     if unsupported_base:
         raise ValueError(f"FPM runner accepts deployment-only Generator inputs, got {sorted(unsupported_base)}")
@@ -926,6 +1008,11 @@ def _cell_generator_overrides(
         "--max-model-len",
         str(plan.options.vllm_max_model_len),
     ]
+    if explicit_points is not None:
+        payload = json.loads(explicit_points)
+        if not payload[cell.workload_kind]:
+            raise ValueError(f"benchmark-points manifest has no {cell.workload_kind} points for this cell")
+        scheduler_args.extend(["--benchmark-points-file", f"{REMOTE_WORKDIR}/{POINTS_FILENAME}"])
     if cell.workload_kind == "decode" and getattr(plan.options, "max_decode_batch_size", None):
         scheduler_args.extend(["--max-num-seqs", str(plan.options.max_decode_batch_size)])
     if cell.workload_kind == "prefill" and not smoke:
@@ -1059,6 +1146,8 @@ def _cell_generator_overrides(
     merged.setdefault("K8sConfig", {})["extra_env"] = list(resolved_env.values())
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
+    if any(str(arg).split("=", 1)[0] == "--benchmark-points-file" for arg in policy_args):
+        raise ValueError("benchmark points must be supplied through --fpm-benchmark-points-file")
     if cell.workload_kind == "decode":
         prefix_caching = _decode_prefix_caching_mode(cell)
         policy_disables = any(
@@ -1106,6 +1195,14 @@ def _configured_sampling_metadata(
     *,
     smoke: bool,
 ) -> dict[str, int | str]:
+    canonical = _frozen_points(plan)
+    if canonical is not None:
+        if smoke:
+            raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
+        return {
+            "benchmark_points_sha256": plan.options.benchmark_points_sha256,
+            "requested_point_count": len(json.loads(canonical)[cell.workload_kind]),
+        }
     if cell.workload_kind != "prefill":
         # Derive checkpoint evidence from the same strategy predicate used to
         # render the engine flags. _cell_generator_overrides rejects policy
@@ -1354,6 +1451,7 @@ def _recover_completed_attempt(
     cell_dir = root / "cells" / cell.cell_id
     try:
         attempt_id = _required_attempt_id(entry, cell.cell_id)
+        _validate_points_receipts(plan, cell, cell_dir / "raw", attempt_id)
         _runtime_collection_summary(
             cell,
             cell_dir / "raw",
@@ -1509,6 +1607,8 @@ def _run_collection_impl(
     database_root: str | None = None,
     publish_partial: bool = False,
 ) -> list[dict[str, object]]:
+    if _frozen_points(plan) is not None and smoke:
+        raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
     run_started_at = _utc_now()
     root = Path(artifact_root).expanduser().resolve() / plan.sha256[:16]
     if smoke:
@@ -1576,6 +1676,10 @@ def _run_collection_impl(
         entry = checkpoint["cells"].get(cell.cell_id)
         if not isinstance(entry, dict) or entry.get("status") != "passed":
             continue
+        if _frozen_points(plan) is not None:
+            _validate_points_receipts(
+                plan, cell, root / "cells" / cell.cell_id / "raw", _required_attempt_id(entry, cell.cell_id)
+            )
         # This refresh only polishes checkpoint metadata for cells whose
         # results were already validated and published; raw artifacts that
         # are no longer readable (disk reclaimed, resume from a different
@@ -1711,6 +1815,7 @@ def _run_collection_impl(
                     env_script,
                     runtime_exec,
                     runtime_preflight,
+                    *_stage_points_file(plan, cell_dir),
                     *(
                         [
                             runtime_preflight.parent / "fpm_text.txt",
@@ -1727,13 +1832,16 @@ def _run_collection_impl(
                 plan_sha256=plan.sha256,
                 attempt_id=attempt_id,
             )
+            _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="before")
             phase_marks["stage_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
             resource.execute(pods)
+            _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="after")
             phase_marks["execute_wall_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
             resource.collect(pods)
             phase_marks["collect_s"] = round(time.monotonic() - mark, 3)
+            _validate_points_receipts(plan, cell, cell_dir / "raw", attempt_id)
             runtime_collection = _runtime_collection_summary(
                 cell,
                 cell_dir / "raw",
