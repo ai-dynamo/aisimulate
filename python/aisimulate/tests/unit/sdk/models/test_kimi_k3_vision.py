@@ -127,6 +127,40 @@ def test_kimi_k3_parser_rejects_invalid_vision_head_count(heads):
 
 
 @pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("vision_metadata", [True, 1, 1.5, "vision", [1]])
+def test_local_checkpoint_rejects_non_object_kimi_vision_metadata(tmp_path, language_only, vision_metadata):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["vision_config"] = vision_metadata
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_config = _model_config()
+    model_config.language_only = language_only
+
+    with pytest.raises(ValueError, match="Kimi K3 vision_config must be an object"):
+        get_model_config_from_model_path(str(tmp_path))
+    with pytest.raises(ValueError, match="Kimi K3 vision_config must be an object"):
+        get_model(str(tmp_path), model_config, "sglang")
+
+
+@pytest.mark.parametrize("language_only", [False, True])
+@pytest.mark.parametrize("vision_metadata", ["missing", None, {}])
+def test_local_checkpoint_preserves_absent_kimi_vision_metadata(tmp_path, language_only, vision_metadata):
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    if vision_metadata == "missing":
+        raw.pop("vision_config")
+    else:
+        raw["vision_config"] = vision_metadata
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    model_config = _model_config()
+    model_config.language_only = language_only
+
+    assert get_model_config_from_model_path(str(tmp_path))["extra_params"].vision_config is None
+    model = get_model(str(tmp_path), model_config, "sglang")
+    assert getattr(model, "encoder_config", None) is None
+    assert not model.encoder_ops
+    assert model.context_ops and model.generation_ops
+
+
+@pytest.mark.parametrize("language_only", [False, True])
 @pytest.mark.parametrize(
     "field",
     [

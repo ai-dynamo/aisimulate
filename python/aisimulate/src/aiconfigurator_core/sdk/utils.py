@@ -1058,6 +1058,9 @@ def _parse_hf_config_json(config: dict) -> dict:
         layer_types = tuple("linear_attention" if (i + 1) in kda_layer_ids else "full_attention" for i in range(layers))
         kimi_vision_config = None
         if vision_cfg:
+            if not isinstance(vision_cfg, dict):
+                raise ValueError("Kimi K3 vision_config must be an object")
+
             # Kimi K3 reuses the MoonViT3D tower and PatchMergerV2 implemented
             # for Kimi K2.5. Sources: Transformers commit
             # cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55 and vLLM commit
