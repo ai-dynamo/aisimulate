@@ -151,6 +151,16 @@ def discover_host() -> HostResources:
 
 
 def resolve_budget(policy: ResourceConfig, host: HostResources) -> dict[str, Any]:
+    inherited = os.environ.get("_AISIMULATE_SUPERVISED_BUDGET")
+    if inherited:
+        budget = json.loads(inherited)
+        supervisor_rss = psutil.Process(budget["supervisor_pid"]).memory_info().rss
+        return {
+            "memory_limit_bytes": budget["memory_limit_bytes"],
+            "cpu_limit": budget["cpu_limit"],
+            "reserved_host_memory_bytes": budget["reserved_host_memory_bytes"],
+            "coordinator_memory_bytes": host.process_memory_bytes + supervisor_rss + COORDINATOR_RESERVE_BYTES,
+        }
     reserve = max(int(policy.reserve_memory_gib * GIB), int(policy.reserve_memory_fraction * host.total_memory_bytes))
     headroom = max(0, host.available_memory_bytes - reserve)
     if policy.memory_limit_gib == "auto":

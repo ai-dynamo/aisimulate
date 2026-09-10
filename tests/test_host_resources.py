@@ -186,7 +186,7 @@ def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command,
     config.write_text(yaml.safe_dump(raw))
     out = tmp_path / "result"
     args = [command, "--stack", "dynamo", "--config", str(config), "--output-dir", str(out)]
-    assert cli.main(args + (["--dry-run"] if dry_run else [])) == 3
+    assert cli._main(args + (["--dry-run"] if dry_run else [])) == 3
     report = json.loads((out / "resource-plan.json").read_text())
     assert report["status"] == "resource_limited"
     assert report["estimate"]["input_token_bytes"] == 264_241_152_000
@@ -213,7 +213,7 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
             return "result"
 
     monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
-    assert recommendation.run_recommendation(config, stack="engine", runner_factory=object()) == "result"
+    assert recommendation._run_recommendation(config, stack="engine", runner_factory=object()) == "result"
     assert seen[0].parallel_evals == 2
     assert seen[0].candidates_per_round == 8
     assert seen[0].max_trials == 256
@@ -262,7 +262,7 @@ def test_error_diagnostic_preserves_existing_output(tmp_path, monkeypatch, host)
     output.mkdir()
     evidence = output / "resource-plan.json"
     evidence.write_text("existing evidence")
-    assert cli.main(["recommend", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)]) == 3
+    assert cli._main(["recommend", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)]) == 3
     assert evidence.read_text() == "existing evidence"
 
 

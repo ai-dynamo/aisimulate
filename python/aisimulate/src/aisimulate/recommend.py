@@ -35,16 +35,47 @@ def run_recommendation(
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
     show_progress: bool = True,
 ) -> SweepResult:
+    """Run recommendation in a supervised process, including preparation.
+
+    Injected factories and providers must be pickleable, as for spawned sweeps.
+    """
+    from .supervision import in_supervised_process, supervised_recommendation
+
+    kwargs = dict(
+        adapter_configs=adapter_configs,
+        stack=stack,
+        runner_factory=runner_factory,
+        providers=providers,
+        show_progress=show_progress,
+    )
+    if in_supervised_process():
+        return _run_recommendation(config, **kwargs)
+    return supervised_recommendation(config, kwargs)
+
+
+def _run_recommendation(
+    config: CoreRecommendationConfig,
+    *,
+    adapter_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    stack: str,
+    runner_factory: RunnerFactory,
+    providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    show_progress: bool = True,
+) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
+    from .supervision import checkpoint
+
+    checkpoint("requested_config", config.model_dump(mode="json"))
     plan = build_plan(
         workload_bounds(config),
         stack=stack,
         policy=config.execution.resources,
-        requested_parallelism=config.optimizer.parallelism,
+        requested_parallelism=config.optimizer.suggestion_batch_size,
         factory=runner_factory,
     )
     require_plan(plan)
+    checkpoint("resource_plan", plan)
     from .sweeper.search import Sweeper
 
     runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
@@ -152,7 +183,7 @@ def recommendation_to_sweeper(
         for section, search_spec in (adapter_configs or {}).items()
     }
 
-    parallelism = config.optimizer.parallelism
+    parallelism = config.optimizer.suggestion_batch_size
     # New exact-global controls are carried alongside the legacy fields. The
     # Sweeper consumes them directly; max_rounds remains one for old callers.
     sweep = {

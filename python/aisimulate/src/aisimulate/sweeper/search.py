@@ -42,6 +42,7 @@ from typing import Any
 from tqdm import tqdm
 
 from ..resources import ResourceLimitError
+from ..supervision import checkpoint, close_pool, in_supervised_process, mark_execution_ready, terminate_pool
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
@@ -937,6 +938,7 @@ def _init_worker(
     identity = getattr(mp.current_process(), "_identity", ())
     worker_id = int(identity[0]) if identity else 0
     runner = runner_factory.create(worker_id)
+    mark_execution_ready()
     # multiprocessing runs Finalize callbacks during a normal child-process
     # shutdown.  Unlike a plain atexit handler, this matches the ProcessPool
     # worker lifecycle and lets a runtime release worker-local resources.
@@ -1012,6 +1014,7 @@ class Sweeper:
             max_seq_len=config.search_space.context_length,
             runner_capabilities=capabilities,
         )
+        checkpoint("run_input", config.model_dump(mode="json"))
         resolved_providers, provider_plans = _prepare_providers(config, injected=providers, show_progress=show_progress)
         for name, plan in provider_plans.items():
             unsupported = [hook for hook in plan.potential_runtime_hooks if not capabilities.supports_hook(hook)]
@@ -1080,6 +1083,8 @@ class Sweeper:
         max_eval_seconds = sweep.max_eval_seconds
         worker_count = min(sweep.parallel_evals, per_round)
         sequential_runner = None if use_pool else runner_factory.create(0)
+        if sequential_runner is not None:
+            mark_execution_ready()
 
         def _new_pool() -> ProcessPoolExecutor:
             return ProcessPoolExecutor(
@@ -1087,6 +1092,7 @@ class Sweeper:
                 mp_context=mp.get_context("spawn"),
                 initializer=_init_worker,
                 initargs=(runner_factory,),
+                max_tasks_per_child=1 if in_supervised_process() else None,
             )
 
         # One-element box so a runtime timeout can kill the hung pool and swap in a fresh one
@@ -1096,12 +1102,7 @@ class Sweeper:
         def _terminate_pool(pool: ProcessPoolExecutor | None) -> None:
             if pool is None:
                 return
-            for process in list((getattr(pool, "_processes", None) or {}).values()):
-                try:
-                    process.terminate()
-                except ProcessLookupError:
-                    pass
-            pool.shutdown(wait=False, cancel_futures=True)
+            terminate_pool(pool)
 
         def _replace_pool() -> None:
             _terminate_pool(pool_box[0])
@@ -1124,7 +1125,7 @@ class Sweeper:
                 # finalizers execute.  Only the timeout-recovery path above sends a
                 # terminate signal, where cleanup is necessarily best-effort.
                 if pool_box[0] is not None:
-                    pool_box[0].shutdown(wait=True, cancel_futures=True)
+                    close_pool(pool_box[0])
                 pool_box[0] = None
                 if sequential_runner is not None:
                     sequential_runner.close()
@@ -1162,6 +1163,7 @@ class Sweeper:
                 wave = todo[start : start + worker_count]
                 pool = pool_box[0]
                 assert pool is not None
+                checkpoint("candidate_wave_started", {"configs": [item.sample for _, item in wave]})
                 try:
                     # submit() can raise when an initializer or an earlier task killed
                     # the pool, so keep it inside the friendly-error wrapper.
@@ -1283,6 +1285,7 @@ class Sweeper:
                     ),
                 )
                 candidate_records.append(record)
+                checkpoint("candidate_completed", record.model_dump(mode="json"))
                 if candidate is not None:
                     record_id_by_candidate_object[id(candidate)] = record.candidate_id
                 best = _best()
