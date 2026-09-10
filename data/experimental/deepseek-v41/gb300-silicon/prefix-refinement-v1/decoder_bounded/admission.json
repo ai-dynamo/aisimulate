@@ -1,0 +1,54 @@
+{
+  "admission_source_sha256": "75ec660c3e0dce8de4f1fd8bb12759f5a09be03bfb97e2644726ec2ad0047957",
+  "baseline_tables_unchanged": true,
+  "fit_corrections": false,
+  "heldout_repetitions": 10,
+  "independent_holdouts": 46,
+  "module_points": 948,
+  "origin_counts": {
+    "formal": 830,
+    "new_calibration": 108,
+    "pilot_selected": 10
+  },
+  "plan_receipt_sha256": "66bcdb6854a4eea8a6ef2d8ad2ae04142bb727c82a43a69802c6b34e6024718f",
+  "private_raw_input_files_sha256": {
+    "heldout": {
+      "COMPLETE": "6f2c3ef78102386857f825969114e53252d4c93fb24b586bbe6ffd667bff797f",
+      "execution-contract.json": "3e80a3b476e57598c12e1353b3062d413c870249fb94398a94282ba217fa0d3c",
+      "forward-rank-0.jsonl": "becbec086b6e3aa2c5dc1f02a996fd9f3f435881b760665081a89d9a8723c5dc",
+      "forward-rank-1.jsonl": "8e9eb30049e87d67601bc20e715cde98bf0550cb522bf9f523f6d574a1c416c2",
+      "forward-rank-2.jsonl": "7f1686fdb05ae2476acf4d149e22884a29e09de80d7a9a4d51f055fc5e4b08c0",
+      "forward-rank-3.jsonl": "11e6d7d4de1b6cfc207434b2b35d08a41ddbba9f526f33d78fc1cdde9060a305",
+      "input_provenance.json": "1c6b375247804fe0e7cb38060cebb230e66063dfe78e4fcbb4139c5c7659ea08",
+      "source_hashes.json": "aca1315eb6315a27eb8affb8cbe3a68f186aafa53c468ef544c0d6f7c5a4cc32",
+      "workload-plan.json": "83037145f350fcee4c48191aa2ea1ddef216947f1934c2bbe8c3591abb2e39fa",
+      "workloads-rank-0.jsonl": "c31db3664a22918bb70590b398a3fd175d50244c753848e6b93dd27154b334c8",
+      "workloads-rank-1.jsonl": "afbc0749add1bedceb0f650be1e75979ff78d7ccbeb200a43fc71513aa000e60",
+      "workloads-rank-2.jsonl": "026e01bca5e516f75ac598d776797a51d396bfde7e5c3df8b0f228b901d44c49",
+      "workloads-rank-3.jsonl": "879b9c95719798052954553d1c059bc7836161fd2fdf6ff5f0ad1528d6f8166b"
+    },
+    "new_calibration": {
+      "COMPLETE": "6f2c3ef78102386857f825969114e53252d4c93fb24b586bbe6ffd667bff797f",
+      "execution-contract.json": "58ed10e1a0eb2ef8f9bb4dc9cdc9ca21d5ddddffc60f337cdd36a06de37e7e5d",
+      "input_provenance.json": "1c6b375247804fe0e7cb38060cebb230e66063dfe78e4fcbb4139c5c7659ea08",
+      "invocations-rank-0.jsonl": "c0e3fbcbf47cbd2097bfb8f56d1ad5d5127bbd8ea88d50f8b370d3e10f752f93",
+      "invocations-rank-1.jsonl": "084658799eae7c8559305d22c4d8090e34167534f93f3361935fd0db0f18361d",
+      "invocations-rank-2.jsonl": "eac67ff3d6e9a58b9bd21603e58cfac366ab6650f2ecd1c5bda840261efb2ffb",
+      "invocations-rank-3.jsonl": "3482ea9d00cca5825cec3b84549527d2f5f79df1cf818acbbe112e9a3d8b3208",
+      "rank-0.jsonl": "532ed7bea0ff2dbb780558092d897e5703d20cbab681eadb07a8064456d3a2bc",
+      "rank-1.jsonl": "941624f121257dc1a680bdd94d0e7c65119e8e2e674ab3d05e52e8763987b122",
+      "rank-2.jsonl": "b0d18b6a0d28879c38dbd10b6063664f33176f07a1967084d8c630bdaf40c666",
+      "rank-3.jsonl": "89227529066b4fda83483d813c015739a0e250dbee95d92e3f7ba20a538ede1b",
+      "source_hashes.json": "aca1315eb6315a27eb8affb8cbe3a68f186aafa53c468ef544c0d6f7c5a4cc32",
+      "workload-plan.json": "e753d52c097e4508275175c58c4541ce237cd69a1373393405e33db7b4ade593",
+      "workloads-rank-0.jsonl": "449819db84c17f73d13bc6f0e587e9122931516a4d5cdd04672ab0a992acf4b1",
+      "workloads-rank-1.jsonl": "7ca6199c8025675f4969d4350a9f2a8828a8bd80c97ee0c93ca3f03f8e42a5f9",
+      "workloads-rank-2.jsonl": "b80d3dcfdfcd47c44a5142b895c187d468490f6c1e5b58c2c7874eb211168d1f",
+      "workloads-rank-3.jsonl": "fbfe8432e425a42e70aceaf5aee8193b0b93b204b2fd82d4fd40e64d63405ad7"
+    }
+  },
+  "profile": "decoder_bounded",
+  "schema": "dsv41.prefix.refinement.admission.v1",
+  "status": "accepted",
+  "table_sha256": "2a84890b0049b98aee3f51d8cd8bbd3b52f6113c9ed059673f891b4cddcc53ec"
+}

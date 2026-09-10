@@ -5,6 +5,17 @@ original pilot, 126-configuration calibration, 38-configuration holdout,
 precision-v2 repeat, tables, and reports remain unchanged. This directory does
 not make the previous unsupported predictions retroactively supported.
 
+The frozen campaign completed on 2026-09-10. All three native lifecycles
+exited successfully. Admission accepted 18 bounded calibration configurations
+and 46 independent forward configurations per profile with the prescribed
+repeat counts and all four TP rank records. The resulting tables contain
+848 full and 948 bounded module keys. The reproducible
+[verification receipt](verification-receipt.json) records exact native
+SILICON lookups for all 1,796 keys; the two profile admission receipts and
+compressed raw evidence retain the configuration, source, input, and sample
+completeness checks. Forward accuracy and whole-model coverage are reported
+separately from this table roundtrip check.
+
 The current table keys prefix exactly and interpolates only its query/KV axis.
 For bounded prefill, the late attention layers see
 `effective_prefix = original_prefix + max(query - 128, 0)`. Ten original bounded
