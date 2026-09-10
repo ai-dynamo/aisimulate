@@ -1,0 +1,54 @@
+{
+  "schema": "dsv41.public.report.artifacts.v1",
+  "compressed_original_json": {
+    "trace-sol.json.gz": {
+      "decompressed_sha256": "deb6d5df18341ad2ef0298535726d3be4cb2dc2dfe5ceff7a093e322d11e3bf1",
+      "compressed_sha256": "d46a82766dcb53652f0932548c617c2070edfc2b4bdd96cbb0a49b54ece924ef"
+    },
+    "e2e-sol.json.gz": {
+      "decompressed_sha256": "2b4d3caf0e81e2fb8b450a5c1c86718b6766b6cc30d9e088fbc58b4bf07fa456",
+      "compressed_sha256": "920e6993aa85bb52afe69065c08699a1263c608cc48c1dc108cba8d63f5985b6"
+    },
+    "trace-hybrid.json.gz": {
+      "decompressed_sha256": "e1f17cc277acb49330361af8e703099b30adcec2cdcf5410433d9773a53f5310",
+      "compressed_sha256": "505bd754e3fb86fd48e9911eaa5f457fd3598016bff94b5aa23563ba2cdf1cdd"
+    },
+    "e2e-hybrid.json.gz": {
+      "decompressed_sha256": "bda0f49e2a907a6aecd5e9a5ed4538940368f77aa3c4946f4719dd6c118e403d",
+      "compressed_sha256": "634804a503ae0698653c187bd749bddace153d3f85a68ed0de2dc3918baade41"
+    },
+    "trace-silicon.json.gz": {
+      "decompressed_sha256": "db87f70894b814f4323856842b31d94684974318b662a4b7362ce949092f59ab",
+      "compressed_sha256": "5952d1d03fde90af798a5e45223e918bb66d35ff0ced140f7ef281f52e6ca080"
+    },
+    "e2e-silicon.json.gz": {
+      "decompressed_sha256": "91182723d162f4b861a30b364d7a6c347706715b4ec8f028a0fd9a79b85cc5e6",
+      "compressed_sha256": "304fda9421078bb4aeadccc142f6e1877cd83072b1053d538a4ff40241ceb65f"
+    },
+    "main-plan.json.gz": {
+      "decompressed_sha256": "1736149abc5bf96fada60e9c09844d69f8a45a31f30c17492c90018b0e36e599",
+      "compressed_sha256": "180a94fd1b8bc78bcce67d520f940a97ae01a1a16017de28e51c5b533b15d35a"
+    },
+    "pilot-plan.json.gz": {
+      "decompressed_sha256": "bec3a640cab45312d85e6976b7e4853d3cf6d8f3479474dd0027f67bb767979d",
+      "compressed_sha256": "3cc9648fdce4c546b0d7fa32c42795135005906a4c3b3da02f30cbd8276c3fba"
+    }
+  },
+  "portable_prediction_configs": {
+    "sol-config.json": {
+      "original_local_input_sha256": "8ec5971ae39efd7a2f5c1f3de36fccca3a2f5718d2e98958fed8776dbfa94094",
+      "published_sha256": "f120a3effabdea10218e58b0268f3053b6c19640e2afcf81e3b81335d77b2c07",
+      "change": "systems_path made repository-relative; all model/execution fields unchanged"
+    },
+    "hybrid-config.json": {
+      "original_local_input_sha256": "5d748f49cc0ac0bb4ade9e67247c883ea6ac6c34759f870a04350ba61d92f5db",
+      "published_sha256": "372185cc1241bce769f9fe05c5b28957d9b6225928ab7c631cb3da81e9039dfa",
+      "change": "systems_path made repository-relative; all model/execution fields unchanged"
+    },
+    "silicon-config.json": {
+      "original_local_input_sha256": "cb9ee55851468f1e3d95f23ae28994cb1b978c0ad69e889ed79281b9b95d3b79",
+      "published_sha256": "1fb02c76f43c5e46d8dcdfc7b0f368e20820d9db6ffabd505f6bc2f0a3abbbd9",
+      "change": "systems_path made repository-relative; all model/execution fields unchanged"
+    }
+  }
+}
