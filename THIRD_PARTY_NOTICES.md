@@ -307,6 +307,7 @@ SGLang's serving architecture at immutable commit
 - `python/sglang/srt/models/deepseek_v4.py` and `deepseek_v2.py`
 - `python/sglang/srt/layers/engram.py`
 - `python/sglang/srt/layers/attention/dsv4/compressor.py`
+- `python/sglang/srt/layers/attention/dsv4/dsv41_sparse.py`
 - `python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py`
 - `python/sglang/benchmark/one_batch.py`
 
