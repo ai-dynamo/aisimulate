@@ -18,7 +18,7 @@ from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
 
-from analyze_e2e import analyze, quantile, trial_metrics
+from analyze_e2e import analyze, finite_positive, quantile, trial_metrics
 from compare_forward import (
     canonical,
     file_hash,
@@ -35,7 +35,10 @@ def positive_int(value, field):
 
 def qualify_e2e_sources(measurement, client_path, scheduler_path):
     bindings = measurement["source_bindings"]
-    for key, path in (("client_summary_file_sha256", client_path), ("scheduler_receipt_file_sha256", scheduler_path)):
+    for key, path in (
+        ("client_summary_file_sha256", client_path),
+        ("scheduler_receipt_file_sha256", scheduler_path),
+    ):
         if bindings.get(key) != file_hash(path):
             raise ValueError("HTTP/scheduler evidence differs from the frozen measurement source: " + key)
 
@@ -92,6 +95,7 @@ def timing_provider(config):
         "strict_provenance": True,
         "systems_path": config["systems_path"],
         "forward_model": config.get("forward_model", "op_level"),
+        **({"fmha_dtype": config["activation_dtype"]} if config.get("activation_dtype") is not None else {}),
     }
 
 
@@ -146,7 +150,11 @@ def sglang_engine(receipt, config):
                 "chunked_prefill_size": actual["chunked_prefill_size"],
                 "schedule_conservativeness": flags["schedule_conservativeness"],
             },
-            "timing_model": {"type": "external", "provider": "aic", "config": timing_provider(config)},
+            "timing_model": {
+                "type": "external",
+                "provider": "aic",
+                "config": timing_provider(config),
+            },
         },
     }
 
@@ -201,7 +209,11 @@ def vllm_engine(receipt, config, plan):
             "max_num_batched_tokens": positive_int(receipt["max_scheduled_tokens"], "scheduled tokens"),
             "enable_prefix_caching": True,
             "enable_chunked_prefill": True,
-            "timing_model": {"type": "external", "provider": "aic", "config": timing_provider(config)},
+            "timing_model": {
+                "type": "external",
+                "provider": "aic",
+                "config": timing_provider(config),
+            },
         },
     }
 
@@ -321,6 +333,21 @@ def replay_spec(engine, cohort, observed, *, seed_cohort=None, seed_observed=Non
     }, (observed["started"]["monotonic_ns"] - origin) / 1e6
 
 
+def observed_metrics(cohort):
+    """Add response completion measures without changing the frozen N analysis."""
+    metrics = trial_metrics(cohort)
+    if not metrics:
+        return metrics
+    for output, field in (
+        ("request_latency_ms", "latency_ms"),
+        ("last_token_latency_ms", "last_token_latency_ms"),
+    ):
+        values = [r.get(field) for r in cohort["requests"]]
+        if all(finite_positive(v) for v in values):
+            metrics[output] = statistics.mean(values)
+    return metrics
+
+
 def predicted_metrics(report, request_ids, cohort_start_ms):
     records = report["per_request"]
     by_id = {r["request_id"]: r for r in records}
@@ -334,6 +361,8 @@ def predicted_metrics(report, request_ids, cohort_start_ms):
         raise ValueError("native replay has an invalid cohort completion time")
     metrics = {
         "ttft_ms": statistics.mean(r["ttft_ms"] for r in selected),
+        "request_latency_ms": statistics.mean(r["terminal_time_ms"] - r["arrival_time_ms"] for r in selected),
+        "last_token_latency_ms": statistics.mean(r["last_token_ms"] - r["arrival_time_ms"] for r in selected),
         "output_tokens_per_second": 1000 * sum(r["output_length"] for r in selected) / duration,
     }
     if all(r["output_length"] > 1 for r in selected):
@@ -393,7 +422,7 @@ def compare_cohort(engine, cohort, observed, native_replay, *, seed_cohort=None,
         "trial_seed": cohort["trial_seed"],
         "declared_coverage_role": cohort.get("coverage_role", "unspecified"),
         "corpus_role": cohort.get("corpus_role", "unspecified"),
-        "observed": trial_metrics(observed),
+        "observed": observed_metrics(observed),
         "replay_spec_sha256": hashlib.sha256(canonical(spec).encode()).hexdigest(),
     }
     try:
@@ -540,7 +569,7 @@ def main():
                     "trial_seed": cohort["trial_seed"],
                     "declared_coverage_role": cohort.get("coverage_role", "unspecified"),
                     "corpus_role": cohort.get("corpus_role", "unspecified"),
-                    "observed": trial_metrics(observed[key]),
+                    "observed": observed_metrics(observed[key]),
                     "status": "prediction_unavailable",
                     "failure_type": "CapacityQualificationError",
                     "failure": capacity_failure,
@@ -593,6 +622,7 @@ def main():
             )
         },
         "prediction_config": public_config,
+        "effective_fmha_quant_mode": measurement.get("fmha_quant_mode"),
         "replay_engine": public_engine,
         "capacity_policy": "observed logical capacity"
         if measurement["backend"] == "sglang"
@@ -605,9 +635,14 @@ def main():
         "resolved_model_identity": model_identity,
         "correction_fitting": False,
         "client_analysis": client_analysis,
+        "supplementary_metrics": {
+            "request_latency_ms": "request arrival to response completion",
+            "last_token_latency_ms": "request arrival to last output token",
+            "sampling_role": "post-plan descriptive metrics; excluded from the frozen pilot N rule",
+        },
         "limitations": [
             "HTTP includes frontend, transport and response completion; native replay excludes them.",
-            "SGLang replay charges a separate first-output decode after prefill.",
+            "The inspected SGLang and vLLM replay paths charge a separate first-output decode after prefill.",
             "Runtime overlap and dynamic admission policies are approximated by the existing scheduler.",
             "Runtime context limit is recorded but not a SGLang replay control; this study stays below it.",
             "SGLang uses observed logical capacity. vLLM's heterogeneous pools are not flattened: "

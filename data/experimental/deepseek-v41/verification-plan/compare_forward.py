@@ -137,12 +137,18 @@ def resolved_model_identity(config, observations):
     expected = utils._attach_inferred_quant_fields(deepcopy(checkpoint))
     if canonical(resolved) != canonical(expected):
         raise ValueError("resolved model config differs from the observed checkpoint and inferred precision")
-    return {
+    identity = {
         "checkpoint_config_file_sha256": file_hash(checkpoint_path),
         "checkpoint_config_canonical_sha256": checkpoint_sha,
         "resolved_config_canonical_sha256": hashlib.sha256(canonical(resolved).encode()).hexdigest(),
         "normalization": "SDK _attach_inferred_quant_fields on the pinned checkpoint; no precision overrides",
     }
+    if config.get("activation_dtype") is not None:
+        identity["normalization"] = (
+            "SDK _attach_inferred_quant_fields on the pinned checkpoint; execution override recorded separately"
+        )
+        identity["execution_quantization_override"] = {"activation_dtype": config["activation_dtype"]}
+    return identity
 
 
 def case_metrics(case):

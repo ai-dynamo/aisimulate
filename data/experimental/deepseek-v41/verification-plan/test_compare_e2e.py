@@ -8,6 +8,7 @@ import pytest
 from compare_e2e import (
     checked_requests,
     compare_cohort,
+    observed_metrics,
     paired_summary,
     predicted_metrics,
     replay_spec,
@@ -172,7 +173,10 @@ def test_actual_external_aic_provider_compiles_and_runs_sol(tmp_path):
 
     # Explicit empty overlay admits the pinned preview version without an
     # environment override. SOL needs the system specification, not timings.
-    shutil.copyfile(Path(aiconfigurator_core.__file__).parent / "systems/gb300.yaml", tmp_path / "gb300.yaml")
+    shutil.copyfile(
+        Path(aiconfigurator_core.__file__).parent / "systems/gb300.yaml",
+        tmp_path / "gb300.yaml",
+    )
     (tmp_path / "data/gb300").mkdir(parents=True)
     config = {
         "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
@@ -279,14 +283,22 @@ def test_actual_native_prefix_seed_reuses_two_pages():
 
     seed, seed_client = case("prefix-warm-A")
     plan, client = case("prefix-reuse-B", start=2000000000)
-    for planned, observed, tokens in [(seed, seed_client, list(range(512))), (plan, client, list(range(768)))]:
+    for planned, observed, tokens in [
+        (seed, seed_client, list(range(512))),
+        (plan, client, list(range(768))),
+    ]:
         digest = hashlib.sha256(canonical(tokens).encode()).hexdigest()
         planned["requests"][0].update(input_token_ids=tokens, input_token_ids_sha256=digest)
         observed["requests"][0].update(prompt_tokens=len(tokens), input_token_ids_sha256=digest)
     plan["seed_cohort_id"] = seed["cohort_id"]
     client["cache_control"] = {"policy": "preserve-A-prefix"}
     result = compare_cohort(
-        fixed_engine(), plan, client, native.run_replay_json, seed_cohort=seed, seed_observed=seed_client
+        fixed_engine(),
+        plan,
+        client,
+        native.run_replay_json,
+        seed_cohort=seed,
+        seed_observed=seed_client,
     )
     assert result["status"] == "predicted"
     assert result["requests"][0]["reused_input_tokens"] == 512
@@ -405,10 +417,28 @@ def test_vllm_capacity_is_frozen_workload_envelope_not_sum_of_physical_groups():
     }
     plan = {"cohorts": [case()[0]]}
     first = vllm_engine(receipt, config, plan)
-    receipt["kv_pool"] = {"num_blocks": 99999, "groups": [{"block_size": 128}, {"block_size": 512}]}
+    receipt["kv_pool"] = {
+        "num_blocks": 99999,
+        "groups": [{"block_size": 128}, {"block_size": 512}],
+    }
     assert vllm_engine(receipt, config, plan) == first
     assert first["rank"]["max_num_seqs"] == 2 and first["rank"]["max_num_batched_tokens"] == 512
     assert first["rank"]["num_gpu_blocks"] == 3
     receipt["parallel"]["enable_expert_parallel"] = True
     with pytest.raises(ValueError, match="topology"):
         vllm_engine(receipt, config, plan)
+
+
+def test_request_completion_and_last_token_are_distinct_from_cohort_duration():
+    import aisimulate._runtime as native
+
+    plan, client = case()
+    client["requests"][0].update(latency_ms=11, last_token_latency_ms=10)
+    assert observed_metrics(client)["request_latency_ms"] == 11
+    assert observed_metrics(client)["last_token_latency_ms"] == 10
+    result = compare_cohort(fixed_engine(), plan, client, native.run_replay_json)
+    # Arrival is 0.1 ms after cohort start; latency excludes that offset.
+    assert result["prediction"]["request_latency_ms"] == pytest.approx(3.2)
+    assert result["prediction"]["last_token_latency_ms"] == pytest.approx(3.2)
+    assert result["signed_error_percent"]["request_latency_ms"] == pytest.approx(100 * (3.2 / 11 - 1))
+    assert result["signed_error_percent"]["last_token_latency_ms"] == pytest.approx(-68)

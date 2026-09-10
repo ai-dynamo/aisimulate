@@ -92,7 +92,7 @@ def fixture(*, backend="sglang", replay=False, diagnostic=False):
             "cohort_id": f"c{index}",
             "trial_index": 0,
             "trial_seed": 9000,
-            "purpose": "decode",
+            "purpose": f"decode-{index}",
             "comparison_role": "primary",
             "requests": [
                 {
@@ -305,6 +305,50 @@ def test_closure_reconciliation_rejects_even_with_refreshed_payload_hash(mutatio
 def test_qualified_prediction_contract(backend, mode):
     _, _, measurement = fixture(backend=backend)
     qualify_prediction_config(config(measurement) | {"database_mode": mode}, measurement)
+
+
+@pytest.mark.parametrize(
+    "mutation", [None, "missing_override", "wrong_override", "missing_receipt", "wrong_native_identity", "op_level"]
+)
+def test_gb200_fpm_fp8_identity_requires_independent_native_receipt(mutation):
+    _, _, measurement = fixture(backend="vllm")
+    measurement["fmha_quant_mode"] = "fp8"
+    measurement["source_bindings"]["fmha_identity_receipt_sha256"] = "f" * 64
+    cfg = config(measurement) | {"forward_model": "fpm", "activation_dtype": "fp8"}
+    if mutation == "missing_override":
+        cfg.pop("activation_dtype")
+    elif mutation == "wrong_override":
+        cfg["activation_dtype"] = "bf16"
+    elif mutation == "missing_receipt":
+        measurement["source_bindings"].pop("fmha_identity_receipt_sha256")
+    elif mutation == "wrong_native_identity":
+        measurement["fmha_quant_mode"] = "bfloat16"
+    elif mutation == "op_level":
+        cfg["forward_model"] = "op_level"
+    if mutation:
+        with pytest.raises(ValueError):
+            qualify_prediction_config(cfg, measurement)
+    else:
+        qualify_prediction_config(cfg, measurement)
+
+
+@pytest.mark.parametrize("mutation", ["short_scenario", "duplicate_index", "duplicate_seed", "mixed_corpus"])
+def test_each_trace_scenario_requires_its_own_complete_independent_budget(mutation):
+    audit, plan, measurement = fixture()
+    if mutation == "mixed_corpus":
+        plan["corpus_role"] = "primary"
+        plan["cohorts"][0]["corpus_role"] = "primary"
+        plan["cohorts"][1]["corpus_role"] = "field-notes"
+    elif mutation == "duplicate_index":
+        plan["cohorts"][1]["purpose"] = plan["cohorts"][0]["purpose"]
+    else:
+        plan["requested_trials"] = 2
+        plan["cohorts"][1]["trial_index"] = 1
+        if mutation == "duplicate_seed":
+            plan["cohorts"][1]["purpose"] = plan["cohorts"][0]["purpose"]
+    bind(audit, plan, measurement)
+    with pytest.raises(ValueError, match="(independent trial budget|corpus stratum)"):
+        qualify_inputs(audit, plan, measurement)
 
 
 @pytest.mark.parametrize(

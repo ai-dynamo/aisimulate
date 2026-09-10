@@ -209,6 +209,19 @@ def qualify_inputs(audit, plan, measurement, *, diagnostic=False):
         integer(case["trial_seed"], "trial_seed")
     if {c["trial_index"] for c in planned} != set(range(count)):
         raise ValueError("frozen main plan does not contain every requested trial")
+    scenarios = defaultdict(list)
+    for case in planned:
+        if case.get("corpus_role", "unspecified") != plan.get("corpus_role", "unspecified"):
+            raise ValueError("one frozen corpus stratum is required per comparison")
+        if case.get("comparison_role") == "primary":
+            scenarios[case["purpose"]].append(case)
+    if not scenarios or any(
+        len(cases) != count
+        or {c["trial_index"] for c in cases} != set(range(count))
+        or len({c["trial_seed"] for c in cases}) != count
+        for cases in scenarios.values()
+    ):
+        raise ValueError("each main scenario requires its full independent trial budget")
     cohorts = {c["cohort_id"]: c for c in audit.get("cohorts", [])}
     if len(cohorts) != len(audit.get("cohorts", [])):
         raise ValueError("duplicate audited cohort identity")
@@ -276,6 +289,14 @@ def qualify_prediction_config(config, measurement):
     # Apply the same pure-TP, inferred-precision and strict-overlay contract to
     # both explicitly qualified backends; the backend identity was checked above.
     common = dict(config, system_name="gb300", backend="sglang", backend_version="0.0.0.dev0")
+    if measurement["backend"] == "vllm" and config.get("forward_model") == "fpm":
+        # The qualified vLLM runtime uses FP8 KV, whose Collector FMHA identity
+        # differs from the SDK's default BF16 label. Require independent native
+        # evidence, not just a matching table label, before selecting that cell.
+        if config.get("activation_dtype") != "fp8" or measurement.get("fmha_quant_mode") != "fp8":
+            raise ValueError("GB200 FPM requires the independently qualified FP8 FMHA identity")
+        require_hash(measurement.get("source_bindings", {}).get("fmha_identity_receipt_sha256"), "native FMHA receipt")
+        common["activation_dtype"] = None
     compare_forward.validate_prediction_contract(
         common, {"execution_profile": "decoder_bounded" if measurement["decoder_replay"] else "full"}
     )
@@ -568,6 +589,7 @@ def main():
                 "source_bindings",
             )
         },
+        "effective_fmha_quant_mode": measurement.get("fmha_quant_mode"),
         "input_sha256": hashes,
         "resolved_model_identity": resolved,
         "systems_identity": system,

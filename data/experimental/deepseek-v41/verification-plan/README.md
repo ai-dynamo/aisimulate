@@ -231,6 +231,13 @@ Both tools require source bindings to the exact audit/plan/execution/worker
 artifacts and analysis source. E2E additionally binds the original HTTP summary
 and resolved scheduler receipt. The normalized identity must be generated from
 verified original receipts, not constructed by selecting arbitrary values.
+The qualified GB200 whole-FPM query explicitly uses `activation_dtype="fp8"`
+to match the runtime's FMHA table identity. Admission requires an independent
+native FP8-KV/Collector-policy receipt and its hash; the table label alone is
+insufficient. The raw checkpoint fingerprint remains unchanged and the execution
+override is recorded separately. GB300 op-level comparisons continue to reject
+precision overrides. The native HTTP replay bridge forwards this identity as
+`fmha_dtype`, rather than silently using the SDK's default BF16 FMHA label.
 `--diagnostic` accepts an explicitly closed partial lifecycle while preserving
 the original main budget and missing coverage; it never reports a completed
 study or final confidence interval. Partial stages cannot be silently pooled
@@ -246,8 +253,16 @@ watermark. Any missing witness or actual capacity pressure makes that prediction
 ineligible while preserving the real measurement. This tests serving timing
 conditional on absence of capacity pressure; it does not validate allocator
 memory accuracy. HTTP frontend/transport costs, native overlap details and the
-existing SGLang replay's extra first-output decode remain explicit model limits.
+existing replay's extra first-output decode remain explicit model limits; that
+extra decode was observed in the inspected SGLang and vLLM replay paths.
 
 The [original corpus strata](corpora/README.md) add English narrative and mixed
 Chinese/English technical prose at fixed geometry. Their prepared inputs are
 separate from actual collected coverage.
+
+Response-completion latency and time to last output token are also reported per
+request, then averaged within each trial. They use the recorded HTTP fields and
+native replay arrival, last-token, and terminal timestamps. These supplementary
+metrics were added after the sampling plan and do not change the frozen pilot
+budget or the independence unit. HTTP response completion includes costs absent
+from native replay.
