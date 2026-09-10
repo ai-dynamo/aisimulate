@@ -3650,10 +3650,19 @@ where
             self.is_workload_done(),
             "replay report requires an idle runtime"
         );
+        anyhow::ensure!(
+            self.flow
+                .requests
+                .values()
+                .all(|state| !state.counted_in_flight && state.coordinator.is_complete()),
+            "replay report requires completed disaggregated requests"
+        );
         self.collector
             .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
-        Ok(std::mem::take(&mut self.collector)
+        let report = std::mem::take(&mut self.collector)
             .finish()
-            .with_wall_time_ms(wall_ms))
+            .with_wall_time_ms(wall_ms);
+        self.flow.requests.clear();
+        Ok(report)
     }
 }

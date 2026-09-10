@@ -926,6 +926,7 @@ mod tests {
                 .num_requests,
             1
         );
+        assert_eq!(engine.submit(request(34, 128, 8)).unwrap(), uuid);
     }
 
     #[test]
