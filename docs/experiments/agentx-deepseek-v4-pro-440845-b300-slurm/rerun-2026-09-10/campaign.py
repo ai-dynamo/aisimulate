@@ -71,7 +71,7 @@ def main():
         subprocess.run([sys.executable, '-m', 'pip', 'freeze'], stdout=out, check=True)
     shutil.copy('/opt/agentx-aiperf/freeze.txt', ROOT / 'client-freeze.txt')
     save(ROOT / 'protocol.json', dict(image=IMAGE, cases=['off', 'on'], model=MODEL, checkpoint_revision=CKPT.name,
-        concurrency=32, duration_seconds=3600, hicache=False, fpm_rank_count=8, seed=42, timezone='UTC',
+        concurrency=32, duration_seconds=600, diagnostic_short_run=True, hicache=False, fpm_rank_count=8, seed=42, timezone='UTC',
         reference_id=440845, engine_entrypoint='sglang.launch_server', router='sglang-router consistent_hashing dp-aware'))
     # Warm the same compilation cache for both cases; each case has a new engine/KV cache.
     env = os.environ.copy()
@@ -171,7 +171,7 @@ def run_case(case, env):
             '--endpoint', '/v1/chat/completions', '--endpoint-type', 'chat', '--streaming',
             '--model', MODEL, '--tokenizer', str(CKPT), '--tokenizer-trust-remote-code',
             '--public-dataset', 'semianalysis_cc_traces_weka_062126', '--num-dataset-entries', '393',
-            '--concurrency', '32', '--benchmark-duration', '3600', '--random-seed', '42',
+            '--concurrency', '32', '--benchmark-duration', '600', '--unsafe-override', '--random-seed', '42',
             '--trajectory-start-min-ratio', '0.25', '--trajectory-start-max-ratio', '0.75',
             '--warmup-requests-per-lane', '10', '--warmup-grace-period', '1800',
             '--trace-idle-gap-cap-seconds', '300', '--system-idle-gap-cap-seconds', '10',

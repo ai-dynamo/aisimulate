@@ -11,7 +11,7 @@
 #SBATCH --exclusive
 #SBATCH --mem=0
 #SBATCH --gpus=8
-#SBATCH --time=04:00:00
+#SBATCH --time=02:30:00
 #SBATCH --signal=TERM@180
 #SBATCH --job-name=hk-agentx-dsv4-rerun
 #SBATCH --output=/home/scratch.hongkuanz_gpu/agentx-dsv4-rerun-%j.log

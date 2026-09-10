@@ -16,8 +16,8 @@ HiCacheoff, synthetic EAGLE/native-MTP acceptance2.49. Both runs use the same
 FPM-fixed amd64 image digest
 `sha256:f856a45537f82e1900ea7607edcbaa7f77fbb2e70220eae522d1d50d0046727e`.
 
-Run off then on, each with fresh engine/KV and equivalent warmup, then3600s of
-measured sending. FPM-on records all eight rank streams. Serving/router settings
+Run off then on, each with fresh engine/KV and equivalent warmup, then600s of
+measured sending, per the request for shorter diagnostic iterations. FPM-on records all eight rank streams. Serving/router settings
 match the original AgentX experiment, including maxrunningrequests64; this differs
 from the fixed sweep's256-slot pool. The goal is to reproduce the AgentX comparison,
 not treat the fixed workload and replay as otherwise identical configurations.
@@ -31,7 +31,7 @@ change the engine or the authored trace. Startup wait is bounded at3600s.
 
 Files are staged at `/home/scratch.hongkuanz_gpu/agentx-dsv4-rerun-20260910/` with
 the pinned thinking template/license and existing image-squashfs checksum.
-`submit.sh` requests one exclusive8B300node for at mostfourhours. Raw results:
+`submit.sh` requests one exclusive8B300node for at most2.5hours. Raw results:
 `/home/scratch.hongkuanz_gpu/agentx-dsv4-rerun-results/job-4227233/`.
 
 After both runs, inspect final client validity/errors/cancellations and FPM
@@ -44,3 +44,14 @@ Configuration provenance remains SemiAnalysisAI/InferenceX
 `fb85931b1edec09f9498509835a8c814bebe3c65`,
 `benchmarks/single_node/agentic/dsv4_fp4_b300_sglang_mtp.sh`, Apache-2.0.
 The original thinking template is a runtime dependency, not vendored here.
+
+## Short diagnostic window
+
+The user requested approximately10-minute measurements to accelerate iteration.
+Both off/on cases use `--benchmark-duration600 --unsafe-override`: the pinned
+AgentX scenario normally enforces a900-second minimum. Consequently these runs
+are explicitly diagnostic, and `submission_valid=false` is expected from that
+protocol override. Request errors, cancellations, coverage and FPM validity still
+need independent checks. Keep warmup separate, and do not compare these as formal
+one-hour leaderboard submissions. A short run may miss late cache-pressure or
+eviction effects.
