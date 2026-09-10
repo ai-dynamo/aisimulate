@@ -43,16 +43,17 @@ and GPU numerical/latency validation remain pending. Do not substitute the packa
 Artifacts report vllm_revision=null, the actual package version, the inspected API
 revision, and the source-manifest digest rather than inventing a global git revision.
 
-Before copying this adapter into AISimulate, add the derived files/source pin to
-root THIRD_PARTY_NOTICES.md, synchronize the packaged notice byte-for-byte, and
-run scripts/check_packaged_legal_files.py.
+The derived files and source pin are recorded in root THIRD_PARTY_NOTICES.md
+and its byte-identical packaged copy. Run scripts/check_packaged_legal_files.py
+after changing either notice.
 
 ## Runtime
 
 Stage this directory on PYTHONPATH, together with the unmodified pinned Dynamo
-components and its actual runtime dependencies, and the matching AISimulate Python
-source package (execution_identity and its helpers). The image must provide the
-pinned vLLM source and native GPU dependencies.
+components and its actual runtime dependencies. Install the matching AISimulate
+wheel, including its native extension, so the shared execution_identity helper
+can import. A source-only Python path is insufficient. The image must provide
+the pinned vLLM source and native GPU dependencies.
 
 Set:
 
@@ -105,11 +106,19 @@ same real-text token stream to the requested length. This fixture is reproducibl
 it is not a representative production corpus. Routing/locality sensitivity and
 numerical equivalence remain live validation work.
 
-Set `AIC_FPM_NATIVE_ARTIFACT` to the absolute path of the matching Collector
-`fpm_forward/native_artifact.py`, then run `python3 test_dsv41_scheduler.py` for 14 CPU lifecycle and producer-consumer contract tests. They cover actual
+From the repository root, run
+`python/aisimulate/.venv/bin/pytest -p no:timeout -c python/aisimulate/pytest.ini python/aisimulate/tests/unit/collector/test_fpm_dsv41_producer.py`
+to execute the 14 isolated CPU lifecycle and producer-consumer contract checks.
+The test wrapper sets the producer and native artifact module paths. They cover actual
 seed completion before measure, retained request identities, cached-prefill state,
 uneven request lengths, decode pipeline timing sequence, failure paths, and earned
 annotations. These are state-machine tests, not substitutes for GPU correctness.
+
+Same-request seed forwards qualify retained KV state for cached-prefill points.
+Cross-request prefix-cache reuse needs separate serving verification with a warm
+request, a subsequent request sharing its prefix, and a cold control. End-to-end
+latency and full Dynamo FPM traces from those verification runs remain separate
+from the calibration grid and its published curves.
 
 
 The pinned Linux ARM64 image is
