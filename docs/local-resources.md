@@ -101,7 +101,9 @@ size stays 16; an existing integer remains both the suggestion batch size and
 an upper limit on concurrent evaluations. The host budget can reduce execution
 parallelism without changing suggestions, seeds, trial budgets or traffic.
 Supervised sweep workers retire after each candidate to release retained runtime
-memory, at the cost of repeated worker startup. Timeout recovery terminates,
+memory, at the cost of repeated worker startup. Before each wave, the coordinator
+sums concrete candidate estimates and rechecks current owned RSS and host
+headroom. A wave that no longer fits is refused before dispatch. Timeout recovery terminates,
 escalates to kill and joins old workers before replacing the pool. Normal pool
 shutdown also has a bounded grace period.
 

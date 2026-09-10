@@ -1148,6 +1148,9 @@ class Sweeper:
             if pool_box[0] is None:
                 assert sequential_runner is not None
                 for suggestion, prepared in todo:
+                    admission = getattr(runner_factory, "admit_wave", None)
+                    if admission is not None:
+                        admission([prepared.replay_spec])
                     yield (
                         suggestion,
                         _score_prepared(
@@ -1163,6 +1166,9 @@ class Sweeper:
                 wave = todo[start : start + worker_count]
                 pool = pool_box[0]
                 assert pool is not None
+                admission = getattr(runner_factory, "admit_wave", None)
+                if admission is not None:
+                    admission([prepared.replay_spec for _, prepared in wave])
                 checkpoint("candidate_wave_started", {"configs": [item.sample for _, item in wave]})
                 try:
                     # submit() can raise when an initializer or an earlier task killed
