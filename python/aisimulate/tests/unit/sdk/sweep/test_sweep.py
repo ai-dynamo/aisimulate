@@ -692,6 +692,59 @@ def test_sweep_disagg_epd_composes_encoder_stage(monkeypatch):
     assert epd_row["request_latency"] == pytest.approx(108.0 + 8.0 * 99 + 90.0)
 
 
+@pytest.mark.parametrize("video", [False, True])
+@pytest.mark.parametrize("config_builder", [False, True])
+def test_sweep_disagg_epd_kimi_k3_keeps_both_language_workers_encoder_free(video, config_builder):
+    from aiconfigurator.sdk.perf_database import get_database_view
+
+    database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
+    visual_fields = (
+        dict(num_images_per_request=0, num_videos_per_request=1, video_frames=4, video_height=224, video_width=224)
+        if video
+        else dict(image_height=224, image_width=224, num_images_per_request=1)
+    )
+    template = config.ModelConfig(enable_encoder_dp=False)
+    model_config = (lambda _parallel: template) if config_builder else template
+    rows = sweep_disagg(
+        model_path="moonshotai/Kimi-K3",
+        runtime_config=config.RuntimeConfig(
+            isl=128, osl=2, ttft=1e6, tpot=1e6, engine_step_backend="rust", **visual_fields
+        ),
+        prefill_database=database,
+        prefill_backend_name="trtllm",
+        prefill_model_config=model_config,
+        prefill_parallel_config_list=[(16, 1, 1, 16, 1, 1)],
+        prefill_latency_correction=1.0,
+        decode_database=database,
+        decode_backend_name="trtllm",
+        decode_model_config=model_config,
+        decode_parallel_config_list=[(16, 1, 1, 16, 1, 1)],
+        decode_latency_correction=1.0,
+        prefill_max_num_tokens=192,  # 128 text tokens plus 64 pooled visual tokens.
+        decode_max_num_tokens=2,
+        prefill_num_worker_list=[1],
+        decode_num_worker_list=[1],
+        num_gpu_list=[36],
+        enable_epd=True,
+        encoder_tp_list=[4],
+        encoder_batch_list=[2],
+        max_encoder_workers=1,
+    )
+
+    # Actual native candidates must survive even though the 12-head vision
+    # tower cannot be sharded over the language workers' TP16 configuration.
+    assert not rows.empty
+    assert (rows["num_total_gpus"] == 36).all()
+    assert (rows["(e)tp"] == 4).all()
+    assert (rows["(p)tp"] == 16).all()
+    assert (rows["(d)tp"] == 16).all()
+    assert (rows["(e)workers"] == 1).all()
+    assert (rows["encoder_latency"] > 0).all()
+    assert (rows["ttft"] > rows["encoder_latency"]).all()
+    assert (rows["seq/s"] > 0).all()
+    assert template.language_only is False
+
+
 def test_sweep_agg_epd_language_only_pin_survives_config_builder(monkeypatch):
     """Task hands sweep_* a per-point ModelConfig builder, not an instance;
     the EPD language-only pin must apply to what the builder produces."""

@@ -1339,7 +1339,7 @@ def sweep_disagg(
     hetero-disagg (prefill and decode on different systems).
 
     ``enable_epd`` switches VL disagg into EPD: the vision encoder runs on
-    dedicated encode workers, prefill workers become language-only, TTFT
+    dedicated encode workers, prefill/decode workers become language-only, TTFT
     gains the encode batch latency, and the encode pool joins the worker
     rate matching (``(e)*`` columns in the output).
 
@@ -1425,8 +1425,9 @@ def sweep_disagg(
             backend_name=prefill_backend_name,
             latency_correction=encoder_latency_correction,
         )
-        # EPD prefill workers are language-only (vision tokens stay in context).
+        # Both EPD language workers omit the encoder; vision tokens stay in context.
         prefill_model_config = _language_only_config(prefill_model_config)
+        decode_model_config = _language_only_config(decode_model_config)
 
     prefill_summary_df = _get_disagg_worker_candidates(
         model_path=model_path,
