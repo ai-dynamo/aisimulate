@@ -1,0 +1,17 @@
+{
+  "image": "nvcr.io/nvidian/dynamo-dev/vllm-agentx:hzhou-fpm-996fed4671-amd64-20260910",
+  "digest": "sha256:b58174af2daaf4d02c4845fc90dd3f18615fc7c3ef930fb852ed0d29e76f1d12",
+  "base_index": "sha256:8f902fed10bd66c662729c926a97af08791f044982b189376db11423c0a33c66",
+  "base_amd64": "sha256:31e6a99a9a25be541ffdffabb31eb72747759f82647924067fe08204e5c2c0af",
+  "vllm_base": "2cf0a6915ce544dc493a0990f2ea38d81601128a",
+  "native_fpm_pr": "https://github.com/vllm-project/vllm/pull/52061",
+  "native_fpm_revision": "996fed467139edd7719a0063d57709b8a7fa6989",
+  "timing_scope": "model_step_cuda",
+  "squashfs": "/home/scratch.hongkuanz_gpu/images/vllm-agentx-fpm-996fed4671-amd64.sqsh",
+  "squashfs_sha256": "660a517a6589189c15aac602d53b11f99eac208aad3e39029ee5f607c0de9b44",
+  "build_job": 4226027,
+  "unit_tests": "20 passed in matching nightly compatibility environment",
+  "mtp_smoke": "Qwen3.5-0.8B native MTP; V2; decode CUDA graphs; 24 successful requests; 242 FPM,238 active,234 decode; no observed counter gaps/reset/rejection",
+  "benchmark_preflight": "off and on CLI parsed; native vLLM entrypoint, TP1 DP8 EP8, reduced SimpleCPUOffloadConnector128GiB per rank; no Dynamo scheduler",
+  "scope": "Latest resolved Dynamo nightly with a compatibility port of the updated PR, not a wholesale replacement with upstream main"
+}

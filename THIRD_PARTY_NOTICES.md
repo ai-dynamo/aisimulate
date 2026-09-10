@@ -55,6 +55,37 @@ independent recording, cleanup and evidence capture. The upstream thinking chat
 template is fetched unchanged into the runtime bundle with its license; it is
 not included in this repository.
 
+## InferenceX B200 vLLM experiment and native vLLM FPM
+
+Repository-root `docs/experiments/agentx-deepseek-v4-pro-440246-b200-vllm/benchmark.py`
+contains locally authored orchestration with serving/replay configuration adapted
+from SemiAnalysisAI/InferenceX commit `4552491d40b179c3323a3485c63090e5b8c964ad`,
+`benchmarks/single_node/agentic/dsv4_fp4_b200_vllm_mtp.sh` and
+`benchmarks/benchmark_lib.sh`.
+
+Source: https://github.com/SemiAnalysisAI/InferenceX/tree/4552491d40b179c3323a3485c63090e5b8c964ad
+
+Copyright 2025 SemiAnalysis LLC, Advanced Micro Devices, NVIDIA CORPORATION.
+Apache-2.0 license:
+https://github.com/SemiAnalysisAI/InferenceX/blob/4552491d40b179c3323a3485c63090e5b8c964ad/LICENSE
+
+Modified settings pin the Dynamo nightly/FPM implementation, reduce CPU KV memory,
+and add paired recording, native-protocol/NUMA checks and cleanup. The adjacent
+README identifies these changes; no model or trace data is included.
+
+The same directory's `native-fpm.patch`, `test_forward_pass_metrics.py`, and
+`forward_pass_metrics_subscriber.py` derive from vllm-project/vllm PR #52061,
+commit `996fed467139edd7719a0063d57709b8a7fa6989`, original paths
+`vllm/v1/metrics/forward_pass_metrics.py` and the lifecycle-hook paths identified
+in the patch, `tests/v1/metrics/test_forward_pass_metrics.py`, and
+`examples/features/forward_pass_metrics/forward_pass_metrics_subscriber.py`.
+The patch is modified for vLLM base `2cf0a6915ce544dc493a0990f2ea38d81601128a`;
+the test accepts the older base's earlier model-config validation error. The
+subscriber is unchanged. `base.sha256` records the guarded upstream files.
+
+Copyright contributors to the vLLM project. Apache-2.0 license:
+https://github.com/vllm-project/vllm/blob/996fed467139edd7719a0063d57709b8a7fa6989/LICENSE
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
