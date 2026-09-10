@@ -1,9 +1,12 @@
 # DeepSeek V4.1 measurement and prediction study
 
-Status: frozen study design, not completed measurement coverage. The current
-GB300 16-workload grid per decoder profile is an implementation qualification
-set. Its 309 module keys per profile are derived geometries, not 309 independent
-workloads. Keep actual coverage and failed attempts alongside this plan.
+Status: the study design is frozen. GB300 completed the 126-configuration
+calibration and 38 independent forward holdouts per Decoder profile, followed
+by a separate ten-repeat attempt on every holdout. The [versioned report](https://github.com/ai-dynamo/aisimulate/tree/22068b86/data/experimental/deepseek-v41/gb300-silicon/report/precision-v2)
+retains both attempts and all missing predictions. GB200 calibration and both
+GPUs' complete HTTP E2E/FPM verification remain pending. The original GB300
+16-workload qualification grid and its 309 derived module keys per profile
+remain separate from independent verification counts.
 
 ## Scope and point counts
 
@@ -188,8 +191,50 @@ prediction configuration. It calls the shared Rust forward estimator without
 tuning, validates geometry and decoder profile, preserves every missing
 prediction, and records the actual loaded model, engine and binary hashes.
 Run separate SOL, HYBRID and strict SILICON comparisons; a supported subset's
-error must always be accompanied by its prediction coverage. Three measured
-repetitions establish a point median, not an E2E confidence interval.
+error must always be accompanied by its prediction coverage. The original
+three-repeat and separate ten-repeat forward attempts estimate point medians;
+neither establishes an E2E confidence interval.
+
+`compare_trace.py` consumes a closed native/request-qualified audit, the frozen
+main plan, normalized measurement identity and an explicit prediction config.
+It compares every attributed native interval, retaining actual unreturned
+overlap work and unsupported predictions. vLLM's original prompt-length
+variance remains in native evidence; op-level prediction receives a separate
+query-length variance with an explicit bridge. Whole-FPM retains its native
+variance convention. Per-interval statistics are descriptive because intervals
+within a trial are correlated.
+
+`compare_e2e.py` replays the actual input token IDs, output lengths and HTTP
+submit offsets through the native scheduler and independent timing provider.
+Each cold cohort starts a fresh model cache; the explicit prefix seed and reuse
+requests share one replay instance. Only the reuse cohort contributes its
+comparison metrics. Native real-KV/page controls and their source receipts are
+pinned. HTTP response time is never an input to the timing provider. Its
+TTFT/mean ITL/throughput comparison includes whole-trial paired bootstrap error
+intervals only for complete main stages with at least twenty trials and complete
+prediction coverage. Actual request ID/token hashes and successful cold-cache
+acknowledgements are required, including the prefix seed.
+
+Both tools require source bindings to the exact audit/plan/execution/worker
+artifacts and analysis source. E2E additionally binds the original HTTP summary
+and resolved scheduler receipt. The normalized identity must be generated from
+verified original receipts, not constructed by selecting arbitrary values.
+`--diagnostic` accepts an explicitly closed partial lifecycle while preserving
+the original main budget and missing coverage; it never reports a completed
+study or final confidence interval. Partial stages cannot be silently pooled
+across different measurement versions.
+
+SGLang replay uses its measured logical KV capacity. vLLM's shared physical
+pool has heterogeneous attention groups and per-request circular buffers, so it
+cannot be mapped by summing group token capacities. Its E2E comparison uses a
+declared unconstrained logical capacity calculated from the frozen workload,
+only when every relevant native dispatch and the final receipt prove zero
+allocation refusals/exceptions/preemptions and minimum free blocks above the
+watermark. Any missing witness or actual capacity pressure makes that prediction
+ineligible while preserving the real measurement. This tests serving timing
+conditional on absence of capacity pressure; it does not validate allocator
+memory accuracy. HTTP frontend/transport costs, native overlap details and the
+existing SGLang replay's extra first-output decode remain explicit model limits.
 
 The [original corpus strata](corpora/README.md) add English narrative and mixed
 Chinese/English technical prose at fixed geometry. Their prepared inputs are
