@@ -998,8 +998,7 @@ def _cell_generator_overrides(
                 {"name": "DYN_FPM_DSV41_REAL_KV", "value": "1"},
                 {
                     "name": "PYTHONPATH",
-                    "value": "/tmp/fpm-bench:/opt/dsv41-dynamo/components/src:"
-                    "/opt/dsv41-aisimulate/python/aisimulate/src",
+                    "value": "/tmp/fpm-bench:/opt/dsv41-dynamo/components/src",
                 },
                 {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
                 {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISION},

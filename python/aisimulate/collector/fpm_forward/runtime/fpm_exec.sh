@@ -75,7 +75,7 @@ fi
 # the import audit as well as the engine; run.sh repeats the frozen model env.
 if [[ -f "${workdir}/dsv41_scheduler.py" ]]; then
   export DYN_FPM_DSV41_REAL_KV=1
-  export PYTHONPATH="${workdir}:/opt/dsv41-dynamo/components/src:/opt/dsv41-aisimulate/python/aisimulate/src"
+  export PYTHONPATH="${workdir}:/opt/dsv41-dynamo/components/src"
 fi
 python3 "${workdir}/preflight.py"
 

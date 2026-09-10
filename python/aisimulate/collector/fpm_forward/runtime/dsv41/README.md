@@ -114,9 +114,11 @@ annotations. These are state-machine tests, not substitutes for GPU correctness.
 
 The pinned Linux ARM64 image is
 `vllm/vllm-openai@sha256:d84a123255b822fc22508635218000187221794f59c0694c33b0650d1e377d58`.
-Mount the unmodified pinned Dynamo source tree at `/opt/dsv41-dynamo` and this
-AISimulate checkout at `/opt/dsv41-aisimulate`. Both mounts are read-only source
-inputs; stage the adapter, source manifest, and fixture through the Collector.
-The adapter and matching source trees must be available during runtime preflight.
+Mount the unmodified pinned Dynamo source tree at `/opt/dsv41-dynamo` read-only.
+Install the matching AISimulate wheel, including its native extension, in the
+runtime image. Importing its shared SDK identity through a source-only Python
+path is insufficient: the package loads the native extension at import time.
+Stage the adapter, source manifest, and fixture through the Collector. The adapter,
+Dynamo source and AISimulate wheel must be available during runtime preflight.
 The installed native `ai-dynamo-runtime` is separately pinned and import-tested;
 the Python package version alone does not establish scheduler compatibility.

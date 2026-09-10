@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 _AUDIT_PATH = Path("/results/runtime-preflight.json")
@@ -62,6 +63,13 @@ def main() -> None:
             "Provide a compatible Dynamo image."
         ) from error
 
+    if os.environ.get("DYN_FPM_DSV41_REAL_KV") == "1":
+        # Parent-package import also verifies that the image has the matching
+        # native AISimulate extension, before loading this model's weights.
+        from aiconfigurator_core.sdk.fpm_identity import execution_identity
+
+        if not callable(execution_identity):
+            raise RuntimeError("V4.1 runtime lacks the shared AISimulate identity helper")
     fields = set(getattr(BenchmarkPoint, "__dataclass_fields__", {}))
     missing_fields = sorted(GRAPH_AWARE_FIELDS - fields)
     missing_methods = sorted(name for name in GRAPH_AWARE_METHODS if not hasattr(InstrumentedScheduler, name))
