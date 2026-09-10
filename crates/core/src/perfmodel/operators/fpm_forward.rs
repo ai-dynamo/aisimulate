@@ -775,6 +775,103 @@ mod tests {
         );
     }
 
+    fn glm_dsa_sol_ops(name: &str) -> Vec<Op> {
+        let dsa = crate::operators::DsaModuleOp::new(
+            name,
+            64,
+            crate::common::enums::KvCacheQuantMode::Fp8,
+            crate::common::enums::FmhaQuantMode::Bfloat16,
+            crate::common::enums::GemmQuantMode::Nvfp4,
+            "GlmMoeDsaForCausalLM",
+            2048,
+        );
+        if name == "context_attention" {
+            vec![Op::DsaContext(dsa)]
+        } else {
+            vec![Op::DsaGeneration(dsa)]
+        }
+    }
+
+    /// A chunked prefill queries KV totals of 8192*k; k=3 (24576) is not a collected site in
+    /// the GLM cells (powers of two only). With the DSA arms the SOL-ratio transfer from the
+    /// neighbouring sites (16384, 32768) answers instead of `no usable neighbour site`.
+    #[test]
+    fn prefill_off_site_kv_resolves_through_the_dsa_sol_transfer() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |total: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: "prefill",
+            batch_size: 1,
+            total_prefill_tokens: total,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        let rows = vec![
+            mk(4096, 16384, 45.0),
+            mk(8192, 16384, 90.0),
+            mk(4096, 32768, 50.0),
+            mk(8192, 32768, 100.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        let mut prefill = op(FpmPhase::Prefill);
+        prefill.sol_ops = glm_dsa_sol_ops("context_attention");
+
+        let got = prefill.query_totals(&db, &[1.0, 8192.0, 24576.0]).unwrap();
+        assert!(
+            got.latency_ms.is_finite() && got.latency_ms > 0.0,
+            "{}",
+            got.latency_ms
+        );
+        // The transfer moves each neighbour's measured latency by the roofline ratio between
+        // the queried and the neighbouring shape; the answer must land near the neighbours,
+        // not at a degenerate value.
+        assert!(
+            (60.0..=130.0).contains(&got.latency_ms),
+            "transferred latency {} is not between the neighbouring sites",
+            got.latency_ms
+        );
+    }
+
+    /// A decode batch with no (C, C+1) capture-rung pair falls back to ScatteredSites, which
+    /// needs the generation roofline for the same reason.
+    #[test]
+    fn decode_pairless_batch_resolves_through_the_dsa_sol_transfer() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mk = |batch: u32, kv: u32, lat: f64| RowSpec {
+            workload_kind: "decode",
+            batch_size: batch,
+            total_prefill_tokens: 0,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            ..RowSpec::default()
+        };
+        let rows = vec![
+            mk(8, 65536, 20.0),
+            mk(8, 131072, 22.0),
+            mk(16, 131072, 30.0),
+            mk(16, 262144, 33.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        let mut decode = op(FpmPhase::Decode);
+        decode.sol_ops = glm_dsa_sol_ops("generation_attention");
+
+        let got = decode.query_totals(&db, &[12.0, 131072.0]).unwrap();
+        assert!(
+            got.latency_ms.is_finite() && got.latency_ms > 0.0,
+            "{}",
+            got.latency_ms
+        );
+        assert!(
+            (15.0..=45.0).contains(&got.latency_ms),
+            "transferred latency {} is not between the neighbouring sites",
+            got.latency_ms
+        );
+    }
+
     #[test]
     fn prefill_raw_kv_fallback_preserves_the_batch_gate() {
         use crate::perf_database::fpm_forward::tests::RowSpec;
