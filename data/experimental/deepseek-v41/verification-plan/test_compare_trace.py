@@ -343,6 +343,59 @@ def test_gb200_fpm_fp8_identity_requires_independent_native_receipt(mutation):
         qualify_prediction_config(cfg, measurement)
 
 
+@pytest.mark.parametrize("replay", [False, True])
+def test_gb300_fpm_selector_only_leaves_the_temporary_op_contract(monkeypatch, replay):
+    import compare_forward
+
+    _, _, measurement = fixture(backend="sglang", replay=replay)
+    cfg = config(measurement) | {"forward_model": "fpm", "fpm_fmha_dtype": "fp8"}
+    original_config, original_measurement = deepcopy(cfg), deepcopy(measurement)
+    validate = compare_forward.validate_prediction_contract
+    observed = []
+
+    def inspect_common(common, observations):
+        observed.append(deepcopy(common))
+        validate(common, observations)
+
+    monkeypatch.setattr(compare_forward, "validate_prediction_contract", inspect_common)
+    qualify_prediction_config(cfg, measurement)
+    assert observed == [{key: value for key, value in cfg.items() if key != "fpm_fmha_dtype"}]
+    assert cfg == original_config and measurement == original_measurement
+    assert cfg["fpm_fmha_dtype"] == "fp8"
+    assert "fmha_quant_mode" not in measurement  # Table identity is not an all-FP8 execution claim.
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"fpm_fmha_dtype": None},
+        {"fpm_fmha_dtype": "bf16"},
+        {"fpm_fmha_dtype": True},
+        {"database_mode": "SOL"},
+        {"database_mode": "HYBRID"},
+        {"activation_dtype": "fp8"},
+        {"weight_dtype": "fp8_block"},
+        {"moe_dtype": "nvfp4"},
+        {"kv_cache_dtype": "fp8"},
+        {"forward_model": "op_level"},
+        {"strict_provenance": False},
+        {"extra_ignored_knob": True},
+    ],
+)
+def test_gb300_fpm_selector_does_not_relax_precision_database_or_op_contract(replay, mutation):
+    _, _, measurement = fixture(backend="sglang", replay=replay)
+    cfg = config(measurement) | {"forward_model": "fpm", "fpm_fmha_dtype": "fp8"} | mutation
+    with pytest.raises(ValueError):
+        qualify_prediction_config(cfg, measurement)
+
+
+def test_gb300_fpm_requires_an_explicit_table_selector():
+    _, _, measurement = fixture(backend="sglang")
+    with pytest.raises(ValueError, match="FP8 table selector"):
+        qualify_prediction_config(config(measurement) | {"forward_model": "fpm"}, measurement)
+
+
 @pytest.mark.parametrize("mutation", ["short_scenario", "duplicate_index", "duplicate_seed", "mixed_corpus"])
 def test_each_trace_scenario_requires_its_own_complete_independent_budget(mutation):
     audit, plan, measurement = fixture()

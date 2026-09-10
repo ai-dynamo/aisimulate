@@ -301,6 +301,14 @@ def qualify_prediction_config(config, measurement):
             raise ValueError("GB200 FPM requires the independently qualified FP8 FMHA identity")
         require_hash(measurement.get("source_bindings", {}).get("fmha_identity_receipt_sha256"), "native FMHA receipt")
         common.pop("fpm_fmha_dtype")
+    elif measurement["backend"] == "sglang" and config.get("forward_model") == "fpm":
+        # This source-qualified GB300 study selects its measured FPM table with
+        # the SDK's FP8 identity. It does not override checkpoint arithmetic or
+        # imply that every attention operation executes in FP8. Keep the actual
+        # config intact; only the shared op-contract validation copy omits it.
+        if config.get("fpm_fmha_dtype") != "fp8" or config.get("database_mode") != "SILICON":
+            raise ValueError("GB300 FPM requires the qualified FP8 table selector and SILICON database")
+        common.pop("fpm_fmha_dtype")
     compare_forward.validate_prediction_contract(
         common, {"execution_profile": "decoder_bounded" if measurement["decoder_replay"] else "full"}
     )
