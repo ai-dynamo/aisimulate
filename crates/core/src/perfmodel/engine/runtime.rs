@@ -825,6 +825,31 @@ impl Engine {
                 marginal_decode_ms,
             ]);
         }
+        if self.has_dsv41_stages() {
+            let isl = isl.max(1);
+            if ctx_tokens > 0 && prefix >= isl {
+                return Err(AicError::InvalidEngineConfig(
+                    "V4.1 prefill requires isl > prefix".into(),
+                ));
+            }
+            // The SDK's packed context count includes prefix for complete
+            // requests. A remainder describes this iteration's partial extend.
+            let mut prefills = Vec::with_capacity(2);
+            if ctx_tokens / isl > 0 {
+                prefills.push((ctx_tokens / isl, isl - prefix, prefix));
+            }
+            if ctx_tokens % isl > 0 {
+                prefills.push((1, ctx_tokens % isl, prefix));
+            }
+            return self.dsv41_mixed_workload(
+                &prefills,
+                gen_tokens.saturating_mul(self.nextn.saturating_add(1)),
+                isl.saturating_add(osl / 2).saturating_add(1),
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
+                on_op,
+            );
+        }
         // Python divides by `isl` (`floor(ctx/isl)`, `ceil(ctx/isl)`) without
         // a guard — callers always pass isl >= 1. Clamp to avoid a Rust
         // div-by-zero panic on degenerate input Python would crash on.
@@ -913,6 +938,139 @@ impl Engine {
             context_attention,
             decode_attention,
         ])
+    }
+
+    fn has_dsv41_stages(&self) -> bool {
+        self.context_ops
+            .iter()
+            .any(|op| matches!(op, Op::Dsv41Stage(_)))
+    }
+
+    /// Scope every prefill extend before fusing token-major work with decode.
+    /// Applying a decoder tail to the combined batch would incorrectly discard
+    /// decode tokens and other requests' tails. The tuple is (batch, new, prefix).
+    #[allow(clippy::too_many_arguments)]
+    fn dsv41_mixed_workload(
+        &self,
+        prefills: &[(u32, u32, u32)],
+        decode_batch: u32,
+        decode_kv: u32,
+        context_scale: f64,
+        generation_scale: f64,
+        mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
+    ) -> Result<[f64; 4], AicError> {
+        let mut totals = [0.0; 4];
+        if prefills.is_empty() {
+            if decode_batch > 0 {
+                // Generation can fuse or overlap children differently from
+                // prefill. Preserve that graph when no prefill is scheduled.
+                for outer in &self.generation_ops {
+                    let children: &[Op] = match outer {
+                        Op::Dsv41Stage(stage) => &stage.children,
+                        _ => std::slice::from_ref(outer),
+                    };
+                    for child in children {
+                        let result = query_generation_op(
+                            child,
+                            &self.db,
+                            decode_batch,
+                            1,
+                            decode_kv,
+                            generation_scale,
+                            0,
+                            None,
+                        )?;
+                        let (bucket, pass) = if child.is_generation_attention() {
+                            (3, MixedPass::DecodeAttention)
+                        } else {
+                            (1, MixedPass::SharedNonAttention)
+                        };
+                        totals[bucket] += result.latency_ms;
+                        on_op(pass, child, result);
+                    }
+                }
+            }
+            totals[0] = totals[1] + totals[3];
+            return Ok(totals);
+        }
+        let prefill_requests: u32 = prefills.iter().map(|(batch, _, _)| batch).sum();
+        for outer in &self.context_ops {
+            let (stage, children): (_, &[Op]) = match outer {
+                Op::Dsv41Stage(stage) => (Some(stage), &stage.children),
+                _ => (None, std::slice::from_ref(outer)),
+            };
+            let scopes: Vec<_> = prefills
+                .iter()
+                .map(|&(batch, s, prefix)| {
+                    let (s, prefix) = stage.map_or((s as f64, prefix as f64), |stage| {
+                        stage.scope(s as f64, prefix as f64)
+                    });
+                    (batch, s as u32, prefix as u32)
+                })
+                .collect();
+            let tokens = scopes
+                .iter()
+                .try_fold(decode_batch, |total, &(batch, s, _)| {
+                    batch.checked_mul(s).and_then(|n| total.checked_add(n))
+                })
+                .ok_or_else(|| {
+                    AicError::InvalidEngineConfig("V4.1 mixed token count overflow".into())
+                })?;
+            for child in children {
+                if child.is_context_attention() {
+                    for &(batch, s, prefix) in &scopes {
+                        if batch == 0 || s == 0 {
+                            continue;
+                        }
+                        let result = query_context_op(
+                            child,
+                            &self.db,
+                            batch,
+                            s,
+                            prefix,
+                            context_scale,
+                            None,
+                        )?;
+                        totals[2] += result.latency_ms;
+                        on_op(MixedPass::ContextAttention, child, result);
+                    }
+                } else if tokens > 0 {
+                    let x = if child.is_logits_gemm() {
+                        prefill_requests.saturating_add(decode_batch)
+                    } else {
+                        tokens
+                    };
+                    let result =
+                        query_context_op(child, &self.db, 1, tokens, 0, context_scale, Some(x))?;
+                    totals[1] += result.latency_ms;
+                    on_op(MixedPass::SharedNonAttention, child, result);
+                }
+            }
+        }
+        if decode_batch > 0 {
+            for outer in &self.generation_ops {
+                let children: &[Op] = match outer {
+                    Op::Dsv41Stage(stage) => &stage.children,
+                    _ => std::slice::from_ref(outer),
+                };
+                for child in children.iter().filter(|op| op.is_generation_attention()) {
+                    let result = query_generation_op(
+                        child,
+                        &self.db,
+                        decode_batch,
+                        1,
+                        decode_kv,
+                        generation_scale,
+                        0,
+                        None,
+                    )?;
+                    totals[3] += result.latency_ms;
+                    on_op(MixedPass::DecodeAttention, child, result);
+                }
+            }
+        }
+        totals[0] = totals[1] + totals[2] + totals[3];
+        Ok(totals)
     }
 
     /// One generation-only step latency. LITERAL mirror of Python
@@ -1227,7 +1385,7 @@ impl Engine {
             },
         )?;
         let mut ctx_attn = ctx_attn.into_values();
-        if ctx_tokens > 0 {
+        if ctx_tokens > 0 && !self.has_dsv41_stages() {
             // Mirror the scalar bucket and Python's fold-then-single-true-
             // division (`base_backend.py:1244-1246`): one `/ scale2` per
             // folded name, never a per-entry reciprocal multiply.
@@ -1568,6 +1726,51 @@ impl Engine {
                 }
             }
             return Ok(total);
+        }
+
+        if self.has_dsv41_stages() {
+            if has_prefill
+                && sched.var_prefill_length > 0.0
+                && self.context_ops.iter().any(|op| {
+                    matches!(op,
+                    Op::Dsv41Stage(stage) if stage.decoder_replay && stage.bounded)
+                })
+            {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "V4.1 Decoder replay requires per-request extend lengths; heterogeneous FPM v1 aggregates cannot identify the tails".into(),
+                ));
+            }
+            // Retain every scheduled token in balanced aggregate telemetry;
+            // integer averages alone discard the remainder. FPM v1 does not
+            // carry individual extend lengths, so unbalanced replay is rejected.
+            let mut prefills = Vec::new();
+            if has_prefill {
+                let n = sched.num_prefill_requests;
+                let q = sched.sum_prefill_tokens / n;
+                let qr = sched.sum_prefill_tokens % n;
+                let p = sched.sum_prefill_kv_tokens / n;
+                let pr = sched.sum_prefill_kv_tokens % n;
+                let mut bounds = vec![0, qr, pr, n];
+                bounds.sort_unstable();
+                bounds.dedup();
+                for pair in bounds.windows(2) {
+                    let count = pair[1] - pair[0];
+                    let query = q + u32::from(pair[0] < qr);
+                    if query > 0 {
+                        prefills.push((count, query, p + u32::from(pair[0] < pr)));
+                    }
+                }
+            }
+            return self
+                .dsv41_mixed_workload(
+                    &prefills,
+                    sched.num_decode_requests,
+                    sched.sum_decode_kv_tokens / sched.num_decode_requests.max(1),
+                    1.0,
+                    1.0,
+                    |_, _, _| {},
+                )
+                .map(|parts| parts[0]);
         }
 
         if has_prefill && has_decode {
@@ -1997,6 +2200,138 @@ mod tests {
                 if message.contains("does not match")
                     && message.contains("Silicon")
                     && message.contains("Empirical")
+        ));
+    }
+
+    // Linear memory probes isolate the engine's workload orchestration from
+    // kernel formulas. Their expected token counts are request-level contracts.
+    fn dsv41_probe_engine(replay: bool) -> Engine {
+        let leaf = |name: &str| {
+            Op::Elementwise(ElementwiseOp {
+                name: name.into(),
+                scale_factor: 1.0,
+                bytes_per_token: 8192.0,
+                scale_num_tokens: 1,
+                seq_split: 1,
+            })
+        };
+        let stage = |is_context, bounded| {
+            Op::Dsv41Stage(crate::operators::Dsv41StageOp {
+                name: if bounded { "decoder" } else { "encoder" }.into(),
+                is_context,
+                bounded,
+                decoder_replay: replay,
+                window_size: 128,
+                children: vec![
+                    leaf("norm"),
+                    leaf(if is_context {
+                        "context_attention"
+                    } else {
+                        "generation_attention"
+                    }),
+                ],
+            })
+        };
+        let mut engine = build_engine(None);
+        engine.db = Arc::new(
+            PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+                .unwrap()
+                .with_mode(DatabaseMode::Sol, TransferPolicy::default()),
+        );
+        engine.context_ops = vec![stage(true, false), stage(true, true)];
+        engine.generation_ops = vec![stage(false, false), stage(false, true)];
+        engine
+    }
+
+    fn dsv41_probe_token_ms(engine: &Engine) -> f64 {
+        let Op::Dsv41Stage(stage) = &engine.context_ops[0] else {
+            unreachable!()
+        };
+        query_context_op(&stage.children[0], &engine.db, 1, 1, 0, 1.0, None)
+            .unwrap()
+            .latency_ms
+    }
+
+    #[test]
+    fn dsv41_mixed_scopes_each_request_before_adding_decode() {
+        let engine = dsv41_probe_engine(true);
+        let unit = dsv41_probe_token_ms(&engine);
+        // Two 256-token extends: encoder 512, decoder 2*128; both
+        // stages also execute all 200 decode requests, not one 128-token tail.
+        let parts = engine
+            .mixed_step_breakdown(512, 200, 256, 32, 0, 1.0, 1.0)
+            .unwrap();
+        assert!((parts[1] / unit - (512.0 + 256.0 + 400.0)).abs() < 1e-9);
+        assert!((parts[2] / unit - 768.0).abs() < 1e-9);
+        assert!((parts[3] / unit - 400.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dsv41_partial_extend_and_prefix_do_not_fill_decoder_tail() {
+        let engine = dsv41_probe_engine(true);
+        let unit = dsv41_probe_token_ms(&engine);
+        for q in [1, 127, 128, 129] {
+            let parts = engine
+                .mixed_step_breakdown(q, 3, 4096, 32, 2048, 1.0, 1.0)
+                .unwrap();
+            assert!((parts[2] / unit - f64::from(q + q.min(128))).abs() < 1e-9);
+            assert!((parts[1] / unit - f64::from(q + q.min(128) + 6)).abs() < 1e-9);
+            let (shared, context, decode) = engine
+                .mixed_step_breakdown_per_op(q, 3, 4096, 32, 2048, 1.0, 1.0)
+                .unwrap();
+            assert!((shared.iter().map(|v| v.1).sum::<f64>() - parts[1]).abs() < 1e-12);
+            assert!((context.iter().map(|v| v.1).sum::<f64>() - parts[2]).abs() < 1e-12);
+            assert!((decode.iter().map(|v| v.1).sum::<f64>() - parts[3]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn dsv41_replay_never_changes_decode_work() {
+        for replay in [false, true] {
+            let mut engine = dsv41_probe_engine(replay);
+            for outer in &mut engine.generation_ops {
+                let Op::Dsv41Stage(stage) = outer else {
+                    unreachable!()
+                };
+                let norm = stage.children[0].clone();
+                stage.children[0] = Op::Overlap(crate::operators::op::OverlapOp::new(
+                    "decode_fused",
+                    vec![norm.clone(), norm.clone()],
+                    vec![norm],
+                ));
+            }
+            let mixed = engine
+                .mixed_step_latency(0, 257, 2048, 32, 0, 1.0, 1.0)
+                .unwrap();
+            let decode = engine.decode_step_latency(257, 2048, 32, 1.0).unwrap();
+            assert!((mixed - decode).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn dsv41_telemetry_retains_prefill_remainders() {
+        let engine = dsv41_probe_engine(false);
+        let unit = dsv41_probe_token_ms(&engine);
+        let mut metrics = ForwardPassMetrics::default();
+        metrics.scheduled_requests.num_prefill_requests = 2;
+        metrics.scheduled_requests.sum_prefill_tokens = 257;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        metrics.scheduled_requests.num_decode_requests = 3;
+        metrics.scheduled_requests.sum_decode_kv_tokens = 1536;
+        let result = engine.forward_pass_time_ms(&[metrics]).unwrap();
+        assert!((result / unit - 4.0 * 260.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dsv41_replay_rejects_ambiguous_heterogeneous_telemetry() {
+        let engine = dsv41_probe_engine(true);
+        let mut metrics = ForwardPassMetrics::default();
+        metrics.scheduled_requests.num_prefill_requests = 2;
+        metrics.scheduled_requests.sum_prefill_tokens = 256;
+        metrics.scheduled_requests.var_prefill_length = 64.0;
+        assert!(matches!(
+            engine.forward_pass_time_ms(&[metrics]),
+            Err(AicError::InvalidForwardPassMetrics(_))
         ));
     }
 
