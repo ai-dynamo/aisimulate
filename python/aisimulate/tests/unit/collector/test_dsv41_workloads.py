@@ -7,7 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from collector.sglang.dsv41_contract import build_manifest
+
+from collector.sglang.dsv41_contract import build_manifest, operation_geometry
 from collector.sglang.dsv41_native_runner import run_workload
 from collector.sglang.dsv41_workloads import baseline_tokens, coordinates, coverage_report, freeze_workloads
 
@@ -145,7 +146,16 @@ def test_checked_in_calibration_keeps_all_points_and_exposes_bounded_holes():
     assert projection["native_forward_calls_per_profile"] == 908
     assert projection["baseline_points"] == 80
     for replay, expected_points, expected_missing in [(False, 836, 0), (True, 830, 10)]:
-        profile = projection["profiles"][int(replay)]
+        # The frozen sampling projection retains its original eight-head
+        # labels. Compare the corrected identity in memory, while preserving
+        # every historical workload, coverage result, and file byte.
+        profile = copy.deepcopy(projection["profiles"][int(replay)])
+        for case in profile["heldout"]:
+            for missing in case["missing_curves"]:
+                if missing[0] == "attention":
+                    geometry = json.loads(missing[1])
+                    assert geometry["index_n_heads"] == 8
+                    missing[1] = operation_geometry(geometry | {"index_n_heads": 32})
         heldout = json.loads((root / "heldout-plan.json").read_text())
         computed = coverage_report(build_manifest(4, replay), calibration, heldout)
         assert computed == profile

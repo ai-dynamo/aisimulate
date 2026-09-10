@@ -29,6 +29,71 @@ def operation_geometry(body: dict) -> str:
     return canonical_json({key: value for key, value in body.items() if key != "name"})
 
 
+def validate_attention_geometry(attention, geometry: dict, layer_id: int) -> None:
+    """Reject a planned identity that differs from the loaded serving module.
+
+    SGLang@1aa0e962 dsv41_sparse.py:203-228 replicates all index heads and
+    both projections across TP. The descriptor labels must reflect those
+    actual dimensions before any timing or model-method instrumentation.
+    """
+    for field, attribute in (
+        ("num_heads", "n_local_heads"),
+        ("o_groups", "n_local_groups"),
+        ("head_dim", "head_dim"),
+        ("q_lora_rank", "q_lora_rank"),
+        ("o_lora_rank", "o_lora_rank"),
+        ("compress_ratio", "compress_ratio"),
+    ):
+        if int(getattr(attention, attribute)) != geometry[field]:
+            raise RuntimeError(f"native attention {attribute} differs from graph at layer {layer_id}")
+    indexer = getattr(attention, "indexer", None)
+    owns_indexer = geometry["role"] in ("full", "reindex")
+    if owns_indexer != (indexer is not None):
+        raise RuntimeError(f"native indexer ownership differs from graph at layer {layer_id}")
+    if indexer is None:
+        return
+    for field, attribute in (
+        ("index_n_heads", "n_heads"),
+        ("index_n_heads", "n_local_heads"),
+        ("index_head_dim", "index_head_dim"),
+        ("index_topk", "index_topk"),
+    ):
+        if int(getattr(indexer, attribute)) != geometry[field]:
+            raise RuntimeError(f"native indexer {attribute} differs from graph at layer {layer_id}")
+    expected = {
+        "wq_b": (geometry["index_n_heads"] * geometry["index_head_dim"], geometry["q_lora_rank"]),
+        "weights_proj": (geometry["index_n_heads"], geometry["hidden_size"]),
+    }
+    for name, shape in expected.items():
+        if tuple(getattr(indexer, name).weight.shape) != shape:
+            raise RuntimeError(f"native indexer {name} weight shape differs from graph at layer {layer_id}")
+
+
+def validate_attention_manifest(layers, manifest: dict) -> None:
+    """Validate both phase identities before installing any timing wrapper."""
+    indexer = next((layer.self_attn.indexer for layer in layers if getattr(layer.self_attn, "indexer", None)), None)
+    if indexer is None:
+        raise RuntimeError("V4.1 collection requires an actual indexer owner")
+    for phase in ("context", "generation"):
+        entries = manifest["phases"][phase]
+        for layer_id, layer in enumerate(layers):
+            shapes = [e["geometry"] for e in entries if e["component"] == "attention" and e["layer"] == layer_id]
+            if len(shapes) != 1:
+                raise RuntimeError(f"expected one {phase} attention geometry at layer {layer_id}")
+            geometry = json.loads(shapes[0])
+            validate_attention_geometry(layer.self_attn, geometry, layer_id)
+            # These global fields also label SWA/reuse rows, whose modules do
+            # not own an indexer. Bind them to an actual owner rather than
+            # allowing inconsistent unused dimensions into physical keys.
+            for field, attribute in (
+                ("index_n_heads", "n_heads"),
+                ("index_head_dim", "index_head_dim"),
+                ("index_topk", "index_topk"),
+            ):
+                if geometry[field] != int(getattr(indexer, attribute)):
+                    raise RuntimeError(f"native indexer {attribute} differs from graph at layer {layer_id}")
+
+
 def build_manifest(tp_size: int, decoder_replay: bool) -> dict:
     from aiconfigurator_core.sdk.config import ModelConfig
     from aiconfigurator_core.sdk.deepseek_v41 import MODEL_PATH

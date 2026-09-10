@@ -315,6 +315,9 @@ The original integration adapter
 `collector/sglang/dsv41_native_runner.py` calls that pinned benchmark's model
 builder and request lifecycle. Its component boundaries are modified from
 the serving contracts above; it does not copy framework metadata builders.
+The matching loaded-dimension guards in `collector/sglang/dsv41_contract.py`
+and their CPU fixtures in `tests/unit/collector/test_dsv41_contract.py` are
+modified analytical adaptations of the indexer layout in `dsv41_sparse.py`.
 
 The measured derivatives under
 `data/experimental/deepseek-v41/gb300-silicon/` include native operation

@@ -19,8 +19,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 if __package__:
+    from .dsv41_contract import validate_attention_manifest
     from .dsv41_workloads import baseline_tokens, coordinates, freeze_workloads
 else:
+    from dsv41_contract import validate_attention_manifest
     from dsv41_workloads import baseline_tokens, coordinates, freeze_workloads
 
 
@@ -51,6 +53,7 @@ class ComponentRecorder:
         layers = [m for m in runner.model.modules() if type(m).__name__ == "DeepseekV4DecoderLayer"]
         if len(layers) != 40:
             raise RuntimeError(f"expected 40 actual text decoder layers, got {len(layers)}")
+        validate_attention_manifest(layers, manifest)
         self.selected = {}
         for phase, entries in manifest["phases"].items():
             for entry in entries:
@@ -93,17 +96,6 @@ class ComponentRecorder:
 
         for layer_id, layer in enumerate(layers):
             expected = [entry for entry in manifest["phases"]["context"] if entry["layer"] == layer_id]
-            attention_shape = json.loads(next(e["geometry"] for e in expected if e["component"] == "attention"))
-            for field, attribute in (
-                ("num_heads", "n_local_heads"),
-                ("o_groups", "n_local_groups"),
-                ("head_dim", "head_dim"),
-                ("q_lora_rank", "q_lora_rank"),
-                ("o_lora_rank", "o_lora_rank"),
-                ("compress_ratio", "compress_ratio"),
-            ):
-                if int(getattr(layer.self_attn, attribute)) != attention_shape[field]:
-                    raise RuntimeError(f"native attention {attribute} differs from graph at layer {layer_id}")
             if not layer.hc_pre_from_prev_sublayer:
                 raise RuntimeError("native mHC must use predecessor single-pass mixing")
             # Upstream deepseek_v4.py:2649-2788 dispatches the same mHC
@@ -330,19 +322,8 @@ def validate_forward_contract(runner, manifest):
     layers = [m for m in runner.model.modules() if type(m).__name__ == "DeepseekV4DecoderLayer"]
     if len(layers) != 40:
         raise RuntimeError("forward-only benchmark requires the 40-layer text backbone")
+    validate_attention_manifest(layers, manifest)
     for layer_id, layer in enumerate(layers):
-        expected = [e for e in manifest["phases"]["context"] if e["layer"] == layer_id]
-        geometry = json.loads(next(e["geometry"] for e in expected if e["component"] == "attention"))
-        for field, attribute in (
-            ("num_heads", "n_local_heads"),
-            ("o_groups", "n_local_groups"),
-            ("head_dim", "head_dim"),
-            ("q_lora_rank", "q_lora_rank"),
-            ("o_lora_rank", "o_lora_rank"),
-            ("compress_ratio", "compress_ratio"),
-        ):
-            if int(getattr(layer.self_attn, attribute)) != geometry[field]:
-                raise RuntimeError(f"forward-only attention layout differs at layer {layer_id}")
         if not layer.hc_pre_from_prev_sublayer:
             raise RuntimeError("forward-only benchmark requires native predecessor mHC")
         shared = layer.mlp.shared_experts
