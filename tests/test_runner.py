@@ -1055,6 +1055,7 @@ def test_runner_threads_forward_model_alias_into_aic_timing():
     engine_args = _engine_args()
     engine_args.pop("timing_model")
     engine_args["aic_forward_model"] = "fpm"
+    engine_args["aic_fpm_parquet_path"] = "/artifacts/reviewed-fpm.parquet"
     deployment = BackendDeploymentSpec(
         deployment_mode="agg",
         backend="vllm",
@@ -1069,7 +1070,12 @@ def test_runner_threads_forward_model_alias_into_aic_timing():
 
     rank = runtime.execution_spec["engine"]["rank"]
     assert rank["timing_model"]["config"]["forward_model"] == "fpm"
+    assert (
+        rank["timing_model"]["config"]["fpm_parquet_path"]
+        == "/artifacts/reviewed-fpm.parquet"
+    )
     assert "aic_forward_model" not in rank
+    assert "aic_fpm_parquet_path" not in rank
 
 
 def test_runner_rejects_forward_model_on_rank_and_in_explicit_aic_timing():

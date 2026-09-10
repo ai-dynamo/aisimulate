@@ -110,20 +110,23 @@ def _worker_performance_model_metadata(
 ) -> dict[str, JSONValue]:
     parallel = worker.parallelism
     sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
+    config: dict[str, JSONValue] = {
+        "backend": engine.backend,
+        "backend_version": engine.backend_version,
+        "system": engine.hardware,
+        "model_path": engine.model,
+        "tp_size": parallel.tensor,
+        "attention_dp_size": parallel.attention_data,
+        "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
+        "moe_ep_size": parallel.moe_expert if sharded_moe else None,
+        "nextn": None,
+        "forward_model": worker.timing.forward_model,
+    }
+    if worker.timing.fpm_parquet_path is not None:
+        config["fpm_parquet_path"] = worker.timing.fpm_parquet_path
     return {
         "provider": "aic",
-        "config": {
-            "backend": engine.backend,
-            "backend_version": engine.backend_version,
-            "system": engine.hardware,
-            "model_path": engine.model,
-            "tp_size": parallel.tensor,
-            "attention_dp_size": parallel.attention_data,
-            "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
-            "moe_ep_size": parallel.moe_expert if sharded_moe else None,
-            "nextn": None,
-            "forward_model": worker.timing.forward_model,
-        },
+        "config": config,
     }
 
 
@@ -169,6 +172,8 @@ def _worker_engine_args(
     if worker.timing.type == "default" and worker.timing.forward_model != "op_level":
         # Only the non-default forward model is spelled out, so op_level specs stay byte-identical.
         payload["aic_forward_model"] = worker.timing.forward_model
+        if worker.timing.fpm_parquet_path is not None:
+            payload["aic_fpm_parquet_path"] = worker.timing.fpm_parquet_path
     if backend == "vllm":
         payload["max_model_len"] = (
             engine.context_length

@@ -204,6 +204,32 @@ class TestForwardModelRewrite:
         assert context_lane_order[0] == attention_backend
         assert generation_lane_order[0] == attention_backend
 
+    def test_fpm_spec_carries_external_parquet_path(self):
+        from aiconfigurator.sdk.engine import build_engine_spec_json
+
+        model = models.get_model(
+            "Qwen/Qwen3-0.6B",
+            _model_config(forward_model="fpm"),
+            "sglang",
+        )
+        external_path = "/artifacts/reviewed-fpm.parquet"
+
+        spec = json.loads(
+            build_engine_spec_json(
+                model,
+                model_path="Qwen/Qwen3-0.6B",
+                system="b200_sxm",
+                backend="sglang",
+                backend_version="0.5.14",
+                kv_block_size=None,
+                systems_path=None,
+                nextn=0,
+                fpm_parquet_path=external_path,
+            )
+        )
+
+        assert spec["engine"]["fpm_parquet_path"] == external_path
+
     def test_fpm_rejects_construction_without_sol_ops(self):
         # Legacy "exactly one of sol_fn/sol_ops" contract, minus the retired
         # half: omitting sol_ops keeps raising (main's ValueError), with the

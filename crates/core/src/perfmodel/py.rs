@@ -1028,6 +1028,7 @@ struct EngineBuildRequest {
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
+    fpm_parquet_path: Option<String>,
     database_mode: Option<String>,
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
@@ -1072,6 +1073,7 @@ impl AicEngineBuilder {
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
+                fpm_parquet_path: None,
                 database_mode: None,
                 shared_layer: None,
                 transfer_policy: None,
@@ -1084,6 +1086,12 @@ impl AicEngineBuilder {
     /// Python's default (op_level).
     pub fn forward_model(mut self, forward_model: &str) -> Self {
         self.request.forward_model = Some(forward_model.to_owned());
+        self
+    }
+
+    /// Use an external FPM parquet and its adjacent `.metadata.json` sidecar.
+    pub fn fpm_parquet_path(mut self, path: impl Into<String>) -> Self {
+        self.request.fpm_parquet_path = Some(path.into());
         self
     }
 
@@ -1218,6 +1226,7 @@ mod builder_tests {
         assert!(builder.request.moe_ep_size.is_none());
         assert!(builder.request.attention_backend.is_none());
         assert!(builder.request.kv_block_size.is_none());
+        assert!(builder.request.fpm_parquet_path.is_none());
         assert!(builder.request.database_mode.is_none());
         assert!(builder.request.shared_layer.is_none());
         assert!(builder.request.transfer_policy.is_none());
@@ -1239,6 +1248,7 @@ mod builder_tests {
             .strict_provenance(true)
             .speculative_decoding(2)
             .kv_block_size(16)
+            .fpm_parquet_path("/artifacts/reviewed-fpm.parquet")
             .systems_path("/tmp/systems");
         assert_eq!(builder.request.backend, "sglang");
         assert_eq!(builder.request.backend_version.as_deref(), Some("0.5.9"));
@@ -1259,6 +1269,10 @@ mod builder_tests {
         assert_eq!(builder.request.nextn, 2);
         assert_eq!(builder.request.kv_block_size, Some(16));
         assert_eq!(
+            builder.request.fpm_parquet_path.as_deref(),
+            Some("/artifacts/reviewed-fpm.parquet")
+        );
+        assert_eq!(
             builder.request.systems_path.as_deref(),
             Some("/tmp/systems")
         );
@@ -1272,6 +1286,7 @@ mod builder_tests {
             "system_name": "system",
             "backend": "vllm",
             "backend_version": "0.25.1",
+            "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet",
             "kv_block_size": null,
             "tp_size": 4,
             "pp_size": 1,
@@ -1297,6 +1312,10 @@ mod builder_tests {
             Some(["xshape".to_owned(), "xquant".to_owned()].as_slice())
         );
         assert_eq!(request.strict_provenance, Some(true));
+        assert_eq!(
+            request.fpm_parquet_path.as_deref(),
+            Some("/artifacts/reviewed-fpm.parquet")
+        );
     }
 
     #[test]
@@ -1356,6 +1375,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
+        kwargs.set_item("fpm_parquet_path", request.fpm_parquet_path.as_deref())?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
@@ -1434,6 +1454,10 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
+        fpm_parquet_path: config
+            .fpm_parquet_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
@@ -1797,6 +1821,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            fpm_parquet_path: None,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,

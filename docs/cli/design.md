@@ -663,6 +663,7 @@ engine:
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
+| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; its adjacent same-stem `.metadata.json` sidecar is required. |
 | `engine.workers.<role>.startup_seconds` | `0` | `x` | `-` | Nonnegative. |
 | `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
@@ -725,9 +726,8 @@ cell and requires an exact match on model, hardware, backend version, parallel s
 quantization. A candidate without a matching cell fails at replay and is recorded as a failed
 candidate (reason category `replay_runtime`) rather than silently falling back to `op_level`. In
 `fpm` mode with `capacity.type: default`, the KV capacity is also capped to the cell's collected
-decode-KV ceiling. The bundled FPM cells are collected at backend versions outside the queryable
-version slots; until FPM cells are slot-queryable, set the transitional escape hatch
-`AIC_ALLOW_UNLISTED_VERSIONS=1` to use them.
+decode-KV ceiling. FPM artifacts collected at backend versions outside the queryable version slots
+require the transitional `AIC_ALLOW_UNLISTED_VERSIONS=1` escape hatch.
 
 `kv_cache.capacity.type: fixed` requires `blocks`, so users can directly provide cache size. It rejects
 `memory_fraction` and nonzero `cuda_graph_reserved_bytes`. Conversely, `type: default` rejects `blocks`
