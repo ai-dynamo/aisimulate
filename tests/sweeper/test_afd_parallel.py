@@ -254,7 +254,9 @@ def test_search_rejects_duplicate_explicit_candidates(field, values):
 
 
 def test_search_rejects_nondivisible_explicit_tp_candidate():
-    with pytest.raises(AFDInfeasible, match="tp_a_candidates must divide gpus_per_node") as error:
+    with pytest.raises(
+        AFDInfeasible, match="tp_a_candidates must divide gpus_per_node"
+    ) as error:
         AFDSearchConfig(
             total_gpus=16,
             gpus_per_node=8,
