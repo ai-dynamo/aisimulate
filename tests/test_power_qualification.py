@@ -52,9 +52,7 @@ def _qualified_document(revision: str) -> dict:
             "threshold_status": "approved",
         }
     )
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
-        copy.deepcopy(policy)
-    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
     for gate in document["gates"]:
         if not gate["release_blocking"]:
             continue
@@ -86,9 +84,7 @@ def test_power_data_invariant_evidence_is_complete_and_machine_readable() -> Non
     result = json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0])
 
     assert result["files_scanned"] == len(result["files"]) == 3
-    assert result["rows_scanned"] == sum(
-        file_result["rows_scanned"] for file_result in result["files"]
-    )
+    assert result["rows_scanned"] == sum(file_result["rows_scanned"] for file_result in result["files"])
     assert result["rows_scanned"] == 122362
     assert result["checks"]["power_and_limit_columns_paired"] == {
         "result": "pass",
@@ -115,9 +111,7 @@ def test_schema_is_versioned_and_machine_readable() -> None:
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["properties"]["schema_version"]["const"] == "1.0"
     assert schema["properties"]["release_target"]["const"] == "0.13.0"
-    assert {"gate", "matrix", "assertion", "execution", "evidence"} <= set(
-        schema["$defs"]
-    )
+    assert {"gate", "matrix", "assertion", "execution", "evidence"} <= set(schema["$defs"])
 
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(_document())
@@ -130,10 +124,7 @@ def test_schema_rejects_unsupported_dimensions() -> None:
 
     errors = list(Draft202012Validator(schema).iter_errors(document))
 
-    assert any(
-        error.validator == "enum" and "bogus-runner" in error.message
-        for error in errors
-    )
+    assert any(error.validator == "enum" and "bogus-runner" in error.message for error in errors)
 
 
 def test_schema_rejects_passing_planned_or_evidence_free_gates() -> None:
@@ -144,9 +135,7 @@ def test_schema_rejects_passing_planned_or_evidence_free_gates() -> None:
     planned = _document()
     planned_gate = _gate(planned, "modeled-power-matrix")
     planned_gate["execution"]["status"] = "passed"
-    planned_gate["execution"]["evidence"] = [
-        _passing_evidence(revision, "modeled-power-matrix")
-    ]
+    planned_gate["execution"]["evidence"] = [_passing_evidence(revision, "modeled-power-matrix")]
     assert list(validator.iter_errors(planned))
 
     evidence_free = _document()
@@ -194,12 +183,7 @@ def test_cli_release_gate_fails_closed_and_checks_expected_revision(
     ledger = tmp_path / "qualification-matrix.json"
     ledger.write_text(json.dumps(_qualified_document(revision)), encoding="utf-8")
 
-    assert (
-        QUALIFICATION.main(
-            [str(ledger), "--require-release-ready", "--expected-revision", revision]
-        )
-        == 0
-    )
+    assert QUALIFICATION.main([str(ledger), "--require-release-ready", "--expected-revision", revision]) == 0
     assert "state=qualified" in capsys.readouterr().out
 
     assert (
@@ -220,18 +204,14 @@ def test_release_check_rejects_stale_or_mixed_candidate_evidence() -> None:
     revision = "a" * 40
     document = _qualified_document(revision)
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="does not match expected_revision"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="does not match expected_revision"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
             expected_revision="b" * 40,
         )
 
-    _gate(document, "application-wheel")["execution"]["evidence"][0][
-        "source_revision"
-    ] = "c" * 40
+    _gate(document, "application-wheel")["execution"]["evidence"][0]["source_revision"] = "c" * 40
     with pytest.raises(
         QUALIFICATION.QualificationError,
         match="evidence does not match candidate_revision",
@@ -258,9 +238,7 @@ def test_qualified_state_cannot_bypass_release_check() -> None:
     document = _document()
     document["release_state"] = "qualified"
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="release-blocking gates"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="release-blocking gates"):
         QUALIFICATION.validate_document(document)
 
 
@@ -277,9 +255,7 @@ def test_unsupported_timing_backends_must_remain_unavailable() -> None:
     assertion = _gate(document, "unsupported-timing-no-fabrication")["assertions"][0]
     assertion["expectation"] = "modeled_power"
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="qualification contract"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="qualification contract"):
         QUALIFICATION.validate_document(document)
 
 
@@ -289,9 +265,7 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
     gate["execution"]["status"] = "passed"
     gate["execution"]["evidence"] = []
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="cannot be passed without evidence"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="cannot be passed without evidence"):
         QUALIFICATION.validate_document(document)
 
     gate["execution"]["evidence"] = [
@@ -310,9 +284,7 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
         QUALIFICATION.validate_document(document)
 
     gate["execution"]["evidence"][0]["sha256"] = "1" * 64
-    gate["execution"]["evidence"][0]["artifact"] = (
-        "http://example.invalid/power-data-invariants.json"
-    )
+    gate["execution"]["evidence"][0]["artifact"] = "http://example.invalid/power-data-invariants.json"
     with pytest.raises(QUALIFICATION.QualificationError, match="HTTPS"):
         QUALIFICATION.validate_document(document)
 
@@ -346,9 +318,7 @@ def test_planned_command_cannot_be_presented_as_passing() -> None:
         }
     ]
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="command is only planned"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="command is only planned"):
         QUALIFICATION.validate_document(document)
 
 
@@ -363,14 +333,10 @@ def test_silicon_gate_and_policy_thresholds_cannot_drift() -> None:
         }
     )
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="qualification contract"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="qualification contract"):
         QUALIFICATION.validate_document(document)
 
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
-        copy.deepcopy(policy)
-    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
     QUALIFICATION.validate_document(document)
 
 
@@ -384,9 +350,7 @@ def test_silicon_approval_rejects_boolean_thresholds() -> None:
             "threshold_status": "approved",
         }
     )
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
-        copy.deepcopy(policy)
-    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
 
     with pytest.raises(QUALIFICATION.QualificationError, match="silicon"):
         QUALIFICATION.validate_document(document)

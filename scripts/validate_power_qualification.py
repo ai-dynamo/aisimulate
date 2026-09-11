@@ -62,18 +62,14 @@ def _expect(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
-def _expect_keys(
-    value: Any, required: set[str], context: str, errors: list[str]
-) -> None:
+def _expect_keys(value: Any, required: set[str], context: str, errors: list[str]) -> None:
     _expect(isinstance(value, dict), f"{context} must be an object", errors)
     if not isinstance(value, dict):
         return
     missing = required - value.keys()
     _expect(not missing, f"{context} is missing {sorted(missing)}", errors)
     unexpected = value.keys() - required
-    _expect(
-        not unexpected, f"{context} has unexpected keys {sorted(unexpected)}", errors
-    )
+    _expect(not unexpected, f"{context} has unexpected keys {sorted(unexpected)}", errors)
 
 
 def _validate_matrix(matrix: Any, context: str, errors: list[str]) -> None:
@@ -114,9 +110,7 @@ def _validate_matrix(matrix: Any, context: str, errors: list[str]) -> None:
         )
 
 
-def _validate_assertion(
-    assertion: Any, matrix: dict[str, list[str]], context: str, errors: list[str]
-) -> None:
+def _validate_assertion(assertion: Any, matrix: dict[str, list[str]], context: str, errors: list[str]) -> None:
     _expect_keys(assertion, {"when", "expectation", "thresholds"}, context, errors)
     if not isinstance(assertion, dict):
         return
@@ -140,11 +134,7 @@ def _validate_assertion(
                     f"{context}.when.{dimension} must contain strings",
                     errors,
                 )
-            if (
-                dimension in matrix
-                and isinstance(selected, list)
-                and all(isinstance(item, str) for item in selected)
-            ):
+            if dimension in matrix and isinstance(selected, list) and all(isinstance(item, str) for item in selected):
                 _expect(
                     set(selected) <= set(matrix[dimension]),
                     f"{context}.when.{dimension} is outside the gate matrix",
@@ -186,23 +176,17 @@ def _validate_evidence(evidence: Any, context: str, errors: list[str]) -> None:
         path_parts = Path(artifact).parts
         _expect(
             artifact.startswith("https://")
-            or (
-                "://" not in artifact
-                and not Path(artifact).is_absolute()
-                and ".." not in path_parts
-            ),
+            or ("://" not in artifact and not Path(artifact).is_absolute() and ".." not in path_parts),
             f"{context}.artifact must be HTTPS or a repository-relative path",
             errors,
         )
     _expect(
-        isinstance(evidence.get("sha256"), str)
-        and bool(DIGEST_RE.fullmatch(evidence["sha256"])),
+        isinstance(evidence.get("sha256"), str) and bool(DIGEST_RE.fullmatch(evidence["sha256"])),
         f"{context}.sha256 must be 64 lowercase hex",
         errors,
     )
     _expect(
-        isinstance(evidence.get("source_revision"), str)
-        and bool(SHA_RE.fullmatch(evidence["source_revision"])),
+        isinstance(evidence.get("source_revision"), str) and bool(SHA_RE.fullmatch(evidence["source_revision"])),
         f"{context}.source_revision must be a 40-character commit SHA",
         errors,
     )
@@ -212,9 +196,7 @@ def _validate_evidence(evidence: Any, context: str, errors: list[str]) -> None:
     except ValueError:
         parsed_time = None
     _expect(
-        recorded_at.endswith("Z")
-        and parsed_time is not None
-        and parsed_time.utcoffset() == UTC.utcoffset(parsed_time),
+        recorded_at.endswith("Z") and parsed_time is not None and parsed_time.utcoffset() == UTC.utcoffset(parsed_time),
         f"{context}.recorded_at must be UTC ISO-8601",
         errors,
     )
@@ -241,8 +223,7 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
     if not isinstance(gate, dict):
         return
     _expect(
-        isinstance(gate.get("id"), str)
-        and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", gate["id"])),
+        isinstance(gate.get("id"), str) and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", gate["id"])),
         f"{context}.id is invalid",
         errors,
     )
@@ -273,9 +254,7 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
         errors,
     )
     depends_on = gate.get("depends_on")
-    _expect(
-        isinstance(depends_on, list), f"{context}.depends_on must be an array", errors
-    )
+    _expect(isinstance(depends_on, list), f"{context}.depends_on must be an array", errors)
     if isinstance(depends_on, list):
         _expect(
             all(ISSUE_RE.fullmatch(str(item)) for item in depends_on),
@@ -293,9 +272,7 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
     )
     if isinstance(matrix, dict) and isinstance(assertions, list):
         for assertion_index, assertion in enumerate(assertions):
-            _validate_assertion(
-                assertion, matrix, f"{context}.assertions[{assertion_index}]", errors
-            )
+            _validate_assertion(assertion, matrix, f"{context}.assertions[{assertion_index}]", errors)
 
     execution = gate.get("execution")
     _expect_keys(
@@ -347,13 +324,9 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
     )
     if isinstance(evidence, list):
         for evidence_index, item in enumerate(evidence):
-            _validate_evidence(
-                item, f"{context}.execution.evidence[{evidence_index}]", errors
-            )
+            _validate_evidence(item, f"{context}.execution.evidence[{evidence_index}]", errors)
         if status in {"passed", "failed"}:
-            _expect(
-                bool(evidence), f"{context} cannot be {status} without evidence", errors
-            )
+            _expect(bool(evidence), f"{context} cannot be {status} without evidence", errors)
         if status == "passed":
             _expect(
                 command_status != "planned",
@@ -361,26 +334,16 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
                 errors,
             )
         if status in {"pending", "blocked"}:
-            _expect(
-                not evidence, f"{context} cannot retain evidence while {status}", errors
-            )
+            _expect(not evidence, f"{context} cannot retain evidence while {status}", errors)
         if status == "passed":
             _expect(
-                all(
-                    item.get("result") == "pass"
-                    for item in evidence
-                    if isinstance(item, dict)
-                ),
+                all(item.get("result") == "pass" for item in evidence if isinstance(item, dict)),
                 f"{context} passed with non-passing evidence",
                 errors,
             )
         if status == "failed":
             _expect(
-                any(
-                    item.get("result") == "fail"
-                    for item in evidence
-                    if isinstance(item, dict)
-                ),
+                any(item.get("result") == "fail" for item in evidence if isinstance(item, dict)),
                 f"{context} failed without failing evidence",
                 errors,
             )
@@ -390,9 +353,7 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
         errors,
     )
     if status == "blocked":
-        _expect(
-            bool(blocked_by), f"{context} is blocked without naming a blocker", errors
-        )
+        _expect(bool(blocked_by), f"{context} is blocked without naming a blocker", errors)
     elif isinstance(blocked_by, list):
         _expect(not blocked_by, f"{context} names blockers but is not blocked", errors)
     _expect(
@@ -402,31 +363,19 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
     )
 
 
-def _gate_by_id(
-    document: dict[str, Any], gate_id: str, errors: list[str]
-) -> dict[str, Any]:
+def _gate_by_id(document: dict[str, Any], gate_id: str, errors: list[str]) -> dict[str, Any]:
     gate = next(
-        (
-            item
-            for item in document.get("gates", [])
-            if isinstance(item, dict) and item.get("id") == gate_id
-        ),
+        (item for item in document.get("gates", []) if isinstance(item, dict) and item.get("id") == gate_id),
         None,
     )
     _expect(gate is not None, f"required gate {gate_id!r} is missing", errors)
     return gate or {}
 
 
-def _expect_dimension(
-    gate: dict[str, Any], name: str, values: set[str], errors: list[str]
-) -> None:
+def _expect_dimension(gate: dict[str, Any], name: str, values: set[str], errors: list[str]) -> None:
     matrix = gate.get("matrix")
     raw = matrix.get(name, []) if isinstance(matrix, dict) else []
-    actual = (
-        set(raw)
-        if isinstance(raw, list) and all(isinstance(item, str) for item in raw)
-        else set()
-    )
+    actual = set(raw) if isinstance(raw, list) and all(isinstance(item, str) for item in raw) else set()
     _expect(
         actual == values,
         f"gate {gate.get('id')!r} must cover {name}={sorted(values)}, got {sorted(actual)}",
@@ -603,9 +552,7 @@ def _validate_required_coverage(document: dict[str, Any], errors: list[str]) -> 
 
     accuracy = _gate_by_id(document, "silicon-power-accuracy", errors)
     policy = document.get("policy")
-    accuracy_policy = (
-        policy.get("silicon_accuracy", {}) if isinstance(policy, dict) else {}
-    )
+    accuracy_policy = policy.get("silicon_accuracy", {}) if isinstance(policy, dict) else {}
     _expect_gate_contract(
         accuracy,
         release_blocking=True,
@@ -710,9 +657,7 @@ def validate_document(
         "$schema must be './qualification-matrix.schema.json'",
         errors,
     )
-    _expect(
-        document.get("schema_version") == "1.0", "schema_version must be '1.0'", errors
-    )
+    _expect(document.get("schema_version") == "1.0", "schema_version must be '1.0'", errors)
     _expect(
         document.get("release_target") == "0.13.0",
         "release_target must be '0.13.0'",
@@ -726,19 +671,12 @@ def validate_document(
     candidate_revision = document.get("candidate_revision")
     _expect(
         candidate_revision is None
-        or (
-            isinstance(candidate_revision, str)
-            and bool(SHA_RE.fullmatch(candidate_revision))
-        ),
+        or (isinstance(candidate_revision, str) and bool(SHA_RE.fullmatch(candidate_revision))),
         "candidate_revision must be null or a 40-character commit SHA",
         errors,
     )
     _expect(
-        expected_revision is None
-        or (
-            isinstance(expected_revision, str)
-            and bool(SHA_RE.fullmatch(expected_revision))
-        ),
+        expected_revision is None or (isinstance(expected_revision, str) and bool(SHA_RE.fullmatch(expected_revision))),
         "expected_revision must be a 40-character commit SHA",
         errors,
     )
@@ -784,8 +722,7 @@ def validate_document(
                 errors,
             )
             _expect(
-                accuracy_policy.get("threshold_status")
-                in {"pending_approval", "approved"},
+                accuracy_policy.get("threshold_status") in {"pending_approval", "approved"},
                 "silicon threshold status is unsupported",
                 errors,
             )
@@ -804,24 +741,18 @@ def validate_document(
                 maximum = accuracy_policy.get("maximum_error_pct")
                 minimum = accuracy_policy.get("minimum_points_per_case")
                 _expect(
-                    isinstance(maximum, (int, float))
-                    and not isinstance(maximum, bool)
-                    and 0 < maximum < 100,
+                    isinstance(maximum, (int, float)) and not isinstance(maximum, bool) and 0 < maximum < 100,
                     "approved silicon maximum error must be between 0 and 100",
                     errors,
                 )
                 _expect(
-                    isinstance(minimum, int)
-                    and not isinstance(minimum, bool)
-                    and minimum > 0,
+                    isinstance(minimum, int) and not isinstance(minimum, bool) and minimum > 0,
                     "approved silicon minimum points must be positive",
                     errors,
                 )
 
     gates = document.get("gates")
-    _expect(
-        isinstance(gates, list) and gates, "gates must be a non-empty array", errors
-    )
+    _expect(isinstance(gates, list) and gates, "gates must be a non-empty array", errors)
     if isinstance(gates, list):
         for index, gate in enumerate(gates):
             _validate_gate(gate, index, errors)
@@ -878,8 +809,7 @@ def validate_document(
                 mismatched = [
                     item.get("source_revision")
                     for item in evidence
-                    if isinstance(item, dict)
-                    and item.get("source_revision") != candidate_revision
+                    if isinstance(item, dict) and item.get("source_revision") != candidate_revision
                 ]
                 _expect(
                     not mismatched,

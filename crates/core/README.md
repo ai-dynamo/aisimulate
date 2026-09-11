@@ -21,6 +21,24 @@ The crate root promotes the common `EngineConfig`, `ReplaySpec`, `Replayer`,
 canonical `ReplayReport`, and timing-provider contracts. Dynamo-specific Router, Planner,
 transport, and live-runtime adapters remain outside this crate.
 
+## Generated concurrency requests
+
+Programmatic replay callers can provide
+`replay::loadgen::GeneratedRequests::new(request_count, factory)` through
+`ReplayRuntimeInput::GeneratedRequests` instead of constructing every
+`DirectRequest` up front. Set `ReplaySpec::max_in_flight` to the concurrency
+limit. Replay calls the factory with the original zero-based request index
+only when a slot becomes available, and applies the admission timestamp just
+as it does for an eager request queue. The factory should generate one request
+without retaining previous requests or capturing a prebuilt request list.
+
+This keeps pending prompt storage independent of the total request count;
+live requests, engine queues, and explicitly captured per-request output still
+consume memory. The engine receives the same ordinary `DirectRequest` and
+does not participate in source generation. Open-loop and existing trace inputs
+retain their current behavior. Integrations such as Dynamo must opt into the
+generated source after adopting a crate release containing this API.
+
 ## Source layout and upstream syncs
 
 The former AIConfigurator Rust crate is kept as a stable mirror subtree under

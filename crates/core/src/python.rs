@@ -12,7 +12,8 @@ use crate::replay::{
     ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
     loadgen::{
         ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
-        WorkloadDriver, load_agentic_mooncake,
+        WekaImportOptions, WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
+        load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
 };
 use anyhow::{Context, Result, anyhow, ensure};
@@ -26,7 +27,7 @@ use serde::Deserialize;
 enum ExecutionPayload {
     Configured {
         spec: ReplaySpec,
-        traffic: RuntimeTraffic,
+        traffic: Box<RuntimeTraffic>,
     },
     Legacy(ReplaySpec),
 }
@@ -35,6 +36,10 @@ enum ExecutionPayload {
 #[serde(deny_unknown_fields)]
 struct RuntimeTraffic {
     source_type: String,
+    /// Configured deployment model used to time every agentic request. Source
+    /// model labels remain provenance on the validated graph.
+    #[serde(default)]
+    execution_model: Option<String>,
     #[serde(default)]
     load_type: Option<String>,
     #[serde(default)]
@@ -46,9 +51,13 @@ struct RuntimeTraffic {
     #[serde(default)]
     trace_block_size: Option<usize>,
     #[serde(default)]
+    weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
+    #[serde(default)]
     arrival_speedup_ratio: Option<f64>,
     #[serde(default)]
     replay_concurrency: Option<usize>,
+    #[serde(default)]
+    agentic_lanes: Option<usize>,
     #[serde(default)]
     isl: Option<usize>,
     #[serde(default)]
@@ -78,6 +87,31 @@ struct RuntimeTraffic {
     kv_load_ratio: Option<serde_json::Value>,
     #[serde(default)]
     max_sim_time_ms: Option<f64>,
+}
+
+struct BuiltRuntimeInput {
+    input: ReplayRuntimeInput,
+    weka_nested_timestamp_basis: Option<WekaResolvedTimestampBasis>,
+}
+
+impl BuiltRuntimeInput {
+    fn without_weka_basis(input: ReplayRuntimeInput) -> Self {
+        Self {
+            input,
+            weka_nested_timestamp_basis: None,
+        }
+    }
+}
+
+const AGENTIC_MODEL_PROJECTION_POLICY: &str = "project_to_configured_target";
+
+fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
+    traffic
+        .execution_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .context("agentic execution requires a configured target model")
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -628,14 +662,41 @@ fn build_runtime_input(
     traffic: RuntimeTraffic,
     engine_block_size: usize,
     allow_agentic: bool,
-) -> Result<ReplayRuntimeInput> {
+) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
+    ensure!(
+        traffic.source_type == "trace" || traffic.agentic_lanes.is_none(),
+        "agentic_lanes requires agentic trace input"
+    );
+    ensure!(
+        traffic.source_type == "trace" || traffic.weka_nested_timestamp_basis.is_none(),
+        "weka_nested_timestamp_basis requires Weka trace input"
+    );
     if traffic.source_type == "trace" {
         let paths = runtime_paths(&traffic)?;
         let trace_block_size = traffic.trace_block_size.unwrap_or(512);
         let format = traffic.trace_format.as_deref().unwrap_or("mooncake");
         let speedup = traffic.arrival_speedup_ratio.unwrap_or(1.0);
+        ensure!(
+            format == "weka" || traffic.weka_nested_timestamp_basis.is_none(),
+            "weka_nested_timestamp_basis requires Weka input"
+        );
+        ensure!(
+            traffic.agentic_lanes != Some(0),
+            "agentic_lanes must be greater than 0"
+        );
+        if traffic.agentic_lanes.is_some() {
+            ensure!(
+                matches!(format, "weka" | "agentic_mooncake" | "dynamo"),
+                "agentic_lanes requires weka, agentic_mooncake, or agentic Dynamo input"
+            );
+        }
         if format == "agentic_mooncake" {
+            require_agentic_execution_model(&traffic)?;
+            ensure!(
+                traffic.load_type.as_deref() == Some("trace_timestamps"),
+                "agentic_mooncake requires trace_timestamps load"
+            );
             ensure!(allow_agentic, "agentic trace requires aggregated topology");
             ensure!(
                 traffic.max_sim_time_ms.is_none(),
@@ -645,18 +706,71 @@ fn build_runtime_input(
                 paths.len() == 1,
                 "agentic_mooncake requires exactly one path"
             );
+            ensure!(
+                traffic.replay_concurrency.is_none(),
+                "agentic_mooncake does not support concurrency load"
+            );
             let trace = load_agentic_mooncake(&paths[0], trace_block_size)?
                 .normalize_starts()
                 .speed_up_timing(speedup)?;
-            return Ok(ReplayRuntimeInput::Workload(
-                WorkloadDriver::new_agentic_trace(trace, engine_block_size)?,
+            return Ok(BuiltRuntimeInput::without_weka_basis(
+                ReplayRuntimeInput::Workload(WorkloadDriver::new_agentic_trace_with_options(
+                    trace,
+                    engine_block_size,
+                    true,
+                    traffic.agentic_lanes,
+                )?),
             ));
+        }
+        if format == "weka" {
+            require_agentic_execution_model(&traffic)?;
+            ensure!(
+                traffic.load_type.as_deref() == Some("trace_timestamps"),
+                "weka requires trace_timestamps load"
+            );
+            ensure!(
+                allow_agentic,
+                "Weka agentic trace requires aggregated topology"
+            );
+            ensure!(
+                traffic.max_sim_time_ms.is_none(),
+                "Weka agentic trace does not support max virtual time"
+            );
+            ensure!(paths.len() == 1, "weka requires exactly one path");
+            ensure!(
+                traffic.replay_concurrency.is_none(),
+                "Weka agentic trace does not support concurrency load"
+            );
+            let requested_basis = traffic.weka_nested_timestamp_basis.unwrap_or_default();
+            let (trace, resolved_basis) = load_weka_agentic_graph_with_options(
+                &paths[0],
+                traffic.trace_block_size,
+                WekaImportOptions {
+                    nested_timestamp_basis: requested_basis,
+                },
+            )?;
+            let trace = trace.normalize_starts().speed_up_timing(speedup)?;
+            return Ok(BuiltRuntimeInput {
+                input: ReplayRuntimeInput::Workload(
+                    WorkloadDriver::new_agentic_trace_with_options(
+                        trace,
+                        engine_block_size,
+                        true,
+                        traffic.agentic_lanes,
+                    )?,
+                ),
+                weka_nested_timestamp_basis: Some(resolved_basis),
+            });
         }
         if format == "dynamo" {
             let loaded =
                 DynamoRequestTrace::from_request_trace_files(&paths, traffic.trace_block_size)?;
             let driver = match loaded {
                 DynamoRequestTrace::Standard(trace) => {
+                    ensure!(
+                        traffic.agentic_lanes.is_none(),
+                        "agentic_lanes requires an agentic Dynamo trace"
+                    );
                     let trace = trace.normalize_session_starts()?.speed_up_timing(speedup)?;
                     match traffic.replay_concurrency {
                         Some(cap) => {
@@ -666,11 +780,12 @@ fn build_runtime_input(
                     }
                 }
                 DynamoRequestTrace::Agentic(trace) => {
+                    require_agentic_execution_model(&traffic)?;
                     ensure!(
                         traffic.replay_concurrency.is_none(),
                         "agentic Dynamo trace does not support concurrency load"
                     );
-                    WorkloadDriver::new_agentic_trace(
+                    WorkloadDriver::new_agentic_trace_with_options(
                         {
                             ensure!(
                                 allow_agentic,
@@ -683,10 +798,14 @@ fn build_runtime_input(
                             trace.normalize_starts().speed_up_timing(speedup)?
                         },
                         engine_block_size,
+                        true,
+                        traffic.agentic_lanes,
                     )?
                 }
             };
-            return Ok(ReplayRuntimeInput::Workload(driver));
+            return Ok(BuiltRuntimeInput::without_weka_basis(
+                ReplayRuntimeInput::Workload(driver),
+            ));
         }
         ensure!(
             paths.len() == 1,
@@ -712,7 +831,9 @@ fn build_runtime_input(
             }
             (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
         };
-        return Ok(ReplayRuntimeInput::Workload(driver));
+        return Ok(BuiltRuntimeInput::without_weka_basis(
+            ReplayRuntimeInput::Workload(driver),
+        ));
     }
 
     ensure!(
@@ -761,7 +882,9 @@ fn build_runtime_input(
         (None, true) => WorkloadDriver::new_trace_accumulating_deltas(trace, engine_block_size)?,
         (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
     };
-    Ok(ReplayRuntimeInput::Workload(driver))
+    Ok(BuiltRuntimeInput::without_weka_basis(
+        ReplayRuntimeInput::Workload(driver),
+    ))
 }
 
 fn run_with_input(
@@ -786,9 +909,22 @@ fn run_with_input(
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let (mut spec, mut traffic) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
-            ExecutionPayload::Configured { spec, traffic } => (spec, Some(traffic)),
+            ExecutionPayload::Configured { spec, traffic } => (spec, Some(*traffic)),
             ExecutionPayload::Legacy(spec) => (spec, None),
         };
+    let agentic_input = traffic.as_ref().and_then(|traffic| {
+        traffic
+            .trace_format
+            .as_deref()
+            .filter(|format| matches!(*format, "weka" | "agentic_mooncake" | "dynamo"))
+            .map(|format| {
+                (
+                    format.to_string(),
+                    traffic.agentic_lanes,
+                    traffic.execution_model.clone(),
+                )
+            })
+    });
     if capture_artifacts {
         ensure!(
             matches!(&spec.topology, ReplayTopology::Aggregated { .. }),
@@ -803,7 +939,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
 
-    let (report, artifacts) = match spec.topology.clone() {
+    let (report, artifacts, resolved_weka_timestamp_basis) = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
             let mut role = aggregated_role(&engine_config);
             let capacity_is_explicit = role
@@ -831,14 +967,19 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            let input = traffic
+            let built_input = traffic
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size, true))
                 .transpose()?;
+            let resolved_basis = built_input
+                .as_ref()
+                .and_then(|built| built.weka_nested_timestamp_basis);
+            let input = built_input.map(|built| built.input);
             let factory = timing.map_or_else(
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
             run_with_input(spec, factory, input, capture_artifacts)
+                .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
             let mut prefill = engine_config
@@ -874,7 +1015,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            let input = traffic
+            let built_input = traffic
                 .map(|traffic| {
                     build_runtime_input(
                         traffic,
@@ -888,6 +1029,10 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                     )
                 })
                 .transpose()?;
+            let resolved_basis = built_input
+                .as_ref()
+                .and_then(|built| built.weka_nested_timestamp_basis);
+            let input = built_input.map(|built| built.input);
             run_with_input(
                 spec,
                 ReplayEngineFactory::with_optional_role_timing_models(
@@ -897,11 +1042,57 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 input,
                 capture_artifacts,
             )
+            .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
     }
     .context("AISimulate replay failed")?;
     let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+    if report.agentic_graph.is_some()
+        && let Some((input_format, agentic_lanes, execution_model)) = agentic_input
+    {
+        let source_models = report
+            .agentic_graph
+            .as_ref()
+            .expect("agentic graph presence was checked")
+            .source_models
+            .clone();
+        let execution_model = execution_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .context("agentic execution did not declare its configured target model")?;
+        let object = report_json
+            .as_object_mut()
+            .context("AISimulate replay report did not serialize as an object")?;
+        object.insert(
+            "agentic_qualification".to_string(),
+            serde_json::Value::String("functional_only".to_string()),
+        );
+        object.insert(
+            "agentic_input_format".to_string(),
+            serde_json::Value::String(input_format),
+        );
+        object.insert(
+            "agentic_lanes".to_string(),
+            serde_json::to_value(agentic_lanes)
+                .context("serializing configured agentic lane count")?,
+        );
+        if let Some(resolved_basis) = resolved_weka_timestamp_basis {
+            object.insert(
+                "weka_nested_timestamp_basis".to_string(),
+                serde_json::Value::String(resolved_basis.as_str().to_string()),
+            );
+        }
+        object.insert(
+            "agentic_model_projection".to_string(),
+            serde_json::json!({
+                "policy": AGENTIC_MODEL_PROJECTION_POLICY,
+                "source_models": source_models,
+                "target_model": execution_model,
+            }),
+        );
+    }
     if !report.per_request.is_empty() {
         let object = report_json
             .as_object_mut()
