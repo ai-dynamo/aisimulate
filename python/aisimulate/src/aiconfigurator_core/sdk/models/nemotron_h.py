@@ -8,6 +8,9 @@ from aiconfigurator_core.sdk import common
 from aiconfigurator_core.sdk.models.base import BaseModel, register_model
 from aiconfigurator_core.sdk.models.helpers import mtp_scale_factor
 
+# vLLM --mamba-ssm-cache-dtype values -> bytes/elem; "auto" is the model dtype (bf16).
+_MAMBA_SSM_DTYPE_BYTES = {"auto": 2, "bfloat16": 2, "float16": 2, "float32": 4}
+
 
 @register_model("NEMOTRONH")
 class NemotronHModel(BaseModel):
@@ -93,6 +96,36 @@ class NemotronHModel(BaseModel):
             "*": pattern.count("*"),
             "-": pattern.count("-"),
         }
+
+    def get_kvcache_elements_per_token(self) -> int:
+        """Only the attention ('*') layers hold token-linear KV; Mamba2 ('M') layers
+        keep a constant per-sequence state priced in
+        :meth:`get_kvcache_static_bytes_per_sequence`."""
+        if not self._hybrid_config:
+            return super().get_kvcache_elements_per_token()
+        num_kv_heads_per_gpu = (self._num_kv_heads + self.config.tp_size - 1) // self.config.tp_size
+        return self._count_layer_types()["*"] * 2 * num_kv_heads_per_gpu * self._head_size
+
+    def get_kvcache_static_bytes_per_sequence(self) -> float:
+        """Constant Mamba2 state per sequence on one GPU: SSM state in the configured
+        ``mamba_ssm_cache_dtype`` plus model-dtype (bf16) conv window, per Mamba layer,
+        TP-sharded like vLLM's ``MambaStateShapeCalculator.mamba2_state_shape``. Not
+        divided by pp (same convention as the attention KV here)."""
+        if not self._hybrid_config:
+            return 0.0
+        cfg = self._hybrid_config
+        tp = self.config.tp_size
+        dtype = self.config.mamba_ssm_cache_dtype or cfg.mamba_ssm_cache_dtype
+        if dtype not in _MAMBA_SSM_DTYPE_BYTES:
+            raise ValueError(
+                f"Unsupported mamba_ssm_cache_dtype {dtype!r}; expected one of {sorted(_MAMBA_SSM_DTYPE_BYTES)}"
+            )
+        nheads_per_gpu = cfg.mamba_num_heads // tp
+        d_inner_per_gpu = nheads_per_gpu * cfg.mamba_head_dim
+        n_groups_per_gpu = max(cfg.n_groups // tp, 1)
+        ssm_bytes = nheads_per_gpu * cfg.mamba_head_dim * cfg.ssm_state_size * _MAMBA_SSM_DTYPE_BYTES[dtype]
+        conv_bytes = (d_inner_per_gpu + 2 * n_groups_per_gpu * cfg.ssm_state_size) * (cfg.conv_kernel - 1) * 2
+        return float(self._count_layer_types()["M"] * (ssm_bytes + conv_bytes))
 
     def _build_context_ops(self) -> None:
         """Build the context (prefill) operations pipeline based on hybrid pattern."""

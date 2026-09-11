@@ -95,6 +95,8 @@ class NemotronHConfig:
         moe_latent_size (int): Latent dim for routed-expert projections (0 disables
             latent compression and routed experts run on hidden_size directly).
             Used by latent-MoE variants like Nemotron-3-Super.
+        mamba_ssm_cache_dtype (str): Checkpoint-declared Mamba2 SSM state dtype
+            ("auto" = model dtype). vLLM reads the same HF key.
     """
 
     hybrid_override_pattern: str
@@ -106,6 +108,7 @@ class NemotronHConfig:
     chunk_size: int
     moe_shared_expert_intermediate_size: int = 0  # Optional: 0 for non-MoE NemotronH models
     moe_latent_size: int = 0  # Optional: 0 means routed experts use hidden_size directly
+    mamba_ssm_cache_dtype: str = "auto"  # Optional: HF `mamba_ssm_cache_dtype`, "auto" when absent
 
 
 @dataclass(frozen=True)

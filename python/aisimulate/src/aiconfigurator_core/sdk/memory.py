@@ -682,8 +682,12 @@ class NaiveKVCacheEstimator:
                 # a rough approximation acceptable for this naive fallback.
                 kv_lora = getattr(extra, "kv_lora_rank", None)
                 qk_rope = getattr(extra, "qk_rope_head_dim", None)
+            # Hybrid NemotronH (Mamba/MoE/attention pattern): only the '*' layers
+            # hold KV; ``layers`` stays the full depth for the weight estimate.
+            hybrid_pattern = getattr(extra, "hybrid_override_pattern", None)
             return {
                 "layers": parsed.get("layers"),
+                "kv_layers": hybrid_pattern.count("*") if isinstance(hybrid_pattern, str) else None,
                 "num_kv_heads": parsed.get("n_kv") or parsed.get("n"),
                 "head_dim": parsed.get("d"),
                 "kv_lora_rank": kv_lora,
@@ -757,10 +761,11 @@ class NaiveKVCacheEstimator:
           Fails closed (``None``) when ``qk_rope_head_dim`` is absent so the caller
           raises rather than guessing the latent width.
         - Standard (GQA/MHA): ``2 * ceil(num_kv_heads / tp) * head_dim * layers *
-          dtype_bytes``.
+          dtype_bytes``. ``layers`` is the KV-holding layer count (``kv_layers``,
+          the attention layers of a hybrid NemotronH pattern) when known.
         """
         geom = self.geometry
-        layers = geom.get("layers")
+        layers = geom.get("kv_layers") or geom.get("layers")
         if not layers:
             return None
 
