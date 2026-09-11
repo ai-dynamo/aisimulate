@@ -224,12 +224,23 @@ def _choices(value: Any, *, default: list[Any], preparation: PreparationBudget |
             raise ValueError("integer log ranges must be lowered as compact bounds")
         if step is None:
             raise ValueError("integer linear engine ranges require step")
-        preparation.reserve(int((raw["max"] - raw["min"]) // step) + 1, "input.integer_range")
+        reserved = int((raw["max"] - raw["min"]) // step) + 1
+        preparation.reserve(reserved, "input.integer_range")
         values: list[Any] = []
         current = raw["min"]
         while current <= raw["max"]:
+            # Floating-point accumulation can include an extra endpoint beyond
+            # the quotient estimate. Charge it before allocation too.
+            if len(values) == reserved:
+                preparation.reserve(1, "input.integer_range")
+                reserved += 1
             values.append(current)
-            current += step
+            if current == raw["max"]:
+                break
+            following = current + step
+            if following <= current:
+                raise ValueError("linear range step does not advance at this numeric precision")
+            current = following
         return values
     return [value]
 

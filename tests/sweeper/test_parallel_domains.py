@@ -348,3 +348,21 @@ def test_public_cp_capability_uses_model_resolution_and_errors(monkeypatch):
     monkeypatch.setattr(models, "get_model_family", lambda _: "unregistered-test-family")
     with pytest.raises(ValueError, match="Unknown model family"):
         models.supports_context_parallelism("test/model", "sglang")
+
+
+def test_float_range_reserves_accumulation_endpoint_before_allocating():
+    from aisimulate.recommend import _choices
+
+    domain = {"range": {"min": 0.0, "max": 1.0, "step": 0.1}}
+    with pytest.raises(SearchSpaceLimitError, match="input.integer_range"):
+        _choices(domain, default=[], preparation=PreparationBudget(max_combinations=10))
+    budget = PreparationBudget(max_combinations=11)
+    assert len(_choices(domain, default=[], preparation=budget)) == budget.considered == 11
+
+
+def test_float_range_rejects_nonadvancing_step():
+    from aisimulate.recommend import _choices
+
+    with pytest.raises(ValueError, match="step does not advance"):
+        _choices({"range": {"min": 1e16, "max": 1e16 + 2, "step": 1.0}}, default=[])
+    assert _choices({"range": {"min": 1e16, "max": 1e16, "step": 1.0}}, default=[]) == [1e16]
