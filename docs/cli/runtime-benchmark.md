@@ -25,7 +25,8 @@ requests. These inputs deliberately bound local memory and execution time.
 - **Warm runner:** three calls to `EngineReplayRunner.run` after one untimed run. Each call creates
   a fresh timing provider and its cache, so this includes provider construction and reporting in an
   already imported process with warm data access. A separate native `wall_time_ms` measurement
-  records the replay loop and its statistics collection, excluding engine construction.
+  includes native validation, worker/runtime construction, event processing, and statistics
+  collection. It excludes AIC timing-provider compilation and Python orchestration.
 
 The controller runs one child at a time and reverses variant order on alternating rounds. One full
 unrecorded pass primes installation/import and filesystem caches. Five recorded rounds are the
