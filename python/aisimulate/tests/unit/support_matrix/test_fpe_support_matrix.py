@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-
 from tools.support_matrix.fpe_support_matrix import (
     STATUS_BUILD_FAILED,
     STATUS_FRAMEWORK_INCOMPATIBLE,
@@ -50,7 +50,8 @@ def _plan(**overrides) -> EngineProbePlan:
 
 
 class _FakeTask:
-    def __init__(self, mode: str):
+    def __init__(self, mode: str, attention_backend="flashinfer"):
+        self.attention_backend = attention_backend
         self.forward_model = "op_level"
         if mode == "agg":
             self.model_path = "test/model"
@@ -82,13 +83,14 @@ class _FakeTask:
             moe_comm_backend=None,
             enable_eplb=False,
             moe_backend=None,
-            attention_backend="flashinfer",
+            attention_backend=self.attention_backend,
             language_only=False,
             enable_encoder_dp=True,
         )
 
 
-def test_build_probe_plans_uses_live_inventory_and_merges_equivalent_roles():
+@pytest.mark.parametrize("attention_backend", [None, "flashinfer", "fa3", "trtllm_mha"])
+def test_build_probe_plans_uses_live_inventory_and_merges_equivalent_roles(attention_backend):
     class FakeMatrix:
         def generate_combinations(self):
             return [("test/model", "b200_sxm", "sglang", "0.5.14")]
@@ -99,7 +101,7 @@ def test_build_probe_plans_uses_live_inventory_and_merges_equivalent_roles():
 
     def create_task(**kwargs):
         assert kwargs["database_mode"] == "SILICON"
-        return _FakeTask(kwargs["mode"])
+        return _FakeTask(kwargs["mode"], attention_backend)
 
     plans = build_probe_plans(
         matrix=FakeMatrix(),
@@ -112,6 +114,17 @@ def test_build_probe_plans_uses_live_inventory_and_merges_equivalent_roles():
     assert plans[0].roles == ("agg", "prefill", "decode")
     assert plans[0].topology == ParallelTopology(2, 1, 1, 1, 2, 1)
     assert plans[0].compile_kwargs()["forward_model"] == "op_level"
+    assert not plans[0].unrepresentable_reasons
+    assert plans[0].attention_backend == attention_backend
+    if attention_backend is None:
+        assert "attention_backend" not in plans[0].compile_kwargs()
+    else:
+        assert plans[0].compile_kwargs()["attention_backend"] == attention_backend
+
+
+def test_attention_backend_distinguishes_probe_identity():
+    plan = _plan(attention_backend="fa3")
+    assert plan.identity_key() != replace(plan, attention_backend="flashinfer").identity_key()
 
 
 def test_build_probe_plans_rejects_non_op_level_forward_models():

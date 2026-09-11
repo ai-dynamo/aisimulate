@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "description": "Required native FPE sentinels, not certification of every reported combination or predictive accuracy. Each identity requires one topology passing all four phases.",
+  "probes": [
+    {
+      "model": "Qwen/Qwen3-32B",
+      "system": "b200_sxm",
+      "backend": "vllm",
+      "backend_version": "0.24.0",
+      "forward_model": "op_level"
+    },
+    {
+      "model": "Qwen/Qwen3-32B",
+      "system": "b200_sxm",
+      "backend": "sglang",
+      "backend_version": "0.5.14",
+      "forward_model": "op_level"
+    },
+    {
+      "model": "Qwen/Qwen3-32B",
+      "system": "b200_sxm",
+      "backend": "trtllm",
+      "backend_version": "1.3.0rc23",
+      "forward_model": "op_level"
+    }
+  ]
+}

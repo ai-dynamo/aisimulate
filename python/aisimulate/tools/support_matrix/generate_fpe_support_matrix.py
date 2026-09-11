@@ -15,7 +15,8 @@ import sys
 from pathlib import Path
 
 _APPLICATION_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_APPLICATION_ROOT / "src"))
+# Import the installed package and its compiled runtime. Prepending src here
+# shadows a correctly installed wheel with a source-only aisimulate package.
 sys.path.insert(0, str(_APPLICATION_ROOT))
 
 from tools.support_matrix.fpe_support_matrix import (

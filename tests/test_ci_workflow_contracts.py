@@ -503,7 +503,8 @@ def test_shared_python_rust_setup_is_used_by_same_revision_jobs() -> None:
 
     assert any(step.get("uses") == action_path for step in _workflow("collector-check.yml")["jobs"]["check"]["steps"])
     assert any(
-        step.get("uses") == action_path for step in _workflow("fpe-support-matrix.yml")["jobs"]["generate"]["steps"]
+        step.get("uses") == action_path
+        for step in _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]["steps"]
     )
 
 
