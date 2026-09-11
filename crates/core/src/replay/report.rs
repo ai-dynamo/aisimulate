@@ -1046,15 +1046,21 @@ impl TraceCollector {
         reused_input_tokens: usize,
         attribution: Option<CacheTierAttribution>,
     ) {
-        if let Some(attribution) = attribution {
-            assert_eq!(
-                attribution
-                    .g1_reused_input_tokens
-                    .checked_add(attribution.host_reused_input_tokens),
-                Some(reused_input_tokens),
-                "G1 and host attribution must sum to total reuse"
-            );
-        }
+        // debug_assert, not assert_eq!: this is a reporting-side invariant on
+        // engine-supplied stats, not a scheduling precondition -- a violation
+        // is a bug worth catching in dev/test, but panicking the whole
+        // replay over one malformed admission record in production is worse
+        // than reporting a stat that's momentarily off. Disagg started
+        // passing real attribution here (previously always None); a
+        // mismatch specific to that path would otherwise abort every run
+        // it's reachable from.
+        debug_assert!(
+            attribution.is_none_or(|attribution| attribution
+                .g1_reused_input_tokens
+                .checked_add(attribution.host_reused_input_tokens)
+                == Some(reused_input_tokens)),
+            "G1 and host attribution must sum to total reuse: {attribution:?} vs {reused_input_tokens}"
+        );
         if let Some(stats) = self.requests.get_mut(&uuid) {
             if stats.first_admit_ms.is_none() {
                 stats.first_admission_reused_input_tokens = reused_input_tokens;
