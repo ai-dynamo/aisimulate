@@ -191,6 +191,24 @@ struct ReadySession {
     turn_index: usize,
 }
 
+/// Reject a non-finite scheduling timestamp at the point it is produced.
+///
+/// A ready time is stored twice -- in the `ready_sessions` heap and in the
+/// owning session's `next_ready_at_ms` -- and `pop_ready_compact` re-identifies
+/// the popped heap entry by comparing the two for equality. NaN never compares
+/// equal to itself, so a NaN ready time is popped (its `> now_ms` deadline test
+/// is also false, so it is not deferred either), fails re-identification, and is
+/// dropped from the heap while the session still advertises a pending deadline.
+/// That session can then never dispatch and `is_drained` never becomes true:
+/// the driver wedges permanently with no error. `+inf` is rejected for the same
+/// class of reason -- it parks the session past every simulated deadline.
+fn checked_ready_at_ms(what: &str, value: f64) -> Result<f64> {
+    if !value.is_finite() {
+        bail!("{what} must be finite, got {value}");
+    }
+    Ok(value)
+}
+
 impl PartialEq for ReadySession {
     fn eq(&self, other: &Self) -> bool {
         self.ready_at_ms.to_bits() == other.ready_at_ms.to_bits()
@@ -701,7 +719,10 @@ impl WorkloadDriver {
                     .expect("validated agentic dependency must exist");
                 let edge = AgenticDependentEdge {
                     target_node: node_index,
-                    delay_ms: dependency.delay_ms,
+                    delay_ms: checked_ready_at_ms(
+                        "agentic dependency delay_ms",
+                        dependency.delay_ms,
+                    )?,
                 };
                 match dependency.trigger {
                     AgenticDependencyTrigger::Dispatch => {
@@ -713,7 +734,10 @@ impl WorkloadDriver {
                 }
             }
             remaining_dependencies.push(node.dependencies.len());
-            authored_not_before_ms.push(node.not_before_ms);
+            authored_not_before_ms.push(checked_ready_at_ms(
+                "agentic node not_before_ms",
+                node.not_before_ms,
+            )?);
 
             let hash_ids = node
                 .hash_ids
@@ -880,7 +904,10 @@ impl WorkloadDriver {
                 let next_ready_at_ms = if is_concurrency {
                     None
                 } else {
-                    Some(session.first_arrival_timestamp_ms.unwrap_or(0.0))
+                    Some(checked_ready_at_ms(
+                        &format!("session {} first_arrival_timestamp_ms", session.session_id),
+                        session.first_arrival_timestamp_ms.unwrap_or(0.0),
+                    )?)
                 };
                 let turns = session
                     .turns
@@ -908,7 +935,10 @@ impl WorkloadDriver {
                             replay_key: turn.replay_key,
                             max_output_tokens: turn.max_output_tokens,
                             output_token_ids,
-                            delay_after_previous_ms: turn.delay_after_previous_ms,
+                            delay_after_previous_ms: checked_ready_at_ms(
+                                "turn delay_after_previous_ms",
+                                turn.delay_after_previous_ms,
+                            )?,
                             priority: turn.priority,
                             strict_priority: turn.strict_priority,
                             policy_class: turn.policy_class,
@@ -1359,7 +1389,13 @@ impl WorkloadDriver {
                 let has_more_turns = self.policy.schedules_sequential_turns()
                     && next_turn_index < session.turns.len();
                 let next_ready_at_ms = has_more_turns
-                    .then(|| now_ms + session.turns[next_turn_index].delay_after_previous_ms);
+                    .then(|| {
+                        checked_ready_at_ms(
+                            "next turn ready time",
+                            now_ms + session.turns[next_turn_index].delay_after_previous_ms,
+                        )
+                    })
+                    .transpose()?;
                 (next_turn_index, next_ready_at_ms, !has_more_turns)
             }
             TurnOutcome::Cancelled | TurnOutcome::Failed => (session.turns.len(), None, true),
@@ -1706,6 +1742,49 @@ mod tests {
             error
                 .to_string()
                 .contains("input_length 5 exceeds synthesized capacity 4")
+        );
+    }
+
+    /// `new_trace` deliberately skips `Trace::validate_for_trace_mode`, so the
+    /// driver itself is the last gate before a NaN reaches the ready heap. A
+    /// NaN there is not merely a wrong time: it is unpoppable (it compares
+    /// unequal to the copy the session holds), so the session silently stops
+    /// existing for scheduling while still counting against `is_drained`.
+    #[test]
+    fn non_finite_first_arrival_is_rejected() {
+        let mut trace = two_session_trace();
+        trace.sessions[1].first_arrival_timestamp_ms = Some(f64::NAN);
+
+        let error = WorkloadDriver::new_trace(trace, 1).unwrap_err();
+
+        assert!(
+            error.to_string().contains("must be finite"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn non_finite_turn_delay_is_rejected() {
+        let mut trace = two_session_trace();
+        trace.sessions[0].turns[1].delay_after_previous_ms = f64::INFINITY;
+
+        let error = WorkloadDriver::new_trace(trace, 1).unwrap_err();
+
+        assert!(
+            error.to_string().contains("must be finite"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn non_finite_agentic_not_before_is_rejected() {
+        let trace = agentic_trace(vec![agentic_node("r0", "p0", f64::NAN, Vec::new())]);
+
+        let error = WorkloadDriver::new_agentic_trace(trace, 1).unwrap_err();
+
+        assert!(
+            error.to_string().contains("must be finite"),
+            "unexpected error: {error}"
         );
     }
 
