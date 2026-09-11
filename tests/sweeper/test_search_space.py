@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 
+import aisimulate.sweeper as sweeper_api
 from aisimulate.sweeper.config import SmartSearchConfig
-from aisimulate.sweeper.kv_estimate import NoPerfDatabase
+from aisimulate.sweeper.deploy import build_backend_deployment
+from aisimulate.sweeper.kv_estimate import NoPerfDatabase, resolve_backend_version
 from aisimulate.sweeper.model_hw import NoViableParallelConfig
 from aisimulate.sweeper.parallel_enum import (
     DisaggParallelConfig,
@@ -16,17 +18,18 @@ from aisimulate.sweeper.parallel_enum import (
     ReplicaParallelConfig,
 )
 from aisimulate.sweeper.replay import RunnerCapabilities
-from aisimulate.sweeper.search_space import branch_knob_choices, enumerate_branches
+from aisimulate.sweeper.sample import unroll_sample
+from aisimulate.sweeper.search_space import (
+    RunnerIncompatibleError,
+    branch_knob_choices,
+    enumerate_branches,
+)
 
 TRACE = str(Path(__file__).parent / "data" / "mooncake_tiny.jsonl")
 
-_AGG_CFG = ReplicaParallelConfig(
-    ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
-)
+_AGG_CFG = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
 _DISAGG_DP1_CFG = DisaggParallelConfig(prefill=_AGG_CFG, decode=_AGG_CFG)
-_DP8_CFG = ReplicaParallelConfig(
-    ParallelShape(tp=1, dp=8, moe_tp=1, moe_ep=8), replicas=1
-)
+_DP8_CFG = ReplicaParallelConfig(ParallelShape(tp=1, dp=8, moe_tp=1, moe_ep=8), replicas=1)
 _DISAGG_DP8_CFG = DisaggParallelConfig(prefill=_AGG_CFG, decode=_DP8_CFG)
 
 
@@ -47,6 +50,12 @@ def _config(**search_overrides) -> SmartSearchConfig:
 
 def _capabilities(*pairs):
     return RunnerCapabilities(supported_backend_topologies=tuple(pairs))
+
+
+def test_runner_incompatible_error_is_public():
+    assert sweeper_api.RunnerIncompatibleError is RunnerIncompatibleError
+    assert "RunnerIncompatibleError" in sweeper_api.__all__
+    assert issubclass(RunnerIncompatibleError, NoViableParallelConfig)
 
 
 def test_branch_knobs_are_backend_only_and_mode_specific():
@@ -81,11 +90,112 @@ def test_enumerate_real_backend_space_honors_runner_topologies():
     assert branch.knob_choices["backend"] == ["trtllm"]
     assert branch.parallel_configs
     assert all(config.total_gpus <= 16 for config in branch.parallel_configs)
-    assert all(
-        branch.supported_backends[config] == frozenset({"trtllm"})
-        for config in branch.parallel_configs
-    )
+    assert all(branch.supported_backends[config] == frozenset({"trtllm"}) for config in branch.parallel_configs)
     assert "agg_max_num_seqs" in branch.knob_choices
+
+
+@pytest.mark.model("Qwen/Qwen3-VL-30B-A3B-Instruct-FP8")
+def test_single_gpu_moe_branch_materializes_backend_deployment():
+    config = _config(
+        model_name="Qwen/Qwen3-VL-30B-A3B-Instruct-FP8",
+        hardware_sku="gb200",
+        backend=["vllm"],
+        deployment_mode=["agg"],
+        gpu_budget=1,
+    )
+    (branch,) = enumerate_branches(
+        config,
+        runner_capabilities=_capabilities(("vllm", "agg")),
+    )
+    expected = ReplicaParallelConfig(
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1),
+        replicas=1,
+    )
+    assert branch.parallel_configs == (expected,)
+
+    selection = {
+        "deployment_mode": "agg",
+        **{name: values[0] for name, values in branch.knob_choices.items()},
+    }
+    sample = unroll_sample(
+        search_space=config.search_space,
+        selection=selection,
+        parallel_config=expected,
+    )
+    deployment = build_backend_deployment(
+        sample,
+        backend_version=resolve_backend_version("gb200", "vllm"),
+    )
+
+    assert deployment.parallel_config == {
+        "tp": 1,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 1,
+        "strategy": "tp",
+        "replicas": 1,
+    }
+    engine = deployment.agg_engine_args
+    assert engine["aic_model_path"] == "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
+    assert engine["aic_tp_size"] == 1
+    assert engine["aic_attention_dp_size"] == 1
+    # Engine defaults are one, so the payload omits redundant MoE dimensions;
+    # the explicit values remain in deployment.parallel_config above.
+    assert "aic_moe_tp_size" not in engine
+    assert "aic_moe_ep_size" not in engine
+
+
+@pytest.mark.model("Qwen/Qwen3-VL-30B-A3B-Instruct-FP8")
+def test_single_gpu_moe_disagg_branch_materializes_both_roles():
+    config = _config(
+        model_name="Qwen/Qwen3-VL-30B-A3B-Instruct-FP8",
+        hardware_sku="gb200",
+        backend=["vllm"],
+        deployment_mode=["disagg"],
+        gpu_budget=2,
+    )
+    (branch,) = enumerate_branches(
+        config,
+        runner_capabilities=_capabilities(("vllm", "disagg")),
+    )
+    role = ReplicaParallelConfig(
+        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1),
+        replicas=1,
+    )
+    expected = DisaggParallelConfig(prefill=role, decode=role)
+    assert branch.parallel_configs == (expected,)
+
+    selection = {
+        "deployment_mode": "disagg",
+        **{name: values[0] for name, values in branch.knob_choices.items()},
+    }
+    sample = unroll_sample(
+        search_space=config.search_space,
+        selection=selection,
+        parallel_config=expected,
+    )
+    deployment = build_backend_deployment(
+        sample,
+        backend_version=resolve_backend_version("gb200", "vllm"),
+    )
+
+    assert deployment.parallel_config == {
+        "prefill_tp": 1,
+        "prefill_pp": 1,
+        "prefill_attention_dp": 1,
+        "prefill_moe_tp": 1,
+        "prefill_moe_ep": 1,
+        "prefill_strategy": "tp",
+        "prefill_replicas": 1,
+        "decode_tp": 1,
+        "decode_pp": 1,
+        "decode_attention_dp": 1,
+        "decode_moe_tp": 1,
+        "decode_moe_ep": 1,
+        "decode_strategy": "tp",
+        "decode_replicas": 1,
+    }
 
 
 def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
@@ -106,9 +216,7 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
         calls.append((deployment_mode, backend))
         return [_DISAGG_DP1_CFG]
 
-    monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs
-    )
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
     config = _config(
         deployment_mode=["disagg"],
         backend=["trtllm", "vllm"],
@@ -123,6 +231,303 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
     assert calls == [("disagg", "vllm")]
     assert branch.knob_choices["backend"] == ["vllm"]
     assert branch.supported_backends[_DISAGG_DP1_CFG] == frozenset({"vllm"})
+
+
+@pytest.mark.filterwarnings("error")
+def test_all_backends_runner_incompatible_raises_typed_terminal_error(monkeypatch):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["disagg"],
+        backend=["trtllm"],
+        gpu_budget=8,
+    )
+
+    with pytest.raises(
+        RunnerIncompatibleError,
+        match=r"deployment_mode='disagg': runner-incompatible backends=\['trtllm'\]",
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+
+def test_all_modes_runner_incompatible_reports_each_mode(monkeypatch):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["agg", "disagg"],
+        backend=["vllm"],
+        gpu_budget=2,
+    )
+
+    with pytest.raises(RunnerIncompatibleError) as error:
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    message = str(error.value)
+    assert "deployment_mode='agg': runner-incompatible backends=['vllm']" in message
+    assert "deployment_mode='disagg': runner-incompatible backends=['vllm']" in message
+
+
+def test_duplicate_runner_incompatible_backends_are_reported_once(monkeypatch):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm", "vllm"],
+        gpu_budget=1,
+    )
+
+    with pytest.raises(RunnerIncompatibleError) as error:
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    assert str(error.value).count("'vllm'") == 1
+
+
+def test_duplicate_runner_compatible_backends_are_looked_up_once(monkeypatch):
+    calls = []
+
+    def fake_parallel_configs(*args, backend, **kwargs):
+        calls.append(backend)
+        return [_AGG_CFG]
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        fake_parallel_configs,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm", "vllm"],
+        gpu_budget=1,
+    )
+
+    (branch,) = enumerate_branches(
+        config,
+        runner_capabilities=_capabilities(("vllm", "agg")),
+    )
+
+    assert calls == ["vllm"]
+    assert branch.knob_choices["backend"] == ["vllm"]
+
+
+@pytest.mark.filterwarnings("error")
+def test_mixed_terminal_failure_preserves_runner_details(monkeypatch):
+    looked_up = []
+
+    def no_perf_database(*args, backend, **kwargs):
+        looked_up.append(backend)
+        raise NoPerfDatabase(f"no performance data for {backend}")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        no_perf_database,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm", "trtllm"],
+        gpu_budget=1,
+    )
+
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"deployment_mode='agg': runner-incompatible backends=\['vllm'\]",
+    ) as error:
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    assert not isinstance(error.value, RunnerIncompatibleError)
+    assert looked_up == ["trtllm"]
+
+
+@pytest.mark.parametrize(
+    "explicit_parallel_override",
+    [
+        {"parallel_configs_by_mode": {"agg": [{"tp": 1}]}},
+        {"parallel_custom_configs_by_mode": {"agg": {"agg": [{"tp": 1}]}}},
+    ],
+)
+def test_explicit_mode_runner_incompatibility_is_not_global(
+    monkeypatch,
+    explicit_parallel_override,
+):
+    calls = []
+
+    def fake_parallel_configs(*args, deployment_mode, backend, **kwargs):
+        calls.append((deployment_mode, backend))
+        assert deployment_mode == "disagg"
+        return [_DISAGG_DP1_CFG]
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        fake_parallel_configs,
+    )
+    config = _config(
+        deployment_mode=["disagg", "agg"],
+        backend=["vllm"],
+        gpu_budget=2,
+        **explicit_parallel_override,
+    )
+
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"deployment_mode='agg'.*runner-incompatible backends=\['vllm'\]",
+    ) as error:
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("vllm", "disagg")),
+        )
+
+    assert not isinstance(error.value, RunnerIncompatibleError)
+    assert calls == [("disagg", "vllm")]
+
+
+@pytest.mark.parametrize(
+    "explicit_parallel_override",
+    [
+        {
+            "parallel_configs_by_mode": {
+                "agg": [{"tp": 1}],
+                "disagg": [{"prefill": {"tp": 1}, "decode": {"tp": 1}}],
+            }
+        },
+        {
+            "parallel_custom_configs_by_mode": {
+                "agg": {"agg": [{"tp": 1}]},
+                "disagg": {
+                    "prefill": [{"tp": 1}],
+                    "decode": [{"tp": 1}],
+                },
+            }
+        },
+    ],
+)
+def test_explicit_all_modes_runner_incompatible_reports_each_mode(
+    monkeypatch,
+    explicit_parallel_override,
+):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["agg", "disagg"],
+        backend=["vllm"],
+        gpu_budget=2,
+        **explicit_parallel_override,
+    )
+
+    with pytest.raises(RunnerIncompatibleError) as error:
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    message = str(error.value)
+    assert "deployment_mode='agg': runner-incompatible backends=['vllm']" in message
+    assert "deployment_mode='disagg': runner-incompatible backends=['vllm']" in message
+
+
+@pytest.mark.parametrize(
+    "explicit_parallel_override",
+    [
+        {"parallel_configs": [{"tp": 1}]},
+        {"parallel_custom_configs_by_mode": {"agg": {"agg": [{"tp": 1}]}}},
+    ],
+)
+def test_explicit_parallel_config_preserves_runner_incompatibility(
+    monkeypatch,
+    explicit_parallel_override,
+):
+    def unexpected_parallel_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible backends must be rejected before perf lookup")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        unexpected_parallel_lookup,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm"],
+        gpu_budget=1,
+        **explicit_parallel_override,
+    )
+
+    with pytest.raises(
+        RunnerIncompatibleError,
+        match=r"deployment_mode='agg': runner-incompatible backends=\['vllm'\]",
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+
+@pytest.mark.parametrize(
+    "explicit_parallel_override",
+    [
+        {"parallel_configs": [{"tp": 1}]},
+        {"parallel_custom_configs_by_mode": {"agg": {"agg": [{"tp": 1}]}}},
+    ],
+)
+def test_explicit_parallel_config_preserves_mixed_runner_details(
+    monkeypatch,
+    explicit_parallel_override,
+):
+    looked_up = []
+
+    def no_perf_database(*args, backend, **kwargs):
+        looked_up.append(backend)
+        raise NoPerfDatabase(f"no performance data for {backend}")
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        no_perf_database,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm", "trtllm"],
+        gpu_budget=1,
+        **explicit_parallel_override,
+    )
+
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"runner-incompatible backends=\['vllm'\]",
+    ) as error:
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    assert not isinstance(error.value, RunnerIncompatibleError)
+    assert looked_up == ["trtllm"]
 
 
 def test_runner_prunes_disaggregated_attention_dp_before_sampling(monkeypatch):
@@ -211,9 +616,7 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
             raise NoViableParallelConfig("disagg does not fit")
         return [_AGG_CFG]
 
-    monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs
-    )
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
     config = _config(
         deployment_mode=["agg", "disagg"],
         backend=["trtllm"],
@@ -227,16 +630,12 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
     assert branches[0].supported_backends[_AGG_CFG] == frozenset({"trtllm"})
 
 
-@pytest.mark.filterwarnings(
-    "ignore:smart-sweep.*deployment_mode=.* skipped.*:UserWarning"
-)
+@pytest.mark.filterwarnings("ignore:smart-sweep.*deployment_mode=.* skipped.*:UserWarning")
 def test_all_modes_infeasible_raises(monkeypatch):
     def always_raise(*args, **kwargs):
         raise NoViableParallelConfig("nothing fits")
 
-    monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for", always_raise
-    )
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", always_raise)
     config = _config(
         deployment_mode=["agg", "disagg"],
         backend=["trtllm"],
@@ -264,9 +663,7 @@ def test_backend_without_perf_database_is_dropped(monkeypatch):
             raise NoPerfDatabase("no vLLM perf database")
         return [_AGG_CFG]
 
-    monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs
-    )
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
     config = _config(
         deployment_mode=["agg"],
         backend=["vllm", "trtllm"],
@@ -365,3 +762,33 @@ def test_partial_illegal_pinned_config_raises(monkeypatch):
         match="legal/KV-feasible for no configured backend",
     ):
         enumerate_branches(config)
+
+
+def test_partial_illegal_pin_preserves_runner_details(monkeypatch):
+    calls = []
+
+    def fake_parallel_configs(*args, backend, **kwargs):
+        calls.append(backend)
+        return [_AGG_CFG]
+
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        fake_parallel_configs,
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm", "trtllm"],
+        gpu_budget=8,
+        parallel_configs=[{"tp": 1, "replicas": 1}, {"tp": 2, "replicas": 1}],
+    )
+
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"deployment_mode='agg': runner-incompatible backends=\['vllm'\]",
+    ):
+        enumerate_branches(
+            config,
+            runner_capabilities=_capabilities(("trtllm", "agg")),
+        )
+
+    assert calls == ["trtllm"]

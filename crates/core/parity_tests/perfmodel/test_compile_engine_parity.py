@@ -230,10 +230,10 @@ class TestOpTransferRoundTrip:
         )
         spec = json.loads(spec_json)
 
-        # Vision is decomposed into encoder child ops; for these text-only
-        # models `encoder_ops` is empty, so context_ops count is exact.
-        encoder_ops = list(getattr(model, "encoder_ops", []) or [])
-        expected_ctx = len(encoder_ops) + len(model.context_ops)
+        # The encoder runs separately through the ad-hoc operation FFI, even
+        # when a model (such as Kimi K2.5) hosts a vision tower. The compiled
+        # context phase contains only the language-model operations.
+        expected_ctx = len(model.context_ops)
         expected_gen = len(model.generation_ops)
 
         assert len(spec["context_ops"]) == expected_ctx, (
@@ -251,9 +251,9 @@ class TestOpTransferRoundTrip:
             assert tag != "Vision", "compiled spec must never contain a Vision op"
 
         # The op names round-trip through the wire in order: spec op name ==
-        # the Python op `_name` for each list (after the encoder prefix).
+        # the Python op `_name` for each language-model phase.
         spec_ctx_names = [next(iter(d.values()))["name"] for d in spec["context_ops"]]
-        py_ctx_names = [op._name for op in encoder_ops] + [op._name for op in model.context_ops]
+        py_ctx_names = [op._name for op in model.context_ops]
         assert spec_ctx_names == py_ctx_names, "context op names/order drifted"
 
         spec_gen_names = [next(iter(d.values()))["name"] for d in spec["generation_ops"]]

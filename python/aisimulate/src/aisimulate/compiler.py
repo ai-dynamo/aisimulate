@@ -385,10 +385,14 @@ def _traffic(
             trace_format=source.format,
             trace_block_size=source.block_size,
         )
+        if source.nested_timestamp_basis is not None:
+            workload["weka_nested_timestamp_basis"] = source.nested_timestamp_basis
         if load.type == "concurrency":
             workload["replay_concurrency"] = load.concurrency
         else:
             workload["arrival_speedup_ratio"] = load.speedup or 1.0
+            if load.agentic_lanes is not None:
+                workload["agentic_lanes"] = load.agentic_lanes
         if stop is not None and stop.max_virtual_time_seconds is not None:
             workload["max_sim_time_ms"] = 1_000.0 * stop.max_virtual_time_seconds
         return workload, None
