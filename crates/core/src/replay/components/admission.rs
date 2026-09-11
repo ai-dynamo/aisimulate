@@ -117,6 +117,9 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
 
     pub(crate) fn next_ready_time_ms(&mut self) -> Option<f64> {
         match (&self.mode, &mut self.source) {
+            // Deliberately lenient: this peek cannot distinguish an empty queue from a
+            // malformed front request, but every caller drains before it peeks, and the
+            // drain rejects a missing or non-finite arrival time first.
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => pending
                 .front()
                 .and_then(|request| request.arrival_timestamp_ms),
@@ -156,10 +159,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         match (&self.mode, &mut self.source) {
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => {
                 let mut ready = Vec::new();
-                loop {
-                    let Some(front) = pending.front() else {
-                        break;
-                    };
+                while let Some(front) = pending.front() {
                     // This queue drains strictly from the front, so a request whose arrival
                     // time never compares ready blocks itself and everything behind it
                     // forever. Reject that malformed input instead of silently wedging, and
@@ -168,6 +168,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                         Some(arrival_time_ms) if arrival_time_ms.is_finite() => arrival_time_ms,
                         malformed => anyhow::bail!(
                             "trace replay request {} has an unusable arrival timestamp ({}); \
+                             it is at the queue front after {} admitted at {now_ms}ms, and \
                              trace-sourced requests must carry a finite authored arrival time",
                             front.request_id().map_or_else(
                                 || "<unidentified>".to_string(),
@@ -175,6 +176,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                             ),
                             malformed
                                 .map_or_else(|| "missing".to_string(), |value| value.to_string()),
+                            ready.len(),
                         ),
                     };
                     if arrival_time_ms > now_ms {
