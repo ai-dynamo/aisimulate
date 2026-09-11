@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.resources
 import inspect
 import json
@@ -81,7 +82,10 @@ def test_stable_function_signatures() -> None:
         "nextn: 'int' = 0, "
         "kv_block_size: 'int | None' = None, "
         "systems_path: 'str | None' = None, "
-        "forward_model: 'str | None' = None) -> 'bytes'"
+        "forward_model: 'str | None' = None, "
+        "database_mode: 'str | None' = None, shared_layer: 'bool | None' = None, "
+        "transfer_policy: 'str | list[str] | None' = None, "
+        "strict_provenance: 'bool | None' = None) -> 'bytes'"
     )
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters
@@ -289,3 +293,40 @@ def test_distribution_carries_typing_contract() -> None:
     root = importlib.resources.files("aiconfigurator_core")
     assert (root / "py.typed").is_file()
     assert (root / "_aiconfigurator_core.pyi").is_file()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("namespace", ["aisimulate_core", "aiconfigurator_core"])
+def test_context_attention_kernel_stub_matches_native_contract(namespace: str) -> None:
+    root = importlib.resources.files("aiconfigurator_core")
+    stub = ast.parse((root / "_aiconfigurator_core.pyi").read_text(encoding="utf-8"))
+    engine = next(node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "AicEngine")
+    method_name = "evaluate_context_attention_kernels_json"
+    method = next(
+        (node for node in engine.body if isinstance(node, ast.FunctionDef) and node.name == method_name),
+        None,
+    )
+    assert method is not None, f"The shipped AicEngine stub omits {method_name}"
+
+    native_engine = importlib.import_module(namespace).AicEngine
+    parameters = list(inspect.signature(getattr(native_engine, method_name)).parameters.values())
+    arguments = method.args
+    stub_parameters = [*arguments.posonlyargs, *arguments.args]
+    assert [argument.arg for argument in stub_parameters] == [parameter.name for parameter in parameters]
+    assert [parameter.kind for parameter in parameters] == [
+        *[inspect.Parameter.POSITIONAL_ONLY] * len(arguments.posonlyargs),
+        *[inspect.Parameter.POSITIONAL_OR_KEYWORD] * len(arguments.args),
+    ]
+    assert arguments.vararg is None and arguments.kwarg is None and not arguments.kwonlyargs
+    assert [ast.literal_eval(default) for default in arguments.defaults] == [
+        parameter.default for parameter in parameters if parameter.default is not inspect.Parameter.empty
+    ]
+    assert {argument.arg: ast.unparse(argument.annotation) for argument in stub_parameters[1:]} == {
+        "ops_json": "str",
+        "batch_size": "int",
+        "s": "int",
+        "prefix": "int",
+        "imbalance_correction_scale": "float",
+        "visual_block_upper_triangle": "bool",
+    }
+    assert ast.unparse(method.returns) == "list[tuple[str, float, float, str]]"

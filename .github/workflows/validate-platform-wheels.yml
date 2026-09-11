@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from ai-dynamo/AIConfigurator at commit
 # 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISimulate packaging.
+# Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
 
 name: Validate platform wheels
 
@@ -18,6 +19,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Preserve lifecycle/manual runs; only replace stale trusted PR validation.
+  group: >-
+    platform-wheels-${{ github.event_name == 'push'
+      && startsWith(github.ref, 'refs/heads/pull-request/') && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   linux-amd64:
     name: Build wheels (manylinux_2_28_x86_64)
@@ -25,13 +33,15 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.expected_sha || github.sha }}
           persist-credentials: false
           lfs: true
       - name: Verify exact target
-        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
+        env:
+          TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
       - name: Build and verify wheel
         uses: ./.github/actions/build-platform-wheel
         with:
@@ -46,13 +56,15 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.expected_sha || github.sha }}
           persist-credentials: false
           lfs: true
       - name: Verify exact target
-        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
+        env:
+          TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
       - name: Build and verify wheel
         uses: ./.github/actions/build-platform-wheel
         with:
@@ -71,13 +83,15 @@ jobs:
           test "$(uname -m)" = "arm64"
           sw_vers
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.expected_sha || github.sha }}
           persist-credentials: false
           lfs: true
       - name: Verify exact target
-        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
+        env:
+          TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
       - name: Build and verify wheel
         uses: ./.github/actions/build-platform-wheel
         with:

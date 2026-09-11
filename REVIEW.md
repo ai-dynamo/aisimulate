@@ -63,6 +63,20 @@ commit with no unresolved P0/P1 finding. Lower-priority findings and CODEOWNER
 review may proceed while Full CI runs, but all required conversations,
 approvals, and exact-head checks must be complete before merge.
 
+`Fast CI Success` and `Full CI Success` are the stable merge-gate results. Both
+run with `always()` semantics and fail when required evidence is missing,
+skipped unexpectedly, canceled, or failed. A non-draft PR without the
+`review-ready` label fails `Fast CI Success`; making a PR ready or removing the
+label retriggers the workflow. Keep the `ready_for_review`, `labeled`, and
+`unlabeled` pull-request activity types so those state changes cannot retain a
+stale green result. Direct pull-request runs publish `Fast CI Success`; Full CI
+displays its reusable invocation as `Fast CI / Fast CI Success` and aggregates
+that result into `Full CI Success`. Release staging is explicitly not
+applicable to manual and trusted-copy PR validation, while it remains required
+for `main` and `release/*` lifecycle pushes. Require the direct `Fast CI
+Success` and aggregate `Full CI Success` results in branch rules rather than
+individual conditional or reusable-workflow jobs.
+
 During the review-acceleration pilot, a maintainer dispatches Full CI after
 verifying those conditions, supplying the reviewed full commit SHA through the
 required `expected_sha` input. Trusted copy-pr-bot `pull-request/*` branches also
@@ -79,10 +93,14 @@ For an admitted PR, no second Full CI launch is needed after Fast CI. The
 trusted `pull-request/*` push starts Full CI automatically, and every expensive
 component waits for the exact-SHA Fast CI and scope selector to pass before it
 can acquire a protected runner. Application tests additionally build one wheel
-per architecture and then fan out contracts, unit, CLI-build, support-matrix,
-and tool-build shards. Admission itself remains the maintainer security gate;
+per architecture and then fan out contracts, unit, integration, CLI-build,
+support-matrix, and tool-build shards. Admission itself remains the maintainer security gate;
 do not replace it with PR-authored credentials or a `pull_request_target`
 workflow.
+
+The [application test inventory](docs/ci-test-inventory.md) maps collected cases
+to their Full CI shard and records explicit manual and optional-dependency
+exceptions. The contracts shard fails when a collected test has no assignment.
 
 ## Product invariants
 

@@ -2,6 +2,7 @@
 # collector-data, and prediction-regression jobs were adapted from NVIDIA
 # AIConfigurator at commit
 # 77fd0773407b3683d8a671fe24a30a7110651b64.
+# Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
 name: Full CI
 
 on:
@@ -28,6 +29,8 @@ jobs:
   verify-target:
     name: Verify Exact Target
     runs-on: ubuntu-latest
+    outputs:
+      comparison-base: ${{ steps.comparison-base.outputs.sha }}
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       RUN_SHA: ${{ github.sha }}
@@ -63,6 +66,30 @@ jobs:
             echo "::error::trusted copy ${RUN_SHA} does not match PR #${pr_number} head ${pr_head}"
             exit 1
           fi
+      - name: Resolve immutable comparison base
+        id: comparison-base
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          comparison_sha=""
+          if [[ "${GITHUB_EVENT_NAME}" == "push" &&
+                ( "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == refs/heads/release/* ) &&
+                -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
+            comparison_sha="${BEFORE_SHA}"
+          else
+            # PR/manual runs and newly created release branches compare with
+            # one snapshot of main, shared by the collector and prediction gates.
+            comparison_sha="$(gh api -X GET "repos/${REPOSITORY}/commits/main" --jq '.sha')"
+          fi
+          if [[ ! "${comparison_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::comparison base must resolve to a full commit SHA"
+            exit 1
+          fi
+          printf 'sha=%s\n' "${comparison_sha}" >> "${GITHUB_OUTPUT}"
 
   select-full-ci:
     name: Select Full CI Scope
@@ -178,20 +205,21 @@ jobs:
 
   collector-data:
     name: Collector Data
-    needs: [fast-ci, select-full-ci]
+    needs: [fast-ci, select-full-ci, verify-target]
     if: ${{ needs.select-full-ci.outputs.collector_data == 'true' }}
     uses: ./.github/workflows/collector-check.yml
     with:
       expected_sha: ${{ github.sha }}
+      base_sha: ${{ needs.verify-target.outputs.comparison-base }}
 
   prediction-regression:
     name: Prediction Regression
-    needs: [fast-ci, select-full-ci]
+    needs: [fast-ci, select-full-ci, verify-target]
     if: ${{ needs.select-full-ci.outputs.prediction_regression == 'true' }}
     uses: ./.github/workflows/prediction-regression-gate.yml
     with:
       expected_sha: ${{ github.sha }}
-      old-ref: main
+      old-ref: ${{ needs.verify-target.outputs.comparison-base }}
 
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
@@ -217,7 +245,9 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install cargo-deny 0.19.0
         env:
@@ -256,7 +286,9 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
@@ -274,7 +306,9 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
@@ -301,7 +335,9 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
@@ -549,7 +585,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-        shard: [contracts, unit, cli-build, support-matrix, tools-build]
+        shard: [contracts, unit, integration, cli-build, support-matrix, tools-build]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     timeout-minutes: 15
     container:
@@ -584,6 +620,7 @@ jobs:
       - name: Run repository and package contracts
         if: matrix.shard == 'contracts'
         run: |
+          python scripts/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
             python/aisimulate/tests/cross_package
@@ -593,15 +630,28 @@ jobs:
         if: matrix.shard == 'unit'
         run: >-
           python -m pytest -q
-          tests
-          -m 'unit and not build'
-          --ignore=tests/unit/sdk/database/test_moe_dispatch.py
+          tests/unit tests/golden
           -n auto
           --timeout=180
         working-directory: python/aisimulate
+      - name: Upload collected test assignments
+        if: always() && matrix.shard == 'contracts'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-test-inventory-${{ matrix.arch }}
+          path: application-test-inventory.json
+          if-no-files-found: error
       - name: Run recommendation E2E without parallel resource contention
         if: matrix.shard == 'cli-build'
         run: python -m pytest -q tests/e2e/cli/test_cli_recommend.py --timeout=180
+        working-directory: python/aisimulate
+      - name: Run migrated integration tests against the installed wheel
+        if: matrix.shard == 'integration'
+        run: >-
+          python -m pytest -q -ra
+          tests/integration
+          -n 2
+          --timeout=600
         working-directory: python/aisimulate
       - name: Run remaining CLI build tests
         if: matrix.shard == 'cli-build'
@@ -648,7 +698,9 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: ${{ matrix.python-version }}
@@ -675,9 +727,10 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
@@ -709,7 +762,9 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
@@ -733,9 +788,9 @@ jobs:
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
 
-  full-ci-success:
+  readiness:
     name: Full CI Success
-    if: always()
+    if: ${{ always() }}
     needs:
       - verify-target
       - select-full-ci
@@ -801,6 +856,12 @@ jobs:
               expected[job] = "success" if selected == "true" else "skipped"
           expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]
           failures = []
+          summary = [
+              f"### Full CI evidence for `{os.environ.get('GITHUB_SHA', 'local')}`",
+              "",
+              "| Required job | Result |",
+              "| --- | --- |",
+          ]
           for name, payload in sorted(needs.items()):
               result = payload["result"]
               wanted = expected.get(name)
@@ -808,8 +869,13 @@ jobs:
                   failures.append(f"{name}=unexpected dependency")
                   continue
               print(f"{name}: {result} (expected {wanted})")
+              outcome = "PASS" if result == wanted else "FAIL"
+              summary.append(f"| {name} | {outcome} (`{result}`, expected `{wanted}`) |")
               if result != wanted:
                   failures.append(f"{name}={result}, expected {wanted}")
+          if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(summary) + "\n")
           if invalid_outputs:
               failures.append("invalid selection outputs: " + ", ".join(invalid_outputs))
           missing_dependencies = sorted(set(expected) - set(needs))

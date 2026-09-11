@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from ai-dynamo/AIConfigurator at commit
 # 77fd0773407b3683d8a671fe24a30a7110651b64; modified as a reusable AISimulate Full CI gate.
+# Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
 
 name: Collector Data Check
 
@@ -22,12 +23,10 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
-  # Manual and reusable invocations must not cancel another comparison run.
+  # Manual and reusable invocations are isolated and never cancel one another.
   group: collector-data-${{ github.run_id }}
-  cancel-in-progress: true
 
 jobs:
   check:
@@ -41,12 +40,15 @@ jobs:
         USER: runner
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.expected_sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Verify exact target
-        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
+        env:
+          TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
       - name: Resolve comparison base
         id: base
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -68,7 +70,11 @@ jobs:
       - name: Fetch comparison base
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
-        run: git fetch --no-tags origin "${BASE_SHA}"
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          basic_token="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_token}" fetch \
+            --no-tags origin "${BASE_SHA}"
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
@@ -120,12 +126,15 @@ jobs:
         USER: runner
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.expected_sha || github.sha }}
+          persist-credentials: false
       - name: Verify exact target
-        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_sha || github.sha }}"
-      - uses: actions/setup-python@v7
+        env:
+          TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - name: Install check dependencies

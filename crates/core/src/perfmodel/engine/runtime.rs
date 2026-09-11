@@ -325,6 +325,14 @@ impl Engine {
     /// caller (`AicEngineBuilder` / `from_spec_bytes`) is responsible for
     /// having loaded the matching `PerfDatabase` from `spec.engine`'s identity.
     pub fn build(spec: EngineSpec, db: Arc<PerfDatabase>) -> Result<Engine, AicError> {
+        Self::validate_engine_database_mode(spec.engine.database_mode)?;
+        Self::validate_engine_database_mode(db.database_mode)?;
+        if spec.engine.database_mode != db.database_mode {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "engine spec database mode {:?} does not match loaded database mode {:?}",
+                spec.engine.database_mode, db.database_mode
+            )));
+        }
         let nextn = spec
             .engine
             .speculative
@@ -403,6 +411,7 @@ impl Engine {
         systems_root: &std::path::Path,
     ) -> Result<Engine, AicError> {
         let spec = EngineSpec::from_bincode(bytes)?;
+        Self::validate_engine_database_mode(spec.engine.database_mode)?;
         let version = spec.engine.backend_version.as_deref().ok_or_else(|| {
             AicError::InvalidEngineConfig(
                 "backend_version is required to load the perf database".to_string(),
@@ -434,17 +443,29 @@ impl Engine {
             )),
             spec.engine.strict_provenance,
             // Estimate-only systems (a spec yaml with no collected data) may
-            // back a SOL view: every SOL answer is analytic from the system
-            // spec, so tolerate a missing perf-data directory under SOL and
-            // let table-backed lookups miss lazily. A directory-less
-            // fleet-`next` spec (validated by the Python slot resolver, which
-            // loaded the same identity through backward fill) also skips the
-            // gate — the source resolver serves every table from sibling
-            // versions. All other loads keep the loud gate.
-            spec.engine.database_mode == DatabaseMode::Sol || spec.engine.tolerate_dirless_version,
+            // back formula-only SOL/EMPIRICAL views, so tolerate a missing
+            // perf-data directory and let table-backed lookups miss lazily. A
+            // directory-less fleet-`next` spec (validated by the Python slot
+            // resolver, which loaded the same identity through backward fill)
+            // also skips the gate — the source resolver serves every table
+            // from sibling versions. All other loads keep the loud gate.
+            matches!(
+                spec.engine.database_mode,
+                DatabaseMode::Empirical | DatabaseMode::Sol
+            ) || spec.engine.tolerate_dirless_version,
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
         Engine::build(spec, Arc::new(db))
+    }
+
+    fn validate_engine_database_mode(database_mode: DatabaseMode) -> Result<(), AicError> {
+        if database_mode == DatabaseMode::SolFull {
+            return Err(AicError::InvalidEngineConfig(
+                "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Shared perf database handle.
@@ -1387,6 +1408,57 @@ impl Engine {
         Ok(strip_per_op_metadata(out.into_values()))
     }
 
+    /// Evaluate only context-attention kernels for an ad-hoc visual-mask
+    /// overlay. Other operator families are rejected. This is a runtime query
+    /// option; the serialized op and EngineSpec formats remain unchanged.
+    /// `visual_block_upper_triangle` returns only the additional bidirectional
+    /// work inside each visual block, which must have no cached prefix.
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_context_attention_kernels_json(
+        &self,
+        ops_json: &str,
+        batch_size: u32,
+        s: u32,
+        prefix: u32,
+        imbalance_correction_scale: f64,
+        visual_block_upper_triangle: bool,
+    ) -> Result<Vec<PerOpValue>, AicError> {
+        if visual_block_upper_triangle && prefix != 0 {
+            return Err(AicError::InvalidEngineConfig(
+                "visual-block attention kernel evaluation requires prefix=0".into(),
+            ));
+        }
+        let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
+            AicError::InvalidEngineConfig(format!("invalid attention kernel op list JSON: {e}"))
+        })?;
+        let mut out = PerOpFold::new("context");
+        for op in &ops {
+            let Op::ContextAttention(attention) = op else {
+                return Err(AicError::InvalidEngineConfig(
+                    "attention kernel evaluation requires ContextAttention ops".into(),
+                ));
+            };
+            let result = if visual_block_upper_triangle {
+                attention.query_visual_block_kernel(
+                    &self.db,
+                    batch_size,
+                    s,
+                    imbalance_correction_scale,
+                )?
+            } else {
+                attention.query_kernel(
+                    &self.db,
+                    batch_size,
+                    s,
+                    prefix,
+                    imbalance_correction_scale,
+                )?
+            };
+            out.add(op, result);
+        }
+        Ok(strip_per_op_metadata(out.into_values()))
+    }
+
     /// [`Self::evaluate_ops_json`] under the SOL_FULL view: evaluate an
     /// ad-hoc op list (JSON array of `OpSpec` objects) with every operator
     /// forced onto its analytic SOL branch, and keep the roofline
@@ -1912,6 +1984,71 @@ mod tests {
         // one engine's database must not appear on the other's accumulator.
         e1.database().note_provenance(ProvenanceTier::Empirical);
         assert_eq!(e2.database().worst_provenance(), ProvenanceTier::Silicon);
+    }
+
+    #[test]
+    fn from_spec_bytes_supports_estimate_only_empirical_database() {
+        let mut config = fixture_engine_config(None);
+        config.system_name = "h100_pcie".to_string();
+        config.backend = BackendKind::Trtllm;
+        config.backend_version = Some("estimate".to_string());
+        config.database_mode = DatabaseMode::Empirical;
+        config.enable_shared_layer = Some(false);
+        let spec = EngineSpec::new(config, Vec::new(), Vec::new());
+
+        let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), &systems_root())
+            .expect("formula-only empirical mode must not require a perf-data directory");
+
+        assert_eq!(engine.database().database_mode, DatabaseMode::Empirical);
+    }
+
+    #[test]
+    fn from_spec_bytes_rejects_sol_full_as_database_default() {
+        let mut config = fixture_engine_config(None);
+        config.database_mode = DatabaseMode::SolFull;
+        let spec = EngineSpec::new(config, Vec::new(), Vec::new());
+
+        let result = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), &systems_root());
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
+        ));
+    }
+
+    #[test]
+    fn build_rejects_sol_full_database_view() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .unwrap()
+            .sol_full_view();
+        let spec = EngineSpec::new(fixture_engine_config(None), context_ops(), generation_ops());
+
+        let result = Engine::build(spec, Arc::new(db));
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
+        ));
+    }
+
+    #[test]
+    fn build_rejects_database_mode_mismatch() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+            .unwrap()
+            .with_mode(DatabaseMode::Empirical, TransferPolicy::default());
+        let spec = EngineSpec::new(fixture_engine_config(None), context_ops(), generation_ops());
+
+        let result = Engine::build(spec, Arc::new(db));
+
+        assert!(matches!(
+            result,
+            Err(AicError::InvalidEngineConfig(message))
+                if message.contains("does not match")
+                    && message.contains("Silicon")
+                    && message.contains("Empirical")
+        ));
     }
 
     #[test]
@@ -2496,6 +2633,49 @@ mod tests {
             "nextn=1 gen ({}) must equal the gen-step at 2*batch ({})",
             generation.generation_ms,
             doubled
+        );
+    }
+
+    /// The kernel-only overlay preserves name folding and rejects non-attention ops.
+    #[test]
+    fn evaluate_context_attention_kernels_json_folds_names_and_rejects_other_ops() {
+        let engine = build_engine(None);
+        let op = context_ops().pop().unwrap();
+        let Op::ContextAttention(attention) = &op else {
+            unreachable!()
+        };
+        let expected = attention
+            .query_kernel(engine.database(), 4, 512, 0, 1.25)
+            .unwrap();
+        let ops_json = serde_json::to_string(&vec![op.clone(), op]).unwrap();
+        let values = engine
+            .evaluate_context_attention_kernels_json(&ops_json, 4, 512, 0, 1.25, false)
+            .unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].1, expected.latency_ms * 2.0);
+        assert_eq!(values[0].2, expected.energy_wms * 2.0);
+        let visual = engine
+            .evaluate_context_attention_kernels_json(&ops_json, 4, 512, 0, 1.25, true)
+            .unwrap();
+        // 512 tokens add 130,816 upper-triangle pairs to the model's
+        // 131,072 causal pairs: the extra-work ratio is 511/512.
+        assert_eq!(visual[0].1, values[0].1 * (511.0 / 512.0));
+        assert_eq!(visual[0].2, values[0].2 * (511.0 / 512.0));
+        assert!(
+            engine
+                .evaluate_context_attention_kernels_json(&ops_json, 4, 512, 1, 1.0, true)
+                .is_err()
+        );
+        let invalid = serde_json::to_string(&context_ops()).unwrap();
+        assert!(
+            engine
+                .evaluate_context_attention_kernels_json(&invalid, 4, 512, 0, 1.0, false)
+                .is_err()
+        );
+        assert!(
+            engine
+                .evaluate_context_attention_kernels_json("not-json", 4, 512, 0, 1.0, false)
+                .is_err()
         );
     }
 
