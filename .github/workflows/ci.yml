@@ -290,7 +290,7 @@ jobs:
 
   stage-application-wheel:
     name: Stage Application Wheel (${{ matrix.arch }})
-    needs: application-wheel
+    needs: [application-wheel, readiness]
     # Manual PR validation builds and verifies wheels without acquiring release
     # credentials. Only post-merge and release lifecycle pushes may stage them.
     if: >-
@@ -531,6 +531,15 @@ jobs:
           python -m pytest -q -rx -n 4
           -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+      - name: Check native prediction numerical sentinels
+        run: python scripts/check_prediction_numerics.py --output numerical-sentinels.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: native-prediction-numerics
+          path: numerical-sentinels.json
+          if-no-files-found: error
+
 
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
@@ -586,7 +595,6 @@ jobs:
       - rust-feature-modes
       - public-api-rust
       - application-wheel
-      - stage-application-wheel
       - application-tests
       - python-compatibility
       - engine-golden-regression
@@ -597,10 +605,6 @@ jobs:
       - name: Report and require every Full CI job
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          EXPECTED_STAGE_RESULT: >-
-            ${{ github.event_name == 'push' &&
-                (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) &&
-                'success' || 'skipped' }}
         run: |
           python - <<'PY'
           import json
@@ -608,7 +612,6 @@ jobs:
 
           needs = json.loads(os.environ["NEEDS_JSON"])
           expected = {name: "success" for name in needs}
-          expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]
           failures = []
           summary = [
               f"### Full CI evidence for `{os.environ['GITHUB_SHA']}`",

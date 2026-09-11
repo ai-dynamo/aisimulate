@@ -127,11 +127,11 @@ def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
     aggregate = jobs["readiness"]
     commands = _run_commands(aggregate)
 
-    assert "stage-application-wheel" in aggregate["needs"]
-    assert set(aggregate["needs"]) == set(jobs) - {"readiness"}
+    assert "stage-application-wheel" not in aggregate["needs"]
+    assert set(jobs["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
+    assert set(aggregate["needs"]) == set(jobs) - {"readiness", "stage-application-wheel"}
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
     assert 'expected = {name: "success" for name in needs}' in commands
-    assert 'expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]' in commands
     assert 'payload["result"]' in commands
     assert "Full CI did not pass" in commands
 

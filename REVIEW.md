@@ -57,11 +57,17 @@ label retriggers the workflow. Keep the `ready_for_review`, `labeled`, and
 `unlabeled` pull-request activity types so those state changes cannot retain a
 stale green result. Direct pull-request runs publish `Fast CI Success`; Full CI
 displays its reusable invocation as `Fast CI / Fast CI Success` and aggregates
-that result into `Full CI Success`. Release staging is explicitly not
-applicable to manual and trusted-copy PR validation, while it remains required
-for `main` and `release/*` lifecycle pushes. Require the direct `Fast CI
-Success` and aggregate `Full CI Success` results in branch rules rather than
+that result into `Full CI Success`. Release staging depends on successful
+validation and remains a separate protected step on `main` and `release/*`
+lifecycle pushes. Waiting for staging approval does not hold `Full CI Success`
+open; a green validation result does not certify staging or publication.
+Require the direct `Fast CI Success` and aggregate `Full CI Success` results in
+branch rules rather than
 individual conditional or reusable-workflow jobs.
+
+The additive ruleset payload and runner-image rollout procedure are in
+[`docs/ci-qualification.md`](docs/ci-qualification.md). A committed ruleset
+payload is not evidence that repository enforcement has been activated.
 
 During the review-acceleration pilot, a maintainer dispatches Full CI after
 verifying those conditions, supplying the reviewed full commit SHA through the

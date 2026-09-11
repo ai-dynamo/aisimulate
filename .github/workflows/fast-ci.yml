@@ -73,7 +73,7 @@ jobs:
           fi
       - name: Check active workflow contracts
         run: |
-          python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py -q \
+          python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py tests/test_ci_qualification.py -q \
             -p no:cacheprovider \
             --override-ini="addopts=" \
             --override-ini="filterwarnings="
