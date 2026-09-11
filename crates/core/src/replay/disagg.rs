@@ -3684,17 +3684,11 @@ where
         }
 
         // Hoisted above the `if` below so a decrement path that also emits a
-        // token -- the realistic form of the bug this guards against -- is
-        // still caught. Checked only inside `step_tokens.is_empty() &&
-        // !step_freed_slot` would miss exactly that case.
-        //
-        // `self.step_freed_slot ||` disjunct: hoisting this above the `if`
-        // surfaced a real case where in-flight legitimately drops with
-        // `step_freed_slot` already set (a cancellation applied earlier in
-        // this same call, ahead of this check) -- confirmed by instrumenting
-        // the one failure this produced, which fired with `freed_slot=true`.
-        // The invariant this assert actually protects is "a decrement without
-        // `step_freed_slot` set is a bug", not "no decrement at all".
+        // token is still caught (checked only inside `step_tokens.is_empty()
+        // && !step_freed_slot` would miss that case), and the invariant is
+        // "a decrement without step_freed_slot set is a bug", not "no
+        // decrement at all" -- in-flight can legitimately drop with
+        // step_freed_slot already set, by an earlier action in this same call.
         debug_assert!(
             self.step_freed_slot || self.cluster_in_flight() >= entry_in_flight,
             "in-flight fell from {entry_in_flight} to {} without setting \

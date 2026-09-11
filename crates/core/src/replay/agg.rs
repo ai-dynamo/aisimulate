@@ -1776,6 +1776,19 @@ where
             return Ok(self.now_ms);
         }
 
+        // Hoisted above the `if` below so a decrement path that also emits a
+        // token is still caught (checked only inside `step_tokens.is_empty()
+        // && !step_freed_slot` would miss that case), and the invariant is
+        // "a decrement without step_freed_slot set is a bug", not "no
+        // decrement at all" -- in-flight can legitimately drop with
+        // step_freed_slot already set, by an earlier action in this same call.
+        debug_assert!(
+            self.step_freed_slot || self.cluster_in_flight() >= entry_in_flight,
+            "in-flight fell from {entry_in_flight} to {} without setting \
+             step_freed_slot; a step that frees a slot must hold its instant",
+            self.cluster_in_flight()
+        );
+
         // Hold the instant whenever this step surfaced anything the caller must
         // react to. A freed slot counts even when it produced no token: the
         // delta cycle's guarantee is that a step which frees a slot returns
@@ -1784,12 +1797,6 @@ where
             && !self.step_freed_slot
             && let Some(next_ms) = self.next_timestamp()
         {
-            debug_assert!(
-                self.cluster_in_flight() >= entry_in_flight,
-                "in-flight fell from {entry_in_flight} to {} without setting \
-                 step_freed_slot; a step that frees a slot must hold its instant",
-                self.cluster_in_flight()
-            );
             if next_ms <= until_ms {
                 self.advance_now_ms(next_ms);
                 if self.evaluate_completions_and_maybe_defer()? {
