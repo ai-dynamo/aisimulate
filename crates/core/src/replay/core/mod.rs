@@ -115,18 +115,13 @@ pub trait PlacementPolicy<Request> {
     fn topology_settled(&mut self, now_ms: f64) -> Result<Vec<Placement>>;
 }
 
-/// Forwarding impl so a boxed policy is itself a [`PlacementPolicy`] and can
-/// be handed to a runtime by value. `?Sized` lets `T` be `dyn
-/// PlacementPolicy<Request>`, which auto-implements `PlacementPolicy<Request>`
-/// because the trait is object-safe -- that is what lets a policy constructed
-/// outside this crate be injected as `Box<dyn PlacementPolicy<Request>>`
-/// without exposing the runtime's generics.
-///
-/// None of `PlacementPolicy`'s methods have a default body today, so a
-/// missing forward here is a compile error, not a silent behavior change.
-/// If a future method gets one, forwarding it here becomes load-bearing:
-/// an unforwarded default-bodied method would compile clean and silently
-/// run the default instead of the inner policy's override.
+/// Forwarding impl so a boxed policy is itself a [`PlacementPolicy`], letting
+/// a policy constructed outside this crate be injected as
+/// `Box<dyn PlacementPolicy<Request>>`. `?Sized` admits `T = dyn
+/// PlacementPolicy<Request>`. No method has a default body today, so an
+/// unforwarded future default-bodied method would silently skip the inner
+/// policy's override rather than fail to compile -- keep every method
+/// forwarded here.
 impl<Request, T: PlacementPolicy<Request> + ?Sized> PlacementPolicy<Request> for Box<T> {
     type Metadata = T::Metadata;
     type Observation = T::Observation;
