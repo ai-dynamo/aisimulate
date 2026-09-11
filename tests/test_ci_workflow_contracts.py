@@ -407,6 +407,19 @@ def test_macos_wheel_environment_seeds_pip_for_shared_verification() -> None:
     assert "python -m pip install --quiet wheelhouse/aisimulate-*.whl" in commands
 
 
+def test_omitted_wheel_base_preserves_dockerfile_default() -> None:
+    with (ACTION_ROOT / "build-platform-wheel" / "action.yml").open(encoding="utf-8") as handle:
+        action = yaml.load(handle, Loader=yaml.BaseLoader)
+    dockerfile = (REPOSITORY_ROOT / "python/aisimulate/docker/Dockerfile").read_text()
+    docker_default = re.search(r"^ARG WHEEL_BUILD_BASE=(.+)$", dockerfile, re.MULTILINE).group(1)
+    wheel_base = action["inputs"]["wheel_base"]
+    assert wheel_base["required"] == "false"
+    assert wheel_base["default"] == docker_default
+    build = next(step for step in action["runs"]["steps"] if step["name"] == "Build Linux wheel")
+    omitted_input_arguments = build["with"]["build-args"].replace("${{ inputs.wheel_base }}", wheel_base["default"])
+    assert omitted_input_arguments == f"WHEEL_BUILD_BASE={docker_default}"
+
+
 def test_containerized_workflows_do_not_require_git_lfs_during_checkout() -> None:
     jobs = (
         ("ci.yml", "engine-golden-regression"),

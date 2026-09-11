@@ -21,7 +21,7 @@ inputs:
   wheel_base:
     description: Manylinux wheel-builder base image
     required: false
-    default: ""
+    default: quay.io/pypa/manylinux_2_28_x86_64
 
 runs:
   using: composite
