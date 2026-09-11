@@ -261,12 +261,54 @@ fn zero_output_completion_survives_decode_reservation_failure() {
 }
 
 #[test]
+fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
+    // Two full pages, both requests need one more page for this step: r2 (no output yet) is
+    // retracted, r1 takes its page, produces its last token and completes in the same step.
+    // SGLang's `retract_decode` estimate is taken from the survivors before the forward
+    // (decoded 1 + 20 over max_new 2 + 1, clamped to 1.0); computing it after the forward would
+    // see an empty batch and reset the ratio to 0.
+    let config = SglangConfig::from_args(&test_args(2, 4, 16));
+    let mut kv_manager = SglangKvManager::new(8, 4, KvEventPublishers::default(), 0);
+    let r1_alloc = kv_manager.allocate_for_request(&[1, 2, 3, 10]).unwrap();
+    let r2_alloc = kv_manager.allocate_for_request(&[5, 6, 7, 8]).unwrap();
+    let mut running = vec![
+        SglangRequest {
+            uuid: Uuid::from_u128(90_010),
+            sequence_tokens: vec![1, 2, 3, 10],
+            prompt_len: 3,
+            max_output_tokens: 2,
+            planned_output_ids: None,
+            kv_lease: r1_alloc.lease,
+            materialized_tokens: 4,
+            allocated_tokens: 4,
+        },
+        SglangRequest {
+            uuid: Uuid::from_u128(90_011),
+            sequence_tokens: vec![5, 6, 7, 8],
+            prompt_len: 4,
+            max_output_tokens: 5,
+            planned_output_ids: None,
+            kv_lease: r2_alloc.lease,
+            materialized_tokens: 4,
+            allocated_tokens: 4,
+        },
+    ];
+    let result = simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
+    assert_eq!(result.requests.len(), 1, "r2 is retracted");
+    assert_eq!(result.requests[0].uuid, Uuid::from_u128(90_011));
+    assert!(running.is_empty(), "r1 completes in this step");
+    assert_eq!(result.new_token_ratio_estimate, Some(1.0));
+}
+
+#[test]
 fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     let args = test_args(8, 4, 16);
     let config = SglangConfig::from_args(&args);
     let (buffer, sink) = capture_kv_event_sink();
-    let mut kv_manager = SglangKvManager::new(11, 4, KvEventPublishers::new(Some(sink)), 0);
-    let prompt = vec![1, 2, 3, 4];
+    // Three pages. The cached prompt spans two; SGLang's `input_len - 1` match cap means the
+    // admitted request reuses only the first cached page and owns a fresh page for the rest.
+    let mut kv_manager = SglangKvManager::new(15, 4, KvEventPublishers::new(Some(sink)), 0);
+    let prompt = vec![1, 2, 3, 4, 5, 6, 7, 8];
 
     let cached = kv_manager.allocate_for_request(&prompt).unwrap();
     let cached_pages = cached.lease.pages().to_vec();
@@ -286,12 +328,13 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         .pop()
         .unwrap();
 
-    assert_eq!(req.cached_tokens(), prompt.len());
-    assert_eq!(req.kv_pages(), cached_pages);
+    assert_eq!(req.cached_tokens(), 4);
+    assert_eq!(req.kv_pages()[..1], cached_pages[..1]);
+    assert_eq!(req.kv_pages().len(), 2);
 
-    // The three-token blocker owns a complete physical page. With two pages
-    // total there is no free capacity, so the cache-hit request is retracted
-    // while the blocker can fill the remainder of its existing page.
+    // The three-token blocker owns a complete physical page (it evicts the second, no longer
+    // referenced cached page to get it). With three pages total there is no free capacity, so the
+    // cache-hit request is retracted while the blocker can fill the remainder of its own page.
     let blocker_tokens = vec![9, 10, 11];
     let blocker_alloc = kv_manager.allocate_for_request(&blocker_tokens).unwrap();
     let blocker = SglangRequest {
@@ -330,9 +373,12 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     assert_eq!(pressure.logical_available_blocks_before, Some(0));
     assert_eq!(pressure.required_blocks_before, Some(1));
     assert!(pressure.state_after.active_blocks <= pressure.state_before.active_blocks);
-    assert_eq!(removed_event_count(&buffer.drain()), 0);
-    assert_eq!(kv_manager.cache().page_pool.available(), 0);
-    assert_eq!(kv_manager.cache_mut().match_prefix(&prompt).0, prompt.len());
+    // The retracted request frees the page it owned beyond the cached prefix (one stored block
+    // removed); the cached first page survives, the second cached page had already been evicted
+    // for the blocker.
+    assert_eq!(removed_event_count(&buffer.drain()), 1);
+    assert_eq!(kv_manager.cache().page_pool.available(), 4);
+    assert_eq!(kv_manager.cache_mut().match_prefix(&prompt).0, 4);
 }
 
 mod source_holds {
@@ -1409,8 +1455,20 @@ mod core_behavior {
         }
 
         let mut collector = crate::engine::trace::TraceCollector::default();
+        // The prefill forward yields exactly one token per request; speculative bursts only
+        // apply to decode forwards.
         let first = core.execute_pass(&mut collector, 0.0);
-        assert_eq!(first.output_signals.len(), 9);
+        assert_eq!(
+            first
+                .output_signals
+                .iter()
+                .map(|signal| signal.uuid)
+                .collect::<Vec<_>>(),
+            vec![short, long, longer]
+        );
+        assert!(core.running.iter().all(|req| req.output_len() == 1));
+
+        // First decode pass: every request accepts the full three-token burst.
         let second = core.execute_pass(&mut collector, first.end_ms);
         let ordered = second
             .output_signals
@@ -1421,6 +1479,28 @@ mod core_behavior {
             ordered,
             vec![
                 (short, false),
+                (short, false),
+                (short, false),
+                (long, false),
+                (long, false),
+                (long, false),
+                (longer, false),
+                (longer, false),
+                (longer, false),
+            ]
+        );
+        assert!(core.running.iter().all(|req| req.output_len() == 4));
+        assert_eq!(second.fpm.unwrap().num_decode_requests, 3);
+
+        // Second decode pass: `short` has one token left and completes; the others burst again.
+        let third = core.execute_pass(&mut collector, second.end_ms);
+        assert_eq!(
+            third
+                .output_signals
+                .iter()
+                .map(|signal| (signal.uuid, signal.completed))
+                .collect::<Vec<_>>(),
+            vec![
                 (short, true),
                 (long, false),
                 (long, false),
@@ -1432,19 +1512,18 @@ mod core_behavior {
         );
         assert_eq!(core.running.len(), 2);
         assert_eq!(core.running[0].uuid, long);
-        assert_eq!(core.running[0].output_len(), 6);
+        assert_eq!(core.running[0].output_len(), 7);
         assert_eq!(core.running[1].uuid, longer);
-        assert_eq!(core.running[1].output_len(), 6);
-        assert_eq!(second.fpm.unwrap().num_decode_requests, 3);
+        assert_eq!(core.running[1].output_len(), 7);
 
-        let third = core.execute_pass(&mut collector, second.end_ms);
+        let fourth = core.execute_pass(&mut collector, third.end_ms);
         assert_eq!(
-            third
+            fourth
                 .output_signals
                 .iter()
-                .map(|signal| signal.uuid)
+                .map(|signal| (signal.uuid, signal.completed))
                 .collect::<Vec<_>>(),
-            vec![long, long, longer, longer],
+            vec![(long, true), (longer, true)],
         );
     }
 }
@@ -1489,9 +1568,9 @@ mod forward_pass_metrics {
             fpm.sum_prefill_tokens > 0,
             "prefill tokens should be computed"
         );
-        // In SGLang, after prefill the request immediately joins running and
-        // participates in the decode step of the same pass.
-        assert_eq!(fpm.num_decode_requests, 1);
+        // SGLang runs a formed prefill batch on its own; the request's first token comes out of
+        // that prefill forward, so no decode work is scheduled in this pass.
+        assert_eq!(fpm.num_decode_requests, 0);
         assert_eq!(fpm.num_queued_prefill, 0);
         assert_eq!(fpm.num_queued_decode, 0);
         assert!(fpm.wall_time_secs > 0.0);
@@ -1526,16 +1605,93 @@ mod forward_pass_metrics {
             arrival_timestamp_ms: None,
         });
 
-        // Pass 2: r2 prefill + decode step runs on all running (r1 + r2)
+        // Pass 2: SGLang runs the r2 prefill batch alone ("run prefill first if possible");
+        // r1 waits for the next pass.
         let pass2 = core.execute_pass(&mut collector, 1.0);
         let fpm2 = pass2.fpm.expect("FPM should be present");
         assert_eq!(fpm2.num_prefill_requests, 1, "r2 is prefilling");
-        // In SGLang, after r2 prefill completes it joins running alongside r1,
-        // so the decode step sees both.
-        assert_eq!(fpm2.num_decode_requests, 2, "r1 + r2 both in decode step");
+        assert_eq!(
+            fpm2.num_decode_requests, 0,
+            "r1 does not decode during r2's prefill"
+        );
+        assert_eq!(fpm2.sum_decode_kv_tokens, 0);
+
+        // Pass 3: no new prefill work, so the running batch (r1 + r2) decodes.
+        let pass3 = core.execute_pass(&mut collector, pass2.end_ms);
+        let fpm3 = pass3.fpm.expect("FPM should be present");
+        assert_eq!(fpm3.num_prefill_requests, 0);
+        assert_eq!(fpm3.num_decode_requests, 2, "r1 + r2 both in decode step");
         assert!(
-            fpm2.sum_decode_kv_tokens > 0,
+            fpm3.sum_decode_kv_tokens > 0,
             "decode requests should have KV context"
+        );
+    }
+
+    #[test]
+    fn test_prefill_pass_stalls_running_decodes_and_charges_no_decode_time() {
+        let mut core = SglangCore::new(fpm_args());
+        let r1 = Uuid::from_u128(1);
+        let r2 = Uuid::from_u128(2);
+        core.receive(DirectRequest {
+            tokens: (0..4).collect(),
+            max_output_tokens: 3,
+            output_token_ids: None,
+            uuid: Some(r1),
+            arrival_timestamp_ms: None,
+        });
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass1 = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(
+            pass1
+                .output_signals
+                .iter()
+                .map(|s| s.uuid)
+                .collect::<Vec<_>>(),
+            vec![r1],
+            "the prefill forward yields r1's first token"
+        );
+        assert_eq!(core.running[0].output_len(), 1);
+
+        core.receive(DirectRequest {
+            tokens: (100..104).collect(),
+            max_output_tokens: 3,
+            output_token_ids: None,
+            uuid: Some(r2),
+            arrival_timestamp_ms: None,
+        });
+        let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
+        assert_eq!(
+            pass2
+                .output_signals
+                .iter()
+                .map(|s| s.uuid)
+                .collect::<Vec<_>>(),
+            vec![r2],
+            "only the freshly prefilled request emits a token; r1 stalls"
+        );
+        assert_eq!(core.running.len(), 2);
+        assert_eq!(core.running[0].uuid, r1, "FIFO order: r1 stays ahead of r2");
+        assert_eq!(core.running[0].output_len(), 1, "r1 did not decode");
+        assert_eq!(core.running[1].output_len(), 1);
+        let fpm2 = pass2.fpm.as_ref().expect("FPM should be present");
+        assert_eq!(
+            fpm2.num_decode_requests, 0,
+            "no decode work in a prefill pass"
+        );
+        assert_eq!(fpm2.sum_decode_kv_tokens, 0);
+        let decode_only = core.execute_pass(&mut collector, pass2.end_ms);
+        assert_eq!(
+            decode_only
+                .output_signals
+                .iter()
+                .map(|s| s.uuid)
+                .collect::<Vec<_>>(),
+            vec![r1, r2],
+            "with no prefill work the whole running batch decodes"
+        );
+        assert!(
+            decode_only.end_ms - pass2.end_ms > 0.0,
+            "a decode pass advances the clock"
         );
     }
 
@@ -1832,6 +1988,383 @@ mod forward_pass_metrics {
             fpm1.sum_prefill_tokens + fpm2.sum_prefill_tokens,
             16,
             "total prefill tokens across chunks should equal full prompt"
+        );
+    }
+
+    #[test]
+    fn test_retraction_requeues_at_back_and_reestimates_new_token_ratio() {
+        // Tight KV (56 tokens): two running requests grow until a decode step must retract one.
+        // SGLang appends the retracted request to the back of the FCFS waiting queue (behind a
+        // request that has never run) and re-estimates `new_token_ratio` from the remaining batch
+        // instead of resetting it to the initial ratio.
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .block_size(4)
+            .num_gpu_blocks(14)
+            .max_num_batched_tokens(Some(32))
+            .max_num_seqs(Some(4))
+            .speedup_ratio(0.0)
+            .sglang(Some(SglangArgs {
+                page_size: Some(4),
+                chunked_prefill_size: Some(32),
+                // Low conservativeness so the second request is admitted while the first runs.
+                schedule_conservativeness: Some(0.3),
+                ..Default::default()
+            }))
+            .build()
+            .unwrap();
+        let mut core = SglangCore::new(args);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let r1 = Uuid::from_u128(1);
+        let r2 = Uuid::from_u128(2);
+        let fresh = Uuid::from_u128(3);
+        for (uuid, tokens, max_output_tokens) in [
+            (r1, (0..4).collect::<Vec<_>>(), 30),
+            (r2, (100..104).collect(), 30),
+        ] {
+            core.receive(DirectRequest {
+                tokens,
+                max_output_tokens,
+                output_token_ids: None,
+                uuid: Some(uuid),
+                arrival_timestamp_ms: None,
+            });
+        }
+        // Pass 1 admits r1 only (r2 needs its full output reserved); r2 is admitted on the next
+        // pass once r1's remaining output is only reserved at `new_token_ratio`.
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(core.running.len(), 1);
+        // A request that does not fit waits in the queue ahead of any retraction.
+        core.receive(DirectRequest {
+            tokens: (200..232).collect(),
+            max_output_tokens: 40,
+            output_token_ids: None,
+            uuid: Some(fresh),
+            arrival_timestamp_ms: None,
+        });
+
+        let mut now = first.end_ms;
+        let mut retracted_seen = false;
+        let mut saw_two_running = false;
+        for _ in 0..40 {
+            let pass = core.execute_pass(&mut collector, now);
+            now = pass.end_ms + 1.0;
+            saw_two_running |= core.running.len() == 2;
+            if let Some(pos) = core.waiting.iter().position(|req| req.output_len() > 0) {
+                assert!(
+                    saw_two_running,
+                    "test setup: both requests should have run together"
+                );
+                retracted_seen = true;
+                let fresh_pos = core
+                    .waiting
+                    .iter()
+                    .position(|req| req.uuid == fresh)
+                    .expect("fresh request still waiting");
+                assert!(
+                    fresh_pos < pos,
+                    "retracted request must queue behind the never-run request"
+                );
+                let remaining = core.running.len();
+                assert_eq!(remaining, 1);
+                let decoded: usize = core.running.iter().map(|req| req.output_len()).sum();
+                let max_new: usize = core.running.iter().map(|req| req.max_output_tokens).sum();
+                let expected =
+                    ((decoded as f64 + 20.0 * remaining as f64) / (max_new as f64 + 1.0)).min(1.0);
+                assert!(
+                    (core.new_token_ratio - expected).abs() < 1e-9,
+                    "ratio {} should be re-estimated to {expected}",
+                    core.new_token_ratio
+                );
+                assert!(
+                    (expected - core.config.init_new_token_ratio).abs() > 1e-9,
+                    "test setup: the estimate must differ from the initial ratio"
+                );
+                break;
+            }
+        }
+        assert!(
+            retracted_seen,
+            "expected a decode retraction under KV pressure"
+        );
+    }
+
+    fn chunk6_args(num_gpu_blocks: usize) -> MockEngineArgs {
+        MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .block_size(1)
+            .num_gpu_blocks(num_gpu_blocks)
+            .max_num_batched_tokens(Some(6))
+            .max_num_seqs(Some(4))
+            .speedup_ratio(0.0)
+            .sglang(Some(SglangArgs {
+                page_size: Some(1),
+                chunked_prefill_size: Some(6),
+                max_prefill_tokens: Some(6),
+                ..Default::default()
+            }))
+            .build()
+            .unwrap()
+    }
+
+    /// Prefill `tokens` as request `id` with one output token and run passes until it has finished,
+    /// so its full sequence is cached.
+    fn finish_and_cache(core: &mut SglangCore, id: u128, tokens: Vec<u32>, now: &mut f64) {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 1,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(id)),
+            arrival_timestamp_ms: None,
+        });
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        for _ in 0..16 {
+            let pass = core.execute_pass(&mut collector, *now);
+            *now = pass.end_ms + 1.0;
+            if core.running.is_empty() && core.waiting.is_empty() {
+                return;
+            }
+        }
+        panic!("request {id} did not finish");
+    }
+
+    #[test]
+    fn test_first_admission_matches_whole_prompt_once() {
+        // r1 (12 tokens) finishes and is cached. r2 shares r1's first 10 tokens: SGLang matches
+        // the whole prompt once at admission (`extend_input_len` = 4 <= chunk 6), so r2 is a single
+        // non-chunked 4-token prefill rather than a 6-token chunk plus continuations.
+        let mut core = SglangCore::new(chunk6_args(256));
+        let mut now = 0.0;
+        finish_and_cache(&mut core, 1, (0..12).collect(), &mut now);
+
+        let mut r2: Vec<u32> = (0..10).collect();
+        r2.extend([100, 101, 102, 103]);
+        core.receive(DirectRequest {
+            tokens: r2,
+            max_output_tokens: 1,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(2)),
+            arrival_timestamp_ms: None,
+        });
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass = core.execute_pass(&mut collector, now);
+        let fpm = pass.fpm.expect("FPM should be present");
+        assert_eq!(fpm.num_prefill_requests, 1);
+        assert_eq!(
+            fpm.sum_prefill_tokens, 4,
+            "only the four uncached tokens are computed"
+        );
+        assert!(
+            pass.end_ms > now,
+            "a prefill pass that computes tokens takes time"
+        );
+        assert!(
+            core.waiting.is_empty(),
+            "the prefill completed in one pass, nothing is chunked"
+        );
+    }
+
+    #[test]
+    fn test_fully_cached_prompt_still_computes_its_last_token() {
+        // SGLang caps the match at `input_len - 1`, so a duplicate prompt is a one-token prefill
+        // rather than a zero-duration pass.
+        let mut core = SglangCore::new(chunk6_args(256));
+        let mut now = 0.0;
+        finish_and_cache(&mut core, 1, (0..5).collect(), &mut now);
+        core.receive(DirectRequest {
+            tokens: (0..5).collect(),
+            max_output_tokens: 2,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(2)),
+            arrival_timestamp_ms: None,
+        });
+        let available_before = core.kv_manager.cache().available_tokens();
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass = core.execute_pass(&mut collector, now);
+        let fpm = pass.fpm.expect("FPM should be present");
+        assert_eq!(fpm.num_prefill_requests, 1);
+        assert_eq!(fpm.sum_prefill_tokens, 1);
+        assert!(pass.end_ms > now);
+        // The allocator honours the same cap (see `allocation_match_is_capped_like_sglang` for the
+        // lease-level state): the fifth prompt token got its own slot at admission and the first
+        // output token took another; once the in-flight prefix was cached, the fifth token's slot
+        // was deduplicated against the identical cached page, so the pool is one token smaller.
+        assert_eq!(core.running.len(), 1);
+        assert_eq!(
+            available_before - core.kv_manager.cache().available_tokens(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_small_request_is_co_admitted_behind_mostly_cached_long_request() {
+        // r2 = 20 cached tokens + 4 new, r3 = 2 fresh tokens. Only r2's 4 uncached tokens count
+        // against the 6-token chunk budget, so r3 fits in the same prefill batch.
+        let mut core = SglangCore::new(chunk6_args(256));
+        let mut now = 0.0;
+        finish_and_cache(&mut core, 1, (0..20).collect(), &mut now);
+
+        let mut r2: Vec<u32> = (0..20).collect();
+        r2.extend([100, 101, 102, 103]);
+        for (id, tokens) in [(2u128, r2), (3u128, vec![200, 201])] {
+            core.receive(DirectRequest {
+                tokens,
+                max_output_tokens: 2,
+                output_token_ids: None,
+                uuid: Some(Uuid::from_u128(id)),
+                arrival_timestamp_ms: None,
+            });
+        }
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass = core.execute_pass(&mut collector, now);
+        let fpm = pass.fpm.expect("FPM should be present");
+        assert_eq!(
+            fpm.num_prefill_requests, 2,
+            "r2 and r3 share the prefill batch"
+        );
+        assert_eq!(fpm.sum_prefill_tokens, 6);
+        assert_eq!(core.running.len(), 2);
+        assert!(core.waiting.is_empty());
+    }
+
+    #[test]
+    fn test_chunked_cold_prompt_reports_no_cache_reuse() {
+        // A 12-token prompt with nothing cached is prefilled in two 6-token chunks. The
+        // continuation's KV context is the request's own first chunk, which is not a cache hit:
+        // neither the admission event nor the cache-hit metric may count it.
+        let mut core = SglangCore::new(chunk6_args(256));
+        core.receive(DirectRequest {
+            tokens: (0..12).collect(),
+            max_output_tokens: 2,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(7)),
+            arrival_timestamp_ms: None,
+        });
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass1 = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(pass1.mocker_metrics.sglang_cache_hit_tokens, 0);
+        assert_eq!(pass1.mocker_metrics.sglang_cache_total_tokens, 6);
+        assert_eq!(pass1.admissions.len(), 1);
+        assert_eq!(pass1.admissions[0].reused_input_tokens, 0);
+        let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
+        assert!(
+            pass2.admissions.is_empty(),
+            "a continuation chunk is not a new admission"
+        );
+        assert_eq!(pass2.mocker_metrics.sglang_cache_hit_tokens, 0);
+        assert_eq!(pass2.mocker_metrics.sglang_cache_total_tokens, 6);
+        let fpm2 = pass2.fpm.expect("FPM should be present");
+        assert_eq!(fpm2.sum_prefill_tokens, 6);
+        assert_eq!(
+            fpm2.sum_prefill_kv_tokens, 6,
+            "the first chunk is KV context for the continuation's forward"
+        );
+    }
+
+    fn three_page_args() -> MockEngineArgs {
+        MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .block_size(4)
+            .num_gpu_blocks(3)
+            .max_num_batched_tokens(Some(16))
+            .max_num_seqs(Some(4))
+            .speedup_ratio(0.0)
+            .sglang(Some(SglangArgs {
+                page_size: Some(4),
+                chunked_prefill_size: Some(16),
+                ..Default::default()
+            }))
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_single_token_requests_finish_in_the_prefill_pass_without_kv_slots() {
+        // Two 4-token prompts with `max_output_tokens = 1` fill two of three pages. SGLang finishes
+        // them in `process_batch_result_prefill` → `check_finished()`: the sampled token never gets
+        // a KV slot, so there is no decode forward and no memory pressure at all.
+        let mut core = SglangCore::new(three_page_args());
+        let r1 = Uuid::from_u128(1);
+        let r2 = Uuid::from_u128(2);
+        for (uuid, tokens) in [(r1, (0..4).collect::<Vec<_>>()), (r2, (100..104).collect())] {
+            core.receive(DirectRequest {
+                tokens,
+                max_output_tokens: 1,
+                output_token_ids: None,
+                uuid: Some(uuid),
+                arrival_timestamp_ms: None,
+            });
+        }
+        let available_before = core.kv_manager.cache().available_tokens();
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(pass.admissions.len(), 2);
+        assert!(pass.pressure_events.is_empty());
+        assert_eq!(
+            pass.output_signals
+                .iter()
+                .map(|s| (s.uuid, s.completed))
+                .collect::<Vec<_>>(),
+            vec![(r1, true), (r2, true)]
+        );
+        assert!(core.running.is_empty() && core.waiting.is_empty());
+        // Both prompts are cached (two pages held by the tree); no page was spent on outputs.
+        assert_eq!(
+            available_before - core.kv_manager.cache().available_tokens(),
+            8
+        );
+    }
+
+    #[test]
+    fn test_prefill_pass_gives_continuing_requests_their_first_token_without_retraction() {
+        // Same prompts but the requests keep decoding (`max_output_tokens = 2`). The prefill pass
+        // still emits exactly one first token per request, never retracts (SGLang's decode memory
+        // check runs in `update_running_batch` on the next decode pass), and the following decode
+        // pass completes both.
+        let mut core = SglangCore::new(three_page_args());
+        core.receive(DirectRequest {
+            tokens: (0..4).collect(),
+            max_output_tokens: 2,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(1)),
+            arrival_timestamp_ms: None,
+        });
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let pass1 = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(pass1.admissions.len(), 1);
+        assert!(
+            pass1.pressure_events.is_empty(),
+            "no retraction in a prefill pass"
+        );
+        assert_eq!(
+            pass1
+                .output_signals
+                .iter()
+                .map(|s| (s.uuid, s.completed))
+                .collect::<Vec<_>>(),
+            vec![(Uuid::from_u128(1), false)]
+        );
+        assert_eq!(core.running.len(), 1);
+        assert_eq!(core.running[0].output_len(), 1);
+        let fpm1 = pass1.fpm.as_ref().expect("FPM should be present");
+        assert_eq!(
+            fpm1.num_decode_requests, 0,
+            "a prefill pass schedules no decode work"
+        );
+
+        let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
+        assert!(pass2.pressure_events.is_empty());
+        assert_eq!(
+            pass2
+                .output_signals
+                .iter()
+                .map(|s| (s.uuid, s.completed))
+                .collect::<Vec<_>>(),
+            vec![(Uuid::from_u128(1), true)]
+        );
+        assert!(
+            pass2.end_ms > pass1.end_ms,
+            "the decode pass is the one that takes time"
         );
     }
 

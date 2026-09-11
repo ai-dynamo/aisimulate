@@ -63,11 +63,6 @@ impl SglangRequest {
         self.sequence_tokens.len()
     }
 
-    pub(super) fn extend_input_len(&self) -> usize {
-        self.current_sequence_len()
-            .saturating_sub(self.materialized_tokens)
-    }
-
     pub(super) fn remaining_output_tokens(&self) -> usize {
         self.max_output_tokens.saturating_sub(self.output_len())
     }
@@ -136,6 +131,14 @@ impl SglangRequest {
         self.kv_lease
             .ensure_page_hashes(&self.sequence_tokens, block_size);
         self.materialized_tokens += 1;
+    }
+
+    /// Append the token that completes the request. Its KV is never computed (SGLang finishes
+    /// the request in `check_finished` right after the forward that sampled it), so it owns no
+    /// slot and `materialized_tokens` is unchanged.
+    pub(super) fn append_final_output_token(&mut self, token: u32) {
+        debug_assert_eq!(self.remaining_output_tokens(), 1);
+        self.sequence_tokens.push(token);
     }
 
     pub(super) fn debug_assert_invariants(&self, _block_size: usize) {

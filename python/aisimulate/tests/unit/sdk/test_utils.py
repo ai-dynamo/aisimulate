@@ -510,6 +510,24 @@ class TestParseHFConfig:
         config = {
             "architectures": ["Llama4ForConditionalGeneration"],
             "model_type": "llama4",
+            "image_processor_config": {
+                "add_global_tile": True,
+                "max_patches": 16,
+                "resize_to_max_canvas": False,
+            },
+            "vision_config": {
+                "hidden_size": 1408,
+                "num_hidden_layers": 34,
+                "num_attention_heads": 16,
+                "num_channels": 3,
+                "intermediate_size": 5632,
+                "image_size": 336,
+                "patch_size": 14,
+                "pixel_shuffle_ratio": 0.5,
+                "projector_input_dim": 4096,
+                "projector_output_dim": 4096,
+                "vision_output_dim": 4096,
+            },
             "text_config": {
                 "num_hidden_layers": 48,
                 "hidden_size": 5120,
@@ -541,6 +559,8 @@ class TestParseHFConfig:
         assert cfg.attn_layer_pattern == tuple(i % 2 for i in range(48))
         assert cfg.sliding_window_size == 8192
         assert cfg.dense_inter_size == 16384
+        assert cfg.vision_config is not None
+        assert cfg.vision_config.image_size == 336
         # Llama 4 uses same dims for all layers → all four dim fields are 0
         assert cfg.swa_num_kv_heads == 0
         assert cfg.swa_head_dim == 0
@@ -550,6 +570,24 @@ class TestParseHFConfig:
         config = {
             "architectures": ["Llama4ForConditionalGeneration"],
             "model_type": "llama4",
+            "image_processor_config": {
+                "add_global_tile": True,
+                "max_patches": 16,
+                "resize_to_max_canvas": False,
+            },
+            "vision_config": {
+                "hidden_size": 1408,
+                "num_hidden_layers": 34,
+                "num_attention_heads": 16,
+                "num_channels": 3,
+                "intermediate_size": 5632,
+                "image_size": 336,
+                "patch_size": 14,
+                "pixel_shuffle_ratio": 0.5,
+                "projector_input_dim": 4096,
+                "projector_output_dim": 4096,
+                "vision_output_dim": 4096,
+            },
             "text_config": {
                 "num_hidden_layers": 48,
                 "hidden_size": 5120,
@@ -576,6 +614,8 @@ class TestParseHFConfig:
         assert sum(cfg.moe_layer_freq) == 24  # 24 MoE layers
         assert cfg.moe_layer_freq.count(0) == 24  # 24 dense layers
         assert cfg.dense_inter_size == 16384
+        assert cfg.vision_config is not None
+        assert cfg.vision_config.image_size == 336
 
     def test_parse_mimov2flash_config(self):
         """Test MiMo-V2-Flash (explicit per-layer patterns, different SWA/global dims) → HybridMoEConfig."""
@@ -719,6 +759,52 @@ class TestParseHFConfig:
         assert cfg.global_head_dim == 512
         assert cfg.sliding_window_size == 1024
         assert cfg.attention_k_eq_v is True
+        assert cfg.vision_config is None
+
+    def test_parse_gemma4_vision_config_alongside_text_config(self):
+        """Gemma 4 keeps its fixed-budget pooled ViT contract beside the text/MoE config."""
+        layer_types = (["sliding_attention"] * 5 + ["full_attention"]) * 5
+        hf_config = self._gemma4_text_config(layer_types)
+        hf_config["text_config"]["use_bidirectional_attention"] = "vision"
+        hf_config["vision_soft_tokens_per_image"] = 280
+        hf_config["vision_config"] = {
+            "model_type": "gemma4_vision",
+            "num_hidden_layers": 27,
+            "hidden_size": 1152,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 16,
+            "head_dim": 72,
+            "intermediate_size": 4304,
+            "patch_size": 16,
+            "pooling_kernel_size": 3,
+            "position_embedding_size": 10240,
+            "default_output_length": 280,
+            "standardize": True,
+        }
+
+        result = _parse_hf_config_json(hf_config)
+
+        cfg = result["extra_params"]
+        assert isinstance(cfg, common.Gemma4MixConfig)
+        assert cfg.layer_types == tuple(layer_types)
+        assert cfg.use_bidirectional_vision_attention is True
+        vision = cfg.vision_config
+        assert isinstance(vision, common.Gemma4VisionEncoderConfig)
+        assert vision.depth == 27
+        assert vision.hidden_size == 1152
+        assert vision.num_heads == vision.num_key_value_heads == 16
+        assert vision.head_dim == 72
+        assert vision.intermediate_size == 4304
+        assert vision.patch_size == 16
+        assert vision.pooling_kernel_size == vision.spatial_merge_size == 3
+        assert vision.position_embedding_size == 10240
+        assert vision.soft_tokens_per_image == 280
+        assert vision.supported_soft_token_budgets == (70, 140, 280, 560, 1120)
+        assert vision.out_hidden_size == 2816
+        assert vision.projector_dims == ((1152, 2816),)
+        assert vision.projector_n_instances == 1
+        assert vision.partial_rotary_factor == 1.0
+        assert vision.standardize is True
 
     def test_gemma4_layer_types_length_mismatch_raises(self):
         """layer_types length must equal num_hidden_layers."""

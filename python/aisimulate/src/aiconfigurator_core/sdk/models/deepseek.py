@@ -9,6 +9,7 @@ import aiconfigurator_core.sdk.operations as ops
 from aiconfigurator_core.sdk import common
 from aiconfigurator_core.sdk.models.base import BaseModel, register_model
 from aiconfigurator_core.sdk.models.blocks.moe import MoEBlockShape
+from aiconfigurator_core.sdk.models.blocks.vit import build_encoder_ops
 from aiconfigurator_core.sdk.models.helpers import (
     attention_projection_exclusions,
     build_large_ep_moe_ops,
@@ -86,6 +87,7 @@ class DeepSeekModel(BaseModel):
             backend_name=backend_name,
             attention_quant_exclusions=attn_exclusions,
             shared_expert_quant_mode=shared_expert_quant_mode,
+            encoder_config=model_info.get("encoder_config"),
         )
 
     #: TRT-LLM large-EP decode PDL overlap discount, transcribed from the
@@ -121,8 +123,15 @@ class DeepSeekModel(BaseModel):
         backend_name: str = "",
         attention_quant_exclusions: frozenset = frozenset(),
         shared_expert_quant_mode: common.GEMMQuantMode | None = None,
+        encoder_config: common.VisionEncoderConfig | None = None,
     ) -> None:
         super().__init__(*args)
+        if encoder_config is not None:
+            self.encoder_config = encoder_config
+            if not self.config.language_only:
+                self.encoder_ops.extend(
+                    build_encoder_ops(encoder_config, self.config.tp_size, self.config.enable_encoder_dp)
+                )
         # Resolve vLLM attention head size. MLA models (e.g., KIMI K2.5) store v_head_dim=128
         # in extra_params; generic hidden_size // n_heads would give the wrong value (e.g., 112).
         self._vllm_head_size = (

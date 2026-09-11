@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+//! Behavioral model of the SGLang scheduler loop (`Scheduler.get_next_batch_to_run`,
+//! `update_running_batch`, `ScheduleBatch.retract_decode`) as of sgl-project/sglang v0.5.6.post2
+//! (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`, `schedule_batch.py`). Re-implemented in
+//! Rust from the observed semantics; no SGLang source is copied.
+
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -23,6 +28,7 @@ use crate::engine::{HandoffId, modeled_duration_ms};
 use super::config::SglangConfig;
 use super::decode::{
     cache_materialized_prefix, cleanup_completed_request, simulate_decode_step_with_sampler,
+    simulate_prefill_first_tokens,
 };
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
@@ -691,10 +697,6 @@ impl SglangCore {
             ),
         };
 
-        if admit.oom {
-            self.new_token_ratio = self.config.init_new_token_ratio;
-        }
-
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
             if let Some(collector) = collector.as_deref_mut() {
@@ -718,6 +720,7 @@ impl SglangCore {
         let prefill_time =
             simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
 
+        let previously_running = self.running.len();
         for mut req in admit.can_run {
             if req.materialized_tokens < req.current_sequence_len() {
                 cache_materialized_prefix(&mut req, &mut self.kv_manager, &self.config);
@@ -727,23 +730,53 @@ impl SglangCore {
             }
         }
 
-        // Capture scheduled decode data before the decode step modifies running.
-        let scheduled_decode_lens: Vec<u64> = self
-            .running
-            .iter()
-            .filter(|req| req.remaining_output_tokens() > 0)
-            .map(|req| req.current_sequence_len() as u64)
-            .collect();
+        // SGLang `Scheduler.get_next_batch_to_run`: "Run prefill first if possible". A pass that
+        // formed a prefill batch runs only that batch (prefill and decode share a forward only
+        // with `--enable-mixed-chunk`, which is not modeled). Requests that were already running
+        // do not decode in this pass; the freshly prefilled requests receive the first token
+        // produced by the prefill forward itself, so that bookkeeping step is not charged any time.
+        let prefill_pass = batch_size > 0;
+        let mut stalled: Vec<SglangRequest> = if prefill_pass && previously_running > 0 {
+            self.running.drain(..previously_running).collect()
+        } else {
+            Vec::new()
+        };
+
+        // Capture scheduled decode data before the decode step modifies running. A prefill-first
+        // pass is a pure prefill forward: nothing is scheduled for decode.
+        let scheduled_decode_lens: Vec<u64> = if prefill_pass {
+            Vec::new()
+        } else {
+            self.running
+                .iter()
+                .filter(|req| req.remaining_output_tokens() > 0)
+                .map(|req| req.current_sequence_len() as u64)
+                .collect()
+        };
 
         let decode_start_ms = now_ms + prefill_time.as_secs_f64() * 1000.0;
-        let mut decode = simulate_decode_step_with_sampler(
-            &mut self.running,
-            &mut self.kv_manager,
-            &self.config,
-            self.speculative_sampler.as_mut(),
-            decode_start_ms,
-            true,
-        )?;
+        let mut decode = if prefill_pass {
+            simulate_prefill_first_tokens(
+                &mut self.running,
+                &mut self.kv_manager,
+                &self.config,
+                decode_start_ms,
+            )?
+        } else {
+            simulate_decode_step_with_sampler(
+                &mut self.running,
+                &mut self.kv_manager,
+                &self.config,
+                self.speculative_sampler.as_mut(),
+                decode_start_ms,
+                true,
+            )?
+        };
+        if !stalled.is_empty() {
+            // Keep FIFO order: older requests stay ahead of the ones admitted in this pass.
+            stalled.append(&mut self.running);
+            self.running = stalled;
+        }
 
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);
@@ -757,25 +790,33 @@ impl SglangCore {
             }
         }
 
-        for req in decode.requests.drain(..).rev() {
-            self.waiting.push_front(req);
+        // SGLang re-queues retracted requests through `_add_request_to_queue`, i.e. at the back of
+        // the FCFS waiting queue, behind requests that have not run yet.
+        for req in decode.requests.drain(..) {
+            self.waiting.push_back(req);
         }
 
-        if decode.retracted_any {
-            self.new_token_ratio = self.config.init_new_token_ratio;
+        if let Some(estimate) = decode.new_token_ratio_estimate {
+            // `ScheduleBatch.retract_decode`: re-estimated from the survivors at the retraction
+            // point, before the forward.
+            self.new_token_ratio = estimate;
             self.bump_capacity_generation();
+        } else if !prefill_pass {
+            // The ratio decays in `update_running_batch`, i.e. only on decode passes.
+            self.new_token_ratio = (self.new_token_ratio - self.config.new_token_ratio_decay_step)
+                .max(self.config.min_new_token_ratio);
         }
-        self.new_token_ratio = (self.new_token_ratio - self.config.new_token_ratio_decay_step)
-            .max(self.config.min_new_token_ratio);
 
         // Build FPM snapshot now that all state has settled.
+        // Radix-cache reuse: admission matches over prompt tokens processed this pass. A chunked
+        // request's own earlier chunks are KV context for the forward but not cache hits.
         let sglang_cache_hit_tokens = prefill_fpm
             .iter()
-            .map(|item| item.prefix_tokens as u64)
+            .map(|item| item.cache_reused_tokens as u64)
             .sum::<u64>();
         let sglang_cache_total_tokens = prefill_fpm
             .iter()
-            .map(|item| (item.prefix_tokens + item.tokens_computed) as u64)
+            .map(|item| (item.cache_reused_tokens + item.tokens_computed) as u64)
             .sum::<u64>();
         let queued_prefills = self
             .waiting

@@ -27,13 +27,9 @@ from aisimulate.sweeper.search_space import (
 
 TRACE = str(Path(__file__).parent / "data" / "mooncake_tiny.jsonl")
 
-_AGG_CFG = ReplicaParallelConfig(
-    ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
-)
+_AGG_CFG = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
 _DISAGG_DP1_CFG = DisaggParallelConfig(prefill=_AGG_CFG, decode=_AGG_CFG)
-_DP8_CFG = ReplicaParallelConfig(
-    ParallelShape(tp=1, dp=8, moe_tp=1, moe_ep=8), replicas=1
-)
+_DP8_CFG = ReplicaParallelConfig(ParallelShape(tp=1, dp=8, moe_tp=1, moe_ep=8), replicas=1)
 _DISAGG_DP8_CFG = DisaggParallelConfig(prefill=_AGG_CFG, decode=_DP8_CFG)
 
 
@@ -94,10 +90,7 @@ def test_enumerate_real_backend_space_honors_runner_topologies():
     assert branch.knob_choices["backend"] == ["trtllm"]
     assert branch.parallel_configs
     assert all(config.total_gpus <= 16 for config in branch.parallel_configs)
-    assert all(
-        branch.supported_backends[config] == frozenset({"trtllm"})
-        for config in branch.parallel_configs
-    )
+    assert all(branch.supported_backends[config] == frozenset({"trtllm"}) for config in branch.parallel_configs)
     assert "agg_max_num_seqs" in branch.knob_choices
 
 
@@ -223,9 +216,7 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
         calls.append((deployment_mode, backend))
         return [_DISAGG_DP1_CFG]
 
-    monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs
-    )
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
     config = _config(
         deployment_mode=["disagg"],
         backend=["trtllm", "vllm"],
@@ -625,9 +616,7 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
             raise NoViableParallelConfig("disagg does not fit")
         return [_AGG_CFG]
 
-    monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs
-    )
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
     config = _config(
         deployment_mode=["agg", "disagg"],
         backend=["trtllm"],
@@ -641,16 +630,12 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
     assert branches[0].supported_backends[_AGG_CFG] == frozenset({"trtllm"})
 
 
-@pytest.mark.filterwarnings(
-    "ignore:smart-sweep.*deployment_mode=.* skipped.*:UserWarning"
-)
+@pytest.mark.filterwarnings("ignore:smart-sweep.*deployment_mode=.* skipped.*:UserWarning")
 def test_all_modes_infeasible_raises(monkeypatch):
     def always_raise(*args, **kwargs):
         raise NoViableParallelConfig("nothing fits")
 
-    monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for", always_raise
-    )
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", always_raise)
     config = _config(
         deployment_mode=["agg", "disagg"],
         backend=["trtllm"],
@@ -678,9 +663,7 @@ def test_backend_without_perf_database_is_dropped(monkeypatch):
             raise NoPerfDatabase("no vLLM perf database")
         return [_AGG_CFG]
 
-    monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs
-    )
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
     config = _config(
         deployment_mode=["agg"],
         backend=["vllm", "trtllm"],
