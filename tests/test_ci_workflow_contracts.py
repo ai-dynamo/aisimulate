@@ -905,6 +905,7 @@ def test_full_ci_selector_matches_the_independent_mapping_oracle() -> None:
         expected = set(COMPONENTS) if case["run_all"] else set(case["selected"])
         assert plan["run_all"] is case["run_all"], case["id"]
         assert actual == expected, case["id"]
-        observed_components.update(actual)
+        if not case["run_all"]:
+            observed_components.update(actual)
 
     assert observed_components == set(COMPONENTS)
