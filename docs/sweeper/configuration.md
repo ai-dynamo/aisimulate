@@ -85,6 +85,12 @@ omitted, the latest performance-data version for both effective SKUs must match;
 version supported by both systems. These overrides are part of the Sweeper YAML/SDK contract; the
 separate `aisimulate recommend` input continues to describe one shared hardware SKU.
 
+The Dynamo Router adapter does not yet support heterogeneous role SKUs with
+`prefill_load_model.type: aic`: its candidate hook uses the shared `hardware_sku` for prefill load
+estimation instead of `prefill_hardware_sku`. Shared-SKU Router AIC behavior is unchanged. Keep
+heterogeneous candidates in the Sweeper YAML/SDK workflow until the provider consumes the
+role-specific SKU.
+
 ## Attention-FFN Disaggregation
 
 AFD is supported by public `aisimulate predict` and `aisimulate recommend` with the built-in
