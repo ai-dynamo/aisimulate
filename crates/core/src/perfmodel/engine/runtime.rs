@@ -1680,6 +1680,33 @@ impl Engine {
         let has_prefill = sched.sum_prefill_tokens > 0;
         let has_decode = sched.num_decode_requests > 0 || sched.sum_decode_kv_tokens > 0;
 
+        // The whole-forward rewrite retains the original stage graph in
+        // sol_ops. Apply the same replay restriction before its table lookup
+        // can return early. Zero variance retains the legacy aggregate path;
+        // it does not establish equal per-request (query, prefix) geometry.
+        let replay_ops = self
+            .fpm_ops()
+            .map_or(self.context_ops.as_slice(), |(prefill, _)| {
+                prefill.sol_ops.as_slice()
+            });
+        if has_prefill
+            && replay_ops.iter().any(|op| {
+                matches!(op,
+                    Op::Dsv41Stage(stage) if stage.decoder_replay && stage.bounded)
+            })
+        {
+            if !sched.var_prefill_length.is_finite() || sched.var_prefill_length < 0.0 {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "V4.1 Decoder replay requires finite nonnegative prefill variance".into(),
+                ));
+            }
+            if sched.var_prefill_length > 0.0 {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "V4.1 Decoder replay requires per-request extend lengths; heterogeneous FPM v1 aggregates cannot identify the tails".into(),
+                ));
+            }
+        }
+
         // FPM engines never enter the three-pass mix composition (its op-name
         // filters cannot see a whole-model op). Prefill-only and decode-only
         // dispatch through the same shared free fns as op-level (the FpmForward
@@ -1736,17 +1763,6 @@ impl Engine {
         }
 
         if self.has_dsv41_stages() {
-            if has_prefill
-                && sched.var_prefill_length > 0.0
-                && self.context_ops.iter().any(|op| {
-                    matches!(op,
-                    Op::Dsv41Stage(stage) if stage.decoder_replay && stage.bounded)
-                })
-            {
-                return Err(AicError::InvalidForwardPassMetrics(
-                    "V4.1 Decoder replay requires per-request extend lengths; heterogeneous FPM v1 aggregates cannot identify the tails".into(),
-                ));
-            }
             // Retain every scheduled token in balanced aggregate telemetry;
             // integer averages alone discard the remainder. FPM v1 does not
             // carry individual extend lengths, so unbalanced replay is rejected.
@@ -2582,6 +2598,154 @@ mod tests {
             vec![fpm_op(FpmPhase::Decode)],
         );
         Engine::build(spec, Arc::new(db))
+    }
+
+    fn fpm_replay_guard_probe(tmp: &std::path::Path, replay: bool) -> Engine {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let rows = [
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 2,
+                total_prefill_tokens: 511,
+                total_kv_read_tokens: 0,
+                latency_ms: 23.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 2,
+                total_prefill_tokens: 257,
+                total_kv_read_tokens: 513,
+                latency_ms: 31.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "decode",
+                batch_size: 8,
+                total_prefill_tokens: 0,
+                total_kv_read_tokens: 4096,
+                latency_ms: 7.0,
+                ..RowSpec::default()
+            },
+        ];
+        let mut engine = build_fpm_engine_with_rows(tmp, &rows).unwrap();
+        let Op::FpmForward(prefill) = &mut engine.context_ops[0] else {
+            unreachable!()
+        };
+        // The real Python FPM rewrite retains the original V4.1 stage graph.
+        prefill.sol_ops = dsv41_probe_engine(replay).context_ops;
+        engine
+    }
+
+    fn fpm_replay_guard_metrics(variance: f64) -> ForwardPassMetrics {
+        ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 511,
+                // Actual current-query geometry [384, 127] has variance
+                // 16512.25; its totals also address a balanced [256, 255] row.
+                var_prefill_length: variance,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_before_balanced_table_lookup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        for variance in [16512.25, 0.25, -1.0, f64::NAN, f64::INFINITY] {
+            let result = engine.forward_pass_time_ms(&[fpm_replay_guard_metrics(variance)]);
+            assert!(
+                matches!(result, Err(AicError::InvalidForwardPassMetrics(_))),
+                "bounded replay variance {variance:?} must not query a balanced table: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_mixed_prefill_before_table_composition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(16512.25);
+        metrics.scheduled_requests.num_decode_requests = 8;
+        metrics.scheduled_requests.sum_decode_kv_tokens = 4096;
+        assert!(matches!(
+            engine.forward_pass_time_ms(&[metrics]),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+    }
+
+    #[test]
+    fn fpm_replay_guard_requires_a_bounded_stage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut engine = fpm_replay_guard_probe(tmp.path(), true);
+        let Op::FpmForward(prefill) = &mut engine.context_ops[0] else {
+            unreachable!()
+        };
+        for op in &mut prefill.sol_ops {
+            let Op::Dsv41Stage(stage) = op else {
+                unreachable!()
+            };
+            stage.bounded = false;
+        }
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(&[fpm_replay_guard_metrics(16512.25)])
+                .unwrap(),
+            23.0
+        );
+    }
+
+    #[test]
+    fn fpm_replay_guard_preserves_off_and_ordinary_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut engine = fpm_replay_guard_probe(tmp.path(), false);
+        let metrics = fpm_replay_guard_metrics(16512.25);
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            23.0
+        );
+        let Op::FpmForward(prefill) = &mut engine.context_ops[0] else {
+            unreachable!()
+        };
+        prefill.sol_ops.clear();
+        assert_eq!(engine.forward_pass_time_ms(&[metrics]).unwrap(), 23.0);
+    }
+
+    #[test]
+    fn fpm_replay_guard_retains_legacy_zero_variance_remainders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.sum_prefill_tokens = 257;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        // Preserve the existing aggregate-only input convention. Zero
+        // variance is not proof that the individual (query, prefix) pairs match.
+        assert_eq!(engine.forward_pass_time_ms(&[metrics]).unwrap(), 31.0);
+    }
+
+    #[test]
+    fn fpm_replay_guard_ignores_prefill_metadata_without_compute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(16512.25);
+        metrics.scheduled_requests.sum_prefill_tokens = 0;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            0.0
+        );
+        metrics.scheduled_requests.num_decode_requests = 8;
+        metrics.scheduled_requests.sum_decode_kv_tokens = 4096;
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            7.0
+        );
+        metrics.scheduled_requests.num_prefill_requests = 0;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 0;
+        assert_eq!(engine.forward_pass_time_ms(&[metrics]).unwrap(), 7.0);
     }
 
     fn cliff_rows() -> Vec<crate::perf_database::fpm_forward::tests::RowSpec> {
