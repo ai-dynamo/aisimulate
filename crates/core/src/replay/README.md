@@ -110,6 +110,54 @@ reason independent of engine callback order.
 For a failed play, `causal_terminal_ms` records this primary failure, which may
 precede client lane release while already-dispatched siblings finish.
 
+### Public AgentX M1 qualification
+
+The built-in Python/CLI engine stack qualifies aggregated vLLM and SGLang with
+HBM-only KV cache and speculative decoding disabled. Use a Weka or Agentic
+Mooncake v2 trace with `trace_timestamps` and `agentic_lanes: 1`; M1 starts at
+turn zero and runs the play to settlement. The public engine boundary rejects
+agentic TensorRT-LLM, host offload, and speculative decoding configurations.
+Generic native runtime conformance, including P/D, has a broader scope than
+this public qualification.
+
+Default Python results retain `agentic_qualification: functional_only` in
+`ReplayReport.metadata`. CLI JSON/artifacts retain the same marker, and table
+output explicitly identifies functional replay. Fixed timing in the gates
+below checks lifecycle semantics; it does not measure prediction accuracy or
+AgentX benchmark fidelity. Warmup, profiling barriers, fixed-duration lane
+recycling, and public P/D qualification belong to later milestones.
+
+After the development setup in [`DEVELOPMENT.md`](../../../../DEVELOPMENT.md),
+run these commands from the repository root:
+
+```sh
+cargo test --locked -p aisimulate-core --test agentx_qualification --example qualify_weka
+python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_m1'
+python/aisimulate/.venv/bin/python scripts/qualify_agentx_m1.py --output /tmp/agentx-m1.json
+```
+
+The last command is an opt-in network gate. It verifies the revision-pinned
+published samples used by `qualify_weka_samples.py`, selects the first play,
+and freshly materializes its v2 counterpart through `WekaImporter`. For each
+backend and each input format, it runs the public Python runner twice and the
+CLI once. Graph identity, lifecycle digest/event count, play outcomes, and
+per-request records must match within that backend; all requests and the play
+must complete. CLI stdout, saved prediction, and request artifacts must agree.
+The summary records dataset revision, source/graph digests, and results for
+all four backend/input combinations. Raw and materialized sample data remain
+temporary. Use `--trace <local-weka-path>` to run the same matrix offline.
+
+The native integration tests additionally compare full lifecycle transcript
+bytes and normalized reports, cover overlapping children, blocking joins,
+parent resumption, one-lane settlement across two plays, and context rejection
+that skips the undispatched parent continuation. Python tests exercise the
+default public runner while rejecting any attempted Dynamo import.
+
+These gates cover the AISimulate portion of AIC-1815. Dynamo compatibility
+qualification remains in [Dynamo PR #14355](https://github.com/ai-dynamo/dynamo/pull/14355)
+and must be rerun against matching AISimulate artifacts before declaring the
+cross-repository M1 milestone complete.
+
 ## File Map
 
 - `src/replay/replayer.rs`
