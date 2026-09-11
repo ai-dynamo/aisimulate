@@ -163,7 +163,7 @@ def test_afd_runner_capability_gate_fails_closed(monkeypatch, mode, pinned):
 
     with pytest.raises(RunnerIncompatibleError, match=r"runner-incompatible backends=\['vllm'\]"):
         enumerate_branches(
-            _config(mode, afd_pinned_topologies=[_topology()] if pinned else []),
+            _config(mode, afd_pinned_topologies=[_topology()] if pinned else [], afd_batch_size_candidates=[16]),
             runner_capabilities=RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),)),
         )
 
@@ -176,12 +176,15 @@ def test_mixed_afd_runner_incompatibility_preserves_explicit_pin_scope(monkeypat
     monkeypatch.setattr("aisimulate.sweeper.search_space.resolve_model_hardware", unexpected_model_lookup)
     monkeypatch.setattr(
         "aisimulate.sweeper.search_space.parallel_configs_for",
-        lambda *args, **kwargs: [ReplicaParallelConfig(shape=ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)],
+        lambda *args, **kwargs: [
+            ReplicaParallelConfig(shape=ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+        ],
     )
     config = _config(
         "afd",
         deployment_mode=["agg", "afd"],
         afd_pinned_topologies=[_topology()] if pinned else [],
+        afd_batch_size_candidates=[16],
     )
     if pinned:
         with pytest.raises(NoViableParallelConfig, match="runner-incompatible") as error:
@@ -195,7 +198,7 @@ def test_mixed_afd_runner_incompatibility_preserves_explicit_pin_scope(monkeypat
 
 def test_mixed_afd_terminal_failure_defers_warning_and_preserves_runner_details(monkeypatch):
     monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", lambda *args, **kwargs: [])
-    config = _config("afd", deployment_mode=["afd", "agg"], afd_pinned_topologies=[])
+    config = _config("afd", deployment_mode=["afd", "agg"], afd_pinned_topologies=[], afd_batch_size_candidates=[16])
 
     with pytest.raises(NoViableParallelConfig, match="runner-incompatible") as error:
         enumerate_branches(config, runner_capabilities=_capabilities("agg"))
