@@ -12,14 +12,41 @@ use crate::engine::{PressureEvent, PressureKind, PressureState, modeled_duration
 use super::config::{SglangConfig, floor_to_block};
 use super::request::SglangRequest;
 
+/// SGLang `SGLANG_RETRACT_DECODE_STEPS`: decode steps worth of KV reserved per surviving request
+/// when `retract_decode` re-estimates `new_token_ratio`.
+pub(super) const RETRACT_DECODE_STEPS: usize = 20;
+
 #[derive(Default)]
 pub(super) struct DecodeResult {
     pub(super) requests: Vec<SglangRequest>,
     pub(super) completed_requests: Vec<SglangRequest>,
     pub(super) output_signals: Vec<OutputSignal>,
     pub(super) pressure_events: Vec<PressureEvent>,
-    pub(super) retracted_any: bool,
+    /// SGLang `ScheduleBatch.retract_decode` re-estimate of `new_token_ratio`, computed from the
+    /// surviving requests at the retraction point (before this pass's forward), when a retraction
+    /// happened.
+    pub(super) new_token_ratio_estimate: Option<f64>,
     pub(super) end_ms: f64,
+}
+
+/// What a scheduler pass asks the step simulation to do with `running`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StepKind {
+    /// A decode forward: memory check with retraction, speculative bursts, modeled duration.
+    Decode,
+    /// Bookkeeping for requests that were just prefilled in this pass: the prefill forward already
+    /// produced exactly one token per request, so no speculative burst and no extra time.
+    PrefillFirstToken,
+}
+
+/// `min(1, (decoded + RETRACT_DECODE_STEPS * n) / (max_new + 1))` over the surviving batch, as in
+/// SGLang `ScheduleBatch.retract_decode`.
+fn retraction_ratio_estimate(running: &[SglangRequest]) -> f64 {
+    let total_decoded: usize = running.iter().map(|req| req.output_len()).sum();
+    let total_max_new: usize = running.iter().map(|req| req.max_output_tokens).sum();
+    let estimate = (total_decoded as f64 + RETRACT_DECODE_STEPS as f64 * running.len() as f64)
+        / (total_max_new as f64 + 1.0);
+    estimate.min(1.0)
 }
 
 fn decode_page_growth_needed(
@@ -209,6 +236,106 @@ pub(super) fn simulate_decode_step(
     result
 }
 
+/// Bookkeeping for the first token that a prefill forward produced for each freshly prefilled
+/// request. SGLang finishes a request whose first token is also its last right after the prefill
+/// batch (`check_finished` in `process_batch_result_prefill`) without ever giving that token a KV
+/// slot; the others get their slot at the next decode step (`prepare_for_decode`), where the
+/// decode memory check and retraction live. This is a pure prefill forward, so it never retracts
+/// and takes no decode time. When the first-output slots do not fit even after evicting cached
+/// pages, the continuing requests keep their first token until the next decode step (which is
+/// where SGLang would have to retract for them).
+fn prefill_first_tokens(
+    running: &mut Vec<SglangRequest>,
+    kv_manager: &mut SglangKvManager,
+    config: &SglangConfig,
+    current_time_ms: f64,
+    mut completed_requests: Vec<SglangRequest>,
+    mut output_signals: Vec<OutputSignal>,
+) -> DecodeResult {
+    let mut completed_indices = Vec::new();
+
+    // Requests that finish with their first token need no KV slot.
+    for (idx, req) in running.iter_mut().enumerate() {
+        if req.remaining_output_tokens() != 1 {
+            continue;
+        }
+        let token_id = req.next_output_token();
+        req.append_final_output_token(token_id);
+        req.debug_assert_invariants(config.block_size);
+        output_signals.push(OutputSignal {
+            uuid: req.uuid,
+            token_id: Some(token_id),
+            completed: true,
+            rejected: false,
+            cached_tokens: None,
+            handoff_delay_ms: compute_prefill_handoff_delay_ms(
+                config.worker_type,
+                true,
+                req.prompt_len(),
+                config.kv_transfer_bandwidth,
+                config.kv_transfer_bytes_per_token,
+            ),
+        });
+        completed_indices.push(idx);
+    }
+    let mut newly_completed = Vec::with_capacity(completed_indices.len());
+    for &idx in completed_indices.iter().rev() {
+        newly_completed.push(running.remove(idx));
+    }
+    newly_completed.reverse();
+    completed_requests.extend(newly_completed);
+
+    // The rest need a slot for the first output token. Make room by evicting cached pages only.
+    let needed = decode_page_growth_needed(running, config.block_size, 1);
+    let available = kv_manager.cache().available_tokens();
+    if available < needed {
+        kv_manager.evict(needed - available);
+    }
+    let reserved_pages = needed / config.block_size;
+    let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
+        return DecodeResult {
+            completed_requests,
+            output_signals,
+            end_ms: current_time_ms,
+            ..DecodeResult::default()
+        };
+    };
+    for req in running.iter_mut() {
+        let crossing_page_boundary = req.current_sequence_len() + 1 > req.allocated_tokens;
+        kv_manager.extend_decode(&mut req.kv_lease, &mut reservation);
+        if crossing_page_boundary {
+            req.allocated_tokens += config.block_size;
+        }
+        let token_id = req.next_output_token();
+        req.append_output_token(token_id, config.block_size);
+        cache_materialized_prefix(req, kv_manager, config);
+        req.debug_assert_invariants(config.block_size);
+        output_signals.push(OutputSignal {
+            uuid: req.uuid,
+            token_id: Some(token_id),
+            completed: false,
+            rejected: false,
+            cached_tokens: None,
+            handoff_delay_ms: compute_prefill_handoff_delay_ms(
+                config.worker_type,
+                false,
+                req.prompt_len(),
+                config.kv_transfer_bandwidth,
+                config.kv_transfer_bytes_per_token,
+            ),
+        });
+    }
+    debug_assert!(reservation.len() <= reserved_pages);
+    kv_manager.release_decode_reservation(reservation);
+
+    DecodeResult {
+        completed_requests,
+        output_signals,
+        end_ms: current_time_ms,
+        ..DecodeResult::default()
+    }
+}
+
 pub(super) fn cleanup_completed_request(
     request: &mut SglangRequest,
     kv_manager: &mut SglangKvManager,
@@ -226,9 +353,48 @@ pub(super) fn simulate_decode_step_with_sampler(
     running: &mut Vec<SglangRequest>,
     kv_manager: &mut SglangKvManager,
     config: &SglangConfig,
+    sampler: Option<&mut SpeculativeDecodeSampler>,
+    current_time_ms: f64,
+    apply_speedup: bool,
+) -> anyhow::Result<DecodeResult> {
+    simulate_step(
+        running,
+        kv_manager,
+        config,
+        sampler,
+        current_time_ms,
+        apply_speedup,
+        StepKind::Decode,
+    )
+}
+
+/// Record the first token that the prefill forward produced for each freshly prefilled request.
+/// Shares the KV bookkeeping with the decode step but takes no speculative burst and no time.
+pub(super) fn simulate_prefill_first_tokens(
+    running: &mut Vec<SglangRequest>,
+    kv_manager: &mut SglangKvManager,
+    config: &SglangConfig,
+    current_time_ms: f64,
+) -> anyhow::Result<DecodeResult> {
+    simulate_step(
+        running,
+        kv_manager,
+        config,
+        None,
+        current_time_ms,
+        false,
+        StepKind::PrefillFirstToken,
+    )
+}
+
+fn simulate_step(
+    running: &mut Vec<SglangRequest>,
+    kv_manager: &mut SglangKvManager,
+    config: &SglangConfig,
     mut sampler: Option<&mut SpeculativeDecodeSampler>,
     current_time_ms: f64,
     apply_speedup: bool,
+    kind: StepKind,
 ) -> anyhow::Result<DecodeResult> {
     if running.is_empty() {
         return Ok(DecodeResult {
@@ -279,6 +445,17 @@ pub(super) fn simulate_decode_step_with_sampler(
         });
     }
 
+    if kind == StepKind::PrefillFirstToken {
+        return Ok(prefill_first_tokens(
+            running,
+            kv_manager,
+            config,
+            current_time_ms,
+            completed_requests,
+            output_signals,
+        ));
+    }
+
     let max_burst = if config.worker_type == crate::engine::common::protocols::WorkerType::Prefill {
         1
     } else {
@@ -293,14 +470,17 @@ pub(super) fn simulate_decode_step_with_sampler(
         current_time_ms,
         &mut pressure_events,
     );
-    let retracted_any = !retracted.is_empty();
+    // SGLang re-estimates the ratio in `retract_decode`, i.e. from the survivors before the
+    // forward that follows, not from their state after this pass's tokens were appended.
+    let new_token_ratio_estimate =
+        (!retracted.is_empty()).then(|| retraction_ratio_estimate(running));
     if running.is_empty() {
         return Ok(DecodeResult {
             completed_requests,
             output_signals,
             requests: retracted,
             pressure_events,
-            retracted_any,
+            new_token_ratio_estimate,
             end_ms: current_time_ms,
         });
     }
@@ -334,7 +514,7 @@ pub(super) fn simulate_decode_step_with_sampler(
             output_signals,
             requests: retracted,
             pressure_events,
-            retracted_any,
+            new_token_ratio_estimate,
             end_ms: current_time_ms,
         });
     };
@@ -402,7 +582,7 @@ pub(super) fn simulate_decode_step_with_sampler(
         completed_requests,
         output_signals,
         pressure_events,
-        retracted_any,
+        new_token_ratio_estimate,
         end_ms: current_time_ms + total_time.as_secs_f64() * 1000.0,
     })
 }

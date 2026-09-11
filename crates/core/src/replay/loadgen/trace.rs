@@ -147,6 +147,7 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             Ok(AgenticMooncakeRow {
                 request_id: raw.request_id,
                 play_id: "agentic-play".to_string(),
+                source_play_ordinal: None,
                 session_id: raw
                     .session_id
                     .unwrap_or_else(|| "agentic-session".to_string()),
@@ -160,6 +161,7 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
                 } else {
                     0.0
                 },
+                recorded_api_time_ms: None,
                 priority: raw.priority,
                 strict_priority: raw.strict_priority,
                 policy_class: raw.policy_class,
@@ -1376,6 +1378,16 @@ impl AgenticTraceBuilder {
                 raw.not_before_ms
             );
         }
+        if raw
+            .recorded_api_time_ms
+            .is_some_and(|duration| !duration.is_finite() || duration < 0.0)
+        {
+            bail!(
+                "trace line {} has invalid recorded_api_time_ms {:?}",
+                line_idx + 1,
+                raw.recorded_api_time_ms
+            );
+        }
         for dependency in &raw.dependencies {
             if dependency.request_id.trim().is_empty() {
                 bail!(
@@ -1419,6 +1431,7 @@ impl AgenticTraceBuilder {
             replay_key,
             request_id: raw.request_id,
             play_id: raw.play_id,
+            source_play_ordinal: raw.source_play_ordinal,
             session_id: raw.session_id,
             model: raw.model,
             input_length,
@@ -1426,6 +1439,7 @@ impl AgenticTraceBuilder {
             output_token_ids,
             hash_ids,
             not_before_ms: raw.not_before_ms,
+            recorded_api_time_ms: raw.recorded_api_time_ms,
             priority: raw.priority.unwrap_or(0),
             strict_priority: raw.strict_priority.unwrap_or(0),
             policy_class: raw.policy_class,
@@ -1479,6 +1493,15 @@ impl AgenticTraceBuilder {
         let mut plays = Vec::with_capacity(nodes_by_play.len());
         for (play_id, mut node_indices) in nodes_by_play {
             node_indices.sort_unstable();
+            let source_play_ordinal = self.nodes[node_indices[0]].source_play_ordinal;
+            if node_indices.iter().any(|node_index| {
+                self.nodes[*node_index].source_play_ordinal != source_play_ordinal
+            }) {
+                bail!(
+                    "play {} has inconsistent source_play_ordinal values",
+                    play_id
+                );
+            }
             let roots: Vec<_> = node_indices
                 .iter()
                 .copied()
@@ -1493,11 +1516,43 @@ impl AgenticTraceBuilder {
             }
             plays.push(AgenticPlay {
                 play_id,
+                source_play_ordinal,
                 root_nodes: roots,
                 nodes: node_indices,
             });
         }
-        plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
+        let ordered_plays = plays
+            .iter()
+            .filter(|play| play.source_play_ordinal.is_some())
+            .count();
+        if ordered_plays != 0 && ordered_plays != plays.len() {
+            bail!("source_play_ordinal must be set for every play when it is used");
+        }
+        if ordered_plays == plays.len() {
+            let mut ordinals = plays
+                .iter()
+                .map(|play| {
+                    play.source_play_ordinal
+                        .expect("all source play ordinals are present")
+                })
+                .collect::<Vec<_>>();
+            ordinals.sort_unstable();
+            for (expected, actual) in ordinals.into_iter().enumerate() {
+                if actual != expected {
+                    bail!(
+                        "source_play_ordinal values must be unique and contiguous from 0; expected {}, found {}",
+                        expected,
+                        actual
+                    );
+                }
+            }
+            plays.sort_by_key(|play| {
+                play.source_play_ordinal
+                    .expect("all source play ordinals are present")
+            });
+        } else {
+            plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
+        }
         let graph_digest = canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes)?;
 
         Ok(AgenticTrace {

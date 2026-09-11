@@ -62,6 +62,7 @@ class ModelHardware:
     vram_per_gpu: int
     gpus_per_node: int
     max_context: int | None  # model's max context length (the default max_seq_len)
+    num_experts: int = 0
 
 
 def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) -> ModelHardware:
@@ -73,6 +74,7 @@ def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) 
     allow_pure_tp = is_moe and architecture in _GQA_MOE_ARCHITECTURES
     mla = is_moe and not allow_pure_tp
     max_context = model_config.get("context")
+    num_experts = int(model_config.get("num_experts") or model_config.get("n_routed_experts") or 0)
 
     system_spec = perf_database.load_system_spec(hardware_sku)
     if not system_spec:
@@ -97,6 +99,7 @@ def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) 
         vram_per_gpu=vram_per_gpu,
         gpus_per_node=gpus_per_node,
         max_context=int(max_context) if max_context else None,
+        num_experts=num_experts,
     )
 
 

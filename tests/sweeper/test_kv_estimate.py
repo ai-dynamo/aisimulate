@@ -41,9 +41,7 @@ def test_estimate_kv_tokens_returns_capacity(monkeypatch):
 
 def test_estimate_kv_tokens_oom_returns_none(monkeypatch):
     def boom(*a, **k):
-        raise ValueError(
-            "no KV budget: non-KV memory (361903882240 bytes) meets/exceeds the KV-cacheable budget"
-        )
+        raise ValueError("no KV budget: non-KV memory (361903882240 bytes) meets/exceeds the KV-cacheable budget")
 
     monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", boom)
     sh = ParallelShape(tp=1, dp=2, moe_tp=1, moe_ep=2)
@@ -72,9 +70,7 @@ def test_feasible_shape_tokens_filters_short_and_oom_and_dedups(monkeypatch):
 
     monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", fake)
     big = ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4)  # 40000 -> feasible
-    small = ParallelShape(
-        tp=2, dp=1, moe_tp=1, moe_ep=2
-    )  # 20000 -> < max_seq_len -> dropped
+    small = ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=2)  # 20000 -> < max_seq_len -> dropped
     oom = ParallelShape(tp=1, dp=2, moe_tp=1, moe_ep=2)  # None -> dropped
 
     feasible = feasible_shape_tokens(

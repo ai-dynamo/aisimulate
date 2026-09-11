@@ -81,6 +81,12 @@ def _verify_payload() -> None:
             "aiconfigurator_core/sdk/engine.py",
             "aiconfigurator_core/sdk/memory.py",
             "aiconfigurator_core/systems/h100_sxm.yaml",
+            "collector/__init__.py",
+            "collector/model_cases.py",
+            "collector/cases/base_ops/mla_module.yaml",
+            "collector/fpm_forward/cli.py",
+            "collector/fpm_forward/__init__.py",
+            "collector/fpm_forward/runtime/fpm_exec.sh",
         ),
     )
     _forbid_distribution_files(
@@ -117,6 +123,8 @@ def _verify_imports() -> None:
     compatibility_runtime = importlib.import_module("aiconfigurator_core._aiconfigurator_core")
     core = importlib.import_module("aiconfigurator_core")
     stable = importlib.import_module("aisimulate_core")
+    importlib.import_module("collector")
+    importlib.import_module("collector.fpm_forward")
     if core.AicEngine is not runtime.AicEngine or compatibility_runtime.AicEngine is not runtime.AicEngine:
         raise RuntimeError("AicEngine identity differs across unified compatibility namespaces")
     if stable.AicEngine is not runtime.AicEngine:
@@ -124,7 +132,9 @@ def _verify_imports() -> None:
 
     sdk = importlib.import_module("aiconfigurator_core.sdk")
     expected_facade = {
+        "AttentionBackend",
         "EngineHandle",
+        "MoEBackend",
         "ModelConfig",
         "RuntimeConfig",
         "RustForwardPassPerfModel",

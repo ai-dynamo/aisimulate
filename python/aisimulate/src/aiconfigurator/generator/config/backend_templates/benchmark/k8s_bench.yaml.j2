@@ -1,5 +1,7 @@
-{# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -#}
-{# SPDX-License-Identifier: Apache-2.0 -#}
+{#
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-#}
 {%- set pvc_name = (K8sConfig.k8s_pvc_name or K8sConfig.k8s_model_cache or '') | trim -%}
 {%- set use_pvc = (pvc_name != '') -%}
 {%- set pvc_mount_path = K8sConfig.k8s_pvc_mount_path | default('/workspace/model_cache') -%}
