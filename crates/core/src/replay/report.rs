@@ -861,6 +861,42 @@ impl TraceRequestStats {
             return;
         };
 
+        // KNOWN GAP (needs a product decision -- do not "fix" silently).
+        //
+        // These two distributions are built from the same gaps but NOT the
+        // same sample set: every zero-length gap enters `itl_distribution` and
+        // is excluded from `output_token_throughput_per_user`. The exclusion
+        // exists only to avoid `1000.0 / 0.0`, which would be `+inf` and then
+        // be silently dropped by `StreamingDistribution::add` anyway.
+        //
+        // Zero-length gaps are not rare. Token timestamps have pass-boundary
+        // granularity -- `on_token` is called once per `OutputSignal` at the
+        // pass's `now_ms` -- and a speculative-decode pass emits its whole
+        // accepted burst in one pass. With accept length k, k-1 of every k
+        // gaps are exactly 0.0. So:
+        //
+        //   mean_itl                        ~= pass_ms / k
+        //   mean_output_token_throughput_per_user ~= 1000 / pass_ms
+        //
+        // and a consumer computing `1000 / mean_itl_ms` disagrees with the
+        // reported per-user throughput by a factor of k. In the degenerate
+        // case where every gap is zero (all of a request's tokens land on one
+        // pass) the distribution has no samples at all and `finish()` emits
+        // `mean_output_token_throughput_per_user: 0.0` -- indistinguishable
+        // from a measured zero.
+        //
+        // This is not diagnostic-only output: it is a live sweeper *maximize*
+        // objective (`docs/sweeper/optimization-goals.md`,
+        // `python/aisimulate/src/aisimulate/sweeper/score.py`), so the bias
+        // steers autotuning toward configurations that merely look worse.
+        //
+        // Two defensible repairs exist and they do not agree: weight each
+        // sample by the burst size (tokens-per-pass / gap), or redefine the
+        // metric per request as `output_length / (last_ms - first_ms)`, which
+        // is what most tools mean by "per user" and which `tpot` right beside
+        // it already does. Picking one changes a locked optimization objective
+        // and every historical sweep score, so it belongs to whoever owns that
+        // contract, not to a correctness pass.
         if include_in_distributions {
             for window in times.windows(2) {
                 let itl_ms = (window[1] - window[0]).max(0.0);
