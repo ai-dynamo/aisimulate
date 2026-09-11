@@ -159,6 +159,7 @@ def _build_default_cmd(
     return cmd
 
 
+@pytest.mark.timeout(300)
 @pytest.mark.parametrize("case", _DEFAULT_BUILD_CASES)
 def test_cli_default_build_subset(case: dict):
     """

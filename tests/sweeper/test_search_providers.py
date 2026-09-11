@@ -80,9 +80,7 @@ class _Adapter:
     def generate_search_space(self, search_spec, context):
         self.generated.append((search_spec, context))
         return AdapterSearchPlan(
-            fragment=SearchSpaceFragment(
-                choices_by_branch={"agg": {"mode": list(search_spec["modes"])}}
-            ),
+            fragment=SearchSpaceFragment(choices_by_branch={"agg": {"mode": list(search_spec["modes"])}}),
             potential_runtime_hooks=(_HOOK,),
         )
 
@@ -115,9 +113,7 @@ class _SharedOutputAdapter(_Adapter):
     def generate_search_space(self, search_spec, context):
         del search_spec, context
         return AdapterSearchPlan(
-            fragment=SearchSpaceFragment(
-                choices_by_branch={"agg": {"mode": ["first", "second"]}}
-            ),
+            fragment=SearchSpaceFragment(choices_by_branch={"agg": {"mode": ["first", "second"]}}),
             potential_runtime_hooks=(_HOOK,),
         )
 
@@ -214,9 +210,7 @@ class _RunnerFactory:
         self.created = 0
 
     def capabilities(self):
-        hooks = (
-            (HookCapability("test.feature", "policy", 1),) if self.support_hook else ()
-        )
+        hooks = (HookCapability("test.feature", "policy", 1),) if self.support_hook else ()
         return RunnerCapabilities(
             supported_backend_topologies=(("*", "*"),),
             supported_hooks=hooks,
@@ -474,13 +468,9 @@ def test_adapter_reused_output_buffer_is_isolated_per_candidate(monkeypatch) -> 
         show_progress=False,
     )
 
-    replay_modes = [
-        spec.adapters["test.feature"].config["mode"] for spec in factory.runner.specs
-    ]
+    replay_modes = [spec.adapters["test.feature"].config["mode"] for spec in factory.runner.specs]
     hook_modes = [spec.runtime_hooks[0].config["mode"] for spec in factory.runner.specs]
-    candidate_modes = [
-        candidate.config["adapters"]["test.feature"]["mode"] for candidate in candidates
-    ]
+    candidate_modes = [candidate.config["adapters"]["test.feature"]["mode"] for candidate in candidates]
     assert replay_modes == ["first", "second"]
     assert hook_modes == ["first", "second"]
     assert candidate_modes == ["first", "second"]
@@ -545,14 +535,8 @@ def test_adapter_contract_rejects_non_json_values_before_worker_submission() -> 
     [
         AdapterReplaySpec(config=[]),
         AdapterReplaySpec(runtime_hooks=[]),
-        AdapterReplaySpec(
-            runtime_hooks=(RuntimeHookSpec(provider="", kind="policy", api_version=1),)
-        ),
-        AdapterReplaySpec(
-            runtime_hooks=(
-                RuntimeHookSpec(provider="test", kind="policy", api_version=True),
-            )
-        ),
+        AdapterReplaySpec(runtime_hooks=(RuntimeHookSpec(provider="", kind="policy", api_version=1),)),
+        AdapterReplaySpec(runtime_hooks=(RuntimeHookSpec(provider="test", kind="policy", api_version=True),)),
     ],
 )
 def test_adapter_replay_contract_rejects_invalid_field_shapes(spec) -> None:
@@ -565,13 +549,9 @@ def test_adapter_replay_contract_rejects_invalid_field_shapes(spec) -> None:
     [
         AdapterSearchPlan(diagnostics=[]),
         AdapterSearchPlan(potential_runtime_hooks=[]),
+        AdapterSearchPlan(fragment=SearchSpaceFragment(choices_by_branch={"agg": {"mode": (1,)}})),
         AdapterSearchPlan(
-            fragment=SearchSpaceFragment(choices_by_branch={"agg": {"mode": (1,)}})
-        ),
-        AdapterSearchPlan(
-            fragment=SearchSpaceFragment(
-                float_ranges_by_branch={"agg": {"weight": (0.0, float("inf"))}}
-            )
+            fragment=SearchSpaceFragment(float_ranges_by_branch={"agg": {"weight": (0.0, float("inf"))}})
         ),
     ],
 )
@@ -587,11 +567,7 @@ def test_adapter_parameter_separator_collisions_are_rejected() -> None:
         supported_backends={},
         knob_choices={},
     )
-    plan = AdapterSearchPlan(
-        fragment=SearchSpaceFragment(
-            choices_by_branch={"agg": {"ambiguous::parameter": [1]}}
-        )
-    )
+    plan = AdapterSearchPlan(fragment=SearchSpaceFragment(choices_by_branch={"agg": {"ambiguous::parameter": [1]}}))
 
     with pytest.raises(ValueError, match="reserved separator"):
         search_module._merge_adapter_spaces([branch], {"test.feature": plan})
