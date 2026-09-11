@@ -32,6 +32,34 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def stream_digest(stream) -> str:
+    hasher = hashlib.sha256()
+    while chunk := stream.read(64 * 1024):
+        hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def file_digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return stream_digest(stream)
+
+
+def source_identity(loaded: Path, expected: Path) -> dict:
+    def tree(root):
+        return {
+            str(path.relative_to(root)): file_digest(path)
+            for path in sorted(root.rglob("*.py"))
+        }
+
+    actual = tree(loaded)
+    if not actual or actual != tree(expected):
+        raise RuntimeError("loaded Python source differs from the recorded checkout")
+    return {
+        "sha256": digest(json.dumps(actual, sort_keys=True).encode()),
+        "python_files": len(actual),
+    }
+
+
 def package_identity(name: str) -> dict:
     package = importlib.metadata.distribution(name)
     return {"name": name, "version": package.version}
@@ -63,24 +91,28 @@ def main() -> None:
 
     # Require a real native module and complete a small native replay first.
     # An import error or placeholder runtime must never count as safe handling.
+    import aisimulate
+    import dynamo.replay
     from dynamo import _core
     from dynamo.mocker import MockEngineArgs
     from dynamo.replay import run_synthetic_trace_replay
     from aisimulate.config.common import ResourceConfig
     from aisimulate.supervision import run_process
 
-    native_hash = digest(Path(_core.__file__).read_bytes())
+    native_hash = file_digest(Path(_core.__file__))
     with zipfile.ZipFile(args.dynamo_wheel) as wheel:
         native_members = [
             name
             for name in wheel.namelist()
             if name.startswith("dynamo/_core") and name.endswith((".so", ".pyd"))
         ]
-        if (
-            len(native_members) != 1
-            or digest(wheel.read(native_members[0])) != native_hash
-        ):
-            raise RuntimeError("loaded native binary does not match the supplied wheel")
+        if len(native_members) != 1:
+            raise RuntimeError("wheel must contain exactly one native replay binary")
+        with wheel.open(native_members[0]) as member:
+            if stream_digest(member) != native_hash:
+                raise RuntimeError(
+                    "loaded native binary does not match the supplied wheel"
+                )
     if (
         getattr(_core, "OFFLINE_SYNTHETIC_CONCURRENCY_ALLOCATION_MODEL", None)
         != "generated-u32-v1"
@@ -98,6 +130,17 @@ def main() -> None:
         for package in tomllib.loads(lock.read_text())["package"]
         if package["name"] == "aisimulate-core"
     )
+
+    aisimulate_source = source_identity(
+        Path(aisimulate.__file__).parent, ROOT / "python/aisimulate/src/aisimulate"
+    )
+    dynamo_python = source_identity(
+        Path(dynamo.replay.__file__).parent,
+        dynamo_source / "components/src/dynamo/replay",
+    )
+    from aisimulate import _runtime
+
+    aisimulate_native_hash = file_digest(Path(_runtime.__file__))
 
     smoke = run_synthetic_trace_replay(
         input_tokens=16,
@@ -130,7 +173,10 @@ def main() -> None:
         "python": platform.python_version(),
         "platform": platform.platform(),
         "native_binary_sha256": native_hash,
-        "dynamo_wheel_sha256": digest(args.dynamo_wheel.read_bytes()),
+        "aisimulate_native_binary_sha256": aisimulate_native_hash,
+        "aisimulate_python_source": aisimulate_source,
+        "dynamo_python_source": dynamo_python,
+        "dynamo_wheel_sha256": file_digest(args.dynamo_wheel),
         "dynamo_revision": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=dynamo_source, text=True
         ).strip(),

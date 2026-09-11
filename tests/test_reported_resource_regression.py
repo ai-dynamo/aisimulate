@@ -149,3 +149,33 @@ def test_native_evidence_gate_cannot_mistake_failure_for_safe_refusal(
             module.check_refusal(tmp_path, runtime)
     else:
         assert module.check_refusal(tmp_path, runtime) == plan
+
+
+def test_evidence_hashing_is_bounded_and_source_identity_is_checked(tmp_path):
+    import importlib.util
+    import io
+
+    path = Path(__file__).parents[1] / "scripts/verify_reported_resource_safety.py"
+    spec = importlib.util.spec_from_file_location("resource_regression_hashing", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class BoundedReader(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 < size <= 64 * 1024
+            return super().read(size)
+
+    payload = b"report evidence" * 10_000
+    assert (
+        module.stream_digest(BoundedReader(payload))
+        == hashlib.sha256(payload).hexdigest()
+    )
+    loaded, expected = tmp_path / "loaded", tmp_path / "expected"
+    loaded.mkdir()
+    expected.mkdir()
+    (loaded / "main.py").write_text("version = 1")
+    (expected / "main.py").write_text("version = 2")
+    with pytest.raises(RuntimeError, match="differs"):
+        module.source_identity(loaded, expected)
+    (loaded / "main.py").write_text("version = 2")
+    assert module.source_identity(loaded, expected)["python_files"] == 1
