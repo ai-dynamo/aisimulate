@@ -1405,6 +1405,32 @@ fn normalized_hashes(
 ) -> Result<Vec<u64>> {
     let full_blocks = request.input_length / block_size;
     let has_partial = !request.input_length.is_multiple_of(block_size);
+    // A `hash_ids` length that disagrees with `input_length` is tolerated, not
+    // rejected, and both directions are deliberate (pinned by
+    // `extra_hashes_are_truncated_and_missing_blocks_are_request_private`):
+    //
+    //  - Surplus entries are ignored. Producers emit one hash per
+    //    ceil(input_length / block_size) block, but a partial trailing block's
+    //    content is not fully determined, so it gets a private identity
+    //    instead of the authored hash. This is correct for prefix modeling.
+    //  - Missing entries become `private:missing` identities, which is what
+    //    makes an entirely hash-less request unshareable. `detect_chains`
+    //    routes hash-less requests into their own chain, so that path is a
+    //    supported first-class case, not corruption.
+    //
+    // The cost is that a *partially* hashed request -- non-empty `hash_ids`
+    // shorter than `full_blocks`, which no known producer convention emits --
+    // is indistinguishable from the supported cases. Its declared-but-unhashed
+    // blocks silently become request-private, so the run reports near-zero
+    // prefix reuse for a corpus that claims sharing. The downstream canonical
+    // validator rejects exactly this mismatch (`trace.rs`, "requires exactly
+    // {} hash_ids") but can never fire here, because this function always
+    // returns a full-length vector.
+    //
+    // Tightening it to reject only the partial case would be a product
+    // decision about the Weka producer contract (is a short `hash_ids` a lossy
+    // producer to accommodate, or corrupt input to refuse?), not a bug fix, so
+    // it is deliberately left alone rather than guessed at.
     let mut result = Vec::with_capacity(full_blocks + usize::from(has_partial));
     for block_index in 0..full_blocks {
         let identity = request.hash_ids.get(block_index).map_or_else(
