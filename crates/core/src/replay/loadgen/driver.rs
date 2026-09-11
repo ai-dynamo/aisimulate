@@ -1014,11 +1014,25 @@ impl WorkloadDriver {
     /// deadlocking: `pop_ready` skips sessions with `in_flight.is_some()`, so a
     /// leaked session would leave `is_drained` stuck at `false` forever.
     pub fn release_cap_slot(&mut self, request_uuid: Uuid, now_ms: f64) {
-        let Ok(Some(resolution)) = self.resolve_turn(request_uuid, now_ms, TurnOutcome::Cancelled)
-        else {
-            return;
-        };
-        self.apply_resolution(resolution, now_ms);
+        // `resolve_turn` returns `Ok(None)` for the expected benign case
+        // (this doc's own "no-op if on_complete already ran"), but it can
+        // also return `Err` for a genuine internal invariant violation
+        // (session/turn bookkeeping mismatch) -- those two outcomes must
+        // not be discarded identically. This function has no Result to
+        // propagate an error through (its callers are themselves on a
+        // failure/panic-recovery path), so surface it via tracing instead
+        // of silently dropping it.
+        match self.resolve_turn(request_uuid, now_ms, TurnOutcome::Cancelled) {
+            Ok(Some(resolution)) => self.apply_resolution(resolution, now_ms),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::error!(
+                    %request_uuid,
+                    error = %error,
+                    "release_cap_slot: internal invariant violation resolving a cancelled request"
+                );
+            }
+        }
     }
 
     pub fn pop_ready(&mut self, now_ms: f64, limit: usize) -> Vec<ReadyTurn> {
