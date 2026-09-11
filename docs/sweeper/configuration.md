@@ -82,7 +82,8 @@ or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pi
 override may be set independently: an omitted role inherits `hardware_sku`. Both roles still share
 the configured model, backend, backend version, and total `gpu_budget`. When `backend_version` is
 omitted, the latest performance-data version for both effective SKUs must match; otherwise pin one
-version supported by both systems.
+version supported by both systems. These overrides are part of the Sweeper YAML/SDK contract; the
+separate `aisimulate recommend` input continues to describe one shared hardware SKU.
 
 ## Attention-FFN Disaggregation
 
