@@ -224,6 +224,8 @@ def _choices(value: Any, *, default: list[Any], preparation: PreparationBudget |
             raise ValueError("integer log ranges must be lowered as compact bounds")
         if step is None:
             raise ValueError("integer linear engine ranges require step")
+        if raw["min"] > raw["max"] or step <= 0:
+            raise ValueError("linear range requires min <= max and step > 0")
         reserved = int((raw["max"] - raw["min"]) // step) + 1
         preparation.reserve(reserved, "input.integer_range")
         values: list[Any] = []

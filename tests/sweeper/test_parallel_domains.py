@@ -366,3 +366,29 @@ def test_float_range_rejects_nonadvancing_step():
     with pytest.raises(ValueError, match="step does not advance"):
         _choices({"range": {"min": 1e16, "max": 1e16 + 2, "step": 1.0}}, default=[])
     assert _choices({"range": {"min": 1e16, "max": 1e16, "step": 1.0}}, default=[]) == [1e16]
+
+
+@pytest.mark.parametrize("bounds", [(3, 1, 1), (1, 3, -1), (1, 3, 0)])
+def test_invalid_linear_range_does_not_change_preparation_budget(bounds):
+    from aisimulate.recommend import _choices
+
+    budget = PreparationBudget(max_combinations=5)
+    budget.reserve(4, "earlier")
+    before = budget.as_dict()
+    minimum, maximum, step = bounds
+    with pytest.raises(ValueError, match="linear range requires"):
+        _choices({"range": {"min": minimum, "max": maximum, "step": step}}, default=[], preparation=budget)
+    assert budget.as_dict() == before
+    with pytest.raises(SearchSpaceLimitError):
+        budget.reserve(2, "later")
+
+
+def test_preparation_reservation_cannot_refund_prior_work():
+    budget = PreparationBudget(max_combinations=5)
+    budget.reserve(4, "earlier")
+    before = budget.as_dict()
+    with pytest.raises(ValueError, match="reservation must be non-negative"):
+        budget.reserve(-1, "invalid")
+    assert budget.as_dict() == before
+    with pytest.raises(SearchSpaceLimitError):
+        budget.reserve(2, "later")

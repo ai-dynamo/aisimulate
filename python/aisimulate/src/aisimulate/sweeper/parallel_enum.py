@@ -48,6 +48,8 @@ class PreparationBudget:
     stages: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def reserve(self, count: int, stage: str) -> None:
+        if count < 0:
+            raise ValueError("preparation reservation must be non-negative")
         if self.considered + count > self.max_combinations:
             raise SearchSpaceLimitError(
                 f"parallel search preparation exceeds max_parallel_combinations={self.max_combinations} "
