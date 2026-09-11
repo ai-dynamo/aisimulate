@@ -159,9 +159,7 @@ def test_max_seq_len_defaults_to_model_context(monkeypatch):
         return dict.fromkeys(shapes, 10_000_000)
 
     monkeypatch.setattr(mh_mod, "feasible_shape_tokens", fake_feasible)
-    parallel_configs_for(
-        DEEPSEEK, "gb200", gpu_budget=16, deployment_mode="agg", backend="trtllm"
-    )
+    parallel_configs_for(DEEPSEEK, "gb200", gpu_budget=16, deployment_mode="agg", backend="trtllm")
     assert seen["max_seq_len"] == 163840  # DeepSeek-V3 max context
 
 
@@ -184,9 +182,7 @@ def test_kv_filter_keeps_only_feasible_shapes(monkeypatch):
         max_seq_len=8192,
     )
     assert cfgs
-    assert all(
-        c.shape.gpus_per_worker >= 4 for c in cfgs
-    )  # KV decides; no weight floor
+    assert all(c.shape.gpus_per_worker >= 4 for c in cfgs)  # KV decides; no weight floor
     assert all(c.total_gpus <= 16 for c in cfgs)
 
 

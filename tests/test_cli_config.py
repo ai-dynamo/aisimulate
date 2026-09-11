@@ -63,9 +63,7 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert disaggregated.engine.workers.decode.scheduler.max_sequences == 256
     assert disaggregated.engine.workers.decode.scheduler.prefill_schedule_interval == 1
 
-    programmatic = WorkersPredictionConfig(
-        prefill=WorkerPredictionConfig(), decode=WorkerPredictionConfig()
-    )
+    programmatic = WorkersPredictionConfig(prefill=WorkerPredictionConfig(), decode=WorkerPredictionConfig())
     assert programmatic.prefill is not None
     assert programmatic.decode is not None
     assert programmatic.prefill.scheduler.max_sequences == 1
@@ -129,9 +127,7 @@ def test_prediction_rejects_cuda_graph_reservation_with_fixed_capacity() -> None
         }
     }
 
-    with pytest.raises(
-        ValidationError, match="fixed KV capacity rejects cuda_graph_reserved_bytes"
-    ):
+    with pytest.raises(ValidationError, match="fixed KV capacity rejects cuda_graph_reserved_bytes"):
         CorePredictionConfig.model_validate({"engine": engine})
 
 
@@ -190,8 +186,7 @@ def test_recommendation_accepts_domains_and_parallel_preset() -> None:
                 "hardware": "auto",
                 "backend": {"choices": ["vllm", "sglang"]},
                 "workers": {
-                    role: {"parallelism": {"preset": "default"}}
-                    for role in ("aggregated", "prefill", "decode")
+                    role: {"parallelism": {"preset": "default"}} for role in ("aggregated", "prefill", "decode")
                 },
             },
             "optimization": {"hardware": "h200_sxm"},
@@ -280,9 +275,7 @@ def test_present_non_core_section_is_split_for_adapter_validation() -> None:
     }
     core, adapters = split_config_sections(base, command="recommend")
     config = CoreRecommendationConfig.model_validate(core)
-    lowered = recommendation_to_sweeper(
-        config, adapter_configs=adapters, stack="example"
-    )
+    lowered = recommendation_to_sweeper(config, adapter_configs=adapters, stack="example")
 
     assert "placement" not in core
     assert adapters == {"placement": {"policy": {"choices": ["first", "least_loaded"]}}}
@@ -364,9 +357,7 @@ def test_engine_scheduler_domains_replace_defaults_and_preserve_log_scale() -> N
                         "parallelism": {"preset": "default"},
                         "scheduler": {
                             "max_batched_tokens": {"choices": [4096]},
-                            "max_sequences": {
-                                "range": {"min": 1, "max": 8, "scale": "log"}
-                            },
+                            "max_sequences": {"range": {"min": 1, "max": 8, "scale": "log"}},
                         },
                     }
                 },
@@ -395,9 +386,7 @@ def test_large_integer_log_ranges_lower_as_compact_bounds() -> None:
                     "aggregated": {
                         "parallelism": {
                             "preset": False,
-                            "replicas": {
-                                "range": {"min": 1, "max": 1_000_000, "scale": "log"}
-                            },
+                            "replicas": {"range": {"min": 1, "max": 1_000_000, "scale": "log"}},
                         }
                     }
                 },
@@ -409,9 +398,7 @@ def test_large_integer_log_ranges_lower_as_compact_bounds() -> None:
     lowered = recommendation_to_sweeper(config)
 
     assert lowered.search_space.parallel_independent_by_mode["agg"]["replicas"] == [1]
-    assert lowered.search_space.parallel_independent_log_ranges_by_mode["agg"][
-        "replicas"
-    ] == [
+    assert lowered.search_space.parallel_independent_log_ranges_by_mode["agg"]["replicas"] == [
         1,
         1_000_000,
     ]
@@ -450,9 +437,7 @@ def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
 
     lowered = recommendation_to_sweeper(config)
 
-    assert lowered.search_space.parallel_custom_configs_by_mode["disagg"][
-        "prefill"
-    ] == [
+    assert lowered.search_space.parallel_custom_configs_by_mode["disagg"]["prefill"] == [
         {
             "replicas": 1,
             "tp": 1,
@@ -462,16 +447,11 @@ def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
             "moe_ep": 1,
         }
     ]
-    assert lowered.search_space.parallel_independent_by_mode["disagg"][
-        "decode_replicas"
-    ] == [
+    assert lowered.search_space.parallel_independent_by_mode["disagg"]["decode_replicas"] == [
         1,
         2,
     ]
-    assert not any(
-        name.startswith("prefill_")
-        for name in lowered.search_space.parallel_independent_by_mode["disagg"]
-    )
+    assert not any(name.startswith("prefill_") for name in lowered.search_space.parallel_independent_by_mode["disagg"])
 
 
 def test_backend_specific_block_size_validation() -> None:
@@ -500,9 +480,7 @@ def test_backend_specific_block_size_validation() -> None:
 
 def test_prediction_rejects_auto_hardware_and_kv_relative_load() -> None:
     with pytest.raises(ValidationError, match="recommendation-only"):
-        CorePredictionConfig.model_validate(
-            {"engine": {**_engine(), "hardware": "auto"}}
-        )
+        CorePredictionConfig.model_validate({"engine": {**_engine(), "hardware": "auto"}})
     with pytest.raises(ValidationError):
         CorePredictionConfig.model_validate(
             {
@@ -541,13 +519,9 @@ def test_traffic_and_optimizer_strict_defaults_and_finite_values() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0), ("e2e_ms", 1000.0)]
-)
+@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0), ("e2e_ms", 1000.0)])
 @pytest.mark.parametrize("target", ["goodput", "goodput_per_gpu"])
-def test_goodput_requires_at_least_one_sla_bound_in_typed_cli_config(
-    target: str, field: str, bound: float
-) -> None:
+def test_goodput_requires_at_least_one_sla_bound_in_typed_cli_config(target: str, field: str, bound: float) -> None:
     base = {
         "engine": {
             **_engine(),
@@ -558,9 +532,7 @@ def test_goodput_requires_at_least_one_sla_bound_in_typed_cli_config(
     }
     with pytest.raises(ValidationError, match="requires an evaluation.sla bound"):
         CoreRecommendationConfig.model_validate(base)
-    accepted = CoreRecommendationConfig.model_validate(
-        {**base, "evaluation": {"sla": {field: bound}}}
-    )
+    accepted = CoreRecommendationConfig.model_validate({**base, "evaluation": {"sla": {field: bound}}})
     assert getattr(accepted.evaluation.sla, field) == bound
 
 
@@ -576,9 +548,7 @@ def test_strict_sla_is_public_and_lowers_to_sweeper_goal() -> None:
     with pytest.raises(ValidationError, match="requires at least one"):
         CoreRecommendationConfig.model_validate(base)
 
-    public = CoreRecommendationConfig.model_validate(
-        {**base, "evaluation": {"sla": {"itl_ms": 30}}}
-    )
+    public = CoreRecommendationConfig.model_validate({**base, "evaluation": {"sla": {"itl_ms": 30}}})
     lowered = recommendation_to_sweeper(public)
 
     assert public.optimization.strict_sla is True
@@ -587,26 +557,18 @@ def test_strict_sla_is_public_and_lowers_to_sweeper_goal() -> None:
     assert lowered.goal.sla.itl_ms == 30
 
     with pytest.raises(ValidationError):
-        CoreRecommendationConfig.model_validate(
-            {**base, "optimization": {"strict_sla": "true"}}
-        )
+        CoreRecommendationConfig.model_validate({**base, "optimization": {"strict_sla": "true"}})
 
 
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
-def test_prediction_accepts_independent_token_sla_bounds(
-    field: str, bound: float
-) -> None:
-    config = CorePredictionConfig.model_validate(
-        {"engine": _engine(), "evaluation": {"sla": {field: bound}}}
-    )
+def test_prediction_accepts_independent_token_sla_bounds(field: str, bound: float) -> None:
+    config = CorePredictionConfig.model_validate({"engine": _engine(), "evaluation": {"sla": {field: bound}}})
 
     assert getattr(config.evaluation.sla, field) == bound
 
 
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
-def test_recommendation_accepts_independent_token_sla_bounds(
-    field: str, bound: float
-) -> None:
+def test_recommendation_accepts_independent_token_sla_bounds(field: str, bound: float) -> None:
     config = CoreRecommendationConfig.model_validate(
         {
             "engine": {**_engine(), "mode": "aggregated"},
