@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import math
 import random
 from collections.abc import Mapping
@@ -17,12 +18,15 @@ from typing import Protocol, runtime_checkable
 from .aic import materialize_aic_num_gpu_blocks
 from .sweeper.provider import JSONValue
 from .sweeper.replay import (
+    BackendDeploymentSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
     RunnerCapabilities,
 )
 from .traffic import materialize_configured_traffic
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("vllm", "agg"),
@@ -41,6 +45,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "trace_paths",
         "trace_format",
         "trace_block_size",
+        "weka_nested_timestamp_basis",
         "arrival_speedup_ratio",
         "replay_concurrency",
         "isl",
@@ -57,6 +62,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "num_request_ratio",
         "kv_load_ratio",
         "max_sim_time_ms",
+        "agentic_lanes",
     }
 )
 
@@ -110,6 +116,17 @@ class EngineReplayRunnerFactory:
             replay_spec_api_version=1,
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
+            supported_trace_formats=(
+                "mooncake",
+                "mooncake-delta",
+                "agentic_mooncake",
+                "applied_compute_agentic",
+                "dynamo",
+                "weka",
+            ),
+            supports_agentic_lanes=True,
+            supported_agentic_topologies=("agg",),
+            agentic_qualification="functional_only",
         )
 
     def create(self, worker_id: int) -> EngineReplayRunner:
@@ -183,6 +200,13 @@ class EngineReplayRunner:
             raise InvalidRunnerError("AISimulate engine replay runtime returned invalid report JSON") from exc
         if not isinstance(report, Mapping):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
+        resolved_basis = report.get("weka_nested_timestamp_basis")
+        if isinstance(resolved_basis, str):
+            logger.info(
+                "The complete Weka corpus uses resolved nested timestamp basis %r; auto selection, "
+                "when requested, is a corpus-wide heuristic and the resolved basis is included in source identity",
+                resolved_basis,
+            )
         return _normalize_engine_replay_report(
             report,
             include_native_report=(output_requirements.include_raw_report or output_requirements.capture_per_request),
@@ -210,8 +234,10 @@ def _materialize_engine_execution_spec(
 
     deployment = spec.backend_deployment
     deployment_mode = deployment.deployment_mode
+    execution_model: str | None = None
     if deployment_mode == "agg":
         raw_engine_args = _required_engine_args(deployment.agg_engine_args, "aggregated")
+        execution_model = _execution_target_model(deployment, "aggregated", raw_engine_args)
         engine = _materialize_engine_role(
             deployment.backend,
             deployment.backend_version,
@@ -318,10 +344,38 @@ def _materialize_engine_execution_spec(
         traffic = {
             key: value for key, value in spec.workload.items() if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
         }
-        if traffic.get("trace_format") != "dynamo":
+        if traffic.get("trace_format") not in {"dynamo", "weka"}:
             traffic.setdefault("trace_block_size", trace_block_size)
+        trace_format = traffic.get("trace_format")
+        if trace_format in {"agentic_mooncake", "dynamo", "weka"}:
+            requires_agentic_model = trace_format != "dynamo" or traffic.get("agentic_lanes") is not None
+            if requires_agentic_model and execution_model is None:
+                raise ValueError("agentic execution requires a configured target model")
+            # Dynamo may contain standard or agentic requests; native validates the loaded kind.
+            if execution_model is not None:
+                traffic["execution_model"] = execution_model
         return {"spec": execution_spec, "traffic": traffic}
     return execution_spec
+
+
+def _execution_target_model(
+    deployment: BackendDeploymentSpec,
+    role: str,
+    raw_engine_args: Mapping[str, JSONValue],
+) -> str | None:
+    """Resolve the deployment model identity independently of timing implementation."""
+
+    metadata = deployment.performance_model_metadata.get(role)
+    if isinstance(metadata, Mapping):
+        config = metadata.get("config")
+        if isinstance(config, Mapping):
+            model = config.get("model_path")
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+    model = raw_engine_args.get("aic_model_path")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
 
 
 def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:

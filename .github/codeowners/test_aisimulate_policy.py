@@ -3,6 +3,7 @@
 
 """Repository-specific routing contract for AISimulate's generated CODEOWNERS."""
 
+import json
 import os
 import subprocess
 import sys
@@ -205,7 +206,9 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     for inexpensive_gate in (
         "Check source and packaged legal files",
         "Check CODEOWNERS policy and generated artifacts",
+        "Check active workflow contracts",
         "ruff check",
+        "ruff format --check",
         "python -m compileall",
         "cargo fmt --all -- --check",
     ):
@@ -218,16 +221,25 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "Application Tests",
         "Release Artifact Contract",
         "Application Wheel",
+        "Platform Wheels",
+        "Collector Data",
+        "Prediction Regression",
+        "Engine Golden Regression",
     ):
         assert expensive_gate in full
         assert expensive_gate not in fast
 
     assert "uses: ./.github/workflows/fast-ci.yml" in full
+    assert "uses: ./.github/workflows/validate-platform-wheels.yml" in full
+    assert "uses: ./.github/workflows/collector-check.yml" in full
+    assert "uses: ./.github/workflows/prediction-regression-gate.yml" in full
     assert "needs: fast-ci" in full
     assert 'EXPECTED_SHA: ${{ inputs.expected_sha }}' in full
     assert 'RUN_SHA: ${{ github.sha }}' in full
     assert 'expected_sha: ${{ github.sha }}' in full
     assert "needs: verify-target" in full
+    assert "name: Fast CI Success" in fast
+    assert "name: Full CI Success" in full
     assert "manual Full CI requires a nonempty expected_sha" in full
     assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
     assert "workflow_dispatch" in full_config["on"]
@@ -293,27 +305,33 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert set(full_readiness["needs"]) == {
         "verify-target",
         "fast-ci",
+        "platform-wheels",
+        "collector-data",
+        "prediction-regression",
         "cargo-deny",
         "rust",
+        "rust-feature-modes",
         "public-api-rust",
         "application-tests",
+        "python-compatibility",
+        "engine-golden-regression",
         "release-artifact-contract",
         "application-wheel",
         "stage-application-wheel",
     }
     assert set(full_readiness["needs"]) == set(full_config["jobs"]) - {"readiness"}
     full_readiness_script = full_readiness["steps"][0]["run"]
-    assert "${VERIFY_TARGET_RESULT}" in full_readiness_script
-    assert "${APPLICATION_WHEEL_RESULT}" in full_readiness_script
-    assert "${STAGE_APPLICATION_WHEEL_RESULT}" in full_readiness_script
-    assert '"${STAGE_APPLICATION_WHEEL_RESULT}" "skipped"' in full_readiness_script
+    full_readiness_env = full_readiness["steps"][0]["env"]
+    assert full_readiness_env["NEEDS_JSON"] == "${{ toJSON(needs) }}"
+    assert 'expected = {name: "success" for name in needs}' in full_readiness_script
+    assert 'expected["stage-application-wheel"]' in full_readiness_script
+    assert 'payload["result"]' in full_readiness_script
 
     staging_if = full_config["jobs"]["stage-application-wheel"]["if"]
-    staging_required = full_readiness["env"]["STAGING_REQUIRED"]
     normalize = lambda text: " ".join(text.split())
-    assert normalize(staging_if) == normalize(
-        staging_required.removeprefix("${{").removesuffix("}}")
-    )
+    expected_stage = normalize(full_readiness_env["EXPECTED_STAGE_RESULT"])
+    assert normalize(staging_if) in expected_stage
+    assert "'success' || 'skipped'" in expected_stage
 
     application_wheel = full_config["jobs"]["application-wheel"]
     assert "if" not in application_wheel
@@ -367,39 +385,44 @@ def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
         (ROOT / ".github/workflows/ci.yml").read_text(),
         Loader=yaml.BaseLoader,
     )
-    script = config["jobs"]["readiness"]["steps"][0]["run"]
+    readiness = config["jobs"]["readiness"]
+    script = readiness["steps"][0]["run"]
+    passing_results = {name: {"result": "success"} for name in readiness["needs"]}
+    passing_results["stage-application-wheel"]["result"] = "skipped"
     passing_pr = {
-        "VERIFY_TARGET_RESULT": "success",
-        "FAST_CI_RESULT": "success",
-        "CARGO_DENY_RESULT": "success",
-        "RUST_RESULT": "success",
-        "PUBLIC_API_RUST_RESULT": "success",
-        "APPLICATION_TESTS_RESULT": "success",
-        "RELEASE_ARTIFACT_RESULT": "success",
-        "APPLICATION_WHEEL_RESULT": "success",
-        "STAGE_APPLICATION_WHEEL_RESULT": "skipped",
-        "STAGING_REQUIRED": "false",
+        "NEEDS_JSON": json.dumps(passing_results),
+        "EXPECTED_STAGE_RESULT": "skipped",
     }
 
     assert _run_readiness_script(script, tmp_path, passing_pr).returncode == 0
 
-    canceled_job = {**passing_pr, "RUST_RESULT": "cancelled"}
+    canceled_results = {**passing_results, "rust": {"result": "cancelled"}}
+    canceled_job = {**passing_pr, "NEEDS_JSON": json.dumps(canceled_results)}
     assert _run_readiness_script(script, tmp_path, canceled_job).returncode != 0
 
-    missing_job = {**passing_pr, "APPLICATION_TESTS_RESULT": ""}
+    failed_results = {**passing_results, "rust": {"result": "failure"}}
+    failed_job = {**passing_pr, "NEEDS_JSON": json.dumps(failed_results)}
+    assert _run_readiness_script(script, tmp_path, failed_job).returncode != 0
+
+    missing_results = {
+        **passing_results,
+        "application-tests": {"result": ""},
+    }
+    missing_job = {**passing_pr, "NEEDS_JSON": json.dumps(missing_results)}
     assert _run_readiness_script(script, tmp_path, missing_job).returncode != 0
 
+    passing_release_results = {
+        **passing_results,
+        "stage-application-wheel": {"result": "success"},
+    }
     passing_release = {
         **passing_pr,
-        "STAGING_REQUIRED": "true",
-        "STAGE_APPLICATION_WHEEL_RESULT": "success",
+        "NEEDS_JSON": json.dumps(passing_release_results),
+        "EXPECTED_STAGE_RESULT": "success",
     }
     assert _run_readiness_script(script, tmp_path, passing_release).returncode == 0
 
-    skipped_release_staging = {
-        **passing_release,
-        "STAGE_APPLICATION_WHEEL_RESULT": "skipped",
-    }
+    skipped_release_staging = {**passing_release, "NEEDS_JSON": json.dumps(passing_results)}
     result = _run_readiness_script(script, tmp_path, skipped_release_staging)
     assert result.returncode != 0
 

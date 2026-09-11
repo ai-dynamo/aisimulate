@@ -151,15 +151,11 @@ def _stub(monkeypatch, branch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
-    monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
-    )
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
 
 
 def _pc(*, tp=4, replicas=2):
-    return ReplicaParallelConfig(
-        ParallelShape(tp=tp, dp=1, moe_tp=1, moe_ep=tp), replicas=replicas
-    )
+    return ReplicaParallelConfig(ParallelShape(tp=tp, dp=1, moe_tp=1, moe_ep=tp), replicas=replicas)
 
 
 def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
@@ -176,9 +172,7 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
 
     assert [candidate.score for candidate in candidates] == [768.0, 512.0, 256.0]
     assert all(candidate.used_gpus == 8 for candidate in candidates)
-    assert all(
-        candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates
-    )
+    assert all(candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates)
     assert candidates[0].metrics["gpu_hours"] == 1.0
     assert factory.worker_ids == [0]
     assert all(isinstance(spec, ReplaySpec) for spec in factory.runner.specs)
@@ -209,13 +203,8 @@ def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     )
 
     assert candidates
-    assert all(
-        candidate.config["backend_version"] == "0.18.0" for candidate in candidates
-    )
-    assert all(
-        spec.backend_deployment.backend_version == "0.18.0"
-        for spec in factory.runner.specs
-    )
+    assert all(candidate.config["backend_version"] == "0.18.0" for candidate in candidates)
+    assert all(spec.backend_deployment.backend_version == "0.18.0" for spec in factory.runner.specs)
 
 
 def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
@@ -301,9 +290,7 @@ def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
         return sampler
 
     monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
-    monkeypatch.setattr(
-        search_mod, "wait", lambda pending, **kwargs: (set(), set(pending))
-    )
+    monkeypatch.setattr(search_mod, "wait", lambda pending, **kwargs: (set(), set(pending)))
 
     candidates = _run_sweep(
         _config(parallel_evals=2, max_eval_seconds=0.01),
@@ -317,10 +304,7 @@ def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
     assert all(pool.shutdown_called for pool in pools)
     assert all(False in pool.shutdown_waits for pool in pools[:-1])
     assert pools[-1].shutdown_waits == [True]
-    assert all(
-        result[0] == "infeasible" and "exceed runtime" in result[1]
-        for result in sampler_seen["sampler"].scored
-    )
+    assert all(result[0] == "infeasible" and "exceed runtime" in result[1] for result in sampler_seen["sampler"].scored)
 
 
 def test_broken_worker_pool_is_friendly_and_always_cleaned_up(monkeypatch):
@@ -348,9 +332,7 @@ def test_broken_worker_pool_is_friendly_and_always_cleaned_up(monkeypatch):
             self.shutdown_waits.append(wait)
 
     monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
-    monkeypatch.setattr(
-        search_mod, "wait", lambda pending, **kwargs: (set(pending), set())
-    )
+    monkeypatch.setattr(search_mod, "wait", lambda pending, **kwargs: (set(pending), set()))
 
     with pytest.raises(RuntimeError, match="guard a script entrypoint"):
         _run_sweep(
@@ -553,9 +535,7 @@ def test_strict_aggregate_sla_gates_before_sampler_observation_and_ranking(
 
     assert [candidate.score for candidate in candidates] == [512.0, 256.0]
     assert any(
-        isinstance(item, tuple)
-        and item[0] == "infeasible"
-        and "strict aggregate SLA violation" in item[1]
+        isinstance(item, tuple) and item[0] == "infeasible" and "strict aggregate SLA violation" in item[1]
         for item in sampler_seen["sampler"].scored
     )
 
@@ -602,9 +582,7 @@ def test_strict_aggregate_sla_rejects_reports_without_latency_samples(monkeypatc
 
     assert candidates == []
     assert any(
-        isinstance(item, tuple)
-        and item[0] == "infeasible"
-        and "no qualifying samples" in item[1]
+        isinstance(item, tuple) and item[0] == "infeasible" and "no qualifying samples" in item[1]
         for item in sampler_seen["sampler"].scored
     )
 
@@ -794,8 +772,7 @@ def test_cache_identity_preserves_distinct_json_scalar_types():
     )
 
     keys = {
-        search_mod._suggestion_cache_key(suggestion, ("same-context",))
-        for suggestion in (boolean, integer, floating)
+        search_mod._suggestion_cache_key(suggestion, ("same-context",)) for suggestion in (boolean, integer, floating)
     }
     assert len(keys) == 3
 
@@ -814,9 +791,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
     )
-    monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
-    )
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
     seen = []
 
     class RepeatingSampler(_FakeSampler):
@@ -830,9 +805,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
 
     def factory(branch, study_id, objectives=None):
         seen.append(branch.deployment_mode)
-        sampler_type = (
-            RepeatingSampler if branch.deployment_mode == "agg" else EmptySampler
-        )
+        sampler_type = RepeatingSampler if branch.deployment_mode == "agg" else EmptySampler
         return sampler_type(branch, study_id, objectives)
 
     _run_sweep(
@@ -952,7 +925,4 @@ def test_pareto_sweep_preserves_kv_load_and_returns_front(monkeypatch):
         ("throughput_per_gpu", True),
         ("throughput_per_user", True),
     ]
-    assert all(
-        set(metrics) == {"throughput_per_gpu", "throughput_per_user"}
-        for metrics in seen["sampler"].observed
-    )
+    assert all(set(metrics) == {"throughput_per_gpu", "throughput_per_user"} for metrics in seen["sampler"].observed)

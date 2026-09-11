@@ -15,7 +15,7 @@ from aisimulate.sweeper.replay import ReplayReport, ReplaySpec, RunnerCapabiliti
 from aisimulate.sweeper.sample import unroll_sample
 from aisimulate.sweeper.sampler import RandomBranchSampler
 from aisimulate.sweeper.search import Sweeper
-from aisimulate.sweeper.search_space import enumerate_branches
+from aisimulate.sweeper.search_space import RunnerIncompatibleError, enumerate_branches
 
 
 def _model_hardware() -> ModelHardware:
@@ -145,17 +145,57 @@ def test_afd_plus_pd_pairs_only_opposite_phase_companion(monkeypatch):
     assert "decode_tp" not in deployment.parallel_config
 
 
-def test_afd_runner_capability_gate_fails_closed(monkeypatch):
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize("pinned", [False, True])
+def test_afd_runner_capability_gate_fails_closed(monkeypatch, mode, pinned):
+    def unexpected_model_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible AFD must be rejected before model lookup")
+
     monkeypatch.setattr(
         "aisimulate.sweeper.search_space.resolve_model_hardware",
-        lambda *args, **kwargs: _model_hardware(),
+        unexpected_model_lookup,
     )
 
-    with pytest.raises(NoViableParallelConfig, match="runner-compatible"):
+    with pytest.raises(RunnerIncompatibleError, match=r"runner-incompatible backends=\['vllm'\]"):
         enumerate_branches(
-            _config("afd"),
+            _config(mode, afd_pinned_topologies=[_topology()] if pinned else []),
             runner_capabilities=RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),)),
         )
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_mixed_afd_runner_incompatibility_preserves_explicit_pin_scope(monkeypatch, pinned):
+    def unexpected_model_lookup(*args, **kwargs):
+        pytest.fail("runner-incompatible AFD must be rejected before model lookup")
+
+    monkeypatch.setattr("aisimulate.sweeper.search_space.resolve_model_hardware", unexpected_model_lookup)
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        lambda *args, **kwargs: [ReplicaParallelConfig(shape=ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)],
+    )
+    config = _config(
+        "afd",
+        deployment_mode=["agg", "afd"],
+        afd_pinned_topologies=[_topology()] if pinned else [],
+    )
+    if pinned:
+        with pytest.raises(NoViableParallelConfig, match="runner-incompatible") as error:
+            enumerate_branches(config, runner_capabilities=_capabilities("agg"))
+        assert not isinstance(error.value, RunnerIncompatibleError)
+    else:
+        with pytest.warns(UserWarning, match="runner-incompatible"):
+            (branch,) = enumerate_branches(config, runner_capabilities=_capabilities("agg"))
+        assert branch.deployment_mode == "agg"
+
+
+def test_mixed_afd_terminal_failure_defers_warning_and_preserves_runner_details(monkeypatch):
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", lambda *args, **kwargs: [])
+    config = _config("afd", deployment_mode=["afd", "agg"], afd_pinned_topologies=[])
+
+    with pytest.raises(NoViableParallelConfig, match="runner-incompatible") as error:
+        enumerate_branches(config, runner_capabilities=_capabilities("agg"))
+
+    assert not isinstance(error.value, RunnerIncompatibleError)
 
 
 def test_afd_rejects_kv_relative_load_until_capacity_is_exposed(monkeypatch):

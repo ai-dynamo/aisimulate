@@ -127,7 +127,9 @@ search_space:
 ```
 
 A disaggregated entry contains `prefill` and `decode` shapes. Every pinned shape must be legal,
-KV-feasible, and supported by at least one selected backend.
+KV-feasible, supported by at least one selected backend, and accepted by the configured Replay
+runner. If every selected backend/topology pair is runner-incompatible, preflight raises
+`aisimulate.sweeper.RunnerIncompatibleError` with the rejected mode and backend names.
 
 ## Provider Selection
 

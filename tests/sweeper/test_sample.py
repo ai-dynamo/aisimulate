@@ -31,9 +31,7 @@ def _agg_selection(**overrides) -> dict:
     return values
 
 
-AGG_CONFIG = ReplicaParallelConfig(
-    shape=ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-)
+AGG_CONFIG = ReplicaParallelConfig(shape=ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
 DISAGG_CONFIG = DisaggParallelConfig(
     prefill=ReplicaParallelConfig(ParallelShape(tp=8, dp=1, moe_tp=1, moe_ep=8), 1),
     decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=8, moe_tp=1, moe_ep=8), 2),
@@ -147,9 +145,7 @@ def test_unroll_folds_only_backend_pinned_values():
         ("disagg", AGG_CONFIG, "DisaggParallelConfig"),
     ],
 )
-def test_unroll_rejects_parallel_config_for_wrong_topology(
-    mode, parallel_config, message
-):
+def test_unroll_rejects_parallel_config_for_wrong_topology(mode, parallel_config, message):
     selection = _agg_selection(deployment_mode=mode)
     if mode == "disagg":
         selection.update(

@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use super::ReplayMode;
 use crate::replay::core::{AdmissionSource as CoreAdmissionSource, ReadyArrival};
-use crate::replay::loadgen::{ReplayRequestHashes, ReplayRequestPayload, WorkloadDriver};
+use crate::replay::loadgen::{
+    GeneratedRequests, ReplayRequestHashes, ReplayRequestPayload, WorkloadDriver,
+};
 use crate::replay::protocol::DirectRequest;
 
 #[doc(hidden)]
@@ -74,6 +76,7 @@ impl<Metadata> ReplayReadyArrival<Metadata> {
 #[allow(clippy::large_enum_variant)] // Boxing the workload adds measurable replay hot-path cost.
 enum AdmissionSource {
     Requests(VecDeque<DirectRequest>),
+    GeneratedRequests(GeneratedRequests),
     Workload(WorkloadDriver),
 }
 
@@ -88,6 +91,14 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         Self {
             source: AdmissionSource::Requests(source),
             mode,
+            metadata: PhantomData,
+        }
+    }
+
+    pub(crate) fn new_generated_requests(source: GeneratedRequests, max_in_flight: usize) -> Self {
+        Self {
+            source: AdmissionSource::GeneratedRequests(source),
+            mode: ReplayMode::Concurrency { max_in_flight },
             metadata: PhantomData,
         }
     }
@@ -115,7 +126,8 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             (ReplayMode::Concurrency { .. }, AdmissionSource::Workload(driver)) => {
                 driver.next_ready_time_ms()
             }
-            (ReplayMode::Concurrency { .. }, AdmissionSource::Requests(_)) => None,
+            (ReplayMode::Concurrency { .. }, AdmissionSource::Requests(_))
+            | (_, AdmissionSource::GeneratedRequests(_)) => None,
         }
     }
 
@@ -202,33 +214,26 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 })
                 .collect()),
             (ReplayMode::Concurrency { max_in_flight }, AdmissionSource::Requests(pending)) => {
-                let mut ready = Vec::new();
-                let mut simulated_in_flight = cluster_in_flight;
-                while simulated_in_flight < *max_in_flight {
-                    let Some(mut request) = pending.pop_front() else {
-                        break;
-                    };
-                    request.arrival_timestamp_ms = Some(now_ms);
-                    let (session_id, turn_index) = request
-                        .replay_context
-                        .as_ref()
-                        .map(|context| (context.session_id.clone(), context.turn_index))
-                        .unwrap_or_default();
-                    ready.push(map(ReplayReadyArrival {
-                        request: ReplayRequestPayload::materialized(request),
-                        arrival_time_ms: now_ms,
-                        scheduled_ready_at_ms: now_ms,
-                        authored_request_id: None,
-                        play_id: None,
-                        dispatched_at_ms: now_ms,
-                        metadata: Metadata::from_hashes(None),
-                        replay_hashes: None,
-                        session_id,
-                        turn_index,
-                    }));
-                    simulated_in_flight += 1;
-                }
-                Ok(ready)
+                Self::drain_concurrency_requests(
+                    now_ms,
+                    cluster_in_flight,
+                    *max_in_flight,
+                    || Ok(pending.pop_front()),
+                    map,
+                )
+            }
+            (
+                ReplayMode::Concurrency { max_in_flight },
+                AdmissionSource::GeneratedRequests(source),
+            ) => Self::drain_concurrency_requests(
+                now_ms,
+                cluster_in_flight,
+                *max_in_flight,
+                || source.pop_front(),
+                map,
+            ),
+            (ReplayMode::Trace, AdmissionSource::GeneratedRequests(_)) => {
+                anyhow::bail!("generated requests require concurrency admission")
             }
             (ReplayMode::Concurrency { .. }, AdmissionSource::Workload(driver)) => {
                 // The driver owns the session cap and only ever holds active sessions'
@@ -261,6 +266,42 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                     .collect())
             }
         }
+    }
+
+    fn drain_concurrency_requests<T>(
+        now_ms: f64,
+        cluster_in_flight: usize,
+        max_in_flight: usize,
+        mut next_request: impl FnMut() -> Result<Option<DirectRequest>>,
+        mut map: impl FnMut(ReplayReadyArrival<Metadata>) -> T,
+    ) -> Result<Vec<T>> {
+        let mut ready = Vec::new();
+        let mut simulated_in_flight = cluster_in_flight;
+        while simulated_in_flight < max_in_flight {
+            let Some(mut request) = next_request()? else {
+                break;
+            };
+            request.arrival_timestamp_ms = Some(now_ms);
+            let (session_id, turn_index) = request
+                .replay_context
+                .as_ref()
+                .map(|context| (context.session_id.clone(), context.turn_index))
+                .unwrap_or_default();
+            ready.push(map(ReplayReadyArrival {
+                request: ReplayRequestPayload::materialized(request),
+                arrival_time_ms: now_ms,
+                scheduled_ready_at_ms: now_ms,
+                authored_request_id: None,
+                play_id: None,
+                dispatched_at_ms: now_ms,
+                metadata: Metadata::from_hashes(None),
+                replay_hashes: None,
+                session_id,
+                turn_index,
+            }));
+            simulated_in_flight += 1;
+        }
+        Ok(ready)
     }
 
     pub(crate) fn on_request_terminal(
@@ -304,6 +345,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     pub(crate) fn is_drained(&self) -> bool {
         match &self.source {
             AdmissionSource::Requests(pending) => pending.is_empty(),
+            AdmissionSource::GeneratedRequests(source) => source.remaining() == 0,
             AdmissionSource::Workload(driver) => driver.is_drained(),
         }
     }
@@ -316,6 +358,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     pub(crate) fn total_requests(&self) -> usize {
         match &self.source {
             AdmissionSource::Requests(pending) => pending.len(),
+            AdmissionSource::GeneratedRequests(source) => source.remaining(),
             AdmissionSource::Workload(driver) => driver.total_turns(),
         }
     }
@@ -379,5 +422,88 @@ impl<Metadata: ReplayAdmissionMetadata> CoreAdmissionSource for AdmissionQueue<M
 
     fn total_requests(&self) -> usize {
         AdmissionQueue::total_requests(self)
+    }
+}
+
+#[cfg(test)]
+mod generated_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn generated_requests_only_fill_vacant_slots_and_keep_original_indices() {
+        let indices = Arc::new(Mutex::new(Vec::new()));
+        let observed = indices.clone();
+        let source = GeneratedRequests::new(1_000_000, move |index| {
+            observed.lock().unwrap().push(index);
+            Ok(DirectRequest {
+                tokens: vec![index as u32],
+                uuid: Some(Uuid::from_u128(index as u128 + 10)),
+                max_output_tokens: 3,
+                arrival_timestamp_ms: Some(999.0),
+                priority: 7,
+                ..Default::default()
+            })
+        });
+        let mut admission = AdmissionQueue::<()>::new_generated_requests(source, 2);
+        assert!(indices.lock().unwrap().is_empty());
+        assert_eq!(admission.total_requests(), 1_000_000);
+        assert_eq!(admission.next_ready_time_ms(), None);
+        assert!(indices.lock().unwrap().is_empty());
+
+        let first = admission.drain_ready_compact(5.0, 0, false).unwrap();
+        assert_eq!(*indices.lock().unwrap(), vec![0, 1]);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].request.metadata().arrival_timestamp_ms, Some(5.0));
+        assert_eq!(first[0].request.metadata().priority, 7);
+        assert_eq!(first[0].request.metadata().uuid, Some(Uuid::from_u128(10)));
+        assert!(
+            admission
+                .drain_ready_compact(6.0, 2, false)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(*indices.lock().unwrap(), vec![0, 1]);
+
+        // Completion/cancellation of either live request leaves exactly one slot.
+        let next = admission.drain_ready_compact(9.0, 1, false).unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(*indices.lock().unwrap(), vec![0, 1, 2]);
+        assert_eq!(next[0].request.metadata().uuid, Some(Uuid::from_u128(12)));
+        assert_eq!(next[0].request.metadata().arrival_timestamp_ms, Some(9.0));
+        assert_eq!(admission.total_requests(), 999_997);
+        assert!(!admission.is_drained());
+        drop(admission);
+        assert_eq!(
+            Arc::strong_count(&indices),
+            1,
+            "dropping replay releases its source"
+        );
+    }
+
+    #[test]
+    fn generated_source_stops_at_end_and_propagates_generation_errors() {
+        let mut admission = AdmissionQueue::<()>::new_generated_requests(
+            GeneratedRequests::new(1, |_| Ok(DirectRequest::default())),
+            4,
+        );
+        assert_eq!(
+            admission.drain_ready_compact(0.0, 0, false).unwrap().len(),
+            1
+        );
+        assert!(admission.is_drained());
+        assert!(
+            admission
+                .drain_ready_compact(1.0, 0, false)
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut failing = AdmissionQueue::<()>::new_generated_requests(
+            GeneratedRequests::new(1, |_| anyhow::bail!("source failed")),
+            1,
+        );
+        let error = failing.drain_ready_compact(0.0, 0, false).err().unwrap();
+        assert_eq!(error.to_string(), "source failed");
     }
 }

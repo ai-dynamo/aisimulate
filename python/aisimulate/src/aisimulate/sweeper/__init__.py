@@ -108,6 +108,7 @@ _LAZY_EXPORTS = {
     "rank": (".score", "rank"),
     "Sweeper": (".search", "Sweeper"),
     "BranchSpace": (".search_space", "BranchSpace"),
+    "RunnerIncompatibleError": (".search_space", "RunnerIncompatibleError"),
     "enumerate_branches": (".search_space", "enumerate_branches"),
 }
 
@@ -170,6 +171,7 @@ __all__ = [
     "Runner",
     "RunnerCapabilities",
     "RunnerFactory",
+    "RunnerIncompatibleError",
     "RuntimeHookSpec",
     "SLATarget",
     "SearchSpace",
