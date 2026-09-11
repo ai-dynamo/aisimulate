@@ -472,15 +472,27 @@ impl StreamingDistribution {
             return empty_distribution_stats();
         }
 
+        // `min`/`max` are tracked exactly, but a percentile is reconstructed
+        // from DDSketch bucket boundaries to within
+        // `DDSKETCH_RELATIVE_ACCURACY`. An extreme percentile therefore
+        // resolves just outside the observed range -- for any `count >= 2`,
+        // `percentile(99.0)` takes the `rank >= span` path to `quantile(1.0)`
+        // and reads back the top bucket, routinely a shade above the true
+        // maximum. Nothing downstream re-checks the ordering, so the report
+        // could carry `p99_ms > max_ms`. Clamp to keep the emitted
+        // distribution internally consistent; `count > 0` here, so
+        // `min <= max` holds.
+        let in_range = |value: f64| value.clamp(self.min, self.max);
+
         TraceDistributionStats {
             mean_ms: self.mean,
             min_ms: self.min,
             max_ms: self.max,
-            median_ms: self.percentile(50.0),
-            p75_ms: self.percentile(75.0),
-            p90_ms: self.percentile(90.0),
-            p95_ms: self.percentile(95.0),
-            p99_ms: self.percentile(99.0),
+            median_ms: in_range(self.percentile(50.0)),
+            p75_ms: in_range(self.percentile(75.0)),
+            p90_ms: in_range(self.percentile(90.0)),
+            p95_ms: in_range(self.percentile(95.0)),
+            p99_ms: in_range(self.percentile(99.0)),
             std_ms: (self.sum_squared_deviations / self.count as f64).sqrt(),
         }
     }
@@ -1942,6 +1954,32 @@ mod tests {
             build_distribution_stats(values.clone()).std_ms.to_bits(),
             std_dev(&values).to_bits()
         );
+    }
+
+    /// Percentiles are DDSketch bucket reconstructions; min/max are exact.
+    /// Without a clamp the top bucket reads back above the true maximum, so
+    /// the emitted distribution could report `p99_ms > max_ms`.
+    #[test]
+    fn streaming_percentiles_stay_within_the_observed_range() {
+        for len in [2, 3, 10, 101, 257] {
+            let mut distribution = StreamingDistribution::default();
+            for index in 0..len {
+                distribution.add(1_000.0 + index as f64 * 7.3);
+            }
+            let stats = distribution.finish();
+            assert!(
+                stats.p99_ms <= stats.max_ms,
+                "len={len}: p99 {} exceeded max {}",
+                stats.p99_ms,
+                stats.max_ms
+            );
+            assert!(
+                stats.median_ms >= stats.min_ms,
+                "len={len}: median {} below min {}",
+                stats.median_ms,
+                stats.min_ms
+            );
+        }
     }
 
     #[test]
