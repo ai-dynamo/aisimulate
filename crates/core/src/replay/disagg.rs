@@ -173,9 +173,10 @@ impl DisaggActionQueues {
         uuid: Uuid,
         action: IssuedHandoffAction,
         stage: SimulationWorkerStage,
-    ) {
-        self.waiting_mut(stage).push_back((uuid, action));
+    ) -> Result<()> {
+        self.waiting_mut(stage)?.push_back((uuid, action));
         self.increment(uuid);
+        Ok(())
     }
 
     fn defer(
@@ -184,23 +185,26 @@ impl DisaggActionQueues {
         action: IssuedHandoffAction,
         stage: SimulationWorkerStage,
         worker_idx: usize,
-    ) {
-        self.deferred_mut(stage)
+    ) -> Result<()> {
+        self.deferred_mut(stage)?
             .entry(worker_idx)
             .or_default()
             .push_back((uuid, action));
         self.increment(uuid);
+        Ok(())
     }
 
-    fn wake_worker_waiters(&mut self, stage: SimulationWorkerStage) {
-        let mut waiting = std::mem::take(self.waiting_mut(stage));
+    fn wake_worker_waiters(&mut self, stage: SimulationWorkerStage) -> Result<()> {
+        let mut waiting = std::mem::take(self.waiting_mut(stage)?);
         self.pending.append(&mut waiting);
+        Ok(())
     }
 
-    fn wake_deferred(&mut self, stage: SimulationWorkerStage, worker_idx: usize) {
-        if let Some(actions) = self.deferred_mut(stage).remove(&worker_idx) {
+    fn wake_deferred(&mut self, stage: SimulationWorkerStage, worker_idx: usize) -> Result<()> {
+        if let Some(actions) = self.deferred_mut(stage)?.remove(&worker_idx) {
             self.pending.extend(actions);
         }
+        Ok(())
     }
 
     fn remove(&mut self, uuid: Uuid) {
@@ -226,12 +230,19 @@ impl DisaggActionQueues {
             && self.deferred_decode.is_empty()
     }
 
-    fn waiting_mut(&mut self, stage: SimulationWorkerStage) -> &mut VecDeque<QueuedHandoffAction> {
+    // `Result`, not `unreachable!`: `DisaggActionQueues` is a plain struct
+    // taking `SimulationWorkerStage` (3 variants) as an ordinary parameter,
+    // one refactor away from a caller that doesn't already exclude
+    // `Aggregated` -- same reasoning as `wake_deferred_actions` above.
+    fn waiting_mut(
+        &mut self,
+        stage: SimulationWorkerStage,
+    ) -> Result<&mut VecDeque<QueuedHandoffAction>> {
         match stage {
-            SimulationWorkerStage::Prefill => &mut self.waiting_prefill,
-            SimulationWorkerStage::Decode => &mut self.waiting_decode,
+            SimulationWorkerStage::Prefill => Ok(&mut self.waiting_prefill),
+            SimulationWorkerStage::Decode => Ok(&mut self.waiting_decode),
             SimulationWorkerStage::Aggregated => {
-                unreachable!("disagg action cannot target an aggregated worker")
+                bail!("disagg action cannot target an aggregated worker")
             }
         }
     }
@@ -239,12 +250,12 @@ impl DisaggActionQueues {
     fn deferred_mut(
         &mut self,
         stage: SimulationWorkerStage,
-    ) -> &mut HashMap<usize, VecDeque<QueuedHandoffAction>> {
+    ) -> Result<&mut HashMap<usize, VecDeque<QueuedHandoffAction>>> {
         match stage {
-            SimulationWorkerStage::Prefill => &mut self.deferred_prefill,
-            SimulationWorkerStage::Decode => &mut self.deferred_decode,
+            SimulationWorkerStage::Prefill => Ok(&mut self.deferred_prefill),
+            SimulationWorkerStage::Decode => Ok(&mut self.deferred_decode),
             SimulationWorkerStage::Aggregated => {
-                unreachable!("disagg action cannot target an aggregated worker")
+                bail!("disagg action cannot target an aggregated worker")
             }
         }
     }
@@ -1537,7 +1548,9 @@ where
                     changed = true;
                 }
                 ActionExecution::WaitingForWorker { action, stage } => {
-                    self.flow.action_queues.wait_for_worker(uuid, action, stage);
+                    self.flow
+                        .action_queues
+                        .wait_for_worker(uuid, action, stage)?;
                 }
                 ActionExecution::Deferred {
                     action,
@@ -1546,15 +1559,15 @@ where
                 } => {
                     self.flow
                         .action_queues
-                        .defer(uuid, action, stage, worker_idx);
+                        .defer(uuid, action, stage, worker_idx)?;
                 }
             }
         }
         Ok(changed)
     }
 
-    fn wake_worker_waiters(&mut self, stage: SimulationWorkerStage) {
-        self.flow.action_queues.wake_worker_waiters(stage);
+    fn wake_worker_waiters(&mut self, stage: SimulationWorkerStage) -> Result<()> {
+        self.flow.action_queues.wake_worker_waiters(stage)
     }
 
     /// Wakes every scheduler-id-keyed deferred action for `worker_id`, not
@@ -1588,7 +1601,7 @@ where
             }
         };
         for &scheduler_id in scheduler_ids {
-            self.flow.action_queues.wake_deferred(stage, scheduler_id);
+            self.flow.action_queues.wake_deferred(stage, scheduler_id)?;
         }
         Ok(())
     }
@@ -2482,7 +2495,7 @@ where
                         released.extend(placements.iter().map(|placement| placement.request_id));
                         self.dispatch_prefill_placements(placements)?;
                         let origin = self.evidence.startup_origin(WorkerPool::Prefill, worker_id);
-                        let state = self.lifecycle_state(WorkerPool::Prefill);
+                        let state = self.lifecycle_state(WorkerPool::Prefill)?;
                         self.evidence.record_lifecycle_operation(
                             self.now_ms,
                             WorkerPool::Prefill,
@@ -2500,7 +2513,7 @@ where
                             state,
                             released,
                         );
-                        self.wake_worker_waiters(SimulationWorkerStage::Prefill);
+                        self.wake_worker_waiters(SimulationWorkerStage::Prefill)?;
                         changed = true;
                     }
                 }
@@ -2532,7 +2545,7 @@ where
                         released.extend(placements.iter().map(|placement| placement.request_id));
                         self.dispatch_decode_placements(placements)?;
                         let origin = self.evidence.startup_origin(WorkerPool::Decode, worker_id);
-                        let state = self.lifecycle_state(WorkerPool::Decode);
+                        let state = self.lifecycle_state(WorkerPool::Decode)?;
                         self.evidence.record_lifecycle_operation(
                             self.now_ms,
                             WorkerPool::Decode,
@@ -2550,7 +2563,7 @@ where
                             state,
                             released,
                         );
-                        self.wake_worker_waiters(SimulationWorkerStage::Decode);
+                        self.wake_worker_waiters(SimulationWorkerStage::Decode)?;
                         changed = true;
                     }
                 }
@@ -2664,7 +2677,7 @@ where
                             .drain_origin(WorkerPool::Prefill, *worker_id),
                     })
                     .collect();
-                let state = self.lifecycle_state(WorkerPool::Prefill);
+                let state = self.lifecycle_state(WorkerPool::Prefill)?;
                 self.evidence.record_lifecycle_operation(
                     self.now_ms,
                     WorkerPool::Prefill,
@@ -2710,7 +2723,7 @@ where
                             .drain_origin(WorkerPool::Decode, *worker_id),
                     })
                     .collect();
-                let state = self.lifecycle_state(WorkerPool::Decode);
+                let state = self.lifecycle_state(WorkerPool::Decode)?;
                 self.evidence.record_lifecycle_operation(
                     self.now_ms,
                     WorkerPool::Decode,
@@ -3176,9 +3189,9 @@ where
             prefill_delay.is_some(),
             planner_tick_ordinal,
             prefill_releases,
-        );
+        )?;
         if !added.is_empty() && prefill_delay.is_none() {
-            self.wake_worker_waiters(SimulationWorkerStage::Prefill);
+            self.wake_worker_waiters(SimulationWorkerStage::Prefill)?;
         }
 
         // -- decode --
@@ -3255,25 +3268,25 @@ where
             decode_delay.is_some(),
             planner_tick_ordinal,
             decode_releases,
-        );
+        )?;
         if !added.is_empty() && decode_delay.is_none() {
-            self.wake_worker_waiters(SimulationWorkerStage::Decode);
+            self.wake_worker_waiters(SimulationWorkerStage::Decode)?;
         }
         self.record_router_pending();
         Ok(())
     }
 
-    fn lifecycle_state(&self, pool: WorkerPool) -> WorkerPoolState {
+    fn lifecycle_state(&self, pool: WorkerPool) -> Result<WorkerPoolState> {
         let engine = match pool {
             WorkerPool::Prefill => &self.prefill_engine,
             WorkerPool::Decode => &self.decode_engine,
-            WorkerPool::Agg => unreachable!("disaggregated replay has no agg pool"),
+            WorkerPool::Agg => bail!("disaggregated replay has no agg pool"),
         };
-        WorkerPoolState {
+        Ok(WorkerPoolState {
             active: engine.active_group_ids(),
             starting: engine.starting_group_ids(),
             draining: engine.draining_group_ids(),
-        }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3287,9 +3300,9 @@ where
         delayed_startup: bool,
         planner_tick_ordinal: Option<u64>,
         released: Vec<Uuid>,
-    ) {
+    ) -> Result<()> {
         if !self.evidence.options().capture_lifecycle_evidence {
-            return;
+            return Ok(());
         }
         let mut transitions = added
             .iter()
@@ -3343,7 +3356,7 @@ where
                 .filter(|worker_id| starting_before.binary_search(worker_id).is_ok())
                 .filter_map(|worker_id| self.evidence.startup_origin(pool, *worker_id)),
         );
-        let state = self.lifecycle_state(pool);
+        let state = self.lifecycle_state(pool)?;
         self.evidence.record_lifecycle_operation(
             self.now_ms,
             pool,
@@ -3358,6 +3371,7 @@ where
             state,
             released,
         );
+        Ok(())
     }
 
     // ------------------------------------------------------------------
