@@ -1730,7 +1730,6 @@ where
                     return Ok(ActionExecution::Applied);
                 };
                 if self.prefill_engine.worker_is_busy(worker_idx)? {
-                    eprintln!("PROBE-CANCELSRC-deferred");
                     return Ok(ActionExecution::Deferred {
                         action: issued,
                         stage: SimulationWorkerStage::Prefill,
@@ -1757,7 +1756,6 @@ where
                     return Ok(ActionExecution::Applied);
                 };
                 if self.decode_engine.worker_is_busy(worker_idx)? {
-                    eprintln!("PROBE-CANCELDEST-deferred");
                     return Ok(ActionExecution::Deferred {
                         action: issued,
                         stage: SimulationWorkerStage::Decode,
