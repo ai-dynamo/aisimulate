@@ -342,32 +342,47 @@ where
         let effects = self
             .placement
             .place(&request, metadata, session_id, self.now_ms)?;
-        if let PlacementDecision::Immediate(placement) = &effects.decision
-            && placement.request_id != uuid
-        {
-            bail!(
-                "offline placement returned request {} while placing {uuid}",
-                placement.request_id
-            );
-        }
+        // Resolve everything that can still fail on the placement policy's
+        // behalf BEFORE any accounting lands. The request-id mismatch check was
+        // already hoisted above `on_arrival`/`traffic.on_arrival` for exactly
+        // this reason -- `mismatched_placement_does_not_retain_arrival_or_offered_traffic`
+        // pins that a failed `submit_dynamic` leaves no collector entry, no
+        // offered-traffic sample, and no `self.requests` entry. The scheduler
+        // lookup below is the same class of failure and was not hoisted, so it
+        // used to fire after `on_arrival`, `on_request_context`,
+        // `traffic.on_arrival()` and `record_placement`'s hit-rate sample had
+        // all already landed, leaving a half-admitted request behind on an
+        // error the caller is expected to survive.
+        let rank_identity = match &effects.decision {
+            PlacementDecision::Immediate(placement) => {
+                if placement.request_id != uuid {
+                    bail!(
+                        "offline placement returned request {} while placing {uuid}",
+                        placement.request_id
+                    );
+                }
+                Some(
+                    self.engine
+                        .rank_identity(placement.scheduler_id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "offline replay placement references unknown scheduler {}",
+                                placement.scheduler_id
+                            )
+                        })?,
+                )
+            }
+            PlacementDecision::Queued => None,
+        };
         self.collector
             .on_arrival(uuid, arrival_time_ms, input_length, output_length);
         if let Some(context) = request.metadata().replay_context.as_ref() {
             self.collector.on_request_context(uuid, context);
         }
         self.traffic.on_arrival();
-        match effects.decision {
-            PlacementDecision::Immediate(placement) => {
+        match (effects.decision, rank_identity) {
+            (PlacementDecision::Immediate(placement), Some((logical_worker_id, dp_rank))) => {
                 self.record_placement(placement);
-                let (logical_worker_id, dp_rank) = self
-                    .engine
-                    .rank_identity(placement.scheduler_id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "offline replay placement references unknown scheduler {}",
-                            placement.scheduler_id
-                        )
-                    })?;
                 self.collector.on_route_immediate(
                     uuid,
                     ReplayRequestPool::Agg,
@@ -392,11 +407,18 @@ where
                     placement.scheduler_id,
                 )?;
             }
-            PlacementDecision::Queued => {
+            (PlacementDecision::Queued, _) => {
                 self.collector
                     .on_route_queued(uuid, ReplayRequestPool::Agg, self.now_ms);
                 self.requests
                     .insert(uuid, AggRequestState::new_queued(request));
+            }
+            // Unreachable: the match above resolves a rank identity for every
+            // `Immediate` decision or returns `Err`. A recoverable `bail!`
+            // rather than `unreachable!` so a future edit that breaks the
+            // pairing fails the run instead of aborting the process.
+            (PlacementDecision::Immediate(_), None) => {
+                bail!("offline replay lost the resolved scheduler identity for {uuid}")
             }
         }
         self.dispatch_placements(effects.released)?;
