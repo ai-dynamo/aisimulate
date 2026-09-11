@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
+
 from aiconfigurator.generator.api import generate_from_request
 from aiconfigurator.generator.request import ModelFacts, from_sweeper_candidate
 
@@ -51,3 +53,18 @@ def test_disagg_sglang_candidate_renders_each_role_prefill_token_limit():
 
     assert _cli_flag_value(artifacts["cli_args_prefill"], "--max-prefill-tokens") == "16384"
     assert _cli_flag_value(artifacts["cli_args_decode"], "--max-prefill-tokens") == "8192"
+
+
+@pytest.mark.parametrize("backend_version", ["current", "0.5.10.post1", "0.5.9", "0.5.8"])
+def test_sglang_candidate_omits_unspecified_kv_cache_dtype(backend_version):
+    request = from_sweeper_candidate(
+        _agg_candidate(backend="sglang", backend_version=backend_version),
+        workload={"isl": 1024, "osl": 128},
+        model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": "example/sglang:release"}},
+    )
+
+    artifacts = generate_from_request(request)
+
+    assert "--kv-cache-dtype" not in artifacts["cli_args_agg"]
+    assert "--kv-cache-dtype" not in artifacts["k8s_deploy.yaml"]

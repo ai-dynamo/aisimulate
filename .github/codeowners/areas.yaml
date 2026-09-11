@@ -42,17 +42,22 @@ areas:
   - label: replay
     github_team: "@ai-dynamo/aisimulate-replay-codeowners"
     path_globs:
+      - crates/core/examples/
       - crates/core/src/replay/
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
       - python/aisimulate/src/aisimulate/traffic.py
       - tests/test_cli_config.py
+      - tests/test_epd_cli.py
+      - examples/cli/
       - tests/test_stack_discovery.py
       - tests/test_unified_cli.py
       - tests/test_unified_traffic_runtime.py
       - tests/test_power_contract.py
       - tests/fixtures/power-contract-v1.json
       - tests/test_host_offload_cli.py
+      - tests/test_afd_*.py
+      - tests/golden/afd-*
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -75,6 +80,7 @@ areas:
       - pytest.ini
       - scripts/
       - tests/test_aic_sync.py
+      - tests/test_ci_workflow_contracts.py
       - tests/test_pages_site.py
       - tests/test_e2e_accuracy_overview.py
       - tests/test_source_compliance.py
@@ -102,6 +108,8 @@ shared:
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_aic_sync.py
     owners: [infra, maintainers]
+  - glob: tests/test_ci_workflow_contracts.py
+    owners: [infra, maintainers]
   - glob: tests/test_pages_site.py
     owners: [infra, maintainers]
   - glob: tests/test_e2e_accuracy_overview.py
@@ -128,6 +136,8 @@ shared:
     owners: [sweeper, maintainers]
   - glob: crates/core/src/replay/
     owners: [replay, maintainers]
+  - glob: crates/core/examples/
+    owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/replay/
     owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/runner.py
@@ -135,6 +145,10 @@ shared:
   - glob: python/aisimulate/src/aisimulate/traffic.py
     owners: [replay, maintainers]
   - glob: tests/test_cli_config.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_epd_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: examples/cli/
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py
     owners: [replay, sweeper, maintainers]
@@ -148,6 +162,10 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_host_offload_cli.py
     owners: [replay, maintainers]
+  - glob: tests/test_afd_*.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/golden/afd-*
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
   - glob: tests/test_traffic.py

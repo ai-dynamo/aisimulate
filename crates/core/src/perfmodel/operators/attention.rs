@@ -231,13 +231,12 @@ impl ContextAttentionOp {
         }
     }
 
-    pub fn query(
+    fn query_kernel_unscaled(
         &self,
         db: &PerfDatabase,
         batch_size: u32,
         isl: u32,
         prefix: u32,
-        seq_imbalance_correction_scale: f64,
     ) -> Result<PerformanceResult, AicError> {
         // Mirror Python's `ContextAttention._ctx(s, pfx)`: each chunk
         // dispatches through the database mode — the silicon table at the
@@ -264,12 +263,67 @@ impl ContextAttentionOp {
         // unchanged) and chunk 2cp-1 (attends almost the full sequence). Only
         // the FMHA table term is split; the fused extras below are added once.
         // Latency and energy both sum across the chunks (Python `__add__`).
-        let mut result = if self.cp_size > 1 {
+        if self.cp_size > 1 {
             let c = isl.div_ceil(2 * self.cp_size).max(1);
-            ctx(c, prefix)?.plus(ctx(c, prefix + isl - c)?)
+            Ok(ctx(c, prefix)?.plus(ctx(c, prefix + isl - c)?))
         } else {
-            ctx(isl, prefix)?
+            ctx(isl, prefix)
+        }
+    }
+
+    /// Attention kernel only, for visual-mask overlays whose ordinary language
+    /// graph already charges Q/K normalization, RoPE, and KV writes. Retains the
+    /// same database policy, lane order, CP geometry, energy, and provenance.
+    pub fn query_kernel(
+        &self,
+        db: &PerfDatabase,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+        seq_imbalance_correction_scale: f64,
+    ) -> Result<PerformanceResult, AicError> {
+        Ok(self
+            .query_kernel_unscaled(db, batch_size, isl, prefix)?
+            .scaled(seq_imbalance_correction_scale)
+            .clamp_non_negative()
+            .scaled(self.scale_factor))
+    }
+
+    /// Additional strict upper-triangle work for a bidirectional visual block.
+    /// The language graph already prices its causal attention and fused extras.
+    /// Preserve the causal kernel's database policy, then scale latency and
+    /// energy by the extra pairs relative to its modeled causal pair count.
+    pub fn query_visual_block_kernel(
+        &self,
+        db: &PerfDatabase,
+        batch_size: u32,
+        isl: u32,
+        seq_imbalance_correction_scale: f64,
+    ) -> Result<PerformanceResult, AicError> {
+        if isl <= 1 {
+            return Ok(PerformanceResult::new(0.0, Source::Sol));
+        }
+        let s = isl as f64;
+        let upper_triangle_pairs = s * (s - 1.0) / 2.0;
+        let modeled_causal_pairs = if self.window_size == 0 || isl <= self.window_size {
+            s * s / 2.0
+        } else {
+            s * self.window_size as f64
         };
+        Ok(self
+            .query_kernel(db, batch_size, isl, 0, seq_imbalance_correction_scale)?
+            .scaled(upper_triangle_pairs / modeled_causal_pairs))
+    }
+
+    pub fn query(
+        &self,
+        db: &PerfDatabase,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+        seq_imbalance_correction_scale: f64,
+    ) -> Result<PerformanceResult, AicError> {
+        let mut result = self.query_kernel_unscaled(db, batch_size, isl, prefix)?;
 
         // Fused-op extras (qk_norm / rope optional, kv_write mandatory).
         // Python evaluates them through the mode-aware `query_mem_op` and
@@ -1285,6 +1339,61 @@ mod tests {
     }
 
     #[test]
+    fn context_attention_kernel_omits_fused_extras_and_preserves_table_policy() {
+        let mut db = b200_vllm_db();
+        let mut op = with_vllm_lanes_ctx(ContextAttentionOp::new(
+            "visual",
+            64,
+            8,
+            128,
+            KvCacheQuantMode::Fp8,
+            FmhaQuantMode::Bfloat16,
+        ));
+        op.scale_factor = 25.0;
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+            DatabaseMode::Sol,
+        ] {
+            db.database_mode = mode;
+            for cp in [1, 2] {
+                op.cp_size = cp;
+                let table = |s, prefix| {
+                    query_context_attention_table(
+                        &db,
+                        &op.lane_order,
+                        4,
+                        s,
+                        prefix,
+                        op.n,
+                        op.n_kv,
+                        op.head_size,
+                        op.window_size,
+                        op.kv_cache_dtype,
+                        op.fmha_quant_mode,
+                    )
+                    .unwrap()
+                };
+                let expected = if cp == 1 {
+                    table(2048, 256)
+                } else {
+                    table(512, 256).plus(table(512, 1792))
+                }
+                .scaled(1.25)
+                .scaled(25.0);
+                let kernel = op.query_kernel(&db, 4, 2048, 256, 1.25).unwrap();
+                let full = op.query(&db, 4, 2048, 256, 1.25).unwrap();
+                assert_eq!(kernel.latency_ms, expected.latency_ms);
+                assert_eq!(kernel.energy_wms, expected.energy_wms);
+                assert_eq!(kernel.source, expected.source);
+                assert!(full.latency_ms > kernel.latency_ms);
+                assert_eq!(full.energy_wms, kernel.energy_wms);
+            }
+        }
+    }
+
+    #[test]
     fn context_attention_prefix_correction_shrinks_latency() {
         let db = b200_vllm_db();
         let op = with_vllm_lanes_ctx(ContextAttentionOp::new(
@@ -1308,6 +1417,66 @@ mod tests {
             with_prefix < no_prefix,
             "prefix correction must shrink latency: {with_prefix} vs {no_prefix}"
         );
+    }
+
+    /// Hand-counted oracle: four visual tokens add the six pairs (0,1),
+    /// (0,2), (0,3), (1,2), (1,3), (2,3). The causal cost model uses eight
+    /// pairs for a full window, four for window=1, and twelve for window=3.
+    /// Each synthetic table leaf costs 8 ms at 10 W; two layers and 1.5x
+    /// imbalance make its causal cost 24 ms / 240 W-ms. Thus the overlays
+    /// are respectively 18/180, 36/360, and 12/120. These are synthetic
+    /// modeling expectations, not measured bidirectional-kernel accuracy.
+    #[test]
+    fn visual_block_kernel_latency_and_energy_match_hand_counted_pairs() {
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let data = write_energy_systems_root(tmp.path());
+        write_parquet(
+            &data.join("context_attention_perf.parquet"),
+            &[
+                Col::Str("attn_dtype", vec!["bfloat16"; 5]),
+                Col::Str("kv_cache_dtype", vec!["bfloat16"; 5]),
+                Col::I64("batch_size", vec![2; 5]),
+                Col::I64("isl", vec![4; 5]),
+                Col::I64("num_heads", vec![16; 5]),
+                Col::I64("num_key_value_heads", vec![16; 5]),
+                Col::I64("head_dim", vec![128; 5]),
+                Col::I64("step", vec![0; 5]),
+                Col::I64("window_size", vec![0, 1, 3, 4, 8]),
+                Col::F64("latency", vec![8.0; 5]),
+                Col::F64("power", vec![10.0; 5]),
+            ],
+        );
+        let db = PerfDatabase::load(tmp.path(), "testsys", "vllm", "1.0").expect("db must load");
+        let mut op = ContextAttentionOp::new(
+            "visual",
+            16,
+            16,
+            128,
+            KvCacheQuantMode::Bfloat16,
+            FmhaQuantMode::Bfloat16,
+        );
+        op.scale_factor = 2.0;
+        for (window, latency, energy) in [
+            (0, 18.0, 180.0),
+            (1, 36.0, 360.0),
+            (3, 12.0, 120.0),
+            (4, 18.0, 180.0),
+            (8, 18.0, 180.0),
+        ] {
+            op.window_size = window;
+            let causal = op.query_kernel(&db, 2, 4, 0, 1.5).unwrap();
+            assert_eq!((causal.latency_ms, causal.energy_wms), (24.0, 240.0));
+            let visual = op.query_visual_block_kernel(&db, 2, 4, 1.5).unwrap();
+            assert_eq!((visual.latency_ms, visual.energy_wms), (latency, energy));
+            assert_eq!(visual.source, Source::Silicon);
+        }
+        for s in [0, 1] {
+            let visual = op.query_visual_block_kernel(&db, 2, s, 1.5).unwrap();
+            assert_eq!((visual.latency_ms, visual.energy_wms), (0.0, 0.0));
+        }
     }
 
     #[test]

@@ -38,8 +38,7 @@ def power_validator() -> Draft202012Validator:
 def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float]:
     """Independently evaluate the documented AIC-compatible formulas."""
     roles = case["roles"]
-    if any(not role["energy_aware"] for role in roles):
-        return {}
+    all_roles_energy_aware = all(role["energy_aware"] for role in roles)
 
     total_latency_ms = 0.0
     covered_latency_ms = 0.0
@@ -57,6 +56,9 @@ def derive_contract_metrics(case: dict[str, Any]) -> dict[str, float]:
             total_energy_wms += energy_wms
             if energy_wms > 0.0:
                 covered_latency_ms += latency_ms
+
+    if not all_roles_energy_aware:
+        return {}
 
     if total_latency_ms <= 0.0:
         return {"power_coverage": 0.0}
@@ -146,14 +148,18 @@ def test_reproducible_examples_record_provenance() -> None:
     json.loads(EXAMPLES_PATH.read_text(encoding="utf-8"))["invalid_evidence_cases"],
     ids=lambda case: case["name"],
 )
-def test_reproducible_examples_reject_invalid_operation_evidence(case: dict[str, Any]) -> None:
-    with pytest.raises(ValueError):
+def test_reproducible_examples_reject_invalid_operation_evidence(
+    case: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError, match="must be finite and non-negative"):
         derive_contract_metrics(case)
 
 
 def test_public_docs_keep_availability_separate_from_semantics() -> None:
     contract = (ROOT / "docs" / "power-model.md").read_text(encoding="utf-8")
-    migration = (ROOT / "docs" / "cli" / "migrate-from-aiconfigurator.md").read_text(encoding="utf-8")
+    migration = (ROOT / "docs" / "cli" / "migrate-from-aiconfigurator.md").read_text(
+        encoding="utf-8"
+    )
     core_api = (ROOT / "docs" / "core-api.md").read_text(encoding="utf-8")
 
     assert "This PR does not change current AIC or FPE runtime behavior" in contract
@@ -162,4 +168,7 @@ def test_public_docs_keep_availability_separate_from_semantics() -> None:
     assert "Once the follow-up runtime work adds a conforming producer" in contract
     assert "fixtures/power-contract-v1.json" in contract
     assert "[modeled-power contract](../power-model.md)" in migration
-    assert "Typed per-op energy alone does\nnot make unified replay power available" in core_api
+    assert (
+        "Typed per-op energy alone does\nnot make unified replay power available"
+        in core_api
+    )

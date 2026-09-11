@@ -168,6 +168,29 @@
           ]
         }
       ]
+    },
+    {
+      "name": "mixed_provider_invalid_energy",
+      "roles": [
+        {
+          "energy_aware": true,
+          "operations": [
+            {
+              "latency_ms": 20.0,
+              "energy_wms": 8000.0
+            }
+          ]
+        },
+        {
+          "energy_aware": false,
+          "operations": [
+            {
+              "latency_ms": 80.0,
+              "energy_wms": -1.0
+            }
+          ]
+        }
+      ]
     }
   ]
 }

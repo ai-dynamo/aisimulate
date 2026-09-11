@@ -559,6 +559,57 @@ fn agentic_v2_rejects_invalid_schema_and_graph_contracts() {
 }
 
 #[test]
+fn agentic_v2_rejects_ambiguous_source_play_order() {
+    let row = |request_id: &str, play_id: &str, ordinal: Option<usize>| {
+        let mut row = serde_json::json!({
+            "request_id": request_id,
+            "play_id": play_id,
+            "session_id": play_id,
+            "model": "model",
+            "not_before_ms": 0.0,
+            "input_length": 4,
+            "output_length": 1,
+            "hash_ids": [1]
+        });
+        if let Some(ordinal) = ordinal {
+            row["source_play_ordinal"] = ordinal.into();
+        }
+        row
+    };
+    let cases = [
+        (
+            "inconsistent rows",
+            vec![row("r1", "p1", Some(0)), row("r2", "p1", Some(1))],
+            "inconsistent source_play_ordinal",
+        ),
+        (
+            "partially ordered plays",
+            vec![row("r1", "p1", Some(0)), row("r2", "p2", None)],
+            "must be set for every play",
+        ),
+        (
+            "duplicate ordinals",
+            vec![row("r1", "p1", Some(0)), row("r2", "p2", Some(0))],
+            "unique and contiguous",
+        ),
+        (
+            "ordinal gap",
+            vec![row("r1", "p1", Some(0)), row("r2", "p2", Some(2))],
+            "unique and contiguous",
+        ),
+    ];
+
+    for (name, rows, expected) in cases {
+        let file = write_agentic_trace(&rows);
+        let error = AgenticTrace::from_agentic_mooncake(file.path()).expect_err(name);
+        assert!(
+            error.to_string().contains(expected),
+            "{name}: unexpected error: {error:#}"
+        );
+    }
+}
+
+#[test]
 fn test_from_applied_compute_agentic_expands_rows_into_num_turns_plus_final_request() {
     let file = write_trace(&[serde_json::json!({
         "num_turns": 2,
