@@ -1,0 +1,13 @@
+FROM nvcr.io/nvidian/dynamo-dev/vllm-agentx@sha256:ab1c5a6e1b2b63743c8a3f8ec4621ca244f049f754cdba8f5ff4b96a57d067c9
+USER root
+COPY --chmod=0644 flash-attn-descale.patch flash-attn-parent.sha256 /opt/fpm/
+COPY --chmod=0644 test_flash_attn_descale.py /opt/fpm/tests/
+RUN set -eu; \
+    VROOT=$(/opt/fpm/.venv/bin/python -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))'); \
+    cd "$(dirname "$VROOT")"; \
+    sha256sum -c /opt/fpm/flash-attn-parent.sha256; \
+    patch --batch --fuzz=0 -p1 < /opt/fpm/flash-attn-descale.patch
+LABEL ai.dynamo.minimax.compatibility="scalar-descale-view-before-expand-no-copy" \
+      ai.dynamo.minimax.fpm.revision="b3563fc65ae0f5359802593d78e7ea097e1fed31"
+USER dynamo
+CMD ["bash"]

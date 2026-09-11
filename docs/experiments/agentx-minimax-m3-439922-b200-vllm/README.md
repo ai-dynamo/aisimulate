@@ -31,7 +31,7 @@ The API labels speculation as `mtp`, but the actual server uses **EAGLE3-GQA**, 
 | Warmup / trajectory | 10 warmup requests/lane, grace 1800 seconds; trajectory start 0.25–0.75; idle-gap caps 300/10 seconds |
 | Client behavior | Streaming chat; server token counts; `ignore_eos=true`; first-turn-prefix cache bust |
 | Client revision | SemiAnalysisAI/aiperf `754356e9a39acc6cc6afb242d123bb57c3fb6f75`, inherited unchanged in `/opt/agentx-aiperf` |
-| Native FPM | Port 20380, one DP-rank-0 publisher for the TP4 engine; one buffered recorder |
+| Native FPM | Job-scoped port, one DP-rank-0 publisher for the TP4 engine; one buffered recorder |
 
 The reference uses vLLM `0.27.2rc1.dev77+gac7509e2b`; this image retains nightly vLLM `0.28.0` at `2cf0a6915ce544dc493a0990f2ea38d81601128a`. The reference server's checkpoint was a local directory with `revision=None`, so its exact weight revision is not independently established. Synthetic acceptance tests performance, not model quality. These boundaries apply to SA comparisons even though both local cases share the same image and weights.
 
@@ -39,7 +39,7 @@ The reference uses vLLM `0.27.2rc1.dev77+gac7509e2b`; this image retains nightly
 
 1. Reuse the target and draft in `/home/scratch.hongkuanz_gpu/models/hub/`. [checkpoint-result.json](checkpoint-result.json) records the immutable revisions, paths and verified file sizes: target 88 weight shards / 250,137,296,832 total bytes; draft one weight file / 6,149,993,396 total bytes. CPU-only download job `4244099` completed `0:0`. No previous model was deleted. Weight licenses are retained by the HF cache; weights and model code are not vendored here.
 2. If the checkpoints are absent in another scratch space, adapt the paths in [download-checkpoints.py](download-checkpoints.py), then run [submit-download.sh](submit-download.sh). It requests eight CPUs, 32 GiB RAM and **zero GPUs**, queries metadata at the pinned revisions, resumes downloads and validates every file's size plus the indexed weight shards. Preserve the backing HF blobs.
-3. Use image `nvcr.io/nvidian/dynamo-dev/vllm-agentx@sha256:ab1c5a6e1b2b63743c8a3f8ec4621ca244f049f754cdba8f5ff4b96a57d067c9`. The Slurm cache is `/home/scratch.hongkuanz_gpu/images/vllm-agentx-fpm-b3563fc65a-amd64.sqsh`, SHA256 `6e9c070a151721de5e15958d54c31090b365aa601a996f0e1e9650aaf4819ece`. See [image-published.json](image-published.json).
+3. Use image `nvcr.io/nvidian/dynamo-dev/vllm-agentx@sha256:2aab1ad231c052eacc53f430b37261b01b31abc1319cd72e0e5cf9936292199a`. The Slurm cache is `/home/scratch.hongkuanz_gpu/images/vllm-agentx-fpm-b3563fc65a-minimax-layout-amd64.sqsh`, SHA256 `673d21cdb48ccbf0cb7610c5e31e1784d44104b1cc85444d1f830a51060ffe3f`. This includes the singleton FP8 descale compatibility fix described below. See [image-published.json](image-published.json).
 4. Stage these scripts, the image manifest and checkpoint result in `/home/scratch.hongkuanz_gpu/minimax-m3-439922-vllm-20260911/`; adapt user/account/partition paths as needed. Submit:
 
 ```bash
@@ -47,7 +47,7 @@ ssh hongkuanz@computelab-sc-01 \
   'sbatch /home/scratch.hongkuanz_gpu/minimax-m3-439922-vllm-20260911/submit-benchmark.sh'
 ```
 
-[submit-benchmark.sh](submit-benchmark.sh) requests **4 GPUs, 112 CPUs, 768 GiB host RAM and four hours**. Host RAM is for model loading, file cache and client work, not G2. This is not a whole-node exclusive allocation; other workloads may use the remaining GPUs/host resources. Record this limitation when interpreting small performance differences. Ports 8888 and 20380 must be unused on the allocated host.
+[submit-benchmark.sh](submit-benchmark.sh) requests **4 GPUs, 112 CPUs, 768 GiB host RAM and four hours**. Host RAM is for model loading, file cache and client work, not G2. This is not a whole-node exclusive allocation; other workloads may use the remaining GPUs/host resources. Record this limitation when interpreting small performance differences. API and FPM ports are `20000 + job_id % 10000` and `10000 + job_id % 10000`, with availability checked before each case; the exact ports are saved in `protocol.json`.
 
 [benchmark.py](benchmark.py) verifies the checkpoint manifest and four CUDA-visible B200 devices, runs a short-lived GPU probe so the controller retains no CUDA context, saves allocation/topology/command metadata, and checks the native CLI has no KV connector or CPU offload. `VLLM_PLUGINS=""` prevents bundled Omni plugins from replacing native vLLM classes. The script unblocks inherited `SIGCHLD`, uses a job-local AIPerf mmap cache, and starts load only after health and chat smoke checks.
 
@@ -67,15 +67,24 @@ The native FPM module is byte-identical to PR revision `b3563fc`; compatibility 
 
 Run [submit-image.sh](submit-image.sh) and [prepare-image.sh](prepare-image.sh) inside a one-B200 allocation. They build, test, publish and export the named image; use a new tag/cache path for a new revision rather than overwriting recorded artifacts. [cli-preflight-node.sh](cli-preflight-node.sh) performs CLI and real CUDA-event smoke checks inside the same allocation. The checked-in test differs from the upstream test only by accepting this older base's earlier `model_config` validation error.
 
+### Singleton FP8 descale compatibility
+
+The raw FPM-updated image hit a first-request FA4/CuTe ABI error with the GQA draft: `Expected strides[leading_dim] == 1, but got 0`. A scalar expanded to `(1,1)` has strides `(0,0)`; PyTorch considers it contiguous, so `.contiguous()` does not canonicalize the leading stride. The draft has four KV heads globally and one per TP4 rank, making this shape reachable. The failure also occurs with FPM disabled and is unrelated to FPM state collection.
+
+[Dockerfile.descale](Dockerfile.descale) extends the FPM image at `ab1c5a6e1b2b63743c8a3f8ec4621ca244f049f754cdba8f5ff4b96a57d067c9` with [flash-attn-descale.patch](flash-attn-descale.patch): three scale expressions become `scale.view(-1).expand(descale_shape)`. This preserves storage and values, gives the singleton head dimension stride 1, and adds no data copy, D2H or CUDA kernel. It retains the reference's FA4/GQA algorithm rather than selecting another attention backend. The FPM module remains byte-identical to `b3563fc`. This image-only compatibility patch is separate from PR #52061 and is applied identically to both cases.
+
+[prepare-layout-image.sh](prepare-layout-image.sh) builds/tests/exports this final layer in a one-B200 allocation. [flash-attn-parent.sha256](flash-attn-parent.sha256) guards the original vLLM backend file. [test_flash_attn_descale.py](test_flash_attn_descale.py) checks view aliasing, reproduces the unmodified singleton ABI failure, and verifies real FA4 outputs at batch 1/2 match dense descale storage **bitwise**.
+
 ## Results and validation
 
-Formal job `4244351` was submitted September 11, 2026. Full off/on performance is pending; no formal throughput/latency comparison is claimed yet. Check its final Slurm state and `campaign-result.json`, not this submission statement, for completion.
+Formal job `4244685` was submitted September 11, 2026 with the validated final image. Full off/on performance is pending; no formal throughput/latency comparison is claimed yet. Check its final Slurm state and `campaign-result.json`, not this submission statement, for completion.
 
 Preparation validation:
 
 - Build job `4244288`: 22 focused FPM/shared-memory tests passed in the matching image, including nonblocking tail collection, new-request arrival, ordered RPC responses, SD corrections and prefill variance.
 - Native off/on CLI preflight passed with no G2 or weight CPU offload.
 - A real B200 `torch.Event` timing smoke passed; it is not a model/performance result.
+- Final layout-image build `4244616`: 27 tests passed, including the above FPM/RPC regressions and real FA4 descale equivalence; allocation completed `0:0`.
 - The changed-file source/response-order review found no new compatibility issue. No additional inference CUDA synchronization was introduced by this port.
 
 One ordered pair measures an observed difference, not universal or statistically proven zero overhead. Report request errors, drain cancellations, metric-duration coverage and publisher/capture limitations alongside performance; do not conflate `was_cancelled=false` with zero cancelled requests.

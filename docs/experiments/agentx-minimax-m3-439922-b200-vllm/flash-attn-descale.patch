@@ -1,0 +1,20 @@
+diff --git a/vllm/v1/attention/backends/flash_attn.py b/vllm/v1/attention/backends/flash_attn.py
+index aa89e3010d..df1452ee2d 100755
+--- a/vllm/v1/attention/backends/flash_attn.py
++++ b/vllm/v1/attention/backends/flash_attn.py
+@@ -1014,12 +1014,12 @@ class FlashAttentionImpl(AttentionImpl):
+             descale_shape = (cu_seqlens_q.shape[0] - 1, self.num_kv_heads)
+ 
+             q_descale = (
+-                layer._q_scale.expand(descale_shape)
++                layer._q_scale.view(-1).expand(descale_shape)
+                 if self.supports_quant_query_input
+                 else None
+             )
+-            k_descale = layer._k_scale.expand(descale_shape)
+-            v_descale = layer._v_scale.expand(descale_shape)
++            k_descale = layer._k_scale.view(-1).expand(descale_shape)
++            v_descale = layer._v_scale.view(-1).expand(descale_shape)
+ 
+             if self.dcp_world_size > 1:
+                 self._forward_with_dcp(

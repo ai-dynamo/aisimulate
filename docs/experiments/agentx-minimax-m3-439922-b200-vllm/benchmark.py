@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -18,6 +19,8 @@ import urllib.error
 import urllib.request
 
 JOB = os.environ['SLURM_JOB_ID']
+API_PORT = 20000 + int(JOB) % 10000
+FPM_PORT = 10000 + int(JOB) % 10000
 BUNDLE = Path(__file__).resolve().parent
 ROOT = Path('/scratch/agentx-minimax-m3-results') / f'job-{JOB}'
 PY = '/opt/fpm/.venv/bin/python'
@@ -52,7 +55,7 @@ def stop(proc):
 
 def server_command(case):
     command = [PY, '-m', 'vllm.entrypoints.cli.main', 'serve', str(TARGET),
-        '--served-model-name', MODEL, '--host', '0.0.0.0', '--port', '8888',
+        '--served-model-name', MODEL, '--host', '0.0.0.0', '--port', str(API_PORT),
         '--tensor-parallel-size', '4', '--data-parallel-size', '1',
         '--gpu-memory-utilization', '0.9', '--block-size', '128',
         '--max-model-len', '1048576', '--language-model-only',
@@ -67,7 +70,7 @@ def server_command(case):
             num_speculative_tokens=3, attention_backend='FLASH_ATTN',
             rejection_sample_method='synthetic', synthetic_acceptance_length=2.78))]
     if case == 'on':
-        command += ['--forward-pass-metrics-port', '20380',
+        command += ['--forward-pass-metrics-port', str(FPM_PORT),
                     '--forward-pass-metrics-worker-id', f'minimax-m3-{JOB}']
     return command
 
@@ -79,7 +82,7 @@ def preflight():
         args = make_arg_parser(FlexibleArgumentParser()).parse_args(['--model', str(TARGET), *server_command(case)[5:]])
         assert args.tensor_parallel_size == 4 and args.data_parallel_size == 1
         assert args.kv_transfer_config is None and args.cpu_offload_gb == 0
-        assert args.forward_pass_metrics_port == (20380 if case == 'on' else 0)
+        assert args.forward_pass_metrics_port == (FPM_PORT if case == 'on' else 0)
         assert args.scheduler_cls is None or 'dynamo' not in str(args.scheduler_cls).lower()
         print(case, 'NATIVE_CLI_G2_OFF_PREFLIGHT_PASS', flush=True)
 
@@ -104,15 +107,18 @@ def run_case(case, env):
                 raise RuntimeError(f'{case} {name} exited {proc.returncode}')
     success = False
     try:
+        for port in (API_PORT, FPM_PORT):
+            with socket.socket() as probe:
+                probe.bind(('0.0.0.0', port))
         stage(case, 'server_starting')
         if case == 'on':
-            spawn('recorder', [PY, '/opt/fpm/record_fpm.py', '--ranks', '1', '--output', str(local/'fpm.jsonl')])
+            spawn('recorder', [PY, '/opt/fpm/record_fpm.py', '--ranks', '1', '--port', str(FPM_PORT), '--output', str(local/'fpm.jsonl')])
         spawn('server', server_command(case))
         deadline = time.monotonic()+3600
         while True:
             health()
             try:
-                with urllib.request.urlopen('http://localhost:8888/health', timeout=5) as response:
+                with urllib.request.urlopen(f'http://localhost:{API_PORT}/health', timeout=5) as response:
                     if response.status == 200:
                         break
             except Exception:
@@ -121,7 +127,7 @@ def run_case(case, env):
                 raise TimeoutError('Model startup exceeded 3600 seconds')
             time.sleep(5)
         stage(case, 'smoke')
-        request = urllib.request.Request('http://localhost:8888/v1/chat/completions',
+        request = urllib.request.Request(f'http://localhost:{API_PORT}/v1/chat/completions',
             data=json.dumps(dict(model=MODEL, messages=[dict(role='user', content='Explain why the sky is blue.')], max_tokens=64)).encode(),
             headers={'Content-Type':'application/json'})
         try:
@@ -139,7 +145,7 @@ def run_case(case, env):
             assert any(m['scheduled_requests']['num_decode_requests'] for m in metrics)
         stage(case, 'aiperf')
         client = ['/opt/agentx-aiperf/bin/aiperf', 'profile', '--scenario', 'inferencex-agentx-mvp',
-            '--url', 'http://localhost:8888', '--endpoint', '/v1/chat/completions', '--endpoint-type', 'chat',
+            '--url', f'http://localhost:{API_PORT}', '--endpoint', '/v1/chat/completions', '--endpoint-type', 'chat',
             '--streaming', '--model', MODEL, '--tokenizer', str(TARGET), '--tokenizer-trust-remote-code',
             '--public-dataset', 'semianalysis_cc_traces_weka_062126', '--num-dataset-entries', '393',
             '--concurrency', '15', '--benchmark-duration', '3600', '--stats-interval', '30',
@@ -237,6 +243,7 @@ print(json.dumps(devices))
         stream_interval=20, frontend='native Python', scheduler='native vLLM', model_runner='V1',
         fpm_revision='b3563fc65ae0f5359802593d78e7ea097e1fed31',
         vllm_base='2cf0a6915ce544dc493a0990f2ea38d81601128a', fpm_publishers=1,
+        api_port=API_PORT, fpm_port=FPM_PORT,
         cases=['off','on'], isolation='Four Slurm-assigned GPUs; not an exclusive whole-node allocation'))
     env = os.environ.copy()
     for name in ('VLLM_USE_SIMPLE_KV_OFFLOAD', 'VLLM_PREFIX_CACHE_RETENTION_INTERVAL', 'AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID'):

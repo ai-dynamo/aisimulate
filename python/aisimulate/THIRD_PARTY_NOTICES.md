@@ -118,6 +118,12 @@ Other test/subscriber content is unchanged. `parent.sha256` guards the parent fi
 Copyright contributors to the vLLM project. Apache-2.0 license:
 https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/LICENSE
 
+The MiniMax experiment's `flash-attn-descale.patch` additionally modifies
+`vllm/v1/attention/backends/flash_attn.py` from vLLM base
+`2cf0a6915ce544dc493a0990f2ea38d81601128a` (same Apache-2.0 license and vLLM
+contributor copyright). It views scalar descales as vectors before expansion;
+this preserves values/storage and canonicalizes the singleton head stride.
+
 No model weights or model source code are included; downloaded checkpoint licenses
 remain separately distributed with their Hugging Face snapshots.
 
