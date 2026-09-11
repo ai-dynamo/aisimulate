@@ -47,7 +47,7 @@ use crate::replay::core::NoEngineEvents;
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 use crate::replay::core::{PlacementPolicy, WorkerTopology};
 use crate::replay::disagg::DisaggRuntimeImpl;
-use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
+use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory, ReplayRoleFactory};
 use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::protocol::DirectRequest;
 use crate::replay::{
@@ -232,6 +232,20 @@ pub struct SteppableAgg<
     live: LiveRequests,
 }
 
+/// The aggregated role factory both constructors below build identically,
+/// parameterized only by the observation flavor that decides whether the
+/// engine retains and publishes KV events.
+fn aggregated_role_factory<O: ReplayEngineObservation>(
+    factory: &ReplayEngineFactory,
+    engine: &ReplayEngineConfig,
+) -> anyhow::Result<ReplayRoleFactory> {
+    Ok(factory.role_factory(
+        engine,
+        WorkerStage::Aggregated,
+        O::capture_engine_kv_events(WorkerStage::Aggregated),
+    )?)
+}
+
 impl<O, M> SteppableAgg<DynPlacement<O, M>, O, M>
 where
     O: ReplayEngineObservation + 'static,
@@ -247,11 +261,7 @@ where
         make_placement: impl FnOnce(u32, Vec<WorkerTopology>) -> anyhow::Result<DynPlacement<O, M>>,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(num_workers > 0, "num_workers must be positive");
-        let role_factory = factory.role_factory(
-            &engine,
-            WorkerStage::Aggregated,
-            O::capture_engine_kv_events(WorkerStage::Aggregated),
-        )?;
+        let role_factory = aggregated_role_factory::<O>(factory, &engine)?;
         let runtime = AggRuntimeImpl::<DynPlacement<O, M>, O, M>::new_composed(
             role_factory,
             AdmissionQueue::new_requests(VecDeque::new(), steppable_mode()),
@@ -299,11 +309,7 @@ impl SteppableAgg<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMet
         num_workers: usize,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(num_workers > 0, "num_workers must be positive");
-        let role_factory = factory.role_factory(
-            &engine,
-            WorkerStage::Aggregated,
-            NoEngineEvents::capture_engine_kv_events(WorkerStage::Aggregated),
-        )?;
+        let role_factory = aggregated_role_factory::<NoEngineEvents>(factory, &engine)?;
         let runtime = AggRuntimeImpl::new_composed(
             role_factory,
             AdmissionQueue::new_requests(VecDeque::new(), steppable_mode()),
@@ -701,11 +707,7 @@ mod tests {
             self.inner.place(request, metadata, session_id, now_ms)
         }
 
-        fn observe(
-            &mut self,
-            observation: Events,
-            now_ms: f64,
-        ) -> anyhow::Result<Vec<Placement>> {
+        fn observe(&mut self, observation: Events, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
             if !observation.is_empty() {
                 self.calls.borrow_mut().observed_batches += 1;
             }
