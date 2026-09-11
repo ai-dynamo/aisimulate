@@ -1888,7 +1888,22 @@ where
                     let state = self.state(uuid)?;
                     !state.counted_in_flight || state.phase == DisaggPhase::Done
                 };
-                if !already_finalized {
+                if already_finalized {
+                    // finish_logical_request (and its prepare_logical_finish)
+                    // must not run again, but retire_completed_request still
+                    // must: decode terminal's own finish_logical_request(uuid,
+                    // false) call deliberately deferred it (action_queues was
+                    // still non-empty / the handoff coordinator wasn't
+                    // complete yet), specifically so this cancellation
+                    // completing the handoff could retire it once ready.
+                    // Skipping this call entirely (as before) left the
+                    // requests_by_handoff entry forever, so
+                    // is_request_work_drained could never return true and the
+                    // run hung (round-12 High).
+                    if self.flow.retire_completed_request(uuid)? {
+                        self.notify_quiescent(uuid)?;
+                    }
+                } else {
                     self.finish_logical_request(uuid, true)?;
                 }
             }
