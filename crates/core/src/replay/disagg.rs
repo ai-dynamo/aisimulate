@@ -3039,14 +3039,27 @@ where
                 self.apply_scaling_with_tick(target_prefill, target_decode, Some(tick_ordinal))?;
             }
 
-            // Re-arm only into the strict, finite future and only while work
-            // remains; the `at_ms == now_ms` pop guard plus this check prevent a
+            // A non-finite next tick is corrupt input, not a degenerate stop.
+            // The `<= now_ms` leniency below is a deliberate spin guard; NaN
+            // and +-inf are neither -- the contract (`scaling.rs`) gives
+            // `next_tick_ms` no meaning beyond "absolute simulated time of the
+            // next tick", and only `None` means stop. Silently folding a PyO3
+            // policy's arithmetic bug into the same permanent "scaling off,
+            // FPM collection off" outcome as an explicit `None` hides it for
+            // the rest of the run.
+            if let Some(next_ms) = decision.next_tick_ms
+                && !next_ms.is_finite()
+            {
+                bail!("replay scaling policy returned a non-finite next_tick_ms {next_ms}");
+            }
+            // Re-arm only into the strict future and only while work remains;
+            // the `at_ms == now_ms` pop guard plus this check prevent a
             // same-pass re-fire or an infinite spin from a degenerate
             // `next_tick_ms <= now_ms`. When no future tick will fire, stop FPM
             // collection so neither buffer grows unbounded after the cadence ends.
             let next_tick = decision
                 .next_tick_ms
-                .filter(|next_ms| next_ms.is_finite() && *next_ms > self.now_ms);
+                .filter(|next_ms| *next_ms > self.now_ms);
             if let Some(next_ms) = next_tick
                 && !self.is_workload_done()
             {

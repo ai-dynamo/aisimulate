@@ -45,6 +45,59 @@ impl ReplayScalingPolicy for CaptureOncePolicy {
     }
 }
 
+/// Returns a corrupt `next_tick_ms`, standing in for a PyO3 scaling policy
+/// whose own arithmetic produced `inf - inf`.
+struct NonFiniteNextTickPolicy {
+    next_tick_ms: f64,
+}
+
+impl ReplayScalingPolicy for NonFiniteNextTickPolicy {
+    fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+        Ok(1_000.0)
+    }
+
+    fn on_tick(
+        &mut self,
+        _snapshot: ReplayScalingSnapshot,
+    ) -> anyhow::Result<ReplayScalingDecision> {
+        Ok(ReplayScalingDecision {
+            next_tick_ms: Some(self.next_tick_ms),
+            ..ReplayScalingDecision::default()
+        })
+    }
+}
+
+/// A non-finite `next_tick_ms` must fail loudly rather than quietly disabling
+/// scaling and FPM collection for the rest of the run.
+///
+/// Only `None` means "stop re-arming"; the `<= now_ms` filter is a deliberate
+/// spin guard. NaN and +-inf were silently folded into the same permanent stop
+/// as an explicit `None`, so a policy arithmetic bug read back as a policy that
+/// had simply chosen to stop scaling.
+#[test]
+fn a_non_finite_scaling_next_tick_is_rejected() {
+    for next_tick_ms in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut config = disagg_config();
+        config.num_prefill_workers = 1;
+        config.num_decode_workers = 1;
+        let pending = crate::replay::normalize_trace_requests(
+            vec![request(9_401, 64, 1, 0.0), request(9_402, 64, 1, 3_000.0)],
+            1.0,
+        )
+        .unwrap();
+
+        let error = DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_scaling_policy(Box::new(NonFiniteNextTickPolicy { next_tick_ms }))
+            .run()
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("non-finite next_tick_ms"),
+            "expected a loud rejection for {next_tick_ms}, got: {error}"
+        );
+    }
+}
+
 struct CaptureAndScaleOncePolicy {
     captured: Rc<RefCell<Option<ReplayScalingSnapshot>>>,
 }

@@ -72,6 +72,49 @@ fn telemetry_only_timestamps_do_not_enter_the_agg_semantic_drain() {
     );
 }
 
+/// Returns a corrupt `next_tick_ms`, standing in for a PyO3 scaling policy
+/// whose own arithmetic produced `inf - inf`.
+struct NonFiniteNextTickPolicy {
+    next_tick_ms: f64,
+}
+
+impl crate::replay::ReplayScalingPolicy for NonFiniteNextTickPolicy {
+    fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+        Ok(1.0)
+    }
+
+    fn on_tick(
+        &mut self,
+        _snapshot: crate::replay::ReplayScalingSnapshot,
+    ) -> anyhow::Result<crate::replay::ReplayScalingDecision> {
+        Ok(crate::replay::ReplayScalingDecision {
+            next_tick_ms: Some(self.next_tick_ms),
+            ..crate::replay::ReplayScalingDecision::default()
+        })
+    }
+}
+
+/// A non-finite `next_tick_ms` must fail loudly rather than quietly disabling
+/// scaling and FPM collection for the rest of the run.
+///
+/// Only `None` means "stop re-arming"; the `<= now_ms` filter is a deliberate
+/// spin guard. NaN and +-inf were silently folded into the same permanent stop
+/// as an explicit `None`, so a policy arithmetic bug read back as a policy that
+/// had simply chosen to stop scaling.
+#[test]
+fn a_non_finite_scaling_next_tick_is_rejected() {
+    for next_tick_ms in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let error = runtime(VecDeque::from([request(1, 10.0)]))
+            .with_scaling_policy(Box::new(NonFiniteNextTickPolicy { next_tick_ms }))
+            .run()
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("non-finite next_tick_ms"),
+            "expected a loud rejection for {next_tick_ms}, got: {error}"
+        );
+    }
+}
+
 struct MismatchedPlacement;
 
 impl PlacementPolicy<ReplayRequestPayload> for MismatchedPlacement {
