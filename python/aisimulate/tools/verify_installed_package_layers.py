@@ -170,6 +170,43 @@ def _exercise_engine() -> None:
         raise RuntimeError(f"unified engine produced invalid latencies: {prefill_ms=}, {decode_ms=}")
 
 
+def _verify_fpe_probe_results(payload: dict) -> None:
+    """Require complete passing probes for each selected role and topology."""
+    role_phases = {
+        "agg": {"prefill", "decode_start", "decode_end", "mixed"},
+        "prefill": {"prefill"},
+        "decode": {"decode_start", "decode_end"},
+    }
+    groups: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+    for row in payload["results"]:
+        if row["status"] != "PASS":
+            raise RuntimeError("installed FPE sentinels did not execute successfully")
+        latency = row["latency_ms"]
+        if (
+            isinstance(latency, bool)
+            or not isinstance(latency, (int, float))
+            or not math.isfinite(latency)
+            or latency <= 0
+        ):
+            raise RuntimeError("installed FPE command produced invalid latencies")
+        roles = tuple(sorted(row["roles"].split("|")))
+        if not set(roles) <= role_phases.keys():
+            raise RuntimeError("installed FPE command produced invalid roles")
+        compile_args = json.loads(row["reproducer"])["compile"]
+        key = (json.dumps(compile_args, sort_keys=True), roles)
+        phases = groups.setdefault(key, set())
+        if row["phase"] in phases:
+            raise RuntimeError("installed FPE command produced duplicate phases")
+        phases.add(row["phase"])
+    if not groups or payload["metadata"]["plan_count"] != len(groups):
+        raise RuntimeError("installed FPE plan count does not match probe results")
+    for (_, roles), phases in groups.items():
+        if phases != set().union(*(role_phases[role] for role in roles)):
+            raise RuntimeError("installed FPE command produced incomplete topology phases")
+    if set().union(*groups.values()) != role_phases["agg"]:
+        raise RuntimeError("installed FPE command did not exercise all required phases")
+
+
 def _exercise_fpe_matrix() -> None:
     """Launch the actual matrix command without exposing a source package."""
     generator = Path(__file__).resolve().parent / "support_matrix/generate_fpe_support_matrix.py"
@@ -202,12 +239,7 @@ def _exercise_fpe_matrix() -> None:
         if result.returncode:
             raise RuntimeError(f"installed FPE command failed: {result.stdout}\n{result.stderr}")
         payload = json.loads((output / "fpe_support_matrix.json").read_text())
-        rows = payload["results"]
-        phases = {"prefill", "decode_start", "decode_end", "mixed"}
-        if len(rows) != 4 or {r["phase"] for r in rows} != phases or any(r["status"] != "PASS" for r in rows):
-            raise RuntimeError(f"installed FPE sentinels did not execute successfully: {rows}")
-        if any(not math.isfinite(r["latency_ms"]) or r["latency_ms"] <= 0 for r in rows):
-            raise RuntimeError("installed FPE command produced invalid latencies")
+        _verify_fpe_probe_results(payload)
 
 
 def _verify_fpm_workflow() -> str:

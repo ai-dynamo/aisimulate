@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 from tools.support_matrix.qualify_fpe_support_matrix import qualify
+from tools.verify_installed_package_layers import _verify_fpe_probe_results
 
 pytestmark = pytest.mark.unit
 SHA = "a" * 40
@@ -76,19 +79,34 @@ def test_complete_native_reports_qualify(tmp_path, payload):
 
 
 @pytest.mark.parametrize(
-    "field,value", [("source_sha", "c" * 40), ("wheel_sha256", "d" * 64), ("schema_version", 2), ("plan_count", 2)]
+    "field,value,message",
+    [
+        ("source_sha", "c" * 40, "wrong source/schema identity"),
+        ("wheel_sha256", "d" * 64, "wrong wheel identity"),
+        ("schema_version", 2, "wrong source/schema identity"),
+        ("plan_count", 2, "plan count does not match"),
+    ],
 )
-def test_wrong_artifact_identity_or_plan_count_fails(tmp_path, payload, field, value):
+def test_wrong_artifact_identity_or_plan_count_fails(tmp_path, payload, field, value, message):
     payload["metadata"][field] = value
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         check(tmp_path, payload)
 
 
-@pytest.mark.parametrize("status", ["PERF_DATA_MISSING", "SDK_UNREPRESENTABLE", "QUERY_FAILED", "BUILD_FAILED", "SKIP"])
-def test_required_case_cannot_be_skipped_or_failed(tmp_path, payload, status):
+@pytest.mark.parametrize(
+    "status,message",
+    [
+        ("PERF_DATA_MISSING", "required known-good probes no longer pass"),
+        ("SDK_UNREPRESENTABLE", "required known-good probes no longer pass"),
+        ("QUERY_FAILED", "unexpected native probe failure"),
+        ("BUILD_FAILED", "unexpected native probe failure"),
+        ("SKIP", "invalid probe result"),
+    ],
+)
+def test_required_case_cannot_be_skipped_or_failed(tmp_path, payload, status, message):
     for row in payload["results"]:
         row["status"] = status
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         check(tmp_path, payload)
 
 
@@ -151,3 +169,72 @@ def test_exploratory_unsupported_case_is_visible_without_qualifying_it(tmp_path,
     payload["results"].extend(extra)
     payload["metadata"]["plan_count"] = 2
     assert check(tmp_path, payload)["status_counts"] == {"PASS": 4, "MODEL_UNSUPPORTED": 4}
+
+
+@pytest.fixture(params=[False, True], ids=["merged-roles", "distinct-roles"])
+def installed_payload(payload, request):
+    for row in payload["results"]:
+        row["reproducer"] = json.dumps({"compile": {"model_path": "test/dense", "tp_size": 1}})
+        row["roles"] = "agg|prefill|decode" if not request.param else "agg"
+    if request.param:
+        for phase, role, tp_size in (
+            ("prefill", "prefill", 2),
+            ("decode_start", "decode", 4),
+            ("decode_end", "decode", 4),
+        ):
+            payload["results"].append(
+                {
+                    **payload["results"][0],
+                    "phase": phase,
+                    "roles": role,
+                    "reproducer": json.dumps({"compile": {"model_path": "test/dense", "tp_size": tp_size}}),
+                }
+            )
+        payload["metadata"]["plan_count"] = 3
+    return payload
+
+
+def test_installed_fpe_accepts_complete_merged_or_distinct_roles(installed_payload):
+    _verify_fpe_probe_results(installed_payload)
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("status", "QUERY_FAILED", "did not execute"),
+        ("latency_ms", float("nan"), "invalid latencies"),
+        ("latency_ms", True, "invalid latencies"),
+        ("roles", "unknown", "invalid roles"),
+    ],
+)
+def test_installed_fpe_rejects_invalid_probe(installed_payload, field, value, message):
+    installed_payload["results"][-1][field] = value
+    with pytest.raises(RuntimeError, match=message):
+        _verify_fpe_probe_results(installed_payload)
+
+
+def test_installed_fpe_rejects_incomplete_role(installed_payload):
+    installed_payload["results"].pop()
+    with pytest.raises(RuntimeError, match="incomplete topology phases"):
+        _verify_fpe_probe_results(installed_payload)
+
+
+def test_installed_fpe_rejects_duplicate_probe(installed_payload):
+    installed_payload["results"].append(installed_payload["results"][-1])
+    with pytest.raises(RuntimeError, match="duplicate phases"):
+        _verify_fpe_probe_results(installed_payload)
+
+
+def test_installed_fpe_rejects_wrong_plan_count(installed_payload):
+    installed_payload["metadata"]["plan_count"] += 1
+    with pytest.raises(RuntimeError, match="plan count"):
+        _verify_fpe_probe_results(installed_payload)
+
+
+def test_source_provenance_uses_checkout_instead_of_dispatch_event(monkeypatch):
+    from tools.support_matrix.generate_fpe_support_matrix import _source_sha
+
+    monkeypatch.setenv("GITHUB_SHA", "0" * 40)
+    root = Path(__file__).resolve().parents[5]
+    expected = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    assert _source_sha() == expected

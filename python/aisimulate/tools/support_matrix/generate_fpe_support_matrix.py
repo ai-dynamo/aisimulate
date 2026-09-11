@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -28,9 +27,8 @@ from tools.support_matrix.fpe_support_matrix import (
 
 
 def _source_sha() -> str:
-    github_sha = os.environ.get("GITHUB_SHA")
-    if github_sha:
-        return github_sha
+    # A manually requested SHA may differ from the workflow event's GITHUB_SHA.
+    # Record the checkout that supplied the generator and discovery code.
     repository_root = _APPLICATION_ROOT.parents[1]
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],

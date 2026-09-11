@@ -127,6 +127,48 @@ def test_attention_backend_distinguishes_probe_identity():
     assert plan.identity_key() != replace(plan, attention_backend="flashinfer").identity_key()
 
 
+@pytest.mark.parametrize(
+    "error,expected_status",
+    [
+        (
+            ValueError(
+                "Cross-node EP requires pure expert parallelism (moe_tp_size=1); got moe_tp_size=2, moe_ep_size=16."
+            ),
+            STATUS_SDK_UNREPRESENTABLE,
+        ),
+        (RuntimeError("unexpected planning failure"), STATUS_BUILD_FAILED),
+    ],
+)
+def test_rejected_topology_preserves_valid_choices_and_its_actual_identity(error, expected_status):
+    class FakeMatrix:
+        def generate_combinations(self):
+            return [("test/model", "b200_sxm", "sglang", "0.5.14")]
+
+        def get_architecture(self, _model):
+            return "TestForCausalLM"
+
+    class TaskWithOneRejectedChoice(_FakeTask):
+        def iter_parallel(self, _role):
+            return iter([(2, 1, 1, 1, 2, 1), (4, 1, 1, 2, 16, 1), (8, 1, 1, 1, 8, 1)])
+
+        def build_model_config(self, *, role, parallel):
+            if parallel[0] == 4:
+                raise error
+            return super().build_model_config(role=role, parallel=(2, 1, 1, 1, 2, 1))
+
+    plans = build_probe_plans(
+        matrix=FakeMatrix(),
+        create_task=lambda **kwargs: TaskWithOneRejectedChoice(kwargs["mode"]),
+        constraints_for_model=lambda _model: object(),
+    )
+    assert {p.topology.tp_size for p in plans if not p.planning_status} == {2, 8}
+    rejected = [p for p in plans if p.planning_status]
+    assert len(rejected) == 1
+    assert rejected[0].topology == ParallelTopology(4, 1, 1, 2, 16, 1)
+    assert rejected[0].planning_status == expected_status
+    assert rejected[0].roles == ("agg", "prefill", "decode")
+
+
 def test_build_probe_plans_rejects_non_op_level_forward_models():
     with pytest.raises(ValueError, match="unsupported forward models:.*fpm"):
         build_probe_plans(forward_models=("fpm",))
@@ -301,10 +343,39 @@ def test_probe_plan_fails_closed_when_public_sdk_cannot_represent_topology():
         (RuntimeError("hardware incompatible"), "build", STATUS_HW_INCOMPATIBLE),
         (RuntimeError("framework unsupported"), "build", STATUS_FRAMEWORK_INCOMPATIBLE),
         (RuntimeError("unsupported model family"), "build", STATUS_MODEL_UNSUPPORTED),
+        (
+            ValueError(
+                "Cross-node EP requires pure expert parallelism (moe_tp_size=1); got moe_tp_size=2, moe_ep_size=16."
+            ),
+            "query",
+            STATUS_QUERY_FAILED,
+        ),
     ],
 )
 def test_classify_failure(error, stage, expected):
     assert classify_failure(error, stage=stage) == expected
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AssertionError("num_heads 24 should be divisible by tp_size 16 "),
+        AssertionError("dense Gemma 4 variants require moe_ep_size=1, got 8"),
+        ValueError(
+            "Invalid quantized MoE configuration: (moe_intermediate_size=1536 / moe_tp_size=16) "
+            "% weight_block_size=128 != 0. "
+        ),
+    ],
+)
+def test_explicit_sdk_geometry_rejection_is_nonpassing_only_at_build(error):
+    assert classify_failure(error, stage="build") == STATUS_SDK_UNREPRESENTABLE
+    assert classify_failure(error, stage="query") == STATUS_QUERY_FAILED
+    assert classify_failure(RuntimeError(str(error)), stage="build") == STATUS_BUILD_FAILED
+
+
+def test_unrecognized_quantized_moe_error_remains_blocking():
+    error = ValueError("Invalid quantized MoE configuration: malformed metadata")
+    assert classify_failure(error, stage="build") == STATUS_BUILD_FAILED
 
 
 def test_result_outputs_are_deterministic_while_run_metrics_remain_separate(tmp_path):

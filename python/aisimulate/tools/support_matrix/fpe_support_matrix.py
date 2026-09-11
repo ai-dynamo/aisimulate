@@ -16,6 +16,7 @@ import csv
 import json
 import math
 import os
+import re
 import resource
 import sys
 import time
@@ -397,15 +398,31 @@ def build_probe_plans(
                             choices = choices[:max_topologies_per_role]
                         for choice in choices:
                             topology = ParallelTopology.from_choice(choice)
-                            mode_seeds.append(
-                                _make_plan(
+                            try:
+                                plan = _make_plan(
                                     task=task,
                                     role=role,
                                     topology=topology,
                                     architecture=architecture,
                                     forward_model=forward_model,
                                 )
-                            )
+                            except Exception as error:
+                                # One rejected choice must not erase valid earlier
+                                # choices or stop discovery of later topologies.
+                                plan = EngineProbePlan(
+                                    model=model,
+                                    architecture=architecture,
+                                    system=system,
+                                    backend=backend,
+                                    backend_version=version,
+                                    forward_model=forward_model,
+                                    topology=topology,
+                                    roles=(role,),
+                                    planning_status=classify_failure(error, stage="build"),
+                                    planning_error_type=type(error).__name__,
+                                    planning_error_message=_error_message(error),
+                                )
+                            mode_seeds.append(plan)
                 except Exception as error:
                     mode_seeds = [
                         EngineProbePlan(
@@ -484,6 +501,29 @@ def _exception_chain(error: BaseException) -> list[BaseException]:
 def classify_failure(error: BaseException, *, stage: str) -> str:
     """Map native/Python failures to stable, conservative matrix categories."""
     chain = _exception_chain(error)
+    # Explicit SDK preflights from moe_comm_resolver and models/base, moe,
+    # hybrid_moe, gemma4. Match the type and complete diagnostic only while building;
+    # unrelated or query-time failures must retain their blocking category.
+    topology_rejections = (
+        (
+            ValueError,
+            r"Cross-node EP requires pure expert parallelism \(moe_tp_size=1\); "
+            r"got moe_tp_size=\d+, moe_ep_size=\d+\.",
+        ),
+        (AssertionError, r"num_heads \d+ should be divisible by tp_size \d+"),
+        (AssertionError, r"dense Gemma 4 variants require moe_ep_size=1, got \d+"),
+        (
+            ValueError,
+            r"Invalid quantized MoE configuration: \(moe_intermediate_size=\d+ / moe_tp_size=\d+\) "
+            r"% weight_block_size=\d+ != 0\.",
+        ),
+    )
+    if stage == "build" and any(
+        isinstance(item, error_type) and re.fullmatch(pattern, str(item).strip())
+        for item in chain
+        for error_type, pattern in topology_rejections
+    ):
+        return STATUS_SDK_UNREPRESENTABLE
     names = " ".join(type(item).__name__ for item in chain).lower()
     messages = " ".join(str(item) for item in chain).lower()
     evidence = f"{names} {messages}"

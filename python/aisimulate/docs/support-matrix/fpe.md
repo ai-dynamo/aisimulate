@@ -44,6 +44,13 @@ uses a field that the supported public engine builder cannot encode, such as
 context parallelism or a large-EP communication backend. The generator does
 not silently test a different topology.
 
+A rejected topology is recorded with its actual parallel configuration while
+other choices continue to be probed. The public builder's explicit rejection
+of mixed tensor/expert parallelism across nodes is `SDK_UNREPRESENTABLE`;
+so are its explicit attention-head/TP divisibility and quantized-MoE block
+alignment rejections. These do not count as passing coverage. Unexpected build and query errors
+remain failures.
+
 Other failures distinguish performance-data gaps, unsupported models,
 hardware or framework incompatibility, engine-build failures, and query
 failures. Error text is diagnostic evidence, not a stable API.
@@ -126,3 +133,9 @@ Full runs also suppress repeated SDK warnings at the console while preserving
 every classified failure and representative error in the matrix artifacts.
 Refresh-time claims must name both runner concurrency and per-runner thread
 count, plus the source SHA from the measured run.
+
+Staging waits for the complete matrix. Each shard has a 480-minute timeout;
+the eight-shard concurrency limit and runner queues can make the total wait
+longer than that per-shard limit. A successful wheel build alone does not make
+the nightly available. No release-latency percentile is promised until complete
+runs have been measured with this gate enabled.
