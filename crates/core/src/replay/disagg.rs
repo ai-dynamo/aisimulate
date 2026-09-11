@@ -1561,6 +1561,17 @@ where
         self.flow.action_queues.wake_worker_waiters(stage);
     }
 
+    /// Wakes every scheduler-id-keyed deferred action for `worker_id`, not
+    /// just the one scheduler id the completion itself carried.
+    ///
+    /// `worker_is_busy`/`apply_command` key on scheduler id
+    /// (`components/engine.rs`), but `pending_pass` is a per-*worker*
+    /// property: at `dp_size > 1`, one worker's pass completing can free
+    /// every dp-rank on it at once, not just the rank whose completion fired.
+    /// The previous shape woke only `payload.worker_idx` (a single scheduler
+    /// id); an action deferred on a different rank of the same worker could
+    /// go permanently unwoken -- a stall reachable only at `dp_size > 1`,
+    /// which nothing in this crate's test suite currently exercises.
     fn wake_deferred_actions(
         &mut self,
         stage: SimulationWorkerStage,
@@ -1569,8 +1580,13 @@ where
         let scheduler_ids = match stage {
             SimulationWorkerStage::Prefill => self.prefill_engine.scheduler_ids(worker_id)?,
             SimulationWorkerStage::Decode => self.decode_engine.scheduler_ids(worker_id)?,
+            // The only caller (`apply_worker_completions`) already bails on
+            // `SimulationWorkerStage::Aggregated` in its own match before
+            // reaching this call, so `stage` here is never `Aggregated`.
             SimulationWorkerStage::Aggregated => {
-                bail!("disaggregated replay completed an aggregated worker")
+                unreachable!(
+                    "apply_worker_completions bails on an aggregated completion before calling this"
+                )
             }
         };
         for &scheduler_id in scheduler_ids {
