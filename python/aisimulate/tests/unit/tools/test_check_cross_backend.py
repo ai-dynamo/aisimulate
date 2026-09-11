@@ -5,6 +5,7 @@
 op_name partitioning, NaN kernel_source visibility, multi-component latency,
 count-aware baseline ratchet, and systematic-offset uniformity."""
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -203,13 +204,16 @@ def test_parallel_audit_preserves_global_comparisons_and_report_order(parallel_a
     assert derive_views(*parallel) == derive_views(*serial)
 
 
-def test_parallel_audit_propagates_worker_exceptions(parallel_audit_tree):
-    from check_cross_backend import run_checks
+def _deliberate_worker_failure(*args, **kwargs):
+    raise TypeError("deliberate table worker failure")
 
-    options = _audit_options(parallel_audit_tree)
-    options["mono_tolerance"] = None  # Force a computation failure inside a worker.
-    with pytest.raises(TypeError):
-        run_checks(**options, workers=2)
+
+def test_parallel_audit_propagates_worker_exceptions(parallel_audit_tree, monkeypatch):
+    import check_cross_backend
+
+    monkeypatch.setattr(check_cross_backend, "_check_table_group", _deliberate_worker_failure)
+    with pytest.raises(TypeError, match="deliberate table worker failure"):
+        check_cross_backend.run_checks(**_audit_options(parallel_audit_tree), workers=2)
 
 
 def test_audit_rejects_nonpositive_workers(tmp_path):
@@ -217,3 +221,57 @@ def test_audit_rejects_nonpositive_workers(tmp_path):
 
     with pytest.raises(ValueError, match="workers must be positive"):
         run_checks(**_audit_options(tmp_path), workers=0)
+
+
+def test_audit_cli_rejects_nonpositive_workers(monkeypatch, capsys):
+    import check_cross_backend
+
+    monkeypatch.setattr(sys, "argv", ["check_cross_backend", "--workers", "0"])
+    with pytest.raises(SystemExit) as error:
+        check_cross_backend.main()
+    assert error.value.code == 2
+    assert "--workers must be positive" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("options", "expected"), [([], 1), (["--workers", "3"], 3)])
+def test_audit_cli_forwards_worker_count(monkeypatch, options, expected):
+    import check_cross_backend
+
+    observed = {}
+
+    def capture_run_checks(**kwargs):
+        observed.update(kwargs)
+        return [], []
+
+    monkeypatch.setattr(sys, "argv", ["check_cross_backend", *options])
+    monkeypatch.setattr(check_cross_backend, "run_checks", capture_run_checks)
+    monkeypatch.setattr(check_cross_backend, "load_kernel_map", lambda path: {})
+    check_cross_backend.main()
+    assert observed["workers"] == expected
+
+
+def test_spawned_audit_workers_keep_info_logging(parallel_audit_tree):
+    import check_cross_backend
+
+    application = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [
+            sys.executable,
+            check_cross_backend.__file__,
+            "--workers",
+            "2",
+            "--data-root",
+            str(parallel_audit_tree),
+            "--systems",
+            "system0",
+            "--op-files",
+            "op0_perf.txt",
+            "--log-level",
+            "INFO",
+        ],
+        cwd=application,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "INFO system0/op0_perf.txt: 2 backends compared" in result.stderr

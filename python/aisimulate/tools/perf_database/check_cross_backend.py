@@ -1050,6 +1050,10 @@ def detect_machine_fingerprint(
     return findings
 
 
+def _configure_worker_logging(level: int) -> None:
+    logging.basicConfig(level=level, format="%(levelname)s %(message)s")
+
+
 def _check_table_group(
     entry,
     *,
@@ -1208,7 +1212,12 @@ def run_checks(
     else:
         # map preserves the serial report order; worker failures propagate.
         # Cross-system and cross-op detectors run only after all groups return.
-        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as executor:
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=_configure_worker_logging,
+            initargs=(logger.getEffectiveLevel(),),
+        ) as executor:
             collect(executor.map(check_group, sorted(tables.items())))
     if fingerprint_factor:
         anomalies.extend(detect_machine_fingerprint(fp_cache, fingerprint_factor))
