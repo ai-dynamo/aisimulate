@@ -375,7 +375,16 @@ impl TrafficAccumulator {
 
     /// Drain the accumulator at the given simulated time, resetting counters.
     pub(crate) fn drain(&mut self, now_ms: f64) -> TrafficStats {
-        let duration_s = (now_ms - self.window_start_ms) / 1000.0;
+        // Clamped because the replay clock legitimately steps backward:
+        // `step_dynamic_until` drains an internally-queued deadline that can
+        // sit before whatever a caller last advanced `now_ms` to, which the
+        // closed-loop wall-clock driver does on every iteration. A drain that
+        // lands on the backward side of the previous drain would otherwise
+        // report a negative window, and every consumer divides its counts by
+        // this to get a rate -- yielding negative RPS rather than an error.
+        // `advance_now_ms` defends its worker-seconds integration from the
+        // same clock behavior with a high-water mark and the same clamp.
+        let duration_s = (now_ms - self.window_start_ms).max(0.0) / 1000.0;
         let num_req = self.offered_count;
         let avg_isl = if self.shape_count > 0 {
             self.total_isl as f64 / self.shape_count as f64
@@ -662,6 +671,19 @@ mod tests {
         poisoned.on_arrival();
         poisoned.on_completion(10, 3, Some((f64::NAN, 5.0)));
         assert_eq!(poisoned.drain(1_000.0).avg_ttft_ms, 0.0);
+    }
+
+    /// The replay clock steps backward by design, so a drain can land before
+    /// the window it opened. A negative window turns every consumer's
+    /// count/duration into a negative rate.
+    #[test]
+    fn traffic_accumulator_never_reports_a_negative_window() {
+        let mut acc = TrafficAccumulator::new();
+        acc.on_arrival();
+        assert_eq!(acc.drain(1_000.0).duration_s, 1.0);
+
+        acc.on_arrival();
+        assert_eq!(acc.drain(400.0).duration_s, 0.0);
     }
 
     #[test]
