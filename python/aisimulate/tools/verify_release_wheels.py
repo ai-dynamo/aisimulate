@@ -116,6 +116,14 @@ def _source_payloads() -> set[str]:
     for package in ("aisimulate", "aisimulate_core", "aiconfigurator", "aiconfigurator_core"):
         _add_source_tree(expected, source_root / package, package)
     expected.discard("aiconfigurator/sdk/config_adapter/README.md")
+    collector_root = Path(__file__).resolve().parents[1] / "collector"
+    expected.update({"collector/__init__.py", "collector/model_cases.py"})
+    for pattern in ("cases/**/*.yaml", "fpm_forward/**/*.py", "fpm_forward/runtime/fpm_exec.sh"):
+        expected.update(
+            (Path("collector") / path.relative_to(collector_root)).as_posix()
+            for path in collector_root.glob(pattern)
+            if path.is_file()
+        )
     return expected
 
 
