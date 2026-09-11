@@ -932,6 +932,24 @@ where
                 .get(rank.dp_rank as usize)
                 .copied()
                 .context("native completion returned an out-of-range DP rank")?;
+            // Retiring on `completed` alone also covers rejections: `rejected`
+            // is only ever set together with `completed`. Its single producer
+            // is the vLLM admission gate (`engine::scheduler::vllm::core`),
+            // which emits rejections as terminal signals; SGLang never rejects.
+            // The rest of the replay layer relies on the same invariant --
+            // `agg::process_output_signal` and `disagg` only inspect `rejected`
+            // inside an `if signal.completed` arm. Assert it so a future
+            // scheduler emitting a non-terminal rejection fails here instead of
+            // leaking that request from `in_flight_by_rank` and
+            // `total_in_flight` for the rest of the run.
+            debug_assert!(
+                !rank
+                    .effects
+                    .outputs
+                    .iter()
+                    .any(|output| output.rejected && !output.completed),
+                "a rejected engine output must also be completed"
+            );
             let completed_request_ids = rank
                 .effects
                 .outputs
