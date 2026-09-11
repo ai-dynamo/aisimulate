@@ -641,7 +641,21 @@ fn dependency_between(
     AgenticDependency {
         request_id: entries[source].request.request_id.clone(),
         trigger,
-        delay_ms: entries[target].start_ms.saturating_sub(source_time) as f64,
+        // A negative difference is reachable here: the caller only sorts by
+        // (start_ms, end_ms) within a session (see by_session's
+        // sort_by_key), which orders arrival, not the (source.end_ms <=
+        // target.start_ms) the Completion trigger assumes. Two overlapping
+        // same-session requests -- target starts before source finishes --
+        // land here with target.start_ms < source_time, and a naive
+        // saturating_sub (which saturates toward i64::MIN on true overflow,
+        // but returns a genuine negative value like any other in-range
+        // subtraction) would hand a negative `delay_ms` to a downstream
+        // validator that rejects it -- so loading any trace with two
+        // legitimately overlapping same-session requests would hard-fail
+        // entirely, not just report a wrong number. `delay_ms` is a delay
+        // everywhere else in this crate (see validate_transfer_delay_ms),
+        // never negative; clamp here instead.
+        delay_ms: entries[target].start_ms.saturating_sub(source_time).max(0) as f64,
         relation,
     }
 }
@@ -794,6 +808,30 @@ mod tests {
         let dependency = &dependencies(&trace, "b")[0];
         assert_eq!(dependency.request_id, "a");
         assert_eq!(dependency.delay_ms, 10.0);
+    }
+
+    /// Same-session entries are sorted by (start_ms, end_ms), which orders
+    /// arrival, not the (source.end_ms <= target.start_ms) a Completion
+    /// dependency's delay assumes. Two overlapping requests in one session
+    /// -- "b" starts before "a" (the earlier arrival) finishes -- must not
+    /// underflow into a huge saturated delay; the delay is 0, not negative.
+    #[test]
+    fn overlapping_same_session_requests_clamp_delay_to_zero_instead_of_underflowing() {
+        let mut first = request("a", 100, Some("session"));
+        first["request"]["total_time_ms"] = json!(20);
+        first["event_time_unix_ms"] = json!(120);
+        let file = trace_file(&[first, request("b", 105, Some("session"))]);
+
+        let DynamoRequestTrace::Agentic(trace) =
+            DynamoRequestTrace::from_request_trace_files(&[file.path().to_path_buf()], Some(4))
+                .unwrap()
+        else {
+            panic!("expected agentic trace");
+        };
+
+        let dependency = &dependencies(&trace, "b")[0];
+        assert_eq!(dependency.request_id, "a");
+        assert_eq!(dependency.delay_ms, 0.0);
     }
 
     #[test]
