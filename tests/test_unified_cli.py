@@ -93,7 +93,8 @@ class _Runner:
             "output_throughput_tok_s": 8.0,
             "power_coverage": self.power_coverage,
         }
-        if self.power_w is not None:
+        power_is_publishable = self.power_w is not None and self.power_coverage >= 0.9
+        if power_is_publishable:
             metrics["power_w"] = self.power_w
             summary["power_w"] = self.power_w
         return ReplayReport(
@@ -104,7 +105,7 @@ class _Runner:
                     "scope": "active_forward_pass_per_gpu",
                     "power_w_unit": "W",
                     "coverage_gate": 0.9,
-                    "publication_status": ("available" if self.power_w is not None else "withheld"),
+                    "publication_status": ("available" if power_is_publishable else "withheld"),
                 },
                 "native_report": {
                     "summary": summary,
@@ -544,7 +545,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert runner.spec.goal["sla"] == {sla_field: bound}
 
     withheld_output = tmp_path / "withheld-recommend-output"
-    withheld_runner = _Runner(power_w=None, power_coverage=0.42)
+    withheld_runner = _Runner(power_w=487.5, power_coverage=0.42)
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(withheld_runner))
     assert (
         cli.main(
