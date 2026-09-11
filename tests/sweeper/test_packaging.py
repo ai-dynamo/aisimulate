@@ -51,6 +51,7 @@ def test_aisimulate_distribution_publishes_aisimulate_sweeper_package():
     assert distribution.metadata["Name"] == "aisimulate"
     assert importlib.util.find_spec("aisimulate.replay") is not None
     assert importlib.util.find_spec("aisimulate.sweeper") is not None
+    assert importlib.util.find_spec("aisimulate.afd_artifacts") is not None
     assert importlib.util.find_spec("aisimulate.replay.__main__") is None
     assert importlib.util.find_spec("aisimulate.sweeper.__main__") is None
     # Editable installs expose only their .pth/dist-info records. In wheel-based

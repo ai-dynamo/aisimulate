@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from .afd_artifacts import write_afd_qualification_artifacts
 from .compiler import prediction_to_replay_spec
 from .config.cli import (
     CorePredictionConfig,
@@ -213,6 +214,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                 f"nested_timestamp_basis requested={requested_basis!r}, resolved={resolved_basis!r}\n"
             )
     report_path = write_prediction_report(root, native)
+    write_afd_qualification_artifacts(root, spec)
     if args.capture_per_request:
         records = native.get("per_request")
         if not isinstance(records, list):

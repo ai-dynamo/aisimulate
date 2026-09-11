@@ -1179,11 +1179,18 @@ Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j
 ```text
 <output-dir>/
 ├── prediction.json
-└── requests.jsonl                 # only with --capture-per-request
+├── requests.jsonl                 # only with --capture-per-request
+├── afd-replay-spec.json           # only for AFD
+└── afd-qualification.json         # only for AFD
 ```
 
 - `prediction.json` preserves the selected runner's existing full prediction report.
 - `requests.jsonl` contains one record per request when explicitly enabled.
+- `afd-replay-spec.json` is the exact, deterministic analytical replay contract for an AFD run,
+  including topology, measurement provenance, workload, goal, and any P/D companion.
+- `afd-qualification.json` validates and summarizes the A/F pools, routing order, backend version,
+  measurement coverage, and GPU accounting. It explicitly records that native launch generation is
+  unsupported; it is not a Kubernetes manifest or runnable shell artifact.
 
 ### Recommendation Directory
 
@@ -1219,9 +1226,9 @@ Without `--overwrite`, the CLI rejects an existing nonempty output directory. Wi
 may replace only the known files and directories listed above. It must preserve unrelated files and
 must not recursively clear an arbitrary directory.
 
-Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `requests.jsonl`, and
-numbered `recommendations/NNNN.yaml` files. Other files, including non-numbered files inside
-`recommendations/`, are preserved.
+Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `requests.jsonl`,
+`afd-replay-spec.json`, `afd-qualification.json`, and numbered `recommendations/NNNN.yaml` files.
+Other files, including non-numbered files inside `recommendations/`, are preserved.
 
 ### Standard Output
 

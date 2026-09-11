@@ -690,3 +690,20 @@ def test_epd_rejects_afd_direct_deployment_and_replay(mode):
     )
     with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
         capabilities.require_compatible(spec)
+
+
+@pytest.mark.parametrize("encoder_present", [False, True])
+def test_afd_qualification_rejects_image_or_encoder_composition(encoder_present):
+    from aisimulate.afd_artifacts import AFDQualificationError, build_afd_qualification
+
+    spec = _spec()
+    spec = replace(
+        spec,
+        backend_deployment=replace(
+            spec.backend_deployment,
+            deployment_mode="afd",
+            encoder=spec.backend_deployment.encoder if encoder_present else None,
+        ),
+    )
+    with pytest.raises(AFDQualificationError, match="AFD qualification does not support analytical EPD"):
+        build_afd_qualification(spec)

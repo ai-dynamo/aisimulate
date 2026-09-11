@@ -107,6 +107,18 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
     saved_summary = report.get("summary", report)
     assert summary["completed_requests"] > 0
     assert saved_summary["completed_requests"] == summary["completed_requests"]
+    if config_path.name == "11-synthetic-afd.yaml":
+        replay_spec = json.loads((output / "afd-replay-spec.json").read_text(encoding="utf-8"))
+        qualification = json.loads((output / "afd-qualification.json").read_text(encoding="utf-8"))
+        assert replay_spec["backend_deployment"]["deployment_mode"] == "afd"
+        assert qualification["qualification"] == {
+            "execution": "analytical_foreground",
+            "native_deployment_reason": (
+                "AISimulate does not provide a physical AFD serving adapter or launch renderer"
+            ),
+            "native_deployment_supported": False,
+            "status": "qualified_for_analytical_replay",
+        }
     if "-trace-weka-" in config_path.name:
         assert "heuristically resolved one nested timestamp basis" in result.stderr
         assert "complete Weka corpus" in result.stderr
@@ -154,6 +166,14 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
             "json",
         )
         assert json.loads(prediction.stdout)["completed_requests"] > 0
+        if config_path.name == "07-afd-plus-pd.yaml":
+            qualification = json.loads((prediction_output / "afd-qualification.json").read_text(encoding="utf-8"))
+            assert qualification["identity"]["deployment_mode"] == "afd+pd"
+            assert qualification["deployment_plan"]["pools"]["companion"]["role"] in {
+                "prefill",
+                "decode",
+            }
+            assert qualification["deployment_plan"]["launch"]["supported"] is False
 
     if config_path.name == "06-override-parallel-mappings-agg-disagg.yaml":
         assert generated_modes == {"aggregated", "disaggregated"}

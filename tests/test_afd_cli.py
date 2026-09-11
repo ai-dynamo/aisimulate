@@ -236,6 +236,11 @@ def test_public_afd_predict_cli_writes_summary_and_per_request(tmp_path, monkeyp
     )
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 4.0
     assert len((output / "requests.jsonl").read_text().splitlines()) == 4
+    qualification = json.loads((output / "afd-qualification.json").read_text())
+    replay_spec = json.loads((output / "afd-replay-spec.json").read_text())
+    assert qualification["qualification"]["status"] == "qualified_for_analytical_replay"
+    assert qualification["qualification"]["native_deployment_supported"] is False
+    assert replay_spec["backend_deployment"]["deployment_mode"] == "afd"
 
 
 def test_afd_recommendation_emits_prediction_ready_candidate() -> None:
