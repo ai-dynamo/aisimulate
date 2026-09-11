@@ -27,9 +27,7 @@ from aisimulate.sweeper.parallel_projection import (
 from aisimulate.sweeper.search_space import BranchSpace
 
 
-def _role(
-    *, gpus: int, attention: str, ffn: str, replicas: int
-) -> ReplicaParallelConfig:
+def _role(*, gpus: int, attention: str, ffn: str, replicas: int) -> ReplicaParallelConfig:
     tp, dp = (gpus, 1) if attention == "tp" else (1, gpus)
     moe_tp, moe_ep = (gpus, 1) if ffn == "tp" else (1, gpus)
     return ReplicaParallelConfig(
@@ -54,9 +52,7 @@ def test_agg_parameters_have_structural_defaults():
         _role(gpus=4, attention="tp", ffn="ep", replicas=4),
         _role(gpus=16, attention="dp", ffn="ep", replicas=2),
     ]
-    branch = _branch(
-        "agg", configs, {config: frozenset({"vllm"}) for config in configs}
-    )
+    branch = _branch("agg", configs, {config: frozenset({"vllm"}) for config in configs})
 
     projector = ParallelConfigProjector(branch)
     parameters = {parameter.name: parameter for parameter in projector.parameters}
@@ -72,9 +68,7 @@ def test_agg_parameters_have_structural_defaults():
 def test_agg_exact_valid_point_projects_to_itself():
     tep4 = _role(gpus=4, attention="tp", ffn="ep", replicas=4)
     dep8 = _role(gpus=8, attention="dp", ffn="ep", replicas=2)
-    branch = _branch(
-        "agg", [tep4, dep8], {tep4: frozenset({"vllm"}), dep8: frozenset({"vllm"})}
-    )
+    branch = _branch("agg", [tep4, dep8], {tep4: frozenset({"vllm"}), dep8: frozenset({"vllm"})})
     projector = ParallelConfigProjector(branch)
 
     projection = projector.project(
@@ -145,9 +139,7 @@ def test_disagg_projection_uses_role_features_and_joint_gpu_budget():
         decode=_role(gpus=8, attention="dp", ffn="tp", replicas=3),
     )
     configs = [balanced, decode_heavy]
-    branch = _branch(
-        "disagg", configs, {config: frozenset({"sglang"}) for config in configs}
-    )
+    branch = _branch("disagg", configs, {config: frozenset({"sglang"}) for config in configs})
     projector = ParallelConfigProjector(branch)
 
     projection = projector.project(
@@ -207,9 +199,7 @@ def test_custom_parallel_preset_is_one_flat_choice() -> None:
 
     projector = ParallelConfigProjector(branch)
 
-    assert [parameter.name for parameter in projector.parameters] == [
-        PARALLEL_CONFIG_CHOICE
-    ]
+    assert [parameter.name for parameter in projector.parameters] == [PARALLEL_CONFIG_CHOICE]
     assert projector.project({PARALLEL_CONFIG_CHOICE: 1}, "vllm").config == second
 
 
@@ -251,9 +241,7 @@ def test_preset_off_exposes_independent_parallel_knobs() -> None:
         "moe_tp",
         "moe_ep",
     }
-    assert projection.config == ReplicaParallelConfig(
-        shape=ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=2
-    )
+    assert projection.config == ReplicaParallelConfig(shape=ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=2)
 
 
 def test_independent_parallel_domain_preserves_explicit_scale() -> None:

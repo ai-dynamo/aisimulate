@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use aiconfigurator_core::{
-    AicEngine, AicEngineBuilder, AicError, BackendKind, EngineConfig, ForwardPassPerfModel,
-    ForwardPassPerfOptions, ForwardPassWorkerType, KvCacheEstimateRequest,
+    AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EngineConfig,
+    ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassWorkerType, KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -23,6 +23,10 @@ pub fn configured_builder() -> AicEngineBuilder {
         .kvcache_quant_mode("bfloat16")
         .fmha_quant_mode("bfloat16")
         .comm_quant_mode("bfloat16")
+        .database_mode(DatabaseMode::Empirical)
+        .shared_layer(true)
+        .transfer_policy(vec!["xshape".to_owned()])
+        .strict_provenance(true)
         .speculative_decoding(0)
         .kv_block_size(16)
         .systems_path("/tmp/systems")

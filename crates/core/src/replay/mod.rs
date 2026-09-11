@@ -161,7 +161,8 @@ pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
 pub use report::TraceCollector;
 pub use report::{
     POWER_DATA_COVERAGE_THRESHOLD, PerRequestAdmissionRecord, PerRequestRecord,
-    PerRequestRoutingRecord, ReplayReport, ReplayRequestPool, ReplayRoutingOutcome,
+    PerRequestRoutingRecord, ReplayOperationPowerDiagnostics, ReplayPhasePowerDiagnostics,
+    ReplayPowerDiagnostics, ReplayReport, ReplayRequestPool, ReplayRoutingOutcome,
     ReplayTerminalStatus, ReplayTerminalStatus as RequestTerminalStatus, SlaThresholds,
     TraceDistributionStats, TraceGoodputStats, TraceInterTokenLatencyStats, TraceLatencyStats,
     TracePowerStats, TraceRequestCounts, TraceThroughputStats, TraceTrajectoryStats,

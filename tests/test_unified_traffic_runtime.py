@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,8 @@ from aisimulate.config import CorePredictionConfig
 from aisimulate.replay.reporting import format_report_table
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.replay import ReplayOutputRequirements
+
+_TRACE_FIXTURES = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/traces"
 
 
 def _engine() -> dict:
@@ -126,9 +129,7 @@ def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
         "decode",
     ]
     phase_energies = [
-        phase["energy_wms"]
-        for phase in diagnostics["phases"]
-        if "energy_wms" in phase
+        phase["energy_wms"] for phase in diagnostics["phases"] if "energy_wms" in phase
     ]
     if phase_energies:
         assert diagnostics["energy_wms"] == pytest.approx(sum(phase_energies))
@@ -210,36 +211,15 @@ def test_engine_stack_runs_ordered_synthetic_sessions() -> None:
     assert [row["input_length"] for row in records[:3]] == [8, 18, 28]
 
 
-def test_engine_stack_runs_mooncake_delta(tmp_path) -> None:
-    trace = tmp_path / "delta.jsonl"
-    rows = [
-        {
-            "request_id": "r0",
-            "session_id": "s0",
-            "input_length": 4,
-            "output_length": 2,
-            "hash_ids": [1],
-            "timestamp": 0,
-        },
-        {
-            "request_id": "r1",
-            "session_id": "s0",
-            "input_length": 2,
-            "output_length": 1,
-            "hash_ids": [2],
-            "delay": 5,
-        },
-    ]
-    trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
-
+def test_engine_stack_runs_mooncake_delta() -> None:
     report = _run(
         {
             "traffic": {
                 "source": {
                     "type": "trace",
-                    "paths": [str(trace)],
+                    "paths": [str(_TRACE_FIXTURES / "mooncake-delta.jsonl")],
                     "format": "mooncake-delta",
-                    "block_size": 4,
+                    "block_size": 512,
                 },
                 "load": {"type": "trace_timestamps"},
             },
@@ -249,34 +229,19 @@ def test_engine_stack_runs_mooncake_delta(tmp_path) -> None:
 
     assert report.metrics["completed_requests"] == 2
     records = report.metadata["native_report"]["per_request"]
-    assert records[1]["input_length"] == 8
+    assert records[1]["input_length"] == 28
     assert records[1]["arrival_time_ms"] >= records[0]["last_token_ms"] + 5
 
 
-def test_engine_stack_runs_applied_compute_agentic(tmp_path) -> None:
-    trace = tmp_path / "applied.jsonl"
-    trace.write_text(
-        json.dumps(
-            {
-                "num_turns": 1,
-                "input_prompt_length": 8,
-                "assistant_response_length": [2],
-                "tool_call_output_length": [3],
-                "tool_call_latency": [0.005],
-                "final_assistant_response_length": 1,
-            }
-        )
-        + "\n"
-    )
-
+def test_engine_stack_runs_applied_compute_agentic() -> None:
     report = _run(
         {
             "traffic": {
                 "source": {
                     "type": "trace",
-                    "paths": [str(trace)],
+                    "paths": [str(_TRACE_FIXTURES / "applied-compute-agentic.jsonl")],
                     "format": "applied_compute_agentic",
-                    "block_size": 4,
+                    "block_size": 512,
                 },
                 "load": {"type": "concurrency", "concurrency": 1},
                 "stop": {"max_virtual_time_seconds": 60},
@@ -285,9 +250,9 @@ def test_engine_stack_runs_applied_compute_agentic(tmp_path) -> None:
         }
     )
 
-    assert report.metrics["completed_requests"] == 2
+    assert report.metrics["completed_requests"] == 3
     records = report.metadata["native_report"]["per_request"]
-    assert records[1]["input_length"] == 13
+    assert [record["input_length"] for record in records] == [16, 28, 40]
 
 
 def test_engine_stack_runs_legacy_agentic_mooncake(tmp_path) -> None:
@@ -336,36 +301,13 @@ def test_engine_stack_runs_legacy_agentic_mooncake(tmp_path) -> None:
     assert child["arrival_time_ms"] >= root["last_token_ms"] + 5
 
 
-def test_engine_stack_runs_native_dynamo_trace(tmp_path) -> None:
-    trace = tmp_path / "dynamo.jsonl"
-    rows = []
-    for index, start in enumerate((100, 120)):
-        rows.append(
-            {
-                "schema": "dynamo.request.trace.v1",
-                "event_type": "request_end",
-                "event_time_unix_ms": start + 10,
-                "request": {
-                    "request_id": f"r{index}",
-                    "output_tokens": 2,
-                    "request_received_ms": start,
-                    "total_time_ms": 10,
-                    "replay": {
-                        "trace_block_size": 4,
-                        "input_length": 4,
-                        "input_sequence_hashes": [11],
-                    },
-                },
-            }
-        )
-    trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
-
+def test_engine_stack_runs_native_dynamo_trace() -> None:
     report = _run(
         {
             "traffic": {
                 "source": {
                     "type": "trace",
-                    "paths": [str(trace)],
+                    "paths": [str(_TRACE_FIXTURES / "dynamo-standard.jsonl")],
                     "format": "dynamo",
                     "block_size": 4,
                 },
@@ -485,3 +427,71 @@ def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(
         ]
         == 8
     )
+
+
+def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
+    corpus = _TRACE_FIXTURES / "weka"
+    report = _run(
+        {
+            "traffic": {
+                "source": {"type": "trace", "paths": [str(corpus)], "format": "weka"},
+                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+            },
+            "engine": _engine(),
+        }
+    )
+
+    assert report.metrics["completed_requests"] == 3
+    native = report.metadata["native_report"]
+    assert native["agentic_input_format"] == "weka"
+    assert native["agentic_lanes"] == 1
+    assert native["agentic_qualification"] == "functional_only"
+    assert native["weka_nested_timestamp_basis"] == "absolute"
+    assert native["agentic_model_projection"] == {
+        "policy": "project_to_configured_target",
+        "source_models": ["model", "other-model"],
+        "target_model": "example/model",
+    }
+    records = native["per_request"]
+    by_play: dict[str, list[dict]] = {}
+    for record in records:
+        by_play.setdefault(record["play_id"], []).append(record)
+    ordered = sorted(
+        by_play,
+        key=lambda play_id: min(
+            record["dispatched_at_ms"] for record in by_play[play_id]
+        ),
+    )
+    assert len(ordered) == 2
+    assert [play_id.rsplit(":play:", 1)[1] for play_id in ordered] == [
+        "play-a",
+        "play-b",
+    ]
+    assert min(record["dispatched_at_ms"] for record in by_play[ordered[1]]) >= max(
+        record["terminal_time_ms"] for record in by_play[ordered[0]]
+    )
+    prefill_only = by_play[ordered[1]][0]
+    assert prefill_only["requested_output_length"] == 0
+    assert prefill_only["output_length"] == 0
+    assert prefill_only["first_token_ms"] is None
+
+
+def test_engine_stack_auto_infers_raw_weka_relative_timestamps() -> None:
+    report = _run(
+        {
+            "traffic": {
+                "source": {
+                    "type": "trace",
+                    "paths": [str(_TRACE_FIXTURES / "weka-relative.json")],
+                    "format": "weka",
+                },
+                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+            },
+            "engine": _engine(),
+        }
+    )
+
+    native = report.metadata["native_report"]
+    assert native["weka_nested_timestamp_basis"] == "relative"
+    assert native["agentic_input_format"] == "weka"
+    assert report.metrics["completed_requests"] == 4

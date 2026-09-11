@@ -97,9 +97,7 @@ def _record(
         candidate_id=candidate_id,
         status=status,
         config={"deployment_mode": "agg", "backend": "trtllm", "used_gpus": 8},
-        prediction_config=(
-            {"engine": {"model": "example/model"}} if feasible else None
-        ),
+        prediction_config=({"engine": {"model": "example/model"}} if feasible else None),
         used_gpus=8,
         score=100.0 if feasible else None,
         metrics={
@@ -172,10 +170,7 @@ def test_result_json_round_trip_is_lossless_and_schema_versioned():
     assert decoded["schema_version"] == RESULT_SCHEMA_VERSION
     assert decoded["provenance"]["search_strategy"] == "exhaustive"
     assert SweepResult.from_json(payload) == result
-    assert (
-        SweepResult.model_json_schema()["properties"]["schema_version"]["const"]
-        == "1.0"
-    )
+    assert SweepResult.model_json_schema()["properties"]["schema_version"]["const"] == "1.0"
 
 
 def test_selected_prediction_configs_preserve_ids_and_canonicalize_artifacts():
@@ -188,9 +183,7 @@ def test_selected_prediction_configs_preserve_ids_and_canonicalize_artifacts():
     assert updated.selected_candidate_ids == ["candidate-000001"]
     assert updated.selected_candidates[0].prediction_config == concrete
     assert updated.candidates[0].prediction_config == concrete
-    assert result.selected_candidates[0].prediction_config == {
-        "engine": {"model": "example/model"}
-    }
+    assert result.selected_candidates[0].prediction_config == {"engine": {"model": "example/model"}}
 
 
 def test_result_rejects_unknown_schema_version_and_inconsistent_counts():
@@ -233,13 +226,8 @@ def test_flat_csv_is_one_row_per_candidate_with_canonical_json_cells():
     assert rows[0]["schema_version"] == "1.0"
     assert rows[0]["is_top_n"] == "True"
     assert json.loads(rows[0]["config_json"])["backend"] == "trtllm"
-    assert (
-        json.loads(rows[0]["prediction_config_json"])["engine"]["model"]
-        == "example/model"
-    )
-    assert (
-        json.loads(rows[0]["provenance_json"])["operations"][0]["source"] == "silicon"
-    )
+    assert json.loads(rows[0]["prediction_config_json"])["engine"]["model"] == "example/model"
+    assert json.loads(rows[0]["provenance_json"])["operations"][0]["source"] == "silicon"
     assert rows[0]["power_w"] == "487.5"
     assert rows[0]["power_coverage"] == "0.95"
     assert rows[0]["power_source"] == "runner_reported"
@@ -529,9 +517,7 @@ def _with_trial_budget(
 
 
 def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),
@@ -572,10 +558,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
     assert result.selected_candidates[0].score == 512.0
     assert result.candidates[0].provenance.performance_data[0]["source"] == "parquet"
     assert result.candidates[0].provenance.performance_data[1]["role"] == "aggregated"
-    assert (
-        result.candidates[0].provenance.performance_data[1]["config"]["model_path"]
-        == "example/model"
-    )
+    assert result.candidates[0].provenance.performance_data[1]["config"]["model_path"] == "example/model"
     assert result.candidates[0].provenance.power["mean_power_w"] == 400.0
 
     views_only = Sweeper(
@@ -593,9 +576,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
 
 
 def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),
@@ -630,24 +611,18 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
     assert result.counts.feasible == 0
     assert result.selected_candidates == []
     assert result.candidates[0].metrics["mean_ttft_ms"] == 20.0
-    assert {record.reason_category for record in result.candidates} == {
-        ReasonCategory.SLA_CONSTRAINT
-    }
+    assert {record.reason_category for record in result.candidates} == {ReasonCategory.SLA_CONSTRAINT}
 
 
 def test_same_batch_failed_duplicates_are_counted_as_coalesced_hits(monkeypatch):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module, "enumerate_branches", lambda *args, **kwargs: [branch]
-    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
     monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
 
     result = Sweeper(
@@ -666,18 +641,14 @@ def test_zero_or_missing_sample_latency_preserves_ranked_sampler_feedback(
     monkeypatch,
     include_sample_count,
 ):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module, "enumerate_branches", lambda *args, **kwargs: [branch]
-    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
     monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
 
     seen = {}
@@ -715,16 +686,12 @@ def test_zero_or_missing_sample_latency_preserves_ranked_sampler_feedback(
     assert result.counts.failed == 0
     assert result.counts.cache_hits == 0
     assert result.candidates[0].reason_category is ReasonCategory.NO_SAMPLES
-    assert (
-        "num_e2e_latency_samples" in result.candidates[0].metrics
-    ) is include_sample_count
+    assert ("num_e2e_latency_samples" in result.candidates[0].metrics) is include_sample_count
     assert seen["sampler"].observed == [{"objective": float("-inf")}]
 
 
 def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monkeypatch):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),

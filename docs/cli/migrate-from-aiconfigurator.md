@@ -33,7 +33,7 @@ remaining AIC workflow has a verified replacement in the `aisimulate` CLI.
 
 | AIC workflow | What AIC provides | Unified CLI status | What to do |
 |---|---|---|---|
-| `aiconfigurator cli estimate` | One FPM point for an explicit batch, parallel configuration, and estimation mode | **Supported for deployment-level prediction, not behaviorally equivalent** | Use `aisimulate predict` when the goal is to predict one concrete serving deployment. Use `--diagnostics power` for replay-phase and per-operation energy evidence. Keep AIC for exact batch-level FPM, multimodal/EPD, static, AFD, memory/time/SOL detail, or unsupported providers. |
+| `aiconfigurator cli estimate` | One FPM point for an explicit batch, parallel configuration, and estimation mode | **Supported for deployment-level prediction, not behaviorally equivalent** | Use `aisimulate predict` for a concrete serving deployment, including the bounded analytical AFD and EPD paths. Use `--diagnostics power` for replay-phase and per-operation energy evidence. Keep AIC for exact batch-level FPM, unsupported EPD semantics, static modes, memory/time/SOL detail, native deployment generation, or unsupported providers. |
 | `aiconfigurator cli default` | Capacity-oriented aggregated/disaggregated search and selection | **Partially supported** | Use `aisimulate recommend` after choosing explicit traffic, topology domains, GPU bounds, and an objective. Keep AIC when its capacity-sweep and ranking semantics are required. |
 | `aiconfigurator cli recommend` | Minimum-GPU procurement sizing for a load target and SLA | **Partially supported** | Use `aisimulate recommend` to search explicit candidates under a chosen traffic shape, SLA, GPU budget, and objective. The unified CLI does not reproduce AIC's minimum-GPU sizing from either a target request rate or target concurrency; keep using the compatibility CLI when that sizing result is required. |
 | `aiconfigurator cli exp` | AIC experiment YAML, including heterogeneous experiments | **Manual migration only** | Use `predict` for each concrete deployment or `recommend` for a search domain. AISimulate does not consume AIC experiment YAML directly. |
@@ -47,10 +47,14 @@ The following limits apply to `aisimulate predict`, `aisimulate recommend`, and 
 implementation and lower-level estimator, collector, and result-schema primitives. Their presence
 does not make a capability available through the unified path.
 
+The [analytical EPD integration](../sweeper/epd.md) supports bounded fixed-image
+E+agg/E+P+D prediction and search through both the unified CLI and Sweeper SDK.
+This does not imply event-level encoder simulation or deployment generation.
+
 | Capability | Current unified status | Migration action |
 |---|---|---|
-| Multimodal image inputs and EPD | **Not supported.** The public traffic schema has no image dimensions or image count, and the engine schema has only aggregated, prefill, and decode workers. It cannot represent AIC's E+agg or E+P+D topology. | Continue using AIC `--enable-epd` workflows. |
-| Attention/FFN disaggregation (AFD) | **Not supported.** There is no unified A/F worker topology or AFD prediction/search mode. | Continue using AIC `--estimate-mode afd` or AIC AFD experiments. |
+| Multimodal image inputs and EPD | **Analytical fixed-image support.** Unified `predict` and `recommend` accept `traffic.source.images` and `engine.workers.encoder` for E+agg/E+P+D, using fixed synthetic concurrency. Saved recommendation YAML preserves the encoder and can be reloaded by `predict`. No image traces, per-request EPD metrics, event-level encoder queueing, or deployment generation. | Use the [CLI examples and semantics](../sweeper/epd.md#unified-cli); retain AIC workflows when their additional semantics are needed. |
+| Attention/FFN disaggregation (AFD) | **Supported analytically for fixed-length synthetic traffic.** `engine.mode: afd` lowers concrete A/F topologies for `predict` and finite, memory-qualified topology domains for `recommend`; single-phase AFD can be paired with a regular P/D companion. | Use the AFD YAML below for analytical prediction or recommendation. Keep AIC for exact batch-level estimates and native deployment generation; AISimulate does not claim physical AFD serving execution. |
 | Power and energy analysis | **Supported for active forward-pass replay evidence.** The engine runner reports gated `power_w`, exact coverage, phase totals, and every typed operation/source in `prediction.json`; `--diagnostics power` selects the complete JSON or bounded table for stdout. It does not estimate idle, host, network, whole-server, or wall-plug energy. | Use `aisimulate predict --diagnostics power` for aggregated or P/D op-level replay. Keep AIC for static, FPM, AFD/EPD, or broader system-energy semantics. |
 | Static, per-operation, and source breakdowns | **Partially supported.** Unified prediction exposes replay-accumulated prefill/decode operation energy, latency, contribution, and source. It does not expose AIC's `static`, `static_ctx`, or `static_gen` single-pass modes or memory/time/SOL detail. | Use `--diagnostics power` for replay energy evidence; continue using `aiconfigurator cli estimate` for the remaining single-point detail workflows. |
 | Estimator and performance-data selection | **Not exposed by the unified CLI.** `engine.backend_version` is available, but database mode, forward model, transfer policy, custom system roots, and estimator tuning remain outside the public YAML. | Continue using AIC when those controls are required. |
@@ -144,9 +148,12 @@ aisimulate predict \
   --output-dir ./aisimulate-prediction
 ```
 
-This predicts deployment-level serving behavior. It does not reproduce AIC's batch-level estimate,
-multimodal/EPD topology, static/AFD estimation modes, or memory/time/SOL detail. Add
-`--diagnostics power` to inspect its replay-accumulated phase and per-operation energy evidence.
+This text-only example predicts deployment-level serving behavior. For bounded analytical EPD
+prediction, use the [EPD CLI examples](../sweeper/epd.md#unified-cli). These paths do not reproduce AIC's
+batch-level estimate, static estimation modes, or memory/time/SOL detail. Add `--diagnostics power`
+to inspect replay-accumulated phase and per-operation energy evidence. AFD has a separate
+analytical deployment path described below; it is not an exact replacement for AIC's single-point
+AFD estimator output.
 
 ## Preserve request-rate traffic during a configuration search
 
@@ -242,6 +249,10 @@ candidate can still maintain 32 in-flight requests while completing them slowly,
 `traffic.load.concurrency` must not be interpreted as the number of concurrent users that a selected
 minimum-GPU fleet can serve.
 
+At fixed concurrency, `strict_sla` filters aggregate mean latency violations, while
+`goodput_per_gpu` favors throughput efficiency. The selected configuration may use more GPUs than
+the smallest SLA-compliant configuration.
+
 ## Keep minimum-GPU sizing on the compatibility CLI
 
 If the required result is AIC's estimate of the minimum GPUs or replicas needed for
@@ -251,7 +262,7 @@ only; they do not preserve that capacity-sizing behavior.
 
 ## SLA translation details
 
-Without `optimization.strict_sla`, a configured SLA classifies individual requests for goodput; a
+For text-only replay, without `optimization.strict_sla`, a configured SLA classifies individual requests for goodput; a
 slow request contributes no tokens to goodput but does not reject the whole candidate. With
 `strict_sla: true`, AISimulate also compares every configured bound with aggregate mean metrics and
 removes a violation before scalar ranking or Pareto analysis. Missing or non-finite aggregate metrics
@@ -264,9 +275,90 @@ For a fixed-output-length synthetic workload, `--request-latency` maps numerical
 mean_e2e_latency_ms = mean_ttft_ms + mean_tpot_ms * (output_tokens - 1)
 ```
 
-`e2e_ms` participates in request-level goodput, and `strict_sla: true` additionally filters aggregate
-mean E2E latency. AISimulate does not expose a separate aggregate-only E2E constraint that is excluded
-from request-level goodput.
+For text-only replay, `e2e_ms` participates in request-level goodput, and `strict_sla: true` additionally filters aggregate
+mean E2E latency. This path does not expose a separate aggregate-only E2E constraint that is excluded
+from request-level goodput. [Analytical EPD](../sweeper/epd.md) uses aggregate-mean SLA bounds only and does not report per-request goodput.
+
+## AFD translation
+
+Attention-FFN Disaggregation (AFD) is implemented as layered contracts. The
+[AFD topology contract](../sweeper/afd-topology.md) owns complete A/F parallel enumeration,
+validation, and A/F GPU accounting; later layers own search composition, measurements, staged
+execution, analytical replay, and the public CLI. The generic Sweeper accepts internal `afd` and
+`afd+pd` branches, and the public CLI lowers `engine.mode: afd` into those typed branches.
+
+Legacy AFD command:
+
+```bash
+aiconfigurator cli default \
+  --model-path Qwen/Qwen3-32B \
+  --system h200_sxm \
+  --backend trtllm \
+  --serving-mode afd \
+  --total-gpus 32 \
+  --isl 1024 \
+  --osl 128 \
+  --ttft 800 \
+  --tpot 30 \
+  --strict-sla
+```
+
+The AISimulate recommendation contract is:
+
+<!-- afd-migration-contract-start -->
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: constant_rate
+    requests_per_second: 4
+  stop:
+    requests_per_load_unit: 10
+
+engine:
+  mode: afd
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  backend: trtllm
+  afd:
+    phase: decode
+    combined_with_pd: true
+    a_batch_size: 128
+
+evaluation:
+  sla:
+    ttft_ms: 800
+    itl_ms: 30
+
+optimization:
+  target: throughput_per_gpu
+  strict_sla: true
+  constraints:
+    max_candidate_gpus: 32
+```
+<!-- afd-migration-contract-end -->
+
+This preserves the legacy command's default of decode-side AFD combined with a static prefill
+companion. Internally this maps to the Sweeper's `afd+pd` branch. The GPU constraint covers the A
+pool, F pool, and companion together; the Sweeper AFD contract accounts for each contribution
+explicitly. Run the analytical search with:
+
+```bash
+aisimulate recommend --config recommendation.yaml
+```
+
+Each selected recommendation contains a concrete `engine.afd` topology and, for `afd+pd`, its
+regular companion worker. That generated YAML can be passed directly to `aisimulate predict`.
+The prediction output includes `afd-replay-spec.json`, which freezes the exact topology,
+measurements, workload, and companion contract, plus `afd-qualification.json`, which validates A/F
+pool routing and GPU accounting. Both artifacts explicitly mark native deployment unsupported.
+The commands use AISimulate's analytical AFD foreground engine; they do not imply native
+request-level AFD serving or Kubernetes/shell deployment generation. AFD currently requires
+fixed-length synthetic request traffic and an absolute load; trace, session, random-length, and
+`kv_capacity_fraction` traffic fail validation.
 
 ## Workflows that must remain on AIC
 
@@ -276,7 +368,7 @@ Continue using the compatibility command for:
 - deployment manifest generation and `--deployment-target` outputs;
 - exact AIC support-matrix checks;
 - AIC experiment YAML that has not been manually translated;
-- multimodal image-input and EPD modeling;
+- multimodal image-input and EPD workloads outside the documented [fixed synthetic-image analytical EPD scope](../sweeper/epd.md);
 - exact single-point FPM, static, AFD, per-op, detail, or power estimation;
 - heterogeneous P/D systems, backends, or versions;
 - AIC-specific database modes and expert estimator flags.

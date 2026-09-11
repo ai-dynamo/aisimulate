@@ -34,6 +34,8 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
             "recommendation.json",
             "recommendation.csv",
             "requests.jsonl",
+            "afd-replay-spec.json",
+            "afd-qualification.json",
         ):
             target = root / name
             if target.is_file() or target.is_symlink():
@@ -110,7 +112,24 @@ def format_prediction_stdout(
                 separators=(",", ":"),
             )
         return json.dumps(summary, sort_keys=True, separators=(",", ":"))
-    table = format_report_table(summary)
+    if summary.get("metric_semantics") == "analytical_epd_overlay":
+        lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
+        for name in (
+            "mean_ttft_ms",
+            "mean_tpot_ms",
+            "mean_e2e_latency_ms",
+            "output_throughput_tok_s",
+            "completed_requests",
+            "duration_ms",
+            "gpu_hours",
+            "encoder_gpus",
+            "total_gpus",
+        ):
+            lines.append(f"{name}: {summary.get(name, 'N/A')}")
+        lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
+        table = "\n".join(lines)
+    else:
+        table = format_report_table(summary)
     if power_diagnostics is None:
         return table
     return f"{table}\n\n{format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)}"
@@ -130,8 +149,5 @@ def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str)
             power += f" power_w={row['power_w']:.4g}W"
         if "power_coverage" in row:
             power += f" power_coverage={row['power_coverage']:.2%}"
-        lines.append(
-            f"{row['rank']}: {metrics} used_gpus={row['used_gpus']}"
-            f"{power} config={row['config_path']}"
-        )
+        lines.append(f"{row['rank']}: {metrics} used_gpus={row['used_gpus']}{power} config={row['config_path']}")
     return "\n".join(lines)

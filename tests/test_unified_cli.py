@@ -102,25 +102,42 @@ class _Runner:
         power_diagnostics = {
             "schema_version": "1.0",
             "scope": "active_forward_pass_per_gpu",
+            "power_w_unit": "W",
+            "energy_unit": "W-ms",
+            "latency_unit": "ms",
             "publication_status": (
                 "available" if self.power_w is not None else "withheld"
             ),
             "coverage_gate": 0.9,
             "power_coverage": self.power_coverage,
+            "energy_wms": 121.875,
+            "latency_ms": 0.25,
+            "covered_latency_ms": 0.25 * self.power_coverage,
             "phases": [
                 {
                     "name": "prefill",
+                    "energy_wms": 121.875,
+                    "latency_ms": 0.25,
+                    "covered_latency_ms": 0.25 * self.power_coverage,
+                    "power_coverage": self.power_coverage,
+                    "publication_status": (
+                        "available" if self.power_w is not None else "withheld"
+                    ),
+                    "source": "silicon",
+                    "source_kind": "measured",
                     "operations": [
                         {
                             "name": "gemm",
-                            "energy_wms": 120.0,
+                            "energy_wms": 121.875,
                             "latency_ms": 0.25,
-                            "covered_latency_ms": 0.25,
-                            "power_coverage": 1.0,
+                            "covered_latency_ms": 0.25 * self.power_coverage,
+                            "power_coverage": self.power_coverage,
                             "energy_contribution": 1.0,
                             "source": "silicon",
                             "source_kind": "measured",
-                            "status": "available",
+                            "status": (
+                                "available" if self.power_coverage == 1.0 else "partial"
+                            ),
                         }
                     ],
                 }
@@ -128,6 +145,11 @@ class _Runner:
         }
         if self.power_w is not None:
             power_diagnostics["power_w"] = self.power_w
+            power_diagnostics["phases"][0]["power_w"] = self.power_w
+        if self.power_coverage < 1.0:
+            power_diagnostics["phases"][0]["operations"][0]["uncovered_reason"] = (
+                "some accumulated operation latency lacks positive energy evidence"
+            )
         return ReplayReport(
             metrics=metrics,
             metadata={
@@ -330,9 +352,15 @@ def test_predict_power_diagnostics_json_preserves_complete_export(
 
     stdout = json.loads(capsys.readouterr().out)
     assert stdout["summary"]["power_w"] == 487.5
-    assert stdout["power_diagnostics"]["phases"][0]["operations"][0]["name"] == "gemm"
+    diagnostics = stdout["power_diagnostics"]
+    assert (
+        diagnostics["power_w"] == diagnostics["energy_wms"] / diagnostics["latency_ms"]
+    )
+    phase = diagnostics["phases"][0]
+    assert phase["power_w"] == phase["energy_wms"] / phase["latency_ms"]
+    assert phase["operations"][0]["name"] == "gemm"
     saved = json.loads((output / "prediction.json").read_text())
-    assert saved["power_diagnostics"] == stdout["power_diagnostics"]
+    assert saved["power_diagnostics"] == diagnostics
 
 
 def test_predict_power_diagnostics_table_applies_top_n(
@@ -415,6 +443,59 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
     else:
         raise AssertionError("configuration error must exit")
     assert "stack unavailable" in capsys.readouterr().err
+
+
+@pytest.mark.filterwarnings("error")
+def test_recommend_runner_incompatibility_is_cli_config_error(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    config_path = tmp_path / "recommendation.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "mode": "aggregated",
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "backend": "vllm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                },
+                "optimization": {
+                    "target": "throughput",
+                    "constraints": {"max_candidate_gpus": 1},
+                },
+                "optimizer": {"max_trials": 1, "parallelism": 1},
+            }
+        )
+    )
+
+    class IncompatibleFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(supported_backend_topologies=(("trtllm", "agg"),))
+
+    monkeypatch.setattr(
+        cli,
+        "resolve_runner_factory",
+        lambda stack: IncompatibleFactory(_Runner()),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+
+    error = capsys.readouterr().err
+    assert "no configured backend/topology is supported by the Replay runner" in error
+    assert "deployment_mode='agg'" in error
+    assert "runner-incompatible backends=['vllm']" in error
+    assert not (tmp_path / "out").exists()
 
 
 def test_set_adapter_path_is_validated_and_materialized_by_adapter(
@@ -623,19 +704,34 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
                 str(recommendation),
                 "--output-dir",
                 str(prediction_output),
+                "--diagnostics",
+                "power",
                 "--format",
                 "json",
             ]
         )
         == 0
     )
-    prediction_summary = json.loads(capsys.readouterr().out)
+    prediction_stdout = json.loads(capsys.readouterr().out)
+    prediction_summary = prediction_stdout["summary"]
     assert prediction_summary["completed_requests"] == 1
     assert prediction_summary["power_w"] == 487.5
     assert prediction_summary["power_coverage"] == 0.9
     prediction_report = json.loads((prediction_output / "prediction.json").read_text())
     assert prediction_report["summary"]["power_w"] == 487.5
     assert prediction_report["summary"]["power_coverage"] == 0.9
+    diagnostics = prediction_report["power_diagnostics"]
+    assert diagnostics == prediction_stdout["power_diagnostics"]
+    assert diagnostics["schema_version"] == "1.0"
+    assert diagnostics["scope"] == "active_forward_pass_per_gpu"
+    assert diagnostics["publication_status"] == "available"
+    assert (
+        diagnostics["power_w"] == diagnostics["energy_wms"] / diagnostics["latency_ms"]
+    )
+    phase = diagnostics["phases"][0]
+    assert phase["power_w"] == phase["energy_wms"] / phase["latency_ms"]
+    assert phase["operations"][0]["name"] == "gemm"
+    assert phase["operations"][0]["source"] == "silicon"
     assert runner.spec.goal["sla"] == {sla_field: bound}
 
     withheld_output = tmp_path / "withheld-recommend-output"
@@ -680,13 +776,16 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
                 str(recommendation),
                 "--output-dir",
                 str(withheld_prediction_output),
+                "--diagnostics",
+                "power",
                 "--format",
                 "json",
             ]
         )
         == 0
     )
-    withheld_prediction_summary = json.loads(capsys.readouterr().out)
+    withheld_prediction_stdout = json.loads(capsys.readouterr().out)
+    withheld_prediction_summary = withheld_prediction_stdout["summary"]
     assert "power_w" not in withheld_prediction_summary
     assert withheld_prediction_summary["power_coverage"] == 0.42
     withheld_prediction_report = json.loads(
@@ -694,6 +793,14 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     )
     assert "power_w" not in withheld_prediction_report["summary"]
     assert withheld_prediction_report["summary"]["power_coverage"] == 0.42
+    withheld_diagnostics = withheld_prediction_report["power_diagnostics"]
+    assert withheld_diagnostics == withheld_prediction_stdout["power_diagnostics"]
+    assert withheld_diagnostics["schema_version"] == "1.0"
+    assert withheld_diagnostics["scope"] == "active_forward_pass_per_gpu"
+    assert withheld_diagnostics["publication_status"] == "withheld"
+    assert "power_w" not in withheld_diagnostics
+    assert withheld_diagnostics["phases"][0]["operations"][0]["name"] == "gemm"
+    assert withheld_diagnostics["phases"][0]["operations"][0]["source"] == "silicon"
 
 
 def test_recommendation_outputs_each_concrete_prediction_once(
@@ -819,6 +926,8 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     (root / "prediction.json").write_text("old")
     (root / "recommendation.json").write_text("old")
     (root / "recommendation.csv").write_text("old")
+    (root / "afd-replay-spec.json").write_text("old")
+    (root / "afd-qualification.json").write_text("old")
     (recommendations / "0001.yaml").write_text("old")
     (recommendations / "notes.txt").write_text("keep")
 
@@ -832,6 +941,8 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert not (root / "prediction.json").exists()
     assert not (root / "recommendation.json").exists()
     assert not (root / "recommendation.csv").exists()
+    assert not (root / "afd-replay-spec.json").exists()
+    assert not (root / "afd-qualification.json").exists()
     assert not (recommendations / "0001.yaml").exists()
 
 
