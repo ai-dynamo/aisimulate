@@ -300,20 +300,29 @@ impl HandoffCoordinatorCore {
     pub fn on_fact(&mut self, fact: HandoffFact) -> Result<Vec<IssuedHandoffAction>> {
         self.validate_handoff(fact.handoff_id())?;
         if self.mode != CoordinatorMode::Active {
-            // A cancel can legitimately arrive *after* the handoff already
-            // succeeded: ownership then rests solely with the decode
+            // A terminal fact can legitimately arrive *after* the handoff
+            // already succeeded: ownership then rests solely with the decode
             // destination, which is still generating tokens. Reopen cleanup
             // for exactly that case. `advance_cleanup` then issues
             // `CancelDestination` alone -- a successful handoff already set
             // `source.cleanup_done` when `ReleaseSource` applied, so the
             // source guard suppresses a redundant `CancelSource`.
             //
-            // Without this, a decode-phase cancel was silently inert: the
-            // runtime recorded a Canceled terminal while the decode worker
-            // kept the request in its running batch to natural completion,
-            // holding its KV and in-flight slot for the whole decode.
-            if matches!(fact, HandoffFact::Canceled { .. })
-                && self.mode == CoordinatorMode::Complete
+            // Without this, a decode-phase terminal was silently inert: the
+            // runtime recorded the terminal while the decode worker kept the
+            // request in its running batch to natural completion, holding its
+            // KV and in-flight slot for the whole decode.
+            //
+            // All three terminal facts, matching the Active arm below. Only
+            // `Canceled` has a production producer that can land post-success
+            // today, but a narrower guard here than in the Active arm is a
+            // landmine for whichever path starts emitting the other two.
+            if matches!(
+                fact,
+                HandoffFact::Canceled { .. }
+                    | HandoffFact::Failed { .. }
+                    | HandoffFact::TimedOut { .. }
+            ) && self.mode == CoordinatorMode::Complete
                 && self.completion == Some(HandoffCompletion::Success)
             {
                 // Not `begin_cleanup`: that method treats `Complete` as
@@ -680,6 +689,80 @@ mod tests {
         };
         validate_transfer_timing(zero_bandwidth).unwrap();
         assert_eq!(start_transfer_delay(zero_bandwidth, 7.5), 7.5);
+    }
+
+    fn completed_coordinator(handoff_id: HandoffId) -> HandoffCoordinatorCore {
+        let mut coordinator =
+            HandoffCoordinatorCore::new_with_fallback(handoff_id, HandoffOrder::SourceFirst, 1.0);
+        let submit = coordinator.start().unwrap().remove(0);
+        coordinator
+            .on_action_outcome(submit.id, HandoffActionOutcome::Submitted)
+            .unwrap();
+        let reserve = coordinator
+            .on_fact(HandoffFact::SourceHeld {
+                handoff_id,
+                transfer_timing: HandoffTransferTiming {
+                    mode: TransferTimingMode::DestinationMissing,
+                    full_prompt_tokens: 4,
+                    kv_bytes_per_token: None,
+                    bandwidth_gb_s: None,
+                },
+            })
+            .unwrap()
+            .remove(0);
+        coordinator
+            .on_action_outcome(reserve.id, HandoffActionOutcome::Accepted)
+            .unwrap();
+        let transfer = coordinator
+            .on_fact(HandoffFact::DestinationReserved {
+                handoff_id,
+                transferable_prompt_tokens: 4,
+            })
+            .unwrap()
+            .remove(0);
+        coordinator
+            .on_action_outcome(transfer.id, HandoffActionOutcome::Scheduled)
+            .unwrap();
+        let activate = coordinator
+            .on_fact(HandoffFact::TransferCompleted { handoff_id })
+            .unwrap()
+            .remove(0);
+        let release = coordinator
+            .on_action_outcome(activate.id, HandoffActionOutcome::Applied)
+            .unwrap()
+            .remove(0);
+        coordinator
+            .on_action_outcome(release.id, HandoffActionOutcome::Applied)
+            .unwrap();
+        assert!(coordinator.is_complete());
+        assert_eq!(coordinator.completion(), Some(HandoffCompletion::Success));
+        coordinator
+    }
+
+    /// After a successful handoff the destination alone owns the request and is
+    /// still generating tokens, so every terminal fact must reopen cleanup to
+    /// issue `CancelDestination`. `on_fact`'s Active arm already treats the
+    /// three uniformly; the post-success reopen must not be narrower, or the
+    /// runtime records a terminal while the decode worker runs to completion
+    /// holding its KV and in-flight slot.
+    #[test]
+    fn every_terminal_fact_reopens_cleanup_after_a_successful_handoff() {
+        let handoff_id = HandoffId::new(Uuid::from_u128(1));
+        for fact in [
+            HandoffFact::Canceled { handoff_id },
+            HandoffFact::Failed { handoff_id },
+            HandoffFact::TimedOut { handoff_id },
+        ] {
+            let mut coordinator = completed_coordinator(handoff_id);
+            let actions = coordinator.on_fact(fact.clone()).unwrap();
+            assert!(
+                actions.iter().any(|issued| matches!(
+                    issued.action,
+                    HandoffAction::CancelDestination { .. }
+                )),
+                "{fact:?} did not reopen cleanup; got {actions:?}"
+            );
+        }
     }
 
     #[test]
