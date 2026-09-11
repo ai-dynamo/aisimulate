@@ -823,7 +823,21 @@ impl DisaggFlowState {
         collector: &mut TraceCollector,
         traffic: &mut TrafficAccumulators,
     ) -> Result<()> {
-        if !signal.rejected {
+        // A cancel racing a decode completion reaches here with a terminal
+        // already on file: `cancel_dynamic` records `Canceled` and defers
+        // `CancelDestination` onto the busy decode worker, and the very
+        // completion that wakes the deferred action carries this signal.
+        // `collector.on_terminal` is first-write-wins so the *report* keeps
+        // saying Canceled -- but `traffic.on_completion` has no such guard, so
+        // the same request was also counted as a completion in the windows fed
+        // to the scaling planner (`drain_planner`) and the telemetry snapshot,
+        // whose `completed_requests` is exactly this `shape_count`. The two
+        // outputs of one run then disagreed about whether it completed.
+        let already_terminal = self
+            .requests
+            .get(&signal.uuid)
+            .is_some_and(|state| state.terminal_status().is_some());
+        if !signal.rejected && !already_terminal {
             let (input_tokens, requested_output_tokens) = {
                 let state = self.state(signal.uuid)?;
                 let original = state.original_request()?;

@@ -2491,6 +2491,71 @@ fn applying_a_deferred_cancel_holds_the_instant_before_the_freed_pool_drives() {
     );
 }
 
+/// A cancel racing the decode completion must not be counted as a completion in
+/// the traffic windows that drive scaling and telemetry.
+///
+/// `cancel_dynamic` records the `Canceled` terminal and defers
+/// `CancelDestination` onto the busy decode worker; the completion that wakes
+/// that deferred action carries the request's own final output signal, so
+/// `record_decode_terminal` runs with a terminal already on file.
+/// `collector.on_terminal` is first-write-wins so the report stayed correct,
+/// but `traffic.on_completion` had no such guard -- the planner and the
+/// telemetry snapshot's `completed_requests` counted a request the report calls
+/// Canceled.
+#[test]
+fn cancel_racing_a_decode_completion_is_not_counted_as_traffic_completion() {
+    let mut runtime = steppable_runtime(&busy_worker_config());
+    // One output token, so the pass in flight when the cancel lands is the
+    // request's last -- that is what makes the two paths collide.
+    let uuid = runtime.submit_dynamic(request(1, 8_000, 1, 0.0)).unwrap();
+    for _ in 0..200 {
+        if runtime.flow.requests.get(&uuid).map(|state| state.phase)
+            == Some(DisaggPhase::RunningDecode)
+        {
+            break;
+        }
+        runtime.step_dynamic_until(f64::INFINITY).unwrap();
+    }
+    // Commit the decode pass without advancing time, so the worker holds it and
+    // the cancel has to defer onto that exact completion.
+    let committed_at_ms = runtime.now_ms();
+    runtime.step_dynamic_until(committed_at_ms).unwrap();
+    assert!(
+        runtime.decode_engine.worker_is_busy(0).unwrap(),
+        "the decode worker must hold a pass for the race to arise"
+    );
+
+    assert_eq!(
+        runtime.cancel_dynamic(uuid).unwrap(),
+        Some(ReplayTerminalStatus::Canceled)
+    );
+    for _ in 0..40 {
+        if runtime.cluster_in_flight() == 0 {
+            break;
+        }
+        runtime.step_dynamic_until(f64::INFINITY).unwrap();
+    }
+
+    assert_eq!(
+        runtime
+            .flow
+            .requests
+            .get(&uuid)
+            .and_then(|state| state.terminal_status()),
+        Some(ReplayTerminalStatus::Canceled),
+        "the recorded terminal must stay Canceled"
+    );
+    let stats = runtime.traffic.drain_planner(runtime.now_ms());
+    assert_eq!(stats.num_req, 1, "the arrival is still counted");
+    assert_eq!(
+        stats.shape_count, 0,
+        "a Canceled request must not enter the completion window that feeds \
+         scaling and telemetry's completed_requests"
+    );
+    assert_eq!(stats.ttft_count, 0);
+    assert_eq!(stats.itl_count, 0);
+}
+
 /// Cancelling a request that is already decoding must actually stop the decode.
 ///
 /// Once the handoff succeeds, the coordinator is `Complete` -- `ReleaseSource`
