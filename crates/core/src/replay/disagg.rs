@@ -2130,8 +2130,6 @@ where
     /// Apply the side effects of a finished prefill pass.
     fn process_prefill_pass(
         &mut self,
-        _worker_idx: usize,
-        _completed_requests: usize,
         output_signals: Vec<OutputSignal>,
         lifecycle_events: Vec<LifecycleEvent>,
         engine_events: Observation::Batch,
@@ -2204,8 +2202,6 @@ where
                     self.record_prefill_fpm(payload.worker_idx, fpm)?;
                 }
                 self.process_prefill_pass(
-                    payload.worker_idx,
-                    payload.completed_requests,
                     payload.output_signals,
                     payload.lifecycle_events,
                     payload.engine_events,
