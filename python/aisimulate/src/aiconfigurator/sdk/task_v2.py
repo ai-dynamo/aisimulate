@@ -3225,6 +3225,8 @@ class Task:
         d_mc = self.build_model_config(
             role="decode", parallel=(decode_tp, decode_pp, decode_dp, decode_moe_tp, decode_moe_ep, 1)
         )
+        if self.enable_epd:
+            d_mc.language_only = True
         d_mc.tp_size = decode_tp
         d_mc.pp_size = decode_pp
         d_mc.attention_dp_size = decode_dp if self._is_moe else 1

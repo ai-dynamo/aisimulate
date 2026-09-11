@@ -24,6 +24,9 @@ pub(crate) struct RadixRequestLease {
     pages: Vec<KvPageId>,
     materialized_tokens: usize,
     cached_tokens: usize,
+    /// Radix-cache prefix matched when the request was admitted from the waiting queue. Unlike
+    /// `cached_tokens`, this never grows with the request's own chunks or outputs.
+    admission_reused_tokens: usize,
     page_hashes: Vec<LocalBlockHash>,
     last_node: Option<NodeId>,
 }
@@ -45,6 +48,11 @@ impl RadixRequestLease {
 
     pub(crate) fn cached_tokens(&self) -> usize {
         self.cached_tokens
+    }
+
+    /// Prefix reused from the radix cache at admission (excludes the request's own chunks).
+    pub(crate) fn admission_reused_tokens(&self) -> usize {
+        self.admission_reused_tokens
     }
 
     pub(crate) fn page_hashes(&self) -> &[LocalBlockHash] {
@@ -97,6 +105,7 @@ impl RadixRequestLease {
             pages,
             materialized_tokens,
             cached_tokens,
+            admission_reused_tokens: cached_tokens,
             page_hashes: Vec::new(),
             last_node: Some(last_node),
         }
@@ -223,16 +232,32 @@ impl SglangKvManager {
     /// then allocate KV pages for a new request.
     ///
     /// Returns `None` if protected and free capacity cannot satisfy the request.
+    #[cfg(test)]
     pub(crate) fn allocate_for_request_lease(
         &mut self,
         token_ids: &[u32],
         lease: &mut RadixRequestLease,
     ) -> Option<usize> {
+        self.allocate_for_request_lease_capped(token_ids, lease, token_ids.len())
+    }
+
+    /// Like [`Self::allocate_for_request_lease`], but the prefix match never extends past
+    /// `max_prefix_tokens`. SGLang matches at most `input_len - 1` tokens
+    /// (`Req.init_next_round_input`), so the last token of a fully cached prompt is still
+    /// computed and owns its own KV slot.
+    pub(crate) fn allocate_for_request_lease_capped(
+        &mut self,
+        token_ids: &[u32],
+        lease: &mut RadixRequestLease,
+        max_prefix_tokens: usize,
+    ) -> Option<usize> {
         assert!(!lease.is_active(), "request KV lease is already active");
         let page_size = self.cache.page_size();
         lease.ensure_page_hashes(token_ids, page_size);
         let materialized_hashes = lease.page_hashes_through(token_ids.len(), page_size);
-        let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(materialized_hashes);
+        let matchable_hashes =
+            &materialized_hashes[..(max_prefix_tokens.min(token_ids.len()) / page_size)];
+        let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(matchable_hashes);
         let required_pages = token_ids.len().div_ceil(page_size) - prefix_len / page_size;
         let required_tokens = required_pages * page_size;
 
@@ -266,6 +291,7 @@ impl SglangKvManager {
         lease.pages = pages;
         lease.materialized_tokens = token_ids.len();
         lease.cached_tokens = prefix_len;
+        lease.admission_reused_tokens = prefix_len;
         lease.last_node = Some(last_node);
         Some(prefix_len)
     }
@@ -282,11 +308,20 @@ impl SglangKvManager {
     /// This is used by chunked-prefill continuation where the request still
     /// owns token slots for a prefix that may extend past the radix-tree's
     /// page-aligned cached prefix.
+    ///
+    /// SGLang matches the whole prompt once, when the request is admitted from
+    /// the waiting queue (`Req.init_next_round_input(tree_cache)`); a chunked
+    /// continuation is re-initialised without the tree cache and never
+    /// re-matches, so this only extends the request's own pages. Eviction for
+    /// the new pages happens here, after the request's path is already locked.
+    /// Returns the owned prefix length, or `None` if protected and free capacity
+    /// cannot satisfy the extension. A `None` result may already have evicted
+    /// cached pages; callers must not assume the cache is unchanged.
     pub(crate) fn extend_allocation(
         &mut self,
         token_ids: &[u32],
         lease: &mut RadixRequestLease,
-    ) -> bool {
+    ) -> Option<usize> {
         let prefix_len = lease.materialized_tokens;
         assert!(
             lease.is_active() && prefix_len <= token_ids.len(),
@@ -297,10 +332,17 @@ impl SglangKvManager {
         let page_size = self.cache.page_size();
         let target_pages = token_ids.len().div_ceil(page_size);
         let new_pages = target_pages.saturating_sub(lease.pages.len());
+        let required_tokens = new_pages * page_size;
+        let reservable = self.cache.available_tokens() + self.cache.evictable_size;
+        if required_tokens > reservable {
+            return None;
+        }
+        let available = self.cache.available_tokens();
+        if required_tokens > available {
+            self.evict(required_tokens - available);
+        }
         let available_before = self.cache.available_tokens();
-        let Some(mut allocated_pages) = self.cache.page_pool.allocate_pages(new_pages) else {
-            return false;
-        };
+        let mut allocated_pages = self.cache.page_pool.allocate_pages(new_pages)?;
         lease.pages.append(&mut allocated_pages);
         lease.materialized_tokens = token_ids.len();
         lease.ensure_page_hashes(token_ids, page_size);
@@ -313,7 +355,7 @@ impl SglangKvManager {
             prefix_len,
         );
         self.log_trace("allocation", allocated_tokens);
-        true
+        Some(prefix_len)
     }
 
     pub(crate) fn extend_cached_prefix(
@@ -1032,12 +1074,12 @@ mod tests {
         assert_eq!(mgr.cache().available_tokens(), 16);
 
         tokens.resize(48, 2);
-        assert!(mgr.extend_allocation(&tokens, &mut alloc.lease));
+        assert!(mgr.extend_allocation(&tokens, &mut alloc.lease).is_some());
         assert_eq!(alloc.lease.page_count(), 3);
         assert_eq!(mgr.cache().available_tokens(), 16);
 
         tokens.push(3);
-        assert!(mgr.extend_allocation(&tokens, &mut alloc.lease));
+        assert!(mgr.extend_allocation(&tokens, &mut alloc.lease).is_some());
         assert_eq!(alloc.lease.page_count(), 4);
         assert_eq!(mgr.cache().available_tokens(), 0);
     }
@@ -1048,14 +1090,20 @@ mod tests {
         let mut alloc = mgr.allocate_for_request(&[1]).unwrap();
         assert_eq!(mgr.cache().available_tokens(), 8);
 
-        assert!(mgr.extend_allocation(&[1, 2, 3, 4], &mut alloc.lease));
+        assert!(
+            mgr.extend_allocation(&[1, 2, 3, 4], &mut alloc.lease)
+                .is_some()
+        );
         assert_eq!(
             mgr.cache().available_tokens(),
             8,
             "filling an owned partial page must not allocate another page"
         );
 
-        assert!(mgr.extend_allocation(&[1, 2, 3, 4, 5], &mut alloc.lease));
+        assert!(
+            mgr.extend_allocation(&[1, 2, 3, 4, 5], &mut alloc.lease)
+                .is_some()
+        );
         assert_eq!(mgr.cache().available_tokens(), 4);
         assert!(mgr.retract(alloc.lease));
         assert_eq!(mgr.cache().available_tokens(), 12);
@@ -1068,7 +1116,10 @@ mod tests {
         let blocker = mgr.allocate_for_request(&[9]).unwrap();
         let pages_before = alloc.lease.pages().to_vec();
 
-        assert!(!mgr.extend_allocation(&[1, 2, 3, 4, 5], &mut alloc.lease));
+        assert!(
+            mgr.extend_allocation(&[1, 2, 3, 4, 5], &mut alloc.lease)
+                .is_none()
+        );
         assert_eq!(alloc.lease.pages(), pages_before);
         assert_eq!(alloc.lease.len(), 1);
         assert_eq!(mgr.cache().available_tokens(), 0);
@@ -1146,7 +1197,10 @@ mod tests {
         let mut mgr = SglangKvManager::new(16, 4, KvEventPublishers::default(), 0);
         let mut alloc = mgr.allocate_for_request(&[1, 2, 3, 4]).unwrap();
         mgr.extend_cached_prefix(&[1, 2, 3, 4], &mut alloc.lease);
-        assert!(mgr.extend_allocation(&[1, 2, 3, 4, 5, 6], &mut alloc.lease));
+        assert!(
+            mgr.extend_allocation(&[1, 2, 3, 4, 5, 6], &mut alloc.lease)
+                .is_some()
+        );
 
         assert_eq!(alloc.lease.cached_tokens(), 4);
         assert_eq!(alloc.lease.len(), 6);
@@ -1212,7 +1266,10 @@ mod tests {
         let mut first = mgr.allocate_for_request(&first_tokens[..4]).unwrap();
         mgr.extend_cached_prefix(&first_tokens[..4], &mut first.lease);
         let retained_tail = first.lease.last_node();
-        assert!(mgr.extend_allocation(&first_tokens, &mut first.lease));
+        assert!(
+            mgr.extend_allocation(&first_tokens, &mut first.lease)
+                .is_some()
+        );
         mgr.extend_cached_prefix(&first_tokens, &mut first.lease);
 
         assert_eq!(first.lease.last_node(), retained_tail);
@@ -1423,7 +1480,10 @@ mod tests {
         mgr.extend_cached_prefix(&tokens[..2], &mut alloc.lease);
         mgr.kv_event_publishers = KvEventPublishers::new(Some(sink.clone()));
 
-        assert!(mgr.extend_allocation(&tokens[..4], &mut alloc.lease));
+        assert!(
+            mgr.extend_allocation(&tokens[..4], &mut alloc.lease)
+                .is_some()
+        );
         mgr.extend_cached_prefix(&tokens[..4], &mut alloc.lease);
         let events = sink.clone_events();
         assert_eq!(events.len(), 1);
@@ -1436,7 +1496,7 @@ mod tests {
             "first unfinished cache should store only the newly completed block"
         );
 
-        assert!(mgr.extend_allocation(&tokens, &mut alloc.lease));
+        assert!(mgr.extend_allocation(&tokens, &mut alloc.lease).is_some());
         mgr.finish(&tokens, alloc.lease);
         let events = sink.clone_events();
         assert_eq!(events.len(), 2);
@@ -1532,6 +1592,57 @@ mod tests {
         // Pool is full
         let result = mgr.allocate_for_request(&[4, 5, 6]);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn allocation_match_is_capped_like_sglang() {
+        // A fully cached five-token prompt admitted with SGLang's `input_len - 1` cap reuses four
+        // tokens and owns a fresh slot for the fifth: physical ownership and `cached_tokens`
+        // honour the same cap, not just the prefill accounting.
+        let mut mgr = SglangKvManager::new(64, 1, KvEventPublishers::default(), 0);
+        let prompt: Vec<u32> = (1..=5).collect();
+        let cached = mgr.allocate_for_request(&prompt).unwrap();
+        mgr.finish(&prompt, cached.lease);
+        let available_before = mgr.cache().available_tokens();
+
+        let mut lease = RadixRequestLease::default();
+        let prefix_len = mgr
+            .allocate_for_request_lease_capped(&prompt, &mut lease, prompt.len() - 1)
+            .unwrap();
+        assert_eq!(prefix_len, 4);
+        assert_eq!(lease.cached_tokens(), 4);
+        assert_eq!(lease.len(), 5);
+        assert_eq!(lease.pages().len(), 5);
+        assert_eq!(available_before - mgr.cache().available_tokens(), 1);
+        assert!(mgr.abort(lease));
+    }
+
+    #[test]
+    fn chunked_continuation_extends_own_pages_without_rematching() {
+        // SGLang never re-matches a chunked continuation against the tree, even when another
+        // request has since cached a longer prefix: the continuation extends its own pages.
+        let mut mgr = SglangKvManager::new(64, 1, KvEventPublishers::default(), 0);
+        let a: Vec<u32> = (1..=8).collect();
+        let alloc_a = mgr.allocate_for_request(&a).unwrap();
+        mgr.finish(&a, alloc_a.lease);
+
+        let b: Vec<u32> = (1..=10).collect();
+        let mut alloc_b = mgr.allocate_for_request(&b[..4]).unwrap();
+        assert_eq!(alloc_b.prefix_len, 4);
+        mgr.extend_cached_prefix(&b[..4], &mut alloc_b.lease);
+        let available_before = mgr.cache().available_tokens();
+
+        let prefix_len = mgr
+            .extend_allocation(&b, &mut alloc_b.lease)
+            .expect("extension fits");
+        assert_eq!(prefix_len, 4, "continuation keeps the owned prefix");
+        assert_eq!(alloc_b.lease.len(), 10);
+        assert_eq!(
+            available_before - mgr.cache().available_tokens(),
+            6,
+            "the six remaining tokens are newly allocated"
+        );
+        assert!(mgr.abort(alloc_b.lease));
     }
 
     #[test]

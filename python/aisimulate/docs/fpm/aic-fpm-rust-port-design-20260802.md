@@ -293,8 +293,10 @@ Documented, deliberate divergences (accepted, not bugs):
 
 - **SOL coverage**: `fpm_sol.rs` covers the vLLM MoE/dense families (Gemm,
   Embedding, Elementwise, Context/GenerationAttention, Moe, MoeDispatch,
-  CustomAllReduce, Nccl, P2P, Overlap/Fallback). DSA (GLM-5.2), MSA
-  (MiniMax-M3), and MLA-module families are NOT ported: exact-hit and
+  CustomAllReduce, Nccl, P2P, Overlap/Fallback), and the DSA
+  context/generation modules (GLM-5.2) via `perf_database::dsa`'s SOL ports
+  (context with `cp_size > 1` still returns a typed `SolNotImplemented`).
+  MSA (MiniMax-M3) and MLA-module families are NOT ported: exact-hit and
   in-curve queries work; transfer/hold paths miss with a structured error.
   Porting those SOLs is a tracked follow-up.
 - **MiniMax-M3 cannot compile to a Rust FPM spec at all**: `_to_opspec` has

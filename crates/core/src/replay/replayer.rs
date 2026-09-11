@@ -219,6 +219,9 @@ impl ReplayTelemetryObserver for TelemetryObserverBoundary {
 #[allow(clippy::large_enum_variant)] // Preserve the inline workload through runtime construction.
 pub enum ReplayRuntimeInput {
     Requests(VecDeque<DirectRequest>),
+    /// Generate the next request only when a concurrency slot is available.
+    /// Requires `ReplaySpec::max_in_flight`; open-loop inputs remain unchanged.
+    GeneratedRequests(crate::replay::loadgen::GeneratedRequests),
     Workload(WorkloadDriver),
 }
 
@@ -412,7 +415,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     C::Metadata,
                 >::new_composed(
                     role_factory,
-                    admission_queue(runtime_input, mode),
+                    admission_queue(runtime_input, mode)?,
                     workers.initial_workers,
                     startup_time_ms,
                     |dp_size, topology| {
@@ -477,7 +480,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     C::Metadata,
                 >::new_composed(
                     &config,
-                    admission_queue(runtime_input, mode),
+                    admission_queue(runtime_input, mode)?,
                     false,
                     |prefill_dp, prefill_topology, decode_dp, decode_topology| {
                         self.composition
@@ -567,11 +570,19 @@ fn validate_request_dp_ranks(
 fn admission_queue<Metadata: ReplayAdmissionMetadata>(
     input: ReplayRuntimeInput,
     mode: ReplayMode,
-) -> AdmissionQueue<Metadata> {
-    match input {
+) -> ReplayResult<AdmissionQueue<Metadata>> {
+    Ok(match input {
         ReplayRuntimeInput::Requests(requests) => AdmissionQueue::new_requests(requests, mode),
+        ReplayRuntimeInput::GeneratedRequests(requests) => {
+            let ReplayMode::Concurrency { max_in_flight } = mode else {
+                return Err(ReplayError::InvalidSpec(
+                    "generated requests require max_in_flight".into(),
+                ));
+            };
+            AdmissionQueue::new_generated_requests(requests, max_in_flight)
+        }
         ReplayRuntimeInput::Workload(driver) => AdmissionQueue::new_workload(driver, mode),
-    }
+    })
 }
 
 fn positive_delay(delay_ms: f64) -> Option<f64> {
@@ -662,6 +673,7 @@ fn apply_runtime_determinism(input: &mut ReplayRuntimeInput, determinism: Replay
                 ));
             }
         }
+        ReplayRuntimeInput::GeneratedRequests(requests) => requests.set_canonical_ids(),
         ReplayRuntimeInput::Workload(driver) => {
             driver.set_deterministic_request_ids(1);
         }
@@ -784,5 +796,172 @@ mod tests {
             .pop_front()
             .unwrap();
         assert_ne!(first.uuid, Some(Uuid::from_u128(1)));
+    }
+}
+
+#[cfg(test)]
+mod generated_replay_tests {
+    use super::*;
+    use crate::engine::{Backend, EngineConfig, TimingModelConfig};
+    use crate::replay::loadgen::GeneratedRequests;
+    use crate::replay::{
+        CanonicalReplayCoverage, CanonicalReplayRecord, ReplayRoleConfig, WorkerPoolSpec,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    fn request(index: usize) -> DirectRequest {
+        DirectRequest {
+            tokens: (0..16 + index % 3)
+                .map(|offset| (index * 100 + offset) as u32)
+                .collect(),
+            output_token_ids: Some(vec![17, 18, 19]),
+            max_output_tokens: 3,
+            uuid: Some(Uuid::from_u128(index as u128 + 100)),
+            arrival_timestamp_ms: Some(index as f64 * 1000.0),
+            ..Default::default()
+        }
+    }
+
+    fn spec(backend: Backend, disagg: bool, cap: usize, prefix_caching: bool) -> ReplaySpec {
+        let mut rank = EngineConfig::for_backend(backend);
+        rank.block_size = 4;
+        rank.num_gpu_blocks = 128;
+        rank.max_num_seqs = 2;
+        rank.max_num_batched_tokens = 16;
+        rank.enable_prefix_caching = prefix_caching;
+        rank.timing_model = TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        };
+        let role = ReplayRoleConfig {
+            rank: rank.clone(),
+            ..Default::default()
+        };
+        let engine = ReplayEngineConfig {
+            rank,
+            prefill: disagg.then(|| role.clone()),
+            decode: disagg.then_some(role),
+            ..Default::default()
+        };
+        ReplaySpec {
+            version: 1,
+            topology: if disagg {
+                ReplayTopology::Disaggregated {
+                    prefill: WorkerPoolSpec {
+                        initial_workers: 2,
+                        startup_delay_ms: 2.0,
+                    },
+                    decode: WorkerPoolSpec {
+                        initial_workers: 1,
+                        startup_delay_ms: 0.0,
+                    },
+                    handoff_latency_ms: 1.0,
+                }
+            } else {
+                ReplayTopology::aggregated(2)
+            },
+            engine: serde_json::to_value(engine).unwrap(),
+            adapters: Default::default(),
+            max_sim_time_ms: None,
+            max_in_flight: Some(cap),
+            record_per_request: true,
+            sla: Default::default(),
+            requests: Vec::new(),
+        }
+    }
+
+    fn canonical(report: &ReplayReport, capture: ReplayCaptureOptions) -> Vec<u8> {
+        CanonicalReplayRecord::build(
+            report,
+            serde_json::json!({}),
+            &CanonicalReplayCoverage::from_report(report, capture),
+            serde_json::json!({}),
+        )
+        .unwrap()
+        .into_json_line()
+        .unwrap()
+    }
+
+    #[test]
+    fn generated_concurrency_matches_eager_reports_across_backends_and_topologies() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            for disagg in [false, true] {
+                for cap in [1, 4, 32] {
+                    for prefix_caching in [false, true] {
+                        for determinism in
+                            [ReplayDeterminism::Random, ReplayDeterminism::CanonicalV1]
+                        {
+                            let spec = spec(backend, disagg, cap, prefix_caching);
+                            let capture = ReplayCaptureOptions {
+                                capture_per_request: true,
+                                determinism,
+                                ..Default::default()
+                            };
+                            let eager = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+                                .unwrap()
+                                .with_runtime_input(ReplayRuntimeInput::Requests(
+                                    (0..11).map(request).collect(),
+                                ))
+                                .with_capture_options(capture)
+                                .run()
+                                .unwrap();
+                            let lazy = Replayer::new(spec, ReplayEngineFactory::new())
+                                .unwrap()
+                                .with_runtime_input(ReplayRuntimeInput::GeneratedRequests(
+                                    GeneratedRequests::new(11, |index| Ok(request(index))),
+                                ))
+                                .with_capture_options(capture)
+                                .run()
+                                .unwrap();
+                            assert_eq!(
+                                canonical(&eager, capture),
+                                canonical(&lazy, capture),
+                                "{backend:?} disagg={disagg} cap={cap} prefix={prefix_caching} determinism={determinism:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cutoff_does_not_generate_the_unadmitted_tail() {
+        for disagg in [false, true] {
+            let mut spec = spec(Backend::Vllm, disagg, 3, false);
+            spec.max_sim_time_ms = Some(0.0);
+            let generated = Arc::new(AtomicUsize::new(0));
+            let counter = generated.clone();
+            let source = GeneratedRequests::new(10_000_000, move |index| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(request(index))
+            });
+            Replayer::new(spec, ReplayEngineFactory::new())
+                .unwrap()
+                .with_runtime_input(ReplayRuntimeInput::GeneratedRequests(source))
+                .run()
+                .unwrap();
+            assert_eq!(generated.load(Ordering::SeqCst), 3);
+        }
+    }
+
+    #[test]
+    fn generated_requests_reject_open_loop_without_invoking_the_factory() {
+        let mut spec = spec(Backend::Vllm, false, 1, false);
+        spec.max_in_flight = None;
+        let source = GeneratedRequests::new(1, |_| panic!("must validate mode before generation"));
+        let error = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .with_runtime_input(ReplayRuntimeInput::GeneratedRequests(source))
+            .run()
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("generated requests require max_in_flight")
+        );
     }
 }

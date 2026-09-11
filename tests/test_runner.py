@@ -83,14 +83,11 @@ def _engine_args(*, role="aggregated", backend="vllm", timing=None):
         "aic_attention_dp_size": 1,
         "block_size": 4,
         "num_gpu_blocks": 16,
-        "timing_model": timing
-        or {"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0},
+        "timing_model": timing or {"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0},
     }
 
 
-def _spec(
-    *, deployment=None, workload=None, goal=None, concurrency=None, adapters=None
-):
+def _spec(*, deployment=None, workload=None, goal=None, concurrency=None, adapters=None):
     return ReplaySpec(
         backend_deployment=deployment
         or BackendDeploymentSpec(
@@ -100,8 +97,7 @@ def _spec(
             agg_engine_args=_engine_args(),
             num_workers=2,
         ),
-        workload=workload
-        or {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
+        workload=workload or {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
         goal=goal or {"target": "throughput"},
         concurrency=concurrency,
         adapters=adapters or {},
@@ -141,6 +137,153 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_disaggregated_attention_dp
     assert capabilities.supported_execution_modes == ("offline",)
     assert capabilities.supported_hooks == ()
+    assert capabilities.supports_trace_format("weka")
+    assert capabilities.supports_trace_format("agentic_mooncake")
+    assert capabilities.supports_agentic_lanes
+    assert capabilities.supported_agentic_topologies == ("agg",)
+    assert capabilities.agentic_qualification == "functional_only"
+
+
+def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size():
+    runtime = RecordingRuntime()
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=0)
+    runner.run(
+        _spec(
+            workload={
+                "source_type": "trace",
+                "load_type": "trace_timestamps",
+                "trace_path": "weka-corpus",
+                "trace_paths": ["weka-corpus"],
+                "trace_format": "weka",
+                "arrival_speedup_ratio": 1.0,
+                "agentic_lanes": 2,
+            }
+        )
+    )
+
+    traffic = runtime.execution_spec["traffic"]
+    assert traffic["trace_format"] == "weka"
+    assert traffic["agentic_lanes"] == 2
+    assert traffic["execution_model"] == "test-model"
+    assert "trace_block_size" not in traffic
+
+
+def test_runner_rejects_agentic_execution_without_a_target_model():
+    engine_args = _engine_args()
+    engine_args.pop("aic_model_path")
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="agentic execution requires a configured target model",
+    ):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=deployment,
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "weka-corpus",
+                    "trace_format": "weka",
+                },
+            )
+        )
+
+
+def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
+    config = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {
+                    "type": "trace",
+                    "paths": ["weka-corpus"],
+                    "format": "weka",
+                    "nested_timestamp_basis": "relative",
+                },
+                "load": {
+                    "type": "trace_timestamps",
+                    "speedup": 2.0,
+                    "agentic_lanes": 3,
+                },
+            },
+            "engine": {
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "context_length": 1024,
+                "workers": {"aggregated": {}},
+            },
+        }
+    )
+    workload = prediction_to_replay_spec(config).workload
+
+    assert workload["trace_format"] == "weka"
+    assert workload["trace_block_size"] is None
+    assert workload["arrival_speedup_ratio"] == 2.0
+    assert workload["agentic_lanes"] == 3
+    assert workload["weka_nested_timestamp_basis"] == "relative"
+
+
+def test_engine_capability_rejects_disaggregated_weka_before_runtime() -> None:
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="disagg",
+            backend="vllm",
+            backend_version="test",
+            num_prefill_workers=1,
+            num_decode_workers=1,
+        ),
+        workload={"source_type": "trace", "trace_format": "weka"},
+    )
+
+    with pytest.raises(ValueError, match="agentic trace format 'weka'.*topology 'disagg'"):
+        capabilities.require_compatible(spec)
+
+
+@pytest.mark.parametrize(
+    ("workload", "message"),
+    [
+        (
+            {"source_type": "trace", "trace_format": "mooncake", "agentic_lanes": 1},
+            "requires weka",
+        ),
+        (
+            {"source_type": "trace", "trace_format": "weka", "agentic_lanes": 0},
+            "positive integer",
+        ),
+        (
+            {"source_type": "trace", "trace_format": "weka", "agentic_lanes": True},
+            "positive integer",
+        ),
+        (
+            {
+                "source_type": "trace",
+                "trace_format": "mooncake",
+                "weka_nested_timestamp_basis": "absolute",
+            },
+            "requires Weka input",
+        ),
+        (
+            {
+                "source_type": "trace",
+                "trace_format": "weka",
+                "weka_nested_timestamp_basis": "guess",
+            },
+            "must be 'auto', 'absolute', or 'relative'",
+        ),
+    ],
+)
+def test_engine_capability_rejects_invalid_agentic_lane_controls(workload: dict, message: str) -> None:
+    capabilities = EngineReplayRunnerFactory().capabilities()
+
+    with pytest.raises(ValueError, match=message):
+        capabilities.require_compatible(_spec(workload=workload))
 
 
 def test_runner_lowers_canonical_spec_and_returns_replay_report():
@@ -171,9 +314,7 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
 
 
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
-def test_engine_runner_preserves_independent_sla_bounds(
-    field: str, bound: float
-) -> None:
+def test_engine_runner_preserves_independent_sla_bounds(field: str, bound: float) -> None:
     runtime = RecordingRuntime()
     spec = _spec(
         goal={
@@ -207,9 +348,7 @@ def test_runner_lowers_sglang_with_prefix_caching_disabled():
         num_workers=1,
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     assert runtime.execution_spec["engine"]["rank"]["enable_prefix_caching"] is False
 
@@ -232,9 +371,7 @@ def test_runner_preserves_native_host_offload_rank_config():
         num_workers=1,
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     rank = runtime.execution_spec["engine"]["rank"]
     assert rank["kv_transfer_bytes_per_token"] == 333
@@ -288,9 +425,7 @@ def test_public_host_offload_config_reaches_native_execution_rank():
         }
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        prediction_to_replay_spec(public)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(public))
 
     rank = runtime.execution_spec["spec"]["engine"]["rank"]
     assert rank["kv_cache_bytes_per_token"] == 131_072
@@ -337,19 +472,13 @@ engine:
     assert public.engine.workers.aggregated is not None
     capacity = public.engine.workers.aggregated.kv_cache.capacity
     assert capacity.cuda_graph_reserved_bytes == reserved_bytes
-    assert (
-        spec.backend_deployment.agg_engine_args["cuda_graph_reserved_bytes"]
-        == reserved_bytes
-    )
+    assert spec.backend_deployment.agg_engine_args["cuda_graph_reserved_bytes"] == reserved_bytes
 
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
 
     engine = runtime.execution_spec["spec"]["engine"]
     assert engine["rank"]["num_gpu_blocks"] == 321
-    assert (
-        engine["rank"]["timing_model"]["config"]["cuda_graph_reserved_bytes"]
-        == reserved_bytes
-    )
+    assert engine["rank"]["timing_model"]["config"]["cuda_graph_reserved_bytes"] == reserved_bytes
     assert calls[0]["cuda_graph_reserved_bytes"] == reserved_bytes
 
 
@@ -379,16 +508,11 @@ engine:
     runtime = RecordingRuntime()
     public = CorePredictionConfig.from_yaml(path)
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        prediction_to_replay_spec(public)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(public))
 
     assert public.engine.workers.aggregated is not None
     assert public.engine.workers.aggregated.scheduler.prefill_schedule_interval == 4
-    assert (
-        runtime.execution_spec["spec"]["engine"]["rank"]["prefill_schedule_interval"]
-        == 4
-    )
+    assert runtime.execution_spec["spec"]["engine"]["rank"]["prefill_schedule_interval"] == 4
 
 
 def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
@@ -417,9 +541,7 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
         num_workers=1,
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     assert runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 321
     assert runtime.execution_spec["engine"]["num_gpu_blocks_is_explicit"] is False
@@ -462,9 +584,7 @@ def test_runner_rejects_nested_inferred_capacity_when_fixed_timing_discards_rese
     )
 
     with pytest.raises(ValueError, match="requires an AIC timing model"):
-        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
-            _spec(deployment=deployment)
-        )
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
 def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch):
@@ -488,9 +608,7 @@ def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypa
         num_workers=1,
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     rank = runtime.execution_spec["engine"]["rank"]
     assert rank["num_gpu_blocks"] == 321
@@ -516,11 +634,7 @@ def test_runner_captures_requested_raw_and_per_request_report():
 
 
 def test_runner_preserves_native_power_provenance_without_raw_report():
-    report = (
-        EngineReplayRunnerFactory(runtime=PowerRecordingRuntime())
-        .create(worker_id=7)
-        .run(_spec())
-    )
+    report = EngineReplayRunnerFactory(runtime=PowerRecordingRuntime()).create(worker_id=7).run(_spec())
 
     assert "native_report" not in report.metadata
     assert report.metrics["power_w"] == 487.5
@@ -535,11 +649,7 @@ def test_runner_preserves_native_power_provenance_without_raw_report():
 
 
 def test_runner_preserves_withheld_power_without_raw_report():
-    report = (
-        EngineReplayRunnerFactory(runtime=WithheldPowerRecordingRuntime())
-        .create(worker_id=7)
-        .run(_spec())
-    )
+    report = EngineReplayRunnerFactory(runtime=WithheldPowerRecordingRuntime()).create(worker_id=7).run(_spec())
 
     assert "native_report" not in report.metadata
     assert report.metrics["power_coverage"] == 0.42
@@ -592,9 +702,7 @@ def test_runner_preserves_closed_loop_concurrency_in_execution_spec():
 
     assert runtime.execution_spec["max_in_flight"] == 3
     assert len(runtime.execution_spec["requests"]) == 6
-    assert {
-        request["arrival_time_ms"] for request in runtime.execution_spec["requests"]
-    } == {0.0}
+    assert {request["arrival_time_ms"] for request in runtime.execution_spec["requests"]} == {0.0}
 
 
 def test_runner_materializes_fixed_interval_open_loop_requests():
@@ -611,9 +719,7 @@ def test_runner_materializes_fixed_interval_open_loop_requests():
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
 
     assert runtime.execution_spec["max_in_flight"] is None
-    assert [
-        request["arrival_time_ms"] for request in runtime.execution_spec["requests"]
-    ] == [0.0, 2.5, 5.0]
+    assert [request["arrival_time_ms"] for request in runtime.execution_spec["requests"]] == [0.0, 2.5, 5.0]
 
 
 def test_runner_materializes_seeded_poisson_open_loop_requests():
@@ -632,12 +738,8 @@ def test_runner_materializes_seeded_poisson_open_loop_requests():
         EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
         execution_specs.append(runtime.execution_spec)
 
-    arrivals = [
-        request["arrival_time_ms"] for request in execution_specs[0]["requests"]
-    ]
-    assert arrivals == [
-        request["arrival_time_ms"] for request in execution_specs[1]["requests"]
-    ]
+    arrivals = [request["arrival_time_ms"] for request in execution_specs[0]["requests"]]
+    assert arrivals == [request["arrival_time_ms"] for request in execution_specs[1]["requests"]]
     assert arrivals[0] == 0.0
     assert arrivals == sorted(arrivals)
 
@@ -661,10 +763,7 @@ def test_runner_randomizes_synthetic_lengths_deterministically():
         execution_specs.append(runtime.execution_spec)
 
     def lengths(execution_spec):
-        return [
-            (request["input_tokens"], request["output_tokens"])
-            for request in execution_spec["requests"]
-        ]
+        return [(request["input_tokens"], request["output_tokens"]) for request in execution_spec["requests"]]
 
     first_lengths = lengths(execution_specs[0])
     assert first_lengths == lengths(execution_specs[1])
@@ -714,9 +813,7 @@ def test_runner_lowers_disaggregated_grouped_engines(backend):
         num_decode_workers=3,
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     assert runtime.execution_spec["topology"]["kind"] == "disaggregated"
     assert runtime.execution_spec["topology"]["prefill"]["initial_workers"] == 2
@@ -754,9 +851,7 @@ def test_runner_lowers_disaggregated_attention_dp(prefill_dp, decode_dp):
         num_decode_workers=1,
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     engine = runtime.execution_spec["engine"]
     assert engine["prefill"]["dp_size"] == prefill_dp
@@ -776,9 +871,7 @@ def test_runner_threads_canonical_backend_version_into_aic_timing():
         num_workers=2,
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     timing = runtime.execution_spec["engine"]["rank"]["timing_model"]
     assert timing["config"]["backend_version"] == "0.11.1"
@@ -806,9 +899,7 @@ def test_runner_accepts_matching_backend_version_in_explicit_aic_timing():
         num_workers=2,
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
     assert timing_config["backend_version"] == "0.11.1"
@@ -842,9 +933,7 @@ def test_runner_rejects_conflicting_backend_version_in_explicit_aic_timing():
             r"BackendDeploymentSpec backend_version='0\.11\.1'"
         ),
     ):
-        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
-            _spec(deployment=deployment)
-        )
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
 def test_runner_rejects_parallel_config_that_conflicts_with_engine_args():
@@ -858,9 +947,7 @@ def test_runner_rejects_parallel_config_that_conflicts_with_engine_args():
     )
 
     with pytest.raises(ValueError, match="parallel_config.tp=4 conflicts"):
-        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
-            _spec(deployment=deployment)
-        )
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
 @pytest.mark.parametrize(
@@ -882,9 +969,7 @@ def test_engine_runner_fails_closed_for_unimplemented_synthetic_shapes(field, va
     }
 
     with pytest.raises(ValueError, match=field):
-        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
-            _spec(workload=workload)
-        )
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(workload=workload))
 
 
 def test_engine_runner_does_not_silently_parse_a_dynamo_trace_as_mooncake():
@@ -940,9 +1025,7 @@ def test_runner_rejects_nested_backend_that_conflicts_with_deployment():
     )
 
     with pytest.raises(ValueError, match="rank backend conflicts"):
-        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
-            _spec(deployment=deployment)
-        )
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
 def test_runner_threads_forward_model_alias_into_aic_timing():
@@ -958,9 +1041,7 @@ def test_runner_threads_forward_model_alias_into_aic_timing():
         num_workers=2,
     )
 
-    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment)
-    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     rank = runtime.execution_spec["engine"]["rank"]
     assert rank["timing_model"]["config"]["forward_model"] == "fpm"
@@ -994,9 +1075,7 @@ def test_runner_rejects_forward_model_on_rank_and_in_explicit_aic_timing():
         ValueError,
         match=r"configured both on the rank and inside timing_model\.config: forward_model",
     ):
-        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
-            _spec(deployment=deployment)
-        )
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
 @pytest.mark.parametrize("value", ["layerwise", "", 3])
@@ -1013,6 +1092,4 @@ def test_runner_rejects_unknown_forward_model(value):
     )
 
     with pytest.raises(ValueError, match="forward_model"):
-        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
-            _spec(deployment=deployment)
-        )
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))

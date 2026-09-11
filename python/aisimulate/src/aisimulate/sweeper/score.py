@@ -59,6 +59,11 @@ _METRIC_KEYS = (
     "power_w",
     "power_coverage",
     "planner_total_ticks",
+    "encoder_latency_ms",
+    "encoder_gpus",
+    "encoder_memory_gib",
+    "encoder_power_coverage",
+    "encoder_power_w",
 )
 
 

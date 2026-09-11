@@ -1,3 +1,8 @@
+# The Rust feature-mode, Python compatibility, engine-golden, platform-wheel,
+# collector-data, and prediction-regression jobs were adapted from NVIDIA
+# AIConfigurator at commit
+# 77fd0773407b3683d8a671fe24a30a7110651b64.
+# Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
 name: Full CI
 
 on:
@@ -24,6 +29,8 @@ jobs:
   verify-target:
     name: Verify Exact Target
     runs-on: ubuntu-latest
+    outputs:
+      comparison-base: ${{ steps.comparison-base.outputs.sha }}
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       RUN_SHA: ${{ github.sha }}
@@ -59,6 +66,30 @@ jobs:
             echo "::error::trusted copy ${RUN_SHA} does not match PR #${pr_number} head ${pr_head}"
             exit 1
           fi
+      - name: Resolve immutable comparison base
+        id: comparison-base
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          comparison_sha=""
+          if [[ "${GITHUB_EVENT_NAME}" == "push" &&
+                ( "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == refs/heads/release/* ) &&
+                -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
+            comparison_sha="${BEFORE_SHA}"
+          else
+            # PR/manual runs and newly created release branches compare with
+            # one snapshot of main, shared by the collector and prediction gates.
+            comparison_sha="$(gh api -X GET "repos/${REPOSITORY}/commits/main" --jq '.sha')"
+          fi
+          if [[ ! "${comparison_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::comparison base must resolve to a full commit SHA"
+            exit 1
+          fi
+          printf 'sha=%s\n' "${comparison_sha}" >> "${GITHUB_OUTPUT}"
 
   fast-ci:
     name: Fast CI
@@ -66,6 +97,29 @@ jobs:
     uses: ./.github/workflows/fast-ci.yml
     with:
       expected_sha: ${{ github.sha }}
+
+  platform-wheels:
+    name: Platform Wheels
+    needs: fast-ci
+    uses: ./.github/workflows/validate-platform-wheels.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
+  collector-data:
+    name: Collector Data
+    needs: [fast-ci, verify-target]
+    uses: ./.github/workflows/collector-check.yml
+    with:
+      expected_sha: ${{ github.sha }}
+      base_sha: ${{ needs.verify-target.outputs.comparison-base }}
+
+  prediction-regression:
+    name: Prediction Regression
+    needs: [fast-ci, verify-target]
+    uses: ./.github/workflows/prediction-regression-gate.yml
+    with:
+      expected_sha: ${{ github.sha }}
+      old-ref: ${{ needs.verify-target.outputs.comparison-base }}
 
   cargo-deny:
     name: Cargo Deny (workspace, ${{ matrix.arch }})
@@ -90,7 +144,9 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install cargo-deny 0.19.0
         env:
@@ -128,21 +184,38 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
       - run: cargo test --workspace
+
+  rust-feature-modes:
+    name: Rust feature modes
+    needs: fast-ci
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 30
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
+        with:
+          python-version: "3.13"
+      - name: Install the unified Python package
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Test with Python embedding enabled
+        run: |
+          export AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1
+          export PYO3_PYTHON="${pythonLocation}/bin/python"
+          cargo test --workspace --features embed-python,replay-bench
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})
@@ -158,17 +231,12 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: cargo test --manifest-path crates/tests/public-api/Cargo.toml
 
   application-wheel:
@@ -177,8 +245,11 @@ jobs:
       - fast-ci
       - cargo-deny
       - rust
+      - rust-feature-modes
       - public-api-rust
       - application-tests
+      - python-compatibility
+      - engine-golden-regression
       - release-artifact-contract
     strategy:
       fail-fast: false
@@ -191,17 +262,12 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: python -m pip install 'maturin>=1.12,<2'
       - name: Build application wheel
         run: python -m maturin build --release --out ../../dist
@@ -375,35 +441,96 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v7
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: python -m pip install maturin pytest pytest-asyncio
       - run: python -m pip install './python/aisimulate[dev]'
       - run: >-
           python -m pytest -q
           python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py
-          python/aisimulate/tests/cross_package/test_core_version_contract.py
+          python/aisimulate/tests/cross_package
       - run: aiconfigurator version
       - run: python -m pytest -q -c pytest.ini tests
+      - name: Run recommendation E2E without parallel resource contention
+        run: python -m pytest -q tests/e2e/cli/test_cli_recommend.py --timeout=180
+        working-directory: python/aisimulate
       - run: >-
           python -m pytest -q
           tests
           -m 'unit or build'
           --ignore=tests/unit/sdk/database/test_moe_dispatch.py
+          --ignore=tests/e2e/cli/test_cli_recommend.py
           -n auto
           --timeout=180
         working-directory: python/aisimulate
+
+  python-compatibility:
+    name: Python ${{ matrix.python-version }} compatibility
+    needs: fast-ci
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install AISimulate and development dependencies
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Verify interpreter and dependency compatibility
+        run: |
+          python -m pip check
+          python -c 'import sys, numpy; from packaging.version import Version; assert f"{sys.version_info.major}.{sys.version_info.minor}" == "${{ matrix.python-version }}"; assert Version("2.1") <= Version(numpy.__version__) < Version("3")'
+      - name: Test unified-package contracts
+        run: >-
+          python -m pytest -q
+          python/aisimulate/tests/cross_package
+
+  engine-golden-regression:
+    name: Engine Golden Regression
+    needs: fast-ci
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 45
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
+        with:
+          python-version: "3.13"
+      - name: Install AISimulate and development dependencies
+        run: python -m pip install './python/aisimulate[dev]'
+      - name: Run engine-step golden regression suite
+        run: >-
+          python -m pytest -q -rx -n 4
+          -c python/aisimulate/pytest.ini
+          crates/core/parity_tests/perfmodel/test_engine_step_parity.py
+      - name: Run compiled-engine golden regression suite
+        run: >-
+          python -m pytest -q -rx -n 4
+          -c python/aisimulate/pytest.ini
+          crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
 
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
@@ -419,17 +546,12 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Install native build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - run: python -m pip install build maturin
       - run: python scripts/build_release_artifacts.py --check-only
       - run: python scripts/build_release_artifacts.py --output-dir dist
@@ -456,72 +578,55 @@ jobs:
     needs:
       - verify-target
       - fast-ci
+      - platform-wheels
+      - collector-data
+      - prediction-regression
       - cargo-deny
       - rust
+      - rust-feature-modes
       - public-api-rust
-      - application-tests
-      - release-artifact-contract
       - application-wheel
       - stage-application-wheel
+      - application-tests
+      - python-compatibility
+      - engine-golden-regression
+      - release-artifact-contract
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    env:
-      VERIFY_TARGET_RESULT: ${{ needs.verify-target.result }}
-      FAST_CI_RESULT: ${{ needs.fast-ci.result }}
-      CARGO_DENY_RESULT: ${{ needs.cargo-deny.result }}
-      RUST_RESULT: ${{ needs.rust.result }}
-      PUBLIC_API_RUST_RESULT: ${{ needs.public-api-rust.result }}
-      APPLICATION_TESTS_RESULT: ${{ needs.application-tests.result }}
-      RELEASE_ARTIFACT_RESULT: ${{ needs.release-artifact-contract.result }}
-      APPLICATION_WHEEL_RESULT: ${{ needs.application-wheel.result }}
-      STAGE_APPLICATION_WHEEL_RESULT: ${{ needs.stage-application-wheel.result }}
-      STAGING_REQUIRED: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) }}
     steps:
-      - name: Require complete Full CI evidence
-        shell: bash
+      - name: Report and require every Full CI job
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EXPECTED_STAGE_RESULT: >-
+            ${{ github.event_name == 'push' &&
+                (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) &&
+                'success' || 'skipped' }}
         run: |
-          set -euo pipefail
-          failures=0
-          {
-            echo "### Full CI evidence for \`${GITHUB_SHA}\`"
-            echo
-            echo "| Required job | Result |"
-            echo "| --- | --- |"
-          } >> "${GITHUB_STEP_SUMMARY}"
+          python - <<'PY'
+          import json
+          import os
 
-          record_expected() {
-            local job_name="$1"
-            local job_result="$2"
-            local expected_result="$3"
-            local outcome="PASS"
-            if [[ "${job_result}" != "${expected_result}" ]]; then
-              outcome="FAIL"
-              failures=$((failures + 1))
-              echo "::error::${job_name} finished with ${job_result:-missing}; expected ${expected_result}"
-            fi
-            printf '| %s | %s (`%s`, expected `%s`) |\n' \
-              "${job_name}" "${outcome}" "${job_result:-missing}" "${expected_result}" \
-              >> "${GITHUB_STEP_SUMMARY}"
-          }
-
-          record_expected "Verify Exact Target" "${VERIFY_TARGET_RESULT}" "success"
-          record_expected "Fast CI" "${FAST_CI_RESULT}" "success"
-          record_expected "Cargo Deny" "${CARGO_DENY_RESULT}" "success"
-          record_expected "Rust" "${RUST_RESULT}" "success"
-          record_expected "Public API Rust" "${PUBLIC_API_RUST_RESULT}" "success"
-          record_expected "Application Tests" "${APPLICATION_TESTS_RESULT}" "success"
-          record_expected "Release Artifact Contract" "${RELEASE_ARTIFACT_RESULT}" "success"
-          record_expected "Application Wheel" "${APPLICATION_WHEEL_RESULT}" "success"
-
-          if [[ "${STAGING_REQUIRED}" == "true" ]]; then
-            record_expected \
-              "Stage Application Wheel" "${STAGE_APPLICATION_WHEEL_RESULT}" "success"
-          else
-            record_expected \
-              "Stage Application Wheel (not applicable)" \
-              "${STAGE_APPLICATION_WHEEL_RESULT}" "skipped"
-          fi
-
-          if (( failures > 0 )); then
-            exit 1
-          fi
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          expected = {name: "success" for name in needs}
+          expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]
+          failures = []
+          summary = [
+              f"### Full CI evidence for `{os.environ['GITHUB_SHA']}`",
+              "",
+              "| Required job | Result |",
+              "| --- | --- |",
+          ]
+          for name, payload in sorted(needs.items()):
+              result = payload["result"]
+              wanted = expected[name]
+              print(f"{name}: {result} (expected {wanted})")
+              outcome = "PASS" if result == wanted else "FAIL"
+              summary.append(f"| {name} | {outcome} (`{result}`, expected `{wanted}`) |")
+              if result != wanted:
+                  failures.append(f"{name}={result}, expected {wanted}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("\n".join(summary) + "\n")
+          if failures:
+              print("::error::Full CI did not pass: " + "; ".join(failures))
+              raise SystemExit(1)
+          PY

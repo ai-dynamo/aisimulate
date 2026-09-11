@@ -41,11 +41,13 @@ authority: every tier still requires the applicable CODEOWNER approval.
 Fast CI contains quick deterministic checks: source and legal policy, generated
 CODEOWNERS integrity, lint, syntax compilation, whitespace, and Rust formatting.
 Full CI contains the expensive multi-architecture dependency, Rust, Python,
-public-API, build, and release-artifact tests. Dispatch Full CI only after the
-required reviews have completed on the current commit with no unresolved P0/P1
-finding. Lower-priority findings and CODEOWNER review may proceed while Full CI
-runs, but all required conversations, approvals, and exact-head checks must be
-complete before merge.
+public-API, feature-mode, engine-golden, platform-wheel, collector-data,
+prediction-regression, build, and release-artifact tests. The FPE support
+matrix remains a scheduled/manual product-support audit rather than a PR gate.
+Dispatch Full CI only after the required reviews have completed on the current
+commit with no unresolved P0/P1 finding. Lower-priority findings and CODEOWNER
+review may proceed while Full CI runs, but all required conversations,
+approvals, and exact-head checks must be complete before merge.
 
 `Fast CI Success` and `Full CI Success` are the stable merge-gate results. Both
 run with `always()` semantics and fail when required evidence is missing,
