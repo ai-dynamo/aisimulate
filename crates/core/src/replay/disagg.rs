@@ -707,6 +707,16 @@ impl DisaggFlowState {
         now_ms: f64,
         collector: &mut TraceCollector,
     ) -> Result<Option<ScheduledTransfer>> {
+        // The single conversion point from a coordinator-supplied delay to a
+        // simulation deadline, and the only one in this file without a guard.
+        // `delay_ms > 0.0` is false for NaN, so a NaN silently took the
+        // zero-delay branch and completed the transfer instantly; `+inf` put a
+        // non-finite deadline in the event heap, which `advance_now_ms` only
+        // `debug_assert!`s against, so `now_ms` became `inf` in release builds.
+        // Checked before `acknowledge_action` so no bookkeeping commits first.
+        if !delay_ms.is_finite() || delay_ms < 0.0 {
+            bail!("handoff transfer delay must be a finite non-negative number, got {delay_ms}");
+        }
         self.acknowledge_action(
             uuid,
             action,

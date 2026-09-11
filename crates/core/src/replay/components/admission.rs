@@ -108,7 +108,16 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         match (&self.mode, &mut self.source) {
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => pending
                 .front()
-                .and_then(|request| request.arrival_timestamp_ms),
+                .and_then(|request| request.arrival_timestamp_ms)
+                // Never advertise a non-finite arrival as a deadline. This value
+                // is reduced with `f64::min`, which returns the non-NaN operand
+                // -- so a NaN is silently erased from the choice -- and which
+                // propagates `+inf`, advancing `now_ms` to infinity whenever no
+                // other event is pending, poisoning every derived latency before
+                // the drain's guard can fire. The drain arm below fails loudly on
+                // the same request, and `is_drained` reports false while it is
+                // still queued, so withholding the deadline cannot hide it.
+                .filter(|arrival_ms| arrival_ms.is_finite()),
             (ReplayMode::Trace, AdmissionSource::Workload(driver)) => driver.next_ready_time_ms(),
             // Concurrency: the driver owns the session cap and gates admission, so defer to
             // it directly (no in-flight clamp needed here).
@@ -463,5 +472,43 @@ mod tests {
             };
             assert!(error.contains("non-finite"), "{error}");
         }
+    }
+
+    /// The drain guard above landed without its peek-side counterpart, which the
+    /// drain's own comment already described: `next_ready_time_ms` returned the
+    /// arrival verbatim, so `+inf` was advertised as the run's next timestamp
+    /// (advancing `now_ms` to infinity when nothing else was pending) and NaN was
+    /// silently erased by the `f64::min` reduction.
+    #[test]
+    fn a_non_finite_arrival_is_never_advertised_as_a_deadline() {
+        for arrival in [f64::NAN, f64::INFINITY] {
+            let malformed = DirectRequest {
+                arrival_timestamp_ms: Some(arrival),
+                ..Default::default()
+            };
+            let mut queue = AdmissionQueue::<NoReplayMetadata>::new_requests(
+                VecDeque::from([malformed]),
+                ReplayMode::Trace,
+            );
+
+            assert_eq!(
+                queue.next_ready_time_ms(),
+                None,
+                "{arrival} must not be advertised as a deadline"
+            );
+            // Withholding the deadline must not hide the request: it is still
+            // queued, so the run cannot report the workload drained.
+            assert!(!queue.is_drained());
+        }
+
+        // A well-formed arrival is still advertised.
+        let mut queue = AdmissionQueue::<NoReplayMetadata>::new_requests(
+            VecDeque::from([DirectRequest {
+                arrival_timestamp_ms: Some(25.0),
+                ..Default::default()
+            }]),
+            ReplayMode::Trace,
+        );
+        assert_eq!(queue.next_ready_time_ms(), Some(25.0));
     }
 }
