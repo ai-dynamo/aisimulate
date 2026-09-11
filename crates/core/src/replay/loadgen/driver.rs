@@ -2229,7 +2229,11 @@ mod tests {
             // driver still drains normally on a well-formed release.
             driver.release_cap_slot(b0, 10.0);
             let at_10 = driver.pop_ready(10.0, usize::MAX);
-            assert_eq!(at_10.len(), 1, "only C is admittable at t=10 ({bad_now_ms})");
+            assert_eq!(
+                at_10.len(),
+                1,
+                "only C is admittable at t=10 ({bad_now_ms})"
+            );
             assert_eq!(at_10[0].session_id, "c");
         }
     }
