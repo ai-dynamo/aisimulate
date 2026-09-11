@@ -299,7 +299,9 @@ jobs:
     needs: [fast-ci, select-full-ci]
     if: ${{ needs.select-full-ci.outputs.rust_feature_modes == 'true' }}
     runs-on: prod-aisimulate-default-amd64-v1
-    timeout-minutes: 30
+    timeout-minutes: 15
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-feature-tests
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
@@ -312,8 +314,22 @@ jobs:
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
-      - name: Install the unified Python package
-        run: python -m pip install './python/aisimulate[dev]'
+      - name: Prepare Python runtime and embedded Rust tests concurrently
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Separate Cargo directories avoid a build lock between maturin's
+          # release extension and the debug embedding test executables.
+          CARGO_TARGET_DIR="${RUNNER_TEMP}/python-extension-target" \
+            python -m pip install './python/aisimulate[dev]' &
+          package_pid=$!
+          export PYO3_PYTHON="${pythonLocation}/bin/python"
+          cargo test --workspace --features embed-python,replay-bench --no-run &
+          rust_pid=$!
+          result=0
+          wait "${package_pid}" || result=1
+          wait "${rust_pid}" || result=1
+          exit "${result}"
       - name: Test with Python embedding enabled
         run: |
           export AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1
@@ -345,18 +361,7 @@ jobs:
 
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
-    needs:
-      - fast-ci
-      - cargo-deny
-      - rust
-      - rust-feature-modes
-      - public-api-rust
-      - application-test-wheel
-      - application-tests
-      - python-compatibility
-      - engine-golden-regression
-      - release-artifact-contract
-      - select-full-ci
+    needs: [fast-ci, select-full-ci, application-test-wheel]
     if: >-
       ${{
         always() &&
@@ -578,14 +583,26 @@ jobs:
           if-no-files-found: error
 
   application-tests:
-    name: Application Tests (${{ matrix.arch }}, ${{ matrix.shard }})
+    name: Application Tests (${{ matrix.arch }}, ${{ matrix.shard.suite }}, ${{ matrix.shard.group }})
     needs: [fast-ci, select-full-ci, application-test-wheel]
     if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
     strategy:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-        shard: [contracts, unit, integration, cli-build, support-matrix, tools-build]
+        shard:
+          - {suite: contracts, group: 1, groups: 1}
+          - {suite: unit, group: 1, groups: 4}
+          - {suite: unit, group: 2, groups: 4}
+          - {suite: unit, group: 3, groups: 4}
+          - {suite: unit, group: 4, groups: 4}
+          - {suite: integration, group: 1, groups: 1}
+          - {suite: cli-build, group: 1, groups: 4}
+          - {suite: cli-build, group: 2, groups: 4}
+          - {suite: cli-build, group: 3, groups: 4}
+          - {suite: cli-build, group: 4, groups: 4}
+          - {suite: support-matrix, group: 1, groups: 1}
+          - {suite: tools-build, group: 1, groups: 1}
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     timeout-minutes: 15
     container:
@@ -615,38 +632,41 @@ jobs:
             echo "::error::expected exactly one application test wheel, found ${#wheels[@]}"
             exit 1
           fi
-          python -m pip install "${wheels[0]}[dev]"
+          python -m pip install uv
+          python -m uv pip install --system "${wheels[0]}[dev]"
           echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
       - name: Run repository and package contracts
-        if: matrix.shard == 'contracts'
+        if: matrix.shard.suite == 'contracts'
         run: |
           python scripts/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
             python/aisimulate/tests/cross_package
           aiconfigurator version
-          python -m pytest -q -c pytest.ini tests
+          python -m pytest -q -c pytest.ini tests -n 4
       - name: Run unit tests
-        if: matrix.shard == 'unit'
+        if: matrix.shard.suite == 'unit'
         run: >-
           python -m pytest -q
           tests/unit tests/golden
-          -n auto
+          --splits ${{ matrix.shard.groups }} --group ${{ matrix.shard.group }}
+          --splitting-algorithm least_duration
+          -n 4
           --timeout=180
         working-directory: python/aisimulate
       - name: Upload collected test assignments
-        if: always() && matrix.shard == 'contracts'
+        if: always() && matrix.shard.suite == 'contracts'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: application-test-inventory-${{ matrix.arch }}
           path: application-test-inventory.json
           if-no-files-found: error
       - name: Run recommendation E2E without parallel resource contention
-        if: matrix.shard == 'cli-build'
+        if: matrix.shard.suite == 'cli-build' && matrix.shard.group == 1
         run: python -m pytest -q tests/e2e/cli/test_cli_recommend.py --timeout=180
         working-directory: python/aisimulate
       - name: Run migrated integration tests against the installed wheel
-        if: matrix.shard == 'integration'
+        if: matrix.shard.suite == 'integration'
         run: >-
           python -m pytest -q -ra
           tests/integration
@@ -654,17 +674,19 @@ jobs:
           --timeout=600
         working-directory: python/aisimulate
       - name: Run remaining CLI build tests
-        if: matrix.shard == 'cli-build'
+        if: matrix.shard.suite == 'cli-build'
         run: >-
           python -m pytest -q
           tests/e2e/cli
           -m build
           --ignore=tests/e2e/cli/test_cli_recommend.py
-          -n auto
+          --splits ${{ matrix.shard.groups }} --group ${{ matrix.shard.group }}
+          --splitting-algorithm least_duration
+          -n 4
           --timeout=180
         working-directory: python/aisimulate
       - name: Run support-matrix build tests
-        if: matrix.shard == 'support-matrix'
+        if: matrix.shard.suite == 'support-matrix'
         run: >-
           python -m pytest -q
           tests/e2e/support_matrix
@@ -673,7 +695,7 @@ jobs:
           --timeout=180
         working-directory: python/aisimulate
       - name: Run tool build tests
-        if: matrix.shard == 'tools-build'
+        if: matrix.shard.suite == 'tools-build'
         run: >-
           python -m pytest -q
           tests/e2e/tools

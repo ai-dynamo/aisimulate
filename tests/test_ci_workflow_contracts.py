@@ -147,7 +147,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert application_test_wheel["timeout-minutes"] == "10"
     assert {"fast-ci", "select-full-ci"}.issubset(application_test_wheel["needs"])
     assert "application-test-wheel" in jobs["application-tests"]["needs"]
-    assert set(jobs["application-tests"]["strategy"]["matrix"]["shard"]) == {
+    assert {shard["suite"] for shard in jobs["application-tests"]["strategy"]["matrix"]["shard"]} == {
         "contracts",
         "unit",
         "integration",
@@ -161,7 +161,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "python/aisimulate/tests/cross_package" in compatibility_commands
     assert "tests/unit tests/golden" in application_commands
     integration_steps = [
-        step for step in jobs["application-tests"]["steps"] if step.get("if") == "matrix.shard == 'integration'"
+        step for step in jobs["application-tests"]["steps"] if step.get("if") == "matrix.shard.suite == 'integration'"
     ]
     assert len(integration_steps) == 1
     assert "tests/integration" in integration_steps[0]["run"]
@@ -220,12 +220,12 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     aggregate = jobs["readiness"]
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
 
-    required_before_wheel_staging = set(jobs["application-wheel"]["needs"])
+    required_before_wheel_staging = set(jobs["stage-application-wheel"]["needs"]) | set(jobs["readiness"]["needs"])
     assert {
         "rust-feature-modes",
         "python-compatibility",
         "engine-golden-regression",
-        "application-test-wheel",
+        "application-wheel",
     }.issubset(required_before_wheel_staging)
     application_wheel_commands = _run_commands(jobs["application-wheel"])
     assert "maturin build" not in application_wheel_commands
@@ -918,3 +918,49 @@ def test_full_ci_selector_matches_the_independent_mapping_oracle() -> None:
             observed_components.update(actual)
 
     assert observed_components == set(COMPONENTS)
+
+
+def test_parallel_test_matrix_has_no_missing_or_duplicate_partitions():
+    jobs = _workflow("ci.yml")["jobs"]
+    shards = jobs["application-tests"]["strategy"]["matrix"]["shard"]
+    for suite in {entry["suite"] for entry in shards}:
+        entries = [entry for entry in shards if entry["suite"] == suite]
+        counts = {int(entry["groups"]) for entry in entries}
+        assert len(counts) == 1
+        assert sorted(int(entry["group"]) for entry in entries) == list(range(1, counts.pop() + 1))
+    assert "application-tests" not in jobs["application-wheel"]["needs"]
+    assert {
+        "application-tests",
+        "application-wheel",
+        "platform-wheels",
+        "collector-data",
+        "prediction-regression",
+    }.issubset(set(jobs["stage-application-wheel"]["needs"]) | set(jobs["readiness"]["needs"]))
+    commands = _run_commands(jobs["application-tests"])
+    assert commands.count("--splitting-algorithm least_duration") == 2
+    assert commands.count("--splits ${{ matrix.shard.groups }} --group ${{ matrix.shard.group }}") == 2
+
+
+@pytest.mark.parametrize("failed", ["package", "rust", "neither"])
+def test_parallel_native_preparation_propagates_either_build_failure(tmp_path, failed):
+    job = _workflow("ci.yml")["jobs"]["rust-feature-modes"]
+    script = next(step["run"] for step in job["steps"] if step.get("name", "").endswith("concurrently"))
+    for executable, component in (("python", "package"), ("cargo", "rust")):
+        path = tmp_path / executable
+        path.write_text(
+            f"#!/bin/sh\necho {component} >> '{tmp_path}/completed'\nexit {1 if failed == component else 0}\n"
+        )
+        path.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "RUNNER_TEMP": str(tmp_path),
+            "pythonLocation": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) == (failed == "neither")
+    assert set((tmp_path / "completed").read_text().splitlines()) == {"package", "rust"}
