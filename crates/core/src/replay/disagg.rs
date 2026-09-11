@@ -1580,13 +1580,15 @@ where
         let scheduler_ids = match stage {
             SimulationWorkerStage::Prefill => self.prefill_engine.scheduler_ids(worker_id)?,
             SimulationWorkerStage::Decode => self.decode_engine.scheduler_ids(worker_id)?,
-            // The only caller (`apply_worker_completions`) already bails on
-            // `SimulationWorkerStage::Aggregated` in its own match before
-            // reaching this call, so `stage` here is never `Aggregated`.
+            // The only caller today (`apply_worker_completions`) already
+            // bails on `SimulationWorkerStage::Aggregated` in its own match
+            // before reaching this call. Kept as a recoverable `bail!` rather
+            // than `unreachable!`: this is a private method taking `stage` as
+            // a plain parameter, one refactor away from a second caller that
+            // doesn't share that precondition, and a process abort is the
+            // wrong failure mode for that case.
             SimulationWorkerStage::Aggregated => {
-                unreachable!(
-                    "apply_worker_completions bails on an aggregated completion before calling this"
-                )
+                bail!("disaggregated replay completed an aggregated worker")
             }
         };
         for &scheduler_id in scheduler_ids {
