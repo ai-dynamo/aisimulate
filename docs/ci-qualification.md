@@ -47,13 +47,13 @@ image. The runner-image owner should build and smoke-test both CPU architectures
 before changing `CI_JOB_CONTAINER_IMAGE`:
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 \
-  --build-arg BASE_IMAGE="$AISIM_BASE_IMAGE_BY_DIGEST" \
-  --file .github/ci-image/Dockerfile --tag "$AISIM_BUILD_IMAGE_TAG" --push .
+bash scripts/build_ci_image.sh
 ```
 
-Supply the current runner image by immutable digest and an authorized image
-destination. Check its runner user, entrypoint, both architectures, native
+Export `AISIM_BASE_IMAGE_BY_DIGEST` with the current runner image's immutable
+digest and `AISIM_BUILD_IMAGE_TAG` with an authorized image destination. The
+wrapper rejects missing, mutable, and malformed base-image references before
+invoking Docker. Check its runner user, entrypoint, both architectures, native
 compilation, and a full validation run. Then set `CI_JOB_CONTAINER_IMAGE` to the
 new multi-architecture image digest. Keep the old value for rollback. This
 repository change does not publish an image or change the shared ECR image.
@@ -63,7 +63,8 @@ repository change does not publish an image or change the shared ECR image.
 `scripts/check_prediction_numerics.py` runs eight frozen public native-engine
 queries in the Engine Golden Regression job: dense Qwen3-32B and MoE
 MiniMax-M2.5, prefill and decode, short and long sequences. The manifest records
-the source commit that produced its expected values. Two percent relative and
+the source commit that produced its expected values; qualification requires
+that full SHA to resolve to a commit in the checkout. Two percent relative and
 0.0001 ms absolute tolerances allow small numerical variation. Missing,
 duplicate, failed, nonfinite, nonpositive, and out-of-tolerance results fail.
 

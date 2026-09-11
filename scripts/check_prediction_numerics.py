@@ -15,10 +15,23 @@ import hashlib
 import json
 import math
 import os
+import re
+import subprocess
 from pathlib import Path
 
 
 def validate_cases(manifest: dict) -> list[dict]:
+    baseline = manifest.get("baseline_source_sha")
+    if not isinstance(baseline, str) or not re.fullmatch(r"[0-9a-f]{40}", baseline):
+        raise ValueError("baseline_source_sha must be a full commit SHA")
+    resolved = subprocess.run(
+        ["git", "cat-file", "-e", f"{baseline}^{{commit}}"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        timeout=10,
+    )
+    if resolved.returncode:
+        raise ValueError(f"baseline_source_sha does not resolve to a commit: {baseline}")
     cases = manifest["cases"]
     if manifest["schema_version"] != 1 or not cases:
         raise ValueError("sentinel manifest must have schema 1 and nonempty cases")
