@@ -20,12 +20,7 @@ from aisimulate.sweeper import (
     enumerate_afd_topologies,
 )
 
-_AFD_MIGRATION_GUIDE = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "cli"
-    / "migrate-from-aiconfigurator.md"
-)
+_AFD_MIGRATION_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "cli" / "migrate-from-aiconfigurator.md"
 
 
 def _documented_afd_recommendation() -> dict:
@@ -36,9 +31,7 @@ def _documented_afd_recommendation() -> dict:
         text,
         flags=re.DOTALL,
     )
-    assert match is not None, (
-        "AFD migration guide must contain one marked YAML contract"
-    )
+    assert match is not None, "AFD migration guide must contain one marked YAML contract"
     payload = yaml.safe_load(match.group(1))
     assert isinstance(payload, dict)
     return payload
@@ -212,9 +205,7 @@ def test_moe_domain_resolves_symbolic_ep_and_filters_expert_divisibility():
 
 
 def test_search_candidate_types_are_strict():
-    with pytest.raises(
-        AFDInfeasible, match="tp_a_candidates must be a positive integer"
-    ):
+    with pytest.raises(AFDInfeasible, match="tp_a_candidates must be a positive integer"):
         AFDSearchConfig(
             total_gpus=16,
             gpus_per_node=8,
@@ -222,15 +213,54 @@ def test_search_candidate_types_are_strict():
             tp_a_candidates=("8",),
         )
 
-    with pytest.raises(
-        AFDInfeasible, match="f_moe_ep_size_candidates accepts positive integers"
-    ):
+    with pytest.raises(AFDInfeasible, match="f_moe_ep_size_candidates accepts positive integers"):
         AFDSearchConfig(
             total_gpus=16,
             gpus_per_node=8,
             is_moe=True,
             f_moe_ep_size_candidates=(True,),
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("num_experts", 8),
+        ("f_moe_ep_size_candidates", (2,)),
+        ("f_moe_ep_size_candidates", (1, 2)),
+        ("f_moe_ep_size_candidates", ("n_f_nodes",)),
+        ("f_moe_ep_size_candidates", ("ffn_tp",)),
+        ("f_moe_ep_size_candidates", ("tp_f",)),
+    ],
+)
+def test_dense_search_rejects_moe_only_settings(field, value):
+    with pytest.raises(AFDInfeasible) as error:
+        AFDSearchConfig(
+            total_gpus=16,
+            gpus_per_node=8,
+            is_moe=False,
+            **{field: value},
+        )
+
+    assert error.value.category is AFDReasonCategory.EXPERT_DIVISIBILITY
+    assert error.value.provenance["field"] == field
+    assert error.value.provenance["value"] == value
+
+
+def test_dense_search_accepts_explicit_single_expert_parallelism():
+    result = enumerate_afd_topologies(
+        AFDSearchConfig(
+            total_gpus=16,
+            gpus_per_node=8,
+            is_moe=False,
+            num_experts=0,
+            f_moe_ep_size_candidates=(1,),
+        )
+    )
+
+    assert result.candidates
+    assert all(item.f_moe_ep_size == 1 and item.num_experts == 0 for item in result.candidates)
+    assert result.provenance["complete"] is True
 
 
 @pytest.mark.parametrize(
@@ -254,9 +284,7 @@ def test_search_rejects_duplicate_explicit_candidates(field, values):
 
 
 def test_search_rejects_nondivisible_explicit_tp_candidate():
-    with pytest.raises(
-        AFDInfeasible, match="tp_a_candidates must divide gpus_per_node"
-    ) as error:
+    with pytest.raises(AFDInfeasible, match="tp_a_candidates must divide gpus_per_node") as error:
         AFDSearchConfig(
             total_gpus=16,
             gpus_per_node=8,
@@ -296,6 +324,40 @@ def test_pinned_domain_is_lossless_and_honors_budget():
     assert budget_error.value.category is AFDReasonCategory.GPU_BUDGET
 
 
+def test_search_rejects_duplicate_pinned_topologies():
+    pinned = _topology()
+
+    with pytest.raises(AFDInfeasible, match="pinned_topologies must not contain duplicates") as error:
+        AFDSearchConfig(
+            total_gpus=16,
+            gpus_per_node=8,
+            is_moe=False,
+            pinned_topologies=(pinned, _topology()),
+            combined_with_pd=False,
+        )
+
+    assert error.value.category is AFDReasonCategory.INVALID_TOPOLOGY
+    assert error.value.provenance["field"] == "pinned_topologies"
+    assert error.value.provenance["values"] == [pinned.provenance(), pinned.provenance()]
+
+
+def test_pinned_domain_accepts_budget_with_partial_node_remainder():
+    pinned = _topology()
+    result = enumerate_afd_topologies(
+        AFDSearchConfig(
+            total_gpus=20,
+            gpus_per_node=8,
+            is_moe=False,
+            pinned_topologies=(pinned,),
+            combined_with_pd=False,
+        )
+    )
+
+    assert result.candidates == (pinned,)
+    assert result.generated_count == 1
+    assert result.provenance["complete"] is True
+
+
 @pytest.mark.parametrize(
     ("topology_overrides", "config_overrides", "field"),
     [
@@ -305,9 +367,7 @@ def test_pinned_domain_is_lossless_and_honors_budget():
         ({"boundary_on_attn": False}, {}, "boundary_on_attn"),
     ],
 )
-def test_pinned_domain_rejects_search_contract_mismatches(
-    topology_overrides, config_overrides, field
-):
+def test_pinned_domain_rejects_search_contract_mismatches(topology_overrides, config_overrides, field):
     pinned = _topology(**topology_overrides)
 
     with pytest.raises(AFDInfeasible) as error:
@@ -341,9 +401,7 @@ def test_candidate_limit_requires_a_complete_domain():
 
 def test_search_requires_two_node_minimum_with_actionable_budget_reason():
     with pytest.raises(AFDInfeasible) as error:
-        enumerate_afd_topologies(
-            AFDSearchConfig(total_gpus=8, gpus_per_node=8, is_moe=False)
-        )
+        enumerate_afd_topologies(AFDSearchConfig(total_gpus=8, gpus_per_node=8, is_moe=False))
     assert error.value.category is AFDReasonCategory.GPU_BUDGET
     assert "at least 16 GPUs" in error.value.detail
 
@@ -372,10 +430,14 @@ def test_generated_domain_applies_minimum_budget_and_inclusive_af_ratio():
     assert result.rejection_counts["af_ratio"] == 2
 
 
-def test_generated_domain_treats_total_gpus_as_an_upper_bound():
+@pytest.mark.parametrize(
+    ("total_gpus", "expected_gpu_counts", "remainder_gpus"),
+    [(16, {16}, 0), (20, {16}, 4), (23, {16}, 7), (24, {16, 24}, 0)],
+)
+def test_generated_domain_treats_total_gpus_as_an_upper_bound(total_gpus, expected_gpu_counts, remainder_gpus):
     result = enumerate_afd_topologies(
         AFDSearchConfig(
-            total_gpus=20,
+            total_gpus=total_gpus,
             gpus_per_node=8,
             is_moe=False,
             tp_a_candidates=(8,),
@@ -385,5 +447,12 @@ def test_generated_domain_treats_total_gpus_as_an_upper_bound():
         )
     )
 
-    assert {item.total_gpus for item in result.candidates} == {16}
+    assert {item.total_gpus for item in result.candidates} == expected_gpu_counts
     assert result.provenance["complete"] is True
+    assert result.provenance["gpu_budget"] == {
+        "granularity": "node",
+        "total_gpus": total_gpus,
+        "gpus_per_node": 8,
+        "usable_gpus": max(expected_gpu_counts),
+        "remainder_gpus": remainder_gpus,
+    }

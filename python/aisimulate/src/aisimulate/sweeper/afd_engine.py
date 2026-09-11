@@ -49,7 +49,7 @@ class AFDStageInterval:
 
 @dataclass(frozen=True)
 class AFDPhaseEvaluation:
-    """One phase's legacy-equivalent AFD pipeline evaluation."""
+    """One phase's AFD pipeline evaluation with its effective scheduling model."""
 
     phase: AFDPhase
     step_latency_ms: float
@@ -132,7 +132,7 @@ def evaluate_afd_phase(
     output_length: int,
     latency_correction: float = 1.0,
 ) -> AFDPhaseEvaluation:
-    """Evaluate one AFD phase with the legacy K=3/K=2/serial formulas."""
+    """Evaluate one AFD phase, using a serial cadence for one microbatch."""
 
     _positive_int("input_length", input_length)
     _positive_int("output_length", output_length)
@@ -152,7 +152,9 @@ def evaluate_afd_phase(
     requested = topology.pipeline_model
     effective = requested
     hidden = False
-    if requested is AFDPipelineModel.SERIAL:
+    if requested is AFDPipelineModel.SERIAL or topology.num_microbatches == 1:
+        # A single microbatch must return from F before its next layer can start.
+        effective = AFDPipelineModel.SERIAL
         cycle = t_a + t_a2f + t_f + t_f2a
     elif requested is AFDPipelineModel.CONSERVATIVE:
         cycle = max(t_a + t_a2f, t_f + t_f2a)
@@ -212,7 +214,7 @@ class AFDForegroundEngine:
     The engine makes every A -> transfer -> F -> transfer stage explicit for
     every ``(layer, microbatch)`` unit. Unit starts are separated by the exact
     cadence selected by :func:`evaluate_afd_phase`, so the final interval ends
-    at the same full-pass boundary as the backend-neutral legacy formula.
+    at the full-pass boundary reported by the evaluator.
     """
 
     def __init__(self, topology: AFDTopology, measurements: tuple[AFDLayerTimes, ...]) -> None:

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import heapq
 import importlib
 import json
 import logging
@@ -534,10 +535,18 @@ def _run_afd_replay(
     batch_capacity = _positive_int(batch_capacity, "AFD replay batch capacity")
 
     ordered_requests = sorted(requests, key=lambda request: float(request["arrival_time_ms"]))
+    # Each slot admits one request and becomes available again only when that
+    # request finishes both phases, including time queued between the pools.
+    admission_slots = [0.0] * min(max_in_flight, len(requests)) if max_in_flight is not None else None
     request_records: list[dict[str, JSONValue]] = []
     next_request = 0
     afd_available_ms = 0.0
     companion_available_ms = 0.0
+    if companion is not None:
+        raw_args = (
+            deployment.prefill_engine_args if companion.phase is AFDPhase.PREFILL else deployment.decode_engine_args
+        )
+        companion_available_ms = _startup_delay_ms(_required_engine_args(raw_args, companion.phase.value))
     afd_passes = 0
     afd_intervals = 0
     batch_count = 0
@@ -550,11 +559,16 @@ def _run_afd_replay(
         batch_start = max(
             first_phase_available,
             _nonnegative_time(ordered_requests[next_request]["arrival_time_ms"], "arrival_time_ms"),
+            admission_slots[0] if admission_slots is not None else 0.0,
         )
         batch = []
         while next_request < len(ordered_requests) and len(batch) < batch_capacity:
             request = ordered_requests[next_request]
             arrival = _nonnegative_time(request["arrival_time_ms"], "arrival_time_ms")
+            if admission_slots is not None:
+                if not admission_slots:
+                    break
+                arrival = max(arrival, admission_slots[0])
             if arrival > batch_start and batch:
                 break
             if arrival > batch_start:
@@ -564,6 +578,9 @@ def _run_afd_replay(
                 or _positive_int(request["output_tokens"], "request output_tokens") != output_length
             ):
                 raise ValueError("AFD request lengths must match the measured workload isl/osl")
+            if admission_slots is not None:
+                heapq.heappop(admission_slots)
+                request["arrival_time_ms"] = arrival
             batch.append(request)
             next_request += 1
         batch_count += 1
@@ -579,7 +596,7 @@ def _run_afd_replay(
                 output_length=output_length,
                 passes=1,
             )
-            decode_end, decode_step_ms, decode_intervals = _run_afd_phase(
+            decode_end, _, decode_intervals = _run_afd_phase(
                 engine,
                 phase=AFDPhase.DECODE,
                 start_ms=prefill_end,
@@ -602,10 +619,11 @@ def _run_afd_replay(
                 passes=1,
             )
             afd_available_ms = prefill_end
-            decode_start = max(prefill_end, companion_available_ms)
-            decode_step_ms = companion.latency_ms if decode_passes else 0.0
-            decode_end = decode_start + decode_step_ms * decode_passes
-            companion_available_ms = decode_end
+            decode_end = prefill_end
+            if decode_passes:
+                decode_start = max(prefill_end, companion_available_ms)
+                decode_end = decode_start + companion.latency_ms * decode_passes
+                companion_available_ms = decode_end
             afd_passes += 1
             afd_intervals += interval_count
         else:
@@ -613,34 +631,38 @@ def _run_afd_replay(
             prefill_start = max(batch_start, companion_available_ms)
             prefill_end = prefill_start + companion.latency_ms
             companion_available_ms = prefill_end
-            decode_start = max(prefill_end, afd_available_ms)
-            decode_end, decode_step_ms, interval_count = _run_afd_phase(
-                engine,
-                phase=AFDPhase.DECODE,
-                start_ms=decode_start,
-                input_length=input_length,
-                output_length=output_length,
-                passes=decode_passes,
-            )
-            afd_available_ms = decode_end
-            afd_passes += decode_passes
-            afd_intervals += interval_count
+            decode_end = prefill_end
+            if decode_passes:
+                decode_start = max(prefill_end, afd_available_ms)
+                decode_end, _, interval_count = _run_afd_phase(
+                    engine,
+                    phase=AFDPhase.DECODE,
+                    start_ms=decode_start,
+                    input_length=input_length,
+                    output_length=output_length,
+                    passes=decode_passes,
+                )
+                afd_available_ms = decode_end
+                afd_passes += decode_passes
+                afd_intervals += interval_count
 
         for request in batch:
+            if admission_slots is not None:
+                heapq.heappush(admission_slots, decode_end)
             arrival = float(request["arrival_time_ms"])
             request_records.append(
                 {
                     "id": str(request["id"]),
                     "arrival_time_ms": arrival,
                     "ttft_ms": prefill_end - arrival,
-                    "tpot_ms": decode_step_ms,
+                    "tpot_ms": (decode_end - prefill_end) / decode_passes if decode_passes else 0.0,
                     "e2e_latency_ms": decode_end - arrival,
                     "output_tokens": output_length,
                 }
             )
 
     first_arrival = min(float(request["arrival_time_ms"]) for request in ordered_requests)
-    end_ms = max(afd_available_ms, companion_available_ms)
+    end_ms = max(float(record["arrival_time_ms"]) + float(record["e2e_latency_ms"]) for record in request_records)
     duration_ms = end_ms - first_arrival
     if duration_ms <= 0.0:
         raise InvalidRunnerError("AFD replay produced a non-positive duration")
