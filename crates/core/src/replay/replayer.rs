@@ -31,7 +31,7 @@ use crate::replay::scaling::ReplayScalingPolicy;
 use crate::replay::telemetry::{ReplayTelemetryObserver, ReplayTelemetrySnapshot};
 use crate::replay::{
     ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayRequest,
-    ReplayResult, ReplaySpec, ReplayTopology, SlaThresholds, WorkerStage,
+    ReplayResult, ReplaySpec, ReplayTopology, WorkerStage,
 };
 
 /// Runtime composition supplied by the built-in engine stack or a Dynamo
@@ -801,6 +801,7 @@ mod tests {
 mod generated_replay_tests {
     use super::*;
     use crate::engine::{Backend, EngineConfig, TimingModelConfig};
+    use crate::replay::SlaThresholds;
     use crate::replay::loadgen::GeneratedRequests;
     use crate::replay::{
         CanonicalReplayCoverage, CanonicalReplayRecord, ReplayRoleConfig, WorkerPoolSpec,
