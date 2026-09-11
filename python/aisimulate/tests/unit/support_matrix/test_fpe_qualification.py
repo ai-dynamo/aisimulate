@@ -9,8 +9,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
 from tools.support_matrix.qualify_fpe_support_matrix import qualify
-from tools.verify_installed_package_layers import _verify_fpe_probe_results
+from tools.verify_installed_package_layers import _exercise_fpe_matrix, _verify_fpe_probe_results
 
 pytestmark = pytest.mark.unit
 SHA = "a" * 40
@@ -238,3 +239,13 @@ def test_source_provenance_uses_checkout_instead_of_dispatch_event(monkeypatch):
     root = Path(__file__).resolve().parents[5]
     expected = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     assert _source_sha() == expected
+
+
+def test_installed_native_fpe_ignores_source_package_on_pythonpath(tmp_path, monkeypatch):
+    shadow = tmp_path / "shadow"
+    package = shadow / "aisimulate"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('raise RuntimeError("source package shadowed the installed wheel")\n')
+    source = Path(__file__).resolve().parents[3] / "src"
+    monkeypatch.setenv("PYTHONPATH", f"{shadow}:{source}")
+    _exercise_fpe_matrix()
