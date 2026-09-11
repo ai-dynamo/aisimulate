@@ -21,8 +21,8 @@ Native cases (Qwen3-32B on h200_sxm, TRT-LLM OfFree and vLLM OfTotal), asserting
 
 Requires the perf DB (LFS) for the SystemSpec capacity used by the native path,
 plus ``aiconfigurator_core`` importable (transitively, via ``sdk.memory``).
-Soft-skips when the import or the native breakdown is unavailable (e.g. no
-``git lfs pull``) so bare runs stay green.
+General native cases soft-skip when the import or native breakdown is unavailable.
+The required Eagle regression fails when its fixture cannot execute.
 """
 
 from __future__ import annotations
@@ -241,13 +241,9 @@ def test_eagle_prefill_kv_budget_nonnegative_kimi_gb200(nextn):
     of ``nextn`` -- the activation must match the ``nextn=0`` baseline exactly, not be
     scaled by ``(nextn+1)`` as the latency sweep does.
     """
-    try:
-        baseline = memory.estimate_kv_cache(**_EAGLE_PREFILL_CASE, nextn=0)
-        est = memory.estimate_kv_cache(**_EAGLE_PREFILL_CASE, nextn=nextn)
-    except ValueError as exc:
-        # A genuinely-missing perf DB / model soft-skips; the "no KV budget" regression
-        # (any other ValueError) is re-raised by the helper and fails the test.
-        _skip_if_fixture_unavailable(exc)
+    # This regression is required CI evidence: a missing fixture must fail.
+    baseline = memory.estimate_kv_cache(**_EAGLE_PREFILL_CASE, nextn=0)
+    est = memory.estimate_kv_cache(**_EAGLE_PREFILL_CASE, nextn=nextn)
 
     # Non-negative budget for any feasible draft length (the reported failure).
     assert est["total_kv_size_bytes"] > 0
