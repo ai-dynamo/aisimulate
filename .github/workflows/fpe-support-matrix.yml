@@ -42,6 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.expected_sha }}
           persist-credentials: false
       - name: Verify exact target
         env:
@@ -104,6 +105,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.expected_sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -153,6 +155,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.expected_sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -166,7 +169,18 @@ jobs:
           echo "${FPE_WHEEL_SHA256}  $(echo fpe-wheel/*.whl)" | sha256sum --check --strict
           python -m pip install --force-reinstall fpe-wheel/*.whl
           python -m pip check
-          python -c 'from aisimulate import _runtime; print(_runtime.__file__)'
+          python - <<'PY'
+          from importlib.metadata import distribution
+          from pathlib import Path
+          from aisimulate import _runtime
+          dist = distribution("aisimulate")
+          runtime = Path(_runtime.__file__).resolve()
+          owned = {Path(dist.locate_file(p)).resolve() for p in dist.files or ()
+                   if str(p).startswith("aisimulate/_runtime.")}
+          if runtime not in owned:
+              raise SystemExit(f"native runtime is not owned by the installed AISimulate wheel: {runtime}")
+          print(runtime)
+          PY
       - name: Generate strict-native op-level coverage through the FPE SDK
         env:
           FPE_SYSTEM: ${{ matrix.shard.system }}
@@ -191,6 +205,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.expected_sha }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
