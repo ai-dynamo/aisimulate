@@ -48,7 +48,6 @@ from .discovery import resolve_providers
 from .epd import add_encoder_choices, resolve_encoder_catalog
 from .kv_estimate import resolve_backend_version
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
-from .parallel_enum import PreparationBudget
 from .provider import (
     SEARCH_SPACE_FRAGMENT_API_VERSION,
     AdapterReplaySpec,
@@ -1072,9 +1071,7 @@ class Sweeper:
 
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
-        preparation = PreparationBudget(
-            config.search_space.max_parallel_combinations, config.search_space.max_parallel_configs
-        )
+        preparation = config.search_space.new_preparation_budget()
         branches = enumerate_branches(
             config,
             max_seq_len=config.search_space.context_length,

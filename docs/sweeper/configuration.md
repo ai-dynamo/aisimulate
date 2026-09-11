@@ -114,12 +114,17 @@ and GPU accounting; it retains AIC's analytical pipeline timing model.
 `num_gpu_per_replica` restricts total candidate GPU sizes and `max_gpu_per_replica`
 sets their ceiling. For disaggregation that total includes both roles and all workers;
 `max_prefill_workers` and `max_decode_workers` independently bound their worker counts.
+These role-specific worker limits require a `disagg` search. A shared low-level GPU
+domain cannot be combined with explicit per-role GPU domains.
 AFD retains its separate topology controls and limits.
 
 Preparation shares a work budget across configured agg/disagg modes and backends.
 `max_parallel_combinations` bounds integer-domain expansion, shape products, worker
 products, and prefill/decode pairing **before** their loops or allocations.
 `max_parallel_configs` bounds each retained topology pool and the backend union.
+Public recommendation lowering shares one budget across its range expansions and
+P/D preset products. Those preparation counts seed the subsequent topology budget
+and remain available in the result diagnostics; repeated runs start from a fresh copy.
 Exceeding either raises `SearchSpaceLimitError` with the stage and a request to narrow
 the domain; no partial domain is returned. These are deterministic preparation guards,
 not a process-memory limit or a timeout for model loading and simulation.

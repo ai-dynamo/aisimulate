@@ -527,7 +527,7 @@ def enumerate_branches(
     model's max context length).
     """
     ss = config.search_space
-    preparation = preparation or PreparationBudget(ss.max_parallel_combinations, ss.max_parallel_configs)
+    preparation = preparation or ss.new_preparation_budget()
     branches: list[BranchSpace] = []
     skipped: list[str] = []  # modes dropped because no backend was viable
     skip_warnings: list[str] = []

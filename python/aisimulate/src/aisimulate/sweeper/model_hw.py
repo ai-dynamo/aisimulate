@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from aiconfigurator.generator.naive import _estimate_model_weight_bytes
 from aiconfigurator_core.sdk import perf_database
-from aiconfigurator_core.sdk.models import check_is_moe
+from aiconfigurator_core.sdk.models import check_is_moe, supports_context_parallelism
 from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
 
 from .kv_estimate import (
@@ -199,12 +199,17 @@ def parallel_configs_for(
             if (max_gpu_per_replica is None or c.total_gpus <= max_gpu_per_replica)
             and (num_gpu_per_replica is None or c.total_gpus in num_gpu_per_replica)
         ]
+        preparation.record(f"{deployment_mode}.{backend}.replica", "considered", len(configs))
+        preparation.record(f"{deployment_mode}.{backend}.replica", "accepted", len(filtered))
         preparation.record(f"{deployment_mode}.{backend}.replica", "rejected", len(configs) - len(filtered))
         configs = filtered
     else:
         raise ValueError(f"deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}")
 
+    cp_supported: bool | None = None
+
     def supported(config):
+        nonlocal cp_supported
         roles = (
             (("agg", config),) if deployment_mode == "agg" else (("prefill", config.prefill), ("decode", config.decode))
         )
@@ -214,12 +219,9 @@ def parallel_configs_for(
                 preparation.record(f"{deployment_mode}.{backend}.capability", "model_divisibility")
                 return False
             if role_config.shape.cp > 1:
-                from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY
-                from aiconfigurator_core.sdk.models.helpers import _architecture_to_model_family
-
-                architecture = get_model_config_from_model_path(model_name).get("architecture", "")
-                model_cls = _MODEL_REGISTRY.get(_architecture_to_model_family(str(architecture)))
-                if role_name == "decode" or model_cls is None or not model_cls.supports_cp(backend):
+                if cp_supported is None:
+                    cp_supported = supports_context_parallelism(model_name, backend)
+                if role_name == "decode" or not cp_supported:
                     preparation.record(f"{deployment_mode}.{backend}.capability", "context_parallelism")
                     return False
         return True

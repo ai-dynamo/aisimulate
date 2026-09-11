@@ -21,6 +21,7 @@ from .config_adapter import (
 )
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
+from .sweeper.parallel_enum import PreparationBudget
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
@@ -83,16 +84,17 @@ def recommendation_to_sweeper(
     adapter_configs: Mapping[str, Mapping[str, Any]] | None = None,
     stack: str = "engine",
 ) -> SmartSearchConfig:
+    preparation = PreparationBudget()
     engine = config.engine.model_dump(mode="python", exclude_none=True)
     optimization = config.optimization
-    mode_values = _choices(engine.get("mode"), default=["aggregated", "disaggregated"])
+    mode_values = _choices(engine.get("mode"), default=["aggregated", "disaggregated"], preparation=preparation)
     modes = [_legacy_mode(str(value)) for value in mode_values]
     afd = engine.get("afd")
     if modes == ["afd"]:
         if not isinstance(afd, dict):
             raise ValueError("engine.mode='afd' requires engine.afd")
         modes = ["afd+pd" if afd["combined_with_pd"] else "afd"]
-    backend_values = _choices(engine.get("backend"), default=["vllm", "sglang"])
+    backend_values = _choices(engine.get("backend"), default=["vllm", "sglang"], preparation=preparation)
     model = engine.get("model")
     if not isinstance(model, str) or not model:
         raise ValueError("engine.model is required and must be concrete")
@@ -119,11 +121,11 @@ def recommendation_to_sweeper(
         "context_length": (resolve_model_context_length(model) if context == "max" else context),
     }
     if isinstance(afd, dict):
-        search_space.update(_afd_search_space(afd))
+        search_space.update(_afd_search_space(afd, preparation=preparation))
         if modes == ["afd+pd"]:
             companion_role = "decode" if afd["phase"] == "prefill" else "prefill"
             workers.setdefault(companion_role, {})
-            kind, value = _parallel_entries(companion_role, workers[companion_role])
+            kind, value = _parallel_entries(companion_role, workers[companion_role], preparation=preparation)
             if kind == "flat":
                 search_space["afd_companion_parallel_configs"] = [_legacy_parallel(entry) for entry in value]
             elif kind == "independent":
@@ -133,9 +135,7 @@ def recommendation_to_sweeper(
                 )
     search_space.update(
         _role_search_space(
-            workers,
-            modes,
-            afd_phase=afd.get("phase") if isinstance(afd, dict) else None,
+            workers, modes, afd_phase=afd.get("phase") if isinstance(afd, dict) else None, preparation=preparation
         )
     )
     if engine.get("workers", {}).get("encoder") is not None:
@@ -143,9 +143,9 @@ def recommendation_to_sweeper(
         search_space["encoder"] = {
             "hardware_sku": encoder.get("hardware"),
             "backend_version": encoder.get("backend_version"),
-            "tp": _choices(encoder["tensor"], default=[1]),
-            "workers": _choices(encoder["replicas"], default=[1]),
-            "batch_size": _choices(encoder["batch_size"], default=[1]),
+            "tp": _choices(encoder["tensor"], default=[1], preparation=preparation),
+            "workers": _choices(encoder["replicas"], default=[1], preparation=preparation),
+            "batch_size": _choices(encoder["batch_size"], default=[1], preparation=preparation),
             "latency_correction": encoder["latency_correction"],
             "rate_degradation": encoder["rate_degradation"],
         }
@@ -160,7 +160,7 @@ def recommendation_to_sweeper(
         independent_parallel,
         independent_parallel_log_ranges,
         custom_parallel,
-    ) = _parallel_config_choices(workers, modes)
+    ) = _parallel_config_choices(workers, modes, preparation=preparation)
     if pinned_parallel:
         search_space["parallel_configs_by_mode"] = pinned_parallel
     if flat_modes:
@@ -173,7 +173,8 @@ def recommendation_to_sweeper(
         search_space["parallel_custom_configs_by_mode"] = custom_parallel
 
     workload = _recommendation_workload(
-        config.traffic.model_dump(mode="python", exclude_none=True) if config.traffic is not None else None
+        config.traffic.model_dump(mode="python", exclude_none=True) if config.traffic is not None else None,
+        preparation=preparation,
     )
     goal = _goal(config)
     adapters = {
@@ -196,7 +197,7 @@ def recommendation_to_sweeper(
         "algorithm": config.optimizer.algorithm,
         "seed": config.optimizer.seed,
     }
-    return SmartSearchConfig.model_validate(
+    smart = SmartSearchConfig.model_validate(
         {
             "search_space": search_space,
             "adapters": adapters,
@@ -206,8 +207,12 @@ def recommendation_to_sweeper(
         }
     )
 
+    smart.search_space._input_preparation = deepcopy(preparation.stages)
+    return smart
 
-def _choices(value: Any, *, default: list[Any]) -> list[Any]:
+
+def _choices(value: Any, *, default: list[Any], preparation: PreparationBudget | None = None) -> list[Any]:
+    preparation = preparation or PreparationBudget()
     if value is None:
         return list(default)
     if isinstance(value, dict) and set(value) == {"choices"}:
@@ -219,9 +224,7 @@ def _choices(value: Any, *, default: list[Any]) -> list[Any]:
             raise ValueError("integer log ranges must be lowered as compact bounds")
         if step is None:
             raise ValueError("integer linear engine ranges require step")
-        from .sweeper.parallel_enum import PreparationBudget
-
-        PreparationBudget().reserve((raw["max"] - raw["min"]) // step + 1, "input integer range")
+        preparation.reserve(int((raw["max"] - raw["min"]) // step) + 1, "input.integer_range")
         values: list[Any] = []
         current = raw["min"]
         while current <= raw["max"]:
@@ -231,8 +234,11 @@ def _choices(value: Any, *, default: list[Any]) -> list[Any]:
     return [value]
 
 
-def _integer_domain(value: Any, *, default: list[int]) -> tuple[list[int], list[int] | None]:
+def _integer_domain(
+    value: Any, *, default: list[int], preparation: PreparationBudget | None = None
+) -> tuple[list[int], list[int] | None]:
     """Lower an integer domain without eagerly expanding a log-scale interval."""
+    preparation = preparation or PreparationBudget()
 
     if isinstance(value, dict) and set(value) == {"range"}:
         raw = value["range"]
@@ -241,23 +247,27 @@ def _integer_domain(value: Any, *, default: list[int]) -> tuple[list[int], list[
             if minimum == maximum:
                 return [minimum], None
             return [minimum], [minimum, maximum]
-    return [int(choice) for choice in _choices(value, default=default)], None
+    return [int(choice) for choice in _choices(value, default=default, preparation=preparation)], None
 
 
 def _legacy_mode(mode: str) -> str:
     return {"aggregated": "agg", "disaggregated": "disagg"}.get(mode, mode)
 
 
-def _afd_search_space(afd: dict[str, Any]) -> dict[str, Any]:
+def _afd_search_space(afd: dict[str, Any], *, preparation: PreparationBudget | None = None) -> dict[str, Any]:
+    preparation = preparation or PreparationBudget()
     result: dict[str, Any] = {
         "afd_phase": afd["phase"],
-        "afd_batch_size_candidates": [int(value) for value in _choices(afd["a_batch_size"], default=[])],
-        "afd_microbatch_candidates": [int(value) for value in _choices(afd.get("num_microbatches"), default=[2, 3, 4])],
+        "afd_batch_size_candidates": [
+            int(value) for value in _choices(afd["a_batch_size"], default=[], preparation=preparation)
+        ],
+        "afd_microbatch_candidates": [
+            int(value) for value in _choices(afd.get("num_microbatches"), default=[2, 3, 4], preparation=preparation)
+        ],
         "afd_pipeline_model_candidates": [
             str(value)
             for value in _choices(
-                afd.get("pipeline_model"),
-                default=["optimistic", "conservative"],
+                afd.get("pipeline_model"), default=["optimistic", "conservative"], preparation=preparation
             )
         ],
         "afd_comm_overhead_factor": afd.get("comm_overhead_factor", 1.0),
@@ -266,9 +276,11 @@ def _afd_search_space(afd: dict[str, Any]) -> dict[str, Any]:
         "afd_max_candidates": afd.get("max_candidates", 10_000),
     }
     if afd.get("tp_a") is not None:
-        result["afd_tp_a_candidates"] = [int(value) for value in _choices(afd["tp_a"], default=[])]
+        result["afd_tp_a_candidates"] = [
+            int(value) for value in _choices(afd["tp_a"], default=[], preparation=preparation)
+        ]
     if afd.get("f_moe_ep_size") is not None:
-        result["afd_f_moe_ep_size_candidates"] = _choices(afd["f_moe_ep_size"], default=[])
+        result["afd_f_moe_ep_size_candidates"] = _choices(afd["f_moe_ep_size"], default=[], preparation=preparation)
     return result
 
 
@@ -277,7 +289,9 @@ def _role_search_space(
     modes: list[str],
     *,
     afd_phase: str | None = None,
+    preparation: PreparationBudget | None = None,
 ) -> dict[str, Any]:
+    preparation = preparation or PreparationBudget()
     result: dict[str, Any] = {
         "engine_float_ranges": {},
         "engine_log_ranges": [],
@@ -310,8 +324,12 @@ def _role_search_space(
         sequences_default = [1, 2, 4, 8, 16, 32, 64, 128, 256] if legacy_role == "prefill" else [256, 512, 1024]
         tokens_name = f"{legacy_role}_max_num_batched_tokens"
         sequences_name = f"{legacy_role}_max_num_seqs"
-        tokens, tokens_log_range = _integer_domain(scheduler.get("max_batched_tokens"), default=tokens_default)
-        sequences, sequences_log_range = _integer_domain(scheduler.get("max_sequences"), default=sequences_default)
+        tokens, tokens_log_range = _integer_domain(
+            scheduler.get("max_batched_tokens"), default=tokens_default, preparation=preparation
+        )
+        sequences, sequences_log_range = _integer_domain(
+            scheduler.get("max_sequences"), default=sequences_default, preparation=preparation
+        )
         result[tokens_name] = tokens
         result[sequences_name] = sequences
         if tokens_log_range is not None:
@@ -325,7 +343,7 @@ def _role_search_space(
         if block_value is None:
             result[block_name] = None
         elif isinstance(block_value, dict):
-            block_choices, block_log_range = _integer_domain(block_value, default=[])
+            block_choices, block_log_range = _integer_domain(block_value, default=[], preparation=preparation)
             result[block_name] = block_choices
             if block_log_range is not None:
                 result["engine_integer_log_ranges"][block_name] = block_log_range
@@ -336,7 +354,7 @@ def _role_search_space(
         if isinstance(memory_value, dict) and "range" in memory_value:
             bounds = memory_value["range"]
             if bounds.get("scale", "linear") == "linear" and bounds.get("step") is not None:
-                result[memory_name] = _choices(memory_value, default=[])
+                result[memory_name] = _choices(memory_value, default=[], preparation=preparation)
             else:
                 result[memory_name] = bounds["min"]
                 result["engine_float_ranges"][memory_name] = [
@@ -346,7 +364,7 @@ def _role_search_space(
                 if bounds.get("scale", "linear") == "log":
                     result["engine_log_ranges"].append(memory_name)
         elif isinstance(memory_value, dict):
-            result[memory_name] = _choices(memory_value, default=[])
+            result[memory_name] = _choices(memory_value, default=[], preparation=preparation)
         else:
             result[memory_name] = memory_value
         result[f"{legacy_role}_enable_prefix_caching"] = cache.get("prefix_caching", True)
@@ -391,7 +409,10 @@ _PARALLEL_KEYS = (
 )
 
 
-def _parallel_entries(role: str, raw: dict[str, Any]) -> tuple[str, Any]:
+def _parallel_entries(
+    role: str, raw: dict[str, Any], *, preparation: PreparationBudget | None = None
+) -> tuple[str, Any]:
+    preparation = preparation or PreparationBudget()
     parallel = raw.get("parallelism") or {}
     if not isinstance(parallel, dict):
         raise ValueError(f"engine.workers.{role}.parallelism must be a mapping")
@@ -413,7 +434,7 @@ def _parallel_entries(role: str, raw: dict[str, Any]) -> tuple[str, Any]:
         if key not in parallel:
             choices[key] = None
             continue
-        values, log_range = _integer_domain(parallel[key], default=[])
+        values, log_range = _integer_domain(parallel[key], default=[], preparation=preparation)
         choices[key] = values
         if log_range is not None:
             log_ranges[key] = log_range
@@ -450,7 +471,7 @@ def _legacy_parallel(entry: dict[str, int]) -> dict[str, int]:
 
 
 def _parallel_config_choices(
-    workers: dict[str, Any], modes: list[str]
+    workers: dict[str, Any], modes: list[str], *, preparation: PreparationBudget | None = None
 ) -> tuple[
     dict[str, list[dict[str, Any]]],
     list[str],
@@ -458,12 +479,13 @@ def _parallel_config_choices(
     dict[str, dict[str, list[int]]],
     dict[str, dict[str, list[dict[str, int]]]],
 ]:
+    preparation = preparation or PreparationBudget()
     role_specs: dict[str, tuple[str, Any]] = {}
     if "agg" in modes:
-        role_specs["agg"] = _parallel_entries("aggregated", workers["aggregated"])
+        role_specs["agg"] = _parallel_entries("aggregated", workers["aggregated"], preparation=preparation)
     if "disagg" in modes:
-        role_specs["prefill"] = _parallel_entries("prefill", workers["prefill"])
-        role_specs["decode"] = _parallel_entries("decode", workers["decode"])
+        role_specs["prefill"] = _parallel_entries("prefill", workers["prefill"], preparation=preparation)
+        role_specs["decode"] = _parallel_entries("decode", workers["decode"], preparation=preparation)
     pinned: dict[str, list[dict[str, Any]]] = {}
     flat_modes: list[str] = []
     independent: dict[str, dict[str, list[int] | None]] = {}
@@ -503,9 +525,6 @@ def _parallel_config_choices(
         prefill_kind, prefill = role_specs["prefill"]
         decode_kind, decode = role_specs["decode"]
         if prefill_kind == decode_kind == "flat":
-            from .sweeper.parallel_enum import PreparationBudget
-
-            preparation = PreparationBudget()
             preparation.reserve(len(prefill) * len(decode), "input P/D presets")
             preparation.check_size(len(prefill) * len(decode), "input P/D presets")
             pinned["disagg"] = [
@@ -544,7 +563,10 @@ def _parallel_config_choices(
     return pinned, flat_modes, independent, independent_log_ranges, custom
 
 
-def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
+def _recommendation_workload(
+    raw: dict[str, Any] | None, *, preparation: PreparationBudget | None = None
+) -> dict[str, Any]:
+    preparation = preparation or PreparationBudget()
     if raw is None:
         return {
             "isl": 1024,
@@ -577,17 +599,11 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             result["weka_nested_timestamp_basis"] = source["nested_timestamp_basis"]
         if load_type == "concurrency":
             _configure_load_domain(
-                result,
-                load.get("concurrency"),
-                field="replay_concurrency",
-                integer=True,
+                result, load.get("concurrency"), field="replay_concurrency", integer=True, preparation=preparation
             )
         else:
             _configure_load_domain(
-                result,
-                load.get("speedup", 1.0),
-                field="arrival_speedup_ratio",
-                integer=False,
+                result, load.get("speedup", 1.0), field="arrival_speedup_ratio", integer=False, preparation=preparation
             )
             if load.get("agentic_lanes") is not None:
                 result["agentic_lanes"] = load["agentic_lanes"]
@@ -616,27 +632,16 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError(f"unsupported traffic source type {source_type!r}")
     if load_type == "concurrency":
         _configure_load_domain(
-            result,
-            load.get("concurrency"),
-            field="concurrency",
-            integer=True,
+            result, load.get("concurrency"), field="concurrency", integer=True, preparation=preparation
         )
     elif load_type in {"poisson", "constant_rate"}:
         value = load.get("requests_per_second", load.get("sessions_per_second"))
-        _configure_load_domain(
-            result,
-            value,
-            field="request_rate",
-            integer=False,
-        )
+        _configure_load_domain(result, value, field="request_rate", integer=False, preparation=preparation)
         if load_type == "poisson":
             result["arrival_seed"] = load.get("seed", 42)
     elif load_type == "kv_capacity_fraction":
         _configure_load_domain(
-            result,
-            load.get("fraction"),
-            field="kv_load_ratio",
-            integer=False,
+            result, load.get("fraction"), field="kv_load_ratio", integer=False, preparation=preparation
         )
     else:
         raise ValueError(f"unsupported synthetic load type {load_type!r}")
@@ -653,7 +658,9 @@ def _configure_load_domain(
     *,
     field: str,
     integer: bool,
+    preparation: PreparationBudget | None = None,
 ) -> None:
+    preparation = preparation or PreparationBudget()
     if isinstance(value, dict) and set(value) == {"choices"}:
         choices = list(value["choices"])
         result[field] = choices[0]
@@ -668,7 +675,7 @@ def _configure_load_domain(
             return
         step = bounds.get("step")
         if bounds.get("scale", "linear") == "linear" and step is not None:
-            choices = _choices(value, default=[])
+            choices = _choices(value, default=[], preparation=preparation)
             result[field] = choices[0]
             result["load_search_field"] = field
             result["load_choices"] = choices

@@ -266,3 +266,85 @@ def test_sdk_presets_reject_invalid_dimensions_before_enumeration(field, value, 
         }
     with pytest.raises(ValueError, match=rf"parallel_configs\.{field} must be a positive integer"):
         config(**overrides)
+
+
+@pytest.mark.parametrize("field", ["max_prefill_workers", "max_decode_workers"])
+def test_inactive_worker_limit_is_rejected(field):
+    with pytest.raises(ValueError, match="worker limits require"):
+        config(**{field: 1})
+
+
+def test_shared_and_role_gpu_domains_cannot_silently_override_each_other():
+    with pytest.raises(ValueError, match="shared gpus_per_worker_candidates"):
+        enumerate_disagg_configs(
+            is_moe=False,
+            backend="sglang",
+            gpu_budget=8,
+            gpus_per_worker_candidates=(1,),
+            prefill_candidates=RoleParallelCandidates(gpus_per_worker=(2,)),
+        )
+
+
+@pytest.mark.parametrize("cp", [0, 2, True, 1.5])
+def test_afd_companion_cp_is_rejected_before_model_lookup(cp):
+    with pytest.raises(ValueError, match="AFD companion context parallelism must be 1"):
+        config(
+            deployment_mode=["afd+pd"],
+            afd_phase="prefill",
+            afd_batch_size_candidates=[1],
+            afd_companion_parallel_configs=[{"tp": 1, "cp": cp}],
+        )
+
+
+def _public_with_expanded_ranges():
+    return CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "mode": "aggregated",
+                "model": "test/model",
+                "hardware": "h200_sxm",
+                "backend": "sglang",
+                "context_length": 128,
+                "workers": {
+                    "aggregated": {
+                        "scheduler": {"max_sequences": {"range": {"min": 1, "max": 4, "step": 1}}},
+                        "parallelism": {
+                            "preset": False,
+                            "context": {"range": {"min": 1, "max": 4, "step": 1}},
+                        },
+                    }
+                },
+            },
+            "optimization": {},
+        }
+    )
+
+
+def test_public_ranges_share_one_preparation_limit(monkeypatch):
+    import aisimulate.recommend as recommend
+
+    monkeypatch.setattr(recommend, "PreparationBudget", lambda: PreparationBudget(max_combinations=7))
+    with pytest.raises(SearchSpaceLimitError, match="input.integer_range"):
+        recommendation_to_sweeper(_public_with_expanded_ranges())
+
+
+def test_public_lowering_diagnostics_seed_each_fresh_enumeration_budget():
+    smart = recommendation_to_sweeper(_public_with_expanded_ranges())
+    first = smart.search_space.new_preparation_budget()
+    assert first.considered == 8
+    assert first.stages["input.integer_range"]["considered"] == 8
+    first.reserve(1, "subsequent_work")
+    assert smart.search_space.new_preparation_budget().considered == 8
+    smart.search_space.max_parallel_combinations = 7
+    with pytest.raises(SearchSpaceLimitError, match="input.integer_range"):
+        enumerate_branches(smart)
+
+
+def test_public_cp_capability_uses_model_resolution_and_errors(monkeypatch):
+    import aiconfigurator_core.sdk.models as models
+
+    assert models.supports_context_parallelism("Qwen/Qwen3-32B", "sglang")
+    assert not models.supports_context_parallelism("Qwen/Qwen3-32B", "vllm")
+    monkeypatch.setattr(models, "get_model_family", lambda _: "unregistered-test-family")
+    with pytest.raises(ValueError, match="Unknown model family"):
+        models.supports_context_parallelism("test/model", "sglang")

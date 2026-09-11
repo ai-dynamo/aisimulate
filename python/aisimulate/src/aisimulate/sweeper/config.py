@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 
 class OptimizationTarget(str, Enum):
@@ -472,6 +472,21 @@ class SearchSpace(BaseModel):
     # Explicit domains expand the default topology pool without changing selection policy.
     max_parallel_combinations: int = Field(default=1_000_000, strict=True, ge=1)
     max_parallel_configs: int = Field(default=100_000, strict=True, ge=1)
+    # Work already performed while lowering public YAML in this request. It is
+    # telemetry, not an input knob; copy it into each run's fresh budget.
+    _input_preparation: dict[str, dict[str, int]] = PrivateAttr(default_factory=dict)
+
+    def new_preparation_budget(self):
+        from .parallel_enum import PreparationBudget
+
+        budget = PreparationBudget(self.max_parallel_combinations, self.max_parallel_configs)
+        for stage, counts in self._input_preparation.items():
+            budget.reserve(counts.get("considered", 0), stage)
+            for reason, count in counts.items():
+                if reason != "considered":
+                    budget.record(stage, reason, count)
+        return budget
+
     num_gpu_per_replica: list[int] | None = None
     max_gpu_per_replica: int | None = Field(default=None, strict=True, ge=1)
     max_prefill_workers: int | None = Field(default=None, strict=True, ge=1)
@@ -727,6 +742,8 @@ class SearchSpace(BaseModel):
             replicas = companion.get("replicas", 1)
             if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
                 raise ValueError(f"afd_companion_parallel_configs[{index}].replicas must be positive")
+            if type(companion.get("cp", 1)) is not int or companion.get("cp", 1) != 1:
+                raise ValueError("AFD companion context parallelism must be 1")
         return self
 
     @model_validator(mode="after")
@@ -859,6 +876,10 @@ class SearchSpace(BaseModel):
             )
             if configured.get(mode) or role in self.parallel_custom_configs_by_mode.get(mode, {}) or role_independent:
                 raise ValueError(f"{sdk_names} cannot be combined with pinned/custom/independent controls for {role}")
+        if "disagg" not in self.deployment_mode and any(
+            getattr(self, name) is not None for name in ("max_prefill_workers", "max_decode_workers")
+        ):
+            raise ValueError("prefill/decode worker limits require deployment_mode='disagg'")
         if set(self.deployment_mode) <= {"afd", "afd+pd"} and any(
             getattr(self, name) is not None
             for name in ("num_gpu_per_replica", "max_gpu_per_replica", "max_prefill_workers", "max_decode_workers")

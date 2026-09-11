@@ -439,6 +439,8 @@ def enumerate_disagg_configs(
     downstream when each candidate is evaluated.
     """
     preparation = preparation or PreparationBudget()
+    if gpus_per_worker_candidates is not None and (prefill_candidates is not None or decode_candidates is not None):
+        raise ValueError("shared gpus_per_worker_candidates cannot be combined with role-specific candidates")
     prefill_candidates = prefill_candidates or RoleParallelCandidates()
     decode_candidates = decode_candidates or RoleParallelCandidates()
     if gpus_per_worker_candidates is not None:

@@ -1087,3 +1087,39 @@ def test_runner_rejects_pipeline_context_mismatch_before_native_execution(field,
     with pytest.raises(ValueError, match=f"parallel_config.{field}={value} conflicts"):
         EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
     assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("mode,prefix", [("agg", ""), ("disagg", "prefill_"), ("disagg", "decode_")])
+@pytest.mark.parametrize("dimension", ["pp", "cp"])
+def test_direct_replay_requires_advertised_parallel_capabilities(mode, prefix, dimension):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.replay import RunnerCapabilities
+
+    capabilities = RunnerCapabilities(supported_backend_topologies=(("*", "*"),))
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode=mode,
+            backend="sglang",
+            backend_version="test",
+            parallel_config={prefix + dimension: 2},
+        )
+    )
+    with pytest.raises(ValueError, match=f"runner does not support parallel_config.{prefix}{dimension}"):
+        capabilities.require_compatible(spec)
+    flag = "supports_pipeline_parallelism" if dimension == "pp" else "supports_context_parallelism"
+    replace(capabilities, **{flag: True}).require_compatible(spec)
+
+
+@pytest.mark.parametrize("prefix", ["prefill_", "decode_"])
+def test_direct_afd_replay_rejects_companion_cp(prefix):
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="afd+pd",
+            backend="sglang",
+            backend_version="test",
+            parallel_config={prefix + "cp": 2},
+        )
+    )
+    with pytest.raises(ValueError, match="AFD companion context parallelism must be 1"):
+        EngineReplayRunnerFactory().capabilities().require_compatible(spec)
