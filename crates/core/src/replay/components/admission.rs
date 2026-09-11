@@ -162,6 +162,25 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                             front.uuid
                         );
                     };
+                    // Checked before the readiness comparison so both
+                    // non-finite shapes are caught on whichever drain first
+                    // sees this request at the front. NaN fails every
+                    // comparison, so `NaN > now_ms` is false and the request
+                    // is admitted immediately carrying a NaN arrival that
+                    // poisons its derived latencies -- `request_latencies`
+                    // computes `(first_token_ms - arrival).max(0.0)`, and
+                    // `f64::max` returns the non-NaN operand, so TTFT is
+                    // silently reported as 0.0 instead of erroring. `+inf`
+                    // takes the other branch and is never ready, while
+                    // `next_ready_time_ms` keeps advertising it as a pending
+                    // deadline. Same class as the ready-time guard in
+                    // `WorkloadDriver`, which this admission source bypasses.
+                    if !arrival_time_ms.is_finite() {
+                        bail!(
+                            "offline trace replay request {:?} has a non-finite arrival_timestamp_ms {arrival_time_ms}",
+                            front.uuid
+                        );
+                    }
                     if arrival_time_ms > now_ms {
                         break;
                     }
@@ -420,5 +439,29 @@ mod tests {
             Err(error) => error.to_string(),
         };
         assert!(error.contains("arrival_timestamp_ms"), "{error}");
+    }
+
+    /// NaN is admitted immediately (`NaN > now_ms` is false) and then reads
+    /// as a 0.0 TTFT downstream; `+inf` is never ready but is still
+    /// advertised as a pending deadline. Both must fail the drain, the same
+    /// way `WorkloadDriver` rejects a non-finite ready time.
+    #[test]
+    fn drain_fails_closed_on_a_non_finite_arrival_timestamp() {
+        for arrival in [f64::NAN, f64::INFINITY] {
+            let malformed = DirectRequest {
+                arrival_timestamp_ms: Some(arrival),
+                ..Default::default()
+            };
+            let mut queue = AdmissionQueue::<NoReplayMetadata>::new_requests(
+                VecDeque::from([malformed]),
+                ReplayMode::Trace,
+            );
+
+            let error = match queue.drain_ready_compact(0.0, 0, false) {
+                Ok(_) => panic!("a non-finite arrival_timestamp_ms must fail closed: {arrival}"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("non-finite"), "{error}");
+        }
     }
 }
