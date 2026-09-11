@@ -892,6 +892,18 @@ impl WorkloadDriver {
         if engine_block_size == 0 {
             bail!("engine_block_size must be greater than 0");
         }
+        // A zero cap admits nothing and waits for nothing: `activate_pending`
+        // never enters its loop, `at_dispatch_capacity` is already true at
+        // `0 >= 0` so `next_ready_time_ms` reports no deadline, and every
+        // session keeps an unconsumed turn -- so `is_drained` never becomes
+        // true and the caller's pump loop spins or exits reporting zero
+        // requests as a successful run. `new_agentic_trace_with_lanes`
+        // already rejects the same shape of zero for the same reason.
+        if let SchedulingPolicy::Concurrency(state) = &policy
+            && state.max_active_sessions == 0
+        {
+            bail!("max_in_flight must be greater than 0");
+        }
         let engine_block_size_u32 =
             u32::try_from(engine_block_size).context("engine_block_size does not fit in u32")?;
         let trace_block_size = trace.block_size;
@@ -901,6 +913,17 @@ impl WorkloadDriver {
             .sessions
             .into_iter()
             .map(|session| -> Result<SessionRuntime> {
+                // `Trace::validate` rejects a turn-less session, but the
+                // constructors that skip it reach here directly. Such a
+                // session is pushed onto the ready heap with `turn_index: 0`,
+                // survives `pop_ready_compact`'s re-identification (its
+                // `next_turn_index` is also 0), and then indexes `turns[0]` on
+                // an empty vector -- a panic in the DES hot loop. In
+                // concurrency mode it additionally burns an `active_sessions`
+                // slot that is never released.
+                if session.turns.is_empty() {
+                    bail!("session {} has no turns", session.session_id);
+                }
                 let next_ready_at_ms = if is_concurrency {
                     None
                 } else {
@@ -1812,6 +1835,36 @@ mod tests {
 
         assert!(
             error.to_string().contains("must be finite"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// A zero cap admits nothing and waits for nothing, so `is_drained` never
+    /// becomes true and the run reports zero requests as a success.
+    /// `new_agentic_trace_with_lanes` already rejects the same shape of zero.
+    #[test]
+    fn zero_max_in_flight_is_rejected() {
+        let error = WorkloadDriver::new_concurrency(two_session_trace(), 1, 0).unwrap_err();
+
+        assert!(
+            error.to_string().contains("max_in_flight"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// A turn-less session is pushed onto the ready heap, survives
+    /// re-identification, and then indexes `turns[0]` on an empty vector.
+    /// `Trace::validate` rejects it; the constructors that skip validation
+    /// reached the panic instead.
+    #[test]
+    fn turnless_session_is_rejected() {
+        let mut trace = two_session_trace();
+        trace.sessions[1].turns.clear();
+
+        let error = WorkloadDriver::new_trace(trace, 1).unwrap_err();
+
+        assert!(
+            error.to_string().contains("has no turns"),
             "unexpected error: {error}"
         );
     }
