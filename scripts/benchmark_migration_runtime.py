@@ -212,7 +212,7 @@ def worker(args):
         for module in list(sys.modules.values())
         if getattr(module, "__file__", "")
         and module.__file__.endswith((".so", ".pyd"))
-        and ("aisimulate" in module.__file__ or "aiconfigurator_core" in module.__file__)
+        and Path(module.__file__).name.startswith(("_runtime.", "_aiconfigurator_core."))
     ]
     result["dependencies"] = {
         name: importlib.metadata.version(name) for name in ("numpy", "pandas", "pyarrow", "pyyaml")
@@ -292,11 +292,18 @@ def controller(args):
                         output.write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
                     print(f"{round_number}: {variant['label']} {case}/{requests}: {wall:.3f}s", flush=True)
     comparisons = []
-    for case, count in (("estimate", 0), ("sdk", 0), ("predict", 100), ("predict", 1000)):
+    for case, count in (
+        ("estimate", 0),
+        ("sdk", 0),
+        ("predict", 100),
+        ("predict", 1000),
+        ("replay", 100),
+        ("replay", 1000),
+    ):
         rows = [r for r in evidence["samples"] if r["case"] == case and r["requests"] == count]
         if not rows:
             continue
-        if case == "predict":
+        if case in {"predict", "replay"}:
             match = all(reports_match(rows[0]["report"], r["report"]) for r in rows)
         else:
             match = len({r["result_sha256"] for r in rows}) == 1

@@ -40,6 +40,55 @@ remaining AIC workflow has a verified replacement in the `aisimulate` CLI.
 | `aiconfigurator cli generate` | Deployment artifacts for Dynamo, llm-d, or FPM targets | **Not supported** | Continue using `aiconfigurator cli generate`. The unified CLI emits prediction and recommendation artifacts, not deployment manifests. |
 | `aiconfigurator cli support` | AIC command-level aggregated/disaggregated coverage | **Not supported as an `aisimulate` command** | Continue using `aiconfigurator cli support` or the published AIC support matrix. Do not substitute FPE estimator coverage for CLI coverage. |
 
+## Runtime speed when migrating
+
+Moving the same AIC estimate into the AISimulate distribution has little measured runtime cost.
+Moving from an AIC analytical estimate to a serving replay changes the work performed, so there
+is no single AIC-to-AISimulate speed ratio. Both distributions already use the Rust estimator;
+AISimulate also simulates scheduling, request arrivals, KV-cache behavior, and request statistics.
+Recommendation repeats that work across its evaluated candidates.
+
+The following **host runtime** measurements were collected on September 11, 2026, with an Apple
+M3 Pro (12 cores, 36 GiB), Python 3.12.11, optimized native builds, matching Python dependencies,
+and one shared profile-data tree. The case is Llama 3.1 8B on B200/vLLM 0.24.0, TP4, 1,024 input
+and 128 output tokens, with batch/concurrency 16. Values are medians of five rounds; each warm
+runner round contains three runs. Fresh processes use warm OS caches. These are CPU execution
+timings, not predicted GPU latency or a silicon-accuracy result.
+
+| Measurement | Standalone AIC | AISimulate before this optimization | AISimulate with timing cache |
+|---|---:|---:|---:|
+| Same `aiconfigurator cli estimate --estimate-mode agg`, fresh process | 2.600 s | 2.536 s | 2.556 s |
+| Same warm SDK prefill / decode query | 8.38 / 9.25 µs | 8.54 / 9.54 µs | 8.71 / 9.04 µs |
+| Unified `predict`, 100 requests, fresh process | Different workflow | 2.120 s | 2.174 s |
+| Unified `predict`, 1,000 requests, fresh process | Different workflow | 2.145 s | 2.160 s |
+| Warm engine runner, 1,000 requests, including provider setup/reporting | Different workflow | 55.44 ms | 44.59 ms |
+| Native replay loop, 1,000 requests, excluding provider setup | Different workflow | 27.70 ms | 17.37 ms |
+
+The matched compatibility CLI is effectively unchanged: the 2.4% baseline difference is small
+relative to the observed run ranges. The replay cache reduces native-loop time by **37% (1.59×)**
+and warm-runner time by **20% (1.24×)** in the 1,000-request case. There is **no demonstrated fresh
+CLI speedup**: imports, model/data loading, and provider construction dominate this small workload.
+The 100-request warm runner changes only from 30.18 ms to 29.86 ms. See the
+[raw timing evidence](benchmarks/migration-runtime-2026-09-11.json) and
+[measurement boundaries and reproduction](runtime-benchmark.md).
+
+The optimization retains at most 1,024 successful latency results per native AIC timing provider.
+Repeated identical prefill/decode coordinates reuse those results, including distinct exact-total
+FPM decode coordinates. Model, hardware, data, quantization, and topology are fixed by the provider;
+its cache is discarded at the end of the replay. Prediction reports match before and after the
+change within the benchmark's tight floating-point tolerance. This does not establish universal
+speedup: traces with few repeated coordinates, other models/hosts, FPM runtime, full searches,
+the Dynamo stack, and analytical AFD/EPD need separate measurements.
+
+For shorter exploratory runs, bound `traffic.stop`, narrow recommendation domains, and set an
+explicit `optimizer.max_trials`. Increase `optimizer.parallelism` only within available CPU and
+memory. These choices change sample size or search coverage and must be revalidated for the final
+workload. Use the virtual-time default; `--online` deliberately paces simulation against wall time.
+Keep a process alive for repeated SDK work when practical to amortize imports and initialization.
+Rust execution, lazy database loading, lookup indexes, and lower-level caches are already in place,
+but startup, unique timing queries, and search orchestration still have optimization opportunities.
+The advisory forward-performance gate covers the warm SDK boundary, not complete CLI/search cost.
+
 ## Known gaps in the unified path
 
 The following limits apply to `aisimulate predict`, `aisimulate recommend`, and the new
