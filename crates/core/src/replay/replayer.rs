@@ -3,7 +3,7 @@
 
 //! Public replay facade over the mechanically moved topology runtimes.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
 
 use anyhow::Result as AnyResult;
@@ -374,6 +374,9 @@ impl<C: ReplayComposition> Replayer<C> {
                 ReplayRuntimeInput::Requests(lower_requests(&self.spec, self.capture.determinism)?)
             }
         };
+        if let ReplayRuntimeInput::Requests(requests) = &runtime_input {
+            validate_unique_request_uuids(requests)?;
+        }
         let mode = self
             .spec
             .max_in_flight
@@ -647,6 +650,30 @@ fn lower_requests(
     Ok(pending.into())
 }
 
+/// Reject two live requests sharing one runtime uuid.
+///
+/// `with_runtime_input` bypasses `lower_requests`, and `ReplaySpec::validate`'s
+/// duplicate guard keys on the authored `String` id rather than the uuid, so
+/// nothing else checks this on that path. A collision reaches
+/// `self.requests.insert(uuid, state)` in both runtimes, where the second
+/// request silently overwrites the first's in-flight state after the in-flight
+/// counter has already been incremented twice -- the run can then never drain.
+/// Under `CanonicalV1` the uuids are reassigned by index just above, so this can
+/// only fire for caller-supplied ids.
+fn validate_unique_request_uuids(requests: &VecDeque<DirectRequest>) -> ReplayResult<()> {
+    let mut seen = HashSet::with_capacity(requests.len());
+    for request in requests {
+        if let Some(uuid) = request.uuid
+            && !seen.insert(uuid)
+        {
+            return Err(ReplayError::InvalidSpec(format!(
+                "duplicate runtime request uuid {uuid}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn apply_runtime_determinism(input: &mut ReplayRuntimeInput, determinism: ReplayDeterminism) {
     if determinism != ReplayDeterminism::CanonicalV1 {
         return;
@@ -679,6 +706,27 @@ mod tests {
     use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayRequest, ReplayTopology, WorkerPoolSpec,
     };
+
+    /// `run_inner` applies this to both branches of the `runtime_input` match,
+    /// so it covers the `with_runtime_input` path that skips `lower_requests`
+    /// and every spec-level check with it.
+    #[test]
+    fn duplicate_runtime_request_uuids_are_rejected() {
+        let request = |uuid: u128| DirectRequest {
+            uuid: Some(Uuid::from_u128(uuid)),
+            ..Default::default()
+        };
+
+        validate_unique_request_uuids(&VecDeque::from(vec![request(1), request(2)]))
+            .expect("distinct uuids must be accepted");
+
+        let error = validate_unique_request_uuids(&VecDeque::from(vec![request(1), request(1)]))
+            .expect_err("a uuid collision must be refused");
+        assert!(
+            error.to_string().contains("duplicate runtime request uuid"),
+            "unexpected error: {error}"
+        );
+    }
 
     #[test]
     fn replay_spec_lowering_preserves_correlation_routing_and_prompt_provenance() {
