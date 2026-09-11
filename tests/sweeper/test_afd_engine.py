@@ -130,6 +130,78 @@ def test_optimistic_schedule_records_conservative_fallback_cadence():
     assert planned.intervals[4].start_ms == pytest.approx(planned.evaluation.cycle_ms)
 
 
+@pytest.mark.parametrize("pipeline_model", ["conservative", "optimistic", "serial"])
+@pytest.mark.parametrize("num_microbatches", [1, 2, 4])
+def test_next_layer_waits_for_its_microbatch_to_return(pipeline_model, num_microbatches):
+    topology = _topology(num_microbatches=num_microbatches, pipeline_model=pipeline_model)
+    times = _times(attention_ms=1.0, ffn_ms=1.0, a_to_f_ms=1.0, f_to_a_ms=1.0, num_layers=3)
+    planned = AFDForegroundEngine(topology, (times,)).execute_pass(
+        phase="decode",
+        now_ms=10.0,
+        input_length=16,
+        output_length=8,
+    )
+
+    returns = {
+        (interval.layer, interval.microbatch): interval.end_ms
+        for interval in planned.intervals
+        if interval.stage is AFDStage.F_TO_A
+    }
+    for interval in planned.intervals:
+        if interval.stage is AFDStage.ATTENTION and interval.layer > 0:
+            assert interval.start_ms >= returns[interval.layer - 1, interval.microbatch]
+
+
+@pytest.mark.parametrize("pipeline_model", ["conservative", "optimistic", "serial"])
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+def test_single_microbatch_reports_serial_timing_and_requested_model(pipeline_model, phase):
+    topology = _topology(
+        gpus_per_node=1,
+        tp_a=1,
+        a_batch_size=1,
+        num_microbatches=1,
+        pipeline_model=pipeline_model,
+        phase=phase,
+        comm_overhead_factor=2.0,
+    )
+    times = _times(phase, attention_ms=1.0, ffn_ms=1.0, a_to_f_ms=1.0, f_to_a_ms=1.0)
+    engine = AFDForegroundEngine(topology, (times,))
+    planned = engine.execute_pass(
+        phase=phase,
+        now_ms=10.0,
+        input_length=16,
+        output_length=8,
+        latency_correction=1.5,
+    )
+
+    # With no other microbatch to overlap, each layer takes 1.5+3+1.5+3 ms.
+    assert [interval.end_ms for interval in planned.intervals] == pytest.approx(
+        [11.5, 14.5, 16.0, 19.0, 20.5, 23.5, 25.0, 28.0]
+    )
+    assert planned.end_ms == pytest.approx(28.0)
+    evaluation = planned.evaluation
+    assert evaluation.step_latency_ms == pytest.approx(18.0)
+    assert evaluation.requested_pipeline_model.value == pipeline_model
+    assert evaluation.effective_pipeline_model is AFDPipelineModel.SERIAL
+    assert evaluation.communication_hidden is False
+    assert evaluation.provenance["topology"]["topology"]["pipeline_model"] == pipeline_model
+    assert evaluation.provenance["layer_times"]["a_to_f_ms"] == pytest.approx(2.0)
+    assert evaluation.provenance["layer_times"]["f_to_a_ms"] == pytest.approx(2.0)
+    assert evaluation.provenance["latency_correction"] == pytest.approx(1.5)
+    if phase == "decode":
+        assert evaluation.tokens_per_second == pytest.approx(1 / 0.018)
+        assert evaluation.sequence_rate == pytest.approx(1 / 0.018 / 8)
+    else:
+        assert evaluation.tokens_per_second == pytest.approx(16 / 0.018)
+        assert evaluation.sequence_rate == pytest.approx(1 / 0.018)
+
+    with pytest.raises(ValueError, match="before its modeled boundary"):
+        engine.complete_pass(planned.pass_id, now_ms=27.0)
+    completion = engine.complete_pass(planned.pass_id, now_ms=planned.end_ms)
+    assert completion.completed_at_ms == pytest.approx(28.0)
+    assert completion.pass_latency_ms == pytest.approx(18.0)
+
+
 def test_both_phase_engine_reuses_pool_but_requires_completion_barrier():
     topology = _topology(phase="both")
     engine = AFDForegroundEngine(topology, (_times("prefill"), _times("decode")))
