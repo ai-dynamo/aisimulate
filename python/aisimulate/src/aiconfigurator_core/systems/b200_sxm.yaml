@@ -18,8 +18,9 @@ gpu:
   sm_version: 100
 
 node:
+  # Reference network: https://inferencex.semianalysis.com/chips/b200
   num_gpus_per_node: 8
-  inter_node_bw: 100000000000  # Byte/s per GPU, single direction, 1:1 CX8 XDR 800Gb/s per node
+  inter_node_bw: 50000000000  # Byte/s per GPU, single direction; CX7 400GbE RoCEv2 reference
   intra_node_bw: 900000000000  # Byte/s per gpu, single direction
   pcie_bw: 128000000000  # Byte/s, single direction, pcie 6.0
   p2p_latency: 0.00001  # 10us some nonofficial correction based on observations, you should try to modify based on your own observations

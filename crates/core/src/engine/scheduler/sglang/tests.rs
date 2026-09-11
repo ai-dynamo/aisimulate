@@ -1082,31 +1082,59 @@ mod core_behavior {
 
     #[test]
     fn test_planned_output_tokens_are_emitted_exactly() {
-        let mut core = SglangCore::new(test_args(100, 4, 8));
-        let uuid = Uuid::from_u128(0xB0B);
-        let planned = vec![111, 222, 333];
-        core.receive(DirectRequest {
-            tokens: vec![1, 2],
-            max_output_tokens: planned.len(),
-            output_token_ids: Some(planned.clone()),
-            uuid: Some(uuid),
-            arrival_timestamp_ms: None,
-        });
+        use crate::engine::common::hashing::compute_block_hash_for_seq;
 
-        let mut collector = crate::engine::trace::TraceCollector::default();
-        let mut emitted = Vec::new();
-        for step in 0..planned.len() {
-            let pass = core.execute_pass(&mut collector, step as f64);
-            emitted.extend(
-                pass.output_signals
-                    .into_iter()
-                    .filter(|signal| signal.uuid == uuid)
-                    .map(|signal| signal.token_id.expect("planned token should be present")),
-            );
+        for emit_token_ids in [false, true] {
+            let mut args = test_args(100, 4, 8);
+            args.emit_kv_token_ids = emit_token_ids;
+            let mut core = SglangCore::new_with_kv_capture(args, 0);
+            let uuid = Uuid::from_u128(0xB0B);
+            let planned = vec![111, 222, 333, 444, 555, 666, 777];
+            let mut sequence = vec![1, 2];
+            core.receive(DirectRequest {
+                tokens: sequence.clone(),
+                max_output_tokens: planned.len(),
+                output_token_ids: Some(planned.clone()),
+                uuid: Some(uuid),
+                arrival_timestamp_ms: None,
+            });
+            sequence.extend_from_slice(&planned);
+
+            let mut collector = crate::engine::trace::TraceCollector::default();
+            let mut emitted = Vec::new();
+            let mut stored_blocks = Vec::new();
+            for step in 0..planned.len() {
+                let pass = core.execute_pass(&mut collector, step as f64);
+                emitted.extend(
+                    pass.output_signals
+                        .into_iter()
+                        .filter(|signal| signal.uuid == uuid)
+                        .map(|signal| signal.token_id.expect("planned token should be present")),
+                );
+                for event in pass.kv_events {
+                    if let KvEventData::Stored(stored) = event.data {
+                        stored_blocks.extend(stored.blocks);
+                    }
+                }
+            }
+
+            assert_eq!(emitted, planned);
+            assert!(core.is_empty());
+            // The second complete block consists entirely of generated tokens.
+            assert_eq!(stored_blocks.len(), sequence.len() / 4);
+            for (block, expected_tokens) in stored_blocks.iter().zip(sequence.chunks_exact(4)) {
+                assert_eq!(
+                    block.token_ids.as_deref(),
+                    emit_token_ids.then_some(expected_tokens)
+                );
+                if let Some(tokens) = &block.token_ids {
+                    assert_eq!(
+                        compute_block_hash_for_seq(tokens, 4)[0].0,
+                        block.tokens_hash
+                    );
+                }
+            }
         }
-
-        assert_eq!(emitted, planned);
-        assert!(core.is_empty());
     }
 
     #[test]

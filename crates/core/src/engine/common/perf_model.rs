@@ -6,7 +6,7 @@
 //! Scheduler algorithms keep their historical polynomial fallback while
 //! provider-backed timing enters through the runtime-neutral engine contract.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
 
 /// Performance model for predicting prefill and decode timing
@@ -72,6 +72,11 @@ impl PerfModel {
                 .predict_prefill_ms(batch_size, prefix + new_tokens_per_req, prefix)
                 .context("external prefill prediction failed")?,
         };
+        // Validate before the floor: f64::max would hide NaN or -infinity.
+        ensure!(
+            time.is_finite(),
+            "prefill timing provider returned non-finite duration {time}ms"
+        );
         Ok(time.max(0.0))
     }
 
@@ -105,6 +110,11 @@ impl PerfModel {
                 )
                 .context("external decode prediction failed")?,
         };
+        // Reject non-finite provider output before it reaches the scheduler.
+        ensure!(
+            time.is_finite(),
+            "decode timing provider returned non-finite duration {time}ms"
+        );
         tracing::trace!(
             "Decode time prediction: batch_size={batch_size}, active_kv_tokens={active_kv_tokens}, context_length={context_length}, time={time:.2}ms"
         );
@@ -206,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn external_decode_preserves_submillisecond_and_invalid_values() {
+    fn external_decode_preserves_finite_values_and_rejects_non_finite() {
         struct FixedDecode(f64);
         impl TimingModel for FixedDecode {
             fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
@@ -222,22 +232,27 @@ mod tests {
                 Ok(self.0)
             }
         }
-        for value in [0.6, 0.0, -1.0, f64::INFINITY] {
+        // Finite values retain the provider's submillisecond resolution;
+        // modeled_duration_ms still rejects negative durations downstream.
+        for value in [0.6, 0.0, -1.0] {
             let model = PerfModel::External {
                 timing: Arc::new(FixedDecode(value)),
             };
             assert_eq!(model.predict_decode_time(1, 128, 128, 1024).unwrap(), value);
         }
-        // Invalid provider output remains visible to modeled_duration_ms validation.
-        let model = PerfModel::External {
-            timing: Arc::new(FixedDecode(f64::NAN)),
-        };
-        assert!(
-            model
-                .predict_decode_time(1, 128, 128, 1024)
-                .unwrap()
-                .is_nan()
-        );
+        // Main's finite-time boundary must reject NaN and both infinities before
+        // any duration normalization or scheduling can hide invalid output.
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let model = PerfModel::External {
+                timing: Arc::new(FixedDecode(value)),
+            };
+            let error = model.predict_decode_time(1, 128, 128, 1024).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("decode timing provider returned non-finite duration")
+            );
+        }
     }
 
     #[test]

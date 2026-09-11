@@ -76,7 +76,11 @@ impl ReservedSglangDecode {
     fn activate(self, kv_manager: &mut SglangKvManager, block_size: usize) -> SglangRequest {
         let Self { mut request, kv } = self;
         let allocated_tokens = kv.allocated_tokens;
-        kv_manager.activate_destination_lease(kv, request.prompt_len(), &mut request.kv_lease);
+        kv_manager.activate_destination_lease(
+            kv,
+            &request.sequence_tokens[..request.prompt_len()],
+            &mut request.kv_lease,
+        );
         request.materialized_tokens = request.prompt_len();
         request.allocated_tokens = allocated_tokens;
         request.debug_assert_invariants(block_size);
@@ -145,6 +149,7 @@ impl SglangCore {
                 kv_event_publishers,
                 dp_rank,
                 args.enable_prefix_caching,
+                args.emit_kv_token_ids,
             ),
             speculative_sampler,
             kv_event_buffer,
