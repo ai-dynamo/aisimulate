@@ -936,9 +936,18 @@ def test_parallel_test_matrix_has_no_missing_or_duplicate_partitions():
         "collector-data",
         "prediction-regression",
     }.issubset(set(jobs["stage-application-wheel"]["needs"]) | set(jobs["readiness"]["needs"]))
-    commands = _run_commands(jobs["application-tests"])
-    assert commands.count("--splitting-algorithm least_duration") == 2
-    assert commands.count("--splits ${{ matrix.shard.groups }} --group ${{ matrix.shard.group }}") == 2
+    for suite in ("unit", "cli-build"):
+        steps = [
+            step for step in jobs["application-tests"]["steps"] if step.get("if") == f"matrix.shard.suite == '{suite}'"
+        ]
+        assert len(steps) == 1
+        command = steps[0]["run"]
+        assert command.count("--splits ") == 1
+        assert command.count("--group ") == 1
+        assert command.count("--splitting-algorithm ") == 1
+        assert "--splits ${{ matrix.shard.groups }}" in command
+        assert "--group ${{ matrix.shard.group }}" in command
+        assert "--splitting-algorithm least_duration" in command
 
 
 @pytest.mark.parametrize("failed", ["package", "rust", "neither"])
