@@ -183,6 +183,13 @@ impl RankEngine for SchedulerRank {
         } else {
             false
         };
+        if suppressed_pending_output && let Some((request_id, _)) = pending_suppression {
+            // A final output can be suppressed after the native scheduler has
+            // already retired its request. Replay still owns its accounting
+            // until the pass completion is observed, so publish the same
+            // retirement delta that completion would have carried.
+            effects.retired_requests.push(request_id);
+        }
         if effects.result != CoreCommandResult::Noop || suppressed_pending_output {
             self.apply_handoff_tracking_update(handoff_update);
         }

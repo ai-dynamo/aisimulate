@@ -29,7 +29,13 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
         raise ValueError(f"output directory {root} is not empty; pass --overwrite to replace known AISimulate outputs")
     root.mkdir(parents=True, exist_ok=True)
     if overwrite:
-        for name in ("prediction.json", "recommendation.json", "requests.jsonl"):
+        for name in (
+            "prediction.json",
+            "recommendation.json",
+            "requests.jsonl",
+            "afd-replay-spec.json",
+            "afd-qualification.json",
+        ):
             target = root / name
             if target.is_file() or target.is_symlink():
                 target.unlink()
@@ -85,6 +91,22 @@ def write_recommendations(root: Path, configs: list[Mapping[str, Any]]) -> list[
 def format_prediction_stdout(summary: dict[str, Any], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    if summary.get("metric_semantics") == "analytical_epd_overlay":
+        lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
+        for name in (
+            "mean_ttft_ms",
+            "mean_tpot_ms",
+            "mean_e2e_latency_ms",
+            "output_throughput_tok_s",
+            "completed_requests",
+            "duration_ms",
+            "gpu_hours",
+            "encoder_gpus",
+            "total_gpus",
+        ):
+            lines.append(f"{name}: {summary.get(name, 'N/A')}")
+        lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
+        return "\n".join(lines)
     return format_report_table(summary)
 
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import aiconfigurator_core.sdk.operations as ops
 from aiconfigurator_core.sdk import common
 from aiconfigurator_core.sdk.models.base import BaseModel, register_model
+from aiconfigurator_core.sdk.models.blocks.vit import build_kimi_k3_encoder_ops
 
 
 @register_model("KIMIK3")
@@ -121,6 +122,17 @@ class KimiK3Model(BaseModel):
 
         self._build_context_ops()
         self._build_generation_ops()
+        if cfg.vision_config is not None:
+            self.encoder_config = cfg.vision_config
+            # EPD language workers keep visual context sizing but host no ViT.
+            if not self.config.language_only:
+                self.encoder_ops.extend(
+                    build_kimi_k3_encoder_ops(
+                        cfg.vision_config,
+                        self.config.tp_size,
+                        self.config.enable_encoder_dp,
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Layer bookkeeping

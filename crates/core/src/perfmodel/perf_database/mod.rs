@@ -368,9 +368,9 @@ impl PerfDatabase {
     /// [`PerfDatabase::load_with_sources`] with an estimate-only escape hatch:
     /// `tolerate_missing_data` skips the perf-data-directory existence gate so
     /// a system that ships only a spec yaml (Python's `allow_missing_data`
-    /// "estimate" databases) can still back a SOL view — every SOL answer is
-    /// analytic from the system spec, and any table-backed lookup raises its
-    /// own per-family miss lazily. Non-SOL callers must keep the loud gate:
+    /// "estimate" databases) can still back a formula-only SOL or EMPIRICAL
+    /// view, and any table-backed lookup raises its own per-family miss lazily.
+    /// SILICON/HYBRID callers must keep the loud gate:
     /// a typo'd version string should fail at load, not as per-op misses.
     pub fn load_with_sources_opts(
         systems_root: &Path,
@@ -1055,8 +1055,8 @@ mod tests {
     fn missing_data_dir_is_tolerated_only_when_requested() {
         // Estimate-only escape hatch (#1552 review finding 8): a system with a
         // spec yaml but NO perf-data directory must load under the tolerant
-        // flag (SOL answers are analytic from the spec) and must keep failing
-        // loudly under the strict default.
+        // flag (formula-only SOL/EMPIRICAL answers do not require tables) and
+        // must keep failing loudly under the strict default.
         let strict = PerfDatabase::load_with_sources_opts(
             &systems_root(),
             "h100_pcie",
