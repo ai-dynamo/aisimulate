@@ -3014,10 +3014,25 @@ where
     /// `worker_count()` counts active + starting-up + draining workers, so this
     /// captures the startup ramp and the scale-down drain tail.
     pub(crate) fn advance_now_ms(&mut self, new_now_ms: f64) {
-        // 1ns tolerance: repeated ms/ns round trips accumulate float noise
-        // far smaller than any real scheduling granularity, so a target a
-        // few ULPs behind now_ms is not a genuine rewind.
-        const CLOCK_REWIND_TOLERANCE_MS: f64 = 1e-6;
+        // This same call is fed by both the deterministic SimClock driver
+        // (float noise only, sub-microsecond) and the wall-clock RealClock
+        // driver (`drive_real_with_source`, which its own doc documents as
+        // making "no determinism guarantee"), so the tolerance has to cover
+        // both. Real-clock replay submits concurrently-admitted requests from
+        // separate async tasks that each take an independent wall-clock
+        // reading; each one races the driver's own advancement of this same
+        // engine, and per-request KV-router admission work is real CPU time
+        // the sim clock doesn't account for between readings. Measured across
+        // 11 runs of `online_matches_native_dynamo_live_replay_apples_to_apples`
+        // (32 concurrent requests), the resulting rewind clustered tightly at
+        // 48-76us with no outliers under full-suite contention -- structural
+        // scheduling jitter, not an unbounded drift. 0.2ms is ~2.6x that
+        // observed max: generous enough not to flake, but still an order of
+        // magnitude tighter than the two independently-epoched-clock bug this
+        // assert caught during development (0.4-2ms, and growing with the
+        // real time elapsed before the run started rather than bounded by a
+        // fixed per-request cost).
+        const CLOCK_REWIND_TOLERANCE_MS: f64 = 0.2;
         debug_assert!(
             new_now_ms.is_finite() && new_now_ms >= self.now_ms - CLOCK_REWIND_TOLERANCE_MS,
             "the replay clock must not go backward or non-finite: {} -> {new_now_ms}",
