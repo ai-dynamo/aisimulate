@@ -183,11 +183,23 @@ impl RankEngine for SchedulerRank {
         } else {
             false
         };
-        if suppressed_pending_output && let Some((request_id, _)) = pending_suppression {
+        if suppressed_pending_output
+            && let Some((request_id, _)) = pending_suppression
+            // A `CancelRequest` can retire the request and suppress its final
+            // output in the *same* command, so the retirement is already in
+            // these effects and pushing it again publishes a duplicate id.
+            && !effects.retired_requests.contains(&request_id)
+        {
             // A final output can be suppressed after the native scheduler has
             // already retired its request. Replay still owns its accounting
             // until the pass completion is observed, so publish the same
             // retirement delta that completion would have carried.
+            //
+            // Every in-tree consumer is idempotent -- `apply_request_accounting`
+            // removes from a set, `handoff_requests.retain` filters -- so the
+            // duplicate is invisible today. `retired_requests` is a `pub` field
+            // on published effects regardless, and an observer that counts
+            // entries rather than removing them would see the retirement twice.
             effects.retired_requests.push(request_id);
         }
         if effects.result != CoreCommandResult::Noop || suppressed_pending_output {
@@ -966,6 +978,44 @@ mod tests {
         assert_eq!(effects.result, CommandResult::Applied);
         assert!(effects.suppressed_pending_output);
         assert!(pending.effects.outputs.is_empty());
+    }
+
+    /// A cancel that retires the request and suppresses its final output in the
+    /// same command must publish the retirement once. The suppression path
+    /// republishes the retirement so replay's accounting still sees it when the
+    /// scheduler retired it first; without a membership check that push lands
+    /// on top of the retirement the same effects already carry.
+    #[test]
+    fn cancel_that_retires_and_suppresses_publishes_one_retirement() {
+        let request_id = Uuid::from_u128(90_004);
+        let mut rank = rank();
+        let mut pending = start_request_pass(&mut rank, request_id, vec![5, 6]);
+
+        let effects = rank
+            .apply_command_effects(
+                Command::CancelRequest {
+                    request_id,
+                    discard_pending_output: false,
+                },
+                CommandContext {
+                    now_ms: 1.0,
+                    pass_in_flight: true,
+                },
+                Some(&mut pending),
+            )
+            .unwrap();
+
+        assert!(effects.suppressed_pending_output);
+        let retirements = effects
+            .retired_requests
+            .iter()
+            .filter(|retired| **retired == request_id)
+            .count();
+        assert_eq!(
+            retirements, 1,
+            "expected exactly one retirement, got {:?}",
+            effects.retired_requests
+        );
     }
 
     #[test]
