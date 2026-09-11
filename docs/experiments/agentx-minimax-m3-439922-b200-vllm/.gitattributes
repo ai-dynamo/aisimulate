@@ -1,3 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # Unified patches encode blank context lines as a literal space.
 *.patch -whitespace
+# Preserve archived log bytes, including CR progress lines and ANSI formatting.
+logs/** -text -whitespace

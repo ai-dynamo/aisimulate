@@ -1,0 +1,82 @@
+{
+  "experiment": 439922,
+  "format": "Byte-for-byte runtime log copies; original FPM gzip",
+  "artifacts": [
+    {
+      "path": "off-4244685/slurm.log",
+      "bytes": 2439,
+      "sha256": "a4dd439da1751f6a24de514eed58695731c6fb38d8e3923f28df59e78a43537c",
+      "source": "job-4244685/slurm.log"
+    },
+    {
+      "path": "off-4244685/cli-preflight.log",
+      "bytes": 73,
+      "sha256": "7f39e314398c11a837ce4cbae10dcbd70695197270a0e1e0b672e83f6fbfa482",
+      "source": "job-4244685/cli-preflight.log"
+    },
+    {
+      "path": "off-4244685/server.log",
+      "bytes": 1459558,
+      "sha256": "a3ca2a17af919a6b12e40d9716a8d7e01d138e89abacdc58ee12f9bd0cb2fed7",
+      "source": "job-4244685/off/server.log"
+    },
+    {
+      "path": "off-4244685/client.log",
+      "bytes": 49382,
+      "sha256": "61c644e372e6959fd60e4426c9598ee474e24af1ec49a8996ca0823dfbeab374",
+      "source": "job-4244685/off/client.log"
+    },
+    {
+      "path": "off-4244685/aiperf.log",
+      "bytes": 33379,
+      "sha256": "f26b3d9ad248e0cf31c2b85be114c2597b07e28a3eed76a47e27ad5737a8c2f6",
+      "source": "job-4244685/off/aiperf/logs/aiperf.log"
+    },
+    {
+      "path": "on-4245705/slurm.log",
+      "bytes": 1745,
+      "sha256": "f05a19f7b637a3f91e9319df7e8abbddd556133f43220b8636460a544f6d932c",
+      "source": "job-4245705/slurm.log"
+    },
+    {
+      "path": "on-4245705/cli-preflight.log",
+      "bytes": 73,
+      "sha256": "7f39e314398c11a837ce4cbae10dcbd70695197270a0e1e0b672e83f6fbfa482",
+      "source": "job-4245705/cli-preflight.log"
+    },
+    {
+      "path": "on-4245705/server.log",
+      "bytes": 1461568,
+      "sha256": "c1aa7da73504de07f34d66b224d84d44934ceace97b690ceeb50deb0db00df9e",
+      "source": "job-4245705/on/server.log"
+    },
+    {
+      "path": "on-4245705/client.log",
+      "bytes": 49691,
+      "sha256": "f53968f0f6f39f11c49cea3f8f92f2f010bb3c2c61e8fcbc91094c814d409c34",
+      "source": "job-4245705/on/client.log"
+    },
+    {
+      "path": "on-4245705/aiperf.log",
+      "bytes": 33729,
+      "sha256": "e495739685d4ec2a09ee55d945391282728bc48635b35beb9a59782e915660ca",
+      "source": "job-4245705/on/aiperf/logs/aiperf.log"
+    },
+    {
+      "path": "on-4245705/recorder.log",
+      "bytes": 90,
+      "sha256": "1af6fd19f4c1fb2f65c019f6edf5e375eab961ff82e7d5ead98b31040fdb5127",
+      "source": "job-4245705/on/recorder.log"
+    },
+    {
+      "path": "on-4245705/fpm.jsonl.gz",
+      "bytes": 10618357,
+      "sha256": "8639ecb2b8761fcd8a53383062b3a2f121c4f809b15a12fabd841d4301869ef1",
+      "source": "job-4245705/on/fpm.jsonl.gz"
+    }
+  ],
+  "uncompressed_fpm": {
+    "bytes": 180923000,
+    "sha256": "18d3fcf012b51aae745296853d0aebee99288b9bc6244828407c462b76401a19"
+  }
+}

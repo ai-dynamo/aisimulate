@@ -137,6 +137,22 @@ Both profiling errors are `ClientOSError(32, Broken pipe)` at the same source tr
 
 Observed on/off differences are total throughput +0.51%, output throughput +0.72%, ITL p50 +0.27%, and TTFT p50 +3.30%. The mean TTFT improvement (−23.35%) coexists with a higher median: off/on maxima are 61.793/10.394 seconds, so the means reflect different tails. **These are observational differences across separate allocations, not isolated FPM overhead or evidence that FPM speeds up serving.** The GPU sets were `1,5,6,7` and `4,5,6,7`; see [allocation-comparison.json](allocation-comparison.json). Both used the same node/configuration/image, but co-tenant activity, CPU placement and fresh compilation caches remain confounders.
 
+### Archived runtime logs
+
+The [logs directory](logs/) contains byte-for-byte copies from the two measured jobs, including original terminal formatting and progress updates. [manifest.json](logs/manifest.json) maps each file to its source and size; [SHA256SUMS](logs/SHA256SUMS) verifies the uploaded bytes. The pinned producer versions are recorded in [image-published.json](image-published.json).
+
+| Case | Job | Logs |
+| --- | --- | --- |
+| FPM off | `4244685` | [Slurm](logs/off-4244685/slurm.log), [server](logs/off-4244685/server.log), [client](logs/off-4244685/client.log), [AIPerf details](logs/off-4244685/aiperf.log), [CLI preflight](logs/off-4244685/cli-preflight.log) |
+| FPM on | `4245705` | [Slurm](logs/on-4245705/slurm.log), [server](logs/on-4245705/server.log), [client](logs/on-4245705/client.log), [AIPerf details](logs/on-4245705/aiperf.log), [CLI preflight](logs/on-4245705/cli-preflight.log), [recorder](logs/on-4245705/recorder.log) |
+
+The [compressed raw FPM capture](logs/on-4245705/fpm.jsonl.gz) is also included. Per-request AIPerf JSONL, model weights and large server-metric exports are not uploaded. The off Slurm log intentionally preserves the post-export assertion failure described above; it is not rewritten as a successful job.
+
+```bash
+cd logs
+sha256sum -c SHA256SUMS
+```
+
 ### FPM collection and download
 
 | Record class | Count | Iteration time p50, ms | Iteration time p90, ms |
@@ -153,7 +169,7 @@ Raw FPM is **180,923,000 bytes**, SHA256 `18d3fcf012b51aae745296853d0aebee99288b
 
 Shared artifacts remain in `/home/scratch.hongkuanz_gpu/agentx-minimax-m3-results/job-4244685/` and `job-4245705/`. The SSH workstation has both cases under `/home/hongkuanz/Experiments/minimax-m3-439922-vllm-20260911/`, including raw FPM, client exports/JSONL, time-slice JSON and logs. Large server-metric JSON and redundant time-slice CSV remain on scratch rather than being copied locally.
 
-From your local computer, substitute your workstation SSH alias:
+Download the [gzip capture directly from GitHub](logs/on-4245705/fpm.jsonl.gz), or use your workstation SSH alias:
 
 ```bash
 scp <workstation-ssh-alias>:/home/hongkuanz/Experiments/minimax-m3-439922-vllm-20260911/job-4245705/on/fpm.jsonl.gz .

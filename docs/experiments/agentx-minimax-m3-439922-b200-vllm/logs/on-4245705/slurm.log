@@ -1,0 +1,36 @@
+JobId=4245705 JobName=hk-minimax-m3-fpm-pair
+   UserId=hongkuanz(140856) GroupId=hardware(30) MCS_label=N/A
+   Priority=512 Nice=0 Account=aifm_fallback QOS=batch-short
+   JobState=RUNNING Reason=Prolog Dependency=(null)
+   Requeue=1 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0
+   RunTime=00:00:06 TimeLimit=04:00:00 TimeMin=N/A
+   SubmitTime=2026-09-11T13:25:56 EligibleTime=2026-09-11T13:25:56
+   AccrueTime=2026-09-11T13:25:56
+   StartTime=2026-09-11T13:26:33 EndTime=2026-09-11T17:26:33 Deadline=N/A
+   PreemptEligibleTime=2026-09-11T13:26:33 PreemptTime=None
+   SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-09-11T13:26:33 Scheduler=Backfill
+   Partition=b200@cr+mp-1000W/umbriel-b200@ts4/8gpu-224cpu-2048gb AllocNode:Sid=dl325g11-1979:2045670
+   ReqNodeList=umbriel-b200-048 ExcNodeList=(null)
+   NodeList=umbriel-b200-048
+   BatchHost=umbriel-b200-048
+   NumNodes=1 NumCPUs=112 NumTasks=1 CPUs/Task=112 ReqB:S:C:T=0:0:*:*
+   ReqTRES=cpu=112,mem=768G,node=1,billing=4,gres/gpu=4
+   AllocTRES=cpu=112,mem=768G,node=1,billing=4,gres/gpu=4,gres/gpu:b200=4
+   Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=*
+   MinCPUsNode=112 MinMemoryNode=768G MinTmpDiskNode=0
+   Features=(null) DelayBoot=00:00:00
+   OverSubscribe=OK Contiguous=0 Licenses=(null) LicensesAlloc=(null) Network=(null)
+   Command=/home/scratch.hongkuanz_gpu/minimax-m3-439922-vllm-20260911/submit-benchmark.sh
+   WorkDir=/home/hongkuanz
+   StdErr=/home/scratch.hongkuanz_gpu/minimax-m3-439922-vllm-20260911/benchmark-4245705.log
+   StdIn=/dev/null
+   StdOut=/home/scratch.hongkuanz_gpu/minimax-m3-439922-vllm-20260911/benchmark-4245705.log
+   TresPerJob=gres/gpu:4
+   TresPerTask=cpu=112
+   
+
+on server_starting
+on smoke
+on aiperf
+on preserving_artifacts
+on complete
