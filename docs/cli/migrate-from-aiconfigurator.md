@@ -36,7 +36,7 @@ remaining AIC workflow has a verified replacement in the `aisimulate` CLI.
 | `aiconfigurator cli estimate` | One FPM point for an explicit batch, parallel configuration, and estimation mode | **Supported for deployment-level prediction, not behaviorally equivalent** | Use `aisimulate predict` when the goal is to predict one concrete serving deployment, including analytical AFD. Keep AIC for exact batch-level FPM, multimodal/EPD outside the [analytical EPD scope](../sweeper/epd.md), static, detail, per-op, or power semantics. |
 | `aiconfigurator cli default` | Capacity-oriented aggregated/disaggregated search and selection | **Partially supported** | Use `aisimulate recommend` after choosing explicit traffic, topology domains, GPU bounds, and an objective. Keep AIC when its capacity-sweep and ranking semantics are required. |
 | `aiconfigurator cli recommend` | Minimum-GPU procurement sizing for a load target and SLA | **Partially supported** | Use `aisimulate recommend` to search explicit candidates under a chosen traffic shape, SLA, GPU budget, and objective. The unified CLI does not reproduce AIC's minimum-GPU sizing from either a target request rate or target concurrency; keep using the compatibility CLI when that sizing result is required. |
-| `aiconfigurator cli exp` | AIC experiment YAML, including heterogeneous experiments | **Manual migration only** | Use `predict` for each concrete deployment or `recommend` for a search domain. AISimulate does not consume AIC experiment YAML directly. |
+| `aiconfigurator cli exp` | AIC experiment YAML, including heterogeneous experiments | **Manual migration only** | AISimulate does not consume AIC experiment YAML directly. Use `predict` for each concrete homogeneous deployment, `recommend` for a unified-CLI search domain, or the Sweeper SDK example below for heterogeneous P/D hardware. |
 | `aiconfigurator cli generate` | Deployment artifacts for Dynamo, llm-d, or FPM targets | **Not supported** | Continue using `aiconfigurator cli generate`. The unified CLI emits prediction and recommendation artifacts, not deployment manifests. |
 | `aiconfigurator cli support` | AIC command-level aggregated/disaggregated coverage | **Not supported as an `aisimulate` command** | Continue using `aiconfigurator cli support` or the published AIC support matrix. Do not substitute FPE estimator coverage for CLI coverage. |
 
@@ -59,7 +59,7 @@ This does not imply event-level encoder simulation or deployment generation.
 | Static, per-operation, and source breakdowns | **Not supported.** Unified prediction simulates serving traffic; it does not expose AIC's `static`, `static_ctx`, or `static_gen` single-pass modes or `--detail` memory/time/source reports. | Continue using `aiconfigurator cli estimate`. |
 | Estimator and performance-data selection | **Not exposed by the unified CLI.** `engine.backend_version` is available, but database mode, forward model, transfer policy, custom system roots, and estimator tuning remain outside the public YAML. | Continue using AIC when those controls are required. |
 | Explicit quantization overrides | **Not exposed by the unified CLI.** There is no direct mapping for AIC's GEMM, KV-cache, FMHA, MoE, or communication quantization flags. | Let the unified engine resolve model/runtime defaults, or stay on AIC when an explicit estimator override is required. |
-| Heterogeneous P/D hardware or backends | **Partially supported.** Prefill and decode can use independent topology and scheduler settings, but one unified engine config still has one model, hardware, backend, and backend version. AIC role-specific system/backend experiments do not map directly. | Use unified disaggregated mode only for a homogeneous engine identity; keep heterogeneous experiments on AIC. |
+| Heterogeneous P/D hardware or backends | **Hardware is supported through Sweeper YAML/SDK only.** Ordinary `disagg` search accepts independent prefill and decode hardware SKUs. Both roles still share one model, backend, and backend version. The unified `predict` and `recommend` schemas still have one hardware field. | Translate AIC role system names to `search_space.prefill_hardware_sku` and `search_space.decode_hardware_sku` as shown below. Keep heterogeneous backends or versions, unified-CLI use, deployment generation, and unsupported adapter paths on AIC. |
 
 ## Common input mapping
 
@@ -67,6 +67,8 @@ This does not imply event-level encoder simulation or deployment generation.
 |---|---|---|
 | `--model-path` / `--model` | `engine.model` | Same model identifier |
 | `--system` | `engine.hardware` for a concrete prediction; `optimization.hardware` when recommendation uses `engine.hardware: auto` | One concrete hardware type per recommendation |
+| `prefill_system_name` / prefill `--system` | `search_space.prefill_hardware_sku` in Sweeper YAML | Optional override; inherits `search_space.hardware_sku` when omitted |
+| `decode_system_name` / `--decode-system` | `search_space.decode_hardware_sku` in Sweeper YAML | Optional override; inherits `search_space.hardware_sku` when omitted |
 | `--backend` | `engine.backend` | One value or an explicit recommendation domain |
 | `--backend-version` | `engine.backend_version` | Optional concrete version; not a search domain |
 | `--total-gpus` on AIC `default` | `optimization.constraints.max_candidate_gpus` | Recommendation budget only; a prediction derives GPU use from concrete worker parallelism and replicas |
@@ -89,6 +91,64 @@ This does not imply event-level encoder simulation or deployment generation.
 The examples below use the built-in engine runner. Use `--stack dynamo` only when `ai-dynamo` is
 installed and the workflow needs its runner or Router/Planner adapters. The stack selection is a CLI
 option; it is not written into the YAML.
+
+## Migrate heterogeneous P/D hardware with Sweeper
+
+AIC disaggregated experiment YAML uses `prefill_system_name` and `decode_system_name`. Translate
+those values to the two optional role overrides under `search_space`. `hardware_sku` remains required
+and is the fallback for either omitted role.
+
+For H200 prefill and GB200 decode, save this as `heterogeneous-pd-sweep.yaml`:
+
+```yaml
+search_space:
+  model_name: Qwen/Qwen3-VL-30B-A3B-Instruct-FP8
+  hardware_sku: h200_sxm
+  prefill_hardware_sku: h200_sxm
+  decode_hardware_sku: gb200
+  backend: [vllm]
+  deployment_mode: [disagg]
+  context_length: 4096
+  gpu_budget: 8
+
+workload:
+  isl: 1024
+  osl: 128
+  request_rate: 4
+  num_request_ratio: 10
+
+goal:
+  target: throughput
+
+sweep:
+  max_rounds: 1
+  candidates_per_round: 4
+  parallel_evals: 1
+```
+
+Run the configuration through the Sweeper SDK with the replay runtime used by your application. The
+built-in engine runner is:
+
+```python
+from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.sweeper import SmartSearchConfig, Sweeper
+
+config = SmartSearchConfig.from_yaml("heterogeneous-pd-sweep.yaml")
+result = Sweeper(runner_factory=EngineReplayRunnerFactory()).run(config)
+print(result.to_json())
+```
+
+In the example, the explicit prefill override equals the fallback and may be omitted. If only
+`decode_hardware_sku: gb200` is present, prefill inherits `hardware_sku: h200_sxm`; the inverse
+applies when only the prefill override is set. Each role is independently parallel-enumerated and
+KV-qualified against its effective hardware, and the pair must fit the shared `gpu_budget`.
+
+The two roles must use the same model, backend, and backend version. When `backend_version` is
+omitted, both hardware SKUs must resolve to the same latest version; otherwise set one explicit
+version supported by both. This path does not add heterogeneous hardware to `aisimulate predict` or
+`aisimulate recommend`. It also does not support heterogeneous deployment-manifest generation. With
+the Dynamo stack, do not use Router `prefill_load_model.type: aic` until that provider consumes
+`prefill_hardware_sku`; its current compatibility path still reads the shared fallback SKU.
 
 ## Migrate one concrete deployment
 
@@ -368,7 +428,8 @@ Continue using the compatibility command for:
 - AIC experiment YAML that has not been manually translated;
 - multimodal image-input and EPD workloads outside the documented [fixed synthetic-image analytical EPD scope](../sweeper/epd.md);
 - exact single-point FPM, static, AFD, per-op, detail, or power estimation;
-- heterogeneous P/D systems, backends, or versions;
+- heterogeneous P/D backends or versions, and heterogeneous hardware outside the documented
+  Sweeper YAML/SDK boundary;
 - AIC-specific database modes and expert estimator flags.
 
 The compatibility command remains available in AISimulate 0.12.0 and is targeted for removal in
