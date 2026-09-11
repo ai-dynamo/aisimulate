@@ -7,6 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 
 This experiment compares native vLLM forward-pass metrics (FPM) disabled and enabled on the same eight-B200 node. The FPM implementation is [vLLM PR #52061](https://github.com/vllm-project/vllm/pull/52061), revision `996fed467139edd7719a0063d57709b8a7fa6989`, including async speculative-decoding length and timing corrections. It does not use Dynamo's `InstrumentedScheduler`.
 
+> [!IMPORTANT]
+> The PR advanced during the experiment to `1c51dc135223342911151c73f4f560b5ab6ac0a5`. This run remains pinned to `996fed4`: later interface/subscriber cleanup, `torch.Event` migration and prefill attention-variance changes are **not benchmarked here**. In this capture, `var_prefill_length` is the population variance of complete prompt lengths among scheduled prefill requests, not the newer `kv_read + scheduled_query_tokens / 2` attention-length variance. Do not interpret that field using the newer PR semantics or attribute these performance numbers to the untested latest head.
+
 ## Reference and experiment configuration
 
 The reference is [AgentX 440246](https://inferencex.semianalysis.com/inference/agentic/440246), using the [InferenceX B200 launcher](https://github.com/SemiAnalysisAI/InferenceX/blob/4552491d40b179c3323a3485c63090e5b8c964ad/benchmarks/single_node/agentic/dsv4_fp4_b200_vllm_mtp.sh). The serving command, not the UI's TP labels alone, determines the topology.
@@ -73,7 +76,78 @@ The compatibility port preserves the nightly's compiled CUDA extensions and engi
 
 ## Results and validation
 
-Full DSv4 FPM-off/on performance results are pending; no valid measured pair has been produced yet. Job `4228930` was submitted September 10, 2026 with the compatibility settings above. This is submission provenance, not a claim of current Slurm state; check its logs and final exports.
+Completed job `4228930` on `umbriel-b200-039`: Slurm job/batch/step `COMPLETED 0:0`, elapsed `03:03:26`; allocation released. Both cases used the same eight B200 GPUs, 1000 W power limits, driver 610.57.04, native scheduler, MTP and 128 GiB/rank G2. See [hardware](job-4228930-hardware.csv), [protocol](job-4228930-protocol.json), [campaign status](job-4228930-campaign-result.json), and [full comparison](job-4228930-comparison.json).
+
+### SA versus our FPM-off and FPM-on performance
+
+SA values are the published [benchmark API](https://inferencex.semianalysis.com/api/v1/benchmarks?model=DeepSeek-V4-Pro) row for 440246, retrieved September 10, 2026. Our columns use the final measured-phase exports, not warmup. Changes are `100 * (new / baseline - 1)`, calculated before rounding. Missing reference validation fields are not substituted with zero.
+
+| Metric | SA 440246 | Ours FPM off | Ours FPM on | Off vs SA | On vs off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Total throughput, tokens/s | 231,253.23 | 237,190.72 | 236,132.59 | +2.57% | -0.45% |
+| Total throughput, tokens/s/GPU | 28,906.65 | 29,648.84 | 29,516.57 | +2.57% | -0.45% |
+| Output throughput, tokens/s | 1,792.528 | 1,830.556 | 1,825.715 | +2.12% | -0.26% |
+| Output throughput, tokens/s/GPU | 224.066 | 228.819 | 228.214 | +2.12% | -0.26% |
+| TTFT mean, s | 4.718 | 4.696 | 4.701 | -0.46% | +0.10% |
+| TTFT p50, s | 1.982 | 2.118 | 2.108 | +6.87% | -0.47% |
+| TTFT p90, s | 7.703 | 8.075 | 7.788 | +4.83% | -3.56% |
+| TTFT p95, s | 19.190 | 16.952 | 17.058 | -11.66% | +0.62% |
+| ITL mean, ms | 21.010 | 19.783 | 19.820 | -5.84% | +0.18% |
+| ITL p50, ms | 20.880 | 19.336 | 19.409 | -7.39% | +0.38% |
+| ITL p90, ms | 23.260 | 22.023 | 22.015 | -5.32% | -0.04% |
+| ITL p95, ms | 24.010 | 23.324 | 23.599 | -2.86% | +1.18% |
+| Request latency mean, s | 25.480 | 24.186 | 24.237 | -5.08% | +0.21% |
+| Request latency p50, s | 13.260 | 12.897 | 12.825 | -2.74% | -0.56% |
+| Request latency p90, s | 57.056 | 53.174 | 53.188 | -6.80% | +0.03% |
+| Request latency p95, s | 89.807 | 84.707 | 84.511 | -5.68% | -0.23% |
+| Completed measured requests | 6,608 | 6,769 | 6,756 | +2.44% | -0.19% |
+| Mean input tokens/request | 126,018.59 | 126,564.94 | 126,241.01 | +0.43% | -0.26% |
+| Mean output tokens/request | 984.45 | 984.37 | 983.66 | -0.01% | -0.07% |
+| Request-activity duration including drain, s | 3,629.078 | 3,629.319 | 3,628.624 | +0.01% | -0.02% |
+| Measured request errors | Not reported in API row | 0 | 0 | — | — |
+| Profiling cancellations at drain deadline | Not reported in API row | 16 | 23 | — | — |
+| Output-length mismatches | Not reported in API row | 0 | 0 | — | — |
+| Submission valid | Not reported in API row | true | true | — | — |
+
+Off profiling began `2026-09-10 22:42:56.799995 UTC`; on began `2026-09-11 00:06:24.700077 UTC`. Each sent load for 3600 seconds, with 30-second request drain followed by up to 10 seconds waiting for cancelled credits. Both logs contain a drain-deadline/credit-timeout message; the remaining 16/23 requests were cancelled, not counted as successful measurements. `was_cancelled=false` refers to the overall run, not zero request cancellations. Both exports have `error_summary=[]`, full TTFT/ITL duration coverage, and zero output-length mismatches. Both warmups completed 707 requests with zero errors/cancellations according to phase-completion logs; the export omits the zero warmup-error metric.
+
+Observed FPM-on deltas are total throughput −0.45%, output throughput −0.26%, ITL p50 +0.38%, and TTFT p50 −0.47%. These are observations from one ordered pair, not a statistical estimate of instrumentation cost or proof of zero overhead. The different runtime and smaller G2 also confound comparison with SA.
+
+### FPM collection
+
+| Record class | Count | Iteration time p50, ms | Iteration time p90, ms |
+| --- | ---: | ---: | ---: |
+| Prefill only | 16,225 | 197.689 | 459.049 |
+| Decode only | 524,712 | 31.150 | 37.758 |
+| Mixed prefill/decode | 46,119 | 159.981 | 236.185 |
+| No scheduled requests | 3,615 | 0 | 0 |
+| Total | 590,671 | — | — |
+
+Counts cover the entire capture, including smoke, warmup, profiling, drain and idle heartbeats. Each DP rank contributes separate records; this is not a count of deduplicated global iterations. Active records total 587,056 across ranks 0–7. The recorder observed zero counter gaps, resets or rejected messages; the independent local audit found zero invalid timing/length records. No FPM queue-full/publish-failure warning was found. Publication is still best-effort: gap-free published counters do not prove that no sample could have been dropped before sequence assignment, and positive KV lengths are not a GPU-tensor oracle for exact length accuracy.
+
+Raw FPM size: **340,361,929 bytes**. SHA256:
+
+```text
+7c57d51ec58e66917ee54ddddf7983c7e126cf3f6e7b5a6b57feb9fdf1d623d8
+```
+
+The SSH workstation has a verified copy at `/home/hongkuanz/Experiments/vllm-fpm-sd-20260910/job-4228930/on/fpm.jsonl`. A lossless gzip copy is 28,287,919 bytes, SHA256 `d502889d64afe28753fcc0efb56cdff173d25aeb86f3fc98924a90b2e79dbaa3`. Shared scratch retains the complete 3.1 GiB campaign, including large server-metric exports; the workstation copy omits the redundant time-slice CSV and approximately 1 GiB server-metric JSON per case, but retains client JSON/JSONL, time-slice JSON, compact server-metric CSV, logs and FPM.
+
+From your local computer, substitute your SSH alias for the workstation:
+
+```bash
+scp <workstation-ssh-alias>:/home/hongkuanz/Experiments/vllm-fpm-sd-20260910/job-4228930/on/fpm.jsonl.gz .
+gzip -dk fpm.jsonl.gz
+sha256sum fpm.jsonl
+```
+
+To repeat the analysis using the preserved campaign and API snapshot, run [analyze.py](analyze.py) on the workstation, not on measured GPUs:
+
+```bash
+uv run --no-project analyze.py /path/to/job-4228930 --reference-api job-4228930-comparison.json
+```
+
+`--reference-api` accepts an API row/list JSON or the saved comparison containing its reference row. The analysis writes one `comparison.json`; this README is the only Markdown result document for this experiment.
 
 | Validation | Result |
 | --- | --- |
