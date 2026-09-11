@@ -7,6 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 
 This experiment compares native vLLM forward-pass metrics (FPM) disabled and enabled on the same eight-B200 node. The FPM implementation is [vLLM PR #52061](https://github.com/vllm-project/vllm/pull/52061), revision `996fed467139edd7719a0063d57709b8a7fa6989`, including async speculative-decoding length and timing corrections. It does not use Dynamo's `InstrumentedScheduler`.
 
+**Completed September 11, 2026 (UTC):** job `4228930` finished both 3600-second measured phases on the same node with `COMPLETED 0:0`; the allocation was released. FPM-on versus off: total throughput **−0.45%**, output throughput **−0.26%**, ITL p50 **+0.38%**, and TTFT p50 **−0.47%**. Both submissions were valid with zero request errors; drain deadlines cancelled 16/23 unfinished requests. This is one ordered pair, not a statistical zero-overhead claim.
+
+The capture contains **590,671 FPM records** across all eight ranks, with zero observed counter gaps, resets or rejected messages. See the [SA/off/on performance table](#sa-versus-our-fpm-off-and-fpm-on-performance), [FPM counts, checksums and download command](#fpm-collection), and [machine-readable results](job-4228930-comparison.json). Reproduction steps and results remain in this single README.
+
 > [!IMPORTANT]
 > The PR advanced during the experiment to `1c51dc135223342911151c73f4f560b5ab6ac0a5`. This run remains pinned to `996fed4`: later interface/subscriber cleanup, `torch.Event` migration and prefill attention-variance changes are **not benchmarked here**. In this capture, `var_prefill_length` is the population variance of complete prompt lengths among scheduled prefill requests, not the newer `kv_read + scheduled_query_tokens / 2` attention-length variance. Do not interpret that field using the newer PR semantics or attribute these performance numbers to the untested latest head.
 
