@@ -1875,7 +1875,22 @@ where
                 self.notify_causal_terminal(uuid)?;
                 self.cancel_prefill_route(uuid)?;
                 self.cancel_decode_route(uuid)?;
-                self.finish_logical_request(uuid, true)?;
+                // Mirrors retire_completed_request's own idempotence guard on
+                // the Success arm above: a cancel racing a decode completion
+                // can reach this arm for a request finish_logical_request
+                // already finalized (the deferred CancelDestination that
+                // caused it was woken by the same completion). Without this
+                // check, finish_logical_request's prepare_logical_finish
+                // hard-bails ("finalized request more than once"), aborting
+                // the whole run over a race the Success path already treats
+                // as an ordinary no-op.
+                let already_finalized = {
+                    let state = self.state(uuid)?;
+                    !state.counted_in_flight || state.phase == DisaggPhase::Done
+                };
+                if !already_finalized {
+                    self.finish_logical_request(uuid, true)?;
+                }
             }
             None => bail!("handoff completed without a terminal coordinator outcome"),
         }
@@ -3659,7 +3674,17 @@ where
         if self.is_request_work_drained() {
             self.drive_pending = false;
         }
-        Ok(Some(ReplayTerminalStatus::Canceled))
+        // `set_terminal_status` is first-write-wins (state.rs), so if this
+        // request already recorded a different terminal outcome (e.g.
+        // Failed) before this cancel reached it, that's the status the
+        // collector actually has on file. Report what was recorded, not an
+        // unconditional Canceled the caller would otherwise trust over the
+        // collector's own record.
+        let status = self
+            .state(uuid)?
+            .terminal_status()
+            .unwrap_or(ReplayTerminalStatus::Canceled);
+        Ok(Some(status))
     }
 
     /// Completion-only slice of [`Self::drain_current_timestamp`]: settle every
