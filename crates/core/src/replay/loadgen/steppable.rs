@@ -365,6 +365,7 @@ where
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
         let status = self.runtime.cancel_dynamic(uuid)?;
         if status.is_some() {
+            self.runtime.discard_step_terminal(uuid);
             self.live.uuids.remove(&uuid);
         }
         Ok(status.map(|status| EngineEvent::terminal(uuid, status)))

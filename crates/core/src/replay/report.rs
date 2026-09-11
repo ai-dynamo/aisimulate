@@ -1067,18 +1067,20 @@ impl TraceCollector {
         }
     }
 
-    pub(crate) fn on_prefill_admit(
+    pub(crate) fn on_prefill_admit_with_tier_attribution(
         &mut self,
         uuid: Uuid,
         admit_time_ms: f64,
         reused_input_tokens: usize,
+        attribution: Option<CacheTierAttribution>,
     ) {
-        self.on_admit(uuid, admit_time_ms, reused_input_tokens);
-        self.on_pool_admission(
+        self.on_admit_with_tier_attribution(uuid, admit_time_ms, reused_input_tokens, attribution);
+        self.on_pool_admission_with_tier_attribution(
             uuid,
             ReplayRequestPool::Prefill,
             admit_time_ms,
             reused_input_tokens,
+            attribution,
         );
         if let Some(detail) = self.detail_mut(uuid) {
             detail.prefill_admit_ms.get_or_insert(admit_time_ms);
@@ -1091,18 +1093,20 @@ impl TraceCollector {
         }
     }
 
-    pub(crate) fn on_decode_admit(
+    pub(crate) fn on_decode_admit_with_tier_attribution(
         &mut self,
         uuid: Uuid,
         admit_time_ms: f64,
         reused_input_tokens: usize,
+        attribution: Option<CacheTierAttribution>,
     ) {
-        self.on_admit(uuid, admit_time_ms, reused_input_tokens);
-        self.on_pool_admission(
+        self.on_admit_with_tier_attribution(uuid, admit_time_ms, reused_input_tokens, attribution);
+        self.on_pool_admission_with_tier_attribution(
             uuid,
             ReplayRequestPool::Decode,
             admit_time_ms,
             reused_input_tokens,
+            attribution,
         );
         if let Some(detail) = self.detail_mut(uuid) {
             detail.decode_admit_ms.get_or_insert(admit_time_ms);
@@ -1248,16 +1252,6 @@ impl TraceCollector {
                 .saturating_sub(sample.overlap_blocks)
         });
         route.placement_replica_id = placement_replica_id;
-    }
-
-    pub(crate) fn on_pool_admission(
-        &mut self,
-        uuid: Uuid,
-        pool: ReplayRequestPool,
-        at_ms: f64,
-        reused_input_tokens: usize,
-    ) {
-        self.on_pool_admission_with_tier_attribution(uuid, pool, at_ms, reused_input_tokens, None);
     }
 
     pub(crate) fn on_pool_admission_with_tier_attribution(
@@ -2002,13 +1996,13 @@ mod tests {
         let uuid = Uuid::from_u128(1);
         collector.on_arrival(uuid, 0.0, 100, 4);
         collector.on_prefill_route_overlap(uuid, 64);
-        collector.on_prefill_admit(uuid, 5.0, 30);
+        collector.on_prefill_admit_with_tier_attribution(uuid, 5.0, 30, None);
         collector.on_source_held(uuid, 10.0);
         collector.on_destination_reserved(uuid, 12.0);
         collector.on_destination_activated(uuid, 20.0);
         collector.on_source_released(uuid, 21.0);
         collector.on_decode_route_overlap(uuid, 32);
-        collector.on_decode_admit(uuid, 25.0, 40);
+        collector.on_decode_admit_with_tier_attribution(uuid, 25.0, 40, None);
         collector.on_prefill_assigned(uuid, 2);
         collector.on_decode_assigned(uuid, 7);
         collector.on_token(uuid, 50.0);

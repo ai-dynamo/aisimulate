@@ -124,10 +124,18 @@ impl<Events: EngineEventBatch> PartialOrd for SimulationEvent<Events> {
 
 impl<Events: EngineEventBatch> Ord for SimulationEvent<Events> {
     fn cmp(&self, other: &Self) -> Ordering {
+        // `total_cmp`, not `partial_cmp().unwrap_or(Equal)`: this feeds a
+        // `BinaryHeap`, which requires a genuine total order. `partial_cmp`
+        // is not one -- every comparison against NaN returns `None`, so the
+        // `unwrap_or` folded a NaN deadline to "equal to everything",
+        // silently breaking heap ordering instead of surfacing the bad
+        // input. `total_cmp` also orders -0.0 before +0.0, matching this
+        // type's `PartialEq` (bitwise via `to_bits()`, which treats them as
+        // distinct); `partial_cmp` did not, so the old `Ord` and `Eq` impls
+        // disagreed on those values.
         other
             .at_ms
-            .partial_cmp(&self.at_ms)
-            .unwrap_or(Ordering::Equal)
+            .total_cmp(&self.at_ms)
             .then_with(|| other.kind.ordering_rank().cmp(&self.kind.ordering_rank()))
             .then_with(|| other.seq_no.cmp(&self.seq_no))
     }

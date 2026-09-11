@@ -1654,6 +1654,16 @@ where
         std::mem::take(&mut self.step_terminals)
     }
 
+    /// Drop a buffered step terminal for `uuid` without publishing it. Used
+    /// by `cancel`, which returns its own terminal directly to the caller:
+    /// without this, a request that already queued a completion this step
+    /// would be reported twice, once by `cancel`'s return value and again by
+    /// the next `take_step_terminals`.
+    pub(crate) fn discard_step_terminal(&mut self, uuid: Uuid) {
+        self.step_terminals
+            .retain(|(terminal_uuid, _)| *terminal_uuid != uuid);
+    }
+
     /// Admit `request` at the current simulated time. The returned id
     /// correlates the request with later measurements.
     pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {

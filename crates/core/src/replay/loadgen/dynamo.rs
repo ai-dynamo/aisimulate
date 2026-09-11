@@ -467,7 +467,9 @@ fn lower_agentic(
         );
     }
 
-    for (child_session, parent_session) in &parent_by_session {
+    let mut parent_sessions_by_child = parent_by_session.iter().collect::<Vec<_>>();
+    parent_sessions_by_child.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (child_session, parent_session) in parent_sessions_by_child {
         let child_indices = by_session
             .get(child_session)
             .expect("child session must have requests");

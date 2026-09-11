@@ -2375,10 +2375,11 @@ where
 
     fn record_prefill_admissions(&mut self, admissions: Vec<AdmissionEvent>) {
         for admission in admissions {
-            self.collector.on_prefill_admit(
+            self.collector.on_prefill_admit_with_tier_attribution(
                 admission.uuid,
                 self.now_ms,
                 admission.reused_input_tokens,
+                admission.cache_tier_attribution,
             );
             self.evidence.record_pressure_readmission(
                 admission.uuid,
@@ -2390,10 +2391,11 @@ where
 
     fn record_decode_admissions(&mut self, admissions: Vec<AdmissionEvent>) -> Result<()> {
         for admission in admissions {
-            self.collector.on_decode_admit(
+            self.collector.on_decode_admit_with_tier_attribution(
                 admission.uuid,
                 self.now_ms,
                 admission.reused_input_tokens,
+                admission.cache_tier_attribution,
             );
             self.evidence.record_pressure_readmission(
                 admission.uuid,
@@ -2578,10 +2580,15 @@ where
         let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = self.prune_stale_transfer_events();
-            // Parity with `AggRuntimeImpl::drain_current_timestamp` (agg.rs),
-            // which settles internal engine work on every drain iteration.
-            // A no-op scan unless a worker has due internal work (i.e. unless
-            // KV-offload is configured).
+            // Not full parity with `AggRuntimeImpl::drain_current_timestamp`
+            // (agg.rs): agg calls `settle_internal_work` again immediately
+            // after a completion, since a completed pass can expose another
+            // deadline at the same instant; this loop settles once per
+            // iteration instead and relies on the outer `loop` (which keeps
+            // iterating while anything `changed`) to pick that deadline up on
+            // the next pass -- same fixed point, one more iteration to reach
+            // it. A no-op scan unless a worker has due internal work (i.e.
+            // unless KV-offload is configured).
             changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
             changed |= self.apply_worker_completions()?;
             if self.should_hold_instant() {
