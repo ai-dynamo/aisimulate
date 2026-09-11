@@ -55,6 +55,8 @@ areas:
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
+      - tests/test_reported_resource_regression.py
+      - scripts/verify_reported_resource_safety.py
   - label: mocker
     github_team: "@ai-dynamo/aisimulate-mocker-codeowners"
     path_globs:
@@ -146,6 +148,10 @@ shared:
   - glob: tests/test_resource_supervision.py
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_host_resources.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/test_reported_resource_regression.py
+    owners: [replay, sweeper, maintainers]
+  - glob: scripts/verify_reported_resource_safety.py
     owners: [replay, sweeper, maintainers]
   - glob: docs/local-resources.md
     owners: [replay, sweeper, maintainers]
