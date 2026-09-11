@@ -157,9 +157,7 @@ def test_reproducible_examples_reject_invalid_operation_evidence(
 
 def test_public_docs_keep_availability_separate_from_semantics() -> None:
     contract = (ROOT / "docs" / "power-model.md").read_text(encoding="utf-8")
-    migration = (ROOT / "docs" / "cli" / "migrate-from-aiconfigurator.md").read_text(
-        encoding="utf-8"
-    )
+    migration = (ROOT / "docs" / "cli" / "migrate-from-aiconfigurator.md").read_text(encoding="utf-8")
     core_api = (ROOT / "docs" / "core-api.md").read_text(encoding="utf-8")
 
     assert "This PR does not change current AIC or FPE runtime behavior" in contract
@@ -168,7 +166,4 @@ def test_public_docs_keep_availability_separate_from_semantics() -> None:
     assert "Once the follow-up runtime work adds a conforming producer" in contract
     assert "fixtures/power-contract-v1.json" in contract
     assert "[modeled-power contract](../power-model.md)" in migration
-    assert (
-        "Typed per-op energy alone does\nnot make unified replay power available"
-        in core_api
-    )
+    assert "Typed per-op energy alone does\nnot make unified replay power available" in core_api
