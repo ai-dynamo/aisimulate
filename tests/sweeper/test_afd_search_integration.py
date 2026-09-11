@@ -6,6 +6,7 @@
 import pytest
 from pydantic import ValidationError
 
+from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.afd_parallel import (
     AFDInfeasible,
     AFDParallelConfig,
@@ -344,6 +345,48 @@ def test_sweeper_runs_afd_branch_through_an_explicitly_capable_runner(monkeypatc
     assert factory.runner.specs[0].backend_deployment.deployment_mode == "afd"
     assert factory.runner.specs[0].backend_deployment.agg_engine_args is None
     assert factory.runner.specs[0].backend_deployment.performance_model_metadata["afd"]["provider"] == "test"
+
+
+def test_sweeper_runs_pure_both_phase_afd_through_engine_runner(monkeypatch):
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        lambda *args, **kwargs: _model_hardware(),
+    )
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search.resolve_backend_version",
+        lambda *args, **kwargs: "test",
+    )
+
+    class PerformanceModel:
+        def measure(self, request):
+            return tuple(
+                AFDLayerTimes(
+                    phase=phase,
+                    attention_ms=1.0,
+                    ffn_ms=1.0,
+                    a_to_f_ms=0.0,
+                    f_to_a_ms=0.0,
+                    num_layers=1,
+                    provenance={"provider": "test"},
+                )
+                for phase in ("prefill", "decode")
+            )
+
+    config = _config("afd", afd_phase="both")
+    config.sweep.max_rounds = 1
+    config.sweep.candidates_per_round = 1
+    config.sweep.parallel_evals = 1
+    config.sweep.algorithm = "random"
+
+    result = Sweeper(
+        runner_factory=EngineReplayRunnerFactory(),
+        afd_performance_model=PerformanceModel(),
+        show_progress=False,
+    ).run(config, top_n=None)
+
+    assert result.counts.feasible == 1
+    assert result.selected_candidates[0].metrics["completed_requests"] == 16.0
+    assert result.selected_candidates[0].metrics["output_throughput_tok_s"] > 0.0
 
 
 @pytest.mark.parametrize(

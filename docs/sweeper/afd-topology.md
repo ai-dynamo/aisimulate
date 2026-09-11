@@ -6,9 +6,10 @@ subtitle: Attention-FFN parallel shapes and complete enumeration
 ---
 
 > [!WARNING]
-> **Experimental.** `SmartSearchConfig` can place AFD topologies in a generic Sweeper study, but
-> performance measurement, staged evaluation, the public recommendation schema, production runner,
-> and deployment artifacts do not yet support AFD.
+> **Experimental.** `SmartSearchConfig` can place AFD topologies in a generic Sweeper study, and
+> the built-in engine runner can execute analytical `backend/afd` and `backend/afd+pd` replay
+> for fixed synthetic lengths. The public recommendation schema and deployment artifacts do not
+> yet support AFD, and no physical serving backend launch is implied.
 
 Attention-FFN Disaggregation (AFD) places attention operations on an A-worker pool and FFN/MoE
 operations on an F-worker pool. `aisimulate.sweeper.afd_parallel` provides the backend-neutral
@@ -123,6 +124,22 @@ KV-relative traffic load is intentionally rejected for AFD in this layer because
 not yet expose scheduler-visible KV capacity. Use a synthetic request rate or absolute concurrency
 with concrete `isl` and `osl`.
 See [Sweeper Configuration](configuration.md#attention-ffn-disaggregation) for an internal example.
+
+## Analytical Replay
+
+`EngineReplayRunner` advertises AFD only after validating and consuming the complete measurement
+contract. Pure `afd` replay requires `phase: both`; a single AFD phase must use `afd+pd` so the
+opposite phase is present. The latter measures a regular companion through AIC static estimation
+or an explicit fixed timing model, then schedules the two independent pools as a two-stage flow.
+
+This preserves arrival and queueing delay in TTFT and end-to-end latency. TPOT is the interval
+from the first output token to completion, including decode queueing, divided by `OSL - 1`;
+it is zero for a single output token. Reports include throughput, goodput, GPU-hours, per-request
+latency on request, batch/pass counts, and exact A/F plus companion GPU accounting.
+
+Replay currently requires fixed synthetic `isl` and `osl`, `random_range_ratio: 1.0`, and no
+trace. Those restrictions keep each request aligned with the performance-model point instead of
+silently reusing a measurement at a different sequence length.
 
 ## Infeasibility and Provenance
 
