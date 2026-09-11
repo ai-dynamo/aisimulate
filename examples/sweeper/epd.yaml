@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# SDK input, not unified predict/recommend YAML. See docs/sweeper/epd.md.
+search_space:
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  hardware_sku: h200_sxm
+  backend: [sglang]
+  deployment_mode: [agg, disagg]
+  gpu_budget: 8
+  encoder:
+    tp: [1, 2]
+    batch_size: [1, 2, 4]
+    workers: [1, 2]
+workload:
+  isl: 128
+  osl: 32
+  concurrency: 8
+  num_request_ratio: 2
+  images: {height: 448, width: 448, count: 1}
+goal:
+  target: throughput_per_gpu
+sweep:
+  algorithm: random
+  max_trials: 10
+  parallel_evals: 1

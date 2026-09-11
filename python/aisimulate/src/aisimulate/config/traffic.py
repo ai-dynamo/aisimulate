@@ -18,10 +18,19 @@ NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False
 Ratio = Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]
 
 
+class ImageInput(StrictModel):
+    """Fixed image dimensions and count on every synthetic request."""
+
+    height: PositiveInt
+    width: PositiveInt
+    count: PositiveInt = 1
+
+
 class SyntheticSource(StrictModel):
     type: Literal["synthetic"] = "synthetic"
     input_tokens: PositiveInt = 1024
     output_tokens: PositiveInt = 128
+    images: ImageInput | None = None
 
 
 class SessionShape(StrictModel):

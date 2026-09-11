@@ -16,6 +16,8 @@ from typing import Any
 from .config import (
     AdapterSearchConfig,
     Candidate,
+    EncoderSearch,
+    ImageWorkload,
     OptimizationGoal,
     OptimizationTarget,
     SearchSpace,
@@ -45,6 +47,7 @@ from .provider import (
 from .replay import (
     REPLAY_SPEC_API_VERSION,
     BackendDeploymentSpec,
+    EncoderPoolSpec,
     HookCapability,
     ReplayOutputRequirements,
     ReplayReport,
@@ -150,7 +153,10 @@ __all__ = [
     "CandidateStatus",
     "ConditionalSearchSpace",
     "DisaggParallelConfig",
+    "EncoderPoolSpec",
+    "EncoderSearch",
     "HookCapability",
+    "ImageWorkload",
     "InfeasibleCandidate",
     "ModelHardware",
     "NoPerfDatabase",
