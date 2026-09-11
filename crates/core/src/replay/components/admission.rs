@@ -160,18 +160,22 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                     let Some(front) = pending.front() else {
                         break;
                     };
-                    // This queue drains strictly from the front, so a request with no
-                    // authored arrival time can never become ready: it would block itself
-                    // and everything behind it forever. Separate that malformed input from
-                    // the ordinary "authored, but not due yet" case below.
-                    let Some(arrival_time_ms) = front.arrival_timestamp_ms else {
-                        anyhow::bail!(
-                            "trace replay request {} is missing its arrival timestamp",
+                    // This queue drains strictly from the front, so a request whose arrival
+                    // time never compares ready blocks itself and everything behind it
+                    // forever. Reject that malformed input instead of silently wedging, and
+                    // keep it distinct from the "authored, but not due yet" case below.
+                    let arrival_time_ms = match front.arrival_timestamp_ms {
+                        Some(arrival_time_ms) if arrival_time_ms.is_finite() => arrival_time_ms,
+                        malformed => anyhow::bail!(
+                            "trace replay request {} has an unusable arrival timestamp ({}); \
+                             trace-sourced requests must carry a finite authored arrival time",
                             front.request_id().map_or_else(
                                 || "<unidentified>".to_string(),
                                 |uuid| uuid.to_string()
-                            )
-                        );
+                            ),
+                            malformed
+                                .map_or_else(|| "missing".to_string(), |value| value.to_string()),
+                        ),
                     };
                     if arrival_time_ms > now_ms {
                         break;
@@ -469,6 +473,25 @@ mod trace_tests {
             message.contains(&Uuid::from_u128(1).to_string()),
             "error must identify the offending request: {message}"
         );
+    }
+
+    /// A non-finite arrival time compares false against both `<= now_ms` and
+    /// `> now_ms`, so it can neither become ready nor be recognized as pending.
+    /// It must be rejected rather than admitted with unusable timing.
+    #[test]
+    fn trace_requests_with_non_finite_arrival_timestamps_fail_closed() {
+        for arrival_timestamp_ms in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let pending = VecDeque::from(vec![trace_request(1, Some(arrival_timestamp_ms))]);
+            let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+            let Err(error) = admission.drain_ready_compact(10.0, 0, false) else {
+                panic!("{arrival_timestamp_ms} must fail closed");
+            };
+            assert!(
+                error.to_string().contains("arrival timestamp"),
+                "error must name the offending field: {error}"
+            );
+        }
     }
 
     #[test]
