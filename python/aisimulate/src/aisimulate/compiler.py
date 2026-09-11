@@ -16,6 +16,15 @@ from .aic import (
 from .config.cli import CorePredictionConfig
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
+from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
+from .sweeper.afd_perfmodel import (
+    AFDPerformanceModel,
+    AICAFDPerformanceModel,
+    attach_afd_measurements,
+)
+from .sweeper.kv_estimate import resolve_backend_version
+from .sweeper.model_hw import resolve_model_hardware
+from .sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from .sweeper.provider import AdapterReplaySpec, JSONValue
 from .sweeper.replay import BackendDeploymentSpec, ReplaySpec
 
@@ -24,12 +33,17 @@ def prediction_to_replay_spec(
     config: CorePredictionConfig,
     *,
     adapter_specs: dict[str, AdapterReplaySpec] | None = None,
+    afd_performance_model: AFDPerformanceModel | None = None,
     execution_mode: str = "offline",
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
-    deployment = _deployment(config.engine)
     workload, concurrency = _traffic(config)
+    deployment = _deployment(
+        config.engine,
+        workload=workload,
+        afd_performance_model=afd_performance_model,
+    )
     if config.engine.workers.encoder is not None:
         if adapter_specs or execution_mode != "offline":
             raise ValueError("analytical EPD requires the offline engine stack without adapters")
@@ -82,7 +96,18 @@ def _prediction_encoder(config: CorePredictionConfig, workload):
     return next(iter(pools.values()))
 
 
-def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
+def _deployment(
+    engine: EnginePredictionConfig,
+    *,
+    workload: dict[str, JSONValue],
+    afd_performance_model: AFDPerformanceModel | None,
+) -> BackendDeploymentSpec:
+    if engine.mode == "afd":
+        return _afd_deployment(
+            engine,
+            workload=workload,
+            performance_model=afd_performance_model or AICAFDPerformanceModel(),
+        )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
     common: dict[str, Any] = {
         "deployment_mode": mode,
@@ -129,6 +154,104 @@ def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
         num_prefill_workers=prefill.parallelism.replicas,
         num_decode_workers=decode.parallelism.replicas,
         **common,
+    )
+
+
+def _afd_deployment(
+    engine: EnginePredictionConfig,
+    *,
+    workload: dict[str, JSONValue],
+    performance_model: AFDPerformanceModel,
+) -> BackendDeploymentSpec:
+    afd = engine.afd
+    assert afd is not None
+    facts = resolve_model_hardware(engine.model, engine.hardware, backend=engine.backend)
+    topology = AFDTopology(
+        **afd.model_dump(mode="python"),
+        gpus_per_node=facts.gpus_per_node,
+        is_moe=facts.is_moe,
+        num_experts=facts.num_experts,
+    )
+    backend_version = engine.backend_version or resolve_backend_version(engine.hardware, engine.backend)
+    resolved_engine = engine.model_copy(update={"backend_version": backend_version})
+    companion_role = "decode" if topology.phase.value == "prefill" else "prefill"
+    companion_worker = getattr(engine.workers, companion_role) if topology.combined_with_pd else None
+    companion: ReplicaParallelConfig | None = None
+    if companion_worker is not None:
+        parallel = companion_worker.parallelism
+        companion = ReplicaParallelConfig(
+            shape=ParallelShape(
+                tp=parallel.tensor,
+                pp=parallel.pipeline,
+                dp=parallel.attention_data,
+                moe_tp=parallel.moe_tensor,
+                moe_ep=parallel.moe_expert,
+            ),
+            replicas=parallel.replicas,
+        )
+    afd_parallel = AFDParallelConfig(topology=topology, companion=companion)
+    parallel_config: dict[str, JSONValue] = {
+        "afd": topology.provenance()["topology"],
+        "afd_provenance": afd_parallel.provenance(),
+    }
+    performance_metadata: dict[str, dict[str, JSONValue]] = {
+        "afd": {
+            "provider": "unresolved",
+            "measurement_required": True,
+            "config": topology.provenance()["topology"],
+            "provenance": afd_parallel.provenance(),
+        }
+    }
+    deployment_kwargs: dict[str, Any] = {}
+    if companion_worker is not None:
+        assert companion is not None
+        prefix = f"{companion_role}_"
+        shape = companion.shape
+        parallel_config.update(
+            {
+                f"{prefix}tp": shape.tp,
+                f"{prefix}pp": shape.pp,
+                f"{prefix}attention_dp": shape.dp,
+                f"{prefix}moe_tp": shape.moe_tp,
+                f"{prefix}moe_ep": shape.moe_ep,
+                f"{prefix}strategy": shape.strategy,
+                f"{prefix}replicas": companion.replicas,
+            }
+        )
+        companion_metadata = _worker_performance_model_metadata(resolved_engine, companion_worker)
+        performance_metadata[companion_role] = companion_metadata
+        deployment_kwargs[f"{companion_role}_engine_args"] = _worker_engine_args(
+            resolved_engine,
+            companion_worker,
+            companion_role,
+            transfer_bytes_per_token=None,
+        )
+        deployment_kwargs[f"num_{companion_role}_workers"] = companion.replicas
+    deployment = BackendDeploymentSpec(
+        deployment_mode=topology.adapter_topology,
+        backend=engine.backend,
+        backend_version=backend_version,
+        parallel_config=parallel_config,
+        performance_model_metadata=performance_metadata,
+        **deployment_kwargs,
+    )
+    sample = {
+        "model_name": engine.model,
+        "hardware_sku": engine.hardware,
+        "backend": engine.backend,
+        "backend_version": backend_version,
+        "context_length": (
+            engine.context_length
+            if isinstance(engine.context_length, int)
+            else resolve_model_context_length(engine.model)
+        ),
+        "afd": topology.provenance()["topology"],
+    }
+    return attach_afd_measurements(
+        deployment,
+        sample=sample,
+        workload=workload,
+        performance_model=performance_model,
     )
 
 

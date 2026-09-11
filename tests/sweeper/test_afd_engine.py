@@ -5,7 +5,11 @@
 
 import pytest
 
-from aisimulate.sweeper.afd_engine import AFDForegroundEngine, AFDStage, evaluate_afd_phase
+from aisimulate.sweeper.afd_engine import (
+    AFDForegroundEngine,
+    AFDStage,
+    evaluate_afd_phase,
+)
 from aisimulate.sweeper.afd_parallel import AFDPipelineModel, AFDTopology
 from aisimulate.sweeper.afd_perfmodel import AFDLayerTimes
 

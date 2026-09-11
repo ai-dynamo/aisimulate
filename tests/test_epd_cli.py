@@ -422,3 +422,30 @@ def test_cli_examples_parse():
     for mode in ("aggregated", "disaggregated"):
         CorePredictionConfig.from_yaml(root / f"examples/cli/epd-predict-{mode}.yaml")
     CoreRecommendationConfig.from_yaml(root / "examples/cli/epd-recommend.yaml")
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize("combined_with_pd", [False, True])
+def test_public_cli_rejects_afd_encoder_composition(tmp_path, capsys, command, combined_with_pd):
+    raw = _prediction() if command == "predict" else _recommendation()
+    encoder = raw["engine"]["workers"]["encoder"]
+    raw["engine"]["mode"] = "afd"
+    raw["engine"]["afd"] = {
+        "phase": "decode" if combined_with_pd else "both",
+        "combined_with_pd": combined_with_pd,
+    }
+    if command == "predict":
+        raw["engine"]["afd"].update(n_a_nodes=1, n_f_nodes=1, tp_a=8, a_batch_size=8)
+    else:
+        raw["engine"]["afd"]["a_batch_size"] = {"choices": [8]}
+    raw["engine"]["workers"] = {"encoder": encoder}
+    if combined_with_pd:
+        raw["engine"]["workers"]["prefill"] = {}
+    path = tmp_path / "hybrid.yaml"
+    path.write_text(yaml.safe_dump(raw))
+
+    with pytest.raises(SystemExit) as exc:
+        main([command, "-c", str(path), "--output-dir", str(tmp_path / "out")])
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert "AFD does not support analytical EPD encoder pools" in captured.err

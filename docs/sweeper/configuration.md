@@ -76,9 +76,10 @@ or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pi
 
 ## Attention-FFN Disaggregation
 
-AFD is currently an internal `SmartSearchConfig` contract. It is not yet accepted by the public
-`aisimulate recommend` schema, and the built-in engine runner does not advertise AFD execution.
-An injected runner must explicitly advertise the selected backend with topology `afd` or `afd+pd`.
+AFD is supported by public `aisimulate predict` and `aisimulate recommend` with the built-in
+analytical engine runner. See the [AFD Topology Contract](afd-topology.md) for public configuration
+and replay limits. The internal `SmartSearchConfig` schema uses topology `afd` or `afd+pd`;
+an injected runner must explicitly advertise the selected backend with the chosen topology.
 
 This pinned pure-AFD example creates a finite standard Sweeper branch:
 

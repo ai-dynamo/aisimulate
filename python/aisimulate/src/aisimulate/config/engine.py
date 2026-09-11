@@ -16,9 +16,50 @@ CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
 Fraction = Annotated[float, Field(strict=True, gt=0, le=1, allow_inf_nan=False)]
-EngineMode = Literal["aggregated", "disaggregated"]
+EngineMode = Literal["aggregated", "disaggregated", "afd"]
 Backend = Literal["vllm", "sglang", "trtllm"]
 KvBytesPerToken = PositiveInt | Literal["auto"]
+AFDPhase = Literal["prefill", "decode", "both"]
+AFDPipelineModel = Literal["optimistic", "conservative", "serial"]
+AFDExpertParallel = PositiveInt | Literal["n_f_nodes", "ffn_tp"]
+
+
+class AFDTopologyPredictionConfig(StrictModel):
+    """One concrete attention/FFN-disaggregated topology."""
+
+    phase: AFDPhase
+    combined_with_pd: bool = Field(strict=True)
+    n_a_nodes: PositiveInt
+    n_f_nodes: PositiveInt
+    tp_a: PositiveInt
+    a_batch_size: PositiveInt
+    f_moe_ep_size: PositiveInt = 1
+    num_microbatches: PositiveInt = 3
+    pipeline_model: AFDPipelineModel = "optimistic"
+    comm_overhead_factor: PositiveFloat = 1.0
+    boundary_on_attn: bool = Field(default=True, strict=True)
+
+
+class AFDSearchRecommendationConfig(StrictModel):
+    """Finite AFD topology domain for a recommendation run."""
+
+    phase: AFDPhase
+    combined_with_pd: bool = Field(strict=True)
+    # This is deliberately required. AFD batches must be memory-qualified for
+    # the target model/hardware rather than inherited from an implicit default.
+    a_batch_size: PositiveInt | Choices[PositiveInt] | IntegerRange
+    tp_a: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
+    f_moe_ep_size: AFDExpertParallel | Choices[AFDExpertParallel] | None = None
+    num_microbatches: PositiveInt | Choices[PositiveInt] | IntegerRange = Field(
+        default_factory=lambda: Choices[PositiveInt](choices=[2, 3, 4])
+    )
+    pipeline_model: AFDPipelineModel | Choices[AFDPipelineModel] = Field(
+        default_factory=lambda: Choices[AFDPipelineModel](choices=["optimistic", "conservative"])
+    )
+    comm_overhead_factor: PositiveFloat = 1.0
+    boundary_on_attn: bool = Field(default=True, strict=True)
+    max_af_ratio: PositiveFloat = 4.0
+    max_candidates: PositiveInt = 10_000
 
 
 class ParallelismPredictionConfig(StrictModel):
@@ -145,8 +186,9 @@ class EnginePredictionConfig(StrictModel):
     backend: Backend = "vllm"
     backend_version: str | None = None
     context_length: PositiveInt | Literal["max"] = "max"
-    workers: WorkersPredictionConfig
+    workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
+    afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
     @classmethod
@@ -164,11 +206,16 @@ class EnginePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
-        _validate_worker_roles(
-            modes={self.mode},
-            workers=self.workers,
-            has_transfer=self.kv_transfer is not None,
-        )
+        if self.mode == "afd":
+            _validate_prediction_afd(self)
+        else:
+            if self.afd is not None:
+                raise ValueError("engine.afd requires engine.mode='afd'")
+            _validate_worker_roles(
+                modes={self.mode},
+                workers=self.workers,
+                has_transfer=self.kv_transfer is not None,
+            )
         _validate_prediction_host_offload(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         return self
@@ -311,8 +358,9 @@ class EngineRecommendationConfig(StrictModel):
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | None = None
     context_length: PositiveInt | Literal["max"] = "max"
-    workers: WorkersRecommendationConfig
+    workers: WorkersRecommendationConfig = Field(default_factory=WorkersRecommendationConfig)
     kv_transfer: KvTransferConfig | None = None
+    afd: AFDSearchRecommendationConfig | None = None
 
     @field_validator("model", "hardware")
     @classmethod
@@ -324,11 +372,18 @@ class EngineRecommendationConfig(StrictModel):
     @model_validator(mode="after")
     def _validate_roles(self) -> EngineRecommendationConfig:
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
-        _validate_worker_roles(
-            modes=modes,
-            workers=self.workers,
-            has_transfer=self.kv_transfer is not None,
-        )
+        if "afd" in modes:
+            if modes != {"afd"}:
+                raise ValueError("AFD recommendation mode cannot be mixed with aggregated/disaggregated modes")
+            _validate_recommendation_afd(self)
+        else:
+            if self.afd is not None:
+                raise ValueError("engine.afd requires engine.mode='afd'")
+            _validate_worker_roles(
+                modes=modes,
+                workers=self.workers,
+                has_transfer=self.kv_transfer is not None,
+            )
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
         _validate_recommendation_host_offload(self)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
@@ -341,6 +396,55 @@ def _workers_with_host_offload(workers) -> list[tuple[str, Any]]:
         for role in ("aggregated", "prefill", "decode")
         if (worker := getattr(workers, role)) is not None and worker.kv_cache.host_offload is not None
     ]
+
+
+def _configured_worker_roles(workers) -> set[str]:
+    return {role for role in ("aggregated", "prefill", "decode") if getattr(workers, role) is not None}
+
+
+def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
+    if engine.workers.encoder is not None:
+        raise ValueError("AFD does not support analytical EPD encoder pools")
+    afd = engine.afd
+    if afd is None:
+        raise ValueError("engine.mode='afd' requires engine.afd")
+    if engine.kv_transfer is not None:
+        raise ValueError("AFD mode rejects kv_transfer; A/F transfers are modeled by engine.afd")
+    configured = _configured_worker_roles(engine.workers)
+    if afd.combined_with_pd:
+        if afd.phase == "both":
+            raise ValueError("AFD+P/D requires phase='prefill' or phase='decode'")
+        companion = "decode" if afd.phase == "prefill" else "prefill"
+        if configured != {companion}:
+            raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true requires only workers.{companion}")
+    else:
+        if afd.phase != "both":
+            raise ValueError("pure AFD prediction requires phase='both'; use combined_with_pd=true for one phase")
+        if configured:
+            raise ValueError("pure AFD prediction rejects regular aggregated/prefill/decode workers")
+
+
+def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
+    if engine.workers.encoder is not None:
+        raise ValueError("AFD does not support analytical EPD encoder pools")
+    afd = engine.afd
+    if afd is None:
+        raise ValueError("engine.mode='afd' requires engine.afd")
+    if engine.kv_transfer is not None:
+        raise ValueError("AFD mode rejects kv_transfer; A/F transfers are modeled by engine.afd")
+    configured = _configured_worker_roles(engine.workers)
+    if afd.combined_with_pd:
+        if afd.phase == "both":
+            raise ValueError("AFD+P/D requires phase='prefill' or phase='decode'")
+        companion = "decode" if afd.phase == "prefill" else "prefill"
+        unexpected = configured - {companion}
+        if unexpected:
+            raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true accepts only optional workers.{companion}")
+    else:
+        if afd.phase != "both":
+            raise ValueError("pure AFD recommendation requires phase='both'; use combined_with_pd=true for one phase")
+        if configured:
+            raise ValueError("pure AFD recommendation rejects regular aggregated/prefill/decode workers")
 
 
 def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
