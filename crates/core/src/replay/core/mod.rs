@@ -115,6 +115,60 @@ pub trait PlacementPolicy<Request> {
     fn topology_settled(&mut self, now_ms: f64) -> Result<Vec<Placement>>;
 }
 
+/// Forwarding impl so a boxed policy is itself a [`PlacementPolicy`] and can
+/// be handed to a runtime by value. `?Sized` lets `T` be `dyn
+/// PlacementPolicy<Request>`, which auto-implements `PlacementPolicy<Request>`
+/// because the trait is object-safe -- that is what lets a policy constructed
+/// outside this crate be injected as `Box<dyn PlacementPolicy<Request>>`
+/// without exposing the runtime's generics.
+///
+/// None of `PlacementPolicy`'s methods have a default body today, so a
+/// missing forward here is a compile error, not a silent behavior change.
+/// If a future method gets one, forwarding it here becomes load-bearing:
+/// an unforwarded default-bodied method would compile clean and silently
+/// run the default instead of the inner policy's override.
+impl<Request, T: PlacementPolicy<Request> + ?Sized> PlacementPolicy<Request> for Box<T> {
+    type Metadata = T::Metadata;
+    type Observation = T::Observation;
+
+    fn place(
+        &mut self,
+        request: &Request,
+        metadata: Self::Metadata,
+        session_id: Option<String>,
+        now_ms: f64,
+    ) -> Result<PlacementEffects> {
+        (**self).place(request, metadata, session_id, now_ms)
+    }
+    fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>> {
+        (**self).observe(observation, now_ms)
+    }
+    fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+        (**self).cancel_pending(request_id)
+    }
+    fn request_terminal(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>> {
+        (**self).request_terminal(request_id, now_ms)
+    }
+    fn prefill_completed(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>> {
+        (**self).prefill_completed(request_id, now_ms)
+    }
+    fn pending_count(&self) -> usize {
+        (**self).pending_count()
+    }
+    fn worker_ready(&mut self, worker: WorkerTopology, now_ms: f64) -> Result<Vec<Placement>> {
+        (**self).worker_ready(worker, now_ms)
+    }
+    fn worker_draining(&mut self, worker: WorkerTopology, now_ms: f64) -> Result<Vec<Placement>> {
+        (**self).worker_draining(worker, now_ms)
+    }
+    fn worker_removed(&mut self, worker: WorkerTopology, now_ms: f64) -> Result<Vec<Placement>> {
+        (**self).worker_removed(worker, now_ms)
+    }
+    fn topology_settled(&mut self, now_ms: f64) -> Result<Vec<Placement>> {
+        (**self).topology_settled(now_ms)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct EngineProgress {
     pub(crate) made_progress: bool,

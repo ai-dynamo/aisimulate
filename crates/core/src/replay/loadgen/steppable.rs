@@ -40,11 +40,15 @@ use std::collections::{HashSet, VecDeque};
 use uuid::Uuid;
 
 use crate::replay::agg::AggRuntimeImpl;
-use crate::replay::components::{AdmissionQueue, NoReplayMetadata, ReplayMode};
+use crate::replay::components::{
+    AdmissionQueue, NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode,
+};
 use crate::replay::core::NoEngineEvents;
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
+use crate::replay::core::{PlacementPolicy, WorkerTopology};
 use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
+use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::protocol::DirectRequest;
 use crate::replay::{
     OfflineDisaggReplayConfig, ReplayReport, ReplayTerminalStatus, SlaThresholds, WorkerStage,
@@ -174,9 +178,15 @@ pub trait SteppableReplay {
     fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport>;
 }
 
-/// Concrete aggregated runtime behind the steppable seam.
-type SteppableAggRuntime =
-    AggRuntimeImpl<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
+/// A type-erased placement policy for the aggregated steppable runtime,
+/// parameterized on the observation and admission-metadata flavors.
+pub type DynPlacement<Observation, Metadata> = Box<
+    dyn PlacementPolicy<
+            ReplayRequestPayload,
+            Metadata = Metadata,
+            Observation = <Observation as ReplayEngineObservation>::Batch,
+        >,
+>;
 type SteppableDisaggRuntime =
     DisaggRuntimeImpl<PoolRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
 
@@ -208,21 +218,80 @@ impl LiveRequests {
     }
 }
 
-/// Build the aggregated role factory one steppable runtime runs on.
-fn aggregated_role_factory(
-    engine: &ReplayEngineConfig,
-    factory: &ReplayEngineFactory,
-) -> anyhow::Result<crate::replay::ReplayRoleFactory> {
-    Ok(factory.role_factory(engine, WorkerStage::Aggregated, false)?)
-}
-
 /// Aggregated multi-worker topology as a [`SteppableReplay`].
-pub struct SteppableAgg {
-    runtime: SteppableAggRuntime,
+pub struct SteppableAgg<
+    P = AggregatedRoundRobinPlacement<()>,
+    O = NoEngineEvents,
+    M = NoReplayMetadata,
+> where
+    O: ReplayEngineObservation,
+    M: ReplayAdmissionMetadata,
+    P: PlacementPolicy<ReplayRequestPayload, Metadata = M, Observation = O::Batch>,
+{
+    runtime: AggRuntimeImpl<P, O, M>,
     live: LiveRequests,
 }
 
-impl SteppableAgg {
+impl<O, M> SteppableAgg<DynPlacement<O, M>, O, M>
+where
+    O: ReplayEngineObservation + 'static,
+    M: ReplayAdmissionMetadata + 'static,
+{
+    /// Build an aggregated steppable runtime driven by a caller-supplied,
+    /// type-erased placement policy. This is the injection point an
+    /// out-of-crate policy uses; the runtime's generics stay private.
+    pub fn with_placement(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        num_workers: usize,
+        make_placement: impl FnOnce(u32, Vec<WorkerTopology>) -> anyhow::Result<DynPlacement<O, M>>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(num_workers > 0, "num_workers must be positive");
+        let role_factory = factory.role_factory(
+            &engine,
+            WorkerStage::Aggregated,
+            O::capture_engine_kv_events(WorkerStage::Aggregated),
+        )?;
+        let runtime = AggRuntimeImpl::<DynPlacement<O, M>, O, M>::new_composed(
+            role_factory,
+            AdmissionQueue::new_requests(VecDeque::new(), steppable_mode()),
+            num_workers,
+            None,
+            |dp_size, topology| {
+                let mut placement = make_placement(dp_size, topology)?;
+                // Worker-ready and topology-settled are raised only for dynamic
+                // scaling, so a policy built here is never told its initial
+                // topology is complete. A stateless policy does not care; a
+                // stateful one holds every request in its pending queue
+                // forever. Scoped to this constructor because a policy whose
+                // `topology_settled` is a one-shot latch would otherwise have
+                // that transition consumed before its real first settle.
+                //
+                // 0.0 matches `AggRuntimeImpl`'s own `now_ms: 0.0` in
+                // `new_composed` -- that field is unconditionally 0.0
+                // regardless of the `startup_time_ms` argument (`None`
+                // above), not derived from it; `create_placement` (where
+                // this call happens) even runs before that field is
+                // assigned. The two 0.0 literals have to agree because
+                // nothing threads one from the other.
+                let released = placement.topology_settled(0.0)?;
+                anyhow::ensure!(
+                    released.is_empty(),
+                    "placement released {} request(s) before any were submitted",
+                    released.len()
+                );
+                Ok(placement)
+            },
+        )?
+        .into_steppable();
+        Ok(Self {
+            runtime,
+            live: LiveRequests::default(),
+        })
+    }
+}
+
+impl SteppableAgg<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata> {
     /// Build an aggregated runtime with `num_workers` round-robin engines.
     pub fn new(
         engine: ReplayEngineConfig,
@@ -230,12 +299,24 @@ impl SteppableAgg {
         num_workers: usize,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(num_workers > 0, "num_workers must be positive");
-        let role_factory = aggregated_role_factory(&engine, factory)?;
-        let runtime = SteppableAggRuntime::new_composed(
+        let role_factory = factory.role_factory(
+            &engine,
+            WorkerStage::Aggregated,
+            NoEngineEvents::capture_engine_kv_events(WorkerStage::Aggregated),
+        )?;
+        let runtime = AggRuntimeImpl::new_composed(
             role_factory,
             AdmissionQueue::new_requests(VecDeque::new(), steppable_mode()),
             num_workers,
             None,
+            // Unlike `with_placement`, this never calls `topology_settled` on
+            // the placement it builds. That's fine here specifically:
+            // `AggregatedRoundRobinPlacement::topology_settled` always
+            // returns `Ok(Vec::new())`, so it is the stateless case
+            // `with_placement`'s own doc comment calls out -- there is no
+            // pending-queue state that an unsettled initial topology could
+            // leave stuck. An injected policy is not guaranteed that, which
+            // is why `with_placement` calls it explicitly.
             |dp_size, topology| Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)),
         )?
         .into_steppable();
@@ -246,7 +327,12 @@ impl SteppableAgg {
     }
 }
 
-impl SteppableReplay for SteppableAgg {
+impl<P, O, M> SteppableReplay for SteppableAgg<P, O, M>
+where
+    O: ReplayEngineObservation,
+    M: ReplayAdmissionMetadata,
+    P: PlacementPolicy<ReplayRequestPayload, Metadata = M, Observation = O::Batch>,
+{
     fn now_ms(&self) -> f64 {
         self.runtime.now_ms()
     }
@@ -530,7 +616,12 @@ impl SteppableReplay for SteppableDisagg {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use super::*;
+    use crate::replay::components::NoReplayMetadata;
+    use crate::replay::core::{EngineEventBatch, Placement, PlacementEffects};
 
     fn request(uuid: u128, input_length: usize, max_output_tokens: usize) -> DirectRequest {
         DirectRequest {
@@ -540,6 +631,229 @@ mod tests {
             arrival_timestamp_ms: Some(0.0),
             ..Default::default()
         }
+    }
+
+    /// An observation flavor that actually captures KV events, so a test can
+    /// tell the generalized `with_placement` apart from the hardcoded
+    /// no-capture path it replaced. `NoEngineEvents` cannot: its flag is
+    /// already `false`, so it agrees with a broken implementation.
+    #[derive(Debug, Default)]
+    struct CapturedKvEvents(Vec<crate::engine::KvEvent>);
+
+    impl EngineEventBatch for CapturedKvEvents {
+        fn is_empty(&self) -> bool {
+            self.0.is_empty()
+        }
+
+        fn append(&mut self, mut other: Self) {
+            self.0.append(&mut other.0);
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct CapturingObservation;
+
+    impl ReplayEngineObservation for CapturingObservation {
+        type Batch = CapturedKvEvents;
+
+        const CAPTURE_ENGINE_KV_EVENTS: bool = true;
+
+        fn observe_engine_events(
+            _stage: WorkerStage,
+            _worker_id: usize,
+            _dp_rank: u32,
+            events: Vec<crate::engine::KvEvent>,
+        ) -> Self::Batch {
+            CapturedKvEvents(events)
+        }
+    }
+
+    #[derive(Default)]
+    struct PolicyCalls {
+        places: usize,
+        terminals: usize,
+        observed_batches: usize,
+    }
+
+    /// A stateful policy with the two properties the injection seam has to
+    /// respect: it refuses to place before its topology is settled, and its
+    /// `topology_settled` is a one-shot latch. Counts its own calls so a test
+    /// can confirm they arrived through the `Box`.
+    struct LatchedPlacement<Events: EngineEventBatch> {
+        inner: AggregatedRoundRobinPlacement<Events>,
+        calls: Rc<RefCell<PolicyCalls>>,
+        is_settled: bool,
+    }
+
+    impl<Events: EngineEventBatch> PlacementPolicy<ReplayRequestPayload> for LatchedPlacement<Events> {
+        type Metadata = NoReplayMetadata;
+        type Observation = Events;
+
+        fn place(
+            &mut self,
+            request: &ReplayRequestPayload,
+            metadata: Self::Metadata,
+            session_id: Option<String>,
+            now_ms: f64,
+        ) -> anyhow::Result<PlacementEffects> {
+            anyhow::ensure!(self.is_settled, "placed before the topology settled");
+            self.calls.borrow_mut().places += 1;
+            self.inner.place(request, metadata, session_id, now_ms)
+        }
+
+        fn observe(
+            &mut self,
+            observation: Events,
+            now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            if !observation.is_empty() {
+                self.calls.borrow_mut().observed_batches += 1;
+            }
+            PlacementPolicy::<ReplayRequestPayload>::observe(&mut self.inner, observation, now_ms)
+        }
+
+        fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+            PlacementPolicy::<ReplayRequestPayload>::cancel_pending(&mut self.inner, request_id)
+        }
+
+        fn request_terminal(
+            &mut self,
+            request_id: Uuid,
+            now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            self.calls.borrow_mut().terminals += 1;
+            PlacementPolicy::<ReplayRequestPayload>::request_terminal(
+                &mut self.inner,
+                request_id,
+                now_ms,
+            )
+        }
+
+        fn prefill_completed(
+            &mut self,
+            request_id: Uuid,
+            now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            PlacementPolicy::<ReplayRequestPayload>::prefill_completed(
+                &mut self.inner,
+                request_id,
+                now_ms,
+            )
+        }
+
+        fn pending_count(&self) -> usize {
+            PlacementPolicy::<ReplayRequestPayload>::pending_count(&self.inner)
+        }
+
+        fn worker_ready(
+            &mut self,
+            worker: WorkerTopology,
+            now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            PlacementPolicy::<ReplayRequestPayload>::worker_ready(&mut self.inner, worker, now_ms)
+        }
+
+        fn worker_draining(
+            &mut self,
+            worker: WorkerTopology,
+            now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            PlacementPolicy::<ReplayRequestPayload>::worker_draining(
+                &mut self.inner,
+                worker,
+                now_ms,
+            )
+        }
+
+        fn worker_removed(
+            &mut self,
+            worker: WorkerTopology,
+            now_ms: f64,
+        ) -> anyhow::Result<Vec<Placement>> {
+            PlacementPolicy::<ReplayRequestPayload>::worker_removed(&mut self.inner, worker, now_ms)
+        }
+
+        fn topology_settled(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+            anyhow::ensure!(!self.is_settled, "topology_settled fired twice");
+            self.is_settled = true;
+            PlacementPolicy::<ReplayRequestPayload>::topology_settled(&mut self.inner, now_ms)
+        }
+    }
+
+    /// An injected boxed policy receives the full lifecycle -- the settle
+    /// handshake at construction, then placements and terminals -- through the
+    /// `Box` forwarding impl.
+    #[test]
+    fn injected_boxed_placement_receives_the_full_lifecycle() {
+        let calls = Rc::new(RefCell::new(PolicyCalls::default()));
+        let policy_calls = Rc::clone(&calls);
+        let mut engine = SteppableAgg::<
+            DynPlacement<NoEngineEvents, NoReplayMetadata>,
+            NoEngineEvents,
+            NoReplayMetadata,
+        >::with_placement(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            2,
+            move |dp_size, topology| {
+                Ok(Box::new(LatchedPlacement {
+                    inner: AggregatedRoundRobinPlacement::new(dp_size, topology),
+                    calls: policy_calls,
+                    is_settled: false,
+                })
+                    as DynPlacement<NoEngineEvents, NoReplayMetadata>)
+            },
+        )
+        .expect("engine builds");
+
+        engine.submit(request(1, 64, 4)).expect("submit");
+        engine.submit(request(2, 64, 4)).expect("submit");
+        drain(&mut engine);
+
+        let calls = calls.borrow();
+        assert_eq!(calls.places, 2);
+        assert_eq!(calls.terminals, 2);
+    }
+
+    /// KV events reach an injected policy when its observation flavor asks for
+    /// them.
+    ///
+    /// This is the behavior `with_placement`'s generalization exists to enable:
+    /// the role factory is built with `O::capture_engine_kv_events(...)`, so an
+    /// observation whose flag is `true` makes the engine retain and publish
+    /// events that then arrive at `observe`. A test using `NoEngineEvents`
+    /// cannot show this -- its flag is already `false`, so it passes just as
+    /// happily against a hardcoded no-capture role factory.
+    #[test]
+    fn injected_placement_observes_kv_events_when_its_flavor_captures_them() {
+        let calls = Rc::new(RefCell::new(PolicyCalls::default()));
+        let policy_calls = Rc::clone(&calls);
+        let mut engine = SteppableAgg::<
+            DynPlacement<CapturingObservation, NoReplayMetadata>,
+            CapturingObservation,
+            NoReplayMetadata,
+        >::with_placement(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            move |dp_size, topology| {
+                Ok(Box::new(LatchedPlacement {
+                    inner: AggregatedRoundRobinPlacement::new(dp_size, topology),
+                    calls: policy_calls,
+                    is_settled: false,
+                })
+                    as DynPlacement<CapturingObservation, NoReplayMetadata>)
+            },
+        )
+        .expect("engine builds");
+
+        engine.submit(request(1, 256, 8)).expect("submit");
+        drain(&mut engine);
+
+        assert!(
+            calls.borrow().observed_batches > 0,
+            "a capturing observation flavor produced no KV events for the policy"
+        );
     }
 
     fn drain(engine: &mut dyn SteppableReplay) -> Vec<EngineEvent> {
