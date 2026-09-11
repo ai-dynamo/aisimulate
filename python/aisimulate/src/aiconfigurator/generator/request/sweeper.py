@@ -258,6 +258,8 @@ def from_sweeper_candidate(
     candidate_payload = _as_mapping(candidate, label="candidate")
     config_value = candidate_payload.get("config", candidate_payload)
     config = _as_mapping(config_value, label="candidate.config")
+    if config.get("encoder") is not None or config.get("deployment_artifact_generation_supported") is False:
+        raise SweeperCandidateError("EPD deployment generation is unsupported; cannot drop the encoder pool")
     workload_payload = _as_mapping(workload, label="workload")
 
     mode = _required_text(config, "deployment_mode")
