@@ -52,11 +52,11 @@ def main() -> None:
     args = parser.parse_args()
 
     config = SmartSearchConfig.from_yaml(args.config)
-    candidates = Sweeper(
+    result = Sweeper(
         runner_factory=ExampleRunnerFactory(),
         show_progress=False,
     ).run(config)
-    for index, candidate in enumerate(candidates):
+    for index, candidate in enumerate(result.selected_candidates):
         print(index, candidate.score, candidate.config)
 
 

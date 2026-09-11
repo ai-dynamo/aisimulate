@@ -8,11 +8,12 @@ use std::sync::Arc;
 
 use crate::engine::{Backend, TimingModel, TimingModelConfig};
 use crate::replay::{
-    ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec,
-    ReplayTopology, Replayer,
+    ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayEngineConfig, ReplayEngineFactory,
+    ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
     loadgen::{
         ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
-        WorkloadDriver, load_agentic_mooncake,
+        WekaImportOptions, WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
+        load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
 };
 use anyhow::{Context, Result, anyhow, ensure};
@@ -26,7 +27,7 @@ use serde::Deserialize;
 enum ExecutionPayload {
     Configured {
         spec: ReplaySpec,
-        traffic: RuntimeTraffic,
+        traffic: Box<RuntimeTraffic>,
     },
     Legacy(ReplaySpec),
 }
@@ -35,6 +36,10 @@ enum ExecutionPayload {
 #[serde(deny_unknown_fields)]
 struct RuntimeTraffic {
     source_type: String,
+    /// Configured deployment model used to time every agentic request. Source
+    /// model labels remain provenance on the validated graph.
+    #[serde(default)]
+    execution_model: Option<String>,
     #[serde(default)]
     load_type: Option<String>,
     #[serde(default)]
@@ -46,9 +51,13 @@ struct RuntimeTraffic {
     #[serde(default)]
     trace_block_size: Option<usize>,
     #[serde(default)]
+    weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
+    #[serde(default)]
     arrival_speedup_ratio: Option<f64>,
     #[serde(default)]
     replay_concurrency: Option<usize>,
+    #[serde(default)]
+    agentic_lanes: Option<usize>,
     #[serde(default)]
     isl: Option<usize>,
     #[serde(default)]
@@ -80,6 +89,31 @@ struct RuntimeTraffic {
     max_sim_time_ms: Option<f64>,
 }
 
+struct BuiltRuntimeInput {
+    input: ReplayRuntimeInput,
+    weka_nested_timestamp_basis: Option<WekaResolvedTimestampBasis>,
+}
+
+impl BuiltRuntimeInput {
+    fn without_weka_basis(input: ReplayRuntimeInput) -> Self {
+        Self {
+            input,
+            weka_nested_timestamp_basis: None,
+        }
+    }
+}
+
+const AGENTIC_MODEL_PROJECTION_POLICY: &str = "project_to_configured_target";
+
+fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
+    traffic
+        .execution_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .context("agentic execution requires a configured target model")
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AicTimingConfig {
@@ -92,6 +126,8 @@ struct AicTimingConfig {
     backend_version: Option<String>,
     #[serde(default = "one")]
     pp: u32,
+    #[serde(default = "one")]
+    cp_size: u32,
     #[serde(default = "one")]
     attention_dp: u32,
     #[serde(default)]
@@ -119,7 +155,11 @@ struct AicTimingConfig {
     #[serde(default)]
     free_gpu_memory_fraction: Option<f64>,
     #[serde(default)]
+    cuda_graph_reserved_bytes: u64,
+    #[serde(default)]
     systems_path: Option<String>,
+    #[serde(default)]
+    forward_model: Option<String>,
 }
 
 const fn one() -> u32 {
@@ -166,10 +206,11 @@ impl AicTimingConfig {
         ensure!(
             self.tp > 0
                 && self.pp > 0
+                && self.cp_size > 0
                 && self.attention_dp > 0
                 && self.moe_tp_size != Some(0)
                 && self.moe_ep_size != Some(0),
-            "AIC timing parallel sizes tp, pp, attention_dp, moe_tp_size, and \
+            "AIC timing parallel sizes tp, pp, cp_size, attention_dp, moe_tp_size, and \
              moe_ep_size must be positive"
         );
         ensure!(self.nextn <= 5, "AIC nextn must be in 0..=5");
@@ -179,9 +220,9 @@ impl AicTimingConfig {
         );
         if let (Some(moe_tp), Some(moe_ep)) = (self.moe_tp_size, self.moe_ep_size) {
             ensure!(
-                u64::from(self.tp) * u64::from(self.attention_dp)
-                    == u64::from(moe_tp) * u64::from(moe_ep),
-                "AIC topology requires tp * attention_dp == moe_tp_size * moe_ep_size"
+                u128::from(self.tp) * u128::from(self.attention_dp) * u128::from(self.cp_size)
+                    == u128::from(moe_tp) * u128::from(moe_ep),
+                "AIC topology requires tp * attention_dp * cp_size == moe_tp_size * moe_ep_size"
             );
         }
         Ok(())
@@ -190,6 +231,8 @@ impl AicTimingConfig {
 
 struct AicTimingModel {
     engine: Py<PyAny>,
+    use_fpm_decode_totals: bool,
+    fpm_decode_kv_ceiling: Option<u32>,
 }
 
 impl AicTimingModel {
@@ -214,12 +257,14 @@ impl AicTimingModel {
         );
         config.resolved_memory_fraction()?;
 
-        let engine = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
+        let use_fpm_decode_totals = config.forward_model.as_deref() == Some("fpm");
+        let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
             let sdk = PyModule::import(py, "aiconfigurator_core.sdk.engine")?;
             let kwargs = PyDict::new(py);
             kwargs.set_item("backend_version", config.resolved_backend_version())?;
             kwargs.set_item("tp_size", config.tp)?;
             kwargs.set_item("pp_size", config.pp)?;
+            kwargs.set_item("cp_size", config.cp_size)?;
             kwargs.set_item("attention_dp_size", config.attention_dp)?;
             kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
             kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
@@ -231,6 +276,7 @@ impl AicTimingModel {
             kwargs.set_item("nextn", config.nextn)?;
             kwargs.set_item("kv_block_size", config.kv_block_size)?;
             kwargs.set_item("systems_path", config.systems_path.as_deref())?;
+            kwargs.set_item("forward_model", config.forward_model.as_deref())?;
             let spec = sdk.getattr("compile_engine")?.call(
                 (
                     config.model.as_str(),
@@ -242,12 +288,22 @@ impl AicTimingModel {
             let aic = PyModule::import(py, "aiconfigurator_core")?
                 .getattr("AicEngine")?
                 .call_method1("from_spec", (spec, config.systems_path.as_deref()))?;
-            Ok(aic.unbind())
+            let fpm_decode_kv_ceiling = if use_fpm_decode_totals {
+                aic.call_method0("fpm_decode_kv_ceiling")?
+                    .extract::<Option<u32>>()?
+            } else {
+                None
+            };
+            Ok((aic.unbind(), fpm_decode_kv_ceiling))
         })
         .map_err(|error| {
             anyhow!("AIC timing provider could not compile the requested engine: {error}")
         })?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            use_fpm_decode_totals,
+            fpm_decode_kv_ceiling,
+        })
     }
 }
 
@@ -276,10 +332,29 @@ impl TimingModel for AicTimingModel {
     fn predict_decode_ms(
         &self,
         batch_size: usize,
-        _active_kv_tokens: usize,
+        active_kv_tokens: usize,
         mean_context_length: usize,
-        _total_kv_tokens: usize,
+        total_kv_tokens: usize,
     ) -> Result<f64> {
+        if self.use_fpm_decode_totals {
+            let total_past_kv_tokens = active_kv_tokens
+                .checked_sub(batch_size)
+                .context("active decode tokens must include one current token per request")?
+                .min(total_kv_tokens);
+            let batch_size = checked_u32(batch_size, "decode batch size")?;
+            let total_past_kv_tokens = checked_u32(total_past_kv_tokens, "total past KV tokens")?;
+            return Python::with_gil(|py| {
+                self.engine
+                    .bind(py)
+                    .call_method1(
+                        "predict_decode_latency_total",
+                        (batch_size, total_past_kv_tokens),
+                    )?
+                    .extract::<f64>()
+            })
+            .map_err(|error| anyhow!("AIC decode prediction failed: {error}"));
+        }
+
         let batch_size = checked_u32(batch_size, "decode batch size")?;
         let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
         Python::with_gil(|py| {
@@ -312,6 +387,7 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("memory_fraction_value", memory_fraction_value)?;
         kwargs.set_item("tp_size", config.tp)?;
         kwargs.set_item("pp_size", config.pp)?;
+        kwargs.set_item("cp_size", config.cp_size)?;
         kwargs.set_item("attention_dp_size", config.attention_dp)?;
         kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
         kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
@@ -320,6 +396,10 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
         kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
+        kwargs.set_item(
+            "cuda_graph_reserved_bytes",
+            config.cuda_graph_reserved_bytes,
+        )?;
         // Capacity intentionally omits NextN until AIC's Eagle memory model no
         // longer returns negative KV capacity. Timing compilation still uses it.
         kwargs.set_item("systems_path", config.systems_path.as_deref())?;
@@ -345,6 +425,10 @@ fn materialize_aic_capacity(
     estimate: impl FnOnce(&AicTimingConfig, &ReplayRoleConfig) -> Result<usize>,
 ) -> Result<()> {
     config.validate_parallel_shape()?;
+    ensure!(
+        config.pp == role.pipeline_parallel_size && config.cp_size == role.context_parallel_size,
+        "AIC PP/CP does not match replay topology"
+    );
     let engine_backend = match role.rank.backend {
         Backend::Vllm => "vllm",
         Backend::Sglang => "sglang",
@@ -389,10 +473,34 @@ fn materialize_aic_capacity(
     Ok(())
 }
 
+fn cap_role_capacity_to_fpm_decode_domain(
+    role: &mut ReplayRoleConfig,
+    decode_kv_ceiling: Option<u32>,
+    capacity_is_explicit: bool,
+) -> Result<()> {
+    let Some(decode_kv_ceiling) = decode_kv_ceiling else {
+        return Ok(());
+    };
+    if capacity_is_explicit {
+        return Ok(());
+    }
+    let covered_blocks = decode_kv_ceiling as usize / role.rank.block_size;
+    ensure!(
+        covered_blocks > 0,
+        "FPM decode KV ceiling {decode_kv_ceiling} does not cover one scheduler block of {} tokens",
+        role.rank.block_size
+    );
+    role.rank.num_gpu_blocks = role.rank.num_gpu_blocks.min(covered_blocks);
+    Ok(())
+}
+
 fn aggregated_role(engine: &ReplayEngineConfig) -> ReplayRoleConfig {
     ReplayRoleConfig {
         dp_size: engine.dp_size,
         tensor_parallel_size: engine.tensor_parallel_size,
+        pipeline_parallel_size: engine.pipeline_parallel_size,
+        context_parallel_size: engine.context_parallel_size,
+        num_gpu_blocks_is_explicit: engine.num_gpu_blocks_is_explicit,
         rank: engine.rank.clone(),
     }
 }
@@ -427,7 +535,13 @@ fn resolve_role_timing(
         capacity_is_explicit,
         estimate_aic_num_gpu_blocks,
     )?;
-    Ok(Some(Arc::new(AicTimingModel::build(config)?)))
+    let timing = AicTimingModel::build(config)?;
+    cap_role_capacity_to_fpm_decode_domain(
+        role,
+        timing.fpm_decode_kv_ceiling,
+        capacity_is_explicit,
+    )?;
+    Ok(Some(Arc::new(timing)))
 }
 
 fn runtime_paths(traffic: &RuntimeTraffic) -> Result<Vec<PathBuf>> {
@@ -559,14 +673,41 @@ fn build_runtime_input(
     traffic: RuntimeTraffic,
     engine_block_size: usize,
     allow_agentic: bool,
-) -> Result<ReplayRuntimeInput> {
+) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
+    ensure!(
+        traffic.source_type == "trace" || traffic.agentic_lanes.is_none(),
+        "agentic_lanes requires agentic trace input"
+    );
+    ensure!(
+        traffic.source_type == "trace" || traffic.weka_nested_timestamp_basis.is_none(),
+        "weka_nested_timestamp_basis requires Weka trace input"
+    );
     if traffic.source_type == "trace" {
         let paths = runtime_paths(&traffic)?;
         let trace_block_size = traffic.trace_block_size.unwrap_or(512);
         let format = traffic.trace_format.as_deref().unwrap_or("mooncake");
         let speedup = traffic.arrival_speedup_ratio.unwrap_or(1.0);
+        ensure!(
+            format == "weka" || traffic.weka_nested_timestamp_basis.is_none(),
+            "weka_nested_timestamp_basis requires Weka input"
+        );
+        ensure!(
+            traffic.agentic_lanes != Some(0),
+            "agentic_lanes must be greater than 0"
+        );
+        if traffic.agentic_lanes.is_some() {
+            ensure!(
+                matches!(format, "weka" | "agentic_mooncake" | "dynamo"),
+                "agentic_lanes requires weka, agentic_mooncake, or agentic Dynamo input"
+            );
+        }
         if format == "agentic_mooncake" {
+            require_agentic_execution_model(&traffic)?;
+            ensure!(
+                traffic.load_type.as_deref() == Some("trace_timestamps"),
+                "agentic_mooncake requires trace_timestamps load"
+            );
             ensure!(allow_agentic, "agentic trace requires aggregated topology");
             ensure!(
                 traffic.max_sim_time_ms.is_none(),
@@ -576,18 +717,71 @@ fn build_runtime_input(
                 paths.len() == 1,
                 "agentic_mooncake requires exactly one path"
             );
+            ensure!(
+                traffic.replay_concurrency.is_none(),
+                "agentic_mooncake does not support concurrency load"
+            );
             let trace = load_agentic_mooncake(&paths[0], trace_block_size)?
                 .normalize_starts()
                 .speed_up_timing(speedup)?;
-            return Ok(ReplayRuntimeInput::Workload(
-                WorkloadDriver::new_agentic_trace(trace, engine_block_size)?,
+            return Ok(BuiltRuntimeInput::without_weka_basis(
+                ReplayRuntimeInput::Workload(WorkloadDriver::new_agentic_trace_with_options(
+                    trace,
+                    engine_block_size,
+                    true,
+                    traffic.agentic_lanes,
+                )?),
             ));
+        }
+        if format == "weka" {
+            require_agentic_execution_model(&traffic)?;
+            ensure!(
+                traffic.load_type.as_deref() == Some("trace_timestamps"),
+                "weka requires trace_timestamps load"
+            );
+            ensure!(
+                allow_agentic,
+                "Weka agentic trace requires aggregated topology"
+            );
+            ensure!(
+                traffic.max_sim_time_ms.is_none(),
+                "Weka agentic trace does not support max virtual time"
+            );
+            ensure!(paths.len() == 1, "weka requires exactly one path");
+            ensure!(
+                traffic.replay_concurrency.is_none(),
+                "Weka agentic trace does not support concurrency load"
+            );
+            let requested_basis = traffic.weka_nested_timestamp_basis.unwrap_or_default();
+            let (trace, resolved_basis) = load_weka_agentic_graph_with_options(
+                &paths[0],
+                traffic.trace_block_size,
+                WekaImportOptions {
+                    nested_timestamp_basis: requested_basis,
+                },
+            )?;
+            let trace = trace.normalize_starts().speed_up_timing(speedup)?;
+            return Ok(BuiltRuntimeInput {
+                input: ReplayRuntimeInput::Workload(
+                    WorkloadDriver::new_agentic_trace_with_options(
+                        trace,
+                        engine_block_size,
+                        true,
+                        traffic.agentic_lanes,
+                    )?,
+                ),
+                weka_nested_timestamp_basis: Some(resolved_basis),
+            });
         }
         if format == "dynamo" {
             let loaded =
                 DynamoRequestTrace::from_request_trace_files(&paths, traffic.trace_block_size)?;
             let driver = match loaded {
                 DynamoRequestTrace::Standard(trace) => {
+                    ensure!(
+                        traffic.agentic_lanes.is_none(),
+                        "agentic_lanes requires an agentic Dynamo trace"
+                    );
                     let trace = trace.normalize_session_starts()?.speed_up_timing(speedup)?;
                     match traffic.replay_concurrency {
                         Some(cap) => {
@@ -597,11 +791,12 @@ fn build_runtime_input(
                     }
                 }
                 DynamoRequestTrace::Agentic(trace) => {
+                    require_agentic_execution_model(&traffic)?;
                     ensure!(
                         traffic.replay_concurrency.is_none(),
                         "agentic Dynamo trace does not support concurrency load"
                     );
-                    WorkloadDriver::new_agentic_trace(
+                    WorkloadDriver::new_agentic_trace_with_options(
                         {
                             ensure!(
                                 allow_agentic,
@@ -614,10 +809,14 @@ fn build_runtime_input(
                             trace.normalize_starts().speed_up_timing(speedup)?
                         },
                         engine_block_size,
+                        true,
+                        traffic.agentic_lanes,
                     )?
                 }
             };
-            return Ok(ReplayRuntimeInput::Workload(driver));
+            return Ok(BuiltRuntimeInput::without_weka_basis(
+                ReplayRuntimeInput::Workload(driver),
+            ));
         }
         ensure!(
             paths.len() == 1,
@@ -643,7 +842,9 @@ fn build_runtime_input(
             }
             (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
         };
-        return Ok(ReplayRuntimeInput::Workload(driver));
+        return Ok(BuiltRuntimeInput::without_weka_basis(
+            ReplayRuntimeInput::Workload(driver),
+        ));
     }
 
     ensure!(
@@ -692,27 +893,55 @@ fn build_runtime_input(
         (None, true) => WorkloadDriver::new_trace_accumulating_deltas(trace, engine_block_size)?,
         (None, false) => WorkloadDriver::new_trace(trace, engine_block_size)?,
     };
-    Ok(ReplayRuntimeInput::Workload(driver))
+    Ok(BuiltRuntimeInput::without_weka_basis(
+        ReplayRuntimeInput::Workload(driver),
+    ))
 }
 
 fn run_with_input(
     spec: ReplaySpec,
     factory: ReplayEngineFactory,
     input: Option<ReplayRuntimeInput>,
-) -> crate::replay::ReplayResult<crate::replay::ReplayReport> {
-    let replayer = Replayer::new(spec, factory)?;
-    match input {
-        Some(input) => replayer.with_runtime_input(input).run(),
-        None => replayer.run(),
+    capture_artifacts: bool,
+) -> crate::replay::ReplayResult<(crate::replay::ReplayReport, Option<ReplayArtifacts>)> {
+    let replayer = match input {
+        Some(input) => Replayer::new(spec, factory)?.with_runtime_input(input),
+        None => Replayer::new(spec, factory)?,
+    };
+    if capture_artifacts {
+        let (report, artifacts) =
+            replayer.run_with_artifacts(ReplayArtifactKvEventVisibility::Native)?;
+        Ok((report, Some(artifacts)))
+    } else {
+        Ok((replayer.run()?, None))
     }
 }
 
-fn execute_json(payload: &str) -> Result<String> {
+fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let (mut spec, mut traffic) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
-            ExecutionPayload::Configured { spec, traffic } => (spec, Some(traffic)),
+            ExecutionPayload::Configured { spec, traffic } => (spec, Some(*traffic)),
             ExecutionPayload::Legacy(spec) => (spec, None),
         };
+    let agentic_input = traffic.as_ref().and_then(|traffic| {
+        traffic
+            .trace_format
+            .as_deref()
+            .filter(|format| matches!(*format, "weka" | "agentic_mooncake" | "dynamo"))
+            .map(|format| {
+                (
+                    format.to_string(),
+                    traffic.agentic_lanes,
+                    traffic.execution_model.clone(),
+                )
+            })
+    });
+    if capture_artifacts {
+        ensure!(
+            matches!(&spec.topology, ReplayTopology::Aggregated { .. }),
+            "detailed replay artifacts require aggregated topology"
+        );
+    }
     let serialized_engine = spec.engine.clone();
     let mut engine_config: ReplayEngineConfig = if spec.engine.is_null() {
         ReplayEngineConfig::default()
@@ -721,15 +950,18 @@ fn execute_json(payload: &str) -> Result<String> {
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
 
-    let report = match spec.topology.clone() {
+    let (report, artifacts, resolved_weka_timestamp_basis) = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
             let mut role = aggregated_role(&engine_config);
-            let timing = resolve_role_timing(
-                &mut role,
-                role_capacity_is_explicit(&serialized_engine, None),
-            )?;
+            let capacity_is_explicit = role
+                .num_gpu_blocks_is_explicit
+                .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, None));
+            let timing = resolve_role_timing(&mut role, capacity_is_explicit)?;
             engine_config.dp_size = role.dp_size;
             engine_config.tensor_parallel_size = role.tensor_parallel_size;
+            engine_config.pipeline_parallel_size = role.pipeline_parallel_size;
+            engine_config.context_parallel_size = role.context_parallel_size;
+            engine_config.num_gpu_blocks_is_explicit = role.num_gpu_blocks_is_explicit;
             engine_config.rank = role.rank;
             if let Some(traffic) = traffic.as_mut()
                 && let ReplayTopology::Aggregated { workers } = &spec.topology
@@ -738,6 +970,9 @@ fn execute_json(payload: &str) -> Result<String> {
                     &ReplayRoleConfig {
                         dp_size: engine_config.dp_size,
                         tensor_parallel_size: engine_config.tensor_parallel_size,
+                        pipeline_parallel_size: engine_config.pipeline_parallel_size,
+                        context_parallel_size: engine_config.context_parallel_size,
+                        num_gpu_blocks_is_explicit: engine_config.num_gpu_blocks_is_explicit,
                         rank: engine_config.rank.clone(),
                     },
                     workers.initial_workers,
@@ -747,14 +982,19 @@ fn execute_json(payload: &str) -> Result<String> {
             }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            let input = traffic
+            let built_input = traffic
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size, true))
                 .transpose()?;
+            let resolved_basis = built_input
+                .as_ref()
+                .and_then(|built| built.weka_nested_timestamp_basis);
+            let input = built_input.map(|built| built.input);
             let factory = timing.map_or_else(
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
-            run_with_input(spec, factory, input)
+            run_with_input(spec, factory, input, capture_artifacts)
+                .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
             let mut prefill = engine_config
@@ -765,14 +1005,14 @@ fn execute_json(payload: &str) -> Result<String> {
                 .decode
                 .clone()
                 .unwrap_or_else(|| aggregated_role(&engine_config));
-            let prefill_timing = resolve_role_timing(
-                &mut prefill,
-                role_capacity_is_explicit(&serialized_engine, Some("prefill")),
-            )?;
-            let decode_timing = resolve_role_timing(
-                &mut decode,
-                role_capacity_is_explicit(&serialized_engine, Some("decode")),
-            )?;
+            let prefill_capacity_is_explicit = prefill
+                .num_gpu_blocks_is_explicit
+                .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("prefill")));
+            let decode_capacity_is_explicit = decode
+                .num_gpu_blocks_is_explicit
+                .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("decode")));
+            let prefill_timing = resolve_role_timing(&mut prefill, prefill_capacity_is_explicit)?;
+            let decode_timing = resolve_role_timing(&mut decode, decode_capacity_is_explicit)?;
             engine_config.prefill = Some(prefill);
             engine_config.decode = Some(decode);
             if let Some(traffic) = traffic.as_mut()
@@ -790,7 +1030,7 @@ fn execute_json(payload: &str) -> Result<String> {
             }
             spec.engine = serde_json::to_value(&engine_config)
                 .context("serializing materialized native engine descriptor")?;
-            let input = traffic
+            let built_input = traffic
                 .map(|traffic| {
                     build_runtime_input(
                         traffic,
@@ -804,6 +1044,10 @@ fn execute_json(payload: &str) -> Result<String> {
                     )
                 })
                 .transpose()?;
+            let resolved_basis = built_input
+                .as_ref()
+                .and_then(|built| built.weka_nested_timestamp_basis);
+            let input = built_input.map(|built| built.input);
             run_with_input(
                 spec,
                 ReplayEngineFactory::with_optional_role_timing_models(
@@ -811,14 +1055,61 @@ fn execute_json(payload: &str) -> Result<String> {
                     decode_timing,
                 ),
                 input,
+                capture_artifacts,
             )
+            .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
     }
     .context("AISimulate replay failed")?;
-    let mut serialized =
+    let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+    if report.agentic_graph.is_some()
+        && let Some((input_format, agentic_lanes, execution_model)) = agentic_input
+    {
+        let source_models = report
+            .agentic_graph
+            .as_ref()
+            .expect("agentic graph presence was checked")
+            .source_models
+            .clone();
+        let execution_model = execution_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .context("agentic execution did not declare its configured target model")?;
+        let object = report_json
+            .as_object_mut()
+            .context("AISimulate replay report did not serialize as an object")?;
+        object.insert(
+            "agentic_qualification".to_string(),
+            serde_json::Value::String("functional_only".to_string()),
+        );
+        object.insert(
+            "agentic_input_format".to_string(),
+            serde_json::Value::String(input_format),
+        );
+        object.insert(
+            "agentic_lanes".to_string(),
+            serde_json::to_value(agentic_lanes)
+                .context("serializing configured agentic lane count")?,
+        );
+        if let Some(resolved_basis) = resolved_weka_timestamp_basis {
+            object.insert(
+                "weka_nested_timestamp_basis".to_string(),
+                serde_json::Value::String(resolved_basis.as_str().to_string()),
+            );
+        }
+        object.insert(
+            "agentic_model_projection".to_string(),
+            serde_json::json!({
+                "policy": AGENTIC_MODEL_PROJECTION_POLICY,
+                "source_models": source_models,
+                "target_model": execution_model,
+            }),
+        );
+    }
     if !report.per_request.is_empty() {
-        let object = serialized
+        let object = report_json
             .as_object_mut()
             .context("AISimulate replay report did not serialize as an object")?;
         object.insert(
@@ -827,13 +1118,28 @@ fn execute_json(payload: &str) -> Result<String> {
                 .context("serializing AISimulate per-request report records")?,
         );
     }
-    serde_json::to_string(&serialized).context("serializing AISimulate replay report")
+    let output = if let Some(artifacts) = artifacts {
+        serde_json::json!({
+            "report": report_json,
+            "artifacts": artifacts,
+        })
+    } else {
+        report_json
+    };
+    serde_json::to_string(&output).context("serializing AISimulate replay output")
 }
 
 /// Execute one canonical serialized ReplaySpec and return serialized report JSON.
 #[pyfunction]
 fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
-    py.allow_threads(|| execute_json(payload))
+    py.allow_threads(|| execute_json(payload, false))
+        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+}
+
+/// Execute one fixed aggregated ReplaySpec and return report plus parity artifacts.
+#[pyfunction]
+fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<String> {
+    py.allow_threads(|| execute_json(payload, true))
         .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
 }
 
@@ -841,6 +1147,7 @@ fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
+    module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
     crate::perfmodel::register_python(module)?;
     Ok(())
 }
@@ -855,6 +1162,25 @@ mod tests {
 
     use super::*;
 
+    #[pyclass]
+    struct DecodeCoordinateProbe;
+
+    #[pymethods]
+    impl DecodeCoordinateProbe {
+        fn predict_decode_latency(
+            &self,
+            batch_size: u32,
+            mean_context_length: u32,
+            _osl: u32,
+        ) -> u64 {
+            u64::from(batch_size) * u64::from(mean_context_length + 1)
+        }
+
+        fn predict_decode_latency_total(&self, _batch_size: u32, total_past_kv_tokens: u32) -> u64 {
+            u64::from(total_past_kv_tokens)
+        }
+    }
+
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
             model: "test-model".into(),
@@ -863,6 +1189,7 @@ mod tests {
             tp: 1,
             backend_version: None,
             pp: 1,
+            cp_size: 1,
             attention_dp: 1,
             moe_tp_size: None,
             moe_ep_size: None,
@@ -876,7 +1203,9 @@ mod tests {
             gpu_memory_utilization: None,
             mem_fraction_static: None,
             free_gpu_memory_fraction: None,
+            cuda_graph_reserved_bytes: 0,
             systems_path: None,
+            forward_model: None,
         }
     }
 
@@ -904,6 +1233,45 @@ mod tests {
     }
 
     #[test]
+    fn cuda_graph_reservation_reaches_capacity_rematerialization() {
+        let mut config = aic_config();
+        config.cuda_graph_reserved_bytes = 14_559_939_133;
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+
+        materialize_aic_capacity(&config, &mut role, false, |config, _role| {
+            assert_eq!(config.cuda_graph_reserved_bytes, 14_559_939_133);
+            Ok(321)
+        })
+        .unwrap();
+
+        assert_eq!(role.rank.num_gpu_blocks, 321);
+    }
+
+    #[test]
+    fn inferred_capacity_is_capped_to_the_fpm_decode_domain() {
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+        role.rank.block_size = 16;
+        role.rank.num_gpu_blocks = 34_483;
+
+        cap_role_capacity_to_fpm_decode_domain(&mut role, Some(546_046), false).unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 34_127);
+
+        role.rank.num_gpu_blocks = 17;
+        cap_role_capacity_to_fpm_decode_domain(&mut role, Some(546_046), false).unwrap();
+        assert_eq!(
+            role.rank.num_gpu_blocks, 17,
+            "coverage must never grow capacity"
+        );
+
+        role.rank.num_gpu_blocks = 34_483;
+        cap_role_capacity_to_fpm_decode_domain(&mut role, Some(546_046), true).unwrap();
+        assert_eq!(
+            role.rank.num_gpu_blocks, 34_483,
+            "explicit capacity is authoritative"
+        );
+    }
+
+    #[test]
     fn capacity_is_detected_independently_per_role() {
         let engine = serde_json::json!({
             "prefill": {"rank": {"num_gpu_blocks": 17}},
@@ -927,7 +1295,71 @@ mod tests {
     }
 
     #[test]
-    fn json_binding_retains_authored_per_request_correlation() {
+    fn aic_timing_config_accepts_fpm_forward_model() {
+        let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+            "model": "test-model",
+            "backend": "vllm",
+            "system": "test-system",
+            "tp": 1,
+            "forward_model": "fpm"
+        }))
+        .unwrap();
+        assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+    }
+
+    #[test]
+    fn fpm_decode_timing_queries_exact_past_kv_total() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let timing = AicTimingModel {
+            engine,
+            use_fpm_decode_totals: true,
+            fpm_decode_kv_ceiling: None,
+        };
+
+        let latency = timing
+            .predict_decode_ms(35, 546_081, 15_602, 546_048)
+            .unwrap();
+
+        assert_eq!(latency, 546_046.0);
+    }
+
+    #[test]
+    fn fpm_decode_timing_caps_logical_past_kv_at_physical_capacity() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let timing = AicTimingModel {
+            engine,
+            use_fpm_decode_totals: true,
+            fpm_decode_kv_ceiling: None,
+        };
+
+        let latency = timing
+            .predict_decode_ms(35, 546_116, 15_603, 546_048)
+            .unwrap();
+
+        assert_eq!(latency, 546_048.0);
+    }
+
+    #[test]
+    fn op_level_decode_timing_keeps_legacy_mean_coordinate() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let timing = AicTimingModel {
+            engine,
+            use_fpm_decode_totals: false,
+            fpm_decode_kv_ceiling: None,
+        };
+
+        let latency = timing
+            .predict_decode_ms(35, 546_081, 15_602, 546_048)
+            .unwrap();
+
+        assert_eq!(latency, 546_105.0);
+    }
+
+    #[test]
+    fn json_bindings_share_report_and_retain_request_correlation() {
         let spec = ReplaySpec {
             version: 1,
             topology: ReplayTopology::Aggregated {
@@ -964,18 +1396,36 @@ mod tests {
                 output_tokens: 1,
                 output_token_ids: None,
                 dp_rank: None,
+                prefill_dp_rank: None,
                 session_id: Some("session-a".into()),
                 turn_index: Some(2),
                 metadata: serde_json::json!({"caller_tag": "binding"}),
             }],
         };
 
-        let output = execute_json(&serde_json::to_string(&spec).unwrap()).unwrap();
+        let payload = serde_json::to_string(&spec).unwrap();
+        let output = execute_json(&payload, false).unwrap();
         let report: serde_json::Value = serde_json::from_str(&output).unwrap();
         let record = &report["per_request"][0];
         assert_eq!(record["request_id"], "authored-id");
         assert_eq!(record["session_id"], "session-a");
         assert_eq!(record["turn_index"], 2);
         assert_eq!(record["metadata"]["caller_tag"], "binding");
+
+        let captured: serde_json::Value =
+            serde_json::from_str(&execute_json(&payload, true).unwrap()).unwrap();
+        assert_eq!(captured["report"]["completed_requests"], 1);
+        assert_eq!(
+            captured["report"]["per_request"][0]["request_id"],
+            "authored-id"
+        );
+        assert_eq!(
+            captured["artifacts"]["requests"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            captured["artifacts"]["requests"][0]["request_id"],
+            captured["report"]["per_request"][0]["uuid"]
+        );
     }
 }

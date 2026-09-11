@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import aisimulate.sweeper.search as search_mod
-from aisimulate.sweeper.config import OptimizationGoal, SmartSearchConfig
+from aisimulate.sweeper.config import OptimizationGoal, SLATarget, SmartSearchConfig
 from aisimulate.sweeper.kv_load import KVLoadResolution
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import (
@@ -53,11 +53,15 @@ def _run_sweep(
     show_progress: bool,
     on_round=None,
 ):
-    return Sweeper(
-        runner_factory=runner_factory,
-        sampler_factory=sampler_factory,
-        show_progress=show_progress,
-    ).run(config, on_round=on_round)
+    return (
+        Sweeper(
+            runner_factory=runner_factory,
+            sampler_factory=sampler_factory,
+            show_progress=show_progress,
+        )
+        .run(config, top_n=None, on_round=on_round)
+        .selected_candidates
+    )
 
 
 def _selection(seqs: int) -> dict:
@@ -145,17 +149,13 @@ def _stub(monkeypatch, branch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, preparation=None: [branch],
     )
-    monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
-    )
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
 
 
 def _pc(*, tp=4, replicas=2):
-    return ReplicaParallelConfig(
-        ParallelShape(tp=tp, dp=1, moe_tp=1, moe_ep=tp), replicas=replicas
-    )
+    return ReplicaParallelConfig(ParallelShape(tp=tp, dp=1, moe_tp=1, moe_ep=tp), replicas=replicas)
 
 
 def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
@@ -172,102 +172,11 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
 
     assert [candidate.score for candidate in candidates] == [768.0, 512.0, 256.0]
     assert all(candidate.used_gpus == 8 for candidate in candidates)
-    assert all(
-        candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates
-    )
+    assert all(candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates)
     assert candidates[0].metrics["gpu_hours"] == 1.0
     assert factory.worker_ids == [0]
     assert all(isinstance(spec, ReplaySpec) for spec in factory.runner.specs)
     assert factory.runner.closed
-
-
-def test_rapid_policy_is_bounded_seeded_and_reported_as_approximate(monkeypatch):
-    branch = _branch(_pc())
-    _stub(monkeypatch, branch)
-    seen = {}
-
-    def sampler_factory(branch, study_id, objectives=None, seed=None):
-        seen["seed"] = seed
-        return _FakeSampler(branch, study_id, objectives)
-
-    sweeper = Sweeper(
-        runner_factory=_FakeRunnerFactory(),
-        sampler_factory=sampler_factory,
-        show_progress=False,
-    )
-    candidates = sweeper.run(_config(seed=17))
-
-    assert len(candidates) == 3
-    assert seen["seed"] == 17
-    assert sweeper.last_report is not None
-    assert sweeper.last_report.as_dict() == {
-        "policy": "rapid",
-        "complete": False,
-        "approximate": True,
-        "seed": 17,
-        "candidate_budget": 33,
-        "finite_candidate_count": None,
-        "suggested_candidates": 3,
-        "evaluated_candidates": 3,
-        "feasible_candidates": 3,
-        "infeasible_candidates": 0,
-        "failed_candidates": 0,
-        "unsupported_candidates": 0,
-        "cache_hits": 0,
-        "stopping_reason": "target_reached",
-        "elapsed_seconds": sweeper.last_report.elapsed_seconds,
-    }
-
-
-def test_branch_sampler_seed_wraps_at_uint32_boundary() -> None:
-    assert search_mod._branch_sampler_seed(2**32 - 1, "agg") == 2**32 - 1
-    assert search_mod._branch_sampler_seed(2**32 - 1, "disagg") == 0
-
-
-def test_thorough_policy_visits_every_finite_candidate_and_reports_completion(
-    monkeypatch,
-):
-    pc = _pc()
-    branch = BranchSpace(
-        deployment_mode="agg",
-        parallel_configs=(pc,),
-        supported_backends={pc: frozenset({"trtllm"})},
-        knob_choices={
-            "backend": ["trtllm"],
-            "agg_max_num_batched_tokens": [8192],
-            "agg_max_num_seqs": [768, 256, 512],
-        },
-    )
-    _stub(monkeypatch, branch)
-    rounds = []
-    runner = _FakeRunner()
-    sweeper = Sweeper(
-        runner_factory=_FakeRunnerFactory(runner),
-        show_progress=False,
-    )
-
-    candidates = sweeper.run(
-        _config(
-            policy="thorough",
-            seed=29,
-            max_rounds=1,
-            candidates_per_round=2,
-        ),
-        on_round=lambda round_no, current: rounds.append((round_no, len(current))),
-    )
-
-    assert runner.calls == 3
-    assert [candidate.score for candidate in candidates] == [768.0, 512.0, 256.0]
-    assert rounds == [(1, 2), (2, 3)]
-    assert sweeper.last_report is not None
-    assert sweeper.last_report.complete
-    assert not sweeper.last_report.approximate
-    assert sweeper.last_report.seed == 29
-    assert sweeper.last_report.candidate_budget == 3
-    assert sweeper.last_report.finite_candidate_count == 3
-    assert sweeper.last_report.suggested_candidates == 3
-    assert sweeper.last_report.evaluated_candidates == 3
-    assert sweeper.last_report.stopping_reason == "space_exhausted"
 
 
 def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
@@ -275,7 +184,7 @@ def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, preparation=None: [branch],
     )
     monkeypatch.setattr(
         search_mod,
@@ -294,13 +203,8 @@ def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     )
 
     assert candidates
-    assert all(
-        candidate.config["backend_version"] == "0.18.0" for candidate in candidates
-    )
-    assert all(
-        spec.backend_deployment.backend_version == "0.18.0"
-        for spec in factory.runner.specs
-    )
+    assert all(candidate.config["backend_version"] == "0.18.0" for candidate in candidates)
+    assert all(spec.backend_deployment.backend_version == "0.18.0" for spec in factory.runner.specs)
 
 
 def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
@@ -386,9 +290,7 @@ def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
         return sampler
 
     monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
-    monkeypatch.setattr(
-        search_mod, "wait", lambda pending, **kwargs: (set(), set(pending))
-    )
+    monkeypatch.setattr(search_mod, "wait", lambda pending, **kwargs: (set(), set(pending)))
 
     candidates = _run_sweep(
         _config(parallel_evals=2, max_eval_seconds=0.01),
@@ -402,10 +304,7 @@ def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
     assert all(pool.shutdown_called for pool in pools)
     assert all(False in pool.shutdown_waits for pool in pools[:-1])
     assert pools[-1].shutdown_waits == [True]
-    assert all(
-        result[0] == "infeasible" and "exceed runtime" in result[1]
-        for result in sampler_seen["sampler"].scored
-    )
+    assert all(result[0] == "infeasible" and "exceed runtime" in result[1] for result in sampler_seen["sampler"].scored)
 
 
 def test_broken_worker_pool_is_friendly_and_always_cleaned_up(monkeypatch):
@@ -433,9 +332,7 @@ def test_broken_worker_pool_is_friendly_and_always_cleaned_up(monkeypatch):
             self.shutdown_waits.append(wait)
 
     monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
-    monkeypatch.setattr(
-        search_mod, "wait", lambda pending, **kwargs: (set(pending), set())
-    )
+    monkeypatch.setattr(search_mod, "wait", lambda pending, **kwargs: (set(pending), set()))
 
     with pytest.raises(RuntimeError, match="guard a script entrypoint"):
         _run_sweep(
@@ -583,6 +480,113 @@ def test_goodput_goal_fails_closed_when_runner_omits_metric(monkeypatch):
     )
 
 
+def test_strict_aggregate_sla_gates_before_sampler_observation_and_ranking(
+    monkeypatch,
+):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    sampler_seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        sampler_seen["sampler"] = sampler
+        return sampler
+
+    class LatencyRunner(_FakeRunner):
+        def run(self, spec: ReplaySpec) -> ReplayReport:
+            self.calls += 1
+            self.specs.append(spec)
+            args = spec.backend_deployment.agg_engine_args
+            assert args is not None
+            max_seqs = float(args["max_num_seqs"])
+            return ReplayReport(
+                metrics={
+                    "completed_requests": 1.0,
+                    "num_ttft_samples": 1.0,
+                    "num_tpot_samples": 1.0,
+                    "output_throughput_tok_s": max_seqs,
+                    "mean_ttft_ms": 100.0,
+                    "mean_tpot_ms": max_seqs / 32.0,
+                }
+            )
+
+    base = _config()
+    config = SmartSearchConfig(
+        search_space=base.search_space,
+        workload={
+            "isl": 1024,
+            "osl": 128,
+            "concurrency": 16,
+            "num_request_ratio": 2,
+        },
+        sweep=base.sweep,
+        goal={
+            "target": "throughput",
+            "sla": {"itl_ms": 16.0},
+            "strict_sla": True,
+        },
+    )
+    candidates = _run_sweep(
+        config,
+        runner_factory=_FakeRunnerFactory(runner=LatencyRunner()),
+        sampler_factory=sampler_factory,
+        show_progress=False,
+    )
+
+    assert [candidate.score for candidate in candidates] == [512.0, 256.0]
+    assert any(
+        isinstance(item, tuple) and item[0] == "infeasible" and "strict aggregate SLA violation" in item[1]
+        for item in sampler_seen["sampler"].scored
+    )
+
+
+def test_strict_aggregate_sla_rejects_reports_without_latency_samples(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    sampler_seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        sampler_seen["sampler"] = sampler
+        return sampler
+
+    class EmptyLatencyRunner(_FakeRunner):
+        def run(self, spec: ReplaySpec) -> ReplayReport:
+            self.calls += 1
+            self.specs.append(spec)
+            return ReplayReport(
+                metrics={
+                    "completed_requests": 0.0,
+                    "num_e2e_latency_samples": 0.0,
+                    "output_throughput_tok_s": 0.0,
+                    "mean_e2e_latency_ms": 0.0,
+                }
+            )
+
+    base = _config(candidates_per_round=1)
+    config = base.model_copy(
+        update={
+            "goal": OptimizationGoal(
+                target="throughput",
+                sla=SLATarget(e2e_ms=100.0),
+                strict_sla=True,
+            )
+        }
+    )
+    candidates = _run_sweep(
+        config,
+        runner_factory=_FakeRunnerFactory(runner=EmptyLatencyRunner()),
+        sampler_factory=sampler_factory,
+        show_progress=False,
+    )
+
+    assert candidates == []
+    assert any(
+        isinstance(item, tuple) and item[0] == "infeasible" and "no qualifying samples" in item[1]
+        for item in sampler_seen["sampler"].scored
+    )
+
+
 def test_replay_spec_version_is_checked_before_runner_creation(monkeypatch):
     branch = _branch(_pc())
     _stub(monkeypatch, branch)
@@ -701,7 +705,8 @@ def test_candidate_build_error_is_reported_not_raised(monkeypatch, capsys):
     assert "candidate build failed" in scored[0][1]
     output = capsys.readouterr().out
     assert "Sweeper failure reason(s): candidate build failed" in output
-    assert "(x33)" in output
+    assert "(x11)" in output
+    assert "22 cache hit(s)" in output
 
 
 def test_duplicate_full_samples_use_cache_and_are_replaced(monkeypatch):
@@ -767,8 +772,7 @@ def test_cache_identity_preserves_distinct_json_scalar_types():
     )
 
     keys = {
-        search_mod._suggestion_cache_key(suggestion, ("same-context",))
-        for suggestion in (boolean, integer, floating)
+        search_mod._suggestion_cache_key(suggestion, ("same-context",)) for suggestion in (boolean, integer, floating)
     }
     assert len(keys) == 3
 
@@ -785,11 +789,9 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, preparation=None: [agg, disagg],
     )
-    monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
-    )
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
     seen = []
 
     class RepeatingSampler(_FakeSampler):
@@ -803,9 +805,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
 
     def factory(branch, study_id, objectives=None):
         seen.append(branch.deployment_mode)
-        sampler_type = (
-            RepeatingSampler if branch.deployment_mode == "agg" else EmptySampler
-        )
+        sampler_type = RepeatingSampler if branch.deployment_mode == "agg" else EmptySampler
         return sampler_type(branch, study_id, objectives)
 
     _run_sweep(
@@ -925,7 +925,4 @@ def test_pareto_sweep_preserves_kv_load_and_returns_front(monkeypatch):
         ("throughput_per_gpu", True),
         ("throughput_per_user", True),
     ]
-    assert all(
-        set(metrics) == {"throughput_per_gpu", "throughput_per_user"}
-        for metrics in seen["sampler"].observed
-    )
+    assert all(set(metrics) == {"throughput_per_gpu", "throughput_per_user"} for metrics in seen["sampler"].observed)

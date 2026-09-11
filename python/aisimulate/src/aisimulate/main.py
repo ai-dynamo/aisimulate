@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from .afd_artifacts import write_afd_qualification_artifacts
 from .compiler import prediction_to_replay_spec
 from .config.cli import (
     CorePredictionConfig,
@@ -32,6 +34,7 @@ from .output import (
     format_recommendation_stdout,
     prepare_output_directory,
     write_prediction_report,
+    write_recommendation_result,
     write_recommendations,
     write_requests,
 )
@@ -51,7 +54,7 @@ class _CliExecutionError(RuntimeError):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aisimulate",
-        description="Predict or recommend an offline LLM serving configuration.",
+        description="Predict or recommend an LLM serving configuration.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in ("predict", "recommend"):
@@ -69,6 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
+    subparsers.choices["predict"].add_argument(
+        "--online",
+        action="store_true",
+        help="pace prediction against the real wall clock instead of virtual time",
+    )
     return parser
 
 
@@ -147,6 +155,9 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    epd = config.engine.workers.encoder is not None
+    if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
+        raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     adapter_specs = _compile_prediction_adapters(
         adapter_raw,
@@ -157,6 +168,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     spec = prediction_to_replay_spec(
         config,
         adapter_specs=adapter_specs,
+        execution_mode="online" if args.online else "offline",
     )
     factory.capabilities().require_compatible(spec)
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
@@ -166,7 +178,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             report = runner.run(
                 spec,
                 output_requirements=ReplayOutputRequirements(
-                    include_raw_report=True,
+                    include_raw_report=not epd,
                     capture_per_request=args.capture_per_request,
                 ),
             )
@@ -179,10 +191,30 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     native = report.metadata.get("native_report")
     if not isinstance(native, dict):
         native = {"summary": dict(report.metrics)}
+    if epd:
+        native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
+        # JSON stdout, like prediction.json, must identify the approximation.
+        native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
+        native["summary"]["total_gpus"] = report.metadata["total_gpus"]
     summary = native.get("summary", native)
     if not isinstance(summary, dict):
         raise RuntimeError("prediction report summary must be a JSON mapping")
+    resolved_basis = native.get("weka_nested_timestamp_basis")
+    if isinstance(resolved_basis, str):
+        source = config.traffic.source
+        requested_basis = getattr(source, "nested_timestamp_basis", None) or "auto"
+        if requested_basis == "auto":
+            sys.stderr.write(
+                "INFO: heuristically resolved one nested timestamp basis after validating the complete "
+                f"Weka corpus: requested='auto', resolved={resolved_basis!r}\n"
+            )
+        else:
+            sys.stderr.write(
+                "INFO: validated the complete Weka corpus with configured "
+                f"nested_timestamp_basis requested={requested_basis!r}, resolved={resolved_basis!r}\n"
+            )
     report_path = write_prediction_report(root, native)
+    write_afd_qualification_artifacts(root, spec)
     if args.capture_per_request:
         records = native.get("per_request")
         if not isinstance(records, list):
@@ -203,7 +235,7 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
-    candidates = run_recommendation(
+    result = run_recommendation(
         config,
         adapter_configs=adapter_raw,
         stack=args.stack,
@@ -211,11 +243,13 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         providers=adapters,
         show_progress=args.format == "table",
     )
-    if not candidates:
-        sys.stderr.write("no feasible candidate found\n")
-        return 1
-    concrete: list[dict[str, Any]] = []
-    for candidate in candidates:
+    selected: list[tuple[str, Any, dict[str, Any]]] = []
+    seen_configs: set[str] = set()
+    for candidate_id, candidate in zip(
+        result.selected_candidate_ids,
+        result.selected_candidates,
+        strict=True,
+    ):
         if candidate.prediction_config is None:
             raise RuntimeError("recommendation candidate has no concrete public config")
         candidate_core, candidate_adapters = split_config_sections(candidate.prediction_config, command="predict")
@@ -229,14 +263,24 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             stack=args.stack,
             context=_prediction_adapter_context(prediction),
         )
-        concrete.append(
-            prediction_mapping(
-                prediction,
-                {adapters[name].section: spec.config for name, spec in compiled_adapters.items()},
-            )
+        concrete = prediction_mapping(
+            prediction,
+            {adapters[name].section: spec.config for name, spec in compiled_adapters.items()},
         )
+        config_key = json.dumps(concrete, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if config_key in seen_configs:
+            continue
+        seen_configs.add(config_key)
+        selected.append((candidate_id, candidate, concrete))
+    result = result.with_selected_prediction_configs(
+        [(candidate_id, concrete) for candidate_id, _, concrete in selected]
+    )
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
-    paths = write_recommendations(root, concrete)
+    result_path = write_recommendation_result(root, result)
+    if not selected:
+        sys.stderr.write(f"no feasible candidate found; saved full result to: {result_path}\n")
+        return 1
+    paths = write_recommendations(root, [config for _, _, config in selected])
     rows = [
         {
             "rank": index,
@@ -245,10 +289,12 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             "used_gpus": candidate.used_gpus,
             "config_path": str(path),
         }
-        for index, (candidate, path) in enumerate(zip(candidates, paths, strict=True), start=1)
+        for index, ((_, candidate, _), path) in enumerate(zip(selected, paths, strict=True), start=1)
     ]
     sys.stdout.write(format_recommendation_stdout(rows, args.format))
     sys.stdout.write("\n")
+    if args.format == "table":
+        sys.stdout.write(f"Saved full result to: {result_path}\n")
     return 0
 
 

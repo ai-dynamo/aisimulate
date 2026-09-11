@@ -113,9 +113,7 @@ class _CountingSampler:
 
 
 def _branches():
-    replica = ReplicaParallelConfig(
-        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
-    )
+    replica = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     disagg = DisaggParallelConfig(prefill=replica, decode=replica)
     return [
         BranchSpace(
@@ -147,9 +145,7 @@ def test_global_trial_budget_is_split_across_branches(monkeypatch) -> None:
     _CountingSampler.created = []
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
-    monkeypatch.setattr(
-        search_module, "enumerate_branches", lambda *args, **kwargs: _branches()
-    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
     monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
     config = SmartSearchConfig.model_validate(
         {
@@ -194,9 +190,7 @@ def test_global_trial_budget_runs_branch_batches_round_robin(monkeypatch) -> Non
     _CountingSampler.created = []
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
-    monkeypatch.setattr(
-        search_module, "enumerate_branches", lambda *args, **kwargs: _branches()
-    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
     monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
     config = SmartSearchConfig.model_validate(
         {
@@ -246,9 +240,7 @@ def test_legacy_rounds_remain_branch_major_without_max_trials(monkeypatch) -> No
     _CountingSampler.created = []
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
-    monkeypatch.setattr(
-        search_module, "enumerate_branches", lambda *args, **kwargs: _branches()
-    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
     monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
     config = SmartSearchConfig.model_validate(
         {
@@ -338,9 +330,7 @@ def test_seeded_random_sampler_is_deterministic() -> None:
     second = RandomBranchSampler(branch, seed=11).suggest(4)
 
     assert [item.selection for item in first] == [item.selection for item in second]
-    assert [item.parallel_config for item in first] == [
-        item.parallel_config for item in second
-    ]
+    assert [item.parallel_config for item in first] == [item.parallel_config for item in second]
 
 
 def test_seeded_bayesian_sampler_is_deterministic() -> None:
@@ -392,5 +382,5 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
         show_progress=False,
     ).run(config)
 
-    assert result == []
+    assert result.selected_candidates == []
     assert _CountingSampler.suggested == 1

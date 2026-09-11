@@ -81,11 +81,11 @@ parallel shape, and MTP setting. The scheduler-visible role capacity is:
 
 ```text
 per_rank_usable_tokens = floor(per_rank_tokens / block_size) * block_size
-role_capacity_tokens = per_rank_usable_tokens * attention_dp * cp * replicas
+role_capacity_tokens = per_rank_usable_tokens * attention_dp * replicas
 ```
 
 Attention-DP ranks own independent sequence pools, so capacity is multiplied by
-`attention_dp` and CP; TP/EP ranks shard the same sequences and are not multipliers. For disagg,
+`attention_dp`; TP/EP ranks shard the same sequences and are not multipliers. For disagg,
 both prefill and decode are checked for candidate-specific memory feasibility, but only
 **decode** capacity drives load. For agg, **agg** capacity drives load.
 

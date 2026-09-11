@@ -18,8 +18,6 @@ goal:
   target: throughput
 
 sweep:
-  policy: rapid
-  seed: 0
   max_rounds: 1
   candidates_per_round: 2
   parallel_evals: 1

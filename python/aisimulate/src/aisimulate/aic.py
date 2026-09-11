@@ -76,16 +76,17 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
         free_gpu_memory_fraction=lowered.get("free_gpu_memory_fraction"),
         backend_version=lowered.get("aic_backend_version"),
         pp_size=(lowered.get("aic_pp_size") if lowered.get("aic_pp_size") is not None else 1),
+        cp_size=lowered.get("aic_cp_size", 1),
         moe_tp_size=lowered.get("aic_moe_tp_size"),
         moe_ep_size=lowered.get("aic_moe_ep_size"),
         attention_dp_size=attention_dp,
-        cp_size=(lowered.get("aic_cp_size") if lowered.get("aic_cp_size") is not None else 1),
         gemm_dtype=lowered.get("aic_gemm_dtype"),
         moe_dtype=lowered.get("aic_moe_dtype"),
         fmha_dtype=lowered.get("aic_fmha_dtype"),
         kv_cache_dtype=lowered.get("aic_kv_cache_dtype"),
         comm_dtype=lowered.get("aic_comm_dtype"),
         systems_path=lowered.get("systems_path"),
+        cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
     )
     return lowered
 
@@ -104,16 +105,17 @@ def estimate_num_gpu_blocks(
     free_gpu_memory_fraction: float | None = None,
     backend_version: str | None = None,
     pp_size: int = 1,
+    cp_size: int = 1,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
     attention_dp_size: int | None = None,
-    cp_size: int = 1,
     gemm_dtype: str | None = None,
     moe_dtype: str | None = None,
     fmha_dtype: str | None = None,
     kv_cache_dtype: str | None = None,
     comm_dtype: str | None = None,
     systems_path: str | None = None,
+    cuda_graph_reserved_bytes: int = 0,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -160,8 +162,8 @@ def estimate_num_gpu_blocks(
             memory_fraction_value=memory_fraction_value,
             tp_size=tp_size,
             pp_size=pp_size,
-            attention_dp_size=(attention_dp_size if attention_dp_size is not None else 1),
             cp_size=cp_size,
+            attention_dp_size=(attention_dp_size if attention_dp_size is not None else 1),
             moe_tp_size=moe_tp_size,
             moe_ep_size=moe_ep_size,
             gemm_quant_mode=_quant_mode_name("gemm", gemm_dtype),
@@ -170,6 +172,7 @@ def estimate_num_gpu_blocks(
             kvcache_quant_mode=_quant_mode_name("kvcache", kv_cache_dtype),
             comm_quant_mode=_quant_mode_name("comm", comm_dtype),
             systems_path=systems_path,
+            cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
         )
     )
 

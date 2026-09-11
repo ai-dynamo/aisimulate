@@ -41,6 +41,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from aiconfigurator.deprecation import deprecated_sweeper_entry_point
 from aiconfigurator.sdk import common, config
 from aiconfigurator.sdk.backends.base_backend import BaseBackend
 from aiconfigurator.sdk.backends.factory import get_backend
@@ -53,10 +54,15 @@ from aiconfigurator.sdk.errors import (
 from aiconfigurator.sdk.models import get_model
 from aiconfigurator.sdk.models.vit_ops import EncoderOnlyModel, build_encoder_ops
 from aiconfigurator.sdk.perf_database import PerfDatabase, has_perf_data_not_available_cause
+from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, merge_moe_comm_fallbacks
 from aiconfigurator.sdk.picking import parallel_dim, worker_gpus
 from aiconfigurator.sdk.predict import predict_agg_worker, predict_disagg_worker
 from aiconfigurator.sdk.speculative import SpeculativeDecodingProfile
-from aiconfigurator.sdk.utils import enumerate_ttft_tpot_constraints, get_model_config_from_model_path
+from aiconfigurator.sdk.utils import (
+    enumerate_ttft_tpot_constraints,
+    get_model_config_from_model_path,
+    get_vision_encoder_config_from_model_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +245,10 @@ def _rate_match_dict(
         "(e)parallel": "",
         "(e)memory": encoder_memory,
         "power_w": disagg_power_avg,
+        MOE_COMM_FALLBACKS_COLUMN: merge_moe_comm_fallbacks(
+            p.get(MOE_COMM_FALLBACKS_COLUMN),
+            d.get(MOE_COMM_FALLBACKS_COLUMN),
+        ),
     }
 
 
@@ -341,6 +351,7 @@ def _sweep_one_parallel_agg(
 
     results_dict_list: list[dict] = []
     results_per_ops_source: list[dict | None] = []
+    results_moe_comm_fallbacks: list[tuple] = []
     capped_b: list[int] = []
     saw_model_fit = False
     saw_memory_fit = False
@@ -403,12 +414,14 @@ def _sweep_one_parallel_agg(
             if result_dict and result_dict["tpot"] <= tpot_target and result_dict["ttft"] <= ttft_target:
                 results_dict_list.append(result_dict)
                 results_per_ops_source.append(summary.get_per_ops_source())
+                results_moe_comm_fallbacks.append(merge_moe_comm_fallbacks(summary.get_moe_comm_fallbacks()))
 
     if not results_dict_list:
         return pd.DataFrame(columns=common.ColumnsAgg), saw_model_fit, saw_memory_fit, perf_misses
 
     df = pd.DataFrame(results_dict_list, columns=common.ColumnsAgg).round(3)
     df["_per_ops_source"] = results_per_ops_source
+    df[MOE_COMM_FALLBACKS_COLUMN] = results_moe_comm_fallbacks
     df = df.sort_values(by="seq/s", ascending=False).round(3)
     if top_k > 0:
         df = df.head(top_k)
@@ -439,6 +452,7 @@ def _language_only_config(model_config):
     return dataclasses.replace(model_config, language_only=True)
 
 
+@deprecated_sweeper_entry_point
 def sweep_agg(
     *,
     model_path: str,
@@ -649,7 +663,7 @@ def sweep_agg(
             continue
 
     if not results_df.empty:
-        dedupe_cols = [c for c in results_df.columns if c != "_per_ops_source"]
+        dedupe_cols = [c for c in results_df.columns if c not in {"_per_ops_source", MOE_COMM_FALLBACKS_COLUMN}]
         results_df = results_df.drop_duplicates(subset=dedupe_cols, ignore_index=True)
         results_df = results_df.sort_values(by="tokens/s/gpu", ascending=False).reset_index(drop=True)
         return results_df
@@ -661,12 +675,13 @@ def sweep_agg(
         ) from terminal_error
     if not saw_model_fit:
         if perf_misses:
-            raise NoFeasibleConfigError(
+            message = (
                 f"sweep_agg: no results — {perf_misses} batch point(s) had no answerable perf data "
                 "(e.g. FPM queries outside the collected domain, or no collected cell matches the "
                 "model identity/quant modes). Check the collected cells against the resolved quant "
                 "configuration, or use forward_model='op_level'."
             )
+            raise NoFeasibleConfigError(message) from PerfDataNotAvailableError(message)
         raise InsufficientMemoryError(
             "sweep_agg: no results — model does not fit in GPU memory for any parallel config. "
             "Try increasing --total-gpus, using a quantized model, or a system with more VRAM per GPU."
@@ -760,7 +775,11 @@ def _get_disagg_worker_candidates(
                     continue
                 if not summary.check_oom() and not summary.check_kv_cache_oom():
                     all_configs_oom = False
-                    result_rows.append(summary.get_summary_df())
+                    summary_df = summary.get_summary_df().copy()
+                    summary_df[MOE_COMM_FALLBACKS_COLUMN] = [
+                        merge_moe_comm_fallbacks(summary.get_moe_comm_fallbacks())
+                    ] * len(summary_df)
+                    result_rows.append(summary_df)
                 else:
                     # Larger b will always OOM. check_kv_cache_oom covers the
                     # fraction-based budget (e.g. vLLM only manages
@@ -792,12 +811,13 @@ def _get_disagg_worker_candidates(
             ) from terminal_error
         if all_configs_oom:
             if perf_misses:
-                raise NoFeasibleConfigError(
+                message = (
                     f"sweep_disagg/{role}: no results — {perf_misses} batch point(s) had no answerable "
                     "perf data (e.g. FPM queries outside the collected domain, or no collected cell "
                     "matches the model identity/quant modes). Check the collected cells against the "
                     "resolved quant configuration, or use forward_model='op_level'."
                 )
+                raise NoFeasibleConfigError(message) from PerfDataNotAvailableError(message)
             raise InsufficientMemoryError(
                 f"sweep_disagg/{role}: no results — model does not fit in GPU memory for any parallel config. "
                 "Try increasing GPU budget, using a quantized model, or a system with more VRAM per GPU."
@@ -840,12 +860,15 @@ def _get_encoder_worker_candidates(
     power_w / power_coverage``.
     """
     backend = get_backend(backend_name)
-    enc_cfg = get_model_config_from_model_path(model_path).get("extra_params")
+    model_info = get_model_config_from_model_path(model_path)
+    enc_cfg = model_info.get("extra_params")
+    if isinstance(enc_cfg, common.KimiK3Config):
+        # K3 nests its generic ViT config alongside the language geometry.
+        # Other nested families may need specialized encoder builders.
+        enc_cfg = get_vision_encoder_config_from_model_info(model_info)
     if not isinstance(enc_cfg, common.VisionEncoderConfig):
         # Not a VL model -> EPD cannot apply (config error, not a type bug).
-        raise ValueError(  # noqa: TRY004
-            f"EPD (encoder disaggregation) requested but model {model_path!r} has no vision encoder."
-        )
+        raise ValueError(f"EPD (encoder disaggregation) requested but model {model_path!r} has no vision encoder.")
     if BaseBackend._visual_context_tokens_from_encoder_config(enc_cfg, runtime_config) <= 0:
         raise ValueError(
             "EPD (encoder disaggregation) requested but the workload has no image input; "
@@ -1262,11 +1285,12 @@ def _find_best_disagg_under_constraint(
         logger.debug("sweep_disagg: no disagg summary after constraints")
         return None
 
-    df = pd.DataFrame(all_category_results, columns=common.ColumnsDisagg).round(3)
+    df = pd.DataFrame(all_category_results, columns=[*common.ColumnsDisagg, MOE_COMM_FALLBACKS_COLUMN]).round(3)
     df = df.sort_values(by=["tokens/s/gpu"], ascending=[False]).head(return_top_k).reset_index(drop=True)
     return df
 
 
+@deprecated_sweeper_entry_point
 def sweep_disagg(
     *,
     model_path: str,
@@ -1315,7 +1339,7 @@ def sweep_disagg(
     hetero-disagg (prefill and decode on different systems).
 
     ``enable_epd`` switches VL disagg into EPD: the vision encoder runs on
-    dedicated encode workers, prefill workers become language-only, TTFT
+    dedicated encode workers, prefill/decode workers become language-only, TTFT
     gains the encode batch latency, and the encode pool joins the worker
     rate matching (``(e)*`` columns in the output).
 
@@ -1401,8 +1425,9 @@ def sweep_disagg(
             backend_name=prefill_backend_name,
             latency_correction=encoder_latency_correction,
         )
-        # EPD prefill workers are language-only (vision tokens stay in context).
+        # Both EPD language workers omit the encoder; vision tokens stay in context.
         prefill_model_config = _language_only_config(prefill_model_config)
+        decode_model_config = _language_only_config(decode_model_config)
 
     prefill_summary_df = _get_disagg_worker_candidates(
         model_path=model_path,
@@ -1562,8 +1587,11 @@ def sweep_disagg(
         logger.debug("sweep_disagg: no disagg result satisfies any constraint")
         return pd.DataFrame(columns=common.ColumnsDisagg)
 
+    dedupe_cols = [
+        column for column in disagg_df.columns if column not in {"_per_ops_source", MOE_COMM_FALLBACKS_COLUMN}
+    ]
     return (
-        disagg_df.drop_duplicates(ignore_index=True)
+        disagg_df.drop_duplicates(subset=dedupe_cols, ignore_index=True)
         .sort_values(by="tokens/s/gpu", ascending=False)
         .reset_index(drop=True)
     )
@@ -1574,6 +1602,7 @@ def sweep_disagg(
 # ---------------------------------------------------------------------------
 
 
+@deprecated_sweeper_entry_point
 def sweep_afd(
     *,
     model_path: str,

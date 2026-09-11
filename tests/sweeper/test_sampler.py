@@ -20,7 +20,6 @@ from aisimulate.sweeper.parallel_projection import (
     USED_GPU_RATIO,
 )
 from aisimulate.sweeper.sampler import (
-    ExhaustiveBranchSampler,
     Suggestion,
     _decoder_for,
     _index_decoder,
@@ -31,14 +30,10 @@ from aisimulate.sweeper.search_space import BranchSpace, ConditionalDimensionSpa
 
 pytestmark = [
     pytest.mark.timeout(300),
-    pytest.mark.filterwarnings(
-        r"ignore::DeprecationWarning:(jax|jaxlib|equinox|jaxopt)(\..*)?"
-    ),
+    pytest.mark.filterwarnings(r"ignore::DeprecationWarning:(jax|jaxlib|equinox|jaxopt)(\..*)?"),
     pytest.mark.filterwarnings("ignore:.*JAXopt is no longer maintained.*"),
     # google-vizier 0.1.21 still uses RandomState.random_integers internally.
-    pytest.mark.filterwarnings(
-        "ignore:This function is deprecated.*call randint.*:DeprecationWarning"
-    ),
+    pytest.mark.filterwarnings("ignore:This function is deprecated.*call randint.*:DeprecationWarning"),
 ]
 
 
@@ -86,10 +81,7 @@ def test_index_decoder_maps_index_back_to_entry():
 
 
 def _branch() -> BranchSpace:
-    configs = tuple(
-        ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=r)
-        for r in (1, 2, 4)
-    )
+    configs = tuple(ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=r) for r in (1, 2, 4))
     return BranchSpace(
         deployment_mode="agg",
         parallel_configs=configs,
@@ -109,164 +101,6 @@ def _branch() -> BranchSpace:
             ],  # discrete float
         },
     )
-
-
-def test_thorough_sampler_enumerates_complete_finite_space_canonically():
-    pc1, pc2, _ = _branch().parallel_configs
-    branch = BranchSpace(
-        deployment_mode="agg",
-        parallel_configs=(pc2, pc1),
-        supported_backends={
-            pc1: frozenset({"vllm"}),
-            pc2: frozenset({"vllm", "trtllm"}),
-        },
-        knob_choices={
-            "backend": ["trtllm", "vllm", "vllm"],
-            "agg_max_num_seqs": [512, 256],
-            "adapter::example::enabled": [True, False],
-        },
-    )
-
-    first = ExhaustiveBranchSampler(branch)
-    first_suggestions = first.suggest(100)
-    second = ExhaustiveBranchSampler(branch)
-    second_suggestions = second.suggest(100)
-
-    # pc1 has one supported backend and pc2 has two: (1 + 2) * 2 * 2.
-    assert first.candidate_count == 12
-    assert len(first_suggestions) == first.candidate_count
-    assert [
-        (suggestion.selection, suggestion.parallel_config)
-        for suggestion in first_suggestions
-    ] == [
-        (suggestion.selection, suggestion.parallel_config)
-        for suggestion in second_suggestions
-    ]
-    assert first.suggest(1) == []
-    assert all(
-        suggestion.selection["backend"]
-        in branch.supported_backends[suggestion.parallel_config]
-        for suggestion in first_suggestions
-    )
-
-
-def test_thorough_candidate_count_includes_execution_and_topology_dimensions():
-    tp = ReplicaParallelConfig(
-        ParallelShape(tp=4, pp=1, dp=1, moe_tp=1, moe_ep=1, cp=1), replicas=1
-    )
-    pp = ReplicaParallelConfig(
-        ParallelShape(tp=2, pp=2, dp=1, moe_tp=1, moe_ep=1, cp=1), replicas=1
-    )
-    branch = BranchSpace(
-        deployment_mode="agg",
-        parallel_configs=(tp, pp),
-        supported_backends={
-            tp: frozenset({"vllm"}),
-            pp: frozenset({"vllm"}),
-        },
-        knob_choices={
-            "backend": ["vllm"],
-            "agg_batch_size": [16, 32],
-            "agg_context_tokens": [4096, 8192],
-        },
-    )
-
-    sampler = ExhaustiveBranchSampler(branch)
-    suggestions = sampler.suggest(100)
-
-    # 2 legal topologies * 2 actual batches * 2 actual context limits.
-    assert sampler.candidate_count == 8
-    assert len(suggestions) == 8
-    assert {suggestion.parallel_config for suggestion in suggestions} == {tp, pp}
-
-
-def test_thorough_sampler_enumerates_integer_ranges() -> None:
-    branch = _branch()
-    ranged = BranchSpace(
-        deployment_mode=branch.deployment_mode,
-        parallel_configs=(branch.parallel_configs[0],),
-        supported_backends={branch.parallel_configs[0]: frozenset({"trtllm"})},
-        knob_choices={"backend": ["trtllm"]},
-        integer_ranges={"agg_max_num_seqs": (2, 4)},
-    )
-
-    sampler = ExhaustiveBranchSampler(ranged)
-    suggestions = sampler.suggest(10)
-
-    assert sampler.candidate_count == 3
-    assert [suggestion.selection["agg_max_num_seqs"] for suggestion in suggestions] == [
-        2,
-        3,
-        4,
-    ]
-
-
-def test_thorough_sampler_enumerates_discrete_conditional_arms() -> None:
-    branch = _branch()
-    conditional = BranchSpace(
-        deployment_mode=branch.deployment_mode,
-        parallel_configs=(branch.parallel_configs[0],),
-        supported_backends={branch.parallel_configs[0]: frozenset({"trtllm"})},
-        knob_choices={
-            "backend": ["trtllm"],
-            "adapter::router::mode": ["round_robin", "kv_router"],
-        },
-        conditional_dimensions=(
-            ConditionalDimensionSpace(
-                selector="adapter::router::mode",
-                values=("kv_router",),
-                knob_choices={"adapter::router::load_model": ["none", "aic"]},
-            ),
-        ),
-    )
-
-    sampler = ExhaustiveBranchSampler(conditional)
-    suggestions = sampler.suggest(10)
-
-    assert sampler.candidate_count == 3
-    assert [suggestion.selection for suggestion in suggestions] == [
-        {
-            "deployment_mode": "agg",
-            "adapter::router::mode": "round_robin",
-            "backend": "trtllm",
-        },
-        {
-            "deployment_mode": "agg",
-            "adapter::router::load_model": "none",
-            "adapter::router::mode": "kv_router",
-            "backend": "trtllm",
-        },
-        {
-            "deployment_mode": "agg",
-            "adapter::router::load_model": "aic",
-            "adapter::router::mode": "kv_router",
-            "backend": "trtllm",
-        },
-    ]
-
-
-def test_thorough_sampler_rejects_continuous_ranges():
-    branch = _branch_with_kv_load()
-
-    with pytest.raises(ValueError, match="finite discrete space.*kv_load_ratio"):
-        ExhaustiveBranchSampler(branch)
-
-
-def test_seeded_rapid_sampler_reproduces_suggestion_sequence(monkeypatch):
-    monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
-    first = make_branch_sampler(_branch(), study_id="seeded_first", seed=73)
-    second = make_branch_sampler(_branch(), study_id="seeded_second", seed=73)
-
-    first_suggestions = first.suggest(count=8)
-    second_suggestions = second.suggest(count=8)
-
-    assert [
-        (suggestion.selection, suggestion.parallel_config)
-        for suggestion in first_suggestions
-    ] == [
-        (suggestion.selection, suggestion.parallel_config)
-        for suggestion in second_suggestions
-    ]
 
 
 def _conditional_branch() -> BranchSpace:
@@ -298,9 +132,7 @@ def _conditional_branch() -> BranchSpace:
 
 
 def _assert_conditional_suggestions(suggestions: list[Suggestion]) -> None:
-    modes = {
-        suggestion.selection["adapter::router::mode"] for suggestion in suggestions
-    }
+    modes = {suggestion.selection["adapter::router::mode"] for suggestion in suggestions}
     assert modes == {"round_robin", "kv_router"}
     for suggestion in suggestions:
         selection = suggestion.selection
@@ -328,12 +160,8 @@ def test_random_sampler_only_samples_active_conditional_children() -> None:
 
 
 def test_infeasible_independent_parallel_suggestion_is_returned_for_tell() -> None:
-    prefill = ReplicaParallelConfig(
-        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
-    )
-    decode = ReplicaParallelConfig(
-        ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
-    )
+    prefill = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    decode = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     legal = DisaggParallelConfig(prefill=prefill, decode=decode)
     branch = BranchSpace(
         deployment_mode="disagg",
@@ -396,10 +224,7 @@ def test_suggest_produces_valid_selections():
     for s in suggestions:
         assert isinstance(s, Suggestion)
         # constants injected; branch identity present
-        assert (
-            s.selection["deployment_mode"] == "agg"
-            and s.selection["backend"] == "trtllm"
-        )
+        assert s.selection["deployment_mode"] == "agg" and s.selection["backend"] == "trtllm"
         assert s.selection["adapter::example::mode"] == "static"
         assert s.selection["adapter::example::sensitivity"] == "default"
         # searched knobs land within their choice sets, native types preserved
@@ -420,9 +245,7 @@ def test_adapter_dict_choice_decodes_via_index():
         "throughput_adjustment_interval_seconds": 240,
         "load_adjustment_interval_seconds": 5,
     }
-    pc = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=1
-    )
+    pc = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=1)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(pc,),
@@ -447,9 +270,7 @@ def test_adapter_dict_choice_decodes_via_index():
 def test_arbitrary_json_choices_decode_via_index(monkeypatch):
     monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
     choices = [True, None, ["nested"], {"mode": "structured"}, "literal", 1.5]
-    pc = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=1
-    )
+    pc = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=1)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(pc,),
@@ -466,9 +287,7 @@ def test_arbitrary_json_choices_decode_via_index(monkeypatch):
     assert suggestions
     for suggestion in suggestions:
         selected = suggestion.selection["adapter::example::json_choice"]
-        assert any(
-            type(selected) is type(choice) and selected == choice for choice in choices
-        )
+        assert any(type(selected) is type(choice) and selected == choice for choice in choices)
 
 
 def test_parallel_suggestions_project_to_valid_configs(monkeypatch):
@@ -483,20 +302,13 @@ def test_parallel_suggestions_project_to_valid_configs(monkeypatch):
         assert USED_GPU_RATIO in suggestion.handle.parameters
         assert suggestion.projection is not None
         assert suggestion.parallel_config in branch.parallel_configs
-        assert (
-            suggestion.selection["backend"]
-            in branch.supported_backends[suggestion.parallel_config]
-        )
+        assert suggestion.selection["backend"] in branch.supported_backends[suggestion.parallel_config]
 
 
 def test_parallel_search_exposes_ordered_size_and_mode_dimensions(monkeypatch):
     monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
-    tep4 = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=4
-    )
-    dtp8 = ReplicaParallelConfig(
-        ParallelShape(tp=1, dp=8, moe_tp=8, moe_ep=1), replicas=2
-    )
+    tep4 = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=4)
+    dtp8 = ReplicaParallelConfig(ParallelShape(tp=1, dp=8, moe_tp=8, moe_ep=1), replicas=2)
     configs = (tep4, dtp8)
     branch = BranchSpace(
         deployment_mode="agg",
@@ -520,9 +332,7 @@ def test_parallel_search_exposes_ordered_size_and_mode_dimensions(monkeypatch):
 
 def test_single_parallel_config_is_pinned(monkeypatch):
     monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
-    pinned = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=8
-    )
+    pinned = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=8)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(pinned,),
@@ -537,16 +347,12 @@ def test_single_parallel_config_is_pinned(monkeypatch):
     assert suggestions
     assert all(suggestion.parallel_config == pinned for suggestion in suggestions)
     assert all(suggestion.projection is None for suggestion in suggestions)
-    assert all(
-        USED_GPU_RATIO not in suggestion.handle.parameters for suggestion in suggestions
-    )
+    assert all(USED_GPU_RATIO not in suggestion.handle.parameters for suggestion in suggestions)
 
 
 def test_fully_pinned_study_uses_only_internal_constant(monkeypatch):
     monkeypatch.setenv("AISIMULATE_SWEEPER_VIZIER_ALGO", "RANDOM_SEARCH")
-    pinned = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=8
-    )
+    pinned = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=8)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(pinned,),
@@ -582,9 +388,7 @@ def test_suggest_observe_round_trips():
     # tracks the best observed score. (Convergence quality isn't asserted —
     # Vizier GP-bandit is slow, ~seconds per suggest, so keep trial counts low.)
     branch = _branch()
-    sampler = make_branch_sampler(
-        branch, study_id=f"test_round_trip_{uuid.uuid4().hex}"
-    )
+    sampler = make_branch_sampler(branch, study_id=f"test_round_trip_{uuid.uuid4().hex}")
     scores = []
     for _ in range(2):
         for s in sampler.suggest(count=2):

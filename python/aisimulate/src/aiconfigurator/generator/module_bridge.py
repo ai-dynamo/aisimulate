@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+from aiconfigurator.sdk.config import has_video_input
 from aiconfigurator.sdk.perf_database import get_database
 from aiconfigurator.sdk.task_v2 import Task
 
@@ -113,6 +114,22 @@ def task_config_to_generator_config(
 
     overrides = copy.deepcopy(generator_overrides or {})
 
+    # The deployment generator has no video benchmark schema yet. Refuse to
+    # save a text-only artifact for a task whose estimate included video
+    # encoder work; callers may still estimate it normally without --save-dir.
+    _has_video_workload = has_video_input(
+        num_videos=getattr(task_config, "num_videos_per_request", 0),
+        video_height=getattr(task_config, "video_height", 0),
+        video_width=getattr(task_config, "video_width", 0),
+        video_frames=getattr(task_config, "video_frames", 0),
+        num_video_tokens=getattr(task_config, "num_video_tokens", 0),
+    )
+    if _has_video_workload:
+        raise NotImplementedError(
+            "Saved deployment artifacts do not support video workloads yet; "
+            "run without --save-dir or use an image workload."
+        )
+
     # Encoder parallelism is deployment-relevant only when the task models an
     # image workload (same gate as the BenchConfig seeding below); text-only
     # tasks must not grow multimodal engine flags.
@@ -124,6 +141,7 @@ def task_config_to_generator_config(
         and (_num_images is None or _num_images > 0)
     ):
         encoder_dp = bool(getattr(task_config, "enable_encoder_dp", True))
+    attention_backend = getattr(task_config, "attention_backend", None)
 
     def _build_worker_params(prefix: str, extra_overrides: dict | None) -> tuple[dict, int]:
         workers = _safe_int(_series_val(result_df, f"{prefix}workers", 1), 1)
@@ -160,8 +178,24 @@ def task_config_to_generator_config(
             worker_payload["kv_cache_dtype"] = quant["kvcache_quant_mode"]
         if encoder_dp is not None:
             worker_payload["enable_encoder_dp"] = encoder_dp
+        if attention_backend is not None:
+            worker_payload["attention_backend"] = attention_backend
 
         worker_payload = _deep_merge(worker_payload, extra_overrides)
+        effective_attention_backend = worker_payload.get("attention_backend")
+        if effective_attention_backend is not None:
+            # Task normalization promotes CLI strings to AttentionBackend
+            # StrEnum members. Keep the generator bridge payload limited to
+            # serialization-safe primitives after task/override merging.
+            effective_attention_backend = str(effective_attention_backend)
+            worker_payload["attention_backend"] = effective_attention_backend
+        if effective_attention_backend == "default":
+            worker_payload.pop("attention_backend")
+        elif task_config.primary_backend_name == "sglang" and effective_attention_backend == "fla":
+            raise ValueError(
+                f"SGLang {task_config.primary_backend_version} rejects attention_backend='fla'; "
+                "use 'default' to let SGLang choose its attention backend or select a supported named backend."
+            )
         return worker_payload, max(workers, 1)
 
     backend_name = task_config.primary_backend_name

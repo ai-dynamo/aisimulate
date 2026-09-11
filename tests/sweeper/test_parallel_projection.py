@@ -12,11 +12,9 @@ from aisimulate.sweeper.parallel_projection import (
     AGG_ATTENTION_MODE,
     AGG_FFN_MODE,
     AGG_GPUS_PER_ENGINE,
-    AGG_PIPELINE_PARALLEL,
     DECODE_ATTENTION_MODE,
     DECODE_FFN_MODE,
     DECODE_GPUS_PER_ENGINE,
-    DECODE_PIPELINE_PARALLEL,
     PARALLEL_CONFIG_CHOICE,
     PREFILL_ATTENTION_MODE,
     PREFILL_FFN_MODE,
@@ -29,9 +27,7 @@ from aisimulate.sweeper.parallel_projection import (
 from aisimulate.sweeper.search_space import BranchSpace
 
 
-def _role(
-    *, gpus: int, attention: str, ffn: str, replicas: int
-) -> ReplicaParallelConfig:
+def _role(*, gpus: int, attention: str, ffn: str, replicas: int) -> ReplicaParallelConfig:
     tp, dp = (gpus, 1) if attention == "tp" else (1, gpus)
     moe_tp, moe_ep = (gpus, 1) if ffn == "tp" else (1, gpus)
     return ReplicaParallelConfig(
@@ -56,9 +52,7 @@ def test_agg_parameters_have_structural_defaults():
         _role(gpus=4, attention="tp", ffn="ep", replicas=4),
         _role(gpus=16, attention="dp", ffn="ep", replicas=2),
     ]
-    branch = _branch(
-        "agg", configs, {config: frozenset({"vllm"}) for config in configs}
-    )
+    branch = _branch("agg", configs, {config: frozenset({"vllm"}) for config in configs})
 
     projector = ParallelConfigProjector(branch)
     parameters = {parameter.name: parameter for parameter in projector.parameters}
@@ -74,9 +68,7 @@ def test_agg_parameters_have_structural_defaults():
 def test_agg_exact_valid_point_projects_to_itself():
     tep4 = _role(gpus=4, attention="tp", ffn="ep", replicas=4)
     dep8 = _role(gpus=8, attention="dp", ffn="ep", replicas=2)
-    branch = _branch(
-        "agg", [tep4, dep8], {tep4: frozenset({"vllm"}), dep8: frozenset({"vllm"})}
-    )
+    branch = _branch("agg", [tep4, dep8], {tep4: frozenset({"vllm"}), dep8: frozenset({"vllm"})})
     projector = ParallelConfigProjector(branch)
 
     projection = projector.project(
@@ -147,9 +139,7 @@ def test_disagg_projection_uses_role_features_and_joint_gpu_budget():
         decode=_role(gpus=8, attention="dp", ffn="tp", replicas=3),
     )
     configs = [balanced, decode_heavy]
-    branch = _branch(
-        "disagg", configs, {config: frozenset({"sglang"}) for config in configs}
-    )
+    branch = _branch("disagg", configs, {config: frozenset({"sglang"}) for config in configs})
     projector = ParallelConfigProjector(branch)
 
     projection = projector.project(
@@ -193,40 +183,6 @@ def test_dense_pool_does_not_expose_ffn_mode():
     assert AGG_FFN_MODE not in {parameter.name for parameter in projector.parameters}
 
 
-def test_rapid_projection_distinguishes_pipeline_and_context_parallel_shapes():
-    pipeline = ReplicaParallelConfig(
-        ParallelShape(tp=2, pp=2, dp=1, moe_tp=1, moe_ep=1, cp=1), replicas=2
-    )
-    context = ReplicaParallelConfig(
-        ParallelShape(tp=1, pp=1, dp=1, moe_tp=1, moe_ep=4, cp=4), replicas=2
-    )
-    branch = _branch(
-        "agg",
-        [pipeline, context],
-        {
-            pipeline: frozenset({"sglang"}),
-            context: frozenset({"sglang"}),
-        },
-        budget=8,
-    )
-    projector = ParallelConfigProjector(branch)
-
-    projection = projector.project(
-        {
-            USED_GPU_RATIO: 1.0,
-            AGG_GPUS_PER_ENGINE: 4,
-            AGG_ATTENTION_MODE: "cp",
-            AGG_PIPELINE_PARALLEL: 1,
-            AGG_FFN_MODE: "ep",
-        },
-        "sglang",
-    )
-
-    assert projection.config == context
-    assert projection.actual_features[AGG_ATTENTION_MODE] == "cp"
-    assert projection.actual_features[AGG_PIPELINE_PARALLEL] == 1.0
-
-
 def test_custom_parallel_preset_is_one_flat_choice() -> None:
     first = _role(gpus=1, attention="tp", ffn="tp", replicas=1)
     second = _role(gpus=4, attention="tp", ffn="tp", replicas=2)
@@ -243,9 +199,7 @@ def test_custom_parallel_preset_is_one_flat_choice() -> None:
 
     projector = ParallelConfigProjector(branch)
 
-    assert [parameter.name for parameter in projector.parameters] == [
-        PARALLEL_CONFIG_CHOICE
-    ]
+    assert [parameter.name for parameter in projector.parameters] == [PARALLEL_CONFIG_CHOICE]
     assert projector.project({PARALLEL_CONFIG_CHOICE: 1}, "vllm").config == second
 
 
@@ -263,7 +217,6 @@ def test_preset_off_exposes_independent_parallel_knobs() -> None:
             "attention_dp": (1,),
             "moe_tp": (1,),
             "moe_ep": (1,),
-            "cp": (1, 2),
         },
     )
 
@@ -276,7 +229,6 @@ def test_preset_off_exposes_independent_parallel_knobs() -> None:
             "attention_dp": 1,
             "moe_tp": 1,
             "moe_ep": 1,
-            "cp": 2,
         },
         "vllm",
     )
@@ -288,54 +240,8 @@ def test_preset_off_exposes_independent_parallel_knobs() -> None:
         "attention_dp",
         "moe_tp",
         "moe_ep",
-        "cp",
     }
-    assert projection.config == ReplicaParallelConfig(
-        shape=ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1, cp=2), replicas=2
-    )
-
-
-def test_hybrid_default_role_uses_role_specific_pipeline_dimension() -> None:
-    prefill = ReplicaParallelConfig(
-        ParallelShape(tp=1, pp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
-    )
-    decode_tp = ReplicaParallelConfig(
-        ParallelShape(tp=2, pp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1
-    )
-    decode_pp = ReplicaParallelConfig(
-        ParallelShape(tp=1, pp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1
-    )
-    tp_config = DisaggParallelConfig(prefill=prefill, decode=decode_tp)
-    pp_config = DisaggParallelConfig(prefill=prefill, decode=decode_pp)
-    branch = BranchSpace(
-        deployment_mode="disagg",
-        parallel_configs=(tp_config, pp_config),
-        supported_backends={
-            tp_config: frozenset({"vllm"}),
-            pp_config: frozenset({"vllm"}),
-        },
-        knob_choices={"backend": ["vllm"]},
-        gpu_budget=4,
-        parallel_custom_choices={"prefill": (prefill,)},
-    )
-    projector = ParallelConfigProjector(branch)
-
-    projection = projector.project(
-        {
-            f"prefill_{PARALLEL_CONFIG_CHOICE}": 0,
-            USED_GPU_RATIO: 0.75,
-            PREFILL_GPU_SHARE: 1 / 3,
-            DECODE_GPUS_PER_ENGINE: 2,
-            DECODE_ATTENTION_MODE: "tp",
-            DECODE_PIPELINE_PARALLEL: 2,
-        },
-        "vllm",
-    )
-
-    assert DECODE_PIPELINE_PARALLEL in {
-        parameter.name for parameter in projector.parameters
-    }
-    assert projection.config == pp_config
+    assert projection.config == ReplicaParallelConfig(shape=ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=2)
 
 
 def test_independent_parallel_domain_preserves_explicit_scale() -> None:

@@ -29,6 +29,22 @@ the same contract. The dependency points only toward this crate.
   and attention-DP
 - `disagg.rs` for disaggregated prefill/decode replay
 
+### AgentX input boundary
+
+AISimulate owns raw Weka ingestion. `WekaImporter` deterministically preflights
+a published Weka JSON object, JSONL corpus, or directory and lowers it to
+Agentic Mooncake v2 rows. A JSONL file may contain multiple plays and published
+AgentX plays may contain multiple request models;
+`load_weka_agentic_graph` validates those rows as a `ValidatedAgenticGraph`.
+Agentic Mooncake v2 is the optional materialized interchange format, not a
+required preprocessing step. A downstream Dynamo integration should call this
+public loader and must not maintain a second Weka parser or lowering pipeline.
+
+Run `python3 scripts/qualify_weka_samples.py` from the repository root to check
+the importer against two revision-pinned rows from the public SemiAnalysis
+`cc-traces-weka-062126-256k` dataset. The rows are held in a temporary directory
+and deleted when the check exits; the complete 570 MB corpus is not downloaded.
+
 ## File Map
 
 - `src/replay/replayer.rs`
@@ -50,6 +66,9 @@ the same contract. The dependency points only toward this crate.
 - `src/replay/runtime_utils.rs`
   Shared helpers used by `agg.rs` and `disagg.rs`: event scheduling,
   `ReadyWorkerCompletions`, and `next_timestamp`.
+- `src/replay/telemetry.rs`
+  Serializable, policy-neutral telemetry snapshots and the optional observer
+  contract.
 - `src/replay/progress.rs`
   `ReplayProgress`, the indicatif-based progress bar used by the harnesses.
 - `src/replay/report.rs`
@@ -92,6 +111,7 @@ It only advances `now_ms` to the next meaningful timestamp:
 
 - next request arrival
 - next worker completion event
+- next telemetry or scaling tick while work remains
 
 ### Worker Model
 
@@ -126,6 +146,7 @@ pub(crate) enum SimulationEventKind<Events> {
     EnginePassCompletion(EnginePassCompletion<Events>),
     TransferComplete { handoff_id },
     WorkerReady { stage, worker_id },
+    TelemetryTick,
     ScalingTick,
 }
 ```
@@ -135,7 +156,13 @@ pub(crate) enum SimulationEventKind<Events> {
 - `TransferComplete` advances a disaggregated request after modeled handoff
   timing.
 - `WorkerReady` marks the point at which a worker returns to the admission pool after a pass completes.
+- `TelemetryTick` samples settled replay state without invoking or changing a
+  scaling policy.
 - `ScalingTick` gives the injected scaling policy a settled cluster snapshot.
+
+At a shared timestamp, Replay settles workload events first, publishes the
+telemetry sample second, and invokes scaling last. A scaling decision therefore
+cannot rewrite the state represented by a coincident telemetry sample.
 
 ## Placement and Scaling Integration
 
@@ -165,8 +192,37 @@ flowchart LR
     C -->|Queued| E["policy owns pending admission"]
     F["engine observations and lifecycle"] --> G["PlacementPolicy::observe / request_terminal"]
     G --> H["released placements"]
-    H --> D
+H --> D
 ```
+
+### Optional telemetry sampling
+
+`Replayer::with_telemetry_observer` attaches a separate observer at a positive,
+finite virtual-time interval. This cadence is independent of Planner's scaling
+ticks and does not need to be a multiple of any engine tick duration. Periodic
+timestamps are derived from the original sampling time and ordinal, rather
+than repeated floating-point addition.
+
+The observer receives:
+
+- a gauge-only baseline after the initial timestamp settles
+- periodic samples with traffic and additive scheduler counters for each
+  completed interval
+- a final sample when a positive elapsed tail remains after the last periodic
+  boundary, or when the final timestamp has pending zero-duration interval
+  observations
+
+Gauge rows describe only live worker ranks. Cache-hit token and preemption
+counters from a rank that retires during an interval are folded into one
+role-level aggregate before its live state is dropped, so telemetry storage is
+O(live ranks) plus O(1) retired history. Arriving-request traffic has its own
+accumulator, so neither the baseline nor telemetry sampling drains Planner's
+traffic window. When no observer is attached, Replay allocates no telemetry
+rank state and performs no telemetry callbacks.
+
+Telemetry heartbeats are observational: they do not keep a deadlocked replay
+alive or advance a replay past its configured time cap. A heartbeat is only
+interleaved when canonical replay work exists at or before the cap.
 
 ### Why KV events are captured only where needed
 
@@ -186,10 +242,22 @@ The disaggregated runtime in `src/replay/disagg.rs` models two distinct stages:
 - a prefill router and prefill worker pool
 - a decode router and decode worker pool
 
-Attention-DP is currently supported only by aggregated offline replay. Disaggregated replay
-requires both prefill and decode `dp_size` to be `1`; ranked prefill/decode routing and handoff
-semantics are not yet modeled, so larger values are rejected explicitly instead of using the old
-aggregate approximation.
+vLLM and TensorRT-LLM use source-first handoff; SGLang uses destination-first handoff. The
+TensorRT-LLM path applies `GUARANTEED_NO_EVICT` to reserve decode completion headroom while the
+destination owns transferred prompt KV.
+
+Attention-DP is supported independently in the prefill and decode pools. Each request is routed
+from one concrete prefill `(worker, dp_rank)` to one concrete decode `(worker, dp_rank)`, while KV
+transfer remains one aggregate request-level event. Rank-wise KV layout conversion and network
+contention are not modeled. Native host offload remains unsupported for disaggregated replay.
+
+Authored rank hints match Dynamo's request contract: `dp_rank` selects the aggregated or decode
+rank, while `prefill_dp_rank` optionally overrides the prefill rank. In disaggregated replay an
+omitted `prefill_dp_rank` falls back to `dp_rank`; each hint is validated against its role's
+independent DP size.
+
+SGLang attention-DP roles mirror its launch-time per-rank normalization: chunked-prefill size is
+divided by DP size and schedule conservativeness is scaled by `0.3` before scheduler construction.
 
 It keeps one logical clock and one completion-event heap, but request ownership moves through a
 two-stage state machine instead of the aggregated single-pool lifecycle.

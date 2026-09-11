@@ -34,9 +34,10 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator_core.sdk import engine
+from aiconfigurator_core.sdk import common, engine
 from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
 from aiconfigurator_core.sdk.operations.base import resolve_op_data_path
+from aiconfigurator_core.sdk.operations.moe import MoE
 from aiconfigurator_core.sdk.operations.moe_comm import MoEExpertCompute
 from aiconfigurator_core.sdk.perf_database import get_database
 
@@ -110,7 +111,7 @@ def _exact_token_probes(token_keys):
     reason="shipped h200_sxm sglang 0.5.6.post2 wideep MoE parquets not present",
 )
 def test_l1_sglang_wideep_moe_query_equivalence():
-    db = get_database("h200_sxm", "sglang", "0.5.6.post2")
+    db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     assert db is not None
 
     # Legacy tables: [quant][dist][topk][experts][hidden][inter][tp][ep] -> {tokens: leaf (ms)}.
@@ -159,7 +160,7 @@ def test_l1_sglang_wideep_moe_query_equivalence():
     reason="shipped gb200 trtllm 1.3.0rc10 wideep_moe parquet not present",
 )
 def test_l1_trtllm_wideep_moe_compute_query_equivalence():
-    db = get_database("gb200", "trtllm", "1.3.0rc10")
+    db = get_database("gb200", "trtllm", "1.3.0rc10", allow_unlisted_version=True)
     assert db is not None
 
     # Legacy table: [kernel][quant][dist][topk][experts][hidden][inter][slots][tp][ep] -> {tokens: leaf (ms)}.
@@ -239,7 +240,7 @@ def test_l1_sglang_context_eplb_token_correction_equivalence():
     # (the retired moe.py); the unified query must reproduce it. Probed
     # raw-derivably: pick a collected token t0 (t0 % 4 == 0) and query
     # tok = t0 * 5 / 4, so the corrected walk lands EXACTLY on the raw t0 row.
-    db = get_database("h200_sxm", "sglang", "0.5.6.post2")
+    db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     legacy_table = fetch_table_view(db, "_wideep_context_moe_data")
     comparisons = 0
     for (quant, dist, topk, experts, hidden, inter, tp, ep), tokens in itertools.islice(
@@ -308,11 +309,10 @@ def test_moe_expert_compute_quant_mode_is_a_constructor_fact():
     # kernel resolution and the table walk. An uncollected ctor mode must
     # MISS loudly; the collected mode (a fresh twin, the pattern production
     # uses) must hit the same value as the direct table recompute.
-    from aiconfigurator_core.sdk import common
     from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
     from aiconfigurator_core.sdk.operations.moe_comm import MoEExpertCompute
 
-    db = get_database("h200_sxm", "sglang", "0.5.6.post2")
+    db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     legacy_table = fetch_table_view(db, "_wideep_context_moe_data")
     (quant, dist, topk, experts, hidden, inter, tp, ep), tokens = next(_iter_slices(legacy_table, 8))
 
@@ -338,6 +338,38 @@ def test_moe_expert_compute_quant_mode_is_a_constructor_fact():
         db, "deepep_moe", quant, dist, "context", topk, experts, experts, hidden, inter, tp, ep, min(tokens)
     )
     assert float(hit) == pytest.approx(float(direct), rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("quant_mode", "expected_ms"),
+    [
+        pytest.param(common.MoEQuantMode.bfloat16, 0.39341440200805666, id="bf16"),
+        pytest.param(common.MoEQuantMode.fp8_block, 0.23400959968566895, id="fp8-block"),
+    ],
+)
+def test_qwen38_vllm_0271_tp1_ep16_moe_lanes_are_silicon(quant_mode, expected_ms):
+    """Pin the two collected Qwen3.8-Max EP16 lanes at an exact token point."""
+    db = get_database("gb300", "vllm", "0.27.1")
+    db.set_default_database_mode(common.DatabaseMode.SILICON)
+    op = MoE(
+        "qwen38_ep16_moe",
+        1.0,
+        8192,
+        2048,
+        10,
+        512,
+        1,
+        16,
+        quant_mode,
+        "power_law_1.2",
+        1,
+        is_context=True,
+    )
+
+    result = op._engine_query(db, x=128)
+
+    assert result.source == "silicon"
+    assert float(result) == pytest.approx(expected_ms, rel=1e-9)
 
 
 if __name__ == "__main__":

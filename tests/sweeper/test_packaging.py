@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 
+from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10
@@ -49,6 +51,7 @@ def test_aisimulate_distribution_publishes_aisimulate_sweeper_package():
     assert distribution.metadata["Name"] == "aisimulate"
     assert importlib.util.find_spec("aisimulate.replay") is not None
     assert importlib.util.find_spec("aisimulate.sweeper") is not None
+    assert importlib.util.find_spec("aisimulate.afd_artifacts") is not None
     assert importlib.util.find_spec("aisimulate.replay.__main__") is None
     assert importlib.util.find_spec("aisimulate.sweeper.__main__") is None
     # Editable installs expose only their .pth/dist-info records. In wheel-based
@@ -66,16 +69,13 @@ def test_aisimulate_native_runtime_imports_from_installed_distribution():
     assert runtime_spec is not None
     runtime = importlib.import_module("aisimulate._runtime")
     assert callable(runtime.run_replay_json)
+    assert callable(runtime.run_replay_with_artifacts_json)
 
 
 def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():
     distribution = importlib.metadata.distribution("aisimulate")
 
-    scripts = {
-        entry.name: entry.value
-        for entry in distribution.entry_points
-        if entry.group == "console_scripts"
-    }
+    scripts = {entry.name: entry.value for entry in distribution.entry_points if entry.group == "console_scripts"}
     assert scripts == {
         "aiconfigurator": "aiconfigurator.main:main",
         "aisimulate": "aisimulate.main:main",
@@ -131,6 +131,32 @@ def test_ai_dynamo_registers_optional_sweeper_providers():
         "dynamo.planner": "dynamo.planner.simulation:create_provider",
         "dynamo.router": "dynamo.router.simulation:create_provider",
     }
+
+
+@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
+def test_ai_dynamo_runner_preserves_independent_sla_bounds(field: str, bound: float) -> None:
+    _ai_dynamo_distribution_or_skip()
+    from dynamo.replay.simulation import DynamoReplayRunner
+
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args={},
+            num_workers=1,
+        ),
+        workload={},
+        goal={"target": "throughput", "strict_sla": False, "sla": {field: bound}},
+    )
+    expected = {
+        "sla_ttft_ms": None,
+        "sla_itl_ms": None,
+        "sla_e2e_ms": None,
+    }
+    expected[f"sla_{field}"] = bound
+
+    assert DynamoReplayRunner._goodput_sla_kwargs(spec) == expected
 
 
 def test_aisimulate_source_versions_are_synchronized():

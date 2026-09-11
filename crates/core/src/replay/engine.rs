@@ -44,6 +44,12 @@ pub struct ReplayEngineConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    pub pipeline_parallel_size: u32,
+    pub context_parallel_size: u32,
+    /// Whether `rank.num_gpu_blocks` came from the user rather than an
+    /// upstream capacity estimator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_gpu_blocks_is_explicit: Option<bool>,
     pub rank: EngineConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefill: Option<ReplayRoleConfig>,
@@ -56,6 +62,9 @@ impl Default for ReplayEngineConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            pipeline_parallel_size: 1,
+            context_parallel_size: 1,
+            num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
             prefill: None,
             decode: None,
@@ -71,6 +80,12 @@ pub struct ReplayRoleConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    pub pipeline_parallel_size: u32,
+    pub context_parallel_size: u32,
+    /// Whether `rank.num_gpu_blocks` came from the user rather than an
+    /// upstream capacity estimator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_gpu_blocks_is_explicit: Option<bool>,
     pub rank: EngineConfig,
 }
 
@@ -79,6 +94,9 @@ impl Default for ReplayRoleConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            pipeline_parallel_size: 1,
+            context_parallel_size: 1,
+            num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
         }
     }
@@ -99,16 +117,25 @@ impl ReplayEngineConfig {
             WorkerStage::Aggregated => ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                pipeline_parallel_size: self.pipeline_parallel_size,
+                context_parallel_size: self.context_parallel_size,
+                num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             },
             WorkerStage::Prefill => self.prefill.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                pipeline_parallel_size: self.pipeline_parallel_size,
+                context_parallel_size: self.context_parallel_size,
+                num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
             WorkerStage::Decode => self.decode.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                pipeline_parallel_size: self.pipeline_parallel_size,
+                context_parallel_size: self.context_parallel_size,
+                num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
         };
@@ -121,20 +148,24 @@ impl ReplayEngineConfig {
     }
 
     pub(crate) fn validate_topology(&self, topology: &ReplayTopology) -> ReplayResult<()> {
-        if matches!(topology, ReplayTopology::Disaggregated { .. }) {
-            for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
-                let role = self.role(stage);
-                if role.dp_size != 1 {
-                    // TODO(#12965): Carry logical-worker plus DP-rank identity through
-                    // disaggregated handoff before removing this fail-fast guard.
-                    let role_name = match stage {
-                        WorkerStage::Prefill => "prefill",
-                        WorkerStage::Decode => "decode",
-                        WorkerStage::Aggregated => unreachable!(),
-                    };
-                    return Err(ReplayError::InvalidSpec(format!(
-                        "disaggregated replay requires {role_name} dp_size=1; attention-DP handoff identity is not implemented"
-                    )));
+        match topology {
+            ReplayTopology::Aggregated { .. } => {
+                if self.rank.native_host_offload.is_some() && self.dp_size != 1 {
+                    return Err(ReplayError::InvalidSpec(
+                        "native_host_offload supports only dp_size=1 in the initial implementation"
+                            .to_string(),
+                    ));
+                }
+            }
+            ReplayTopology::Disaggregated { .. } => {
+                for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
+                    let role = self.role(stage);
+                    if role.rank.native_host_offload.is_some() {
+                        return Err(ReplayError::InvalidSpec(
+                            "native_host_offload supports only aggregated replay in the initial implementation"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
         }
@@ -149,7 +180,10 @@ pub struct ReplayRoleFactory {
     factory: EngineFactory,
     dp_size: NonZeroU32,
     tensor_parallel_size: u32,
+    pipeline_parallel_size: u32,
+    context_parallel_size: u32,
     backend: Backend,
+    total_blocks: u64,
 }
 
 impl ReplayRoleFactory {
@@ -178,6 +212,8 @@ impl ReplayRoleFactory {
                 usize::try_from(self.tensor_parallel_size)
                     .ok()
                     .and_then(|tp| dp.checked_mul(tp))
+                    .and_then(|n| n.checked_mul(self.pipeline_parallel_size as usize))
+                    .and_then(|n| n.checked_mul(self.context_parallel_size as usize))
             })
             .ok_or_else(|| ReplayError::InvalidSpec("engine GPU count overflows usize".into()))
     }
@@ -185,6 +221,11 @@ impl ReplayRoleFactory {
     #[doc(hidden)]
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    #[doc(hidden)]
+    pub fn total_blocks(&self) -> u64 {
+        self.total_blocks
     }
 }
 
@@ -236,9 +277,12 @@ impl ReplayEngineFactory {
         let dp_size = NonZeroU32::new(role.dp_size).ok_or_else(|| {
             ReplayError::InvalidSpec("native engine dp_size must be positive".into())
         })?;
-        if role.tensor_parallel_size == 0 {
+        if role.tensor_parallel_size == 0
+            || role.pipeline_parallel_size == 0
+            || role.context_parallel_size == 0
+        {
             return Err(ReplayError::InvalidSpec(
-                "native tensor_parallel_size must be positive".into(),
+                "native tensor_parallel_size must be positive; pipeline_parallel_size and context_parallel_size must be positive".into(),
             ));
         }
         let timing = match stage {
@@ -247,6 +291,9 @@ impl ReplayEngineFactory {
             WorkerStage::Decode => self.decode_timing.as_ref().or(self.timing.as_ref()),
         };
         let backend = role.rank.backend;
+        let total_blocks = u64::try_from(role.rank.num_gpu_blocks).map_err(|_| {
+            ReplayError::InvalidSpec("engine KV block count exceeds the metrics range".into())
+        })?;
         let factory = match timing {
             Some(timing) => EngineFactory::with_timing_model(role.rank, Arc::clone(timing)),
             None => EngineFactory::new(role.rank),
@@ -256,7 +303,10 @@ impl ReplayEngineFactory {
             factory,
             dp_size,
             tensor_parallel_size: role.tensor_parallel_size,
+            pipeline_parallel_size: role.pipeline_parallel_size,
+            context_parallel_size: role.context_parallel_size,
             backend,
+            total_blocks,
         })
     }
 }

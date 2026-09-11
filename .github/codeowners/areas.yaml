@@ -9,8 +9,13 @@ areas:
   - label: maintainers
     github_team: "@ai-dynamo/access-aisimulate-maintain"
     path_globs:
+      - AGENTS.md
+      - CODE_OF_CONDUCT.md
+      - DEVELOPMENT.md
       - LICENSE
+      - THIRD_PARTY_NOTICES.md
       - README.md
+      - SECURITY.md
       - CONTRIBUTING.md
       - CONTRIBUTORS.md
       - docs/
@@ -37,16 +42,23 @@ areas:
   - label: replay
     github_team: "@ai-dynamo/aisimulate-replay-codeowners"
     path_globs:
+      - crates/core/examples/
       - crates/core/src/replay/
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
       - python/aisimulate/src/aisimulate/traffic.py
       - tests/test_cli_config.py
+      - tests/test_epd_cli.py
+      - examples/cli/
       - tests/test_stack_discovery.py
       - tests/test_unified_cli.py
       - tests/test_unified_traffic_runtime.py
+      - tests/test_host_offload_cli.py
+      - tests/test_afd_*.py
+      - tests/golden/afd-*
       - tests/test_runner.py
       - tests/test_traffic.py
+      - tests/e2e/
   - label: mocker
     github_team: "@ai-dynamo/aisimulate-mocker-codeowners"
     path_globs:
@@ -55,6 +67,7 @@ areas:
     github_team: "@ai-dynamo/aisimulate-infra-codeowners"
     path_globs:
       - .github/
+      - .dockerignore
       - .gitignore
       - CODEOWNERS
       - Cargo.lock
@@ -65,6 +78,10 @@ areas:
       - pytest.ini
       - scripts/
       - tests/test_aic_sync.py
+      - tests/test_ci_workflow_contracts.py
+      - tests/test_pages_site.py
+      - tests/test_e2e_accuracy_overview.py
+      - tests/test_source_compliance.py
 
 # More-specific shared entries are emitted after base area rules, preserving
 # GitHub's last-match-wins behavior. As in AIConfigurator, the maintainer team
@@ -89,6 +106,12 @@ shared:
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_aic_sync.py
     owners: [infra, maintainers]
+  - glob: tests/test_ci_workflow_contracts.py
+    owners: [infra, maintainers]
+  - glob: tests/test_pages_site.py
+    owners: [infra, maintainers]
+  - glob: tests/test_e2e_accuracy_overview.py
+    owners: [forward-pass-engine, infra, maintainers]
   - glob: docs/core-api.md
     owners: [forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/__init__.py
@@ -107,6 +130,8 @@ shared:
     owners: [sweeper, maintainers]
   - glob: crates/core/src/replay/
     owners: [replay, maintainers]
+  - glob: crates/core/examples/
+    owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/replay/
     owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/runner.py
@@ -115,16 +140,28 @@ shared:
     owners: [replay, maintainers]
   - glob: tests/test_cli_config.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_epd_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: examples/cli/
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_unified_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
     owners: [replay, maintainers]
+  - glob: tests/test_host_offload_cli.py
+    owners: [replay, maintainers]
+  - glob: tests/test_afd_*.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/golden/afd-*
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
   - glob: tests/test_traffic.py
     owners: [replay, maintainers]
+  - glob: tests/e2e/
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: crates/core/src/engine/
     owners: [mocker, maintainers]
   - glob: crates/core/src/engine/timing.rs
@@ -153,6 +190,16 @@ shared:
     owners: [infra, maintainers]
   - glob: scripts/
     owners: [infra, maintainers]
+  - glob: SECURITY.md
+    owners: [infra, maintainers]
+  - glob: AGENTS.md
+    owners: [infra, maintainers]
+  - glob: .coderabbit.yaml
+    owners: [infra, maintainers]
+  - glob: REVIEW.md
+    owners: [infra, maintainers]
+  - glob: DEVELOPMENT.md
+    owners: [infra, maintainers]
   - glob: .gitattributes
     owners: [infra, maintainers]
   # Imported AIC repository metadata is inactive in this monorepo, but changes
@@ -172,12 +219,6 @@ shared:
     owners: [infra, maintainers]
   - glob: python/aisimulate/.pre-commit-config.yaml
     owners: [infra, maintainers]
-  - glob: python/aisimulate/AGENTS.md
-    owners: [infra, maintainers]
-  - glob: python/aisimulate/DEVELOPMENT.md
-    owners: [infra, maintainers]
-  - glob: python/aisimulate/SECURITY.md
-    owners: [infra, maintainers]
   - glob: python/aisimulate/eslint.config.js
     owners: [infra, maintainers]
   - glob: python/aisimulate/pyproject.toml
@@ -193,8 +234,6 @@ shared:
   - glob: python/aisimulate/.github/codeowners/
     owners: [infra, maintainers]
   - glob: python/aisimulate/.github/workflows/codeowners.yml
-    owners: [infra, maintainers]
-  - glob: python/aisimulate/CODEOWNERS
     owners: [infra, maintainers]
   - glob: .github/codeowners/
     owners: [infra, maintainers]

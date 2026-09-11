@@ -44,6 +44,8 @@ _ALLOWED_CLI_FLAGS = {
         "--data-parallel-size",
         "--enable-expert-parallel",
         "--block-size",
+        "--num-gpu-blocks-override",
+        "--gpu-memory-utilization",
         "--kv-cache-dtype",
         "--max-model-len",
         "--max-num-seqs",
@@ -113,7 +115,7 @@ _TRTLLM_TOP_LEVEL_KEYS = {
 }
 
 _TRTLLM_NESTED_KEYS = {
-    "kv_cache_config": {"free_gpu_memory_fraction", "dtype", "tokens_per_block", "enable_block_reuse"},
+    "kv_cache_config": {"free_gpu_memory_fraction", "max_tokens", "dtype", "tokens_per_block", "enable_block_reuse"},
     "cache_transceiver_config": {"backend", "max_tokens_in_buffer"},
     "cuda_graph_config": {"enable_padding", "batch_sizes"},
     "speculative_config": {"decoding_type", "num_nextn_predict_layers"},
@@ -310,6 +312,7 @@ def test_vllm_0_20_1_cli_args_golden_contract():
     assert _value_after(tokens, "--tensor-parallel-size") == "8"
     assert _value_after(tokens, "--data-parallel-size") == "1"
     assert _value_after(tokens, "--kv-cache-dtype") == "auto"
+    assert _value_after(tokens, "--gpu-memory-utilization") == "0.82"
     assert _value_after(tokens, "--max-num-batched-tokens") == "4060"
     assert "--enable-expert-parallel" in flags
     assert "--enforce-eager" in flags

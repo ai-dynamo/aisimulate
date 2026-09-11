@@ -150,9 +150,8 @@ impl NormalizedHandoffConformance {
     #[doc(hidden)]
     pub fn validate(&self) -> Result<()> {
         let expected_order = match self.engine_type {
-            Backend::Vllm => HandoffOrder::SourceFirst,
+            Backend::Vllm | Backend::Trtllm => HandoffOrder::SourceFirst,
             Backend::Sglang => HandoffOrder::DestinationFirst,
-            Backend::Trtllm => bail!("TRT-LLM does not support destination handoff"),
         };
         if self.order != expected_order {
             bail!(

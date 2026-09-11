@@ -90,7 +90,7 @@ def _role_capacity_tokens(
     # engine-wide KV pool, so attention-DP ranks contribute independent capacity;
     # tensor/expert parallel ranks shard the same sequences and are not multipliers.
     per_rank_usable_tokens = (per_rank_tokens // block_size) * block_size
-    return per_rank_usable_tokens * config.shape.dp * config.shape.cp * config.replicas
+    return per_rank_usable_tokens * config.shape.dp * config.replicas
 
 
 def resolve_kv_load(

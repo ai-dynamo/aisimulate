@@ -6,6 +6,8 @@
 import pytest
 from pydantic import ValidationError
 
+from aisimulate.config import CoreRecommendationConfig
+from aisimulate.recommend import recommendation_to_sweeper
 from aisimulate.sweeper import OptimizationTarget, SmartSearchConfig
 from aisimulate.sweeper.config import (
     OptimizationGoal,
@@ -68,6 +70,47 @@ sweep:
     assert config.sweep.max_rounds == 2
 
 
+def test_aic_strict_sla_migration_yaml_loads(tmp_path):
+    """Keep the command-migration guide's strict-SLA example executable."""
+    path = tmp_path / "recommendation.yaml"
+    path.write_text(
+        """
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: constant_rate
+    requests_per_second: 4
+  stop:
+    requests_per_load_unit: 10
+engine:
+  mode: aggregated
+  model: meta-llama/Meta-Llama-3.1-8B
+  hardware: gb200
+  backend: trtllm
+  workers:
+    aggregated: {}
+evaluation:
+  sla:
+    ttft_ms: 800
+    itl_ms: 30
+optimization:
+  target: throughput
+  strict_sla: true
+  constraints:
+    max_candidate_gpus: 8
+"""
+    )
+
+    public = CoreRecommendationConfig.from_yaml(path)
+    config = recommendation_to_sweeper(public)
+
+    assert config.goal.strict_sla
+    assert config.goal.sla == SLATarget(ttft_ms=800, itl_ms=30)
+
+
 def test_defaults_are_backend_only():
     config = SmartSearchConfig(
         search_space=_search_space(),
@@ -91,9 +134,7 @@ def test_defaults_are_backend_only():
     assert config.goal.target is OptimizationTarget.THROUGHPUT
     assert config.sweep.parallel_evals == 16
     dumped = config.search_space.model_dump()
-    assert (
-        not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
-    )
+    assert not {"planner_scaling_policy", "router_mode", "num_g2_blocks"} & dumped.keys()
 
 
 def test_extra_fields_are_forbidden_at_each_boundary():
@@ -192,62 +233,6 @@ def test_well_formed_agg_and_disagg_parallel_configs_are_accepted():
     )
 
 
-def test_role_parallel_execution_and_replica_candidates_are_explicit():
-    space = SearchSpace(
-        **_search_space(
-            agg_num_gpu_candidates=[8, 16],
-            agg_tp_candidates=[4, 8],
-            agg_pp_candidates=[1, 2],
-            agg_dp_candidates=[1],
-            agg_moe_tp_candidates=[1],
-            agg_moe_ep_candidates=[8, 16],
-            agg_cp_candidates=[1, 2],
-            agg_batch_size_candidates=[16, 32],
-            agg_context_tokens_candidates=[4096, 8192],
-            agg_num_workers_candidates=[1, 2],
-            num_gpu_per_replica=[8, 16],
-            max_gpu_per_replica=16,
-            max_prefill_workers=4,
-            max_decode_workers=8,
-        )
-    )
-
-    assert space.agg_pp_candidates == [1, 2]
-    assert space.agg_cp_candidates == [1, 2]
-    assert space.agg_batch_size_candidates == [16, 32]
-    assert space.agg_context_tokens_candidates == [4096, 8192]
-    assert space.agg_num_workers_candidates == [1, 2]
-    assert space.num_gpu_per_replica == [8, 16]
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [
-        ("agg_tp_candidates", [], "non-empty"),
-        ("agg_pp_candidates", [1, 1], "duplicates"),
-        ("prefill_num_workers_candidates", [0], "positive"),
-        ("decode_cp_candidates", [1, 2], "decode_cp_candidates"),
-    ],
-)
-def test_role_candidate_lists_fail_loudly(field, value, message):
-    with pytest.raises(ValidationError, match=message):
-        SearchSpace(**_search_space(**{field: value}))
-
-
-def test_actual_execution_candidates_round_trip_with_scheduler_defaults():
-    space = SearchSpace(
-        **_search_space(
-            agg_batch_size_candidates=[16],
-            agg_context_tokens_candidates=[4096],
-        )
-    )
-
-    round_tripped = SearchSpace.model_validate(space.model_dump(mode="python"))
-
-    assert round_tripped.agg_batch_size_candidates == [16]
-    assert round_tripped.agg_context_tokens_candidates == [4096]
-
-
 def test_trace_and_synthetic_workloads_are_mutually_exclusive():
     with pytest.raises(ValidationError, match="must not set synthetic fields"):
         Workload(
@@ -320,23 +305,39 @@ def test_invalid_workloads_are_rejected(workload):
         Workload(**workload)
 
 
-def test_goodput_requires_complete_sla():
-    with pytest.raises(ValidationError, match="require an SLA"):
-        OptimizationGoal(target=OptimizationTarget.GOODPUT)
-    with pytest.raises(ValidationError, match="supplied together"):
-        OptimizationGoal(
-            target=OptimizationTarget.GOODPUT,
-            sla=SLATarget(ttft_ms=2000),
-        )
+@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 2000.0), ("itl_ms", 30.0), ("e2e_ms", 5000.0)])
+@pytest.mark.parametrize("target", [OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU])
+def test_goodput_requires_at_least_one_sla_bound(target: OptimizationTarget, field: str, bound: float):
+    with pytest.raises(ValidationError, match="require at least one SLA"):
+        OptimizationGoal(target=target)
 
-    OptimizationGoal(
+    goal = OptimizationGoal(
+        target=target,
+        sla=SLATarget(**{field: bound}),
+    )
+    assert getattr(goal.sla, field) == bound
+
+
+def test_strict_sla_requires_a_bound_but_does_not_change_request_sla_shape():
+    with pytest.raises(ValidationError, match="strict_sla requires"):
+        OptimizationGoal(strict_sla=True)
+
+    non_strict = OptimizationGoal(sla=SLATarget(itl_ms=30))
+    assert not non_strict.strict_sla
+
+    goal = OptimizationGoal(
+        target=OptimizationTarget.THROUGHPUT,
+        sla=SLATarget(itl_ms=30),
+        strict_sla=True,
+    )
+    assert goal.strict_sla
+
+    goodput = OptimizationGoal(
         target=OptimizationTarget.GOODPUT,
-        sla=SLATarget(ttft_ms=2000, itl_ms=30),
+        sla=SLATarget(itl_ms=30),
+        strict_sla=True,
     )
-    OptimizationGoal(
-        target=OptimizationTarget.GOODPUT_PER_GPU,
-        sla=SLATarget(e2e_ms=5000),
-    )
+    assert goodput.strict_sla
 
 
 def test_scalar_target_directions():
@@ -478,26 +479,6 @@ def test_non_positive_sweep_control_is_rejected(kwargs):
         SweepConfig(**kwargs)
 
 
-def test_search_policy_defaults_to_bounded_rapid():
-    config = SweepConfig()
-
-    assert config.policy.value == "rapid"
-    assert config.seed == 42
-
-
-@pytest.mark.parametrize("seed", [-1, 2**32, True, 1.5])
-def test_invalid_search_seed_is_rejected(seed):
-    with pytest.raises(ValidationError):
-        SweepConfig(seed=seed)
-
-
-def test_thorough_policy_is_explicitly_selectable():
-    config = SweepConfig(policy="thorough", seed=19)
-
-    assert config.policy.value == "thorough"
-    assert config.seed == 19
-
-
 @pytest.mark.parametrize(
     ("minimum", "maximum"),
     [(0, 16), (32, 16)],
@@ -521,3 +502,17 @@ def test_valid_min_gpu_budget_is_accepted():
     )
 
     assert space.min_gpu_budget == 8
+
+
+def test_forward_model_defaults_to_op_level_for_every_role():
+    space = SearchSpace(**_search_space())
+
+    assert space.agg_forward_model == "op_level"
+    assert space.prefill_forward_model == "op_level"
+    assert space.decode_forward_model == "op_level"
+
+
+@pytest.mark.parametrize("field", ["agg_forward_model", "prefill_forward_model", "decode_forward_model"])
+def test_unknown_forward_model_is_rejected(field):
+    with pytest.raises(ValidationError, match=f"{field} has invalid choice 'layerwise'"):
+        SearchSpace(**_search_space(**{field: "layerwise"}))

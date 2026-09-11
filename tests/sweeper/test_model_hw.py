@@ -14,10 +14,11 @@ from aisimulate.sweeper.model_hw import (
     parallel_configs_for,
     resolve_model_hardware,
 )
-from aisimulate.sweeper.parallel_enum import RoleParallelCandidates
+from aisimulate.sweeper.parallel_enum import ParallelShape
 
 DEEPSEEK = "deepseek-ai/DeepSeek-V3"
 QWEN = "Qwen/Qwen3-32B"
+QWEN3_VL_MOE = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
 
 
 @pytest.mark.model(DEEPSEEK)
@@ -26,7 +27,6 @@ def test_resolve_deepseek_is_moe_mla_wideep():
     assert mh.is_moe and mh.mla and mh.enable_wideep
     assert mh.weight_bytes > 0
     assert mh.max_context == 163840  # DeepSeek-V3 max context
-    assert mh.default_gpus_per_worker == (1, 2, 4, 8, 16, 32, 64)
 
 
 @pytest.mark.model(QWEN)
@@ -36,7 +36,6 @@ def test_resolve_dense_qwen():
     assert not mh.mla
     assert not mh.enable_wideep  # dense models never enable wideEP
     assert mh.max_context == 40960  # Qwen3-32B max context
-    assert mh.default_gpus_per_worker == (1, 2, 4, 8)
 
 
 @pytest.mark.model(QWEN)
@@ -53,6 +52,7 @@ def test_aic_core_system_spec_contract(monkeypatch):
         lambda model: {
             "architecture": "Qwen3ForCausalLM",
             "context": 40960,
+            "n_routed_experts": 64,
         },
     )
     monkeypatch.setattr(mh_mod, "check_is_moe", lambda model_config: False)
@@ -75,100 +75,7 @@ def test_aic_core_system_spec_contract(monkeypatch):
     assert mh.vram_per_gpu == 80
     assert mh.gpus_per_node == 8
     assert mh.weight_bytes == 123
-
-
-def test_custom_pipeline_context_and_worker_domain_reaches_kv_filter(monkeypatch):
-    facts = ModelHardware(
-        model_name="model",
-        hardware_sku="gb200",
-        backend="sglang",
-        is_moe=True,
-        mla=True,
-        enable_wideep=False,
-        weight_bytes=1,
-        vram_per_gpu=1,
-        gpus_per_node=8,
-        max_context=8192,
-        model_family="DEEPSEEK",
-        default_gpus_per_worker=(1, 2, 4, 8, 16),
-        default_pp_candidates=(1,),
-        default_cp_candidates=(1, 2, 4, 8),
-    )
-    monkeypatch.setattr(mh_mod, "resolve_model_hardware", lambda *args, **kwargs: facts)
-    monkeypatch.setattr(
-        mh_mod,
-        "feasible_shape_tokens",
-        lambda shapes, **kwargs: dict.fromkeys(shapes, 100_000),
-    )
-    candidates = RoleParallelCandidates(
-        gpus_per_worker=(8,),
-        tp=(1,),
-        pp=(2,),
-        attention_dp=(1,),
-        moe_tp=(1,),
-        moe_ep=(4,),
-        cp=(4,),
-        workers=(1,),
-    )
-
-    configs = parallel_configs_for(
-        "model",
-        "gb200",
-        gpu_budget=8,
-        deployment_mode="agg",
-        backend="sglang",
-        agg_candidates=candidates,
-    )
-
-    assert len(configs) == 1
-    assert configs[0].shape.pp == 2
-    assert configs[0].shape.cp == 4
-    assert configs[0].replicas == 1
-
-
-def test_model_capability_prunes_explicit_unsupported_context_parallelism(monkeypatch):
-    facts = ModelHardware(
-        model_name="model",
-        hardware_sku="h200_sxm",
-        backend="vllm",
-        is_moe=False,
-        mla=False,
-        enable_wideep=False,
-        weight_bytes=1,
-        vram_per_gpu=1,
-        gpus_per_node=8,
-        max_context=8192,
-        model_family="MODEL",
-        default_gpus_per_worker=(1, 2, 4, 8),
-        default_pp_candidates=(1,),
-        default_cp_candidates=(1,),
-    )
-    monkeypatch.setattr(mh_mod, "resolve_model_hardware", lambda *args, **kwargs: facts)
-    monkeypatch.setattr(
-        mh_mod,
-        "feasible_shape_tokens",
-        lambda shapes, **kwargs: dict.fromkeys(shapes, 100_000),
-    )
-    candidates = RoleParallelCandidates(
-        gpus_per_worker=(4,),
-        tp=(1,),
-        pp=(1,),
-        attention_dp=(1,),
-        moe_tp=(1,),
-        moe_ep=(1,),
-        cp=(4,),
-        workers=(1,),
-    )
-
-    with pytest.raises(NoViableParallelConfig):
-        parallel_configs_for(
-            "model",
-            "h200_sxm",
-            gpu_budget=4,
-            deployment_mode="agg",
-            backend="vllm",
-            agg_candidates=candidates,
-        )
+    assert mh.num_experts == 64
 
 
 def test_role_runtime_preserves_legacy_three_tuple_contract(monkeypatch):
@@ -186,10 +93,6 @@ def test_role_runtime_preserves_legacy_three_tuple_contract(monkeypatch):
             vram_per_gpu=80,
             gpus_per_node=8,
             max_context=2048,
-            model_family="MODEL",
-            default_gpus_per_worker=(1, 2),
-            default_pp_candidates=(1,),
-            default_cp_candidates=(1,),
         ),
     )
     seen = {}
@@ -216,6 +119,38 @@ def test_role_runtime_preserves_legacy_three_tuple_contract(monkeypatch):
     assert seen["memory_fraction"] == 0.75
 
 
+@pytest.mark.model(QWEN3_VL_MOE)
+def test_single_gpu_moe_shape_passes_real_kv_feasibility():
+    configs = parallel_configs_for(
+        QWEN3_VL_MOE,
+        "gb200",
+        gpu_budget=1,
+        deployment_mode="agg",
+        backend="vllm",
+    )
+
+    expected = ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1, pp=1)
+    assert len(configs) == 1
+    assert configs[0].shape == expected
+    assert configs[0].replicas == 1
+
+
+@pytest.mark.model(QWEN3_VL_MOE)
+def test_single_gpu_moe_shape_still_fails_real_kv_infeasibility():
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"no parallel config holds a 1000000000-token sequence",
+    ):
+        parallel_configs_for(
+            QWEN3_VL_MOE,
+            "gb200",
+            gpu_budget=1,
+            deployment_mode="agg",
+            backend="vllm",
+            max_seq_len=1_000_000_000,
+        )
+
+
 @pytest.mark.model(DEEPSEEK)
 def test_max_seq_len_defaults_to_model_context(monkeypatch):
     # Omitting max_seq_len uses the model's max context length.
@@ -226,9 +161,7 @@ def test_max_seq_len_defaults_to_model_context(monkeypatch):
         return dict.fromkeys(shapes, 10_000_000)
 
     monkeypatch.setattr(mh_mod, "feasible_shape_tokens", fake_feasible)
-    parallel_configs_for(
-        DEEPSEEK, "gb200", gpu_budget=16, deployment_mode="agg", backend="trtllm"
-    )
+    parallel_configs_for(DEEPSEEK, "gb200", gpu_budget=16, deployment_mode="agg", backend="trtllm")
     assert seen["max_seq_len"] == 163840  # DeepSeek-V3 max context
 
 
@@ -251,9 +184,7 @@ def test_kv_filter_keeps_only_feasible_shapes(monkeypatch):
         max_seq_len=8192,
     )
     assert cfgs
-    assert all(
-        c.shape.gpus_per_worker >= 4 for c in cfgs
-    )  # KV decides; no weight floor
+    assert all(c.shape.gpus_per_worker >= 4 for c in cfgs)  # KV decides; no weight floor
     assert all(c.total_gpus <= 16 for c in cfgs)
 
 

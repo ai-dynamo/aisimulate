@@ -202,14 +202,18 @@ reach that code:
 
 - add an explicit FPM branch ahead of the 3-pass split in both languages:
   - mixed step = `FPM_prefill(B_ctx, tokens_ctx, kv_ctx)` +
-    `[FPM_decode(B_gen, kv_gen) − FPM_decode_baseline(B_gen)]` — the **marginal-decode
+    `[FPM_decode(B_gen, kv_gen) − FPM_decode_baseline(B_gen, kv_gen)]` — the **marginal-decode
     composition** (owner-approved 2026-07-19, superseding the plain sum in the original
     plan §1/M3). A mixed step is one shared forward pass: weight reads, kernel launches,
     and fixed per-step overheads are paid once, by the prefill component; a full
-    pure-decode step would pay them twice. Sampling the decode curve at its KV-axis floor
-    (`max(B, domain_min)` — one KV token per request is the physical minimum) isolates the
-    shared-pass part, so the subtraction keeps only the KV-read/attention cost that
-    genuinely adds to the iteration. Residuals: the gen tokens' GEMM marginal is dropped
+    pure-decode step would pay them twice. The decode baseline uses each collected batch
+    curve's measured KV floor. An off-lattice batch holds its padded bracket curves at
+    their own floors, then interpolates along the batch axis — over the same rows the
+    decode query itself resolved on, since a bracket row whose collected KV range misses
+    the queried coordinate is dropped from both sides. This narrow left-boundary
+    hold applies only to the synthetic mixed-step baseline; ordinary decode queries remain
+    strict. The subtraction therefore keeps only the KV-read/attention cost that genuinely
+    adds to the iteration. Residuals: the gen tokens' GEMM marginal is dropped
     (small when `B_gen ≪ ctx_tokens`, slight underestimate — the plain sum overestimates,
     so truth is bracketed), and the subtraction doubles single-sample noise variance;
   - a generation-only step (`ctx_tokens == 0`) has no pass to ride on and keeps the full

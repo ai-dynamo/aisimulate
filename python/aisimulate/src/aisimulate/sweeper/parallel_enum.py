@@ -7,7 +7,7 @@ The per-worker shape enumeration mirrors
 ``aiconfigurator.sdk.utils.enumerate_parallel_config``. The MoE width constraint
 ``dp*tp*cp == moe_tp*moe_ep`` holds; for MoE only the pure TEP / DEP / MoE-TP patterns are
 kept (MoE-TP — moe_ep==1 under tensor- or DP-attention — gated by ``allow_moe_pure_tp``,
-now enabled for every MoE model incl. MLA); dense models use plain TP.
+enabled for every MoE model incl. MLA). Dense models support TP, PP and qualified CP.
 The backend-specific MoE filters are mirrored too.
 
 ``enumerate_parallel_config`` stops at *one worker's* shape
@@ -25,12 +25,55 @@ feasibility of each shape is applied separately by :mod:`aisimulate.sweeper.mode
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from math import prod
 
 # GPUs-per-worker ladder (matches AIC's default num_gpu_per_worker).
 _DEFAULT_GPUS_PER_WORKER: tuple[int, ...] = (1, 2, 4, 8, 16)
 # Ladder used to enumerate tp / dp / moe_tp / moe_ep candidates within a worker.
 _DIM_LADDER: tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64, 128)
+
+
+class SearchSpaceLimitError(ValueError):
+    """The configured topology domain exceeds its preparation budget."""
+
+
+@dataclass
+class PreparationBudget:
+    """Bound enumeration work before allocation; never silently truncate a domain."""
+
+    max_combinations: int = 1_000_000
+    max_configs: int = 100_000
+    considered: int = 0
+    stages: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def reserve(self, count: int, stage: str) -> None:
+        if self.considered + count > self.max_combinations:
+            raise SearchSpaceLimitError(
+                f"parallel search preparation exceeds max_parallel_combinations={self.max_combinations} "
+                f"at {stage} (already {self.considered}, next {count}); narrow the topology domain"
+            )
+        self.considered += count
+        self.record(stage, "considered", count)
+
+    def record(self, stage: str, reason: str, count: int = 1) -> None:
+        counts = self.stages.setdefault(stage, {})
+        counts[reason] = counts.get(reason, 0) + count
+
+    def check_size(self, count: int, stage: str) -> None:
+        if count > self.max_configs:
+            raise SearchSpaceLimitError(
+                f"parallel search preparation exceeds max_parallel_configs={self.max_configs} "
+                f"at {stage}; narrow the topology domain"
+            )
+
+    def as_dict(self) -> dict:
+        return {
+            "max_combinations": self.max_combinations,
+            "max_configs": self.max_configs,
+            "considered": self.considered,
+            "stages": {stage: dict(sorted(counts.items())) for stage, counts in sorted(self.stages.items())},
+        }
 
 
 @dataclass(frozen=True)
@@ -153,6 +196,8 @@ def enumerate_worker_shapes_with_diagnostics(
     enable_wideep: bool = False,
     moe_backend: str | None = None,
     allow_moe_pure_tp: bool = True,
+    preparation: PreparationBudget | None = None,
+    stage: str = "topology",
 ) -> tuple[list[ParallelShape], EnumerationDiagnostics]:
     """Legal per-worker shapes and pruning counts at exactly ``gpus_per_worker`` GPUs.
 
@@ -161,8 +206,25 @@ def enumerate_worker_shapes_with_diagnostics(
     tensor-parallel (moe_ep == 1, under tensor- or DP-attention) is kept when
     ``allow_moe_pure_tp`` — now enabled for every MoE model, MLA included, since
     real deployments run it (InferenceX GLM-5 reports EP=1). Dense models scan
-    plain TP and are unaffected. Backend EP-only filters (sglang wideep) still apply.
+    TP, PP and qualified CP. Backend EP-only kernel filters still apply.
     """
+    preparation = preparation or PreparationBudget()
+    preparation.reserve(
+        prod(
+            map(
+                len,
+                (
+                    tp_candidates,
+                    pp_candidates,
+                    attention_dp_candidates,
+                    moe_tp_candidates,
+                    moe_ep_candidates,
+                    cp_candidates,
+                ),
+            )
+        ),
+        stage + ".shapes",
+    )
     considered = 0
     pruned: Counter[str] = Counter()
     shapes: list[ParallelShape] = []
@@ -208,6 +270,7 @@ def enumerate_worker_shapes_with_diagnostics(
                                 pruned["vllm_mixed_moe_parallelism"] += 1
                                 continue
                             if not is_moe:
+                                preparation.check_size(len(shapes) + 1, stage + ".shapes")
                                 shapes.append(
                                     ParallelShape(
                                         tp=tp,
@@ -231,9 +294,10 @@ def enumerate_worker_shapes_with_diagnostics(
                                 and moe_ep == 1
                                 and ((attention_tp_width > 1 and dp == 1) or (tp == 1 and cp == 1 and dp > 1))
                             )
-                            if not (is_tep or is_dep or is_moe_tp):
+                            if not (width == 1 or is_tep or is_dep or is_moe_tp):
                                 pruned["non_silicon_moe_pattern"] += 1
                                 continue
+                            preparation.check_size(len(shapes) + 1, stage + ".shapes")
                             shapes.append(
                                 ParallelShape(
                                     tp=tp,
@@ -244,6 +308,10 @@ def enumerate_worker_shapes_with_diagnostics(
                                     cp=cp,
                                 )
                             )
+    preparation.check_size(len(shapes), stage + ".shapes")
+    preparation.record(stage + ".shapes", "accepted", len(shapes))
+    for reason, count in pruned.items():
+        preparation.record(stage + ".shapes", reason, count)
     return shapes, EnumerationDiagnostics.from_counter(considered=considered, accepted=len(shapes), pruned=pruned)
 
 
@@ -273,6 +341,8 @@ def enumerate_parallel_configs(
     enable_wideep: bool = False,
     moe_backend: str | None = None,
     allow_moe_pure_tp: bool = True,
+    preparation: PreparationBudget | None = None,
+    stage: str = "topology",
 ) -> list[ReplicaParallelConfig]:
     """Enumerate ``(worker shape, replica count)`` configs that fit ``gpu_budget``.
 
@@ -289,10 +359,14 @@ def enumerate_parallel_configs(
     (prefill / decode) for ``disagg`` — the prefill/decode pairing under the
     shared budget is the downstream rate-matching step.
     """
+    preparation = preparation or PreparationBudget()
     configs: list[ReplicaParallelConfig] = []
     for g in gpus_per_worker_candidates:
+        preparation.record(stage + ".gpu_domain", "considered")
         if g > gpu_budget or g < min_gpus_per_worker:
+            preparation.record(stage + ".gpu_domain", "gpu_limit")
             continue
+        preparation.record(stage + ".gpu_domain", "accepted")
         shapes = enumerate_worker_shapes(
             is_moe=is_moe,
             backend=backend,
@@ -306,21 +380,28 @@ def enumerate_parallel_configs(
             enable_wideep=enable_wideep,
             moe_backend=moe_backend,
             allow_moe_pure_tp=allow_moe_pure_tp,
+            preparation=preparation,
+            stage=stage,
         )
         if not shapes:
             continue
         max_replicas = gpu_budget // g
         if max_workers is not None:
             max_replicas = min(max_replicas, max_workers)
+        replicas = worker_candidates if worker_candidates is not None else range(1, max_replicas + 1)
+        preparation.reserve(len(shapes) * len(replicas), stage + ".workers")
         for shape in shapes:
-            replicas = worker_candidates or tuple(range(1, max_replicas + 1))
             for r in replicas:
                 if r > max_replicas:
+                    preparation.record(stage + ".workers", "worker_or_gpu_limit")
                     continue
                 total = g * r
                 if min_gpu_budget is not None and total < min_gpu_budget:
+                    preparation.record(stage + ".workers", "minimum_gpu_budget")
                     continue
+                preparation.check_size(len(configs) + 1, stage + ".workers")
                 configs.append(ReplicaParallelConfig(shape=shape, replicas=r))
+                preparation.record(stage + ".workers", "accepted")
     return configs
 
 
@@ -341,11 +422,13 @@ def enumerate_disagg_configs(
     enable_wideep: bool = False,
     moe_backend: str | None = None,
     allow_moe_pure_tp: bool = True,
+    preparation: PreparationBudget | None = None,
+    stage: str = "topology",
 ) -> list[DisaggParallelConfig]:
     """Enumerate disagg ``(prefill, decode)`` configs that share the GPU budget.
 
-    Both roles are enumerated from the same per-role candidate set (shared
-    model / hardware / backend, first pass) and paired so that
+    Each role is enumerated from its own candidate set (sharing
+    model / hardware / backend) and paired so that
     ``prefill.total_gpus + decode.total_gpus`` lies in
     ``[min_gpu_budget, gpu_budget]``. prefill and decode may differ in shape and
     replica count.
@@ -355,6 +438,7 @@ def enumerate_disagg_configs(
     grid-enumerating; prefill/decode throughput rate-matching is applied
     downstream when each candidate is evaluated.
     """
+    preparation = preparation or PreparationBudget()
     prefill_candidates = prefill_candidates or RoleParallelCandidates()
     decode_candidates = decode_candidates or RoleParallelCandidates()
     if gpus_per_worker_candidates is not None:
@@ -377,6 +461,8 @@ def enumerate_disagg_configs(
         enable_wideep=enable_wideep,
         moe_backend=moe_backend,
         allow_moe_pure_tp=allow_moe_pure_tp,
+        preparation=preparation,
+        stage=stage + ".prefill",
     )
     decode_role = enumerate_parallel_configs(
         is_moe=is_moe,
@@ -395,6 +481,8 @@ def enumerate_disagg_configs(
         enable_wideep=enable_wideep,
         moe_backend=moe_backend,
         allow_moe_pure_tp=allow_moe_pure_tp,
+        preparation=preparation,
+        stage=stage + ".decode",
     )
     if not prefill_role or not decode_role:
         return []
@@ -403,20 +491,32 @@ def enumerate_disagg_configs(
     # at budget minus the other role's minimum (prunes pairs that can never fit).
     min_prefill = min(c.total_gpus for c in prefill_role)
     min_decode = min(c.total_gpus for c in decode_role)
-    prefill_role = [c for c in prefill_role if c.total_gpus <= gpu_budget - min_decode]
-    decode_role = [c for c in decode_role if c.total_gpus <= gpu_budget - min_prefill]
+    prefill_kept = [c for c in prefill_role if c.total_gpus <= gpu_budget - min_decode]
+    decode_kept = [c for c in decode_role if c.total_gpus <= gpu_budget - min_prefill]
+    for role, original, kept in (("prefill", prefill_role, prefill_kept), ("decode", decode_role, decode_kept)):
+        preparation.record(stage + f".{role}.pair_feasibility", "considered", len(original))
+        preparation.record(stage + f".{role}.pair_feasibility", "opposite_role_minimum", len(original) - len(kept))
+        preparation.record(stage + f".{role}.pair_feasibility", "accepted", len(kept))
+    prefill_role, decode_role = prefill_kept, decode_kept
 
+    preparation.reserve(len(prefill_role) * len(decode_role), stage + ".pairs")
     configs: list[DisaggParallelConfig] = []
     for prefill in prefill_role:
         for decode in decode_role:
             total = prefill.total_gpus + decode.total_gpus
             if total > gpu_budget:
+                preparation.record(stage + ".pairs", "gpu_budget")
                 continue
             if max_gpu_per_replica is not None and total > max_gpu_per_replica:
+                preparation.record(stage + ".pairs", "replica_gpu_ceiling")
                 continue
             if num_gpu_per_replica is not None and total not in num_gpu_per_replica:
+                preparation.record(stage + ".pairs", "replica_gpu_choices")
                 continue
             if min_gpu_budget is not None and total < min_gpu_budget:
+                preparation.record(stage + ".pairs", "minimum_gpu_budget")
                 continue
+            preparation.check_size(len(configs) + 1, stage + ".pairs")
             configs.append(DisaggParallelConfig(prefill=prefill, decode=decode))
+            preparation.record(stage + ".pairs", "accepted")
     return configs

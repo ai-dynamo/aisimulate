@@ -9,6 +9,8 @@ use serde_json::Value;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use uuid::Uuid;
 
+use crate::engine::CacheTierAttribution;
+use crate::replay::PlacementCacheSample;
 use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
 
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
@@ -114,6 +116,9 @@ pub struct TraceDistributionStats {
 
 #[derive(Debug, Clone)]
 pub struct TraceLatencyStats {
+    pub num_ttft_samples: usize,
+    pub num_tpot_samples: usize,
+    pub num_e2e_latency_samples: usize,
     pub ttft: TraceDistributionStats,
     pub ttst: TraceDistributionStats,
     pub tpot: TraceDistributionStats,
@@ -289,6 +294,12 @@ impl Serialize for ReplayReport {
         map.serialize_entry(
             "first_admission_prefix_cache_reused_ratio",
             &self.first_admission_prefix_cache_reused_ratio,
+        )?;
+        map.serialize_entry("num_ttft_samples", &self.latency.num_ttft_samples)?;
+        map.serialize_entry("num_tpot_samples", &self.latency.num_tpot_samples)?;
+        map.serialize_entry(
+            "num_e2e_latency_samples",
+            &self.latency.num_e2e_latency_samples,
         )?;
         serialize_distribution(&mut map, "ttft", &self.latency.ttft)?;
         serialize_distribution(&mut map, "ttst", &self.latency.ttst)?;
@@ -489,6 +500,7 @@ impl StreamingDistribution {
 
 #[derive(Debug, Default)]
 struct PerRequestDetail {
+    first_admission_cache_tier_attribution: Option<CacheTierAttribution>,
     prefill_reused_input_tokens: Option<usize>,
     prefill_admit_ms: Option<f64>,
     source_held_ms: Option<f64>,
@@ -541,6 +553,10 @@ pub struct PerRequestRoutingRecord {
     pub scheduler_id: Option<usize>,
     pub dp_rank: Option<u32>,
     pub reported_overlap_tokens: Option<usize>,
+    pub selected_overlap_blocks: Option<u32>,
+    pub best_available_overlap_blocks: Option<u32>,
+    pub overlap_regret_blocks: Option<u32>,
+    pub placement_replica_id: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -550,6 +566,10 @@ pub struct PerRequestAdmissionRecord {
     pub pool: ReplayRequestPool,
     pub at_ms: f64,
     pub reused_input_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub g1_reused_input_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_reused_input_tokens: Option<usize>,
     pub is_readmission: bool,
 }
 
@@ -604,6 +624,10 @@ pub struct PerRequestRecord {
     /// Number of output tokens actually emitted by the mock engine.
     pub output_length: usize,
     pub reused_input_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_admission_g1_reused_input_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_admission_host_reused_input_tokens: Option<usize>,
     pub prefill_worker_idx: Option<usize>,
     pub decode_worker_idx: Option<usize>,
     pub prefill_admit_ms: Option<f64>,
@@ -637,11 +661,9 @@ pub(crate) struct TraceRequestStatsSnapshot {
     pub first_admission_reused_input_tokens: usize,
 }
 
-/// SLA thresholds used to classify requests for goodput. Mirrors Sweeper's
-/// `SLATarget` shape: set `ttft_ms` + `itl_ms` together, or `e2e_ms` alone.
-/// Only the thresholds that are set are checked, so an e2e-only SLA gates on
-/// e2e and a ttft+itl SLA gates on both. All-`None` (the default) means "no
-/// SLA", which suppresses goodput entirely.
+/// SLA thresholds used to classify requests for goodput. Every configured
+/// field is enforced independently; an unset field is unbounded. All-`None`
+/// (the default) means "no SLA", which suppresses goodput entirely.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, serde::Deserialize)]
 pub struct SlaThresholds {
     pub ttft_ms: Option<f64>,
@@ -660,11 +682,6 @@ impl SlaThresholds {
 
     pub(crate) fn validate(&self) -> crate::replay::ReplayResult<()> {
         let token_form = self.ttft_ms.is_some() || self.itl_ms.is_some();
-        if token_form && (self.ttft_ms.is_none() || self.itl_ms.is_none()) {
-            return Err(crate::replay::ReplayError::InvalidSpec(
-                "sla.ttft_ms and sla.itl_ms must be supplied together".to_string(),
-            ));
-        }
         if token_form && self.e2e_ms.is_some() {
             return Err(crate::replay::ReplayError::InvalidSpec(
                 "sla.e2e_ms is mutually exclusive with sla.ttft_ms/itl_ms".to_string(),
@@ -729,6 +746,9 @@ impl SlaThresholds {
 #[derive(Debug, Default)]
 pub struct TraceCollector {
     requests: FxHashMap<Uuid, TraceRequestStats>,
+    /// Simulated timestamp at which this reporting epoch began. Request
+    /// timestamps remain absolute; aggregate rates use elapsed epoch time.
+    report_start_ms: f64,
     /// Global per-token distributions are folded in as requests terminate, so
     /// completed requests no longer retain one timestamp per emitted token.
     itl_distribution: StreamingDistribution,
@@ -844,6 +864,10 @@ impl TraceRequestStats {
 }
 
 impl TraceCollector {
+    pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
+        self.requests.contains_key(&uuid)
+    }
+
     /// Defer token-timeline folding until the entire replay has ended.
     pub fn set_defer_token_timeline_finalization(&mut self, value: bool) {
         self.defer_token_timeline_finalization = value;
@@ -1012,9 +1036,31 @@ impl TraceCollector {
     }
 
     pub fn on_admit(&mut self, uuid: Uuid, admit_time_ms: f64, reused_input_tokens: usize) {
+        self.on_admit_with_tier_attribution(uuid, admit_time_ms, reused_input_tokens, None);
+    }
+
+    pub(crate) fn on_admit_with_tier_attribution(
+        &mut self,
+        uuid: Uuid,
+        admit_time_ms: f64,
+        reused_input_tokens: usize,
+        attribution: Option<CacheTierAttribution>,
+    ) {
+        if let Some(attribution) = attribution {
+            assert_eq!(
+                attribution
+                    .g1_reused_input_tokens
+                    .checked_add(attribution.host_reused_input_tokens),
+                Some(reused_input_tokens),
+                "G1 and host attribution must sum to total reuse"
+            );
+        }
         if let Some(stats) = self.requests.get_mut(&uuid) {
             if stats.first_admit_ms.is_none() {
                 stats.first_admission_reused_input_tokens = reused_input_tokens;
+                if let Some(detail) = stats.detail.as_deref_mut() {
+                    detail.first_admission_cache_tier_attribution = attribution;
+                }
                 stats.first_admit_ms = Some(admit_time_ms);
             }
             stats.reused_input_tokens = stats.reused_input_tokens.max(reused_input_tokens);
@@ -1114,6 +1160,8 @@ impl TraceCollector {
         scheduler_id: usize,
         dp_rank: u32,
         reported_overlap_tokens: usize,
+        cache_sample: Option<PlacementCacheSample>,
+        placement_replica_id: Option<usize>,
     ) {
         let Some(detail) = self.detail_mut(uuid) else {
             return;
@@ -1128,6 +1176,15 @@ impl TraceCollector {
             scheduler_id: Some(scheduler_id),
             dp_rank: Some(dp_rank),
             reported_overlap_tokens: Some(reported_overlap_tokens),
+            selected_overlap_blocks: cache_sample.map(|sample| sample.overlap_blocks),
+            best_available_overlap_blocks: cache_sample
+                .map(|sample| sample.best_available_overlap_blocks),
+            overlap_regret_blocks: cache_sample.map(|sample| {
+                sample
+                    .best_available_overlap_blocks
+                    .saturating_sub(sample.overlap_blocks)
+            }),
+            placement_replica_id,
         });
     }
 
@@ -1145,6 +1202,10 @@ impl TraceCollector {
             scheduler_id: None,
             dp_rank: None,
             reported_overlap_tokens: None,
+            selected_overlap_blocks: None,
+            best_available_overlap_blocks: None,
+            overlap_regret_blocks: None,
+            placement_replica_id: None,
         });
     }
 
@@ -1158,6 +1219,8 @@ impl TraceCollector {
         scheduler_id: usize,
         dp_rank: u32,
         reported_overlap_tokens: usize,
+        cache_sample: Option<PlacementCacheSample>,
+        placement_replica_id: Option<usize>,
     ) {
         let Some(detail) = self.detail_mut(uuid) else {
             return;
@@ -1176,6 +1239,15 @@ impl TraceCollector {
         route.scheduler_id = Some(scheduler_id);
         route.dp_rank = Some(dp_rank);
         route.reported_overlap_tokens = Some(reported_overlap_tokens);
+        route.selected_overlap_blocks = cache_sample.map(|sample| sample.overlap_blocks);
+        route.best_available_overlap_blocks =
+            cache_sample.map(|sample| sample.best_available_overlap_blocks);
+        route.overlap_regret_blocks = cache_sample.map(|sample| {
+            sample
+                .best_available_overlap_blocks
+                .saturating_sub(sample.overlap_blocks)
+        });
+        route.placement_replica_id = placement_replica_id;
     }
 
     pub(crate) fn on_pool_admission(
@@ -1184,6 +1256,17 @@ impl TraceCollector {
         pool: ReplayRequestPool,
         at_ms: f64,
         reused_input_tokens: usize,
+    ) {
+        self.on_pool_admission_with_tier_attribution(uuid, pool, at_ms, reused_input_tokens, None);
+    }
+
+    pub(crate) fn on_pool_admission_with_tier_attribution(
+        &mut self,
+        uuid: Uuid,
+        pool: ReplayRequestPool,
+        at_ms: f64,
+        reused_input_tokens: usize,
+        attribution: Option<CacheTierAttribution>,
     ) {
         let Some(detail) = self.detail_mut(uuid) else {
             return;
@@ -1198,6 +1281,8 @@ impl TraceCollector {
             pool,
             at_ms,
             reused_input_tokens,
+            g1_reused_input_tokens: attribution.map(|value| value.g1_reused_input_tokens),
+            host_reused_input_tokens: attribution.map(|value| value.host_reused_input_tokens),
             is_readmission: pool_admission_ordinal > 0,
         });
     }
@@ -1261,7 +1346,38 @@ impl TraceCollector {
             .map(TraceRequestStats::actual_output_length)
     }
 
-    pub fn finish(mut self) -> ReplayReport {
+    /// First scheduler admission `(at_ms, reused_input_tokens)` for `uuid`.
+    pub(crate) fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> {
+        let stats = self.requests.get(&uuid)?;
+        Some((
+            stats.first_admit_ms?,
+            stats.first_admission_reused_input_tokens,
+        ))
+    }
+
+    /// Drain measurements while retaining the configuration that applies to
+    /// each reporting epoch of a reusable runtime. The absolute report boundary
+    /// includes idle time in this epoch and starts the next one.
+    pub(crate) fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
+        debug_assert!(report_end_ms.is_finite() && report_end_ms >= self.report_start_ms);
+        let next = Self {
+            report_start_ms: report_end_ms,
+            defer_token_timeline_finalization: self.defer_token_timeline_finalization,
+            capture_per_request: self.capture_per_request,
+            sla: self.sla,
+            static_worker_count: self.static_worker_count,
+            prefill_gpus_per_worker: self.prefill_gpus_per_worker,
+            decode_gpus_per_worker: self.decode_gpus_per_worker,
+            ..Default::default()
+        };
+        std::mem::replace(self, next).finish_at(Some(report_end_ms))
+    }
+
+    pub fn finish(self) -> ReplayReport {
+        self.finish_at(None)
+    }
+
+    fn finish_at(mut self, report_end_ms: Option<f64>) -> ReplayReport {
         let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {
             let left = self
@@ -1302,6 +1418,7 @@ impl TraceCollector {
             Vec::new()
         };
         let sla = self.sla;
+        let report_start_ms = self.report_start_ms;
         let static_worker_count = self.static_worker_count;
         let accumulated_prefill_worker_seconds = self.prefill_worker_seconds;
         let accumulated_decode_worker_seconds = self.decode_worker_seconds;
@@ -1327,7 +1444,9 @@ impl TraceCollector {
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
-        let mut duration_ms = 0.0_f64;
+        let mut duration_ms = report_end_ms
+            .map(|end_ms| (end_ms - report_start_ms).max(0.0))
+            .unwrap_or(0.0);
         let mut total_input_tokens = 0usize;
         let mut total_output_tokens = 0usize;
         let mut completed_requests = 0usize;
@@ -1357,7 +1476,7 @@ impl TraceCollector {
             total_output_tokens += output_length;
             total_reused_tokens += stats.reused_input_tokens;
             total_first_admission_reused_tokens += stats.first_admission_reused_input_tokens;
-            duration_ms = duration_ms.max(terminal_time_ms);
+            duration_ms = duration_ms.max((terminal_time_ms - report_start_ms).max(0.0));
 
             let (Some(first_token_ms), Some(last_token_ms)) =
                 (stats.first_token_ms(), stats.last_token_ms())
@@ -1389,6 +1508,9 @@ impl TraceCollector {
             }
         }
 
+        let num_ttft_samples = ttfts.len();
+        let num_tpot_samples = tpots.len();
+        let num_e2e_latency_samples = e2e_latencies.len();
         let duration_s = (duration_ms / 1000.0).max(1e-9);
         // Provisioned worker-seconds: static count × duration for an externally
         // clocked runtime, else the runtime-integrated accumulator.
@@ -1442,6 +1564,9 @@ impl TraceCollector {
                 total_first_admission_reused_tokens as f64 / total_input_tokens as f64
             },
             latency: TraceLatencyStats {
+                num_ttft_samples,
+                num_tpot_samples,
+                num_e2e_latency_samples,
                 ttft: build_distribution_stats(ttfts),
                 ttst: build_distribution_stats(ttsts),
                 tpot: build_distribution_stats(tpots),
@@ -1503,6 +1628,12 @@ impl TraceCollector {
                 reused_input_tokens: detail
                     .prefill_reused_input_tokens
                     .unwrap_or(stats.reused_input_tokens),
+                first_admission_g1_reused_input_tokens: detail
+                    .first_admission_cache_tier_attribution
+                    .map(|value| value.g1_reused_input_tokens),
+                first_admission_host_reused_input_tokens: detail
+                    .first_admission_cache_tier_attribution
+                    .map(|value| value.host_reused_input_tokens),
                 prefill_worker_idx: stats.prefill_worker_idx,
                 decode_worker_idx: stats.decode_worker_idx,
                 prefill_admit_ms: detail.prefill_admit_ms,
@@ -1805,8 +1936,16 @@ mod tests {
         assert_eq!(report.throughput.duration_ms, 25.0);
         assert_eq!(report.throughput.decode_worker_seconds, 0.025);
         assert!((report.throughput.gpu_hours - 0.1 / 3600.0).abs() < 1e-12);
+        assert_eq!(report.latency.num_ttft_samples, 0);
+        assert_eq!(report.latency.num_tpot_samples, 0);
+        assert_eq!(report.latency.num_e2e_latency_samples, 0);
         assert_eq!(report.latency.ttft.mean_ms, 0.0);
         assert_eq!(report.latency.e2e.mean_ms, 0.0);
+
+        let summary = serde_json::to_value(&report).unwrap();
+        assert_eq!(summary["num_ttft_samples"], 0);
+        assert_eq!(summary["num_tpot_samples"], 0);
+        assert_eq!(summary["num_e2e_latency_samples"], 0);
     }
 
     #[test]
@@ -1909,6 +2048,36 @@ mod tests {
         assert_eq!(rec.terminal_status, ReplayTerminalStatus::Completed);
     }
 
+    #[test]
+    fn per_request_route_records_overlap_regret_and_policy_replica() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let uuid = Uuid::from_u128(2);
+        collector.on_arrival(uuid, 0.0, 2_048, 1);
+        collector.on_route_immediate(
+            uuid,
+            ReplayRequestPool::Agg,
+            3,
+            3,
+            0,
+            1_024,
+            Some(PlacementCacheSample {
+                overlap_blocks: 4,
+                best_available_overlap_blocks: 7,
+                isl_blocks: 8,
+            }),
+            Some(1),
+        );
+        collector.on_terminal(uuid, 1.0, ReplayTerminalStatus::Completed);
+
+        let report = collector.finish();
+        let route = &report.per_request[0].routing_history[0];
+        assert_eq!(route.selected_overlap_blocks, Some(4));
+        assert_eq!(route.best_available_overlap_blocks, Some(7));
+        assert_eq!(route.overlap_regret_blocks, Some(3));
+        assert_eq!(route.placement_replica_id, Some(1));
+    }
+
     /// A conditional-prefill bypass is reflected by `prefill_worker_idx ==
     /// None` while `decode_worker_idx` is set. This is how downstream tooling
     /// distinguishes bypassed requests from standard disagg flow.
@@ -1943,7 +2112,15 @@ mod tests {
         // Note: NOT calling set_capture_per_request — capture stays false.
         let uuid = Uuid::from_u128(1);
         collector.on_arrival(uuid, 0.0, 100, 2);
-        collector.on_admit(uuid, 5.0, 0);
+        collector.on_admit_with_tier_attribution(
+            uuid,
+            5.0,
+            20,
+            Some(CacheTierAttribution {
+                g1_reused_input_tokens: 12,
+                host_reused_input_tokens: 8,
+            }),
+        );
         collector.on_decode_assigned(uuid, 0);
         collector.on_token(uuid, 50.0);
         collector.on_token(uuid, 60.0);
@@ -1955,6 +2132,8 @@ mod tests {
         assert!(report.per_request.is_empty());
         // Summary stats still work.
         assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.prefix_cache_reused_ratio, 0.2);
+        assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.2);
     }
 
     /// Register a completed request: arrival, output length (osl), and the
@@ -2003,6 +2182,38 @@ mod tests {
         // duration = max last token = 200ms → 0.2s; good output tokens = 3 (B) + 1 (C) = 4.
         assert!((goodput.output_throughput_tok_s - 4.0 / 0.2).abs() < 1e-6);
         assert!((goodput.request_throughput_rps - 2.0 / 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sla_validation_accepts_independent_token_bounds() {
+        for sla in [
+            SlaThresholds {
+                ttft_ms: Some(150.0),
+                ..Default::default()
+            },
+            SlaThresholds {
+                itl_ms: Some(30.0),
+                ..Default::default()
+            },
+        ] {
+            sla.validate().unwrap();
+        }
+    }
+
+    /// A TTFT-only SLA leaves ITL unbounded for request-level goodput.
+    #[test]
+    fn goodput_ttft_only_ignores_itl() {
+        let mut collector = TraceCollector::default();
+        collector.set_sla_thresholds(SlaThresholds {
+            ttft_ms: Some(150.0),
+            ..Default::default()
+        });
+        // TTFT=100 passes even though avg ITL=(400-100)/2=150ms.
+        add_completed(&mut collector, 1, 0.0, 3, &[100.0, 250.0, 400.0]);
+        // TTFT=200 fails independently of its short ITL.
+        add_completed(&mut collector, 2, 0.0, 3, &[200.0, 210.0, 220.0]);
+
+        assert_eq!(collector.finish().goodput.unwrap().completed_requests, 1);
     }
 
     /// A request straddling the ITL bound flips good↔bad at the boundary.

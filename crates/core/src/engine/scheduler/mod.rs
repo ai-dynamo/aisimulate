@@ -17,7 +17,7 @@ use crate::engine::common::protocols::DirectRequest;
 pub(crate) use crate::engine::common::protocols::ForwardPassSnapshot;
 use crate::engine::common::protocols::OutputSignal;
 use crate::engine::generalized::SameTimestampRetry;
-use crate::engine::{KvEvent, PressureEvent};
+use crate::engine::{CacheTierAttribution, HostOffloadObserver, KvEvent, PressureEvent};
 pub(crate) use kv_event_sink::{CapturedKvEventBuffer, capture_kv_event_sink};
 pub(crate) use source_holds::{
     ActiveHandoffRequests, DestinationHolds, PendingDestinations, RemovedSource, SourceCompletion,
@@ -26,6 +26,7 @@ pub(crate) use source_holds::{
 pub use source_holds::{
     SchedulerCommand, SchedulerCommandEffects, SchedulerCommandResult, SchedulerLifecycleEvent,
 };
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Welford's online algorithm for count / sum / population-variance.
@@ -146,9 +147,15 @@ pub(crate) use vllm::VllmCore;
 #[derive(Clone, Default, Debug, PartialEq)]
 pub struct MockerMetrics {
     pub dp_rank: u32,
+    /// Backend-native legacy occupancy: active references for vLLM, occupied
+    /// page-pool blocks (including radix-resident pages) for SGLang.
     pub active_decode_blocks: u64,
+    /// Resident reusable blocks excluded from `active_decode_blocks`. vLLM
+    /// populates this; SGLang reports zero by construction.
+    pub inactive_decode_blocks: u64,
     pub total_blocks: u64,
     pub gpu_cache_usage_perc: f64,
+    pub physical_gpu_cache_usage_perc: f64,
     pub running_requests: u64,
     pub waiting_requests: u64,
     pub vllm_preemptions_total: u64,
@@ -168,16 +175,51 @@ impl MockerMetrics {
         sglang_cache_hit_tokens: u64,
         sglang_cache_total_tokens: u64,
     ) -> Self {
+        Self::from_parts_with_inactive(
+            dp_rank,
+            active_decode_blocks,
+            0,
+            total_blocks,
+            running_requests,
+            waiting_requests,
+            vllm_preemptions_total,
+            sglang_cache_hit_tokens,
+            sglang_cache_total_tokens,
+        )
+    }
+
+    /// Construct scheduler metrics with an explicit inactive reusable-cache
+    /// population. [`Self::from_parts`] remains the compatibility constructor
+    /// for backends whose resident occupancy is identical to active occupancy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts_with_inactive(
+        dp_rank: u32,
+        active_decode_blocks: u64,
+        inactive_decode_blocks: u64,
+        total_blocks: u64,
+        running_requests: u64,
+        waiting_requests: u64,
+        vllm_preemptions_total: u64,
+        sglang_cache_hit_tokens: u64,
+        sglang_cache_total_tokens: u64,
+    ) -> Self {
         let gpu_cache_usage_perc = if total_blocks == 0 {
             0.0
         } else {
             active_decode_blocks as f64 / total_blocks as f64
         };
+        let physical_gpu_cache_usage_perc = if total_blocks == 0 {
+            0.0
+        } else {
+            active_decode_blocks.saturating_add(inactive_decode_blocks) as f64 / total_blocks as f64
+        };
         Self {
             dp_rank,
             active_decode_blocks,
+            inactive_decode_blocks,
             total_blocks,
             gpu_cache_usage_perc,
+            physical_gpu_cache_usage_perc,
             running_requests,
             waiting_requests,
             vllm_preemptions_total,
@@ -191,6 +233,7 @@ impl MockerMetrics {
 pub(crate) struct AdmissionEvent {
     pub(crate) uuid: Uuid,
     pub(crate) reused_input_tokens: usize,
+    pub(crate) cache_tier_attribution: Option<CacheTierAttribution>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +308,18 @@ pub(crate) enum EngineCore {
 }
 
 impl EngineCore {
+    pub(crate) fn prepare_group_pass(&mut self, wave_step: u64, dp_size: u32) {
+        if let Self::Vllm(core) = self {
+            core.prepare_group_pass(wave_step, dp_size);
+        }
+    }
+
+    pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
+        if let Self::Vllm(core) = self {
+            core.set_host_offload_observer(observer);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn receive(&mut self, request: DirectRequest) -> Uuid {
         match self {
@@ -288,6 +343,32 @@ impl EngineCore {
         }
     }
 
+    pub(crate) fn is_ready(&self) -> bool {
+        match self {
+            Self::Vllm(core) => core.is_ready(),
+            Self::Sglang(core) => !core.is_drained(),
+        }
+    }
+
+    pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
+        match self {
+            Self::Vllm(core) => core.next_internal_deadline_ms(),
+            Self::Sglang(_) => None,
+        }
+    }
+
+    pub(crate) fn process_internal_work(&mut self, now_ms: f64) {
+        if let Self::Vllm(core) = self {
+            core.process_internal_work(now_ms);
+        }
+    }
+
+    pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
+        if let Self::Vllm(core) = self {
+            core.complete_engine_boundary(now_ms);
+        }
+    }
+
     pub(crate) fn waiting_for_external_command(&self) -> bool {
         match self {
             Self::Vllm(core) => core.waiting_for_external_command(),
@@ -306,6 +387,7 @@ impl EngineCore {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_command_effects(
         &mut self,
         command: SchedulerCommand,
@@ -313,6 +395,20 @@ impl EngineCore {
     ) -> anyhow::Result<SchedulerCommandEffects> {
         match self {
             Self::Vllm(core) => core.apply_command_effects(command, allow_destination_admission),
+            Self::Sglang(core) => core.apply_command_effects(command, allow_destination_admission),
+        }
+    }
+
+    pub(crate) fn apply_command_effects_at(
+        &mut self,
+        command: SchedulerCommand,
+        allow_destination_admission: bool,
+        now_ms: f64,
+    ) -> anyhow::Result<SchedulerCommandEffects> {
+        match self {
+            Self::Vllm(core) => {
+                core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
+            }
             Self::Sglang(core) => core.apply_command_effects(command, allow_destination_admission),
         }
     }
@@ -388,6 +484,18 @@ mod tests {
             arrival_timestamp_ms: None,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn physical_cache_usage_includes_inactive_blocks_without_changing_legacy_usage() {
+        let legacy = MockerMetrics::from_parts(0, 4, 10, 1, 2, 3, 5, 8);
+        assert_eq!(legacy.inactive_decode_blocks, 0);
+        assert_eq!(legacy.gpu_cache_usage_perc, 0.4);
+        assert_eq!(legacy.physical_gpu_cache_usage_perc, 0.4);
+
+        let with_inactive = MockerMetrics::from_parts_with_inactive(0, 4, 3, 10, 1, 2, 3, 5, 8);
+        assert_eq!(with_inactive.gpu_cache_usage_perc, 0.4);
+        assert_eq!(with_inactive.physical_gpu_cache_usage_perc, 0.7);
     }
 
     fn destination_reservation_attempts(core: &EngineCore) -> usize {

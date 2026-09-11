@@ -31,9 +31,7 @@ def _agg_selection(**overrides) -> dict:
     return values
 
 
-AGG_CONFIG = ReplicaParallelConfig(
-    shape=ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-)
+AGG_CONFIG = ReplicaParallelConfig(shape=ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
 DISAGG_CONFIG = DisaggParallelConfig(
     prefill=ReplicaParallelConfig(ParallelShape(tp=8, dp=1, moe_tp=1, moe_ep=8), 1),
     decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=8, moe_tp=1, moe_ep=8), 2),
@@ -56,7 +54,6 @@ def test_agg_unroll_preserves_backend_shape_and_batching():
             "attention_dp",
             "moe_tp",
             "moe_ep",
-            "cp",
             "pp",
             "replicas",
             "strategy",
@@ -71,7 +68,6 @@ def test_agg_unroll_preserves_backend_shape_and_batching():
         "attention_dp": 1,
         "moe_tp": 1,
         "moe_ep": 4,
-        "cp": 1,
         "pp": 1,
         "replicas": 2,
         "strategy": "tep",
@@ -115,27 +111,6 @@ def test_disagg_unroll_preserves_both_roles():
     assert "agg_max_num_seqs" not in sample
 
 
-def test_actual_batch_and_context_choices_materialize_scheduler_limits():
-    sample = unroll_sample(
-        search_space=_space(
-            agg_batch_size_candidates=[16, 32],
-            agg_context_tokens_candidates=[4096, 8192],
-        ),
-        selection={
-            "deployment_mode": "agg",
-            "backend": "vllm",
-            "agg_batch_size": 32,
-            "agg_context_tokens": 8192,
-        },
-        parallel_config=AGG_CONFIG,
-    )
-
-    assert sample["agg_batch_size"] == 32
-    assert sample["agg_context_tokens"] == 8192
-    assert sample["agg_max_num_seqs"] == 32
-    assert sample["agg_max_num_batched_tokens"] == 8192
-
-
 def test_unroll_folds_only_backend_pinned_values():
     sample = unroll_sample(
         search_space=_space(
@@ -170,9 +145,7 @@ def test_unroll_folds_only_backend_pinned_values():
         ("disagg", AGG_CONFIG, "DisaggParallelConfig"),
     ],
 )
-def test_unroll_rejects_parallel_config_for_wrong_topology(
-    mode, parallel_config, message
-):
+def test_unroll_rejects_parallel_config_for_wrong_topology(mode, parallel_config, message):
     selection = _agg_selection(deployment_mode=mode)
     if mode == "disagg":
         selection.update(

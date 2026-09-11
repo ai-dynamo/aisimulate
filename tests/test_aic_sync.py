@@ -83,3 +83,49 @@ reason = "adapt the combined wheel manifest"
     assert "`pyproject.toml`" in report_text
     assert "`M\tpyproject.toml`" in report_text
     assert "adapt the combined wheel manifest" in report_text
+
+
+def test_render_prefixes_rename_metadata_with_the_mirror_target(tmp_path: Path, monkeypatch) -> None:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.name", "AISimulate test")
+    _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    (mirror / "old.txt").write_text("stable\n")
+    _git(tmp_path, "add", "mirror/old.txt")
+    _git(tmp_path, "-c", "commit.gpgsign=false", "commit", "-m", "base")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+
+    _git(tmp_path, "mv", "mirror/old.txt", "mirror/new.txt")
+    _git(tmp_path, "-c", "commit.gpgsign=false", "commit", "-m", "rename")
+    target = _git(tmp_path, "rev-parse", "HEAD")
+
+    ledger = tmp_path / "ledger.toml"
+    ledger.write_text(
+        """
+[upstream]
+last_synced = "unused"
+
+[[mirror]]
+source = "mirror"
+target = "mapped"
+""".strip()
+        + "\n"
+    )
+    monkeypatch.setattr(SYNC, "LEDGER", ledger)
+
+    patch = SYNC.render(tmp_path, base, target)
+    assert b"rename from mapped/old.txt" in patch
+    assert b"rename to mapped/new.txt" in patch
+
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    _git(destination, "init")
+    (destination / "mapped").mkdir()
+    (destination / "mapped" / "old.txt").write_text("stable\n")
+    patch_path = tmp_path / "rename.patch"
+    patch_path.write_bytes(patch)
+    subprocess.run(
+        ("git", "-C", str(destination), "apply", "--check", str(patch_path)),
+        check=True,
+    )

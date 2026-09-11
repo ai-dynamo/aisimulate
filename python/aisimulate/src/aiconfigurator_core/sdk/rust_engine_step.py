@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 from collections import OrderedDict
@@ -23,9 +24,19 @@ from pathlib import Path
 from typing import Any
 
 from aiconfigurator_core.sdk.config import RuntimeConfig
+from aiconfigurator_core.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
 
 logger = logging.getLogger(__name__)
 ENGINE_STEP_BACKEND_ENV = "AICONFIGURATOR_ENGINE_STEP_BACKEND"
+_MoeCommFallbackPayload = tuple[str, str, int, int, int, int]
+_MoeCommFallbackMetadata = tuple[_MoeCommFallbackPayload, list[_MoeCommFallbackPayload]]
+PerOpValue = tuple[str, float, float, str]
+_PerOpValueWithMetadata = tuple[str, float, float, str, _MoeCommFallbackMetadata | None]
+_REGRESSION_WEIGHT_FIELDS = (
+    "regression_attention_kv_weight",
+    "regression_prefill_attention_pair_weight",
+    "regression_ffn_token_weight",
+)
 
 
 # Python-step telemetry (#1357): count every remaining Python op.query() use
@@ -86,17 +97,16 @@ class RustForwardPassPerfModel:
     """Facade over the compiled Rust forward-pass perf model (PR #1152).
 
     Built on the PyO3 ``aiconfigurator_core`` extension (the compiled
-    ``Engine``). The public class name and method signatures match PR #1152 so
-    callers (the Dynamo planner / mocker) are unaffected; FPM inputs are passed
-    as Python dictionaries and marshalled to JSON for the Rust boundary.
+    ``Engine``). FPM inputs are passed as Python dictionaries and marshalled to
+    JSON for the Rust boundary.
 
     This wrapper is forward-pass-level only. It does not model TTFT, ITL, SLA,
     queueing, or engine limits. ``estimate_forward_pass_time_ms()`` takes one
     iteration as a list of FPM dictionaries, one per attention-DP rank. Single
     rank callers may pass either one FPM dictionary or a one-element list.
 
-    The Rust model infers the workload kind from each iteration's scheduled FPM
-    fields:
+    Native AIC models infer the workload kind from each iteration's scheduled
+    FPM fields:
 
     * prefill: scheduled prefill tokens and no scheduled decode work, using
       ``[sum_prefill_tokens]``
@@ -107,6 +117,12 @@ class RustForwardPassPerfModel:
     * empty: no scheduled prefill or decode work, estimates ``0.0`` and is not
       used for tuning
 
+    Regression models instead bind one immutable ``worker_type`` at
+    construction: ``"prefill"``, ``"decode"``, or ``"aggregated"``. All DP
+    ranks in an iteration use that worker type's two-dimensional critical-
+    attention/global-FFN feature schema. ``"agg"`` and other aliases are not
+    accepted.
+
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
     as a workload descriptor: scheduled request fields are used, while
@@ -114,8 +130,8 @@ class RustForwardPassPerfModel:
     telemetry: scheduled request fields are used as features and positive
     ``wall_time`` is the latency target. For tuning, ``tune_with_fpms()`` accepts
     multiple iterations as ``[[iter0_rank0, iter0_rank1], [iter1_rank0,
-    iter1_rank1]]``. Each iteration is merged using max-rank load features and
-    max positive ``wall_time`` across ranks.
+    iter1_rank1]]``. Each backend derives its own cross-rank features, and the
+    maximum positive ``wall_time`` across ranks is the latency target.
 
     Correction grids use fixed constructor-time ranges from ``options``:
     ``max_num_tokens`` bounds ``sum_prefill_tokens`` and defaults to ``8192``,
@@ -129,6 +145,14 @@ class RustForwardPassPerfModel:
     It defaults to ``2.0``, limiting learned slowdowns to ``2x``. Passing
     ``None`` for either option leaves that direction unbounded. Regression
     fallback ignores both options.
+
+    The three regression-weight options accept ordinary Python floats. To keep
+    their transport valid JSON, this facade encodes nonfinite values as the
+    exact strings ``"NaN"``, ``"Infinity"``, and ``"-Infinity"``. Raw PyO3
+    ``options_json`` callers must use those same quoted sentinels. Native models,
+    including a successful-native ``best_available()``, ignore all three
+    weights; regression construction (including fallback) decodes the sentinels
+    and rejects the resulting nonfinite value with its field-specific error.
     """
 
     def __init__(self, inner: Any) -> None:
@@ -162,19 +186,24 @@ class RustForwardPassPerfModel:
     def best_available(
         cls,
         config: dict[str, Any],
+        worker_type: str,
         options: dict[str, Any] | None = None,
     ) -> RustForwardPassPerfModel:
-        """API: ``RustForwardPassPerfModel.best_available(config, options=None)``.
+        """API: ``best_available(config, worker_type, options=None)``.
 
         Description: create a native model when possible, otherwise fall back to
-        regression. Fallback reason is available from
-        ``diagnostics()["last_warning"]``.
+        regression bound to ``worker_type``. Fallback reason is available from
+        ``diagnostics()["last_warning"]``. ``worker_type`` must be exactly
+        ``"prefill"``, ``"decode"``, or ``"aggregated"``; a successful native
+        construction does not otherwise use it.
         """
+        worker_type = _validate_worker_type(worker_type)
         _configure_default_data_roots()
         import aiconfigurator_core
 
         inner = aiconfigurator_core.RustForwardPassPerfModel.best_available(
             _json_dumps(config),
+            worker_type,
             _optional_json_dumps(options),
         )
         return cls(inner)
@@ -182,20 +211,24 @@ class RustForwardPassPerfModel:
     @classmethod
     def from_regression(
         cls,
+        worker_type: str,
         options: dict[str, Any] | None = None,
     ) -> RustForwardPassPerfModel:
-        """API: ``RustForwardPassPerfModel.from_regression(options=None)``.
+        """API: ``from_regression(worker_type, options=None)``.
 
-        Description: create a regression-only forward-pass model. Regression
-        models return ``None`` for non-empty estimates until enough samples have
-        been provided for the inferred workload kind through
+        Description: create a regression-only forward-pass model bound to one
+        engine-level ``worker_type``. It returns ``None`` for non-empty estimates
+        until enough compatible samples have been provided through
         ``tune_with_fpms()``. Correction factor getters return ``None`` in this
-        mode.
+        mode. ``worker_type`` must be exactly ``"prefill"``, ``"decode"``, or
+        ``"aggregated"``.
         """
+        worker_type = _validate_worker_type(worker_type)
         _configure_default_data_roots()
         import aiconfigurator_core
 
         inner = aiconfigurator_core.RustForwardPassPerfModel.from_regression(
+            worker_type,
             _optional_json_dumps(options),
         )
         return cls(inner)
@@ -207,11 +240,11 @@ class RustForwardPassPerfModel:
 
         ``metrics`` represents one iteration. Pass a list of FPM dictionaries
         for attention-DP ranks, or a single FPM dictionary for a single-rank
-        convenience form. The inferred workload kind uses only
-        ``scheduled_requests``; queued fields and ``wall_time`` are ignored for
-        estimation. Regression models return ``None`` until the matching
-        inferred workload kind has enough tuned observations. Empty scheduled
-        work returns ``0.0``.
+        convenience form. Native workload inference and role-bound regression
+        feature extraction use only ``scheduled_requests``; queued fields and
+        ``wall_time`` are ignored for estimation. Regression models return
+        ``None`` until their single store has enough tuned observations. Empty
+        scheduled work returns ``0.0``.
         """
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
 
@@ -271,7 +304,23 @@ def _json_dumps(value: Any) -> str:
 def _optional_json_dumps(value: dict[str, Any] | None) -> str | None:
     if value is None:
         return None
-    return _json_dumps(value)
+    wire_value = value.copy()
+    for field in _REGRESSION_WEIGHT_FIELDS:
+        weight = wire_value.get(field)
+        if isinstance(weight, float) and not math.isfinite(weight):
+            if math.isnan(weight):
+                wire_value[field] = "NaN"
+            elif weight > 0.0:
+                wire_value[field] = "Infinity"
+            else:
+                wire_value[field] = "-Infinity"
+    return _json_dumps(wire_value)
+
+
+def _validate_worker_type(worker_type: str) -> str:
+    if worker_type not in ("prefill", "decode", "aggregated"):
+        raise ValueError(f"invalid worker_type {worker_type!r}: expected 'prefill', 'decode', or 'aggregated'")
+    return worker_type
 
 
 def _normalize_tuning_iterations(iterations: dict[str, Any] | list[Any]) -> list[Any]:
@@ -393,10 +442,11 @@ def _reraise_engine_error(exc: ValueError) -> None:
 def _fold_per_op(
     entries: Any,
     scale: float = 1.0,
-) -> tuple[dict[str, float], dict[str, float], dict[str, str]]:
+) -> tuple[dict[str, float], dict[str, float], dict[str, str], tuple[MoECommFallback, ...]]:
     """Fold the compiled engine's per-op tuples into the Python phase dicts.
 
-    ``entries`` is the FFI's ``[(name, latency_ms, energy_wms, source), ...]``
+    ``entries`` is the FFI's ``[(name, latency_ms, energy_wms, source,
+    moe_comm_fallbacks), ...]``
     — already name-folded inside the engine, so this is an idempotent re-fold
     (it also keeps duck-typed handles in tests correct): duplicate names
     accumulate with ``+=`` and sources merge to ``"mixed"`` on mismatch —
@@ -405,12 +455,17 @@ def _fold_per_op(
     ``latency_correction_scale`` post-multiply, applied to latency AND energy
     per key exactly like the Python phase runners' downstream scaling. The
     three dicts share one key set (the power-coverage gate pairs latency and
-    energy by identical keys).
+    energy by identical keys). The optional fifth field is ``None`` or an
+    inline-first ``(first_record, additional_records)`` pair. Older duck-typed
+    test handles may omit it or provide the earlier single-record/list shapes.
     """
     latency: dict[str, float] = {}
     energy: dict[str, float] = {}
     source: dict[str, str] = {}
-    for name, latency_ms, energy_wms, src in entries:
+    fallbacks: list[MoECommFallback] = []
+    for entry in entries:
+        name, latency_ms, energy_wms, src = entry[:4]
+        fallback_payloads = entry[4] if len(entry) > 4 else None
         latency[name] = latency.get(name, 0.0) + latency_ms * scale
         energy[name] = energy.get(name, 0.0) + energy_wms * scale
         prior = source.get(name)
@@ -418,7 +473,34 @@ def _fold_per_op(
             source[name] = src
         elif prior != src:
             source[name] = "mixed"
-    return latency, energy, source
+        if fallback_payloads:
+            if isinstance(fallback_payloads[0], str):
+                fallbacks.append(_moe_comm_fallback_from_payload(fallback_payloads))
+                continue
+            if (
+                isinstance(fallback_payloads, tuple)
+                and len(fallback_payloads) == 2
+                and isinstance(fallback_payloads[1], list)
+            ):
+                first_payload, payloads = fallback_payloads
+                fallbacks.append(_moe_comm_fallback_from_payload(first_payload))
+            else:
+                # Compatibility for the earlier private list payload.
+                payloads = fallback_payloads
+            for payload in payloads:
+                fallbacks.append(_moe_comm_fallback_from_payload(payload))
+    return latency, energy, source, merge_moe_comm_fallbacks(fallbacks)
+
+
+def _moe_comm_fallback_from_payload(payload: _MoeCommFallbackPayload) -> MoECommFallback:
+    return MoECommFallback(
+        inference_phase=payload[0],
+        comm_backend=payload[1],
+        requested_ep_size=payload[2],
+        requested_node_num=payload[3],
+        measurement_ep_size=payload[4],
+        measurement_node_num=payload[5],
+    )
 
 
 def estimate_static_latency_breakdown_with_rust(
@@ -435,23 +517,27 @@ def estimate_static_latency_breakdown_with_rust(
     dict[str, float],
     dict[str, str],
     dict[str, str],
+    tuple[MoECommFallback, ...],
 ]:
     """Static (context / generation) per-op breakdown via the compiled engine.
 
-    Routes through ``EngineHandle.run_static_per_op`` (the "Python builds,
-    Rust executes" path). The engine performs the decode stride quadrature and
+    Routes through ``EngineHandle._run_static_per_op_with_metadata``, the
+    private same-call metadata counterpart to the "Python builds, Rust
+    executes" path. The public ``run_static_per_op`` method remains a list of
+    four-tuples. The engine performs the decode stride quadrature and
     the ``(nextn + 1)`` decode-batch scaling internally (mirroring
     the retired Python ``_run_generation_phase``) and returns every queried op's
-    ``(name, latency_ms, energy_wms, source)``; this side folds them into the
+    ``(name, latency_ms, energy_wms, source, moe_comm_fallbacks)``; this side
+    folds them into the
     same name-keyed dicts the Python phase runners produce — real op names,
     real energies, real provenance tags. Returns ``(context_latency,
     generation_latency, context_energy_wms, generation_energy_wms,
-    context_source, generation_source)``.
+    context_source, generation_source, moe_comm_fallbacks)``.
     """
     handle = _cached_engine_handle(model, database)
     engine_mode = mode if mode in {"static", "static_ctx", "static_gen"} else "static"
     try:
-        context_ops, generation_ops = handle.run_static_per_op(
+        context_ops, generation_ops = handle._run_static_per_op_with_metadata(
             batch_size=int(runtime_config.batch_size),
             isl=int(runtime_config.isl),
             osl=int(runtime_config.osl),
@@ -466,8 +552,12 @@ def estimate_static_latency_breakdown_with_rust(
         _reraise_engine_error(exc)
     _note_rust_provenance(handle)
 
-    context_latency, context_energy, context_source = _fold_per_op(context_ops, latency_correction_scale)
-    generation_latency, generation_energy, generation_source = _fold_per_op(generation_ops, latency_correction_scale)
+    context_latency, context_energy, context_source, context_fallbacks = _fold_per_op(
+        context_ops, latency_correction_scale
+    )
+    generation_latency, generation_energy, generation_source, generation_fallbacks = _fold_per_op(
+        generation_ops, latency_correction_scale
+    )
     return (
         context_latency,
         generation_latency,
@@ -475,6 +565,7 @@ def estimate_static_latency_breakdown_with_rust(
         generation_energy,
         context_source,
         generation_source,
+        merge_moe_comm_fallbacks(context_fallbacks, generation_fallbacks),
     )
 
 
@@ -540,7 +631,7 @@ def estimate_mixed_step_breakdown_with_rust(
     """
     handle = _cached_engine_handle(model, database)
     try:
-        shared_ops, ctx_attn_ops, decode_attn_ops = handle.mixed_step_breakdown_per_op(
+        shared_ops, ctx_attn_ops, decode_attn_ops = handle._mixed_step_breakdown_per_op_with_metadata(
             int(ctx_tokens),
             int(gen_tokens),
             int(isl),
@@ -553,9 +644,9 @@ def estimate_mixed_step_breakdown_with_rust(
         _reraise_engine_error(exc)
     _note_rust_provenance(handle)
 
-    shared_latency, shared_energy, shared_source = _fold_per_op(shared_ops)
-    ctx_latency, ctx_energy, ctx_source = _fold_per_op(ctx_attn_ops)
-    dec_latency, dec_energy, dec_source = _fold_per_op(decode_attn_ops)
+    shared_latency, shared_energy, shared_source, shared_fallbacks = _fold_per_op(shared_ops)
+    ctx_latency, ctx_energy, ctx_source, ctx_fallbacks = _fold_per_op(ctx_attn_ops)
+    dec_latency, dec_energy, dec_source, dec_fallbacks = _fold_per_op(decode_attn_ops)
 
     # Pass 2/3 fold to (at most) the single filtered attention key; missing
     # passes report 0.0 under the Python branch's default "silicon" source
@@ -591,6 +682,7 @@ def estimate_mixed_step_breakdown_with_rust(
         "component_energy_wms": component_energy_wms,
         "per_op_latency_ms": per_op_latency_ms,
         "per_op_source": per_op_source,
+        "moe_comm_fallbacks": merge_moe_comm_fallbacks(shared_fallbacks, ctx_fallbacks, dec_fallbacks),
     }
 
 
@@ -633,24 +725,25 @@ def estimate_decode_step_breakdown_with_rust(
     isl: int,
     osl: int,
     gen_seq_imbalance_correction_scale: float = 1.0,
-) -> tuple[float, float, dict[str, float], dict[str, str]]:
+) -> tuple[float, float, dict[str, float], dict[str, str], tuple[MoECommFallback, ...]]:
     """``estimate_decode_step_latency_with_rust`` with the per-op values kept.
 
-    Returns ``(latency_ms, energy_wms, per_op_latency, per_op_source)`` —
+    Returns ``(latency_ms, energy_wms, per_op_latency, per_op_source,
+    moe_comm_fallbacks)`` —
     the exact shape ``base_backend._get_genonly_step_latency`` produces on the
     Python step, with real op names and per-op energies folded from the
     compiled engine's per-op results.
     """
     handle = _cached_engine_handle(model, database)
-    entries = handle.decode_step_per_op(
+    entries = handle._decode_step_per_op_with_metadata(
         int(gen_tokens),
         int(isl),
         int(osl),
         gen_seq_imbalance_correction_scale=_scale_or_one(gen_seq_imbalance_correction_scale),
     )
     _note_rust_provenance(handle)
-    latency, energy, source = _fold_per_op(entries)
-    return sum(latency.values()), sum(energy.values()), latency, source
+    latency, energy, source, fallbacks = _fold_per_op(entries)
+    return sum(latency.values()), sum(energy.values()), latency, source, fallbacks
 
 
 def evaluate_context_ops_with_rust(
@@ -663,7 +756,7 @@ def evaluate_context_ops_with_rust(
     prefix: int = 0,
     seq_imbalance_correction_scale: float = 1.0,
     x: int | None = None,
-) -> list[tuple[str, float, float, str]]:
+) -> list[PerOpValue]:
     """Evaluate an index-addressed sublist of the compiled context op list.
 
     The thin op-list evaluation FFI: Python-side orchestration (AFD A/F
@@ -698,7 +791,7 @@ def evaluate_generation_ops_with_rust(
     gen_seq_imbalance_correction_scale: float = 1.0,
     prefix: int = 0,
     x: int | None = None,
-) -> list[tuple[str, float, float, str]]:
+) -> list[PerOpValue]:
     """Evaluate an index-addressed sublist of the compiled generation op list
     at the decode-step shape (see ``evaluate_context_ops_with_rust``). The
     base decode walk carries no prefix; ``prefix`` exists for orchestrations
@@ -727,7 +820,7 @@ def evaluate_ops_json_with_rust(
     prefix: int = 0,
     imbalance_correction_scale: float = 1.0,
     x: int | None = None,
-) -> list[tuple[str, float, float, str]]:
+) -> list[PerOpValue]:
     """Evaluate an ad-hoc op list (JSON array of OpSpec objects) against the
     engine's database — serves op lists deliberately NOT in the compiled spec
     (the VL encoder phase). The caller keeps the shape math and passes the
@@ -743,6 +836,29 @@ def evaluate_ops_json_with_rust(
         prefix=int(prefix or 0),
         imbalance_correction_scale=_scale_or_one(imbalance_correction_scale),
         x=x,
+    )
+    _note_rust_provenance(handle)
+    return result
+
+
+def evaluate_context_attention_kernels_with_rust(
+    model: Any,
+    database: Any,
+    *,
+    ops_json: str,
+    batch_size: int,
+    s: int,
+    imbalance_correction_scale: float = 1.0,
+    visual_block_upper_triangle: bool = False,
+) -> list[PerOpValue]:
+    """Evaluate visual-mask attention kernels with the model's compiled database policy."""
+    handle = _cached_engine_handle(model, database)
+    result = handle.evaluate_context_attention_kernels_json(
+        ops_json,
+        batch_size=int(batch_size),
+        s=int(s),
+        imbalance_correction_scale=_scale_or_one(imbalance_correction_scale),
+        visual_block_upper_triangle=visual_block_upper_triangle,
     )
     _note_rust_provenance(handle)
     return result

@@ -8,31 +8,45 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.12.0"
+# Nightly CI stamps a dev suffix via scripts/apply_dev_version.py:
+# PEP 440 `0.12.0.devYYYYMMDD` in the wheel, SemVer `0.12.0-dev.YYYYMMDD` in
+# the crate (cargo rejects the PEP 440 spelling). The release contract still
+# anchors on VERSION; only this suffix pair is additionally accepted.
+DEV_SUFFIX_RE = re.compile(r"\.dev[0-9]{8}")
 
 EXPECTED_PYTHON_PROJECTS = {
     ROOT / "python" / "aisimulate" / "pyproject.toml": "aisimulate",
 }
 EXPECTED_CRATE = ROOT / "crates" / "core" / "Cargo.toml"
+LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
+IGNORED_DISCOVERY_DIRS = {".git", ".venv", "dist", "target"}
 
 
 def _toml(path: Path) -> dict[str, object]:
     return tomllib.loads(path.read_text())
 
 
-def check_manifests() -> None:
+def _is_source_manifest(path: Path) -> bool:
+    return not IGNORED_DISCOVERY_DIRS.intersection(path.relative_to(ROOT).parts)
+
+
+def check_manifests() -> tuple[str, str]:
+    """Validate the manifest set; return (wheel version, crate version)."""
     pyprojects = {
         path: str(_toml(path)["project"]["name"])
         for path in ROOT.rglob("pyproject.toml")
-        if ".venv" not in path.parts and "target" not in path.parts
+        if _is_source_manifest(path)
     }
     assert pyprojects == EXPECTED_PYTHON_PROJECTS, (
         "publishable Python manifest set changed:\n"
@@ -41,7 +55,7 @@ def check_manifests() -> None:
 
     publishable_crates: dict[Path, str] = {}
     for path in ROOT.rglob("Cargo.toml"):
-        if ".venv" in path.parts or "target" in path.parts:
+        if not _is_source_manifest(path):
             continue
         manifest = _toml(path)
         package = manifest.get("package")
@@ -54,7 +68,19 @@ def check_manifests() -> None:
 
     app = _toml(ROOT / "python" / "aisimulate" / "pyproject.toml")["project"]
     crate = _toml(EXPECTED_CRATE)["package"]
-    assert app["version"] == crate["version"] == VERSION
+    py_version = str(app["version"])
+    crate_version = str(crate["version"])
+    dev_suffix = py_version.removeprefix(VERSION)
+    assert py_version.startswith(VERSION) and (
+        dev_suffix == "" or DEV_SUFFIX_RE.fullmatch(dev_suffix)
+    ), f"wheel version must be {VERSION} or {VERSION}.devYYYYMMDD, got {py_version}"
+    expected_crate_version = (
+        f"{VERSION}-dev.{dev_suffix[len('.dev'):]}" if dev_suffix else VERSION
+    )
+    assert crate_version == expected_crate_version, (
+        f"crate version {crate_version} does not match wheel version "
+        f"{py_version} (expected {expected_crate_version})"
+    )
     optional_dependencies = app.get("optional-dependencies", {})
     dependencies = [
         *app["dependencies"],
@@ -75,6 +101,7 @@ def check_manifests() -> None:
         "aiconfigurator": "aiconfigurator.main:main",
         "aisimulate": "aisimulate.main:main",
     }
+    return py_version, crate_version
 
 
 def _run(
@@ -85,7 +112,7 @@ def _run(
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
-def build(output: Path) -> None:
+def build(output: Path, py_version: str, crate_version: str) -> None:
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise SystemExit(f"output directory must be empty: {output}")
@@ -113,25 +140,39 @@ def build(output: Path) -> None:
             str(target),
             env={**os.environ, "PYO3_PYTHON": sys.executable},
         )
-        crate = target / "package" / f"aisimulate-core-{VERSION}.crate"
+        crate = target / "package" / f"aisimulate-core-{crate_version}.crate"
         if not crate.is_file():
             raise SystemExit(f"cargo did not produce {crate}")
         shutil.copy2(crate, output / crate.name)
 
-    verify_output(output)
+    verify_output(output, py_version, crate_version)
 
 
-def verify_output(output: Path) -> None:
+def verify_output(output: Path, py_version: str, crate_version: str) -> None:
     names = sorted(path.name for path in output.iterdir() if path.is_file())
-    expected_crate = f"aisimulate-core-{VERSION}.crate"
+    expected_crate = f"aisimulate-core-{crate_version}.crate"
     app_wheels = [
         name
         for name in names
-        if name.startswith(f"aisimulate-{VERSION}-") and name.endswith(".whl")
+        if name.startswith(f"aisimulate-{py_version}-") and name.endswith(".whl")
     ]
     assert len(names) == 2, f"expected exactly two artifacts, got {names}"
     assert len(app_wheels) == 1, f"missing or duplicate aisimulate wheel: {names}"
     assert expected_crate in names, f"missing {expected_crate}: {names}"
+    wheel_path = output / app_wheels[0]
+    with zipfile.ZipFile(wheel_path) as wheel:
+        for legal_file in LEGAL_FILES:
+            matches = [
+                name
+                for name in wheel.namelist()
+                if name.endswith(f".dist-info/licenses/{legal_file}")
+            ]
+            assert len(matches) == 1, (
+                f"expected one packaged {legal_file}, found {matches}"
+            )
+            assert wheel.read(matches[0]) == (ROOT / legal_file).read_bytes(), (
+                f"packaged {legal_file} differs from the root original"
+            )
     print("verified release artifacts:")
     for name in names:
         print(f"- {name}")
@@ -143,9 +184,9 @@ def main() -> None:
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
 
-    check_manifests()
+    py_version, crate_version = check_manifests()
     if not args.check_only:
-        build(args.output_dir.resolve())
+        build(args.output_dir.resolve(), py_version, crate_version)
 
 
 if __name__ == "__main__":

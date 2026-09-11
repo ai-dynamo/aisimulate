@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::super::scaling::{ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::*;
@@ -11,15 +12,18 @@ use crate::engine::{
     Backend as EngineType, EngineConfig as MockEngineArgs, KvEvent, KvEventData,
     TransferTimingMode as KvTransferTimingMode, WorkerType,
 };
-use crate::replay::ReplayReport;
 use crate::replay::components::{AdmissionQueue, NoReplayMetadata, ReplayEngineObservation};
-use crate::replay::core::EngineEventBatch;
 use crate::replay::core::round_robin::PoolRoundRobinPlacement;
+use crate::replay::core::{EngineEventBatch, NoEngineEvents, PlacementEffects};
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory, ReplayRoleConfig};
 use crate::replay::loadgen::{
     AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope, AgenticMooncakeHeader,
-    AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace, SessionTrace, Trace, TurnTrace,
+    AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace, ReplayRequestPayload, SessionTrace,
+    Trace, TurnTrace,
+};
+use crate::replay::{
+    ReplayReport, ReplayTelemetryObserver, ReplayTelemetrySampleKind, ReplayTelemetrySnapshot,
 };
 
 struct CaptureOncePolicy {
@@ -38,6 +42,164 @@ impl ReplayScalingPolicy for CaptureOncePolicy {
     ) -> anyhow::Result<ReplayScalingDecision> {
         *self.captured.borrow_mut() = Some(snapshot);
         Ok(ReplayScalingDecision::default())
+    }
+}
+
+struct CaptureAndScaleOncePolicy {
+    captured: Rc<RefCell<Option<ReplayScalingSnapshot>>>,
+}
+
+struct CaptureTelemetryObserver {
+    samples: Arc<Mutex<Vec<ReplayTelemetrySnapshot>>>,
+}
+
+impl ReplayTelemetryObserver for CaptureTelemetryObserver {
+    fn on_sample(&mut self, snapshot: ReplayTelemetrySnapshot) -> anyhow::Result<()> {
+        self.samples.lock().unwrap().push(snapshot);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct QueueUntilWorkerPlacement {
+    scheduler_id: Option<usize>,
+    pending: VecDeque<Uuid>,
+}
+
+impl QueueUntilWorkerPlacement {
+    fn initially_blocked(_topology: Vec<WorkerTopology>) -> Self {
+        Self {
+            scheduler_id: None,
+            pending: VecDeque::new(),
+        }
+    }
+
+    fn release_pending(&mut self) -> Vec<Placement> {
+        let Some(scheduler_id) = self.scheduler_id else {
+            return Vec::new();
+        };
+        self.pending
+            .drain(..)
+            .map(|request_id| Placement {
+                request_id,
+                scheduler_id,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+                placement_replica_id: None,
+            })
+            .collect()
+    }
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
+    type Metadata = ();
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        _metadata: Self::Metadata,
+        _session_id: Option<String>,
+        _now_ms: f64,
+    ) -> anyhow::Result<PlacementEffects> {
+        let request_id = request.metadata().uuid.expect("test request UUID");
+        let decision = match self.scheduler_id {
+            Some(scheduler_id) => PlacementDecision::Immediate(Placement {
+                request_id,
+                scheduler_id,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+                placement_replica_id: None,
+            }),
+            None => {
+                self.pending.push_back(request_id);
+                PlacementDecision::Queued
+            }
+        };
+        Ok(PlacementEffects {
+            decision,
+            released: Vec::new(),
+        })
+    }
+
+    fn observe(&mut self, _observation: (), _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+        let before = self.pending.len();
+        self.pending.retain(|pending| *pending != request_id);
+        self.pending.len() != before
+    }
+
+    fn request_terminal(
+        &mut self,
+        _request_id: Uuid,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn prefill_completed(
+        &mut self,
+        _request_id: Uuid,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn worker_ready(
+        &mut self,
+        worker: WorkerTopology,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        self.scheduler_id = worker.scheduler_ids.first().copied();
+        Ok(self.release_pending())
+    }
+
+    fn worker_draining(
+        &mut self,
+        worker: WorkerTopology,
+        _now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        if worker.scheduler_ids.first().copied() == self.scheduler_id {
+            self.scheduler_id = None;
+        }
+        Ok(Vec::new())
+    }
+
+    fn worker_removed(
+        &mut self,
+        worker: WorkerTopology,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        self.worker_draining(worker, now_ms)
+    }
+
+    fn topology_settled(&mut self, _now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(self.release_pending())
+    }
+}
+
+impl ReplayScalingPolicy for CaptureAndScaleOncePolicy {
+    fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+        Ok(0.1)
+    }
+
+    fn on_tick(
+        &mut self,
+        snapshot: ReplayScalingSnapshot,
+    ) -> anyhow::Result<ReplayScalingDecision> {
+        *self.captured.borrow_mut() = Some(snapshot);
+        Ok(ReplayScalingDecision {
+            target_prefill: Some(2),
+            target_decode: Some(2),
+            next_tick_ms: None,
+        })
     }
 }
 
@@ -76,6 +238,8 @@ fn sglang_staged_args(worker_type: WorkerType, speedup_ratio: f64) -> MockEngine
 struct TestDisaggConfig {
     prefill_args: MockEngineArgs,
     decode_args: MockEngineArgs,
+    prefill_dp_size: u32,
+    decode_dp_size: u32,
     num_prefill_workers: usize,
     num_decode_workers: usize,
 }
@@ -85,15 +249,24 @@ impl TestDisaggConfig {
         let engine = ReplayEngineConfig {
             dp_size: 1,
             tensor_parallel_size: 1,
+            pipeline_parallel_size: 1,
+            context_parallel_size: 1,
+            num_gpu_blocks_is_explicit: None,
             rank: MockEngineArgs::default(),
             prefill: Some(ReplayRoleConfig {
-                dp_size: 1,
+                dp_size: self.prefill_dp_size,
                 tensor_parallel_size: 1,
+                pipeline_parallel_size: 1,
+                context_parallel_size: 1,
+                num_gpu_blocks_is_explicit: None,
                 rank: self.prefill_args.clone(),
             }),
             decode: Some(ReplayRoleConfig {
-                dp_size: 1,
+                dp_size: self.decode_dp_size,
                 tensor_parallel_size: 1,
+                pipeline_parallel_size: 1,
+                context_parallel_size: 1,
+                num_gpu_blocks_is_explicit: None,
                 rank: self.decode_args.clone(),
             }),
         };
@@ -118,6 +291,8 @@ fn disagg_config() -> TestDisaggConfig {
     TestDisaggConfig {
         prefill_args: staged_args(WorkerType::Prefill, 1000.0),
         decode_args: staged_args(WorkerType::Decode, 1000.0),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
         num_prefill_workers: 2,
         num_decode_workers: 2,
     }
@@ -127,6 +302,8 @@ fn sglang_disagg_config() -> TestDisaggConfig {
     TestDisaggConfig {
         prefill_args: sglang_staged_args(WorkerType::Prefill, 1000.0),
         decode_args: sglang_staged_args(WorkerType::Decode, 1000.0),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
         num_prefill_workers: 2,
         num_decode_workers: 2,
     }
@@ -150,7 +327,14 @@ fn forced_chunked_handoff_config(engine_type: EngineType) -> TestDisaggConfig {
 fn disagg_config_with_handoff_delay() -> TestDisaggConfig {
     let mut config = disagg_config();
     config.prefill_args.kv_transfer_bandwidth = Some(1.0);
-    config.prefill_args.kv_bytes_per_token = Some(1_000_000);
+    config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
+    config
+}
+
+fn trtllm_disagg_config_with_handoff_delay() -> TestDisaggConfig {
+    let mut config = trtllm_disagg_config();
+    config.prefill_args.kv_transfer_bandwidth = Some(1.0);
+    config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
     config
 }
 
@@ -167,7 +351,7 @@ fn transfer_timing_config(
     config.num_prefill_workers = 1;
     config.num_decode_workers = decode_workers;
     config.prefill_args.kv_transfer_bandwidth = Some(1.0);
-    config.prefill_args.kv_bytes_per_token = Some(1_000_000);
+    config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
     config.prefill_args.kv_transfer_timing_mode = mode;
     config.decode_args.kv_transfer_timing_mode = mode;
     config
@@ -189,7 +373,7 @@ fn cleanup_overtake_args(engine_type: EngineType, worker_type: WorkerType) -> Mo
     };
     if worker_type == WorkerType::Prefill {
         args.kv_transfer_bandwidth = Some(100.0);
-        args.kv_bytes_per_token = Some(131_072);
+        args.kv_transfer_bytes_per_token = Some(131_072);
     }
     args
 }
@@ -198,12 +382,14 @@ fn cleanup_overtake_config(engine_type: EngineType) -> TestDisaggConfig {
     TestDisaggConfig {
         prefill_args: cleanup_overtake_args(engine_type, WorkerType::Prefill),
         decode_args: cleanup_overtake_args(engine_type, WorkerType::Decode),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
         num_prefill_workers: 2,
         num_decode_workers: 2,
     }
 }
 
-fn trtllm_reject_staged_args(worker_type: WorkerType) -> MockEngineArgs {
+fn trtllm_staged_args(worker_type: WorkerType) -> MockEngineArgs {
     // 4 GPU blocks * block_size 4 = 16-token to-completion budget per request.
     MockEngineArgs {
         backend: EngineType::Trtllm,
@@ -211,7 +397,7 @@ fn trtllm_reject_staged_args(worker_type: WorkerType) -> MockEngineArgs {
         num_gpu_blocks: 4,
         max_num_batched_tokens: 64,
         max_num_seqs: 4,
-        enable_prefix_caching: false,
+        enable_prefix_caching: true,
         enable_chunked_prefill: true,
         speedup_ratio: 1000.0,
         worker_type,
@@ -219,29 +405,33 @@ fn trtllm_reject_staged_args(worker_type: WorkerType) -> MockEngineArgs {
     }
 }
 
-fn trtllm_reject_disagg_config() -> TestDisaggConfig {
+fn trtllm_disagg_config() -> TestDisaggConfig {
     TestDisaggConfig {
-        prefill_args: trtllm_reject_staged_args(WorkerType::Prefill),
-        decode_args: trtllm_reject_staged_args(WorkerType::Decode),
+        prefill_args: trtllm_staged_args(WorkerType::Prefill),
+        decode_args: trtllm_staged_args(WorkerType::Decode),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
         num_prefill_workers: 1,
         num_decode_workers: 1,
     }
 }
 
 #[test]
-fn trtllm_disaggregation_is_rejected_before_runtime_state() {
-    let config = trtllm_reject_disagg_config();
-    let result = DisaggRuntime::from_requests(
-        &config,
-        None,
-        None,
-        VecDeque::from([request(1, 4, 4, 0.0)]),
-        ReplayMode::Concurrency { max_in_flight: 1 },
+fn trtllm_disaggregation_runs_source_first_handoff_to_completion() {
+    let config = trtllm_disagg_config();
+    let runtime =
+        new_handoff_conformance(&config, VecDeque::from([request(1, 4, 2, 0.0)])).unwrap();
+
+    let conformance = runtime.run_handoff_conformance(EngineType::Trtllm).unwrap();
+
+    assert_eq!(conformance.order, HandoffOrder::SourceFirst);
+    assert_eq!(
+        conformance.lifecycle,
+        crate::replay::expected_normalized_handoff(HandoffOrder::SourceFirst)
     );
-    assert!(matches!(
-        result,
-        Err(error) if error.to_string().contains("does not support TRT-LLM")
-    ));
+    assert_eq!(conformance.completed_requests, 1);
+    assert!(conformance.source_drained);
+    assert!(conformance.destination_drained);
 }
 
 fn request(
@@ -344,6 +534,27 @@ impl DisaggRuntime {
     ) -> anyhow::Result<RoundRobinDisaggRuntime> {
         let config = config.runtime_config(false)?;
         RoundRobinDisaggRuntime::new_round_robin_workload(&config, driver, mode)
+    }
+
+    fn from_requests_with_rank_offsets(
+        config: &TestDisaggConfig,
+        pending: VecDeque<DirectRequest>,
+        mode: ReplayMode,
+        prefill_offset: usize,
+        decode_offset: usize,
+    ) -> anyhow::Result<RoundRobinDisaggRuntime> {
+        let config = config.runtime_config(false)?;
+        RoundRobinDisaggRuntime::new_composed(
+            &config,
+            AdmissionQueue::new_requests(pending, mode),
+            false,
+            |_, prefill_topology, _, decode_topology| {
+                Ok((
+                    PoolRoundRobinPlacement::new_starting_at(prefill_topology, prefill_offset),
+                    PoolRoundRobinPlacement::new_starting_at(decode_topology, decode_offset),
+                ))
+            },
+        )
     }
 }
 
@@ -517,6 +728,106 @@ fn scaling_tick_emits_idle_fpm_for_both_disagg_pools() {
         assert_eq!(snapshots[0].1.num_queued_prefill, 0);
         assert_eq!(snapshots[0].1.num_queued_decode, 0);
     }
+}
+
+#[test]
+fn telemetry_samples_router_queues_before_a_coincident_scale_up() {
+    let mut config = disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    let pending =
+        crate::replay::normalize_trace_requests(vec![request(9_303, 64, 1, 0.0)], 1.0).unwrap();
+    let captured = Rc::new(RefCell::new(None));
+    let policy = CaptureAndScaleOncePolicy {
+        captured: Rc::clone(&captured),
+    };
+    let telemetry_samples = Arc::new(Mutex::new(Vec::new()));
+    let telemetry_observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&telemetry_samples),
+    };
+
+    let runtime_config = config.runtime_config(false).unwrap();
+    DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+        &runtime_config,
+        AdmissionQueue::new_requests(pending, ReplayMode::Trace),
+        false,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+            ))
+        },
+    )
+    .unwrap()
+    .with_telemetry_observer(0.1, Box::new(telemetry_observer))
+    .with_scaling_policy(Box::new(policy))
+    .run()
+    .unwrap();
+
+    let snapshot = captured
+        .borrow_mut()
+        .take()
+        .expect("initial scaling tick must fire");
+    assert_eq!(snapshot.now_ms, 0.1);
+    assert_eq!(snapshot.traffic.num_req, 1);
+    assert_eq!(snapshot.active_prefill_ids, vec![0]);
+    assert_eq!(snapshot.active_decode_ids, vec![0]);
+
+    let samples = telemetry_samples.lock().unwrap();
+    let coincident = samples
+        .iter()
+        .find(|sample| {
+            sample.kind == ReplayTelemetrySampleKind::Periodic && sample.sampled_at_ms == 0.1
+        })
+        .expect("telemetry must sample at the coincident scaling timestamp");
+    assert_eq!(coincident.router_pending_prefill_requests, 1);
+    assert_eq!(coincident.router_pending_decode_requests, 0);
+    assert_eq!(coincident.active_prefill_ids, vec![0]);
+    assert_eq!(coincident.active_decode_ids, vec![0]);
+}
+
+#[test]
+fn telemetry_heartbeat_does_not_keep_a_deadlocked_disagg_replay_alive() {
+    let config = disagg_config();
+    let runtime_config = config.runtime_config(false).unwrap();
+    let build_runtime = || {
+        let pending =
+            crate::replay::normalize_trace_requests(vec![request(9_304, 64, 1, 0.0)], 1.0).unwrap();
+        DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+            &runtime_config,
+            AdmissionQueue::new_requests(pending, ReplayMode::Trace),
+            false,
+            |_, prefill_topology, _, decode_topology| {
+                Ok((
+                    QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                    QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+                ))
+            },
+        )
+        .unwrap()
+    };
+
+    let baseline_error = match build_runtime().run() {
+        Ok(_) => panic!("blocked replay unexpectedly completed"),
+        Err(error) => error.to_string(),
+    };
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let observed_error = match build_runtime()
+        .with_telemetry_observer(0.1, Box::new(observer))
+        .run()
+    {
+        Ok(_) => panic!("telemetry kept a blocked replay alive"),
+        Err(error) => error.to_string(),
+    };
+
+    assert_eq!(observed_error, baseline_error);
+    assert!(observed_error.contains("dead end"));
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
 }
 
 fn run_trace_with_details(
@@ -957,6 +1268,37 @@ fn test_prefill_and_decode_use_separate_worker_pools() {
 }
 
 #[test]
+fn attention_dp_routes_requests_across_asymmetric_rank_pools() {
+    let mut config = disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    config.prefill_dp_size = 2;
+    config.decode_dp_size = 4;
+    let requests = (1..=8).map(|id| request(id, 4, 2, 0.0)).collect::<Vec<_>>();
+
+    let (_, stats) = run_trace_collect(&config, requests, None, 1.0);
+    let prefill_schedulers = stats
+        .prefill_assignments
+        .values()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let decode_schedulers = stats
+        .decode_assignments
+        .values()
+        .copied()
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(prefill_schedulers, BTreeSet::from([0, 1]));
+    assert_eq!(decode_schedulers, BTreeSet::from([0, 1, 2, 3]));
+    assert!(
+        stats
+            .request_snapshots
+            .values()
+            .all(|snapshot| snapshot.phase == DisaggPhase::Done)
+    );
+}
+
+#[test]
 fn source_cleanup_preserves_prefill_prefix_reuse() {
     let requests = vec![request(1, 128, 2, 0.0), request(2, 128, 2, 100.0)];
 
@@ -1269,22 +1611,39 @@ fn rejected_prefill_remains_rejected_during_failed_handoff_cleanup() {
 
 #[test]
 fn test_permanently_unavailable_destination_unwinds_without_stalling() {
-    for mut config in [disagg_config(), sglang_disagg_config()] {
+    for (mut config, input_tokens) in [
+        (disagg_config(), 128),
+        (sglang_disagg_config(), 128),
+        (trtllm_disagg_config(), 4),
+    ] {
         config.num_prefill_workers = 1;
         config.num_decode_workers = 1;
+        config.prefill_dp_size = 2;
+        config.decode_dp_size = 4;
         config.decode_args.num_gpu_blocks = 1;
 
         let pending =
-            crate::replay::normalize_trace_requests(vec![request(1, 128, 2, 0.0)], 1.0).unwrap();
-        let (collector, stats) =
-            DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
-                .unwrap()
-                .with_per_request_records(true)
-                .run()
+            crate::replay::normalize_trace_requests(vec![request(1, input_tokens, 2, 0.0)], 1.0)
                 .unwrap();
+        let (collector, stats) = DisaggRuntime::from_requests_with_rank_offsets(
+            &config,
+            pending,
+            ReplayMode::Trace,
+            1,
+            3,
+        )
+        .unwrap()
+        .with_per_request_records(true)
+        .run()
+        .unwrap();
         let report = collector.finish();
         let uuid = Uuid::from_u128(1);
 
+        if config.prefill_args.backend == EngineType::Sglang {
+            assert!(!stats.prefill_assignments.contains_key(&uuid));
+        } else {
+            assert_eq!(stats.prefill_assignments[&uuid], 1);
+        }
         assert_eq!(stats.request_snapshots[&uuid].phase, DisaggPhase::Done);
         assert_eq!(report.request_counts.completed_requests, 0);
         assert_eq!(report.per_request.len(), 1);
@@ -1293,6 +1652,12 @@ fn test_permanently_unavailable_destination_unwinds_without_stalling() {
             ReplayTerminalStatus::Failed
         );
         assert!(report.per_request[0].first_token_ms.is_none());
+        let decode_route = report.per_request[0]
+            .routing_history
+            .iter()
+            .find(|route| route.pool == ReplayRequestPool::Decode)
+            .unwrap();
+        assert_eq!(decode_route.dp_rank, Some(3));
         assert!(
             stats
                 .transition_log
@@ -1457,63 +1822,72 @@ fn test_cancellation_during_transfer_ignores_retired_completion_event() {
         KvTransferTimingMode::FullPrompt,
         KvTransferTimingMode::DestinationMissing,
     ] {
-        let mut config = disagg_config_with_handoff_delay();
-        config.prefill_args.kv_transfer_timing_mode = mode;
-        config.decode_args.kv_transfer_timing_mode = mode;
-        let uuid = Uuid::from_u128(1);
-        let mut runtime = DisaggRuntime::from_requests(
-            &config,
-            None,
-            None,
-            VecDeque::from([request(1, 128, 2, 0.0)]),
-            ReplayMode::Trace,
-        )
-        .unwrap()
-        .with_per_request_records(true);
+        for mut config in [
+            disagg_config_with_handoff_delay(),
+            trtllm_disagg_config_with_handoff_delay(),
+        ] {
+            config.prefill_dp_size = 2;
+            config.decode_dp_size = 4;
+            config.prefill_args.kv_transfer_timing_mode = mode;
+            config.decode_args.kv_transfer_timing_mode = mode;
+            let uuid = Uuid::from_u128(1);
+            let input_tokens = config.prefill_args.block_size * 2;
+            let mut runtime = DisaggRuntime::from_requests_with_rank_offsets(
+                &config,
+                VecDeque::from([request(1, input_tokens, 2, 0.0)]),
+                ReplayMode::Trace,
+                1,
+                3,
+            )
+            .unwrap()
+            .with_per_request_records(true);
 
-        runtime.drain_current_timestamp().unwrap();
-        for _ in 0..16 {
-            if runtime.state(uuid).unwrap().phase == DisaggPhase::TransferPending {
-                break;
+            runtime.drain_current_timestamp().unwrap();
+            for _ in 0..16 {
+                if runtime.state(uuid).unwrap().phase == DisaggPhase::TransferPending {
+                    break;
+                }
+                let next = runtime.next_timestamp().unwrap();
+                runtime.advance_now_ms(next);
+                runtime.drain_current_timestamp().unwrap();
             }
-            let next = runtime.next_timestamp().unwrap();
-            runtime.advance_now_ms(next);
-            runtime.drain_current_timestamp().unwrap();
-        }
-        assert_eq!(
-            runtime.state(uuid).unwrap().phase,
-            DisaggPhase::TransferPending
-        );
-        let handoff_id = runtime.state(uuid).unwrap().handoff_id;
-        runtime.apply_scaling(0, 0).unwrap();
-        assert_eq!(runtime.total_prefill_count(), 1);
-        assert_eq!(runtime.total_decode_count(), 1);
-        runtime
-            .apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })
-            .unwrap();
+            assert_eq!(
+                runtime.state(uuid).unwrap().phase,
+                DisaggPhase::TransferPending
+            );
+            assert_eq!(runtime.stats.prefill_assignments[&uuid], 1);
+            assert_eq!(runtime.stats.decode_assignments[&uuid], 3);
+            let handoff_id = runtime.state(uuid).unwrap().handoff_id;
+            runtime.apply_scaling(0, 0).unwrap();
+            assert_eq!(runtime.total_prefill_count(), 1);
+            assert_eq!(runtime.total_decode_count(), 1);
+            runtime
+                .apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })
+                .unwrap();
 
-        runtime.drain_current_timestamp().unwrap();
-        assert!(runtime.events.iter().all(|event| !matches!(
-            &event.kind,
-            crate::replay::events::SimulationEventKind::TransferComplete { .. }
-        )));
-        while !runtime.is_done() {
-            let next = runtime.next_timestamp().unwrap();
-            runtime.advance_now_ms(next);
             runtime.drain_current_timestamp().unwrap();
+            assert!(runtime.events.iter().all(|event| !matches!(
+                &event.kind,
+                crate::replay::events::SimulationEventKind::TransferComplete { .. }
+            )));
+            while !runtime.is_done() {
+                let next = runtime.next_timestamp().unwrap();
+                runtime.advance_now_ms(next);
+                runtime.drain_current_timestamp().unwrap();
+            }
+            assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+            assert_eq!(runtime.total_prefill_count(), 0);
+            assert_eq!(runtime.total_decode_count(), 0);
+            assert!(
+                !runtime
+                    .stats
+                    .transition_log
+                    .contains(&DisaggTransition::DestinationActivated { uuid })
+            );
+            let records = runtime.collector.per_request_records();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Canceled);
         }
-        assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
-        assert_eq!(runtime.total_prefill_count(), 0);
-        assert_eq!(runtime.total_decode_count(), 0);
-        assert!(
-            !runtime
-                .stats
-                .transition_log
-                .contains(&DisaggTransition::DestinationActivated { uuid })
-        );
-        let records = runtime.collector.per_request_records();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Canceled);
     }
 }
 
@@ -1781,6 +2155,127 @@ fn test_disagg_max_sim_time_truncates_run() {
         report.throughput.duration_ms,
         cap_ms
     );
+}
+
+#[test]
+fn telemetry_heartbeats_do_not_advance_disagg_through_a_capped_idle_gap() {
+    let config = disagg_config();
+    let cap_ms = 5.0;
+    let pending = VecDeque::from([request(9_401, 64, 2, 10.0)]);
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(cap_ms))
+            .run()
+            .unwrap();
+    let mut baseline = collector.finish();
+
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(cap_ms))
+            .with_telemetry_observer(1.0, Box::new(observer))
+            .run()
+            .unwrap();
+    let mut observed = collector.finish();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    assert_eq!(samples[0].sampled_at_ms, 0.0);
+}
+
+#[test]
+fn telemetry_only_timestamps_do_not_enter_the_disagg_semantic_drain() {
+    let config = disagg_config();
+    let pending = VecDeque::from([request(9_403, 64, 2, 10.0)]);
+    let (_, baseline_stats) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .run()
+            .unwrap();
+
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let (_, observed_stats) =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_telemetry_observer(1.0, Box::new(observer))
+            .run()
+            .unwrap();
+
+    assert!(baseline_stats.semantic_drain_count > 1);
+    assert_eq!(
+        observed_stats.semantic_drain_count, baseline_stats.semantic_drain_count,
+        "telemetry-only heartbeats must not wake disaggregate semantic replay work"
+    );
+    assert!(samples.lock().unwrap().len() > 2);
+}
+
+#[test]
+fn capped_disagg_telemetry_flushes_t0_observations_without_advancing_accounting() {
+    let config = disagg_config();
+    let pending = VecDeque::from([request(9_402, 64, 2, 0.0)]);
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(0.0))
+            .run()
+            .unwrap();
+    let mut baseline = collector.finish();
+
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let observer = CaptureTelemetryObserver {
+        samples: Arc::clone(&samples),
+    };
+    let (collector, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace)
+            .unwrap()
+            .with_max_sim_time_ms(Some(0.0))
+            .with_telemetry_observer(0.1, Box::new(observer))
+            .run()
+            .unwrap();
+    let mut observed = collector.finish();
+
+    baseline.throughput.wall_time_ms = 0.0;
+    observed.throughput.wall_time_ms = 0.0;
+    assert_eq!(baseline.throughput.duration_ms, 0.0);
+    assert_eq!(observed.throughput.duration_ms, 0.0);
+    assert_eq!(baseline.throughput.prefill_worker_seconds, 0.0);
+    assert_eq!(observed.throughput.prefill_worker_seconds, 0.0);
+    assert_eq!(baseline.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(observed.throughput.decode_worker_seconds, 0.0);
+    assert_eq!(baseline.throughput.gpu_hours, 0.0);
+    assert_eq!(observed.throughput.gpu_hours, 0.0);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(&observed).unwrap()
+    );
+
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), 2);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    let final_sample = &samples[1];
+    assert_eq!(final_sample.kind, ReplayTelemetrySampleKind::Final);
+    assert_eq!(final_sample.interval_start_ms, 0.0);
+    assert_eq!(final_sample.sampled_at_ms, 0.0);
+    assert_eq!(final_sample.traffic.duration_s, 0.0);
+    assert_eq!(final_sample.traffic.arriving_requests, 1);
 }
 
 /// Sanity: without a cap, the same setup admits all submitted requests
