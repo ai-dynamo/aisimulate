@@ -796,6 +796,26 @@ where
                 started_at_ms: started.started_at_ms,
                 end_ms: started.end_ms,
             };
+            // `execute_pass` has already committed the pass to the engine, so the
+            // component must record it before any fallible step below. Otherwise an
+            // error leaves the engine holding a pass this component believes does
+            // not exist: `worker_is_busy` reports idle and `next_internal_deadline_ms`
+            // stops hiding that worker's mid-pass deadlines, which its own doc forbids.
+            self.required_worker_mut(worker_id)?.pending_pass = Some(pending);
+
+            // Validate every rank before draining any of them. The drain below moves
+            // each rank's admissions out, so bailing partway through silently
+            // discards admissions the engine has already made -- they never reach
+            // the collector, while `self.requests` still holds those requests as
+            // queued and `cluster_in_flight()` does not count them.
+            for rank in &started.by_rank {
+                if !rank.effects.kv_events.is_empty() {
+                    bail!(
+                        "generalized engine exposed KV observations before pass completion for worker {worker_id} rank {}",
+                        rank.dp_rank
+                    );
+                }
+            }
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
             for rank in started.by_rank {
@@ -817,14 +837,7 @@ where
                             event,
                         }
                     }));
-                if !rank.effects.kv_events.is_empty() {
-                    bail!(
-                        "generalized engine exposed KV observations before pass completion for worker {worker_id} rank {}",
-                        rank.dp_rank
-                    );
-                }
             }
-            self.required_worker_mut(worker_id)?.pending_pass = Some(pending);
 
             if started.end_ms > now_ms {
                 effects.schedule_completion(
@@ -926,10 +939,14 @@ where
                 completion.stage
             );
         }
-        let pending = self
-            .required_worker_mut(completion.worker_id)?
+        // Read the pass without clearing it: both the ID check below and the
+        // engine call can fail, and clearing first would leave this component
+        // believing the worker is idle while the engine still owns a live pass --
+        // re-exposing it to `drive_ready` and hiding its mid-pass deadlines.
+        let pending = *self
+            .required_worker(completion.worker_id)?
             .pending_pass
-            .take()
+            .as_ref()
             .context("offline replay completed a worker with no pass in flight")?;
         if pending.pass_id != completion.pass_id {
             bail!("offline replay generalized-engine pass ID mismatch");
@@ -939,6 +956,7 @@ where
             .engine
             .complete_pass(completion.pass_id, now_ms)
             .map_err(crate::replay::error::engine_boundary)?;
+        self.required_worker_mut(completion.worker_id)?.pending_pass = None;
         let mut payloads = Vec::with_capacity(completed.effects.by_rank.len());
         for rank in completed.effects.into_by_rank() {
             let scheduler_id = self
