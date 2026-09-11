@@ -95,7 +95,7 @@ runs:
       shell: bash
       run: |
         python -m pip install --quiet wheelhouse/aisimulate-*.whl
-        python python/aisimulate/tools/verify_installed_package_layers.py --exercise-engine
+        python python/aisimulate/tools/verify_installed_package_layers.py --exercise-engine --exercise-fpe
 
     - name: Exercise installed public CLI round trip
       shell: bash

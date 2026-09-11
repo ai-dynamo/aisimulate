@@ -354,6 +354,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expect", choices=("fpm", "full", "unified"), default="unified")
     parser.add_argument("--exercise-engine", action="store_true")
+    parser.add_argument(
+        "--exercise-fpe", action="store_true", help="Run repository FPE tooling against the installed wheel"
+    )
     args = parser.parse_args()
 
     if args.expect == "fpm":
@@ -365,6 +368,7 @@ def main() -> int:
     _verify_imports()
     if args.exercise_engine:
         _exercise_engine()
+    if args.exercise_fpe:
         _exercise_fpe_matrix()
     print(
         f"Verified unified aisimulate {wheel_version}: application, compatibility SDKs, resources, and native runtime"
