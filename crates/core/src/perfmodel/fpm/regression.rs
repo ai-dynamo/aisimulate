@@ -408,7 +408,10 @@ mod tests {
         };
 
         assert_eq!(raw_order(&left), raw_order(&right));
-        assert_eq!(left.fit.map(|fit| fit.intercept), right.fit.map(|f| f.intercept));
+        assert_eq!(
+            left.fit.map(|fit| fit.intercept),
+            right.fit.map(|f| f.intercept)
+        );
     }
 
     #[test]

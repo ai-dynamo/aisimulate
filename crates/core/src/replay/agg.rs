@@ -1204,6 +1204,7 @@ where
             self.collector.clear_static_worker_count();
         }
         let starting_before = self.engine.starting_group_ids();
+        let topologies_before = self.engine.active_worker_topologies();
         let (added, newly_marked, removed) = self
             .engine
             .apply_target_count(target_workers)
@@ -1241,10 +1242,10 @@ where
         }
 
         for &id in &newly_marked {
-            let topology = self.engine.worker_topology(id).unwrap_or(WorkerTopology {
-                worker_id: id,
-                scheduler_ids: Vec::new(),
-            });
+            let topology = topologies_before
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("draining worker {id} has no engine topology"))?;
             let placements = self.placement.worker_draining(topology, self.now_ms)?;
             released.extend(placements.iter().map(|placement| placement.request_id));
             self.dispatch_placements(placements)?;

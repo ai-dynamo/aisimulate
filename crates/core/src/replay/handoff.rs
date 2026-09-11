@@ -756,10 +756,9 @@ mod tests {
             let mut coordinator = completed_coordinator(handoff_id);
             let actions = coordinator.on_fact(fact.clone()).unwrap();
             assert!(
-                actions.iter().any(|issued| matches!(
-                    issued.action,
-                    HandoffAction::CancelDestination { .. }
-                )),
+                actions
+                    .iter()
+                    .any(|issued| matches!(issued.action, HandoffAction::CancelDestination { .. })),
                 "{fact:?} did not reopen cleanup; got {actions:?}"
             );
         }

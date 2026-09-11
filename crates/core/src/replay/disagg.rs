@@ -3194,6 +3194,7 @@ where
         }
         // -- prefill --
         let prefill_starting_before = self.prefill_engine.starting_group_ids();
+        let prefill_topologies_before = self.prefill_engine.active_worker_topologies();
         let mut prefill_releases = Vec::new();
         let (added, newly_marked, removed) = self
             .prefill_engine
@@ -3231,13 +3232,10 @@ where
             }
         }
         for &id in &newly_marked {
-            let topology = self
-                .prefill_engine
-                .worker_topology(id)
-                .unwrap_or(WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                });
+            let topology = prefill_topologies_before
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| anyhow!("draining prefill worker {id} has no engine topology"))?;
             let placements = self
                 .prefill_placement
                 .worker_draining(topology, self.now_ms)?;
@@ -3274,6 +3272,7 @@ where
 
         // -- decode --
         let decode_starting_before = self.decode_engine.starting_group_ids();
+        let decode_topologies_before = self.decode_engine.active_worker_topologies();
         let mut decode_releases = Vec::new();
         let (added, newly_marked, removed) =
             self.decode_engine
@@ -3310,13 +3309,10 @@ where
             }
         }
         for &id in &newly_marked {
-            let topology = self
-                .decode_engine
-                .worker_topology(id)
-                .unwrap_or(WorkerTopology {
-                    worker_id: id,
-                    scheduler_ids: Vec::new(),
-                });
+            let topology = decode_topologies_before
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| anyhow!("draining decode worker {id} has no engine topology"))?;
             let placements = self
                 .decode_placement
                 .worker_draining(topology, self.now_ms)?;

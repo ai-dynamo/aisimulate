@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -491,6 +491,21 @@ where
 
     pub(crate) fn non_draining_group_count(&self) -> usize {
         self.active_group_ids().len() + self.pending_startup.len()
+    }
+
+    /// Topologies of every currently-active worker, keyed by worker id.
+    ///
+    /// Callers snapshot this *before* `apply_target_count`: that method ends
+    /// with `try_remove_drained`, so a worker that is idle when it is marked is
+    /// tombstoned within the same call and appears in both `newly_marked` and
+    /// `removed`. `worker_topology` returns `None` for a tombstoned slot, so a
+    /// post-call lookup cannot recover the rank set the placement policy needs
+    /// to be told about the drain.
+    pub(crate) fn active_worker_topologies(&self) -> BTreeMap<usize, WorkerTopology> {
+        self.active_group_ids()
+            .into_iter()
+            .filter_map(|id| self.worker_topology(id).map(|topology| (id, topology)))
+            .collect()
     }
 
     pub(crate) fn worker_topology(&self, worker_id: usize) -> Option<WorkerTopology> {
@@ -1425,6 +1440,37 @@ mod tests {
         assert_eq!(second.cache_hit_tokens, 0);
         assert_eq!(second.cache_total_tokens, 0);
         assert_eq!(second.preemptions, 0);
+    }
+
+    /// Scaling down an idle worker marks and tombstones it inside a single
+    /// `apply_target_count` call, so the id the caller must report to
+    /// `PlacementPolicy::worker_draining` no longer resolves through
+    /// `worker_topology`. Callers must snapshot beforehand, or the policy is
+    /// told about the drain with an empty rank set and a policy that keys on
+    /// released ranks never frees them.
+    #[test]
+    fn draining_an_idle_worker_tombstones_it_before_its_topology_can_be_read() {
+        let mut component = decode_component(2);
+        let topologies_before = component.active_worker_topologies();
+
+        let (_, newly_marked, removed) = component.apply_target_count(1).unwrap();
+
+        let drained = *newly_marked.first().expect("scale-down must mark a worker");
+        assert!(
+            removed.contains(&drained),
+            "an idle marked worker is tombstoned in the same call"
+        );
+        assert!(
+            component.worker_topology(drained).is_none(),
+            "post-call lookup cannot recover the topology"
+        );
+        let snapshot = topologies_before
+            .get(&drained)
+            .expect("pre-call snapshot retains the draining worker");
+        assert!(
+            !snapshot.scheduler_ids.is_empty(),
+            "the snapshot must carry the real rank set, not an empty stand-in"
+        );
     }
 
     #[test]
