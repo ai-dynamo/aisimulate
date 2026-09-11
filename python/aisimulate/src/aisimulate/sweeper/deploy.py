@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
-from .replay import BackendDeploymentSpec
+from .replay import BackendDeploymentSpec, EncoderPoolSpec
 
 
 def _role_prefix(role: str) -> str:
@@ -31,6 +31,11 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
         "moe_tp_size": moe_tp if moe_tp * moe_ep > 1 else None,
         "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
         "nextn": sample.get("aic_nextn"),
+        "forward_model": (
+            (sample.get(f"{role}_forward_model") or "op_level")
+            if sample.get(f"{role}_timing_model") is None
+            else "op_level"
+        ),
     }
     return {"provider": "aic", "config": config}
 
@@ -76,6 +81,9 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         payload["aic_moe_ep_size"] = moe_ep
     if sample.get("aic_nextn") is not None:
         payload["aic_nextn"] = int(sample["aic_nextn"])
+    forward_model = sample.get(f"{role}_forward_model")
+    if forward_model is not None and forward_model != "op_level":
+        payload["aic_forward_model"] = str(forward_model)
     startup = sample.get(f"{role}_startup_time")
     if startup is None:
         startup = sample.get("startup_time")
@@ -95,6 +103,7 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
             "aic_moe_tp_size",
             "aic_moe_ep_size",
             "aic_nextn",
+            "aic_forward_model",
         ):
             payload.pop(name, None)
     host_offload = sample.get(f"{role}_native_host_offload")
@@ -129,14 +138,68 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
     if role in {"prefill", "decode"}:
         if sample.get("kv_transfer_bandwidth") is not None:
             payload["kv_transfer_bandwidth"] = float(sample["kv_transfer_bandwidth"])
-        payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
+        if sample.get("kv_transfer_timing_mode") is not None:
+            payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
 
 
-def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) -> BackendDeploymentSpec:
+def build_backend_deployment(
+    sample: dict[str, Any],
+    *,
+    backend_version: str,
+    encoder: EncoderPoolSpec | None = None,
+) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
+    if encoder is not None and mode not in {"agg", "disagg"}:
+        raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
+    if mode in {"afd", "afd+pd"}:
+        parallel_config = {
+            "afd": sample["afd"],
+            "afd_provenance": sample["afd_provenance"],
+        }
+        performance_model_metadata = {
+            "afd": {
+                "provider": "unresolved",
+                "measurement_required": True,
+                "config": sample["afd"],
+                "provenance": sample["afd_provenance"],
+            }
+        }
+        afd_common = {
+            "deployment_mode": mode,
+            "backend": sample["backend"],
+            "backend_version": backend_version,
+            "parallel_config": parallel_config,
+            "performance_model_metadata": performance_model_metadata,
+        }
+        if mode == "afd":
+            return BackendDeploymentSpec(**afd_common)
+
+        companion_role = sample["afd_companion_role"]
+        if companion_role not in {"prefill", "decode"}:
+            raise ValueError("afd+pd requires one prefill or decode companion")
+        prefix = f"{companion_role}_"
+        for suffix in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "strategy", "replicas"):
+            parallel_config[f"{prefix}{suffix}"] = sample[f"{prefix}{suffix}"]
+        performance_model_metadata[companion_role] = _performance_model_metadata(
+            sample, companion_role, backend_version=backend_version
+        )
+        companion_args = _engine_args_payload(sample, companion_role, backend_version=backend_version)
+        if companion_role == "prefill":
+            return BackendDeploymentSpec(
+                prefill_engine_args=companion_args,
+                num_prefill_workers=int(sample["prefill_replicas"]),
+                **afd_common,
+            )
+        return BackendDeploymentSpec(
+            decode_engine_args=companion_args,
+            num_decode_workers=int(sample["decode_replicas"]),
+            **afd_common,
+        )
+
     common = {
+        "encoder": encoder,
         "deployment_mode": mode,
         "backend": sample["backend"],
         "backend_version": backend_version,

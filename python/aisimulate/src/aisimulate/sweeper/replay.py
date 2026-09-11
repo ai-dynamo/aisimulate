@@ -21,6 +21,65 @@ REPLAY_SPEC_API_VERSION = 1
 
 
 @dataclass(frozen=True)
+class EncoderPoolSpec:
+    """Resolved analytical EPD pool. Missing power is unavailable, never zero watts."""
+
+    model: str
+    system: str
+    backend: str
+    backend_version: str
+    tp: int
+    batch_size: int
+    workers: int
+    latency_ms: float
+    throughput_rps: float
+    memory_gib: float
+    rate_degradation: float
+    visual_tokens: int
+    image_height: int
+    image_width: int
+    image_count: int
+    power_w: float | None = None
+    power_coverage: float = 0.0
+    latency_correction: float = 1.0
+
+    def __post_init__(self):
+        for name in ("model", "system", "backend", "backend_version"):
+            if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
+                raise ValueError(f"encoder {name} must be nonempty")
+        for name in ("tp", "batch_size", "workers", "visual_tokens", "image_height", "image_width", "image_count"):
+            if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
+                raise ValueError(f"encoder {name} must be a positive integer")
+        for name in ("latency_ms", "throughput_rps", "memory_gib", "rate_degradation", "latency_correction"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"encoder {name} must be positive and finite")
+        if self.batch_size > 8 or self.rate_degradation > 1:
+            raise ValueError("encoder batch_size must be <= 8 and rate_degradation <= 1")
+        if (
+            isinstance(self.power_coverage, bool)
+            or not isinstance(self.power_coverage, Real)
+            or not math.isfinite(self.power_coverage)
+            or not 0 <= self.power_coverage <= 1
+        ):
+            raise ValueError("encoder power_coverage must be within [0, 1]")
+        if self.power_w is not None and (
+            isinstance(self.power_w, bool)
+            or not isinstance(self.power_w, Real)
+            or not math.isfinite(self.power_w)
+            or self.power_w <= 0
+            or self.power_coverage <= 0
+        ):
+            raise ValueError("encoder power requires positive finite watts and coverage")
+        if self.power_w is None and self.power_coverage != 0:
+            raise ValueError("unavailable encoder power must have zero coverage")
+
+    @property
+    def total_gpus(self) -> int:
+        return self.tp * self.workers
+
+
+@dataclass(frozen=True)
 class BackendDeploymentSpec:
     """Concrete backend engines and fleet shape for one candidate."""
 
@@ -35,6 +94,7 @@ class BackendDeploymentSpec:
     num_prefill_workers: int = 0
     num_decode_workers: int = 0
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
+    encoder: EncoderPoolSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +107,7 @@ class ReplaySpec:
     concurrency: int | None = None
     adapters: dict[str, AdapterReplaySpec] = field(default_factory=dict)
     api_version: int = REPLAY_SPEC_API_VERSION
+    execution_mode: str = "offline"
 
     @property
     def runtime_hooks(self) -> tuple[RuntimeHookSpec, ...]:
@@ -111,6 +172,12 @@ class RunnerCapabilities:
     supported_backend_topologies: tuple[tuple[str, str], ...] = ()
     supported_hooks: tuple[HookCapability, ...] = ()
     supports_disaggregated_attention_dp: bool = False
+    supported_execution_modes: tuple[str, ...] = ("offline",)
+    supported_trace_formats: tuple[str, ...] = ("*",)
+    supports_agentic_lanes: bool = False
+    supported_agentic_topologies: tuple[str, ...] = ("agg", "disagg")
+    agentic_qualification: str | None = None
+    supports_analytical_epd: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -124,8 +191,16 @@ class RunnerCapabilities:
             for supported_backend, supported_topology in self.supported_backend_topologies
         )
 
+    def supports_execution_mode(self, mode: str) -> bool:
+        """Return whether this runner can execute the requested clock mode."""
+
+        return mode in self.supported_execution_modes
+
     def supports_hook(self, hook: RuntimeHookSpec) -> bool:
         return any(capability.supports(hook) for capability in self.supported_hooks)
+
+    def supports_trace_format(self, trace_format: str) -> bool:
+        return "*" in self.supported_trace_formats or trace_format in self.supported_trace_formats
 
     def supports_attention_dp(self, topology: str, *dp_sizes: int) -> bool:
         """Return whether the topology supports all requested attention-DP sizes."""
@@ -150,10 +225,41 @@ class RunnerCapabilities:
         """Raise a clear error when this runner cannot execute ``spec``."""
 
         self.require_replay_spec_version(spec.api_version)
+        if not self.supports_execution_mode(spec.execution_mode):
+            raise ValueError(f"runner does not support execution mode {spec.execution_mode!r}")
         deployment = spec.backend_deployment
+        if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
+            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
+        if deployment.encoder is not None and not self.supports_analytical_epd:
+            raise ValueError("runner does not support analytical EPD")
         if not self.supports_backend_topology(deployment.backend, deployment.deployment_mode):
             raise ValueError(
                 f"runner does not support backend/topology {deployment.backend!r}/{deployment.deployment_mode!r}"
+            )
+        trace_format = spec.workload.get("trace_format")
+        if isinstance(trace_format, str) and not self.supports_trace_format(trace_format):
+            raise ValueError(f"runner does not support trace format {trace_format!r}")
+        weka_basis = spec.workload.get("weka_nested_timestamp_basis")
+        if weka_basis is not None:
+            if trace_format != "weka":
+                raise ValueError("weka_nested_timestamp_basis requires Weka input")
+            if weka_basis not in {"auto", "absolute", "relative"}:
+                raise ValueError("weka_nested_timestamp_basis must be 'auto', 'absolute', or 'relative'")
+        agentic_lanes = spec.workload.get("agentic_lanes")
+        if agentic_lanes is not None:
+            if type(agentic_lanes) is not int or agentic_lanes <= 0:
+                raise ValueError("agentic_lanes must be a positive integer")
+            if trace_format not in {"weka", "agentic_mooncake", "dynamo"}:
+                raise ValueError("agentic_lanes requires weka, agentic_mooncake, or agentic dynamo input")
+            if not self.supports_agentic_lanes:
+                raise ValueError("runner does not support agentic_lanes")
+        agentic_topology_required = trace_format in {"weka", "agentic_mooncake"} or (
+            trace_format == "dynamo" and agentic_lanes is not None
+        )
+        if agentic_topology_required and deployment.deployment_mode not in self.supported_agentic_topologies:
+            raise ValueError(
+                f"runner does not support agentic trace format {trace_format!r} "
+                f"with topology {deployment.deployment_mode!r}"
             )
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]
         if unsupported:

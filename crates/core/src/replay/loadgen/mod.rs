@@ -4,14 +4,19 @@
 mod arrival;
 mod driver;
 mod dynamo;
+mod generated;
+mod steppable;
 mod trace;
 mod types;
+mod weka;
 
 use rand::Rng;
 use rand::rngs::StdRng;
 
 pub use driver::WorkloadDriver;
 pub use dynamo::DynamoRequestTrace;
+pub use generated::GeneratedRequests;
+pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableEngine, SteppableReplay};
 pub use trace::{AgenticGraphBuilder, load_agentic_mooncake, validate_trace_files};
 #[doc(hidden)]
 pub use types::CompactReadyTurn;
@@ -24,6 +29,11 @@ pub use types::{
     ReplayRequestHashes, ReplayRequestPayload, SessionPartitionSpec, SessionTrace,
     SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace, ValidatedAgenticGraph,
     effective_replay_key, output_replay_id_annotation,
+};
+pub use weka::{
+    WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
+    WekaResolvedTimestampBasis, load_weka_agentic_graph, load_weka_agentic_graph_with_options,
+    load_weka_agentic_rows, stream_weka_agentic_rows,
 };
 
 pub(super) const SYNTHETIC_OUTPUT_SEED: u64 = 0xD37A_0A7E_5EED;

@@ -183,6 +183,13 @@ impl RankEngine for SchedulerRank {
         } else {
             false
         };
+        if suppressed_pending_output && let Some((request_id, _)) = pending_suppression {
+            // A final output can be suppressed after the native scheduler has
+            // already retired its request. Replay still owns its accounting
+            // until the pass completion is observed, so publish the same
+            // retirement delta that completion would have carried.
+            effects.retired_requests.push(request_id);
+        }
         if effects.result != CoreCommandResult::Noop || suppressed_pending_output {
             self.apply_handoff_tracking_update(handoff_update);
         }
@@ -199,6 +206,10 @@ impl RankEngine for SchedulerRank {
 
     fn waiting_for_external_command(&self) -> bool {
         self.core.waiting_for_external_command()
+    }
+
+    fn prepare_group_pass(&mut self, wave_step: u64, dp_size: std::num::NonZeroU32) {
+        self.core.prepare_group_pass(wave_step, dp_size.get());
     }
 
     fn execute_pass(
@@ -366,6 +377,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         max_model_len: config.max_model_len,
         max_num_seqs: Some(config.max_num_seqs),
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
+        prefill_schedule_interval: config.prefill_schedule_interval,
         enable_prefix_caching: config.enable_prefix_caching,
         enable_chunked_prefill: config.enable_chunked_prefill,
         speedup_ratio: config.speedup_ratio,

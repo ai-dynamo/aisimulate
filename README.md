@@ -215,6 +215,7 @@ Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/core-api.md)
+- [FPM collection-to-prediction workflow](python/aisimulate/docs/fpm/end-to-end-workflow.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
 - [Sweeper SDK](docs/sweeper/overview.md)
 - [AIConfigurator compatibility Python API](python/aisimulate/README.md#python-api)
@@ -224,6 +225,16 @@ APIs:
 Support coverage and accuracy are separate evidence. A supported cell means a
 specific path can execute with the required data; it does not establish that
 the resulting end-to-end prediction is accurate.
+
+### Explicit CUDA graph reservation
+
+KV-cache estimation and engine replay accept an optional rank-local
+`cuda_graph_reserved_bytes` value. AISimulate subtracts this fixed runtime
+reservation before allocating KV cache and preserves it when the native replay
+runtime rematerializes capacity. For SGLang, the value is additional to the
+graph/runtime headroom already encoded by `mem_fraction_static`. The default is
+zero, so existing serialized callers do not change. See the
+[core API contract](docs/core-api.md#kv-cache-capacity-reservation).
 
 ### FPE support matrix — in development
 
@@ -288,6 +299,16 @@ Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
 The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
 consume AISimulate through optional adapters.
+
+### Packaged legal-file copies
+
+The root [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+are the canonical repository legal files. Because the Python wheel build is
+rooted at `python/aisimulate/`, byte-identical copies are retained there so the
+wheel can declare and distribute them. These copies do not create a separate
+licensing boundary, and CI fails if either copy differs from its root original.
+See the [artifact contract](docs/artifact-contract.md#packaged-license-files) for
+the complete packaging contract.
 
 ## Develop from source
 

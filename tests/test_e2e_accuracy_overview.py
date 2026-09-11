@@ -133,9 +133,7 @@ def _inputs() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
             "failed": 1,
             "method": "randomized_synthetic_engine_replay",
             "completed_at": "2026-08-26T01:00:00Z",
-            "runtime": {
-                "packages": {"aisimulate": "0.12.0", "aisimulate-core": "0.12.0"}
-            },
+            "runtime": {"packages": {"aisimulate": "0.12.0", "aisimulate-core": "0.12.0"}},
         },
     }
     coverage = {
@@ -154,10 +152,7 @@ def _summary() -> dict[str, object]:
         metadata,
         coverage,
         predictions_sha256="c" * 64,
-        source_url=(
-            "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
-            "db-dump/fixture"
-        ),
+        source_url=("https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture"),
     )
 
 
@@ -231,10 +226,7 @@ def test_inconsistent_snapshot_fails_closed() -> None:
             metadata,
             coverage,
             predictions_sha256="c" * 64,
-            source_url=(
-                "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
-                "db-dump/fixture"
-            ),
+            source_url=("https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture"),
         )
 
 
@@ -247,10 +239,7 @@ def test_source_url_must_match_validated_release_tag() -> None:
             metadata,
             coverage,
             predictions_sha256="c" * 64,
-            source_url=(
-                "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
-                "db-dump/other"
-            ),
+            source_url=("https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/other"),
         )
 
 
@@ -265,10 +254,7 @@ def test_unknown_hardware_requires_explicit_multinode_scope() -> None:
             metadata,
             coverage,
             predictions_sha256="c" * 64,
-            source_url=(
-                "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
-                "db-dump/fixture"
-            ),
+            source_url=("https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture"),
         )
 
 
@@ -277,15 +263,11 @@ def test_checked_in_public_snapshot_is_consistent_and_internal_link_free() -> No
     summary = json.loads((public_dir / "summary.json").read_text())
 
     assert summary["schema_version"] == OVERVIEW.SCHEMA_VERSION
-    assert summary["snapshot"]["measurement_source_url"].startswith(
-        "https://github.com/"
-    )
+    assert summary["snapshot"]["measurement_source_url"].startswith("https://github.com/")
     assert summary["scope"]["measurement_scope"] == "end_to_end"
     assert summary["scope"]["latency_scope"] == "client_observed"
     assert summary["scope"]["multinode"] == "excluded"
-    assert (
-        sum(model["rows"] for model in summary["models"]) == summary["totals"]["rows"]
-    )
+    assert sum(model["rows"] for model in summary["models"]) == summary["totals"]["rows"]
 
     statuses = summary["totals"]["aisimulate"]["status_counts"]
     assert sum(statuses.values()) == summary["totals"]["rows"]
@@ -300,9 +282,7 @@ def test_checked_in_public_snapshot_is_consistent_and_internal_link_free() -> No
     for model in summary["models"]:
         for workload in model["workloads"]:
             assert sum(gpu["rows"] for gpu in workload["gpus"]) == workload["rows"]
-            assert (
-                sorted(gpu["gpu"] for gpu in workload["gpus"]) == workload["gpu_skus"]
-            )
+            assert sorted(gpu["gpu"] for gpu in workload["gpus"]) == workload["gpu_skus"]
 
 
 def test_public_page_has_no_e2e_gym_navigation_or_payload() -> None:
@@ -321,16 +301,12 @@ def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
     script = (public_dir / "app.js").read_text()
 
     assert page.index("AISimulate TPOT MAPE") < page.index("AIC TPOT MAPE")
-    assert script.index('accuracyCard("Average AISimulate Error"') < script.index(
-        'accuracyCard("Average AIC Error"'
-    )
+    assert script.index('accuracyCard("Average AISimulate Error"') < script.index('accuracyCard("Average AIC Error"')
     assert "data-series" not in page
 
 
 def test_public_page_uses_compact_dashboard_structure() -> None:
-    page = (
-        ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "index.html"
-    ).read_text()
+    page = (ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "index.html").read_text()
 
     assert '<html lang="en" data-theme="dark">' in page
     assert 'class="top-header"' in page
@@ -341,9 +317,7 @@ def test_public_page_uses_compact_dashboard_structure() -> None:
 
 
 def test_public_page_validates_snapshot_urls_and_nested_schema() -> None:
-    script = (
-        ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "app.js"
-    ).read_text()
+    script = (ROOT / "python" / "aisimulate" / "docs" / "e2e-accuracy" / "app.js").read_text()
 
     assert "isSafeHttpsUrl(snapshot.measurement_source_url)" in script
     assert "!Array.isArray(model.workloads)" in script

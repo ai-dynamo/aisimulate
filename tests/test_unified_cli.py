@@ -20,8 +20,7 @@ from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 class _RecommendationResult:
     def __init__(self, selected_candidates, *, failed: int = 0) -> None:
         self._candidates = {
-            f"candidate-{index:06d}": candidate
-            for index, candidate in enumerate(selected_candidates, start=1)
+            f"candidate-{index:06d}": candidate for index, candidate in enumerate(selected_candidates, start=1)
         }
         self._selected_ids = list(self._candidates)
         self._failed = failed
@@ -103,9 +102,7 @@ class _Factory:
         self.runner = runner
 
     def capabilities(self):
-        return RunnerCapabilities(
-            supported_backend_topologies=(("vllm", "agg"), ("trtllm", "agg"))
-        )
+        return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"), ("trtllm", "agg")))
 
     def create(self, worker_id: int):
         del worker_id
@@ -171,18 +168,79 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
 
     assert runner.spec.workload["concurrency"] == 10
     assert runner.spec.workload["request_count"] == 100
+    assert runner.spec.execution_mode == "offline"
     assert runner.closed is True
-    assert (
-        json.loads((output / "prediction.json").read_text())["summary"][
-            "completed_requests"
-        ]
-        == 1
-    )
-    assert (
-        json.loads((output / "requests.jsonl").read_text())["request_id"]
-        == "synthetic-0"
-    )
+    assert json.loads((output / "prediction.json").read_text())["summary"]["completed_requests"] == 1
+    assert json.loads((output / "requests.jsonl").read_text())["request_id"] == "synthetic-0"
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
+def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, capsys) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+    runner = _Runner()
+
+    class OnlineFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_execution_modes=("offline", "online"),
+                supported_backend_topologies=(("vllm", "agg"),),
+            )
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: OnlineFactory(runner))
+
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--online",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    assert runner.spec.execution_mode == "online"
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
+def test_predict_online_rejects_runner_without_online_capability(tmp_path, monkeypatch, capsys) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(["predict", "--online", "--config", str(config_path)])
+
+    assert "runner does not support execution mode 'online'" in capsys.readouterr().err
 
 
 def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
@@ -199,9 +257,58 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
     assert "stack unavailable" in capsys.readouterr().err
 
 
-def test_set_adapter_path_is_validated_and_materialized_by_adapter(
-    tmp_path, monkeypatch, capsys
-) -> None:
+@pytest.mark.filterwarnings("error")
+def test_recommend_runner_incompatibility_is_cli_config_error(tmp_path, monkeypatch, capsys) -> None:
+    config_path = tmp_path / "recommendation.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "mode": "aggregated",
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "backend": "vllm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                },
+                "optimization": {
+                    "target": "throughput",
+                    "constraints": {"max_candidate_gpus": 1},
+                },
+                "optimizer": {"max_trials": 1, "parallelism": 1},
+            }
+        )
+    )
+
+    class IncompatibleFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(supported_backend_topologies=(("trtllm", "agg"),))
+
+    monkeypatch.setattr(
+        cli,
+        "resolve_runner_factory",
+        lambda stack: IncompatibleFactory(_Runner()),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+
+    error = capsys.readouterr().err
+    assert "no configured backend/topology is supported by the Replay runner" in error
+    assert "deployment_mode='agg'" in error
+    assert "runner-incompatible backends=['vllm']" in error
+    assert not (tmp_path / "out").exists()
+
+
+def test_set_adapter_path_is_validated_and_materialized_by_adapter(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -245,9 +352,7 @@ def test_set_adapter_path_is_validated_and_materialized_by_adapter(
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
-def test_engine_stack_rejects_explicit_unavailable_component(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_engine_stack_rejects_explicit_unavailable_component(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -270,9 +375,7 @@ def test_engine_stack_rejects_explicit_unavailable_component(
 
     def unavailable(names):
         assert list(names) == ["engine.router"]
-        raise cli.ConfigAdapterResolutionError(
-            "config adapter 'engine.router' is unavailable"
-        )
+        raise cli.ConfigAdapterResolutionError("config adapter 'engine.router' is unavailable")
 
     monkeypatch.setattr(cli, "resolve_config_adapters", unavailable)
 
@@ -396,9 +499,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert runner.spec.goal["sla"] == {sla_field: bound}
 
 
-def test_recommendation_outputs_each_concrete_prediction_once(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys) -> None:
     concrete = {
         "traffic": {
             "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
@@ -472,9 +573,7 @@ def test_recommendation_outputs_each_concrete_prediction_once(
         )
         for selection, score in (("first", 2.0), ("second", 1.0))
     ]
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
     monkeypatch.setattr(
         "aisimulate.recommend.run_recommendation",
         lambda *args, **kwargs: _RecommendationResult(candidates),
@@ -499,9 +598,7 @@ def test_recommendation_outputs_each_concrete_prediction_once(
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) == 1
     assert rows[0]["score"] == 2.0
-    assert [path.name for path in (output / "recommendations").iterdir()] == [
-        "0001.yaml"
-    ]
+    assert [path.name for path in (output / "recommendations").iterdir()] == ["0001.yaml"]
     result = json.loads((output / "recommendation.json").read_text())
     assert result["counts"]["feasible"] == 2
     assert result["views"]["top_n"] == ["candidate-000001"]
@@ -518,6 +615,8 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     unrelated.write_text("keep")
     (root / "prediction.json").write_text("old")
     (root / "recommendation.json").write_text("old")
+    (root / "afd-replay-spec.json").write_text("old")
+    (root / "afd-qualification.json").write_text("old")
     (recommendations / "0001.yaml").write_text("old")
     (recommendations / "notes.txt").write_text("keep")
 
@@ -530,12 +629,12 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert (recommendations / "notes.txt").read_text() == "keep"
     assert not (root / "prediction.json").exists()
     assert not (root / "recommendation.json").exists()
+    assert not (root / "afd-replay-spec.json").exists()
+    assert not (root / "afd-qualification.json").exists()
     assert not (recommendations / "0001.yaml").exists()
 
 
-def test_recommendation_writes_an_empty_result_before_returning_failure(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path, monkeypatch, capsys) -> None:
     import aisimulate.recommend as recommendation_module
 
     monkeypatch.setattr(

@@ -1,0 +1,219 @@
+name: Fast CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: Exact commit that the caller expects Fast CI to validate
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  # Replace stale PR validation while preserving every lifecycle/manual run.
+  group: >-
+    fast-ci-${{ (github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')))
+      && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Repository Policy
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'review-ready'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+      - run: python -m pip install pyyaml==6.0.3 pytest==8.4.2
+      - name: Check source and packaged legal files
+        run: |
+          python scripts/check_copyright.py
+          python scripts/check_packaged_legal_files.py
+      - name: Check CODEOWNERS policy and generated artifacts
+        run: |
+          python -m pytest -c /dev/null .github/codeowners/test_*.py -q \
+            -p no:cacheprovider \
+            --override-ini="addopts=" \
+            --override-ini="filterwarnings="
+          python .github/codeowners/build_codeowners.py \
+            --areas .github/codeowners/areas.yaml \
+            --repo . \
+            --strict
+          python .github/codeowners/emit_codeowners.py \
+            --areas .github/codeowners/areas.yaml \
+            --out CODEOWNERS \
+            --external .github/codeowners/external_contributors.yaml \
+            --contributors-out CONTRIBUTORS.md
+          if [[ -n "$(git status --porcelain --untracked-files=all -- \
+              CODEOWNERS CONTRIBUTORS.md)" ]]; then
+            git diff -- CODEOWNERS CONTRIBUTORS.md || true
+            git status --short --untracked-files=all -- CODEOWNERS CONTRIBUTORS.md
+            echo "::error::Generated CODEOWNERS artifacts are out of date."
+            exit 1
+          fi
+      - name: Check active workflow contracts
+        run: |
+          python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py -q \
+            -p no:cacheprovider \
+            --override-ini="addopts=" \
+            --override-ini="filterwarnings="
+
+  python-static:
+    name: Python Static Checks
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'review-ready'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+      - run: python -m pip install ruff==0.14.1
+      - name: Ruff
+        run: >-
+          ruff check
+          --config python/aisimulate/pyproject.toml
+          python/aisimulate/src/aisimulate
+          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
+          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
+          tests
+      - name: Ruff format
+        run: >-
+          ruff format --check
+          --config python/aisimulate/pyproject.toml
+          python/aisimulate/src/aisimulate
+          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
+          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
+          tests
+      - name: Compile Python sources
+        run: >-
+          python -m compileall -q
+          python/aisimulate/src
+          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
+          tests
+      - name: Check changed-line whitespace
+        shell: bash
+        run: |
+          if [[ -n "${BASE_SHA}" && ! "${BASE_SHA}" =~ ^0+$ ]]; then
+            git diff --check "${BASE_SHA}...${TARGET_SHA}"
+          else
+            git diff --check "${TARGET_SHA}^" "${TARGET_SHA}"
+          fi
+
+  rust-format:
+    name: Rust Format
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'review-ready'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt
+      - name: Verify exact target
+        run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+      - run: cargo fmt --all -- --check
+
+  # Direct PR runs publish `Fast CI Success`. When Full CI calls this workflow,
+  # GitHub displays `Fast CI / Fast CI Success`; `Full CI Success` aggregates
+  # that composed result for branch-rule enforcement.
+  readiness:
+    name: Fast CI Success
+    if: ${{ always() }}
+    needs: [policy, python-static, rust-format]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      IS_DRAFT: ${{ github.event.pull_request.draft || false }}
+      HAS_REVIEW_READY: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'review-ready') }}
+      POLICY_RESULT: ${{ needs.policy.result }}
+      PYTHON_STATIC_RESULT: ${{ needs.python-static.result }}
+      RUST_FORMAT_RESULT: ${{ needs.rust-format.result }}
+    steps:
+      - name: Require complete Fast CI evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && "${IS_DRAFT}" == "true" ]]; then
+            echo "### Fast CI is not applicable while this pull request is a draft" \
+              >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          if [[ "${HAS_REVIEW_READY}" != "true" ]]; then
+            echo "::error::A non-draft pull request must have the review-ready label."
+            echo "### Fast CI failed: review-ready label is missing" \
+              >> "${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
+
+          failures=0
+          {
+            echo "### Fast CI evidence"
+            echo
+            echo "| Required job | Result |"
+            echo "| --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          record_required() {
+            local job_name="$1"
+            local job_result="$2"
+            local outcome="PASS"
+            if [[ "${job_result}" != "success" ]]; then
+              outcome="FAIL"
+              failures=$((failures + 1))
+              echo "::error::${job_name} finished with ${job_result:-missing}"
+            fi
+            printf '| %s | %s (`%s`) |\n' \
+              "${job_name}" "${outcome}" "${job_result:-missing}" \
+              >> "${GITHUB_STEP_SUMMARY}"
+          }
+
+          record_required "Repository Policy" "${POLICY_RESULT}"
+          record_required "Python Static Checks" "${PYTHON_STATIC_RESULT}"
+          record_required "Rust Format" "${RUST_FORMAT_RESULT}"
+
+          if (( failures > 0 )); then
+            exit 1
+          fi

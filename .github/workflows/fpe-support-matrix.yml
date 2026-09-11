@@ -51,6 +51,11 @@ jobs:
     needs: discover-shards
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 480
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -60,13 +65,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          lfs: true
-      - uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - name: Install stable Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      - run: rustup default stable
       - name: Install AISimulate from this source SHA
         run: |
           python -m pip install 'maturin>=1.12,<2'

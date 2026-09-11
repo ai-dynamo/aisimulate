@@ -155,6 +155,23 @@ def _resolve_from(
     return _runtime_from_spec(framework_key, spec, runtime_spec, manifest, family=family)
 
 
+def _model_pinned_runtime(
+    manifest: dict[str, Any],
+    framework_key: str,
+    model_path: str | None,
+) -> CollectorRuntime | None:
+    """Return an exact model-scoped runtime override, when declared."""
+    if not model_path:
+        return None
+    spec = manifest["frameworks"].get(framework_key)
+    if spec is None:
+        return None
+    runtime_spec = (spec.get("models") or {}).get(model_path)
+    if runtime_spec is None:
+        return None
+    return _runtime_from_spec(framework_key, spec, runtime_spec, manifest, family=None)
+
+
 def resolve_op_runtime(
     framework: str,
     op: str,
@@ -196,14 +213,17 @@ def require_collector_runtime(
     *,
     requested_ops: set[str],
     wideep_ops: set[str] | None = None,
+    model_path: str | None = None,
     path: str | Path = MANIFEST_PATH,
     catalog_path: str | Path = CATALOG_PATH,
 ) -> CollectorRuntime:
     """Resolve the single runtime the requested ops pin, and enforce it exactly.
 
-    Collector V3 semantics: every op resolves independently (family override or
-    framework default); one executor container serves exactly one runtime, so
-    any spread across versions is an error telling the caller to split the run.
+    Collector V3 semantics: every op resolves independently (model override,
+    family override, or framework default); one executor container serves
+    exactly one runtime, so any spread across versions is an error telling the
+    caller to split the run. An exact model pin overrides family/default
+    resolution for every op in that model's run.
     """
     wideep_ops = wideep_ops or set()
     manifest = load_manifest(path)
@@ -224,10 +244,11 @@ def require_collector_runtime(
             missing = ops - {e.op for e in entries}
             if missing:
                 raise KeyError(f"{key} registry has no op(s): {sorted(missing)}")
+        model_runtime = _model_pinned_runtime(manifest, key, model_path)
         by_identity: dict[tuple, CollectorRuntime] = {}
         op_runtimes: dict[str, CollectorRuntime] = {}
         for entry in entries:
-            runtime = _resolve_from(manifest, family_map, key, entry)
+            runtime = model_runtime or _resolve_from(manifest, family_map, key, entry)
             by_identity.setdefault(_runtime_identity(runtime), runtime)
             op_runtimes[entry.op] = runtime
         if len(by_identity) > 1:
@@ -340,6 +361,13 @@ def _validate_framework_spec(name: str, spec: object, frameworks: dict[str, Any]
         raise TypeError(f"frameworks.{name}.families must be a mapping")
     for family, override in families.items():
         _validate_runtime_spec(f"frameworks.{name}.families.{family}", override)
+    models = spec.get("models") or {}
+    if not isinstance(models, dict):
+        raise TypeError(f"frameworks.{name}.models must be a mapping")
+    for model_id, override in models.items():
+        if not isinstance(model_id, str) or not model_id:
+            raise ValueError(f"frameworks.{name}.models keys must be non-empty strings")
+        _validate_runtime_spec(f"frameworks.{name}.models.{model_id}", override)
 
 
 def _validate_runtime_spec(name: str, spec: object) -> None:

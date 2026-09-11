@@ -13,7 +13,7 @@ from __future__ import annotations
 import copy
 import math
 from collections.abc import Mapping
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
 from .schema import (
@@ -32,6 +32,13 @@ from .schema import (
 
 class SweeperCandidateError(ValueError):
     """A candidate cannot be represented faithfully by the generator."""
+
+
+_DEFAULT_GPU_MEMORY_UTILIZATION = {
+    "sglang": 0.88,
+    "trtllm": 0.9,
+    "vllm": 0.9,
+}
 
 
 def _as_mapping(value: Any, *, label: str) -> dict[str, Any]:
@@ -94,7 +101,7 @@ def _flatten_overrides(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
     return raw
 
 
-def _role_sizing(config: Mapping[str, Any], role: str) -> tuple[RoleSizing, int]:
+def _role_sizing(config: Mapping[str, Any], role: str, *, backend: str) -> tuple[RoleSizing, int]:
     prefix = "" if role == "agg" else f"{role}_"
 
     tp = _positive_int(config.get(f"{prefix}tp"), path=f"candidate.config.{prefix}tp")
@@ -126,20 +133,35 @@ def _role_sizing(config: Mapping[str, Any], role: str) -> tuple[RoleSizing, int]
         config.get(f"{role}_block_size"),
         path=f"candidate.config.{role}_block_size",
     )
-    memory_fraction = _positive_float(
-        config.get(f"{role}_gpu_memory_utilization"),
-        path=f"candidate.config.{role}_gpu_memory_utilization",
-    )
-    if memory_fraction > 1:
-        raise SweeperCandidateError(f"candidate.config.{role}_gpu_memory_utilization must be at most 1")
+    memory_path = f"candidate.config.{role}_gpu_memory_utilization"
+    blocks_path = f"candidate.config.{role}_num_gpu_blocks"
+    memory_value = config.get(f"{role}_gpu_memory_utilization")
+    blocks_value = config.get(f"{role}_num_gpu_blocks")
+    if memory_value is not None and blocks_value is not None:
+        raise SweeperCandidateError(f"{memory_path} and {blocks_path} are mutually exclusive")
 
     extra: dict[str, Any] = {
         "gpus_per_worker": tp * pp * dp,
         "max_num_tokens": max_num_tokens,
         "tokens_per_block": tokens_per_block,
-        "kv_cache_free_gpu_memory_fraction": memory_fraction,
         "disable_prefix_cache": not bool(config.get(f"{role}_enable_prefix_caching")),
     }
+    if blocks_value is not None:
+        num_gpu_blocks = _positive_int(blocks_value, path=blocks_path)
+        extra["num_gpu_blocks"] = num_gpu_blocks
+        if backend in {"sglang", "trtllm"}:
+            extra["kv_cache_max_tokens"] = num_gpu_blocks * tokens_per_block
+    else:
+        if memory_value is None:
+            memory_value = _DEFAULT_GPU_MEMORY_UTILIZATION.get(backend)
+            if memory_value is None:
+                raise SweeperCandidateError(
+                    f"{memory_path} is required because backend {backend!r} has no default GPU memory utilization"
+                )
+        memory_fraction = _positive_float(memory_value, path=memory_path)
+        if memory_fraction > 1:
+            raise SweeperCandidateError(f"{memory_path} must be at most 1")
+        extra["kv_cache_free_gpu_memory_fraction"] = memory_fraction
     context_length = config.get("context_length")
     if context_length is not None:
         extra["max_seq_len"] = _positive_int(context_length, path="candidate.config.context_length")
@@ -236,11 +258,21 @@ def from_sweeper_candidate(
     candidate_payload = _as_mapping(candidate, label="candidate")
     config_value = candidate_payload.get("config", candidate_payload)
     config = _as_mapping(config_value, label="candidate.config")
-    workload_payload = _as_mapping(workload, label="workload")
 
+    if config.get("deployment_mode") not in ("afd", "afd+pd") and (
+        config.get("encoder") is not None or config.get("deployment_artifact_generation_supported") is False
+    ):
+        raise SweeperCandidateError("EPD deployment generation is unsupported; cannot drop the encoder pool")
     mode = _required_text(config, "deployment_mode")
+    if mode in {"afd", "afd+pd"}:
+        raise SweeperCandidateError(
+            "native deployment generation is not supported for analytical AFD candidates; "
+            "pass the concrete recommendation to 'aisimulate predict' to produce "
+            "afd-replay-spec.json and afd-qualification.json"
+        )
     if mode not in {"agg", "disagg"}:
         raise SweeperCandidateError(f"candidate.config.deployment_mode must be 'agg' or 'disagg', got {mode!r}")
+    workload_payload = _as_mapping(workload, label="workload")
     model_path = _required_text(config, "model_name")
     backend = _required_text(config, "backend")
     backend_version = _required_text(config, "backend_version")
@@ -251,10 +283,23 @@ def from_sweeper_candidate(
     workers: dict[str, int] = {}
     expected_gpus = 0
     for role in active_roles:
-        sizing, count = _role_sizing(config, role)
+        sizing, count = _role_sizing(config, role, backend=backend)
         roles[role] = sizing
         workers[role] = count
         expected_gpus += count * int(sizing.extra["gpus_per_worker"])
+
+    if backend == "sglang":
+        # Sweeper's backend-neutral scheduler limit is the SGLang prefill
+        # ceiling. Keep max_num_tokens for the evaluated candidate contract,
+        # and also lower it to the generator field that renders the SGLang
+        # --max-prefill-tokens flag without mutating frozen RoleSizing values.
+        roles = {
+            role: replace(
+                sizing,
+                extra={**sizing.extra, "max_prefill_tokens": sizing.extra["max_num_tokens"]},
+            )
+            for role, sizing in roles.items()
+        }
 
     used_gpus = candidate_payload.get("used_gpus", config.get("used_gpus"))
     if used_gpus is not None:

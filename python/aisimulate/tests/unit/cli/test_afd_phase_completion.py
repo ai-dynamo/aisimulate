@@ -691,6 +691,22 @@ def test_afd_summary_phase_both_paired_scalars_and_nan_unprefixed(monkeypatch):
     assert result["decode_balance_ratio"] == pytest.approx(1.33)
     assert result["decode_t_step"] == pytest.approx(50.0)
     assert result["decode_comm_hidden"] is False
+    assert result["afd_layer_measurements"] == {
+        "prefill": {
+            "attention_ms": 0.5,
+            "ffn_ms": 0.7,
+            "a_to_f_ms": 0.05,
+            "f_to_a_ms": 0.05,
+            "num_layers": 4,
+        },
+        "decode": {
+            "attention_ms": 1.2,
+            "ffn_ms": 0.9,
+            "a_to_f_ms": 0.1,
+            "f_to_a_ms": 0.1,
+            "num_layers": 4,
+        },
+    }
 
     # Un-prefixed scalars are NaN (numeric) / None (bool) so consumers
     # cannot accidentally treat decode-only values as the both-phase answer.
@@ -976,6 +992,37 @@ def test_cli_estimate_afd_combined_with_pd_false_skips_static(monkeypatch):
 
     assert result is afd_only
     assert static_calls == []
+
+
+def test_cli_estimate_afd_rejects_visual_encoder_workload():
+    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
+        api.cli_estimate(
+            **_afd_cli_estimate_kwargs(
+                video_height=448,
+                video_width=448,
+                video_frames=8,
+                num_videos=1,
+            ),
+        )
+
+
+def test_cli_estimate_afd_rejects_partial_video_workload():
+    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
+        api.cli_estimate(
+            **_afd_cli_estimate_kwargs(
+                video_frames=8,
+                num_videos=0,
+            ),
+        )
+
+
+def test_cli_estimate_afd_rejects_token_only_video_workload():
+    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
+        api.cli_estimate(
+            **_afd_cli_estimate_kwargs(
+                num_video_tokens=196,
+            ),
+        )
 
 
 def test_cli_estimate_afd_combined_with_pd_true_runs_static_combine(monkeypatch):

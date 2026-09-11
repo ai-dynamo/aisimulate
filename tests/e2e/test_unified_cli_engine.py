@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +36,9 @@ _EXPECTED_PREDICT_CASES = (
     "08-trace-dynamo-standard.yaml",
     "09-trace-dynamo-agentic.yaml",
     "10-trace-dynamo-standard-disagg.yaml",
+    "11-synthetic-afd.yaml",
+    "11-trace-weka-agentic-lane.yaml",
+    "12-trace-weka-jsonl-agentic-lane.yaml",
 )
 _EXPECTED_RECOMMEND_CASES = (
     "01-default-preset-throughput.yaml",
@@ -43,15 +47,17 @@ _EXPECTED_RECOMMEND_CASES = (
     "04-mixed-disagg-pareto.yaml",
     "05-kv-fraction-goodput.yaml",
     "06-override-parallel-mappings-agg-disagg.yaml",
+    "07-afd-plus-pd.yaml",
 )
 _PREDICT_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glob("*.yaml")))
 _RECOMMEND_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml")))
 
 
-def _run_cli(*args: str, timeout: float = 120.0) -> subprocess.CompletedProcess[str]:
+def _run_cli(*args: str, timeout: float = 120.0, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         [sys.executable, "-m", "aisimulate", *args],
         cwd=_REPO_ROOT,
+        env=None if env is None else {**os.environ, **env},
         text=True,
         capture_output=True,
         timeout=timeout,
@@ -101,6 +107,22 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
     saved_summary = report.get("summary", report)
     assert summary["completed_requests"] > 0
     assert saved_summary["completed_requests"] == summary["completed_requests"]
+    if config_path.name == "11-synthetic-afd.yaml":
+        replay_spec = json.loads((output / "afd-replay-spec.json").read_text(encoding="utf-8"))
+        qualification = json.loads((output / "afd-qualification.json").read_text(encoding="utf-8"))
+        assert replay_spec["backend_deployment"]["deployment_mode"] == "afd"
+        assert qualification["qualification"] == {
+            "execution": "analytical_foreground",
+            "native_deployment_reason": (
+                "AISimulate does not provide a physical AFD serving adapter or launch renderer"
+            ),
+            "native_deployment_supported": False,
+            "status": "qualified_for_analytical_replay",
+        }
+    if "-trace-weka-" in config_path.name:
+        assert "heuristically resolved one nested timestamp basis" in result.stderr
+        assert "complete Weka corpus" in result.stderr
+        assert "requested='auto', resolved='absolute'" in result.stderr
 
 
 @pytest.mark.parametrize("config_path", _RECOMMEND_CASES, ids=lambda path: path.stem)
@@ -144,7 +166,60 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
             "json",
         )
         assert json.loads(prediction.stdout)["completed_requests"] > 0
+        if config_path.name == "07-afd-plus-pd.yaml":
+            qualification = json.loads((prediction_output / "afd-qualification.json").read_text(encoding="utf-8"))
+            assert qualification["identity"]["deployment_mode"] == "afd+pd"
+            assert qualification["deployment_plan"]["pools"]["companion"]["role"] in {
+                "prefill",
+                "decode",
+            }
+            assert qualification["deployment_plan"]["launch"]["supported"] is False
 
     if config_path.name == "06-override-parallel-mappings-agg-disagg.yaml":
         assert generated_modes == {"aggregated", "disaggregated"}
         assert [row["score"] for row in rows] == sorted((row["score"] for row in rows), reverse=True)
+
+
+_FPM_CASE = _CONFIG_ROOT / "predict/fpm/01-minimax-m27-h200-tp4-fpm.yaml"
+
+
+def test_engine_predict_accepts_forward_model_from_yaml_and_set(tmp_path: Path) -> None:
+    # The bundled FPM cell is collected outside the queryable version slots.
+    env = {"AIC_ALLOW_UNLISTED_VERSIONS": "1"}
+    fpm = json.loads(
+        _run_cli(
+            "predict",
+            "--stack",
+            "engine",
+            "--config",
+            str(_FPM_CASE),
+            "--output-dir",
+            str(tmp_path / "fpm"),
+            "--format",
+            "json",
+            env=env,
+        ).stdout
+    )
+    op_level = json.loads(
+        _run_cli(
+            "predict",
+            "--stack",
+            "engine",
+            "--config",
+            str(_FPM_CASE),
+            "--set",
+            "engine.workers.aggregated.timing.forward_model=op_level",
+            "--output-dir",
+            str(tmp_path / "op-level"),
+            "--format",
+            "json",
+            env=env,
+        ).stdout
+    )
+
+    # Both runs prove CLI plumbing only (the YAML field and the --set path are accepted and the
+    # replay completes). Whether the FPM data path is actually engaged is proven in-process by
+    # tests/test_unified_traffic_runtime.py (fail-closed on an uncovered identity); accuracy is a
+    # FPM-vs-silicon question and is not asserted anywhere in the test suite.
+    assert fpm["completed_requests"] == 8
+    assert op_level["completed_requests"] == 8

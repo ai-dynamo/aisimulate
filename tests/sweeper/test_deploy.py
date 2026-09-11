@@ -35,9 +35,7 @@ def _agg_selection(**overrides) -> dict:
     return values
 
 
-AGG_MOE = ReplicaParallelConfig(
-    ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-)
+AGG_MOE = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
 
 
 def _agg_deployment(*, space=None, selection=None, parallel_config=AGG_MOE):
@@ -102,9 +100,7 @@ def test_disagg_backend_deployment_preserves_both_roles():
         decode_max_num_batched_tokens=8192,
         decode_max_num_seqs=1024,
     )
-    sample = unroll_sample(
-        search_space=_space(), selection=selection, parallel_config=parallel
-    )
+    sample = unroll_sample(search_space=_space(), selection=selection, parallel_config=parallel)
 
     deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
 
@@ -123,9 +119,7 @@ def test_disagg_backend_deployment_preserves_both_roles():
 
 
 def test_dense_shape_omits_moe_sizes():
-    dense = ReplicaParallelConfig(
-        ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1
-    )
+    dense = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     engine = _agg_deployment(
         space=_space(model_name="example/dense"),
         parallel_config=dense,
@@ -170,9 +164,7 @@ def test_memory_fraction_uses_the_backend_native_field(backend, memory_field):
 
 
 def test_optional_backend_runtime_values_are_forwarded():
-    engine = _agg_deployment(
-        space=_space(startup_time=45.0, aic_nextn=2)
-    ).agg_engine_args
+    engine = _agg_deployment(space=_space(startup_time=45.0, aic_nextn=2)).agg_engine_args
 
     assert engine["startup_time"] == 45.0
     assert engine["aic_nextn"] == 2
@@ -184,9 +176,7 @@ def test_fixed_host_offload_descriptor_lowers_into_aggregated_engine_args():
         "d2h_bandwidth_gbps": 7.0,
         "h2d_bandwidth_gbps": 38.0,
     }
-    dense = ReplicaParallelConfig(
-        ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1
-    )
+    dense = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
 
     engine = _agg_deployment(
         space=_space(
@@ -307,6 +297,64 @@ def test_fixed_timing_preserves_aic_identity_for_stack_adapters(monkeypatch):
                 "moe_tp_size": 1,
                 "moe_ep_size": 4,
                 "nextn": None,
+                "forward_model": "op_level",
             },
         }
     }
+
+
+def test_fpm_forward_model_lowers_onto_the_engine_payload():
+    deployment = _agg_deployment(space=_space(agg_forward_model="fpm"))
+    engine = deployment.agg_engine_args
+
+    assert engine["aic_forward_model"] == "fpm"
+    assert "timing_model" not in engine
+    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
+
+
+def test_op_level_forward_model_adds_no_engine_field():
+    deployment = _agg_deployment()
+
+    assert "aic_forward_model" not in deployment.agg_engine_args
+    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"
+
+
+def test_disagg_forward_model_is_lowered_per_role():
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(tp=8, dp=1, moe_tp=1, moe_ep=8), 1),
+        decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=8, moe_tp=1, moe_ep=8), 2),
+    )
+    selection = _agg_selection(
+        deployment_mode="disagg",
+        backend="vllm",
+        prefill_max_num_batched_tokens=32768,
+        prefill_max_num_seqs=4,
+        decode_max_num_batched_tokens=8192,
+        decode_max_num_seqs=1024,
+    )
+    sample = unroll_sample(
+        search_space=_space(decode_forward_model="fpm"), selection=selection, parallel_config=parallel
+    )
+
+    deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+    assert "aic_forward_model" not in deployment.prefill_engine_args
+    assert deployment.decode_engine_args["aic_forward_model"] == "fpm"
+    assert deployment.performance_model_metadata["prefill"]["config"]["forward_model"] == "op_level"
+    assert deployment.performance_model_metadata["decode"]["config"]["forward_model"] == "fpm"
+
+
+def test_fixed_timing_drops_the_forward_model_field(monkeypatch):
+    monkeypatch.setattr(
+        deploy_module,
+        "materialize_aic_num_gpu_blocks",
+        lambda payload: {**payload, "num_gpu_blocks": 321},
+    )
+    deployment = _agg_deployment(
+        space=_space(agg_forward_model="fpm"),
+        selection=_agg_selection(agg_timing_model={"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}),
+    )
+
+    assert "aic_forward_model" not in deployment.agg_engine_args
+    assert deployment.agg_engine_args["timing_model"]["type"] == "fixed"
+    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"

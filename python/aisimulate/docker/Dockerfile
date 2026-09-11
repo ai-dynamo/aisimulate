@@ -47,10 +47,19 @@ ENV UV_PYTHON=/opt/python/cp313-cp313/bin/python3
 COPY Cargo.toml Cargo.lock /workspace/
 COPY crates/ /workspace/crates/
 COPY python/aisimulate/src/ /workspace/python/aisimulate/src/
+COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/
 COPY python/aisimulate/LICENSE python/aisimulate/THIRD_PARTY_NOTICES.md python/aisimulate/pyproject.toml python/aisimulate/README.md /workspace/python/aisimulate/
 COPY python/aisimulate/tools/verify_release_wheels.py /workspace/python/aisimulate/tools/verify_release_wheels.py
 COPY python/aisimulate/tools/verify_installed_package_layers.py /workspace/python/aisimulate/tools/verify_installed_package_layers.py
 COPY python/aisimulate/tools/build_legacy_monolith_fixture.py /workspace/python/aisimulate/tools/build_legacy_monolith_fixture.py
+# The source checkout exposes the compatibility data through
+# aic-core/src -> ../src. Recreate that link in the reduced Docker context so
+# maturin can follow aiconfigurator/{model_configs,systems} while assembling the
+# wheel, and fail before the expensive Rust build if the layout ever drifts.
+RUN mkdir -p /workspace/python/aisimulate/aic-core \
+    && ln -s ../src /workspace/python/aisimulate/aic-core/src \
+    && test -d /workspace/python/aisimulate/src/aiconfigurator/model_configs \
+    && test -d /workspace/python/aisimulate/src/aiconfigurator/systems
 # Fail fast if Git LFS content wasn't materialized before the build — otherwise
 # the wheel ships pointer stubs in place of perf data (see DYN-2725).
 RUN set -e; \
@@ -121,4 +130,5 @@ COPY python/aisimulate/tests/ /workspace/tests/
 COPY python/aisimulate/src/ /workspace/src/
 COPY python/aisimulate/tools/ /workspace/tools/
 COPY python/aisimulate/collector/ /workspace/collector/
+COPY python/aisimulate/docs/support-matrix/index.html /workspace/docs/support-matrix/index.html
 COPY python/aisimulate/.agents/ /workspace/.agents/

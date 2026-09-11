@@ -69,7 +69,10 @@ from aiconfigurator.sdk.speculative import (
     SpeculativeDecodingProfile,
     normalize_speculative_decoding,
 )
-from aiconfigurator.sdk.utils import enumerate_parallel_config, get_model_config_from_model_path
+from aiconfigurator.sdk.utils import (
+    enumerate_parallel_config,
+    get_model_config_from_model_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -712,7 +715,16 @@ class Task:
     afd_ttft_correction_factor: float | None = None
     afd_decode_latency_correction: float = 1.0
 
-    # ====== 11. Internal — resolved in __post_init__ ======
+    # ====== 11. Multimodal video inputs ======
+    # Appended to preserve the positional constructor contract of all existing
+    # Task fields. New callers should pass these by keyword.
+    video_height: int = 0
+    video_width: int = 0
+    video_frames: int = 0
+    num_videos_per_request: int = 0
+    num_video_tokens: int = 0
+
+    # ====== 12. Internal — resolved in __post_init__ ======
     _is_moe: bool = field(default=False, repr=False, init=False)
     _model_family: str = field(default="", repr=False, init=False)
     _raw_config: dict = field(default_factory=dict, repr=False, init=False)
@@ -2028,6 +2040,11 @@ class Task:
             image_height=self.image_height,
             image_width=self.image_width,
             num_images_per_request=self.num_images_per_request,
+            video_height=self.video_height,
+            video_width=self.video_width,
+            video_frames=self.video_frames,
+            num_videos_per_request=self.num_videos_per_request,
+            num_video_tokens=self.num_video_tokens,
             ttft=self.ttft,
             tpot=self.tpot,
             request_latency=self.request_latency,
@@ -2037,11 +2054,14 @@ class Task:
             rt.batch_size = batch_size
         return rt
 
-    def _prefill_effective_isl(self) -> int:
+    def _prefill_effective_isl(self, runtime_config: config.RuntimeConfig | None = None) -> int:
         """Text ISL + vision context tokens for one request."""
         from aiconfigurator.sdk.backends.base_backend import BaseBackend
 
-        return BaseBackend.effective_prefill_isl(self.primary_model_path, self.build_runtime_config())
+        return BaseBackend.effective_prefill_isl(
+            self.primary_model_path,
+            runtime_config or self.build_runtime_config(),
+        )
 
     def build_model_config(
         self,
@@ -2148,20 +2168,24 @@ class Task:
                 f"decode_cp_candidates={cp_list}. Enable CP via prefill/agg instead."
             )
 
-        return iter(
-            enumerate_parallel_config(
-                num_gpu_list=_cands("num_gpu"),
-                tp_list=_cands("tp"),
-                pp_list=_cands("pp"),
-                dp_list=_cands("dp"),
-                moe_tp_list=_cands("moe_tp"),
-                moe_ep_list=_cands("moe_ep"),
-                cp_list=cp_list,
-                is_moe=self._is_moe,
-                backend=common.BackendName[self._role_attr(role, "backend_name")],
-                moe_backend=self.moe_backend,
-            )
+        backend = common.BackendName[self._role_attr(role, "backend_name")]
+        parallel = enumerate_parallel_config(
+            num_gpu_list=_cands("num_gpu"),
+            tp_list=_cands("tp"),
+            pp_list=_cands("pp"),
+            dp_list=_cands("dp"),
+            moe_tp_list=_cands("moe_tp"),
+            moe_ep_list=_cands("moe_ep"),
+            cp_list=cp_list,
+            is_moe=self._is_moe,
+            backend=backend,
+            moe_backend=self.moe_backend,
         )
+        if self._model_family == "MUSEGLIMMER" and backend == common.BackendName.sglang:
+            # Muse supports pure TP and pure prefill CP, but SGLang rejects a
+            # mixed attention TP/CP topology before model construction.
+            parallel = [cfg for cfg in parallel if cfg[5] == 1 or (cfg[0] == 1 and cfg[2] == 1)]
+        return iter(parallel)
 
     # =====================================================================
     # Validation
@@ -2288,6 +2312,18 @@ class Task:
             raise ValueError("afd mode requires system_name")
         if self.effective_total_gpus is None:
             raise ValueError("afd mode requires total_gpus or afd_total_gpus")
+        has_image_workload = self.num_images_per_request > 0 and self.image_height > 0 and self.image_width > 0
+        has_video_workload = config.has_video_input(
+            num_videos=self.num_videos_per_request,
+            video_height=self.video_height,
+            video_width=self.video_width,
+            video_frames=self.video_frames,
+            num_video_tokens=self.num_video_tokens,
+        )
+        if has_image_workload or has_video_workload:
+            raise NotImplementedError(
+                "AFD does not support image/video encoder workloads; use agg, disagg, or static estimation."
+            )
         if (
             isinstance(self.afd_max_a_batch_size, bool)
             or not isinstance(self.afd_max_a_batch_size, int)
@@ -3065,7 +3101,7 @@ class Task:
             backend=backend,
             database=database,
             runtime_config=runtime_config,
-            ctx_tokens=ctx_tokens if ctx_tokens is not None else self.isl,
+            ctx_tokens=ctx_tokens if ctx_tokens is not None else self._prefill_effective_isl(runtime_config),
             predictor=self.predictor,
             speculative_profile=self.build_speculative_profile(),
             **backend_kwargs,
@@ -3189,6 +3225,8 @@ class Task:
         d_mc = self.build_model_config(
             role="decode", parallel=(decode_tp, decode_pp, decode_dp, decode_moe_tp, decode_moe_ep, 1)
         )
+        if self.enable_epd:
+            d_mc.language_only = True
         d_mc.tp_size = decode_tp
         d_mc.pp_size = decode_pp
         d_mc.attention_dp_size = decode_dp if self._is_moe else 1

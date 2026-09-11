@@ -551,6 +551,10 @@ def test_evaluate_op_helpers_forward_args_and_return_entries_verbatim(monkeypatc
             calls.append(("json", ops_json, kwargs))
             return entries
 
+        def evaluate_context_attention_kernels_json(self, ops_json, **kwargs):
+            calls.append(("attention_kernels", ops_json, kwargs))
+            return entries
+
         def last_provenance(self):
             return None
 
@@ -595,6 +599,40 @@ def test_evaluate_op_helpers_forward_args_and_return_entries_verbatim(monkeypatc
         ops_json,
         {"is_context": True, "batch_size": 3, "s": 32, "prefix": 0, "imbalance_correction_scale": 1.0, "x": None},
     )
+
+    result = rust_engine_step.evaluate_context_attention_kernels_with_rust(
+        model,
+        database,
+        ops_json=ops_json,
+        batch_size=6,
+        s=280,
+        imbalance_correction_scale=0.0,
+        visual_block_upper_triangle=True,
+    )
+    assert result is entries
+    assert calls[3] == (
+        "attention_kernels",
+        ops_json,
+        {"batch_size": 6, "s": 280, "imbalance_correction_scale": 0.0, "visual_block_upper_triangle": True},
+    )
+
+
+@pytest.mark.parametrize("tier", [None, "silicon", "xop"])
+def test_attention_kernel_helper_forwards_provenance(monkeypatch, tier) -> None:
+    from aiconfigurator.sdk.operations import util_empirical
+
+    handle = SimpleNamespace(
+        evaluate_context_attention_kernels_json=lambda *args, **kwargs: [],
+        last_provenance=lambda: tier,
+    )
+    monkeypatch.setattr(rust_engine_step, "_cached_engine_handle", lambda model, database: handle)
+
+    with util_empirical.capture_provenance() as tags:
+        rust_engine_step.evaluate_context_attention_kernels_with_rust(
+            object(), object(), ops_json="[]", batch_size=1, s=280
+        )
+
+    assert tags == ({"xop"} if tier == "xop" else set())
 
 
 def test_rust_provenance_tier_forwarded_into_python_capture(monkeypatch) -> None:
@@ -1675,6 +1713,7 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
     from aiconfigurator.sdk.models import get_model
     from aiconfigurator.sdk.perf_database import get_database
 
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     rust_engine_step._engine_handle_cache_clear()
     try:
         captured_results = []

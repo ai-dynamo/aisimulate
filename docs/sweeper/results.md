@@ -226,9 +226,9 @@ Failure row:
 ## Replay specification
 
 The result contract complements, rather than replaces, `ReplaySpec`. `ReplaySpec` version 1 contains
-the concrete backend deployment, workload, goal, concurrency, adapter configuration, and runtime
-hooks. `RunnerCapabilities.require_compatible` checks it before execution, and `canonical_json`
-creates deterministic strict JSON for the replay boundary.
+the concrete backend deployment, workload, goal, execution mode, concurrency, adapter configuration,
+and runtime hooks. `RunnerCapabilities.require_compatible` checks it before execution, and
+`canonical_json` creates deterministic strict JSON for the replay boundary.
 
 Exact repeated suggestions reuse a result from the current `run` call. The cache does not persist
 between calls, even when the same `Sweeper` instance is reused.
@@ -244,3 +244,8 @@ with `aiconfigurator.generator.api.generate_from_request`.
 The bridge preserves evaluated engine limits and supported adapter configuration, and rejects
 candidate data it cannot lower without loss. Pareto output has no implicit winner: callers must
 select one point before requesting deployment artifacts.
+
+AFD candidates are intentionally outside that native generator bridge because its renderers have
+no A/F worker or routing contract. Pass a selected AFD recommendation to `aisimulate predict`
+instead; the prediction writes deterministic `afd-replay-spec.json` and
+`afd-qualification.json` analytical artifacts and marks native launch generation unsupported.
