@@ -191,6 +191,15 @@ fn validate_report_finite(report: &ReplayReport) -> Result<()> {
             goodput.output_throughput_tok_s,
         )?;
     }
+    // `report.trajectories.e2e` is a `TraceDistributionStats` like ttft/ttst/
+    // tpot/itl/e2e above, and `Serialize` emits it into `/summary` the same
+    // way (round-12 High: this was the one distribution missing from the
+    // finite gate, so a NaN trajectory latency passed validation and
+    // serde_json silently mapped it to `null`, changing that field's JSON
+    // type in a record advertised as byte-stable).
+    if let Some(trajectories) = &report.trajectories {
+        validate_distribution("/summary/trajectories/e2e", &trajectories.e2e)?;
+    }
     for record in &report.per_request {
         validate_per_request_finite(record)?;
     }
@@ -383,5 +392,37 @@ mod tests {
         let error =
             CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).unwrap_err();
         assert!(error.to_string().contains("/summary/wall_time_ms"));
+    }
+
+    /// `report.trajectories.e2e` is a `TraceDistributionStats` like ttft/
+    /// ttst/tpot/itl/e2e, serialized into `/summary` the same way, but was
+    /// the one distribution missing from the finite gate (round-12 High).
+    #[test]
+    fn canonical_record_rejects_non_finite_trajectory_stats() {
+        let mut report = TraceCollector::default().finish();
+        report.trajectories = Some(crate::replay::report::TraceTrajectoryStats {
+            total: 1,
+            completed: 1,
+            incomplete: 0,
+            e2e: crate::replay::report::TraceDistributionStats {
+                mean_ms: f64::NAN,
+                min_ms: 0.0,
+                max_ms: 0.0,
+                median_ms: 0.0,
+                p75_ms: 0.0,
+                p90_ms: 0.0,
+                p95_ms: 0.0,
+                p99_ms: 0.0,
+                std_ms: 0.0,
+            },
+        });
+        let coverage =
+            CanonicalReplayCoverage::from_report(&report, ReplayCaptureOptions::default());
+        let error =
+            CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).unwrap_err();
+        assert!(
+            error.to_string().contains("/summary/trajectories/e2e"),
+            "{error}"
+        );
     }
 }
