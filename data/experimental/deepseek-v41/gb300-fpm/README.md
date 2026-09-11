@@ -47,9 +47,18 @@ Missing-point counts and source bindings remain in the public receipts; complete
 attempt evidence remains in the private archives.
 
 OFF predictions now cover all observed HTTP cohorts and native intervals.
-ON core still lacks 100 HTTP predictions and 100 native predictions for the
-unavailable query geometry; missing predictions remain in the original coverage
-denominators. All field/service HTTP cohorts and native intervals are supported.
+ON core still lacks predictions for 100 heterogeneous HTTP cohorts (300 requests)
+and 100 native prefill intervals. Decoder replay requires the per-request new-token
+and cached-prefix lengths; the current mean/aggregate input cannot represent these
+heterogeneous batches. All 100 native failures are this representation guard,
+not missing-table lookups. Their observed dispatches are B2/Q895 (22), B2/Q511 (37),
+B2/Q1152 (30), and B3/Q1279 (11), all with zero prefix and nonzero length variance.
+This is separate from the missing balanced B3/Q1278 calibration point; collecting
+that point alone would not make these requests representable. The same HTTP
+cohorts first hit an earlier calibration-coverage gate in v1, so their original
+and current failure reasons remain separately preserved. Missing predictions
+remain in the original coverage denominators. All field/service HTTP cohorts
+and native intervals are supported.
 Calibration-coordinate coverage, observed coverage and prediction coverage are
 distinct. Balanced aggregate interpolation does not establish equivalence of
 heterogeneous per-request shapes.
