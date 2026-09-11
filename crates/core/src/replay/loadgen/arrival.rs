@@ -16,7 +16,17 @@ impl ArrivalSpec {
 
         for request_idx in 0..request_count {
             if request_idx > 0 {
-                next_arrival_ms += self.sample_gap_ms(mean_gap_ms, &mut rng)?;
+                let gap_ms = self.sample_gap_ms(mean_gap_ms, &mut rng)?;
+                // A finite `mean_gap_ms` is not sufficient: the gamma arm divides
+                // it by `smoothness`, so a tiny smoothness overflows the scale and
+                // `inf * 0.0` in the shape<1 branch produces a NaN gap.
+                if !gap_ms.is_finite() {
+                    bail!("arrival gap must be a finite number, got {gap_ms}");
+                }
+                next_arrival_ms += gap_ms;
+            }
+            if !next_arrival_ms.is_finite() {
+                bail!("arrival timestamp must be a finite number, got {next_arrival_ms}");
             }
             timestamps.push(next_arrival_ms);
         }
@@ -31,7 +41,12 @@ impl ArrivalSpec {
                 if !qps.is_finite() || *qps <= 0.0 {
                     bail!("qps must be a finite positive number, got {qps}");
                 }
-                Ok(1000.0 / qps)
+                // A denormal qps is finite and positive but its reciprocal is not.
+                let mean_gap_ms = 1000.0 / qps;
+                if !mean_gap_ms.is_finite() {
+                    bail!("qps {qps} is too small to produce a finite mean arrival gap");
+                }
+                Ok(mean_gap_ms)
             }
         }
     }
@@ -183,6 +198,43 @@ mod tests {
                 .to_string()
                 .contains("gamma smoothness")
             );
+        }
+    }
+
+    /// Denormal parameters pass the finite-and-positive gates but their
+    /// reciprocals do not, so the emitted schedule was `[0.0, inf, inf, ..]`
+    /// (constant/poisson) or all-NaN gaps (gamma, via `inf * 0.0`).
+    #[test]
+    fn denormal_arrival_parameters_cannot_emit_non_finite_timestamps() {
+        let error = ArrivalSpec::ConstantQps { qps: 1e-320 }
+            .timestamps(3, 42)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("too small"),
+            "a denormal qps must be refused, got: {error}"
+        );
+
+        let error = ArrivalSpec::GammaQps {
+            qps: 10.0,
+            smoothness: 1e-320,
+        }
+        .timestamps(3, 42)
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("finite"),
+            "a denormal smoothness must be refused, got: {error}"
+        );
+
+        for timestamp in ArrivalSpec::GammaQps {
+            qps: 10.0,
+            smoothness: 0.5,
+        }
+        .timestamps(64, 42)
+        .expect("ordinary gamma parameters must remain accepted")
+        {
+            assert!(timestamp.is_finite(), "emitted {timestamp}");
         }
     }
 }
