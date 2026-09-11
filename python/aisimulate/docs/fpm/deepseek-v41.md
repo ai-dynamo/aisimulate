@@ -45,6 +45,15 @@ vLLM route rejects it because the verified preview executes the full backbone.
 Prefix-cache/SWA tail recomputation does not establish true decoder replay.
 Replay OFF data must never be relabeled as ON data.
 
+For Decoder ON, the FPM v1 telemetry API rejects an iteration with multiple
+prefill requests and fresh prefill tokens. Its prompt-length variance cannot
+prove equal current extends when requests have different cached prefixes or
+completed chunks. Single-prefill and decode-only telemetry remain supported;
+explicit homogeneous static inputs retain their separate table-query path.
+This admission limit also applies to whole-forward FPM engines before lookup.
+Historical reports retain their original predictor identities and coverage;
+their supported counts do not describe this stricter current admission rule.
+
 ## Slurm transport
 
 `--fpm-executor slurm` runs inside a caller-owned Slurm allocation with Pyxis.

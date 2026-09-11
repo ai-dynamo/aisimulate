@@ -1733,8 +1733,10 @@ impl Engine {
 
         // The whole-forward rewrite retains the original stage graph in
         // sol_ops. Apply the same replay restriction before its table lookup
-        // can return early. Zero variance retains the legacy aggregate path;
-        // it does not establish equal per-request (query, prefix) geometry.
+        // can return early. FPM v1 variance describes whole prompt lengths,
+        // not the current extends: even equal prompts can have different
+        // cached prefixes or previously completed chunks. Only one prefill
+        // request has identifiable (query, prefix) geometry in this input.
         let replay_ops = self
             .fpm_ops()
             .map_or(self.context_ops.as_slice(), |(prefill, _)| {
@@ -1751,9 +1753,9 @@ impl Engine {
                     "V4.1 Decoder replay requires finite nonnegative prefill variance".into(),
                 ));
             }
-            if sched.var_prefill_length > 0.0 {
+            if sched.num_prefill_requests > 1 {
                 return Err(AicError::InvalidForwardPassMetrics(
-                    "V4.1 Decoder replay requires per-request extend lengths; heterogeneous FPM v1 aggregates cannot identify the tails".into(),
+                    "V4.1 Decoder replay requires per-request extend lengths; FPM v1 aggregates with multiple prefill requests cannot identify the tails, even when prompt-length variance is zero".into(),
                 ));
             }
         }
@@ -1816,7 +1818,8 @@ impl Engine {
         if self.has_dsv41_stages() {
             // Retain every scheduled token in balanced aggregate telemetry;
             // integer averages alone discard the remainder. FPM v1 does not
-            // carry individual extend lengths, so unbalanced replay is rejected.
+            // carry individual extend lengths; multiple bounded-replay
+            // prefills were rejected before the whole-forward dispatch above.
             let mut prefills = Vec::new();
             if has_prefill {
                 let n = sched.num_prefill_requests;
@@ -2671,6 +2674,22 @@ mod tests {
                 ..RowSpec::default()
             },
             RowSpec {
+                workload_kind: "prefill",
+                batch_size: 2,
+                total_prefill_tokens: 1024,
+                total_kv_read_tokens: 1024,
+                latency_ms: 43.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 1,
+                total_prefill_tokens: 129,
+                total_kv_read_tokens: 513,
+                latency_ms: 17.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
                 workload_kind: "decode",
                 batch_size: 8,
                 total_prefill_tokens: 0,
@@ -2693,8 +2712,8 @@ mod tests {
             scheduled_requests: crate::ScheduledRequestMetrics {
                 num_prefill_requests: 2,
                 sum_prefill_tokens: 511,
-                // Actual current-query geometry [384, 127] has variance
-                // 16512.25; its totals also address a balanced [256, 255] row.
+                // Prompt-length variance does not identify current extends;
+                // these totals also address the balanced [256, 255] row.
                 var_prefill_length: variance,
                 ..Default::default()
             },
@@ -2706,7 +2725,7 @@ mod tests {
     fn fpm_replay_guard_rejects_before_balanced_table_lookup() {
         let tmp = tempfile::tempdir().unwrap();
         let engine = fpm_replay_guard_probe(tmp.path(), true);
-        for variance in [16512.25, 0.25, -1.0, f64::NAN, f64::INFINITY] {
+        for variance in [0.0, 16512.25, 0.25, -1.0, f64::NAN, f64::INFINITY] {
             let result = engine.forward_pass_time_ms(&[fpm_replay_guard_metrics(variance)]);
             assert!(
                 matches!(result, Err(AicError::InvalidForwardPassMetrics(_))),
@@ -2719,7 +2738,7 @@ mod tests {
     fn fpm_replay_guard_rejects_mixed_prefill_before_table_composition() {
         let tmp = tempfile::tempdir().unwrap();
         let engine = fpm_replay_guard_probe(tmp.path(), true);
-        let mut metrics = fpm_replay_guard_metrics(16512.25);
+        let mut metrics = fpm_replay_guard_metrics(0.0);
         metrics.scheduled_requests.num_decode_requests = 8;
         metrics.scheduled_requests.sum_decode_kv_tokens = 4096;
         assert!(matches!(
@@ -2766,15 +2785,86 @@ mod tests {
     }
 
     #[test]
-    fn fpm_replay_guard_retains_legacy_zero_variance_remainders() {
+    fn fpm_replay_guard_rejects_zero_variance_remainders() {
         let tmp = tempfile::tempdir().unwrap();
         let engine = fpm_replay_guard_probe(tmp.path(), true);
         let mut metrics = fpm_replay_guard_metrics(0.0);
         metrics.scheduled_requests.sum_prefill_tokens = 257;
         metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
-        // Preserve the existing aggregate-only input convention. Zero
-        // variance is not proof that the individual (query, prefix) pairs match.
-        assert_eq!(engine.forward_pass_time_ms(&[metrics]).unwrap(), 31.0);
+        assert!(matches!(
+            engine.forward_pass_time_ms(&[metrics]),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_equal_prompt_heterogeneous_extends() {
+        // Both prompts have 1024 tokens, but their (new, prefix) pairs are
+        // (1, 1023) and (1023, 1). The bounded tails total 129 tokens, while
+        // the same aggregate addresses a balanced table cell with 256 tails.
+        let requests = [(1024, 1, 1023), (1024, 1023, 1)];
+        assert!(
+            requests
+                .iter()
+                .all(|&(prompt, query, prefix)| { prompt == 1024 && query + prefix == prompt })
+        );
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.sum_prefill_tokens = requests.iter().map(|r| r.1).sum();
+        metrics.scheduled_requests.sum_prefill_kv_tokens = requests.iter().map(|r| r.2).sum();
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        // Exercise both the whole-forward rewrite and direct stage engine.
+        for probe in [&engine, &dsv41_probe_engine(true)] {
+            let error = probe
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap_err();
+            assert!(matches!(error, AicError::InvalidForwardPassMetrics(_)));
+            assert!(error.to_string().contains("multiple prefill requests"));
+        }
+        // OFF still consumes exactly the table cell that ON must not borrow.
+        let off = fpm_replay_guard_probe(tmp.path(), false);
+        assert_eq!(off.forward_pass_time_ms(&[metrics]).unwrap(), 43.0);
+    }
+
+    #[test]
+    fn fpm_replay_guard_preserves_single_prefill_and_rejects_invalid_variance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.num_prefill_requests = 1;
+        metrics.scheduled_requests.sum_prefill_tokens = 129;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap(),
+            17.0
+        );
+        for variance in [-1.0, f64::NAN, f64::INFINITY] {
+            metrics.scheduled_requests.var_prefill_length = variance;
+            let error = engine
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap_err();
+            assert!(matches!(error, AicError::InvalidForwardPassMetrics(_)));
+            assert!(error.to_string().contains("finite nonnegative"));
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_preserves_explicit_static_geometry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        // Static input explicitly declares two identical (new, prefix)
+        // pairs. It is not the ambiguous FPM v1 telemetry entry point.
+        let mut input = runtime(2, 1024, 1);
+        input.prefix = 512;
+        assert_eq!(
+            engine
+                .run_static(&input, StaticMode::Context, 32)
+                .unwrap()
+                .context_ms,
+            43.0
+        );
     }
 
     #[test]

@@ -201,3 +201,57 @@ def test_real_v41_fpm_selector_roundtrip_and_frozen_interpolation_are_unchanged(
     assert count == 164
     with pytest.raises(ValueError, match="requires forward_model='fpm'"):
         RustForwardPassPerfModel.from_native(selected | {"forward_model": "op_level"})
+
+
+def test_real_v41_fpm_rejects_ambiguous_aggregates_but_keeps_identifiable_inputs():
+    """The public whole-forward path must reject before a balanced lookup."""
+    import pyarrow.parquet as pq
+
+    from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    root = Path(__file__).resolve().parents[5]
+    packet = root / "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2"
+    config = json.loads((packet / "prediction-config.json").read_text())
+    config["systems_path"] = str(packet / "systems")
+    predictor = RustForwardPassPerfModel.from_native(config)
+
+    # Equal complete prompts can have unequal current extends: (1, 1023)
+    # and (1023, 1) in (new, prefix) coordinates. Prompt variance is zero.
+    scheduled = dict(
+        num_prefill_requests=2,
+        sum_prefill_tokens=1024,
+        sum_prefill_kv_tokens=1024,
+        var_prefill_length=0.0,
+        num_decode_requests=0,
+        sum_decode_kv_tokens=0,
+        var_decode_kv_tokens=0.0,
+    )
+    for decode_batch in (0, 1):
+        metrics = dict(
+            version=1,
+            wall_time=1.0,
+            scheduled_requests=scheduled
+            | dict(num_decode_requests=decode_batch, sum_decode_kv_tokens=decode_batch * 129),
+        )
+        with pytest.raises(ValueError, match="multiple prefill requests"):
+            predictor.estimate_forward_pass_time_ms(metrics)
+
+    rows = pq.read_table(next((packet / "systems").rglob("fpm_forward_perf.parquet"))).to_pylist()
+    for phase in ("prefill", "decode"):
+        row = next(row for row in rows if row["workload_kind"] == phase and row["batch_size"] == 1)
+        batch, new, kv = row["batch_size"], row["total_prefill_tokens"], row["total_kv_read_tokens"]
+        exact = dict(
+            num_prefill_requests=batch if phase == "prefill" else 0,
+            sum_prefill_tokens=new,
+            sum_prefill_kv_tokens=kv if phase == "prefill" else 0,
+            var_prefill_length=0.0,
+            num_decode_requests=batch if phase == "decode" else 0,
+            sum_decode_kv_tokens=kv if phase == "decode" else 0,
+            var_decode_kv_tokens=0.0,
+        )
+        metrics = dict(version=1, wall_time=1.0, scheduled_requests=exact)
+        assert predictor.estimate_forward_pass_time_ms(metrics) == row["latency_ms"]
+        if phase == "decode":
+            # Fully cached prefill metadata schedules no new prefill compute.
+            exact.update(num_prefill_requests=2, sum_prefill_kv_tokens=1024)
+            assert predictor.estimate_forward_pass_time_ms(metrics) == row["latency_ms"]
