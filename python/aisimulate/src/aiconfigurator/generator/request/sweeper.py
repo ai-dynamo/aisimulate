@@ -297,6 +297,7 @@ def from_sweeper_candidate(
                 "heterogeneous P/D deployment artifact generation is unsupported because the generator "
                 f"has one global hardware profile; got {role_hardware}"
             )
+        hardware_sku = role_hardware["prefill"]
 
     active_roles = ("agg",) if mode == "agg" else ("prefill", "decode")
     roles: dict[str, RoleSizing] = {}

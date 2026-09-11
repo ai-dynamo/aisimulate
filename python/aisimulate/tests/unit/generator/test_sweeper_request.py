@@ -178,6 +178,7 @@ def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
 def test_disagg_candidate_accepts_matching_effective_role_hardware():
     request = from_sweeper_candidate(
         _disagg_candidate(
+            hardware_sku="h200_sxm",
             prefill_hardware_sku="gb200",
             decode_hardware_sku="gb200",
         ),
