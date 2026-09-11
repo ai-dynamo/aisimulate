@@ -127,7 +127,98 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_trace_format("agentic_mooncake")
     assert capabilities.supports_agentic_lanes
     assert capabilities.supported_agentic_topologies == ("agg",)
+    assert capabilities.supported_agentic_backends == ("vllm", "sglang")
+    assert not capabilities.supports_agentic_host_offload
+    assert not capabilities.supports_agentic_speculative_decoding
     assert capabilities.agentic_qualification == "functional_only"
+
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize(
+    ("unsupported", "message"),
+    [
+        ({"native_host_offload": {"num_host_blocks": 8}}, "HBM-only"),
+        ({"aic_nextn": 1}, "speculative decoding disabled"),
+        ({"nextn": 1}, "speculative decoding disabled"),
+    ],
+)
+def test_agentic_capabilities_reject_unqualified_memory_and_decode_modes(
+    trace_format, nested_rank, unsupported, message
+):
+    runtime = RecordingRuntime()
+    args = _engine_args() | unsupported
+    if nested_rank:
+        args = {"rank": args}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args=args,
+            num_workers=1,
+        ),
+        workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
+    )
+
+    with pytest.raises(ValueError, match=message):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
+def test_agentic_capabilities_reject_trtllm(trace_format):
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="trtllm",
+            backend_version="test",
+            agg_engine_args=_engine_args(backend="trtllm"),
+            num_workers=1,
+        ),
+        workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
+    )
+    with pytest.raises(ValueError, match="agentic execution with backend 'trtllm'"):
+        EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+
+
+def test_standard_dynamo_defers_agentic_restrictions_until_trace_kind_is_known():
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args=_engine_args() | {"aic_nextn": 1},
+            num_workers=1,
+        ),
+        workload={"source_type": "trace", "trace_format": "dynamo"},
+    )
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+
+
+def test_agentic_qualification_survives_default_python_report():
+    qualification = {
+        "agentic_qualification": "functional_only",
+        "agentic_input_format": "weka",
+        "agentic_lanes": 1,
+        "agentic_model_projection": {
+            "policy": "project_to_configured_target",
+            "source_models": ["source-model"],
+            "target_model": "test-model",
+        },
+        "weka_nested_timestamp_basis": "absolute",
+    }
+
+    class QualifiedRuntime(RecordingRuntime):
+        def run_replay_json(self, execution_spec_json):
+            report = json.loads(super().run_replay_json(execution_spec_json))
+            return json.dumps(report | qualification)
+
+    report = EngineReplayRunnerFactory(runtime=QualifiedRuntime()).create(0).run(_spec())
+
+    assert report.metadata == qualification
+    assert report.metrics["completed_requests"] == 1
+    assert "native_report" not in report.metadata
 
 
 def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size():
