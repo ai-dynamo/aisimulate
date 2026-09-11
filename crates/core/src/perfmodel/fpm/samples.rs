@@ -11,7 +11,7 @@
 //! [`StoreStats`] provides the count/readiness view shared by native correction
 //! and the single role-bound regression store.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use super::options::ForwardPassPerfOptions;
 
@@ -26,7 +26,11 @@ pub(crate) trait StoreStats {
 
 #[derive(Clone, Debug)]
 pub(crate) struct BucketedSamples<T> {
-    pub(crate) buckets: HashMap<Vec<usize>, Vec<(Vec<f64>, T)>>,
+    /// Ordered by bucket key so retained-sample order, retirement tie-breaks,
+    /// and every derived aggregate are a pure function of the observations.
+    /// `HashMap` order varies per store instance and leaked into the
+    /// order-dependent Welford standardization in `fit_regression`.
+    pub(crate) buckets: BTreeMap<Vec<usize>, Vec<(Vec<f64>, T)>>,
     pub(crate) total_observations: usize,
     axis_min: Vec<f64>,
     axis_max: Vec<f64>,
@@ -58,7 +62,7 @@ impl<T: Clone> BucketedSamples<T> {
             integer_sqrt(options.bucket_count)
         };
         Self {
-            buckets: HashMap::new(),
+            buckets: BTreeMap::new(),
             total_observations: 0,
             axis_min: vec![f64::INFINITY; ndim],
             axis_max: vec![f64::NEG_INFINITY; ndim],

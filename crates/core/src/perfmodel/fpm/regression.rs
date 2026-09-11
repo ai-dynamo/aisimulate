@@ -378,6 +378,39 @@ mod tests {
         );
     }
 
+    /// Two stores fed the same observations in the same order must retain them
+    /// in the same order. `fit_regression` standardizes with Welford's method,
+    /// which is order-dependent in floating point, so a retained-sample
+    /// ordering that varies between equivalent stores makes every prediction
+    /// vary with it.
+    #[test]
+    fn retained_observation_order_is_independent_of_store_identity() {
+        let build = || {
+            let mut regression = BucketedRegression::new(&regression_options());
+            for i in 0..24u32 {
+                let attention = f64::from(i) * 500.0;
+                let ffn = f64::from(23 - i) * 500.0;
+                assert!(regression.add_observation([attention, ffn], 1.0 + f64::from(i)));
+            }
+            regression
+        };
+
+        let left = build();
+        let right = build();
+
+        let raw_order = |regression: &BucketedRegression| {
+            regression
+                .samples
+                .observations()
+                .into_iter()
+                .map(|(_, observation)| observation.raw_x)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(raw_order(&left), raw_order(&right));
+        assert_eq!(left.fit.map(|fit| fit.intercept), right.fit.map(|f| f.intercept));
+    }
+
     #[test]
     fn buckets_on_log_coordinates_but_retains_raw_observation() {
         let mut regression = BucketedRegression::new(&regression_options());
