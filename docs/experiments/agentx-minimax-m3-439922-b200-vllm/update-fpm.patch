@@ -1,0 +1,678 @@
+--- a/vllm/config/observability.py
++++ b/vllm/config/observability.py
+@@ -85,10 +85,6 @@
+     """Worker identifier stamped onto forward-pass metrics. Defaults to the
+     generated vLLM instance ID when unset."""
+ 
+-    forward_pass_metrics_max_queue_size: int = Field(default=10_000, gt=0)
+-    """Maximum number of forward-pass metrics waiting for background ZMQ
+-    publication. New samples are dropped instead of blocking when full."""
+-
+     jit_monitor_mode: Literal["warn", "error"] = "warn"
+     """How to handle post-warmup JIT compilation events."""
+ 
+--- a/vllm/distributed/device_communicators/shm_broadcast.py
++++ b/vllm/distributed/device_communicators/shm_broadcast.py
+@@ -820,6 +820,33 @@
+                         self._spin_condition.record_read()
+                 break
+ 
++    def can_enqueue(self) -> bool:
++        """Check the next write slot without spinning, from the sole writer."""
++        assert self._is_writer
++        if self.n_local_reader == 0:
++            return True
++        with self.buffer.get_metadata(self.current_idx) as metadata:
++            memory_fence()
++            return not metadata[0] or sum(metadata[1:]) == self.buffer.n_reader
++
++    def can_dequeue(self) -> bool:
++        """Check the next message without consuming it or spinning.
++
++        Only the owning reader may call this. A ready SHM slot cannot be
++        overwritten until that reader consumes it. Overflow messages also
++        need their socket payload before ``dequeue`` can return without waiting.
++        """
++        if self._is_local_reader:
++            with self.buffer.get_metadata(self.current_idx) as metadata:
++                memory_fence()
++                if not metadata[0] or metadata[self.local_reader_rank + 1]:
++                    return False
++            with self.buffer.get_data(self.current_idx) as buf:
++                overflow = buf[0] == 1
++            return not overflow or bool(self.local_socket.poll(timeout=0))
++        assert self._is_remote_reader
++        return bool(self.remote_socket.poll(timeout=0))
++
+     def enqueue(self, obj, timeout: float | None = None):
+         """Write to message queue with optional timeout (in seconds)"""
+         assert self._is_writer, "Only writers can enqueue"
+--- a/vllm/engine/arg_utils.py
++++ b/vllm/engine/arg_utils.py
+@@ -668,9 +668,6 @@
+     forward_pass_metrics_worker_id: str = (
+         ObservabilityConfig.forward_pass_metrics_worker_id
+     )
+-    forward_pass_metrics_max_queue_size: int = (
+-        ObservabilityConfig.forward_pass_metrics_max_queue_size
+-    )
+     jit_monitor_mode: Literal["warn", "error"] = ObservabilityConfig.jit_monitor_mode
+     jit_monitor_verbose: bool = ObservabilityConfig.jit_monitor_verbose
+     enable_mm_processor_stats: bool = ObservabilityConfig.enable_mm_processor_stats
+@@ -1463,10 +1460,6 @@
+             **observability_kwargs["forward_pass_metrics_worker_id"],
+         )
+         observability_group.add_argument(
+-            "--forward-pass-metrics-max-queue-size",
+-            **observability_kwargs["forward_pass_metrics_max_queue_size"],
+-        )
+-        observability_group.add_argument(
+             "--show-hidden-metrics-for-version",
+             **observability_kwargs["show_hidden_metrics_for_version"],
+         )
+@@ -1950,9 +1943,6 @@
+             enable_logging_iteration_details=self.enable_logging_iteration_details,
+             forward_pass_metrics_port=self.forward_pass_metrics_port,
+             forward_pass_metrics_worker_id=self.forward_pass_metrics_worker_id,
+-            forward_pass_metrics_max_queue_size=(
+-                self.forward_pass_metrics_max_queue_size
+-            ),
+             jit_monitor_mode=self.jit_monitor_mode,
+             jit_monitor_verbose=self.jit_monitor_verbose,
+         )
+--- a/vllm/utils/math_utils.py
++++ b/vllm/utils/math_utils.py
+@@ -2,6 +2,8 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """Math utility functions for vLLM."""
+ 
++from dataclasses import dataclass
++
+ # Approximate value of 1/ln(2), used for log/exp base conversion
+ # Best FP32 approximation: 1.4426950216 (hex 0x3FB8AA3B)
+ RCP_LN2 = 1.4426950216
+@@ -30,3 +32,24 @@
+ def largest_power_of_2_divisor(n: int) -> int:
+     """Return the largest power-of-2 that divides *n* (isolate lowest set bit)."""
+     return n & (-n)
++
++
++@dataclass(slots=True)
++class WelfordAccumulator:
++    """Single-pass count, exact integer sum, and population variance."""
++
++    count: int = 0
++    total: int = 0
++    _mean: float = 0.0
++    _m2: float = 0.0
++
++    def add(self, value: int) -> None:
++        self.count += 1
++        self.total += value
++        delta = value - self._mean
++        self._mean += delta / self.count
++        self._m2 += delta * (value - self._mean)
++
++    @property
++    def variance(self) -> float:
++        return self._m2 / self.count if self.count else 0.0
+--- a/vllm/v1/core/sched/interface.py
++++ b/vllm/v1/core/sched/interface.py
+@@ -70,13 +70,6 @@
+             "metrics are enabled"
+         )
+ 
+-    def should_emit_forward_pass_metrics(
+-        self, scheduler_output: "SchedulerOutput"
+-    ) -> bool:
+-        """Whether native FPM should measure and emit this iteration."""
+-
+-        return True
+-
+     @abstractmethod
+     def schedule(self, throttle_prefills: bool = False) -> "SchedulerOutput":
+         """Schedule the requests to process in this scheduling step.
+--- a/vllm/v1/core/sched/output.py
++++ b/vllm/v1/core/sched/output.py
+@@ -268,8 +268,7 @@
+     # Number of spec tokens to schedule for the next step.
+     num_spec_tokens_to_schedule: int = 0
+ 
+-    # Engine-assigned identity used to associate asynchronously completed CUDA
+-    # timing with this scheduler iteration. None when native FPM is disabled.
++    # Sequence number matching this iteration to its timing; None when FPM is off.
+     forward_pass_metrics_iteration_id: int | None = None
+ 
+     @classmethod
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -85,7 +85,11 @@
+     fault_tolerant_wrapper,
+ )
+ from vllm.v1.kv_cache_interface import KVCacheConfig, get_kv_cache_spec_kind
+-from vllm.v1.metrics.forward_pass_metrics import ForwardPassMetricsEmitter
++from vllm.v1.metrics.forward_pass_metrics import (
++    FPM_IDLE_POLL_INTERVAL_SECONDS,
++    FPM_SHUTDOWN_TIMEOUT_SECONDS,
++    ForwardPassMetricsEmitter,
++)
+ from vllm.v1.metrics.stats import SchedulerIterationDetails, SchedulerStats
+ from vllm.v1.outputs import ModelRunnerOutput
+ from vllm.v1.request import Request, RequestStatus
+@@ -594,7 +598,7 @@
+         # Check for any requests remaining in the scheduler - unfinished,
+         # or finished and not yet removed from the batch.
+         if not self.scheduler.has_requests():
+-            self._flush_forward_pass_metrics()
++            self._poll_forward_pass_metrics()
+             return {}, False
+         scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
+         if self.forward_pass_metrics_emitter is not None:
+@@ -710,7 +714,7 @@
+             # Queue is empty. We should not reach here since this method should
+             # only be called when the scheduler contains requests or the queue
+             # is non-empty.
+-            self._flush_forward_pass_metrics()
++            self._poll_forward_pass_metrics()
+             return None, False
+ 
+         # Block until the next result is available.
+@@ -767,14 +771,31 @@
+ 
+         return engine_core_outputs, model_executed
+ 
++    def _poll_forward_pass_metrics(self) -> None:
++        """Collect ready tail timings without delaying a new request."""
++        emitter = self.forward_pass_metrics_emitter
++        if emitter is not None:
++            emitter.poll_timing(self.model_executor)
++
+     def _flush_forward_pass_metrics(self) -> None:
+-        """Finish the final timing before EngineCore enters its idle wait."""
++        """Allow a bounded shutdown grace for timing responses."""
+ 
+         emitter = self.forward_pass_metrics_emitter
+         if emitter is None or not emitter.has_pending_timing():
+             return
+-        samples = self.model_executor.drain_forward_pass_timing(wait=True)
+-        emitter.complete_timing_samples(samples)
++        deadline = time.monotonic() + FPM_SHUTDOWN_TIMEOUT_SECONDS
++        while emitter.has_pending_timing():
++            try:
++                emitter.poll_timing(self.model_executor)
++            except Exception:
++                logger.warning("Failed to collect final FPM timings", exc_info=True)
++                break
++            if not emitter.has_pending_timing():
++                break
++            if time.monotonic() >= deadline:
++                logger.warning("Dropping unfinished FPM samples during shutdown")
++                break
++            time.sleep(FPM_IDLE_POLL_INTERVAL_SECONDS)
+ 
+     def _process_aborts_queue(self):
+         if not self.aborts_queue.empty():
+@@ -1445,10 +1466,9 @@
+ 
+         waited = False
+         while not self.has_work() and self.is_running():
+-            # This is the actual transition to the blocking idle state. Finish
+-            # any CUDA timing that could not ride back on the final model
+-            # output before waiting indefinitely for the next request.
+-            self._flush_forward_pass_metrics()
++            emitter = self.forward_pass_metrics_emitter
++            if emitter is not None and self.input_queue.empty():
++                emitter.poll_timing(self.model_executor)
+             # Notify callbacks waiting for engine to become idle.
+             self._notify_idle_state_callbacks()
+             if self.input_queue.empty():
+@@ -1459,10 +1479,16 @@
+                     logger.debug("EngineCore waiting for work.")
+                     waited = True
+             block = self.process_input_queue_block
++            poll_timing = block and emitter is not None and emitter.has_pending_timing()
+             try:
+-                req = self.input_queue.get(block=block)
++                if poll_timing:
++                    req = self.input_queue.get(timeout=FPM_IDLE_POLL_INTERVAL_SECONDS)
++                else:
++                    req = self.input_queue.get(block=block)
+                 self._handle_client_request(*req)
+             except queue.Empty:
++                if poll_timing:
++                    continue
+                 break
+             if not block:
+                 break
+--- a/vllm/v1/executor/abstract.py
++++ b/vllm/v1/executor/abstract.py
+@@ -33,6 +33,7 @@
+ _R = TypeVar("_R")
+ 
+ FailureCallback = Callable[[], None]
++ForwardPassTimingPoll = Callable[[], tuple[tuple[int, float], ...] | None]
+ 
+ 
+ class Executor(ABC):
+@@ -255,15 +256,22 @@
+         output: list[DraftTokenIds] = self.collective_rpc("take_draft_token_ids")
+         return output[0]
+ 
+-    def drain_forward_pass_timing(
+-        self, wait: bool = True
+-    ) -> tuple[tuple[int, float], ...]:
+-        """Collect completed CUDA timings from the model-output worker."""
++    def start_forward_pass_timing_poll(self) -> ForwardPassTimingPoll | None:
++        """Start one nonblocking timing query; return a nonblocking result poller.
+ 
+-        worker_samples: list[tuple[tuple[int, float], ...]] = self.collective_rpc(
+-            "drain_forward_pass_timing", kwargs={"wait": wait}
++        Executors with lazy futures must override this to advance their response
++        transport without waiting. None means submission should be retried later.
++        """
++        future: Future[list[tuple[tuple[int, float], ...]]] = self.collective_rpc(
++            "poll_forward_pass_timing", non_block=True
+         )
+-        return tuple(sample for samples in worker_samples for sample in samples)
++
++        def poll() -> tuple[tuple[int, float], ...] | None:
++            if not future.done():
++                return None
++            return tuple(sample for samples in future.result() for sample in samples)
++
++        return poll
+ 
+     def profile(self, is_start: bool = True, profile_prefix: str | None = None):
+         self.collective_rpc("profile", args=(is_start, profile_prefix))
+--- a/vllm/v1/executor/multiproc_executor.py
++++ b/vllm/v1/executor/multiproc_executor.py
+@@ -67,7 +67,7 @@
+     startup_omp_num_threads,
+ )
+ from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
+-from vllm.v1.executor.abstract import Executor, FailureCallback
++from vllm.v1.executor.abstract import Executor, FailureCallback, ForwardPassTimingPoll
+ from vllm.v1.executor.vllm_net_devices import set_worker_net_device
+ from vllm.v1.outputs import AsyncModelRunnerOutput, DraftTokenIds, ModelRunnerOutput
+ from vllm.v1.worker.worker_base import WorkerWrapperBase
+@@ -444,6 +444,33 @@
+ 
+         return future if non_block else future.result()
+ 
++    def start_forward_pass_timing_poll(self) -> ForwardPassTimingPoll | None:
++        # Only issue this idle query with an empty RPC queue and a writable
++        # broadcast slot. Ordinary inference RPCs keep their existing path.
++        assert self.rpc_broadcast_mq is not None
++        if self.futures_queue or not self.rpc_broadcast_mq.can_enqueue():
++            return None
++        future = self.collective_rpc(
++            "poll_forward_pass_timing",
++            non_block=True,
++            unique_reply_rank=self.output_rank,
++        )
++        response_mq = self.response_mqs[self.output_rank]
++
++        def poll() -> tuple[tuple[int, float], ...] | None:
++            if not future.done():
++                # A later model RPC may already have consumed this response.
++                # Otherwise, consume only at the head of the ordered queue.
++                if not self.futures_queue or self.futures_queue[-1] is not future:
++                    return None
++                if not response_mq.can_dequeue():
++                    return None
++                self.futures_queue.pop()
++                future._wait_for_response()
++            return future.result()
++
++        return poll
++
+     @staticmethod
+     def _ensure_worker_termination(worker_procs: list[BaseProcess]):
+         """Ensure that all worker processes are terminated. Assumes workers have
+--- a/vllm/v1/executor/ray_executor.py
++++ b/vllm/v1/executor/ray_executor.py
+@@ -6,7 +6,7 @@
+ from collections.abc import Callable
+ from concurrent.futures import Future
+ from dataclasses import dataclass
+-from typing import TYPE_CHECKING, Any
++from typing import TYPE_CHECKING, Any, cast
+ 
+ import cloudpickle
+ 
+@@ -21,7 +21,7 @@
+ )
+ from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
+ from vllm.v1.engine import ReconfigureDistributedRequest, ReconfigureRankType
+-from vllm.v1.executor.abstract import Executor
++from vllm.v1.executor.abstract import Executor, ForwardPassTimingPoll
+ from vllm.v1.executor.ray_utils import (
+     WORKER_SPECIFIC_ENV_VARS,
+     FutureWrapper,
+@@ -507,6 +507,21 @@
+ 
+         return ray.get(ray_worker_outputs, timeout=timeout)
+ 
++    def start_forward_pass_timing_poll(self) -> ForwardPassTimingPoll:
++        future = cast(
++            FutureWrapper,
++            self.collective_rpc("poll_forward_pass_timing", non_block=True),
++        )
++        refs = future.ref_or_refs
++
++        def poll() -> tuple[tuple[int, float], ...] | None:
++            _, pending = ray.wait(refs, num_returns=len(refs), timeout=0)
++            if pending:
++                return None
++            return tuple(sample for samples in future.result() for sample in samples)
++
++        return poll
++
+     def _check_ray_cgraph_installation(self):
+         import importlib.metadata
+ 
+--- a/vllm/v1/metrics/forward_pass_metrics.py
++++ b/vllm/v1/metrics/forward_pass_metrics.py
+@@ -32,41 +32,25 @@
+ import zmq
+ 
+ from vllm.logger import init_logger
++from vllm.utils.math_utils import WelfordAccumulator
+ 
+ if TYPE_CHECKING:
+     from vllm.config import VllmConfig
+     from vllm.v1.core.sched.interface import SchedulerInterface
+     from vllm.v1.core.sched.output import SchedulerOutput
++    from vllm.v1.executor.abstract import Executor, ForwardPassTimingPoll
+     from vllm.v1.outputs import ModelRunnerOutput
+ 
+ logger = init_logger(__name__)
+ 
+ FPM_VERSION = 1
+ FPM_HEARTBEAT_INTERVAL_SECONDS = 1.0
++FPM_IDLE_POLL_INTERVAL_SECONDS = 0.005
++FPM_SHUTDOWN_TIMEOUT_SECONDS = 1.0
++FPM_MAX_QUEUE_SIZE = 10_000
+ FPM_TIMING_SCOPE_MODEL_STEP_CUDA = "model_step_cuda"
+ 
+ 
+-@dataclass(slots=True)
+-class WelfordAccumulator:
+-    """Single-pass count, sum, and population variance accumulator."""
+-
+-    count: int = 0
+-    total: int = 0
+-    _mean: float = 0.0
+-    _m2: float = 0.0
+-
+-    def add(self, value: int) -> None:
+-        self.count += 1
+-        self.total += value
+-        delta = value - self._mean
+-        self._mean += delta / self.count
+-        self._m2 += delta * (value - self._mean)
+-
+-    @property
+-    def variance(self) -> float:
+-        return self._m2 / self.count if self.count else 0.0
+-
+-
+ class ScheduledRequestMetrics(
+     msgspec.Struct,
+     frozen=True,  # type: ignore[call-arg]
+@@ -76,10 +60,12 @@
+ 
+     num_prefill_requests: int = 0
+     sum_prefill_tokens: int = 0
++    # Across this iteration's prefill requests: Var(kv_read + scheduled_tokens / 2).
+     var_prefill_length: float = 0.0
+     sum_prefill_kv_tokens: int = 0
+     num_decode_requests: int = 0
+     sum_decode_kv_tokens: int = 0
++    # Population variance of per-request KV lengths in this decode batch (tokens²).
+     var_decode_kv_tokens: float = 0.0
+ 
+ 
+@@ -152,9 +138,8 @@
+ class ForwardPassMetricsTimer:
+     """Non-blocking CUDA event timer used by both GPU model runners.
+ 
+-    Timing events are preallocated and pooled. Hot-path drains only read elapsed
+-    time after ``query`` reports completion. The engine uses ``wait=True`` only
+-    on the cold transition to idle so the final iteration cannot be lost.
++    Timing events are pooled. Drains read elapsed time only after ``query``
++    reports completion and skip a contended drain instead of waiting for it.
+     """
+ 
+     def __init__(
+@@ -174,8 +159,8 @@
+         self._drain_lock = threading.Lock()
+ 
+     @staticmethod
+-    def _make_event() -> torch.cuda.Event:
+-        return torch.cuda.Event(enable_timing=True)
++    def _make_event() -> torch.Event:
++        return torch.Event(enable_timing=True)
+ 
+     def start(self, scheduler_output: SchedulerOutput) -> None:
+         if self._active is not None:
+@@ -205,38 +190,37 @@
+             self._pending.append(pending)
+ 
+     def cancel(self) -> None:
+-        # Exception paths are cold. Wait before recycling the recorded start
+-        # event so a later interval cannot re-record it while it is in flight.
+-        if self._active is not None:
+-            self._active.start_event.synchronize()
+-            self._event_pool.put((self._active.start_event, self._active.end_event))
++        # Discard this pair instead of recycling an event still in flight.
+         self._active = None
+ 
+-    def drain_samples(self, wait: bool = False) -> tuple[tuple[int, float], ...]:
+-        """Return completed timing samples without blocking unless requested.
+-
+-        CUDA driver calls run outside ``_pending_lock``. The inference thread
+-        therefore never waits behind ``query``/``elapsed_time``/``synchronize``.
+-        """
+-
++    def drain_samples(self) -> tuple[tuple[int, float], ...]:
++        """Return ready timings without waiting for GPU work or another drain."""
++        if not self._drain_lock.acquire(blocking=False):
++            return ()
+         ready: list[tuple[int, float]] = []
+-        with self._drain_lock:
++        try:
+             while True:
+-                with self._pending_lock:
+-                    pending = self._pending[0] if self._pending else None
+-                if pending is None:
++                if not self._pending_lock.acquire(blocking=False):
+                     break
+-                if wait:
+-                    pending.end_event.synchronize()
+-                elif not pending.end_event.query():
++                try:
++                    pending = self._pending[0] if self._pending else None
++                finally:
++                    self._pending_lock.release()
++                if pending is None or not pending.end_event.query():
+                     break
+ 
+                 elapsed_ms = pending.start_event.elapsed_time(pending.end_event)
+-                with self._pending_lock:
++                if not self._pending_lock.acquire(blocking=False):
++                    break
++                try:
+                     completed = self._pending.popleft()
++                finally:
++                    self._pending_lock.release()
+                 assert completed is pending
+                 ready.append((pending.iteration_id, elapsed_ms * 1e-3))
+                 self._event_pool.put((pending.start_event, pending.end_event))
++        finally:
++            self._drain_lock.release()
+         return tuple(ready)
+ 
+     def drain_into(self, output: Any) -> Any:
+@@ -306,9 +290,8 @@
+         endpoint: str,
+         worker_id: str,
+         dp_rank: int,
+-        max_queue_size: int,
+     ) -> None:
+-        self._queue = queue.Queue[ForwardPassMetrics | None](maxsize=max_queue_size)
++        self._queue = queue.Queue[ForwardPassMetrics | None](maxsize=FPM_MAX_QUEUE_SIZE)
+         self._worker_id = worker_id
+         self._dp_rank = dp_rank
+         self._sequence = count()
+@@ -434,6 +417,8 @@
+         self._correct_async_spec_lengths = correct_async_spec_lengths
+         self._spec_requests: dict[int, dict[str, tuple[Any, int]]] = {}
+         self._pending: OrderedDict[int, _PendingIteration] = OrderedDict()
++        self._timing_poll: ForwardPassTimingPoll | None = None
++        self._next_timing_poll = 0.0
+ 
+     @classmethod
+     def from_vllm_config(
+@@ -461,7 +446,6 @@
+             endpoint=f"tcp://*:{port}",
+             worker_id=worker_id,
+             dp_rank=dp_rank,
+-            max_queue_size=config.forward_pass_metrics_max_queue_size,
+         )
+         logger.info("Forward-pass metrics publisher bound to tcp://*:%d", port)
+         return cls(
+@@ -489,13 +473,10 @@
+                 for rid in scheduler_output.num_scheduled_tokens
+                 if (request := requests.get(rid)) is not None
+             }
+-            # Even a suppressed/dropped iteration can reject tokens included
++            # Even a dropped iteration can reject tokens included
+             # in a later snapshot. Keep this until its CPU output is settled.
+             self._spec_requests[id(scheduler_output)] = generations
+-        if (
+-            scheduler_output.total_num_scheduled_tokens == 0
+-            or not scheduler.should_emit_forward_pass_metrics(scheduler_output)
+-        ):
++        if scheduler_output.total_num_scheduled_tokens == 0:
+             return
+         if len(self._pending) >= self._max_pending_iterations:
+             stale_iteration_id, _ = self._pending.popitem(last=False)
+@@ -507,7 +488,7 @@
+         iteration_id = next(self._iteration_ids)
+         scheduler_output.forward_pass_metrics_iteration_id = iteration_id
+         self._pending[iteration_id] = _PendingIteration(
+-            scheduled=_extract_scheduled_metrics(scheduler, scheduler_output)
++            scheduled=_extract_scheduled_metrics(scheduler_output)
+         )
+         if self._correct_async_spec_lengths:
+             pending = self._pending[iteration_id]
+@@ -559,6 +540,7 @@
+         scheduler_output: SchedulerOutput,
+         model_output: ModelRunnerOutput,
+     ) -> None:
++        self._receive_ready_timing()
+         self._spec_requests.pop(id(scheduler_output), None)
+         self.complete_timing_samples(model_output.forward_pass_timing_samples)
+ 
+@@ -614,18 +596,38 @@
+         )
+ 
+     def has_pending_timing(self) -> bool:
+-        return bool(self._pending)
++        return bool(self._pending) or self._timing_poll is not None
++
++    def _receive_ready_timing(self) -> None:
++        if self._timing_poll is not None:
++            samples = self._timing_poll()
++            if samples is not None:
++                self._timing_poll = None
++                self.complete_timing_samples(samples)
++
++    def poll_timing(self, executor: Executor) -> None:
++        """Advance at most one timing RPC while idle; rate-limit retries."""
++        self._receive_ready_timing()
++        if self._timing_poll is not None or not self._pending:
++            return
++        now = time.monotonic()
++        if now < self._next_timing_poll:
++            return
++        self._next_timing_poll = now + FPM_IDLE_POLL_INTERVAL_SECONDS
++        self._timing_poll = executor.start_forward_pass_timing_poll()
++        self._receive_ready_timing()
+ 
+     def shutdown(self) -> None:
++        self._timing_poll = None
++        self._pending.clear()
++        self._spec_requests.clear()
+         self._publisher.shutdown()
+ 
+ 
+ def _extract_scheduled_metrics(
+-    scheduler: SchedulerInterface,
+     output: SchedulerOutput,
+ ) -> ScheduledRequestMetrics:
+     num_scheduled = output.num_scheduled_tokens
+-    requests, _, _ = scheduler.get_forward_pass_metrics_request_state()
+     prefill_lengths = WelfordAccumulator()
+     decode_kv = WelfordAccumulator()
+     num_prefill = 0
+@@ -634,23 +636,19 @@
+ 
+     for request_data in output.scheduled_new_reqs:
+         num_prefill += 1
+-        sum_prefill_tokens += num_scheduled.get(request_data.req_id, 0)
+-        request = requests.get(request_data.req_id)
+-        prompt_length = (
+-            request.num_prompt_tokens
+-            if request is not None
+-            else len(request_data.prompt_token_ids or ())
+-        )
+-        prefill_lengths.add(prompt_length)
++        query_tokens = num_scheduled.get(request_data.req_id, 0)
++        sum_prefill_tokens += query_tokens
++        # Accumulate twice the attention length to preserve half-token values.
++        prefill_lengths.add(2 * request_data.num_computed_tokens + query_tokens)
+         sum_prefill_kv_tokens += request_data.num_computed_tokens
+ 
+     cached = output.scheduled_cached_reqs
+     for index, request_id in enumerate(cached.req_ids):
+         if cached.is_context_phase(request_id):
+             num_prefill += 1
+-            sum_prefill_tokens += num_scheduled.get(request_id, 0)
+-            request = requests.get(request_id)
+-            prefill_lengths.add(request.num_prompt_tokens if request else 0)
++            query_tokens = num_scheduled.get(request_id, 0)
++            sum_prefill_tokens += query_tokens
++            prefill_lengths.add(2 * cached.num_computed_tokens[index] + query_tokens)
+             sum_prefill_kv_tokens += cached.num_computed_tokens[index]
+         else:
+             decode_kv.add(cached.num_computed_tokens[index])
+@@ -658,7 +656,7 @@
+     return ScheduledRequestMetrics(
+         num_prefill_requests=num_prefill,
+         sum_prefill_tokens=sum_prefill_tokens,
+-        var_prefill_length=prefill_lengths.variance,
++        var_prefill_length=prefill_lengths.variance / 4,
+         sum_prefill_kv_tokens=sum_prefill_kv_tokens,
+         num_decode_requests=decode_kv.count,
+         sum_decode_kv_tokens=decode_kv.total,
+--- a/vllm/v1/worker/gpu_worker.py
++++ b/vllm/v1/worker/gpu_worker.py
+@@ -1177,13 +1177,11 @@
+ 
+         return None
+ 
+-    def drain_forward_pass_timing(
+-        self, wait: bool = False
+-    ) -> tuple[tuple[int, float], ...]:
+-        """Drain output-rank CUDA timings, optionally waiting for completion."""
++    def poll_forward_pass_timing(self) -> tuple[tuple[int, float], ...]:
++        """Return ready output-rank timings without waiting for GPU work."""
+ 
+         timer = self.model_runner.forward_pass_metrics_timer
+-        return () if timer is None else timer.drain_samples(wait=wait)
++        return () if timer is None else timer.drain_samples()
+ 
+     def take_draft_token_ids(self) -> DraftTokenIds | None:
+         return self.model_runner.take_draft_token_ids()

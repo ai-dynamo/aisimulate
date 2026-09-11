@@ -86,6 +86,41 @@ subscriber is unchanged. `base.sha256` records the guarded upstream files.
 Copyright contributors to the vLLM project. Apache-2.0 license:
 https://github.com/vllm-project/vllm/blob/996fed467139edd7719a0063d57709b8a7fa6989/LICENSE
 
+## InferenceX MiniMax-M3 B200 vLLM experiment
+
+Repository-root `docs/experiments/agentx-minimax-m3-439922-b200-vllm/benchmark.py`
+contains locally authored orchestration with serving/replay settings adapted from
+SemiAnalysisAI/InferenceX `5c3e65cf4c59db9966a9b16eb0035702bc5cf692`, original paths
+`benchmarks/single_node/agentic/minimaxm3_fp4_b200_mtp.sh` and
+`benchmarks/benchmark_lib.sh`.
+
+Source: https://github.com/SemiAnalysisAI/InferenceX/tree/5c3e65cf4c59db9966a9b16eb0035702bc5cf692
+
+Copyright 2025 SemiAnalysis LLC, Advanced Micro Devices, NVIDIA CORPORATION.
+Apache-2.0 license:
+https://github.com/SemiAnalysisAI/InferenceX/blob/5c3e65cf4c59db9966a9b16eb0035702bc5cf692/LICENSE
+
+Modified settings pin checkpoint/image revisions and add paired native FPM capture,
+G2-off checks, allocation control and result preservation. `reference-point.json`
+preserves the public InferenceX benchmark API's factual metrics/configuration row.
+
+The same directory's `update-fpm.patch`, `test_forward_pass_metrics.py`,
+`test_shm_broadcast.py`, and `forward_pass_metrics_subscriber.py` derive from
+vllm-project/vllm PR #52061 at `b3563fc65ae0f5359802593d78e7ea097e1fed31`, original
+paths `vllm/v1/metrics/forward_pass_metrics.py` and the hook paths named in the patch,
+`tests/v1/metrics/test_forward_pass_metrics.py`, `tests/distributed/test_shm_broadcast.py`,
+and `examples/features/forward_pass_metrics/forward_pass_metrics_subscriber.py`.
+The patch updates an earlier `996fed467139edd7719a0063d57709b8a7fa6989` compatibility
+port on vLLM `2cf0a6915ce544dc493a0990f2ea38d81601128a`; older import/hook placement
+is retained, and the FPM test accepts the older base's earlier model-config error.
+Other test/subscriber content is unchanged. `parent.sha256` guards the parent files.
+
+Copyright contributors to the vLLM project. Apache-2.0 license:
+https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/LICENSE
+
+No model weights or model source code are included; downloaded checkpoint licenses
+remain separately distributed with their Hugging Face snapshots.
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from

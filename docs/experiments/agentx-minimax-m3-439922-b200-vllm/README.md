@@ -1,0 +1,87 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# MiniMax-M3 / AgentX 439922 — B200 vLLM reproduction and results
+
+Native vLLM FPM-off/on comparison on the same four allocated B200 GPUs, with **G2 disabled in both cases**. The image updates [FPM PR #52061](https://github.com/vllm-project/vllm/pull/52061) to `b3563fc65ae0f5359802593d78e7ea097e1fed31`, preserving the previous Dynamo nightly's vLLM/CUDA binaries and isolated AIPerf installation. It does not use Dynamo's `InstrumentedScheduler`.
+
+## Configuration
+
+The reference is [AgentX 439922](https://inferencex.semianalysis.com/inference/agentic/439922). Configuration was checked against the [published API](https://inferencex.semianalysis.com/api/v1/benchmarks?model=MiniMax-M3), its [server log](https://inferencex.semianalysis.com/api/v1/server-log?id=439922&file=results%2Fserver.log), and the [InferenceX launcher](https://github.com/SemiAnalysisAI/InferenceX/blob/5c3e65cf4c59db9966a9b16eb0035702bc5cf692/benchmarks/single_node/agentic/minimaxm3_fp4_b200_mtp.sh). [reference-point.json](reference-point.json) preserves the retrieved point.
+
+The API labels speculation as `mtp`, but the actual server uses **EAGLE3-GQA**, not MiniMax's native MTP head. Reproduce the actual target/draft pair and command.
+
+| Setting | This experiment |
+| --- | --- |
+| Hardware / topology | 4 B200, TP4, DP1, PP1, no expert-parallel flag |
+| Target | `nvidia/MiniMax-M3-NVFP4`, revision `901464083161bf8612a29ff7ad29914cd4ab4a85` |
+| Draft | `Inferact/MiniMax-M3-EAGLE3-GQA`, revision `96692486b5fd38ebf8fd2a5f6bb53427d30819a8` |
+| Speculation | `eagle3`, 3 speculative tokens, draft `FLASH_ATTN`, synthetic acceptance length 2.78 |
+| G2 / weight CPU offload | No KV connector; no CPU KV cache; `--cpu-offload-gb 0` |
+| Frontend / scheduler | Native Python API server and native vLLM scheduler; V1 model runner, matching the reference execution path |
+| Model mode | Language-model-only; thinking enabled; native `minimax_m3` tool/reasoning parsers |
+| Attention | `FLASHINFER`, TRT-LLM attention enabled, FP8 indexer cache, Triton sparse MSA decode |
+| GPU KV | FP8, block size 128, prefix caching enabled, max context 1,048,576 |
+| Batching / graphs | Max batched tokens 16384; max CUDA graph capture size 512; native model-specific graph setup |
+| Streaming | `--stream-interval 20`, as in the reference |
+| Memory / all-reduce | GPU memory utilization 0.9; FlashInfer all-reduce backend `trtllm` |
+| Replay | Weka 393 entries; c15, seed 42; 3600 measured seconds per case |
+| Warmup / trajectory | 10 warmup requests/lane, grace 1800 seconds; trajectory start 0.25–0.75; idle-gap caps 300/10 seconds |
+| Client behavior | Streaming chat; server token counts; `ignore_eos=true`; first-turn-prefix cache bust |
+| Client revision | SemiAnalysisAI/aiperf `754356e9a39acc6cc6afb242d123bb57c3fb6f75`, inherited unchanged in `/opt/agentx-aiperf` |
+| Native FPM | Port 20380, one DP-rank-0 publisher for the TP4 engine; one buffered recorder |
+
+The reference uses vLLM `0.27.2rc1.dev77+gac7509e2b`; this image retains nightly vLLM `0.28.0` at `2cf0a6915ce544dc493a0990f2ea38d81601128a`. The reference server's checkpoint was a local directory with `revision=None`, so its exact weight revision is not independently established. Synthetic acceptance tests performance, not model quality. These boundaries apply to SA comparisons even though both local cases share the same image and weights.
+
+## Reproduce
+
+1. Reuse the target and draft in `/home/scratch.hongkuanz_gpu/models/hub/`. [checkpoint-result.json](checkpoint-result.json) records the immutable revisions, paths and verified file sizes: target 88 weight shards / 250,137,296,832 total bytes; draft one weight file / 6,149,993,396 total bytes. CPU-only download job `4244099` completed `0:0`. No previous model was deleted. Weight licenses are retained by the HF cache; weights and model code are not vendored here.
+2. If the checkpoints are absent in another scratch space, adapt the paths in [download-checkpoints.py](download-checkpoints.py), then run [submit-download.sh](submit-download.sh). It requests eight CPUs, 32 GiB RAM and **zero GPUs**, queries metadata at the pinned revisions, resumes downloads and validates every file's size plus the indexed weight shards. Preserve the backing HF blobs.
+3. Use image `nvcr.io/nvidian/dynamo-dev/vllm-agentx@sha256:ab1c5a6e1b2b63743c8a3f8ec4621ca244f049f754cdba8f5ff4b96a57d067c9`. The Slurm cache is `/home/scratch.hongkuanz_gpu/images/vllm-agentx-fpm-b3563fc65a-amd64.sqsh`, SHA256 `6e9c070a151721de5e15958d54c31090b365aa601a996f0e1e9650aaf4819ece`. See [image-published.json](image-published.json).
+4. Stage these scripts, the image manifest and checkpoint result in `/home/scratch.hongkuanz_gpu/minimax-m3-439922-vllm-20260911/`; adapt user/account/partition paths as needed. Submit:
+
+```bash
+ssh hongkuanz@computelab-sc-01 \
+  'sbatch /home/scratch.hongkuanz_gpu/minimax-m3-439922-vllm-20260911/submit-benchmark.sh'
+```
+
+[submit-benchmark.sh](submit-benchmark.sh) requests **4 GPUs, 112 CPUs, 768 GiB host RAM and four hours**. Host RAM is for model loading, file cache and client work, not G2. This is not a whole-node exclusive allocation; other workloads may use the remaining GPUs/host resources. Record this limitation when interpreting small performance differences. Ports 8888 and 20380 must be unused on the allocated host.
+
+[benchmark.py](benchmark.py) verifies the checkpoint manifest and four CUDA-visible B200 devices, runs a short-lived GPU probe so the controller retains no CUDA context, saves allocation/topology/command metadata, and checks the native CLI has no KV connector or CPU offload. `VLLM_PLUGINS=""` prevents bundled Omni plugins from replacing native vLLM classes. The script unblocks inherited `SIGCHLD`, uses a job-local AIPerf mmap cache, and starts load only after health and chat smoke checks.
+
+The order is off then on, each with a fresh engine/KV cache and the same warmup and 3600-second measured phase. Compilation caches may be reused within the allocation. The on case subscribes before engine startup, checks rank 0 and active decode after smoke, then preserves raw FPM/checksum before server teardown. Final validation checks received counters and metric sanity; publication remains best-effort and is not an exact GPU-length oracle.
+
+Results appear under `/home/scratch.hongkuanz_gpu/agentx-minimax-m3-results/job-<JOB_ID>/`: exact server/client commands, `protocol.json`, allocated GPU identities, AIPerf exports/logs, `on/fpm.jsonl`, checksum and validation. Reproduce the comparison on a workstation, not on measured GPUs:
+
+```bash
+uv run --no-project analyze.py /path/to/job-ID --reference-api reference-point.json
+```
+
+### Rebuild the updated image
+
+[Dockerfile](Dockerfile) extends the previous image at `b58174af2daaf4d02c4845fc90dd3f18615fc7c3ef930fb852ed0d29e76f1d12`. [parent.sha256](parent.sha256) checks every changed parent file before applying [update-fpm.patch](update-fpm.patch) without fuzz. CUDA binaries and the isolated client environment are unchanged; `multiprocess==0.70.18` is added only to the FPM test environment for the upstream shared-memory test.
+
+The native FPM module is byte-identical to PR revision `b3563fc`; compatibility edits preserve older core/Ray imports and the older locations of CLI and scheduler hooks. The update includes corrected async SD decode lengths, current prefill attention variance, `torch.Event`, and nonblocking tail-timing polling that preserves ordered multiprocessing RPC responses. `var_prefill_length` now means the population variance of `kv_read + scheduled_query_tokens / 2` in a scheduled prefill batch, unlike the older DSv4 capture in this branch.
+
+Run [submit-image.sh](submit-image.sh) and [prepare-image.sh](prepare-image.sh) inside a one-B200 allocation. They build, test, publish and export the named image; use a new tag/cache path for a new revision rather than overwriting recorded artifacts. [cli-preflight-node.sh](cli-preflight-node.sh) performs CLI and real CUDA-event smoke checks inside the same allocation. The checked-in test differs from the upstream test only by accepting this older base's earlier `model_config` validation error.
+
+## Results and validation
+
+Formal job `4244351` was submitted September 11, 2026. Full off/on performance is pending; no formal throughput/latency comparison is claimed yet. Check its final Slurm state and `campaign-result.json`, not this submission statement, for completion.
+
+Preparation validation:
+
+- Build job `4244288`: 22 focused FPM/shared-memory tests passed in the matching image, including nonblocking tail collection, new-request arrival, ordered RPC responses, SD corrections and prefill variance.
+- Native off/on CLI preflight passed with no G2 or weight CPU offload.
+- A real B200 `torch.Event` timing smoke passed; it is not a model/performance result.
+- The changed-file source/response-order review found no new compatibility issue. No additional inference CUDA synchronization was introduced by this port.
+
+One ordered pair measures an observed difference, not universal or statistically proven zero overhead. Report request errors, drain cancellations, metric-duration coverage and publisher/capture limitations alongside performance; do not conflate `was_cancelled=false` with zero cancelled requests.
+
+## Source and attribution
+
+Serving/replay configuration is adapted from SemiAnalysisAI/InferenceX `5c3e65cf4c59db9966a9b16eb0035702bc5cf692`, `benchmarks/single_node/agentic/minimaxm3_fp4_b200_mtp.sh` and `benchmarks/benchmark_lib.sh`. Apache-2.0; copyright 2025 SemiAnalysis LLC, Advanced Micro Devices, NVIDIA CORPORATION. Modifications include immutable checkpoint/image selection, G2-off validation, paired native FPM capture, Slurm allocation and artifact preservation.
+
+The patch and tests/subscriber derive from vllm-project/vllm PR #52061 at `b3563fc65ae0f5359802593d78e7ea097e1fed31`, updating the earlier `996fed467139edd7719a0063d57709b8a7fa6989` compatibility port on base `2cf0a6915ce544dc493a0990f2ea38d81601128a`. Apache-2.0; copyright contributors to the vLLM project. The root and packaged `THIRD_PARTY_NOTICES.md` record the source paths and modifications. Model downloads retain the target's [MiniMax Community License](https://huggingface.co/nvidia/MiniMax-M3-NVFP4/blob/901464083161bf8612a29ff7ad29914cd4ab4a85/LICENSE) and the draft's separately distributed licenses.
