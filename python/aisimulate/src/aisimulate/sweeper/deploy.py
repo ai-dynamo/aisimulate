@@ -151,6 +151,8 @@ def build_backend_deployment(
 ) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
+    if encoder is not None and mode not in {"agg", "disagg"}:
+        raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
     if mode in {"afd", "afd+pd"}:
         parallel_config = {
             "afd": sample["afd"],
