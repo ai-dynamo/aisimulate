@@ -6,7 +6,7 @@
 //! Scheduler algorithms keep their historical polynomial fallback while
 //! provider-backed timing enters through the runtime-neutral engine contract.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
 
 /// Performance model for predicting prefill and decode timing
@@ -63,6 +63,13 @@ impl PerfModel {
                 .predict_prefill_ms(batch_size, prefix + new_tokens_per_req, prefix)
                 .context("external prefill prediction failed")?,
         };
+        // `f64::max` returns the non-NaN operand, so clamping first would convert a
+        // NaN prediction into a plausible 0.0 and leave `modeled_duration_ms`'s
+        // finiteness guard permanently dead for this path.
+        ensure!(
+            time.is_finite(),
+            "prefill timing provider returned a non-finite duration {time}ms"
+        );
         Ok(time.max(0.0))
     }
 
@@ -96,6 +103,11 @@ impl PerfModel {
                 )
                 .context("external decode prediction failed")?,
         };
+        // See `predict_prefill_time`: the clamp below would launder a NaN into 1.0.
+        ensure!(
+            time.is_finite(),
+            "decode timing provider returned a non-finite duration {time}ms"
+        );
         // Token-emitting decode steps should not collapse onto the same timestamp.
         let result = time.max(1.0);
         tracing::trace!(
@@ -174,6 +186,37 @@ mod tests {
             _total_kv_tokens: usize,
         ) -> anyhow::Result<f64> {
             anyhow::bail!("missing decode point")
+        }
+    }
+
+    struct NonFiniteTiming(f64);
+
+    impl TimingModel for NonFiniteTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(self.0)
+        }
+
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(self.0)
+        }
+    }
+
+    /// `f64::max` returns the non-NaN operand, so an unguarded clamp would report
+    /// a NaN prediction as a legitimate 0ms prefill / 1ms decode.
+    #[test]
+    fn non_finite_provider_predictions_are_rejected_not_clamped() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let model = PerfModel::External {
+                timing: Arc::new(NonFiniteTiming(value)),
+            };
+            assert!(
+                model.predict_prefill_time(4, 128, 0).is_err(),
+                "prefill accepted {value}"
+            );
+            assert!(
+                model.predict_decode_time(4, 128, 128, 1024).is_err(),
+                "decode accepted {value}"
+            );
         }
     }
 
