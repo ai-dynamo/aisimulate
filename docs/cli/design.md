@@ -356,6 +356,7 @@ the current SA convention.
 | `traffic.source.type` | `synthetic` | `x` | `-` | `synthetic`, `synthetic-session`, or `trace`. |
 | `traffic.source.input_tokens` | `1024` | `x` | `-` | Positive; `synthetic` only. |
 | `traffic.source.output_tokens` | `128` | `x` | `-` | Positive; `synthetic` only. |
+| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1); synthetic analytical EPD only; requires `engine.workers.encoder`. |
 | `traffic.source.new_input_tokens_per_turn` | `1024` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.output_tokens_per_turn` | `128` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.session.turns` | `4` | `x` | `-` | At least `2`. |
@@ -364,7 +365,8 @@ the current SA convention.
 | `traffic.source.session.inter_turn_delay_ms` | `0` | `x` | `-` | Nonnegative. |
 | `traffic.source.paths` | Required for trace | `x` | `-` | One path except `dynamo`, which permits multiple. |
 | `traffic.source.format` | `mooncake` | `x` | `-` | See [Trace Format Compatibility](#trace-format-compatibility). |
-| `traffic.source.block_size` | `512`; embedded for `dynamo` | `x` | `-` | Positive. |
+| `traffic.source.block_size` | `512`; embedded for `dynamo` and `weka` | `x` | `-` | Positive. For embedded formats, an explicit value is an equality assertion. |
+| `traffic.source.nested_timestamp_basis` | `auto` | `x` | `-` | `auto`, `absolute`, or `relative`; Weka only. |
 | `traffic.load.type` | `concurrency` | `x` | `-` | Synthetic: `concurrency`, `poisson`, `constant_rate`, or `kv_capacity_fraction`; trace: `trace_timestamps` or `concurrency`. |
 | `traffic.load.concurrency` | `10` | `-` | `-` | Positive integer; explicit domains are allowed in `recommend`. |
 | `traffic.load.requests_per_second` | `null` | `-` | `-` | Positive; synthetic request open-loop load only. |
@@ -372,6 +374,7 @@ the current SA convention.
 | `traffic.load.seed` | `42` | `x` | `-` | Nonnegative; `poisson` only. |
 | `traffic.load.fraction` | `null` | `-` | `-` | Positive finite number; `kv_capacity_fraction` only and may exceed `1`. |
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
+| `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |
@@ -489,13 +492,44 @@ first-arrival pacing, and inter-turn or dependency delays remain unscaled.
 | `mooncake` | One request or session turn with a full prompt | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | None specific to the format. |
 | `mooncake-delta` | One session turn; follow-up input is only the new input delta | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | Aggregated deployment only; `planner.policy` must be `disabled`. |
 | `agentic_mooncake` | One request node in a dependency graph | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; `planner.policy` must be `disabled`. |
+| `weka` | A raw kv-cache-tester or published AgentX JSON/JSONL corpus; directories are traversed recursively and JSONL files may contain multiple plays | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; source block size is embedded and the result is functionally qualified. |
 | `applied_compute_agentic` | One complete session, expanded into `num_turns + 1` requests | `concurrency` | Not supported; omit it | Supported | Source rows have no first-turn timestamps. |
 | `dynamo` standard trace | Native request-trace records, possibly across multiple files | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | The embedded trace block size is authoritative. |
 | `dynamo` agentic trace | Native agentic request-trace records, possibly across multiple files | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; `planner.policy` must be `disabled`. |
 
 The `dynamo` loader detects whether its records are standard or agentic and applies the corresponding
-row above. If `traffic.source.block_size` is supplied for `dynamo`, it must match the embedded block
-size. For the other formats, `block_size` is the trace hash-block size used to reconstruct prompts.
+row above. If `traffic.source.block_size` is supplied for `dynamo` or `weka`, it must match the
+embedded block size. For the other formats, `block_size` is the trace hash-block size used to
+reconstruct prompts.
+
+Weka is the public AgentX source format and AISimulate is its prediction entry point. AISimulate
+deterministically lowers Weka into Agentic Mooncake v2, the versioned producer-neutral interchange
+format, and then validates that lower IR as a `ValidatedAgenticGraph`, the runtime representation.
+Dynamo is an optional integration and is not required to parse, convert, or predict a Weka corpus.
+Two producer timestamp conventions exist: raw kv-cache-tester nested request timestamps are relative
+to their subagent marker, while SemiAnalysis-published AgentX timestamps are root-trace absolute.
+`nested_timestamp_basis` may select either convention explicitly. When omitted (or set to `auto`),
+AISimulate scans every nested request in every JSON/JSONL row before lowering. If any child timestamp
+is earlier than its subagent marker by more than the join epsilon, the complete corpus is interpreted
+as relative; otherwise it is interpreted as absolute. This is one corpus-wide heuristic, never a
+per-request rewrite. It cannot prove that a corpus is homogeneous: a malformed absolute request can
+select relative for the entire corpus, while relative offsets that are all at or above their markers
+can select absolute. Producers with ambiguous data should set the basis explicitly. Both conventions
+lower uniformly to root-absolute canonical timestamps. The selected basis and whether it was inferred
+heuristically or configured are logged; the resolved value is reported as
+`weka_nested_timestamp_basis` and included in source identity.
+The neutral importer accepts mixed source models and preserves each request's model label in graph
+provenance and identity. Version 1 execution is intentionally single-target: before the graph enters
+the model-neutral `WorkloadDriver`, AISimulate projects every request onto the one model configured by
+`engine.model`. The report records the sorted source-model set, target model, and
+`project_to_configured_target` policy under `agentic_model_projection`; per-node heterogeneous timing
+models are not supported yet.
+The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
+deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
+ordered graph must provide one unique contiguous ordinal for every play.
+An explicit `agentic_lanes: N` assigns plays round-robin to N lanes and starts the next play in a lane
+only after the current play becomes quiescent. Omitting the field preserves authored timestamp
+behavior; corpus wrapping and fixed-duration lane orchestration are outside the version 1 contract.
 
 ### Mooncake and Mooncake Delta JSONL
 
@@ -595,17 +629,21 @@ engine:
 
 ### Engine Fields
 
-`<role>` is `aggregated`, `prefill`, or `decode` as selected by `engine.mode`.
+`<role>` is `aggregated`, `prefill`, or `decode` as selected by `engine.mode`. AFD uses
+`engine.afd` for its A/F pool and an optional opposite-phase regular worker.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `-` | `aggregated` or `disaggregated`. |
+| `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `-` | `aggregated`, `disaggregated`, or explicit `afd`. AFD cannot be mixed into a recommendation mode domain. |
 | `engine.model` | Required | `x` | `-` | Nonempty and fixed during recommendation. |
 | `engine.hardware` | Required | `auto` | `-` | One hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
-| `engine.workers` | Required | `x` | `-` | Aggregated role or prefill plus decode roles. |
+| `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional analytical `encoder` pool. |
+| `engine.workers.encoder.tensor`, `.replicas`, `.batch_size` | `1` | Scalar or finite `choices` | `encoder` | Positive; batch size at most 8. Not a language-worker parallelism preset. |
+| `engine.workers.encoder.hardware`, `.backend_version` | Inherit/resolve | `x` | `-` | Encoder hardware and performance data; backend follows language backend. Saved prediction YAML pins resolved values. |
+| `engine.workers.encoder.latency_correction`, `.rate_degradation` | `1.0`, `0.9` | `x` | `-` | Finite positive factors; degradation at most 1. See [EPD CLI semantics](../sweeper/epd.md#unified-cli). |
 | `engine.workers.<role>.parallelism.preset` | `default` in `recommend` | `auto` | `-` | Generated default space, complete mapping list, `false`, or `{}`. |
 | `engine.workers.<role>.parallelism.replicas` | `1` | Feasible positive values within GPU budget | `parallelism` | Positive. |
 | `engine.workers.<role>.parallelism.tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
@@ -634,6 +672,15 @@ engine:
 | `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
 | `engine.kv_transfer.timing_mode` | `destination_missing` | `x` | `-` | `full_prompt` or `destination_missing`; disaggregated mode only. |
+| `engine.afd.phase` | Required for AFD | `x` | `-` | `both` for pure AFD; `prefill` or `decode` when `combined_with_pd: true`. |
+| `engine.afd.combined_with_pd` | Required for AFD | `x` | `-` | Selects pure `afd` or internal `afd+pd`; it is never inferred from workers. |
+| `engine.afd.a_batch_size` | Required for AFD | User-supplied finite domain | `-` | Positive, memory-qualified A-worker batch size. Prediction requires one value. |
+| `engine.afd.n_a_nodes`, `n_f_nodes`, `tp_a` | Required for AFD prediction | Enumerated within the GPU budget | `-` | Positive concrete topology fields. Recommendation may optionally constrain `tp_a`. |
+| `engine.afd.f_moe_ep_size` | `1` for prediction; model-derived domain for recommendation | Optional choices | `-` | Positive; recommendation also accepts `n_f_nodes` or `ffn_tp`. Dense models require `1`. |
+| `engine.afd.num_microbatches` | `3` for prediction | `{choices: [2, 3, 4]}` | `-` | Positive. |
+| `engine.afd.pipeline_model` | `optimistic` for prediction | `{choices: [optimistic, conservative]}` | `-` | `optimistic`, `conservative`, or `serial`. |
+| `engine.afd.comm_overhead_factor` | `1.0` | `x` | `-` | Positive factor applied once by the AFD evaluator. |
+| `engine.afd.boundary_on_attn` | `true` | `x` | `-` | Fixed A/F boundary convention. |
 
 `engine.hardware: auto` is valid only in `recommend` and requires the single hardware identifier under
 `optimization.hardware`. Every recommended prediction YAML replaces `auto` with that concrete
@@ -679,6 +726,15 @@ All worker roles share the top-level model, hardware, backend, backend version, 
 version 1. Role-specific model, hardware, or backend selection is rejected. If `engine.mode` is a
 recommendation domain containing both modes, `workers` declares all three roles. Each concrete
 candidate retains only the role or roles active for its selected mode.
+
+An AFD prediction is concrete: pure AFD requires `phase: both` and explicit `n_a_nodes`,
+`n_f_nodes`, `tp_a`, and `a_batch_size`. A single-phase topology sets
+`combined_with_pd: true` and supplies only its opposite regular worker: a decode-side AFD pool uses
+`workers.prefill`, while a prefill-side AFD pool uses `workers.decode`. Recommendation enumerates
+the node split under `optimization.constraints.max_candidate_gpus`; it still requires an explicit,
+memory-qualified `a_batch_size` domain. AFD supports fixed-length synthetic request traffic and an
+absolute load only. The implementation is an analytical foreground-engine execution path, not a
+claim that the selected topology was physically served.
 
 `kv_cache.capacity.type: default` and `timing.type: default` replace the previous public name `aic`.
 They select the stack's default capacity estimator and timing provider. The initial default registry
@@ -1123,11 +1179,18 @@ Replay metrics use unit-bearing names such as `*_tok_s`, `*_ms`, `*_w`, and `*_j
 ```text
 <output-dir>/
 ├── prediction.json
-└── requests.jsonl                 # only with --capture-per-request
+├── requests.jsonl                 # only with --capture-per-request
+├── afd-replay-spec.json           # only for AFD
+└── afd-qualification.json         # only for AFD
 ```
 
 - `prediction.json` preserves the selected runner's existing full prediction report.
 - `requests.jsonl` contains one record per request when explicitly enabled.
+- `afd-replay-spec.json` is the exact, deterministic analytical replay contract for an AFD run,
+  including topology, measurement provenance, workload, goal, and any P/D companion.
+- `afd-qualification.json` validates and summarizes the A/F pools, routing order, backend version,
+  measurement coverage, and GPU accounting. It explicitly records that native launch generation is
+  unsupported; it is not a Kubernetes manifest or runnable shell artifact.
 
 ### Recommendation Directory
 
@@ -1163,9 +1226,9 @@ Without `--overwrite`, the CLI rejects an existing nonempty output directory. Wi
 may replace only the known files and directories listed above. It must preserve unrelated files and
 must not recursively clear an arbitrary directory.
 
-Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `requests.jsonl`, and
-numbered `recommendations/NNNN.yaml` files. Other files, including non-numbered files inside
-`recommendations/`, are preserved.
+Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `requests.jsonl`,
+`afd-replay-spec.json`, `afd-qualification.json`, and numbered `recommendations/NNNN.yaml` files.
+Other files, including non-numbered files inside `recommendations/`, are preserved.
 
 ### Standard Output
 

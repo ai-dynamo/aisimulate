@@ -5,24 +5,32 @@
 
 from __future__ import annotations
 
+import heapq
 import importlib
 import json
+import logging
 import math
 import random
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from numbers import Real
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from .aic import materialize_aic_num_gpu_blocks
+from .sweeper.afd_engine import AFDForegroundEngine
+from .sweeper.afd_parallel import AFDPhase, AFDTopology
+from .sweeper.afd_perfmodel import AFDLayerTimes
 from .sweeper.provider import JSONValue
 from .sweeper.replay import (
+    BackendDeploymentSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
     RunnerCapabilities,
 )
 from .traffic import materialize_configured_traffic
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("vllm", "agg"),
@@ -31,6 +39,12 @@ _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("sglang", "disagg"),
     ("trtllm", "agg"),
     ("trtllm", "disagg"),
+    ("vllm", "afd"),
+    ("vllm", "afd+pd"),
+    ("sglang", "afd"),
+    ("sglang", "afd+pd"),
+    ("trtllm", "afd"),
+    ("trtllm", "afd+pd"),
 )
 
 _RUNTIME_TRAFFIC_FIELDS = frozenset(
@@ -41,6 +55,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "trace_paths",
         "trace_format",
         "trace_block_size",
+        "weka_nested_timestamp_basis",
         "arrival_speedup_ratio",
         "replay_concurrency",
         "isl",
@@ -57,6 +72,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "num_request_ratio",
         "kv_load_ratio",
         "max_sim_time_ms",
+        "agentic_lanes",
     }
 )
 
@@ -99,6 +115,143 @@ class EngineReplayRuntime(Protocol):
 
 
 @dataclass(frozen=True)
+class AFDCompanionTiming:
+    """Static opposite-phase timing used by an `afd+pd` replay."""
+
+    phase: AFDPhase | str
+    latency_ms: float
+    batch_capacity_per_worker: int
+    workers: int
+    provenance: dict[str, JSONValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        phase = AFDPhase(self.phase)
+        if phase is AFDPhase.BOTH:
+            raise ValueError("AFD companion timing must describe prefill or decode")
+        if (
+            isinstance(self.latency_ms, bool)
+            or not isinstance(self.latency_ms, (int, float))
+            or not math.isfinite(float(self.latency_ms))
+            or self.latency_ms <= 0.0
+        ):
+            raise ValueError("AFD companion latency_ms must be finite and positive")
+        _positive_int(self.batch_capacity_per_worker, "AFD companion batch_capacity_per_worker")
+        _positive_int(self.workers, "AFD companion workers")
+        object.__setattr__(self, "phase", phase)
+        object.__setattr__(self, "latency_ms", float(self.latency_ms))
+
+    @property
+    def total_batch_capacity(self) -> int:
+        return self.batch_capacity_per_worker * self.workers
+
+
+@runtime_checkable
+class AFDCompanionPerformanceModel(Protocol):
+    """Measure the regular P/D side of an `afd+pd` deployment."""
+
+    def measure(self, spec: ReplaySpec) -> AFDCompanionTiming: ...
+
+
+class AICAFDCompanionPerformanceModel:
+    """Use AIC static estimation for the regular companion phase."""
+
+    def __init__(self, estimator: Any | None = None) -> None:
+        self._estimator = estimator
+
+    def measure(self, spec: ReplaySpec) -> AFDCompanionTiming:
+        deployment = spec.backend_deployment
+        role = _afd_companion_role(deployment)
+        raw_args = deployment.prefill_engine_args if role == "prefill" else deployment.decode_engine_args
+        args = _required_engine_args(raw_args, role)
+        workload = spec.workload
+        isl = _positive_int(workload.get("isl"), "isl")
+        osl = _positive_int(workload.get("osl"), "osl")
+        token_capacity = _positive_int(args.get("max_num_batched_tokens"), f"{role}_max_num_batched_tokens")
+        sequence_capacity = _positive_int(args.get("max_num_seqs"), f"{role}_max_num_seqs")
+        tokens_per_sequence = isl if role == "prefill" else 1
+        batch_capacity = min(sequence_capacity, max(1, token_capacity // tokens_per_sequence))
+        workers = deployment.num_prefill_workers if role == "prefill" else deployment.num_decode_workers
+        workers = _positive_int(workers, f"num_{role}_workers")
+
+        timing_model = args.get("timing_model")
+        if isinstance(timing_model, Mapping) and timing_model.get("type") == "fixed":
+            key = "prefill_ms" if role == "prefill" else "decode_ms"
+            latency = _positive_number(timing_model.get(key), f"{role} timing_model.{key}")
+            return AFDCompanionTiming(
+                phase=role,
+                latency_ms=latency,
+                batch_capacity_per_worker=batch_capacity,
+                workers=workers,
+                provenance={"provider": "fixed", "field": key},
+            )
+
+        estimator = self._estimator
+        if estimator is None:
+            from aiconfigurator.cli.api import cli_estimate
+
+            estimator = cli_estimate
+        prefix = f"{role}_"
+        parallel = deployment.parallel_config
+        forward_model = args.get("aic_forward_model", "op_level")
+        if not isinstance(forward_model, str) or forward_model not in _AIC_FORWARD_MODELS:
+            raise ValueError(
+                f"{role} AFD companion aic_forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, "
+                f"got {forward_model!r}"
+            )
+        kwargs: dict[str, Any] = {
+            "mode": "static_ctx" if role == "prefill" else "static_gen",
+            "backend_name": deployment.backend,
+            "backend_version": deployment.backend_version,
+            "forward_model": forward_model,
+            "isl": isl,
+            "osl": osl,
+            "batch_size": batch_capacity,
+            "tp_size": _positive_int(parallel.get(f"{prefix}tp"), f"parallel_config.{prefix}tp"),
+            "pp_size": _positive_int(parallel.get(f"{prefix}pp", 1), f"parallel_config.{prefix}pp"),
+            "attention_dp_size": _positive_int(
+                parallel.get(f"{prefix}attention_dp", 1),
+                f"parallel_config.{prefix}attention_dp",
+            ),
+        }
+        for source, target in (
+            (f"{prefix}moe_tp", "moe_tp_size"),
+            (f"{prefix}moe_ep", "moe_ep_size"),
+        ):
+            if parallel.get(source) is not None:
+                kwargs[target] = _positive_int(parallel[source], f"parallel_config.{source}")
+        if args.get("aic_nextn") is not None:
+            kwargs["nextn"] = _positive_int(args["aic_nextn"], "aic_nextn")
+        model_name = args.get("aic_model_path")
+        hardware = args.get("aic_system")
+        if not isinstance(model_name, str) or not model_name or not isinstance(hardware, str) or not hardware:
+            raise ValueError(f"{role} AFD companion requires aic_model_path and aic_system")
+        try:
+            result = estimator(model_name, hardware, **kwargs)
+        except Exception as exc:
+            raise InvalidRunnerError(
+                f"AIC could not measure the AFD {role} companion: {type(exc).__name__}: {exc}"
+            ) from exc
+        raw = getattr(result, "raw", None)
+        metric = "ttft" if role == "prefill" else "tpot"
+        if not isinstance(raw, Mapping):
+            raise InvalidRunnerError("AIC AFD companion estimate did not return a result mapping")
+        latency = _positive_number(raw.get(metric), f"AIC AFD companion {metric}")
+        return AFDCompanionTiming(
+            phase=role,
+            latency_ms=latency,
+            batch_capacity_per_worker=batch_capacity,
+            workers=workers,
+            provenance={
+                "provider": "aic",
+                "source": "aiconfigurator.cli.api.cli_estimate",
+                "backend_version": deployment.backend_version,
+                "forward_model": forward_model,
+                "metric": metric,
+            },
+        )
+
+
+@dataclass(frozen=True)
 class EngineReplayRunnerFactory:
     """Create reusable engine-only Runners for Sweeper candidates.
 
@@ -109,12 +262,29 @@ class EngineReplayRunnerFactory:
 
     trace_block_size: int = 512
     runtime: EngineReplayRuntime | None = field(default=None, repr=False, compare=False)
+    afd_companion_model: AFDCompanionPerformanceModel | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def capabilities(self) -> RunnerCapabilities:
         return RunnerCapabilities(
             replay_spec_api_version=1,
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
+            supports_analytical_epd=True,
+            supported_trace_formats=(
+                "mooncake",
+                "mooncake-delta",
+                "agentic_mooncake",
+                "applied_compute_agentic",
+                "dynamo",
+                "weka",
+            ),
+            supports_agentic_lanes=True,
+            supported_agentic_topologies=("agg",),
+            agentic_qualification="functional_only",
         )
 
     def create(self, worker_id: int) -> EngineReplayRunner:
@@ -123,6 +293,7 @@ class EngineReplayRunnerFactory:
             capabilities=self.capabilities(),
             trace_block_size=self.trace_block_size,
             runtime=self.runtime,
+            afd_companion_model=self.afd_companion_model,
         )
 
 
@@ -134,6 +305,7 @@ class EngineReplayRunner:
     capabilities: RunnerCapabilities
     trace_block_size: int = 512
     runtime: EngineReplayRuntime | None = None
+    afd_companion_model: AFDCompanionPerformanceModel | None = None
 
     def _resolve_runtime(self) -> EngineReplayRuntime:
         if self.runtime is not None:
@@ -169,6 +341,66 @@ class EngineReplayRunner:
         if output_requirements.capture_telemetry:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
         self.capabilities.require_compatible(spec)
+        encoder = spec.backend_deployment.encoder
+        if encoder is None and spec.workload.get("images") is not None:
+            raise InvalidRunnerError("image workloads require an encoder pool")
+        if spec.backend_deployment.deployment_mode in {"afd", "afd+pd"}:
+            return _run_afd_replay(
+                spec,
+                trace_block_size=self.trace_block_size,
+                companion_model=self.afd_companion_model,
+                include_report=output_requirements.include_raw_report,
+                capture_per_request=output_requirements.capture_per_request,
+            )
+        if encoder is not None:
+            from .sweeper.config import OptimizationGoal, Workload
+            from .sweeper.epd import apply_encoder_overlay
+
+            if output_requirements.capture_per_request or output_requirements.include_raw_report:
+                raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
+            if spec.adapters or spec.execution_mode != "offline":
+                raise InvalidRunnerError("analytical EPD requires offline static pools without adapters")
+            goal = OptimizationGoal.model_validate(spec.goal)
+            if (goal.sla is not None and not goal.strict_sla) or any(
+                target.value.startswith("goodput")
+                for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+            ):
+                raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
+            workload = Workload.model_validate(spec.workload)
+            workload.require_fixed_epd()
+            images = workload.images
+            if (images.height, images.width, images.count) != (
+                encoder.image_height,
+                encoder.image_width,
+                encoder.image_count,
+            ):
+                raise InvalidRunnerError("encoder estimate does not match the image workload")
+            if encoder.backend != spec.backend_deployment.backend:
+                raise InvalidRunnerError("encoder and language backend must match")
+            deployment = spec.backend_deployment
+            role_args = (
+                [deployment.agg_engine_args]
+                if deployment.deployment_mode == "agg"
+                else [deployment.prefill_engine_args, deployment.decode_engine_args]
+            )
+            for args in role_args:
+                if not args or args.get("aic_model_path") != encoder.model:
+                    raise InvalidRunnerError("encoder and language model must match")
+                scopes = [args]
+                if args.get("rank") is not None:
+                    if not isinstance(args["rank"], Mapping):
+                        raise InvalidRunnerError("language rank config must be a mapping")
+                    scopes.append(args["rank"])
+                for scope in scopes:
+                    if scope.get("timing_model") is not None or any(
+                        scope.get(alias, "op_level") != "op_level"
+                        for alias in _AIC_TIMING_FIELD_ALIASES["forward_model"]
+                    ):
+                        raise InvalidRunnerError("analytical EPD requires op_level language timing")
+                    if scope.get("startup_time") not in (None, 0.0):
+                        raise InvalidRunnerError("analytical EPD requires static worker pools")
+            original_spec = spec
+            spec = replace(spec, workload={**spec.workload, "isl": spec.workload["isl"] + encoder.visual_tokens})
         execution_spec = _materialize_engine_execution_spec(
             spec,
             trace_block_size=self.trace_block_size,
@@ -188,10 +420,18 @@ class EngineReplayRunner:
             raise InvalidRunnerError("AISimulate engine replay runtime returned invalid report JSON") from exc
         if not isinstance(report, Mapping):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
-        return _normalize_engine_replay_report(
+        resolved_basis = report.get("weka_nested_timestamp_basis")
+        if isinstance(resolved_basis, str):
+            logger.info(
+                "The complete Weka corpus uses resolved nested timestamp basis %r; auto selection, "
+                "when requested, is a corpus-wide heuristic and the resolved basis is included in source identity",
+                resolved_basis,
+            )
+        normalized = _normalize_engine_replay_report(
             report,
             include_native_report=(output_requirements.include_raw_report or output_requirements.capture_per_request),
         )
+        return apply_encoder_overlay(normalized, original_spec) if encoder is not None else normalized
 
     def close(self) -> None:
         """Release worker-local resources.
@@ -199,6 +439,363 @@ class EngineReplayRunner:
         The current extension owns no persistent resources beyond its imported
         module, so closing is intentionally a no-op.
         """
+
+
+def _afd_companion_role(deployment) -> str:
+    has_prefill = deployment.prefill_engine_args is not None
+    has_decode = deployment.decode_engine_args is not None
+    if has_prefill == has_decode:
+        raise ValueError("afd+pd requires exactly one prefill or decode companion engine")
+    return "prefill" if has_prefill else "decode"
+
+
+def _afd_topology(deployment) -> AFDTopology:
+    raw = deployment.parallel_config.get("afd")
+    if not isinstance(raw, Mapping):
+        raise ValueError("AFD deployment requires parallel_config.afd")
+    values = dict(raw)
+    values.pop("ffn_tp", None)
+    topology = AFDTopology(**values)
+    if topology.adapter_topology != deployment.deployment_mode:
+        raise ValueError(f"AFD topology advertises {topology.adapter_topology!r}, not {deployment.deployment_mode!r}")
+    return topology
+
+
+def _afd_layer_measurements(deployment) -> tuple[AFDLayerTimes, ...]:
+    metadata = deployment.performance_model_metadata.get("afd")
+    if not isinstance(metadata, Mapping):
+        raise ValueError("AFD deployment is missing performance_model_metadata.afd")
+    if metadata.get("measurement_required") is not False:
+        raise ValueError("AFD deployment performance measurement is unresolved")
+    raw_measurements = metadata.get("measurements")
+    if not isinstance(raw_measurements, list) or not raw_measurements:
+        raise ValueError("AFD deployment requires a non-empty measurements list")
+    measurements: list[AFDLayerTimes] = []
+    for index, raw in enumerate(raw_measurements):
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"AFD measurement {index} must be a mapping")
+        try:
+            measurements.append(
+                AFDLayerTimes(
+                    phase=raw["phase"],
+                    attention_ms=raw["attention_ms"],
+                    ffn_ms=raw["ffn_ms"],
+                    a_to_f_ms=raw["a_to_f_ms"],
+                    f_to_a_ms=raw["f_to_a_ms"],
+                    num_layers=raw["num_layers"],
+                    provenance=raw.get("provenance", {}),
+                )
+            )
+        except KeyError as exc:
+            raise ValueError(f"AFD measurement {index} is missing {exc.args[0]!r}") from exc
+    return tuple(measurements)
+
+
+def _afd_total_gpus(deployment, topology: AFDTopology) -> int:
+    expected = topology.total_gpus
+    if deployment.deployment_mode == "afd+pd":
+        role = _afd_companion_role(deployment)
+        prefix = f"{role}_"
+        parallel = deployment.parallel_config
+        replicas = _positive_int(
+            parallel.get(f"{prefix}replicas"),
+            f"parallel_config.{prefix}replicas",
+        )
+        tp = _positive_int(parallel.get(f"{prefix}tp"), f"parallel_config.{prefix}tp")
+        dp = _positive_int(
+            parallel.get(f"{prefix}attention_dp", 1),
+            f"parallel_config.{prefix}attention_dp",
+        )
+        pp = _positive_int(
+            parallel.get(f"{prefix}pp", 1),
+            f"parallel_config.{prefix}pp",
+        )
+        expected += replicas * tp * dp * pp
+    provenance = deployment.parallel_config.get("afd_provenance")
+    if isinstance(provenance, Mapping):
+        accounting = provenance.get("gpu_accounting")
+        if isinstance(accounting, Mapping) and accounting.get("total_gpus") is not None:
+            recorded = _positive_int(accounting["total_gpus"], "AFD total_gpus")
+            if recorded != expected:
+                raise ValueError(f"AFD provenance total_gpus={recorded} conflicts with topology accounting={expected}")
+    return expected
+
+
+def _run_afd_phase(
+    engine: AFDForegroundEngine,
+    *,
+    phase: AFDPhase,
+    start_ms: float,
+    input_length: int,
+    output_length: int,
+    passes: int,
+) -> tuple[float, float, int]:
+    cursor = start_ms
+    pass_latency_ms = 0.0
+    interval_count = 0
+    for _ in range(passes):
+        planned = engine.execute_pass(
+            phase=phase,
+            now_ms=cursor,
+            input_length=input_length,
+            output_length=output_length,
+        )
+        completed = engine.complete_pass(planned.pass_id, now_ms=planned.end_ms)
+        cursor = completed.completed_at_ms
+        pass_latency_ms = completed.pass_latency_ms
+        interval_count += len(planned.intervals)
+    return cursor, pass_latency_ms, interval_count
+
+
+def _request_passes_sla(record: Mapping[str, JSONValue], sla: Mapping[str, JSONValue]) -> bool:
+    comparisons = (
+        ("ttft_ms", "ttft_ms"),
+        ("itl_ms", "tpot_ms"),
+        ("e2e_ms", "e2e_latency_ms"),
+    )
+    return all(sla.get(bound) is None or float(record[metric]) <= float(sla[bound]) for bound, metric in comparisons)
+
+
+def _run_afd_replay(
+    spec: ReplaySpec,
+    *,
+    trace_block_size: int,
+    companion_model: AFDCompanionPerformanceModel | None,
+    include_report: bool,
+    capture_per_request: bool,
+) -> ReplayReport:
+    deployment = spec.backend_deployment
+    topology = _afd_topology(deployment)
+    measurements = _afd_layer_measurements(deployment)
+    if spec.workload.get("trace_path") is not None:
+        raise ValueError(
+            "AFD engine replay requires concrete synthetic isl/osl measurements; trace replay is not supported"
+        )
+    if spec.workload.get("random_range_ratio", 1.0) != 1.0:
+        raise ValueError("AFD engine replay requires random_range_ratio=1.0 to match measured sequence lengths")
+    if spec.workload.get("max_sim_time_ms") is not None:
+        raise ValueError("AFD engine replay does not yet support max_sim_time_ms")
+    requests, max_in_flight = _materialize_requests(spec, trace_block_size)
+    if not requests:
+        raise ValueError("AFD engine replay requires at least one request")
+    input_length = _positive_int(spec.workload.get("isl"), "isl")
+    output_length = _positive_int(spec.workload.get("osl"), "osl")
+    engine = AFDForegroundEngine(topology, measurements)
+
+    companion: AFDCompanionTiming | None = None
+    if deployment.deployment_mode == "afd":
+        if topology.phase is not AFDPhase.BOTH:
+            raise ValueError("pure AFD replay requires phase='both'; use afd+pd for a single AFD phase")
+        batch_capacity = topology.total_batch_size
+    else:
+        if topology.phase is AFDPhase.BOTH:
+            raise ValueError("afd+pd replay requires one concrete AFD phase")
+        companion = (companion_model or AICAFDCompanionPerformanceModel()).measure(spec)
+        expected_companion = AFDPhase.DECODE if topology.phase is AFDPhase.PREFILL else AFDPhase.PREFILL
+        if companion.phase is not expected_companion:
+            raise ValueError(
+                f"AFD companion phase {companion.phase.value!r} does not complement {topology.phase.value!r}"
+            )
+        batch_capacity = min(topology.total_batch_size, companion.total_batch_capacity)
+    if max_in_flight is not None:
+        batch_capacity = min(batch_capacity, max_in_flight)
+    batch_capacity = _positive_int(batch_capacity, "AFD replay batch capacity")
+
+    ordered_requests = sorted(requests, key=lambda request: float(request["arrival_time_ms"]))
+    # Each slot admits one request and becomes available again only when that
+    # request finishes both phases, including time queued between the pools.
+    admission_slots = [0.0] * min(max_in_flight, len(requests)) if max_in_flight is not None else None
+    request_records: list[dict[str, JSONValue]] = []
+    next_request = 0
+    afd_available_ms = 0.0
+    companion_available_ms = 0.0
+    if companion is not None:
+        raw_args = (
+            deployment.prefill_engine_args if companion.phase is AFDPhase.PREFILL else deployment.decode_engine_args
+        )
+        companion_available_ms = _startup_delay_ms(_required_engine_args(raw_args, companion.phase.value))
+    afd_passes = 0
+    afd_intervals = 0
+    batch_count = 0
+    while next_request < len(ordered_requests):
+        first_phase_available = (
+            afd_available_ms
+            if deployment.deployment_mode == "afd" or topology.phase is AFDPhase.PREFILL
+            else companion_available_ms
+        )
+        batch_start = max(
+            first_phase_available,
+            _nonnegative_time(ordered_requests[next_request]["arrival_time_ms"], "arrival_time_ms"),
+            admission_slots[0] if admission_slots is not None else 0.0,
+        )
+        batch = []
+        while next_request < len(ordered_requests) and len(batch) < batch_capacity:
+            request = ordered_requests[next_request]
+            arrival = _nonnegative_time(request["arrival_time_ms"], "arrival_time_ms")
+            if admission_slots is not None:
+                if not admission_slots:
+                    break
+                arrival = max(arrival, admission_slots[0])
+            if arrival > batch_start and batch:
+                break
+            if arrival > batch_start:
+                batch_start = arrival
+            if (
+                _positive_int(request["input_tokens"], "request input_tokens") != input_length
+                or _positive_int(request["output_tokens"], "request output_tokens") != output_length
+            ):
+                raise ValueError("AFD request lengths must match the measured workload isl/osl")
+            if admission_slots is not None:
+                heapq.heappop(admission_slots)
+                request["arrival_time_ms"] = arrival
+            batch.append(request)
+            next_request += 1
+        batch_count += 1
+
+        decode_passes = max(output_length - 1, 0)
+        if deployment.deployment_mode == "afd":
+            prefill_start = max(batch_start, afd_available_ms)
+            prefill_end, _, interval_count = _run_afd_phase(
+                engine,
+                phase=AFDPhase.PREFILL,
+                start_ms=prefill_start,
+                input_length=input_length,
+                output_length=output_length,
+                passes=1,
+            )
+            decode_end, _, decode_intervals = _run_afd_phase(
+                engine,
+                phase=AFDPhase.DECODE,
+                start_ms=prefill_end,
+                input_length=input_length,
+                output_length=output_length,
+                passes=decode_passes,
+            )
+            afd_available_ms = decode_end
+            afd_passes += 1 + decode_passes
+            afd_intervals += interval_count + decode_intervals
+        elif topology.phase is AFDPhase.PREFILL:
+            assert companion is not None
+            prefill_start = max(batch_start, afd_available_ms)
+            prefill_end, _, interval_count = _run_afd_phase(
+                engine,
+                phase=AFDPhase.PREFILL,
+                start_ms=prefill_start,
+                input_length=input_length,
+                output_length=output_length,
+                passes=1,
+            )
+            afd_available_ms = prefill_end
+            decode_end = prefill_end
+            if decode_passes:
+                decode_start = max(prefill_end, companion_available_ms)
+                decode_end = decode_start + companion.latency_ms * decode_passes
+                companion_available_ms = decode_end
+            afd_passes += 1
+            afd_intervals += interval_count
+        else:
+            assert companion is not None
+            prefill_start = max(batch_start, companion_available_ms)
+            prefill_end = prefill_start + companion.latency_ms
+            companion_available_ms = prefill_end
+            decode_end = prefill_end
+            if decode_passes:
+                decode_start = max(prefill_end, afd_available_ms)
+                decode_end, _, interval_count = _run_afd_phase(
+                    engine,
+                    phase=AFDPhase.DECODE,
+                    start_ms=decode_start,
+                    input_length=input_length,
+                    output_length=output_length,
+                    passes=decode_passes,
+                )
+                afd_available_ms = decode_end
+                afd_passes += decode_passes
+                afd_intervals += interval_count
+
+        for request in batch:
+            if admission_slots is not None:
+                heapq.heappush(admission_slots, decode_end)
+            arrival = float(request["arrival_time_ms"])
+            request_records.append(
+                {
+                    "id": str(request["id"]),
+                    "arrival_time_ms": arrival,
+                    "ttft_ms": prefill_end - arrival,
+                    "tpot_ms": (decode_end - prefill_end) / decode_passes if decode_passes else 0.0,
+                    "e2e_latency_ms": decode_end - arrival,
+                    "output_tokens": output_length,
+                }
+            )
+
+    first_arrival = min(float(request["arrival_time_ms"]) for request in ordered_requests)
+    end_ms = max(float(record["arrival_time_ms"]) + float(record["e2e_latency_ms"]) for record in request_records)
+    duration_ms = end_ms - first_arrival
+    if duration_ms <= 0.0:
+        raise InvalidRunnerError("AFD replay produced a non-positive duration")
+    completed = len(request_records)
+    output_tokens = completed * output_length
+    sla = _materialize_sla(spec)
+    good_output_tokens = sum(
+        int(record["output_tokens"]) for record in request_records if _request_passes_sla(record, sla)
+    )
+    total_gpus = _afd_total_gpus(deployment, topology)
+    mean_ttft = sum(float(record["ttft_ms"]) for record in request_records) / completed
+    mean_tpot = sum(float(record["tpot_ms"]) for record in request_records) / completed
+    mean_e2e = sum(float(record["e2e_latency_ms"]) for record in request_records) / completed
+    input_tokens = completed * input_length
+    duration_s = duration_ms / 1_000.0
+    metrics = {
+        "duration_ms": duration_ms,
+        "num_requests": float(completed),
+        "total_input_tokens": float(input_tokens),
+        "total_output_tokens": float(output_tokens),
+        "request_throughput_rps": completed / duration_s,
+        "input_throughput_tok_s": input_tokens / duration_s,
+        "output_throughput_tok_s": output_tokens * 1_000.0 / duration_ms,
+        "total_throughput_tok_s": (input_tokens + output_tokens) / duration_s,
+        "gpu_hours": total_gpus * duration_ms / 3_600_000.0,
+        "num_ttft_samples": float(completed),
+        "num_tpot_samples": float(completed if output_length > 1 else 0),
+        "num_e2e_latency_samples": float(completed),
+        "mean_ttft_ms": mean_ttft,
+        "mean_tpot_ms": mean_tpot,
+        "mean_e2e_latency_ms": mean_e2e,
+        "mean_output_token_throughput_per_user": 1_000.0 / mean_tpot if mean_tpot > 0.0 else 0.0,
+        "completed_requests": float(completed),
+        "error_rate": 0.0,
+        "num_total_gpus": float(total_gpus),
+    }
+    if sla:
+        metrics["goodput_completed_requests"] = float(
+            sum(1 for record in request_records if _request_passes_sla(record, sla))
+        )
+        metrics["goodput_output_throughput_tok_s"] = good_output_tokens / duration_s
+    summary: dict[str, JSONValue] = {
+        "executor": "afd_foreground",
+        "deployment_mode": deployment.deployment_mode,
+        "phase": topology.phase.value,
+        "batches": batch_count,
+        "afd_passes": afd_passes,
+        "afd_stage_intervals": afd_intervals,
+        "batch_capacity": batch_capacity,
+        "companion": companion.provenance if companion is not None else None,
+    }
+    metadata: dict[str, JSONValue] = {"afd_replay": summary}
+    native_report: dict[str, JSONValue] = {
+        "summary": dict(metrics),
+        "afd_replay": summary,
+    }
+    if capture_per_request:
+        # Preserve the runner-level compatibility projection while also exposing
+        # the public CLI's canonical native-report shape.
+        metadata["per_request"] = request_records
+        native_report["per_request"] = request_records
+    if include_report or capture_per_request:
+        metadata["native_report"] = native_report
+    if include_report:
+        metadata["afd_report"] = {"metrics": metrics, **summary}
+    return ReplayReport(metrics=metrics, metadata=metadata)
 
 
 def _materialize_engine_execution_spec(
@@ -215,8 +812,10 @@ def _materialize_engine_execution_spec(
 
     deployment = spec.backend_deployment
     deployment_mode = deployment.deployment_mode
+    execution_model: str | None = None
     if deployment_mode == "agg":
         raw_engine_args = _required_engine_args(deployment.agg_engine_args, "aggregated")
+        execution_model = _execution_target_model(deployment, "aggregated", raw_engine_args)
         engine = _materialize_engine_role(
             deployment.backend,
             deployment.backend_version,
@@ -323,10 +922,38 @@ def _materialize_engine_execution_spec(
         traffic = {
             key: value for key, value in spec.workload.items() if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
         }
-        if traffic.get("trace_format") != "dynamo":
+        if traffic.get("trace_format") not in {"dynamo", "weka"}:
             traffic.setdefault("trace_block_size", trace_block_size)
+        trace_format = traffic.get("trace_format")
+        if trace_format in {"agentic_mooncake", "dynamo", "weka"}:
+            requires_agentic_model = trace_format != "dynamo" or traffic.get("agentic_lanes") is not None
+            if requires_agentic_model and execution_model is None:
+                raise ValueError("agentic execution requires a configured target model")
+            # Dynamo may contain standard or agentic requests; native validates the loaded kind.
+            if execution_model is not None:
+                traffic["execution_model"] = execution_model
         return {"spec": execution_spec, "traffic": traffic}
     return execution_spec
+
+
+def _execution_target_model(
+    deployment: BackendDeploymentSpec,
+    role: str,
+    raw_engine_args: Mapping[str, JSONValue],
+) -> str | None:
+    """Resolve the deployment model identity independently of timing implementation."""
+
+    metadata = deployment.performance_model_metadata.get(role)
+    if isinstance(metadata, Mapping):
+        config = metadata.get("config")
+        if isinstance(config, Mapping):
+            model = config.get("model_path")
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+    model = raw_engine_args.get("aic_model_path")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
 
 
 def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:

@@ -1,5 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Kimi processor/topology modeling is a modified adaptation (Apache-2.0),
+# copyright 2026 the HuggingFace Inc. team and HuggingFace Team, and copyright
+# contributors to the vLLM project:
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+# https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+# https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+# https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/layers/quantization/modelopt.py
 
 import importlib.resources as pkg_resources
 import json
@@ -50,6 +57,9 @@ def get_vision_encoder_config_from_model_info(model_info: dict) -> VisionEncoder
     ``extra_params``. Qwen3.5 must retain its language/GDN/MoE configuration
     there and therefore nests the vision contract under ``vision_config``.
     """
+    direct_config = model_info.get("encoder_config")
+    if isinstance(direct_config, VisionEncoderConfig):
+        return direct_config
     extra_params = model_info.get("extra_params")
     if isinstance(extra_params, VisionEncoderConfig):
         return extra_params
@@ -565,6 +575,285 @@ def _parse_qwen_vision_encoder_config(
     )
 
 
+def _kimi_processor_limits(processor_cfg: dict | None, vision_cfg: dict) -> dict:
+    """Read legacy Moonshot or native Transformers processor geometry.
+
+    Defaults are the image/video class attributes at Transformers commit
+    cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55 (Apache-2.0), copyright 2026
+    the HuggingFace Inc. team and HuggingFace Team. Modified adaptation:
+    https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+    https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+    """
+    if processor_cfg is None:
+        processor_cfg = {}
+    if not isinstance(processor_cfg, dict):
+        raise ValueError("Kimi preprocessor_config must be an object")
+    media = processor_cfg.get("media_proc_cfg", processor_cfg)
+    if not isinstance(media, dict):
+        raise ValueError("Kimi media_proc_cfg must be an object")
+    video = processor_cfg.get("video_processor", {})
+    if not isinstance(video, dict):
+        raise ValueError("Kimi video processor config must be an object")
+
+    def positive_int(value, name):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"Kimi processor {name} must be a positive integer")
+        return value
+
+    def side_limit(settings, default):
+        size = settings.get("size", {"max_height": default, "max_width": default})
+        if not isinstance(size, dict) or size.get("max_height") != size.get("max_width"):
+            raise ValueError("Kimi processor size requires identical max_height and max_width")
+        return positive_int(size.get("max_height"), "size.max_height")
+
+    side = positive_int(media.get("patch_limit_on_one_side", side_limit(media, 512)), "patch_limit_on_one_side")
+    # Legacy Moonshot settings share one limit across image and video;
+    # native Transformers processors each independently default to 512.
+    video_default_side = side if "patch_limit_on_one_side" in media else 512
+    if side_limit(video, video_default_side) != side:
+        raise ValueError("Kimi image and video processor side limits must match")
+    for settings in (media, video):
+        if settings.get("do_resize", True) is not True:
+            raise ValueError("Kimi processor do_resize=False is not modeled")
+        if positive_int(settings.get("patch_size", vision_cfg["patch_size"]), "patch_size") != vision_cfg["patch_size"]:
+            raise ValueError("Kimi processor patch_size must match vision_config")
+        merge = settings.get("merge_kernel_size", settings.get("merge_size", 2))
+        if positive_int(merge, "merge_size") != vision_cfg.get("merge_kernel_size", [2, 2])[0]:
+            raise ValueError("Kimi processor merge_size must match vision_config")
+    for name in ("fixed_output_tokens", "in_patch_limit_video", "max_num_frames_each_video"):
+        if media.get(name) is not None:
+            raise ValueError(f"Kimi processor {name} is not modeled")
+    frames = positive_int(
+        media.get("temporal_merge_kernel_size", video.get("temporal_patch_size", 4)), "temporal_merge_kernel_size"
+    )
+    if frames != 4:
+        raise ValueError("Kimi processor temporal chunk size must be 4")
+    return {
+        "resize_mode": "kimi",
+        "image_max_patches": positive_int(media.get("in_patch_limit", media.get("max_patches", 16384)), "max_patches"),
+        "video_max_patches": positive_int(
+            media.get("in_patch_limit_each_frame", video.get("max_patches", 4096)), "video max_patches"
+        ),
+        "max_patches_per_side": side,
+        "max_video_frames": frames,
+    }
+
+
+def _parse_kimi_k25_vision_encoder_config(
+    vision_cfg: dict | None,
+    *,
+    expected_out_hidden_size: int,
+    root_quant_cfg: dict | None,
+    processor_cfg: dict | None = None,
+) -> VisionEncoderConfig | None:
+    """Parse Kimi K2.5's spatial-temporal ViT and pooled PatchMerger.
+
+    Sources: Transformers commit cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55
+    and vLLM commit d2906091bfc579cebefe3d8e8fb9077397ce9882.
+    """
+    if not vision_cfg:
+        return None
+
+    merge_kernel = vision_cfg.get("merge_kernel_size", [2, 2])
+    if not (isinstance(merge_kernel, list) and len(merge_kernel) == 2 and merge_kernel[0] == merge_kernel[1]):
+        raise ValueError(f"Kimi K2.5 requires a square merge_kernel_size, got {merge_kernel!r}")
+    if vision_cfg.get("mm_projector_type") != "patchmerger":
+        raise ValueError(
+            "Kimi K2.5 vision modeling requires mm_projector_type='patchmerger', "
+            f"got {vision_cfg.get('mm_projector_type')!r}"
+        )
+    if vision_cfg.get("merge_type") != "sd2_tpool":
+        raise ValueError(
+            f"Kimi K2.5 vision modeling requires merge_type='sd2_tpool', got {vision_cfg.get('merge_type')!r}"
+        )
+    if vision_cfg.get("video_attn_type") != "spatial_temporal":
+        raise ValueError(
+            "Kimi K2.5 vision modeling requires video_attn_type='spatial_temporal', "
+            f"got {vision_cfg.get('video_attn_type')!r}"
+        )
+
+    # The Moonshot checkpoint scopes quantization to text_config. NVIDIA's
+    # model-level NVFP4 config explicitly excludes both vision components.
+    if root_quant_cfg:
+        exclusions = root_quant_cfg.get("ignore", [])
+        if not isinstance(exclusions, (list, tuple)) or any(not isinstance(pattern, str) for pattern in exclusions):
+            raise ValueError("Kimi K2.5 quantization_config.ignore must be a list or tuple of strings")
+        # ModelOpt supports glob matching and legacy component substrings.
+        # Accept only patterns that prove every descendant is excluded; a
+        # child path, regex, different prefix or case cannot establish this.
+        # vLLM d2906091, quantization/modelopt.py:is_layer_excluded (Apache-2.0).
+        if root_quant_cfg.get("quant_method") != "modelopt":
+            raise ValueError("Kimi model-level vision exclusions require supported modelopt matching semantics")
+        vision_ignored = bool(set(exclusions) & {"*", "vision_tower", "vision_tower*", "vision_tower.*"})
+        projector_ignored = bool(set(exclusions) & {"*", "mm_projector", "mm_projector*", "mm_projector.*"})
+        if not (vision_ignored and projector_ignored):
+            raise ValueError(
+                "Kimi K2.5 has model-level quantization but does not explicitly exclude both "
+                "vision_tower and mm_projector; refusing to infer encoder precision from the language model"
+            )
+
+    hidden_vit = int(vision_cfg["vt_hidden_size"])
+    vision_heads = vision_cfg["vt_num_attention_heads"]
+    if not isinstance(vision_heads, int) or isinstance(vision_heads, bool) or vision_heads <= 0:
+        raise ValueError("Kimi K2.5 vision vt_num_attention_heads must be a positive integer")
+    if hidden_vit % vision_heads:
+        raise ValueError("Kimi K2.5 vision vt_hidden_size must be divisible by vt_num_attention_heads")
+    spatial_merge_size = int(merge_kernel[0])
+    merger_dim = hidden_vit * spatial_merge_size**2
+    out_hidden_size = int(vision_cfg["text_hidden_size"])
+    if out_hidden_size != expected_out_hidden_size:
+        raise ValueError(
+            f"Kimi K2.5 vision text_hidden_size ({out_hidden_size}) does not match "
+            f"text_config.hidden_size ({expected_out_hidden_size})"
+        )
+    return VisionEncoderConfig(
+        depth=int(vision_cfg["vt_num_hidden_layers"]),
+        hidden_size=hidden_vit,
+        num_heads=vision_heads,
+        intermediate_size=int(vision_cfg["vt_intermediate_size"]),
+        patch_size=int(vision_cfg["patch_size"]),
+        temporal_patch_size=1,
+        spatial_merge_size=spatial_merge_size,
+        out_hidden_size=out_hidden_size,
+        projector_dims=((merger_dim, merger_dim), (merger_dim, out_hidden_size)),
+        partial_rotary_factor=1.0,
+        in_channels=3,
+        final_norm=True,
+        pool_temporal=True,
+        video_attention_type=str(vision_cfg["video_attn_type"]),
+        projector_replicated=True,
+        **_kimi_processor_limits(processor_cfg, vision_cfg),
+    )
+
+
+def _parse_llama4_vision_config(
+    vision_cfg: dict,
+    image_processor_cfg: dict | None,
+    text_hidden_size: int,
+) -> VisionEncoderConfig:
+    """Translate the published Llama 4 tower and connector shapes."""
+    required = (
+        "hidden_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_channels",
+        "intermediate_size",
+        "image_size",
+        "patch_size",
+        "pixel_shuffle_ratio",
+        "projector_input_dim",
+        "projector_output_dim",
+        "vision_output_dim",
+    )
+    missing = [key for key in required if key not in vision_cfg]
+    if missing:
+        raise ValueError(f"Llama 4 vision_config is missing required fields: {', '.join(missing)}")
+
+    for key in required:
+        if key == "pixel_shuffle_ratio":
+            continue
+        value = vision_cfg[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"Llama 4 vision_config.{key} must be a positive integer, got {value!r}")
+
+    hidden = int(vision_cfg["hidden_size"])
+    num_heads = int(vision_cfg["num_attention_heads"])
+    if hidden % num_heads != 0:
+        raise ValueError(
+            "Llama 4 vision_config.hidden_size must be divisible by num_attention_heads: "
+            f"hidden_size={hidden}, num_attention_heads={num_heads}"
+        )
+
+    processor_required = ("max_patches", "resize_to_max_canvas", "add_global_tile")
+    if not isinstance(image_processor_cfg, dict):
+        raise TypeError(
+            "Llama 4 config must preserve image_processor_config metadata or provide preprocessor_config.json"
+        )
+    if "image_processor_type" in image_processor_cfg:
+        if image_processor_cfg["image_processor_type"] not in ("Llama4ImageProcessor", "Llama4ImageProcessorFast"):
+            raise ValueError(
+                f"Unsupported Llama 4 image_processor_type: {image_processor_cfg['image_processor_type']!r}"
+            )
+        # Processor defaults and conditional global tile adapted from Transformers:
+        # https://github.com/huggingface/transformers/blob/0720e206c6ba28887e4d60ef60a6a089f6c1cc76/src/transformers/models/llama4/image_processing_llama4_fast.py
+        # Copyright 2025 HuggingFace Inc. team. All rights reserved.
+        # Apache-2.0; modified to normalize metadata without loading image tensors.
+        image_processor_cfg = {
+            "max_patches": 16,
+            "resize_to_max_canvas": False,
+            "add_global_tile": True,
+            "size": {"height": 336, "width": 336},
+            **image_processor_cfg,
+        }
+    if "size" in image_processor_cfg:
+        size = image_processor_cfg["size"]
+        if (
+            not isinstance(size, dict)
+            or any(
+                not isinstance(size.get(axis), int) or isinstance(size.get(axis), bool) for axis in ("height", "width")
+            )
+            or size != {"height": vision_cfg["image_size"], "width": vision_cfg["image_size"]}
+        ):
+            raise ValueError("Llama 4 image processor size must match the square vision_config.image_size")
+    processor_missing = [key for key in processor_required if key not in image_processor_cfg]
+    if processor_missing:
+        raise ValueError("Llama 4 image_processor_config is missing required fields: " + ", ".join(processor_missing))
+    max_patches = image_processor_cfg["max_patches"]
+    if not isinstance(max_patches, int) or isinstance(max_patches, bool) or max_patches <= 0:
+        raise ValueError(f"Llama 4 image_processor_config.max_patches must be a positive integer, got {max_patches!r}")
+    for key in ("resize_to_max_canvas", "add_global_tile"):
+        if not isinstance(image_processor_cfg[key], bool):
+            raise TypeError(f"Llama 4 image_processor_config.{key} must be boolean")
+
+    ratio = vision_cfg["pixel_shuffle_ratio"]
+    if not isinstance(ratio, (int, float)) or isinstance(ratio, bool) or ratio <= 0:
+        raise ValueError(f"Llama 4 pixel_shuffle_ratio must be positive, got {ratio!r}")
+    spatial_merge_size = round(1.0 / float(ratio))
+    if spatial_merge_size <= 0 or abs(float(ratio) * spatial_merge_size - 1.0) > 1e-9:
+        raise ValueError(f"Llama 4 pixel_shuffle_ratio must have an integral reciprocal, got {ratio!r}")
+
+    merge_dim = hidden * spatial_merge_size**2
+    if merge_dim != vision_cfg["intermediate_size"]:
+        raise ValueError(
+            "Llama 4 pixel-shuffle width must equal vision intermediate_size: "
+            f"{hidden} * {spatial_merge_size}^2 = {merge_dim}, config has {vision_cfg['intermediate_size']}"
+        )
+    if vision_cfg["projector_output_dim"] != vision_cfg["vision_output_dim"]:
+        raise ValueError(
+            "Llama 4 vision adaptor output must match multimodal projector input: "
+            f"projector_output_dim={vision_cfg['projector_output_dim']} "
+            f"vision_output_dim={vision_cfg['vision_output_dim']}"
+        )
+
+    adapter_hidden = int(vision_cfg["projector_input_dim"])
+    adapter_out = int(vision_cfg["projector_output_dim"])
+    return VisionEncoderConfig(
+        depth=int(vision_cfg["num_hidden_layers"]),
+        hidden_size=hidden,
+        num_heads=num_heads,
+        intermediate_size=int(vision_cfg["intermediate_size"]),
+        patch_size=int(vision_cfg["patch_size"]),
+        temporal_patch_size=1,
+        spatial_merge_size=spatial_merge_size,
+        out_hidden_size=text_hidden_size,
+        projector_dims=(
+            (merge_dim, adapter_hidden),
+            (adapter_hidden, adapter_out),
+            (int(vision_cfg["vision_output_dim"]), text_hidden_size),
+        ),
+        projector_n_instances=1,
+        partial_rotary_factor=0.5,
+        in_channels=int(vision_cfg["num_channels"]),
+        image_size=int(vision_cfg["image_size"]),
+        has_cls_token=True,
+        max_num_tiles=max_patches,
+        resize_to_max_canvas=image_processor_cfg["resize_to_max_canvas"],
+        add_global_tile=image_processor_cfg["add_global_tile"],
+        prompt_image_tokens=3,
+        prompt_tokens_per_local_tile=1,
+    )
+
+
 def _parse_hf_config_json(config: dict) -> dict:
     """
     Convert a HuggingFace config.json dictionary into model configuration parameters.
@@ -580,12 +869,18 @@ def _parse_hf_config_json(config: dict) -> dict:
     """
     architecture = config["architectures"][0]
     vision_cfg = config.get("vision_config")
+    vision_soft_tokens_per_image = config.get("vision_soft_tokens_per_image")
+    processor_cfg = config.get("preprocessor_config")
+    root_quant_cfg = config.get("quantization_config")
+    encoder_config = None
+    image_processor_cfg = config.get("image_processor_config")
     image_token_id = int(config.get("image_token_id") or 0)
     video_token_id = int(config.get("video_token_id") or 0)
 
     # For multimodal models, unwrap the nested text config so that all LLM
     # parameters (layers, hidden_size, MoE fields, etc.) are read from the
     # correct sub-dictionary while keeping the top-level architecture name.
+    processor_cfg = config.get("preprocessor_config")
     text_key = MULTIMODAL_TEXT_CONFIG_KEY.get(architecture)
     if text_key and text_key in config:
         text_cfg = config[text_key]
@@ -598,9 +893,6 @@ def _parse_hf_config_json(config: dict) -> dict:
             architecture,
             text_key,
         )
-        # Merge quantization_config from text_config if not present at top level
-        if "quantization_config" not in config and "quantization_config" in text_cfg:
-            config["quantization_config"] = text_cfg["quantization_config"]
         config = {**text_cfg, **{"architectures": [architecture]}}
 
     if architecture not in ARCHITECTURE_TO_MODEL_FAMILY:
@@ -715,18 +1007,23 @@ def _parse_hf_config_json(config: dict) -> dict:
             raise ValueError(f"interleave_moe_layer_step must be a positive integer, got {step}")
         attn_pattern = tuple(i % 2 for i in range(layers))
         moe_freq = tuple(1 if (i + 1) % step == 0 else 0 for i in range(layers))
+        if not isinstance(vision_cfg, dict):
+            raise TypeError("Llama 4 config must preserve vision_config metadata")
+        llama4_vision_config = _parse_llama4_vision_config(vision_cfg, image_processor_cfg, hidden_size)
         extra_params = HybridMoEConfig(
             attn_layer_pattern=attn_pattern,
             moe_layer_freq=moe_freq,
             # All attention dims are uniform (0 → fall back to model-level defaults).
             sliding_window_size=config.get("attention_chunk_size", 0),
             dense_inter_size=config.get("intermediate_size_mlp", 0),
+            vision_config=llama4_vision_config,
         )
         logger.info(
             f"Llama4 hybrid config: interleave_moe_layer_step={step}, "
             f"global_attn_layers={sum(attn_pattern)}, local_attn_layers={attn_pattern.count(0)}, "
             f"moe_layers={sum(moe_freq)}, dense_layers={moe_freq.count(0)}, "
-            f"sliding_window_size={extra_params.sliding_window_size}"
+            f"sliding_window_size={extra_params.sliding_window_size}, "
+            f"vision_encoder={'enabled' if llama4_vision_config else 'absent'}"
         )
     elif architecture == "KimiK25ForConditionalGeneration":
         # KIMI K2.5 wraps a DeepSeek-V3-style MLA text model. Store v_head_dim so
@@ -738,6 +1035,12 @@ def _parse_hf_config_json(config: dict) -> dict:
             "kv_lora_rank": config.get("kv_lora_rank", 0),
             "qk_rope_head_dim": config.get("qk_rope_head_dim", 0),
         }
+        encoder_config = _parse_kimi_k25_vision_encoder_config(
+            vision_cfg,
+            expected_out_hidden_size=hidden_size,
+            root_quant_cfg=root_quant_cfg,
+            processor_cfg=processor_cfg,
+        )
     elif architecture == "KimiK3ForConditionalGeneration":
         # Kimi-K3: hybrid KDA linear attention + MLA full attention with LatentMoE.
         # linear_attn_config.kda_layers / full_attn_layers are 1-based layer ids.
@@ -753,6 +1056,90 @@ def _parse_hf_config_json(config: dict) -> dict:
                 "silently dropped and produce a wrong hybrid layer plan."
             )
         layer_types = tuple("linear_attention" if (i + 1) in kda_layer_ids else "full_attention" for i in range(layers))
+        kimi_vision_config = None
+        if vision_cfg is not None and not isinstance(vision_cfg, dict):
+            raise ValueError("Kimi K3 vision_config must be an object")
+        if vision_cfg:
+            # Kimi K3 reuses the MoonViT3D tower and PatchMergerV2 implemented
+            # for Kimi K2.5. Sources: Transformers commit
+            # cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55 and vLLM commit
+            # d2906091bfc579cebefe3d8e8fb9077397ce9882.
+            def positive_int(value, name):
+                if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                    raise ValueError(f"Kimi K3 vision_config.{name} must be a positive integer")
+                return value
+
+            merge_kernel = vision_cfg.get("merge_kernel_size")
+            if (
+                not isinstance(merge_kernel, (list, tuple))
+                or len(merge_kernel) != 2
+                or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in merge_kernel)
+            ):
+                raise ValueError("Kimi K3 vision_config.merge_kernel_size must contain two positive integers")
+            if merge_kernel[0] != merge_kernel[1]:
+                raise ValueError(f"Kimi K3 requires a square merge_kernel_size, got {merge_kernel!r}")
+            if vision_cfg.get("merge_type") != "sd2_tpool":
+                raise ValueError(
+                    f"Kimi K3 vision modeling requires merge_type='sd2_tpool', got {vision_cfg.get('merge_type')!r}"
+                )
+            if vision_cfg.get("mm_projector_type") != "patchmergerv2":
+                raise ValueError(
+                    "Kimi K3 vision modeling requires mm_projector_type='patchmergerv2', "
+                    f"got {vision_cfg.get('mm_projector_type')!r}"
+                )
+
+            vision_hidden = positive_int(vision_cfg.get("vt_hidden_size"), "vt_hidden_size")
+            # The patch embedder constructs a temporal sin/cos table even for images.
+            if vision_hidden % 2 != 0:
+                raise ValueError("Kimi K3 vision_config.vt_hidden_size must be even for temporal position embeddings")
+            vision_heads = positive_int(vision_cfg.get("vt_num_attention_heads"), "vt_num_attention_heads")
+            vision_depth = positive_int(vision_cfg.get("vt_num_hidden_layers"), "vt_num_hidden_layers")
+            vision_intermediate = positive_int(vision_cfg.get("vt_intermediate_size"), "vt_intermediate_size")
+            patch_size = positive_int(vision_cfg.get("patch_size"), "patch_size")
+            # The upstream attention layer defaults only absent/null QKV width
+            # to the tower width; zero and other falsy values are malformed.
+            qkv_hidden = vision_cfg.get("qkv_hidden_size")
+            qkv_hidden = vision_hidden if qkv_hidden is None else positive_int(qkv_hidden, "qkv_hidden_size")
+            if qkv_hidden % vision_heads != 0:
+                raise ValueError(
+                    f"Kimi K3 qkv_hidden_size ({qkv_hidden}) must be divisible by "
+                    f"vt_num_attention_heads ({vision_heads})"
+                )
+            if (qkv_hidden // vision_heads) % 4 != 0:
+                raise ValueError("Kimi K3 attention head dimension must be divisible by 4 for 2D rotary embeddings")
+            if positive_int(vision_cfg.get("mm_hidden_size"), "mm_hidden_size") != vision_hidden:
+                raise ValueError("Kimi K3 PatchMergerV2 requires mm_hidden_size to match vt_hidden_size")
+            out_hidden = positive_int(vision_cfg.get("text_hidden_size"), "text_hidden_size")
+            if out_hidden != hidden_size:
+                raise ValueError(
+                    f"Kimi K3 vision text_hidden_size ({out_hidden}) must match "
+                    f"the language hidden_size ({hidden_size})"
+                )
+            max_temporal_patches = positive_int(vision_cfg.get("init_pos_emb_time"), "init_pos_emb_time")
+            merger_dim = vision_hidden * merge_kernel[0] * merge_kernel[1]
+            kimi_vision_config = VisionEncoderConfig(
+                depth=vision_depth,
+                hidden_size=vision_hidden,
+                num_heads=vision_heads,
+                intermediate_size=vision_intermediate,
+                patch_size=patch_size,
+                temporal_patch_size=1,
+                spatial_merge_size=merge_kernel[0],
+                out_hidden_size=out_hidden,
+                projector_dims=((merger_dim, merger_dim), (merger_dim, out_hidden)),
+                partial_rotary_factor=1.0,
+                in_channels=3,
+                qkv_hidden_size=qkv_hidden,
+                final_norm=True,
+                pool_temporal=True,
+                video_attention_type="spatial_temporal",
+                max_temporal_patches=max_temporal_patches,
+                projector_post_norm=True,
+                projector_replicated=True,
+                projector_pre_norm=False,
+                **_kimi_processor_limits(processor_cfg, vision_cfg),
+                encoder_type="kimi_k3_moonvit3d_patchmergerv2",
+            )
         extra_params = KimiK3Config(
             layer_types=layer_types,
             kda_num_heads=linear_attn_cfg["num_heads"],
@@ -772,11 +1159,13 @@ def _parse_hf_config_json(config: dict) -> dict:
             first_k_dense_replace=config.get("first_k_dense_replace", 0),
             dense_inter_size=config.get("intermediate_size", 0),
             attn_res_block_size=config.get("attn_res_block_size", 0) or 0,
+            vision_config=kimi_vision_config,
         )
         logger.info(
             f"Kimi-K3 hybrid config: kda_layers={layer_types.count('linear_attention')}, "
             f"mla_layers={layer_types.count('full_attention')}, num_experts={num_experts}, "
-            f"latent={extra_params.routed_expert_hidden_size}, shared={extra_params.num_shared_experts}"
+            f"latent={extra_params.routed_expert_hidden_size}, shared={extra_params.num_shared_experts}, "
+            f"vision={'enabled' if kimi_vision_config is not None else 'absent'}"
         )
     elif architecture in {"DeepSeekForCausalLM", "DeepseekV3ForCausalLM"}:
         # DeepSeek V3 / R1 / Kimi K2: MLA latent geometry from config so the KV
@@ -857,6 +1246,77 @@ def _parse_hf_config_json(config: dict) -> dict:
         global_hd = config.get("global_head_dim")
         if global_hd is None:
             global_hd = swa_hd
+
+        gemma4_vision_config = None
+        if vision_cfg is not None:
+            if not isinstance(vision_cfg, dict):
+                raise ValueError(
+                    f"Expected 'vision_config' to be a dict for architecture {architecture}, "
+                    f"got {type(vision_cfg).__name__}"
+                )
+            if vision_cfg.get("model_type") not in (None, "gemma4_vision"):
+                raise ValueError(
+                    f"Gemma 4 vision_config.model_type must be 'gemma4_vision', got {vision_cfg.get('model_type')!r}"
+                )
+
+            pooling_kernel_size = int(vision_cfg["pooling_kernel_size"])
+            if pooling_kernel_size <= 0:
+                raise ValueError("Gemma 4 vision pooling_kernel_size must be positive")
+            soft_tokens_per_image = int(
+                vision_soft_tokens_per_image
+                if vision_soft_tokens_per_image is not None
+                else vision_cfg.get("default_output_length", 0)
+            )
+            if soft_tokens_per_image <= 0:
+                raise ValueError(
+                    "Gemma 4 requires a positive vision_soft_tokens_per_image or vision_config.default_output_length"
+                )
+            supported_soft_token_budgets = (70, 140, 280, 560, 1120)
+            if soft_tokens_per_image not in supported_soft_token_budgets:
+                raise ValueError(
+                    f"Gemma 4 vision soft-token budget must be one of {supported_soft_token_budgets}, "
+                    f"got {soft_tokens_per_image}"
+                )
+
+            vision_hidden_size = int(vision_cfg["hidden_size"])
+            vision_num_heads = vision_cfg["num_attention_heads"]
+            if not isinstance(vision_num_heads, int) or isinstance(vision_num_heads, bool) or vision_num_heads <= 0:
+                raise ValueError("Gemma 4 vision num_attention_heads must be a positive integer")
+            vision_num_kv_heads = int(vision_cfg.get("num_key_value_heads", vision_num_heads))
+            vision_head_dim = int(vision_cfg.get("head_dim", vision_hidden_size // vision_num_heads))
+            if vision_num_heads * vision_head_dim != vision_hidden_size:
+                raise ValueError(
+                    "Gemma 4 vision attention geometry must satisfy num_attention_heads * head_dim == hidden_size"
+                )
+            if vision_num_kv_heads != vision_num_heads:
+                raise ValueError(
+                    "Gemma 4 vision modeling currently requires full MHA (num_key_value_heads == num_attention_heads)"
+                )
+
+            gemma4_vision_config = common.Gemma4VisionEncoderConfig(
+                depth=int(vision_cfg["num_hidden_layers"]),
+                hidden_size=vision_hidden_size,
+                num_heads=vision_num_heads,
+                intermediate_size=int(vision_cfg["intermediate_size"]),
+                patch_size=int(vision_cfg["patch_size"]),
+                temporal_patch_size=1,
+                # This is average-pooling stride, not Qwen pixel shuffle. The
+                # subclass keeps the distinction explicit for op construction.
+                spatial_merge_size=pooling_kernel_size,
+                out_hidden_size=hidden_size,
+                projector_dims=((vision_hidden_size, hidden_size),),
+                projector_n_instances=1,
+                # Full 2-D RoPE, split independently across x/y head halves.
+                partial_rotary_factor=1.0,
+                in_channels=int(vision_cfg.get("num_channels", 3)),
+                num_key_value_heads=vision_num_kv_heads,
+                head_dim=vision_head_dim,
+                pooling_kernel_size=pooling_kernel_size,
+                position_embedding_size=int(vision_cfg["position_embedding_size"]),
+                soft_tokens_per_image=soft_tokens_per_image,
+                supported_soft_token_budgets=supported_soft_token_budgets,
+                standardize=bool(vision_cfg.get("standardize", False)),
+            )
         extra_params = common.Gemma4MixConfig(
             layer_types=tuple(layer_types_raw),
             swa_num_kv_heads=swa_num_kv,
@@ -865,13 +1325,17 @@ def _parse_hf_config_json(config: dict) -> dict:
             global_head_dim=global_hd,
             sliding_window_size=config.get("sliding_window", 0),
             attention_k_eq_v=bool(config.get("attention_k_eq_v", False)),
+            use_bidirectional_vision_attention=config.get("use_bidirectional_attention") == "vision",
+            vision_config=gemma4_vision_config,
         )
         logger.info(
             f"Gemma 4 config: "
             f"swa_layers={extra_params.layer_types.count('sliding_attention')}, "
             f"global_layers={extra_params.layer_types.count('full_attention')}, "
             f"num_experts={num_experts}, top_k={topk}, "
-            f"sw={extra_params.sliding_window_size}, k_eq_v_global={extra_params.attention_k_eq_v}"
+            f"sw={extra_params.sliding_window_size}, k_eq_v_global={extra_params.attention_k_eq_v}, "
+            f"bidir_vision={extra_params.use_bidirectional_vision_attention}, "
+            f"vision={'enabled' if gemma4_vision_config is not None else 'disabled'}"
         )
     elif architecture == "MuseGlimmerForConditionalGeneration":
         # Muse Glimmer: dense hybrid SWA/global attention, uniform head geometry.
@@ -1038,6 +1502,7 @@ def _parse_hf_config_json(config: dict) -> dict:
         "num_experts": num_experts,
         "moe_inter_size": moe_inter_size,
         "extra_params": extra_params,
+        "encoder_config": encoder_config,
     }
 
 
@@ -1252,9 +1717,19 @@ def _infer_quant_dynamic(quant_cfg: dict) -> bool | None:
     return None
 
 
+def _get_language_quantization_config(raw_config: dict) -> dict | None:
+    """Read root-first language quantization without changing its declared scope."""
+    if "quantization_config" in raw_config:
+        return raw_config["quantization_config"]
+    architecture = (raw_config.get("architectures") or [None])[0]
+    text_key = MULTIMODAL_TEXT_CONFIG_KEY.get(architecture)
+    nested = raw_config.get(text_key, {}) if text_key else {}
+    return nested.get("quantization_config", {}) if isinstance(nested, dict) else {}
+
+
 def _infer_quantization_fields(raw_config: dict) -> dict[str, object]:
     """Infer quant_method, kv_cache_quant_method, and quant_dynamic from config."""
-    quant_cfg = raw_config.get("quantization_config")
+    quant_cfg = _get_language_quantization_config(raw_config)
     quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else {}
 
     hf_quant = raw_config.get("hf_quant_config")
@@ -1315,15 +1790,8 @@ def _infer_quantization_fields(raw_config: dict) -> dict[str, object]:
 
 def _attach_inferred_quant_fields(raw_config: dict) -> dict:
     """Attach inferred quantization fields to config, checking text_config for multimodal models."""
-    # For multimodal models the quantization_config may live under text_config.
-    # Promote it to the top level so downstream inference picks it up.
-    if "quantization_config" not in raw_config:
-        architecture = (raw_config.get("architectures") or [None])[0]
-        text_key = MULTIMODAL_TEXT_CONFIG_KEY.get(architecture)
-        if text_key:
-            nested = raw_config.get(text_key, {})
-            if isinstance(nested, dict) and "quantization_config" in nested:
-                raw_config["quantization_config"] = nested["quantization_config"]
+    # Keep text-only metadata nested: vision validation needs the original
+    # model-level scope even after repeated loads of the cached raw config.
     inferred = _infer_quantization_fields(raw_config)
     for key, value in inferred.items():
         raw_config.setdefault(key, value)
@@ -1339,6 +1807,25 @@ def _attach_hf_quant_config(raw_config: dict, hf_quant_config: dict | None) -> d
         normalized = _normalize_hf_quant_config(hf_quant_config)
         if normalized:
             raw_config["quantization_config"] = normalized
+    return raw_config
+
+
+def _attach_llama4_processor_config(raw_config: dict, model_path: str) -> dict:
+    """Load Llama 4's separate processor metadata, retaining bundled inline configs."""
+    if (raw_config.get("architectures") or [None])[0] != "Llama4ForConditionalGeneration":
+        return raw_config
+    if "image_processor_config" in raw_config:
+        return raw_config
+    if os.path.isdir(model_path):
+        processor_path = Path(model_path) / "preprocessor_config.json"
+        processor_config = _load_json_with_infinity(processor_path) if processor_path.exists() else None
+    elif model_path in DefaultHFModels:
+        processor_path = _get_model_config_path() / f"{model_path.replace('/', '--')}_preprocessor_config.json"
+        processor_config = _load_json_with_infinity(processor_path) if processor_path.exists() else None
+    else:
+        processor_config = _download_hf_json(model_path, "preprocessor_config.json", raise_on_404=False)
+    if processor_config is not None:
+        raw_config["image_processor_config"] = processor_config
     return raw_config
 
 
@@ -1363,17 +1850,17 @@ def _load_model_config_from_model_path(model_path: str) -> dict:
     """
     # Check if it's a local path
     if os.path.isdir(model_path):
-        config = _load_local_config(model_path)
+        config = _attach_llama4_processor_config(_load_local_config(model_path), model_path)
         return _attach_inferred_quant_fields(_attach_hf_quant_config(config, _load_local_quant_config(model_path)))
 
     # Otherwise treat as HuggingFace path
     if model_path in DefaultHFModels:
-        config = _load_pre_downloaded_hf_config(model_path)
+        config = _attach_llama4_processor_config(_load_pre_downloaded_hf_config(model_path), model_path)
         return _attach_inferred_quant_fields(
             _attach_hf_quant_config(config, _load_pre_downloaded_hf_quant_config(model_path))
         )
 
-    config = _download_hf_config(model_path)
+    config = _attach_llama4_processor_config(_download_hf_config(model_path), model_path)
     try:
         hf_quant_config = _download_hf_json(model_path, "hf_quant_config.json", raise_on_404=False)
     except Exception as exc:  # best-effort for optional quant config
@@ -1392,8 +1879,38 @@ def get_model_config_from_model_path(model_path: str) -> dict:
 
     Returns:
         dict: Model configuration parameters and raw config under "raw_config".
+        Quantization metadata retains its original root or text_config scope.
     """
     raw_config = _load_model_config_from_model_path(model_path)
+    if (
+        raw_config.get("architectures")
+        in (
+            ["KimiK25ForConditionalGeneration"],
+            ["KimiK3ForConditionalGeneration"],
+        )
+        and model_path not in DefaultHFModels
+    ):
+        # Only Kimi consumes these processor files. Bundled checkpoints use
+        # the pinned processor defaults; local/downloaded checkpoints may
+        # override them with the original media_proc_cfg or native HF layout.
+        processor = {}
+        for filename, key in (
+            ("preprocessor_config.json", None),
+            ("video_preprocessor_config.json", "video_processor"),
+        ):
+            if os.path.isdir(model_path):
+                path = Path(model_path) / filename
+                data = _load_json_with_infinity(path) if path.is_file() else None
+            else:
+                data = _download_hf_json(model_path, filename, raise_on_404=False)
+            if data is not None:
+                if not isinstance(data, dict):
+                    raise ValueError(f"Kimi {filename} must be an object")
+                if key is None:
+                    processor.update(data)
+                else:
+                    processor[key] = data
+        raw_config = {**raw_config, "preprocessor_config": processor}
     parsed = _parse_hf_config_json(raw_config)
     if parsed["architecture"] == "DeepseekV4ForCausalLM" and model_path not in common.DEEPSEEK_V4_HF_MODELS:
         supported = ", ".join(sorted(common.DEEPSEEK_V4_HF_MODELS))

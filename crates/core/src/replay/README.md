@@ -29,6 +29,22 @@ the same contract. The dependency points only toward this crate.
   and attention-DP
 - `disagg.rs` for disaggregated prefill/decode replay
 
+### AgentX input boundary
+
+AISimulate owns raw Weka ingestion. `WekaImporter` deterministically preflights
+a published Weka JSON object, JSONL corpus, or directory and lowers it to
+Agentic Mooncake v2 rows. A JSONL file may contain multiple plays and published
+AgentX plays may contain multiple request models;
+`load_weka_agentic_graph` validates those rows as a `ValidatedAgenticGraph`.
+Agentic Mooncake v2 is the optional materialized interchange format, not a
+required preprocessing step. A downstream Dynamo integration should call this
+public loader and must not maintain a second Weka parser or lowering pipeline.
+
+Run `python3 scripts/qualify_weka_samples.py` from the repository root to check
+the importer against two revision-pinned rows from the public SemiAnalysis
+`cc-traces-weka-062126-256k` dataset. The rows are held in a temporary directory
+and deleted when the check exits; the complete 570 MB corpus is not downloaded.
+
 ## File Map
 
 - `src/replay/replayer.rs`
