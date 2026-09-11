@@ -1073,7 +1073,8 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
         VecDeque::from([request(1, input_tokens, 2, 0.0)]),
         ReplayMode::Trace,
     )
-    .unwrap();
+    .unwrap()
+    .with_per_request_records(true);
 
     runtime.drain_current_timestamp().unwrap();
     for _ in 0..16 {
@@ -1110,6 +1111,11 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
         Some(HandoffCompletion::Canceled)
     );
     assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+    // The retained handoff must still retire into exactly one reported record,
+    // carrying the first terminal status observed for the request.
+    let records = runtime.collector.per_request_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Canceled);
 }
 
 #[rstest::rstest]
