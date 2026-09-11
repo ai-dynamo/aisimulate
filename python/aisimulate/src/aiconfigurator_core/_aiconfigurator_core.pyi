@@ -151,6 +151,16 @@ class AicEngine:
         imbalance_correction_scale: float = 1.0,
         x: int | None = None,
     ) -> list[tuple[str, float, float, str]]: ...
+    def evaluate_context_attention_kernels_json(
+        self,
+        /,
+        ops_json: str,
+        batch_size: int,
+        s: int,
+        prefix: int = 0,
+        imbalance_correction_scale: float = 1.0,
+        visual_block_upper_triangle: bool = False,
+    ) -> list[tuple[str, float, float, str]]: ...
     def last_provenance(self) -> str | None: ...
 
 class RustForwardPassPerfModel:

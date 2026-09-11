@@ -22,7 +22,7 @@ from __future__ import annotations
 import math
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -250,7 +250,9 @@ class Workload(BaseModel):
     trace_paths: list[str] | None = None
     trace_block_size: int | None = None
     trace_format: str = "mooncake"  # replay-ready trace schema
+    weka_nested_timestamp_basis: Literal["auto", "absolute", "relative"] | None = None
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
+    agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
     # *synthetic* closed-loop workload use ``concurrency`` or ``kv_load_ratio`` instead.
@@ -351,6 +353,23 @@ class Workload(BaseModel):
 
     @model_validator(mode="after")
     def _validate_workload(self) -> Workload:
+        if self.weka_nested_timestamp_basis is not None and (
+            self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
+        ):
+            raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
+        if self.agentic_lanes is not None:
+            if (
+                self.trace_path is None
+                or self.source_type != "trace"
+                or self.trace_format not in {"weka", "agentic_mooncake", "dynamo"}
+            ):
+                raise ValueError("agentic_lanes requires weka, agentic_mooncake, or agentic Dynamo trace input")
+            if (
+                self.load_type != "trace_timestamps"
+                or self.replay_concurrency is not None
+                or self.load_search_field == "replay_concurrency"
+            ):
+                raise ValueError("agentic_lanes requires trace_timestamps load without replay_concurrency")
         synthetic_only = (
             "isl",
             "osl",

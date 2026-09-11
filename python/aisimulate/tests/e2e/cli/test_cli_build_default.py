@@ -61,6 +61,7 @@ _DEFAULT_BUILD_CASES = [
             "ttft": 5000,
             "tpot": 100,
         },
+        marks=pytest.mark.timeout(300),
     ),
     pytest.param(
         {

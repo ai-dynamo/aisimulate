@@ -658,6 +658,97 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
         }
     )
     assert config.traffic.source.block_size == 512
+
+    weka = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {"type": "trace", "paths": ["weka-corpus"], "format": "weka"},
+                "load": {"type": "trace_timestamps", "agentic_lanes": 2},
+            },
+            "engine": _engine(),
+        }
+    )
+    assert weka.traffic.source.block_size is None
+    assert weka.traffic.source.nested_timestamp_basis is None
+    assert weka.traffic.load.agentic_lanes == 2
+
+    configured_weka = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {
+                    "type": "trace",
+                    "paths": ["weka-corpus"],
+                    "format": "weka",
+                    "nested_timestamp_basis": "relative",
+                },
+                "load": {"type": "trace_timestamps"},
+            },
+            "engine": _engine(),
+        }
+    )
+    assert configured_weka.traffic.source.nested_timestamp_basis == "relative"
+
+    with pytest.raises(ValidationError, match="only valid for trace format 'weka'"):
+        CorePredictionConfig.model_validate(
+            {
+                "traffic": {
+                    "source": {
+                        "type": "trace",
+                        "paths": ["trace.jsonl"],
+                        "format": "mooncake",
+                        "nested_timestamp_basis": "absolute",
+                    },
+                    "load": {"type": "trace_timestamps"},
+                },
+                "engine": _engine(),
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "traffic",
+    [
+        {
+            "source": {"type": "trace", "paths": ["trace.jsonl"], "format": "mooncake"},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        },
+        {
+            "source": {"type": "trace", "paths": ["weka-corpus"], "format": "weka"},
+            "load": {"type": "concurrency", "concurrency": 1},
+        },
+        {
+            "source": {"type": "trace", "paths": ["weka-corpus"], "format": "weka"},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 0},
+        },
+    ],
+)
+def test_agentic_lane_contract_rejects_unsupported_inputs(traffic: dict) -> None:
+    with pytest.raises(ValidationError):
+        CorePredictionConfig.model_validate({"traffic": traffic, "engine": _engine()})
+
+
+def test_weka_requires_aggregated_engine() -> None:
+    with pytest.raises(ValidationError, match="weka requires aggregated"):
+        CorePredictionConfig.model_validate(
+            {
+                "traffic": {
+                    "source": {
+                        "type": "trace",
+                        "paths": ["weka-corpus"],
+                        "format": "weka",
+                    },
+                    "load": {"type": "trace_timestamps"},
+                },
+                "engine": {
+                    **_engine(),
+                    "mode": "disaggregated",
+                    "workers": {"prefill": {}, "decode": {}},
+                },
+            }
+        )
+
+
+def test_finite_rate_and_timeout_contract() -> None:
     with pytest.raises(ValidationError):
         CorePredictionConfig.model_validate(
             {
