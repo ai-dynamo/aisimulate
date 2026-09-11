@@ -407,7 +407,10 @@ struct TraceRequestStats {
 #[derive(Debug)]
 enum TokenTimeline {
     Recording(Vec<f64>),
-    Finalized(FinalizedTokenTimeline),
+    /// `None` is a request that finalized having produced no token at all. It
+    /// must still be a *finalized* state: falling back to `Recording` would
+    /// reopen the timeline and let post-terminal tokens accumulate.
+    Finalized(Option<FinalizedTokenTimeline>),
 }
 
 impl Default for TokenTimeline {
@@ -803,21 +806,21 @@ impl TraceRequestStats {
     fn first_token_ms(&self) -> Option<f64> {
         match &self.token_timeline {
             TokenTimeline::Recording(times) => times.first().copied(),
-            TokenTimeline::Finalized(summary) => Some(summary.first_ms),
+            TokenTimeline::Finalized(summary) => summary.map(|summary| summary.first_ms),
         }
     }
 
     fn last_token_ms(&self) -> Option<f64> {
         match &self.token_timeline {
             TokenTimeline::Recording(times) => times.last().copied(),
-            TokenTimeline::Finalized(summary) => Some(summary.last_ms),
+            TokenTimeline::Finalized(summary) => summary.map(|summary| summary.last_ms),
         }
     }
 
     fn actual_output_length(&self) -> usize {
         match &self.token_timeline {
             TokenTimeline::Recording(times) => times.len(),
-            TokenTimeline::Finalized(summary) => summary.len,
+            TokenTimeline::Finalized(summary) => summary.map_or(0, |summary| summary.len),
         }
     }
 
@@ -840,7 +843,10 @@ impl TraceRequestStats {
                 };
                 (*first_token_ms, *second_token_ms)
             }
-            TokenTimeline::Finalized(summary) => (summary.first_ms, summary.second_ms?),
+            TokenTimeline::Finalized(summary) => {
+                let summary = (*summary)?;
+                (summary.first_ms, summary.second_ms?)
+            }
         };
         Some((second_token_ms - first_token_ms).max(0.0))
     }
@@ -866,7 +872,16 @@ impl TraceRequestStats {
         }
 
         let Some(first_ms) = times.first().copied() else {
-            self.token_timeline = TokenTimeline::default();
+            // A request that terminated without producing a token still
+            // finalizes. This used to reset to `TokenTimeline::default()`,
+            // i.e. back to `Recording` -- so `on_token` kept appending after
+            // the terminal, and a request cancelled before its first token
+            // later acquired a first_token_ms, an output_length, a ttft and an
+            // itl from tokens that arrived after it was already terminal.
+            // A request cancelled *after* its first token was correctly
+            // Finalized and dropped those same tokens: one event, two
+            // different recorded outcomes, neither signalled.
+            self.token_timeline = TokenTimeline::Finalized(None);
             return;
         };
         let summary = FinalizedTokenTimeline {
@@ -875,7 +890,7 @@ impl TraceRequestStats {
             last_ms: times.last().copied().unwrap_or(first_ms),
             len: times.len(),
         };
-        self.token_timeline = TokenTimeline::Finalized(summary);
+        self.token_timeline = TokenTimeline::Finalized(Some(summary));
     }
 }
 
@@ -2640,5 +2655,57 @@ mod tests {
         assert_eq!(report.latency.itl.distribution.mean_ms, 2.5);
         assert_eq!(report.latency.itl.distribution.min_ms, 2.0);
         assert_eq!(report.latency.itl.distribution.max_ms, 3.0);
+    }
+
+    /// Post-terminal tokens must be dropped whether or not the request had
+    /// produced a token before its terminal.
+    ///
+    /// A terminal with an empty timeline used to reset to
+    /// `TokenTimeline::default()` -- which is `Recording`, not finalized -- so
+    /// `on_token` kept appending afterwards. A request cancelled before its
+    /// first token therefore *gained* tokens, a `first_token_ms` and an
+    /// `output_length` from work recorded after it was already terminal, while
+    /// a request cancelled after one token correctly dropped them. Output
+    /// signals from a pass still in flight do reach `on_token` post-terminal
+    /// (disagg's `process_decode_signal` records them unconditionally), so the
+    /// two arms disagreed on the same event.
+    #[test]
+    fn tokens_arriving_after_a_terminal_are_dropped_even_with_an_empty_timeline() {
+        let cancelled_before_first_token = Uuid::from_u128(9);
+        let cancelled_after_first_token = Uuid::from_u128(10);
+        let mut collector = TraceCollector::default();
+
+        for uuid in [cancelled_before_first_token, cancelled_after_first_token] {
+            collector.on_arrival(uuid, 0.0, 128, 3);
+            collector.on_admit(uuid, 1.0, 0);
+        }
+        collector.on_token(cancelled_after_first_token, 10.0);
+
+        for uuid in [cancelled_before_first_token, cancelled_after_first_token] {
+            collector.on_terminal(uuid, 11.0, ReplayTerminalStatus::Canceled);
+        }
+
+        // Tokens from a decode pass that was already in flight when the cancel
+        // landed.
+        for uuid in [cancelled_before_first_token, cancelled_after_first_token] {
+            collector.on_token(uuid, 12.0);
+            collector.on_token(uuid, 13.0);
+        }
+
+        assert_eq!(
+            collector.retained_token_timestamps(),
+            0,
+            "no timeline may still be recording after its terminal"
+        );
+        let before = collector
+            .snapshot(cancelled_before_first_token)
+            .expect("request must remain summarized");
+        assert_eq!(before.output_length, 0);
+        assert_eq!(before.first_token_ms, None);
+        let after = collector
+            .snapshot(cancelled_after_first_token)
+            .expect("request must remain summarized");
+        assert_eq!(after.output_length, 1);
+        assert_eq!(after.first_token_ms, Some(10.0));
     }
 }
