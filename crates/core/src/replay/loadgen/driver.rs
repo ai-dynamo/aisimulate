@@ -1364,6 +1364,12 @@ impl WorkloadDriver {
         now_ms: f64,
         status: ReplayTerminalStatus,
     ) -> Result<()> {
+        // Checked before any mutation: `activate_pending` stamps this value into
+        // both `next_ready_at_ms` and the ready heap, and `pop_ready_compact`
+        // re-identifies a popped entry by comparing the two. NaN fails that
+        // comparison and the entry is dropped while the session still has a
+        // pending turn, so the driver never drains.
+        checked_ready_at_ms("terminal time", now_ms)?;
         let outcome = match status {
             ReplayTerminalStatus::Completed => TurnOutcome::Completed,
             ReplayTerminalStatus::Rejected => TurnOutcome::Rejected,
@@ -1392,6 +1398,9 @@ impl WorkloadDriver {
 
     /// Mark an already-terminal agentic request free of runtime-owned state.
     pub fn on_quiescent(&mut self, request_uuid: Uuid, now_ms: f64) -> Result<()> {
+        // `activate_play` derives every node's ready time from this value, so a
+        // non-finite quiescence time wedges the whole lane. See `on_causal_terminal`.
+        checked_ready_at_ms("quiescence time", now_ms)?;
         let SchedulingPolicy::Agentic(state) = &mut self.policy else {
             return Ok(());
         };
@@ -2085,6 +2094,40 @@ mod tests {
             (at_15[0].session_id.as_str(), at_15[0].turn_index),
             ("a", 1)
         );
+    }
+
+    /// A non-finite terminal timestamp must be refused before it reaches the
+    /// ready heap. `activate_pending` stamps the caller's `now_ms` into both
+    /// `next_ready_at_ms` and the heap entry, and `pop_ready_compact`
+    /// re-identifies a popped entry with `next_ready_at_ms == Some(ready_at_ms)`
+    /// -- false for NaN -- so the entry is dropped while the session still
+    /// advertises a pending turn, and the driver never drains.
+    #[test]
+    fn non_finite_terminal_time_is_refused_instead_of_wedging_the_ready_heap() {
+        for bad_now_ms in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut driver = WorkloadDriver::new_concurrency(three_session_trace(), 1, 2).unwrap();
+            let first = driver.pop_ready(0.0, usize::MAX);
+            let b0 = first
+                .iter()
+                .find(|r| r.session_id == "b")
+                .unwrap()
+                .request_uuid;
+
+            let error = driver
+                .on_complete(b0, bad_now_ms)
+                .expect_err("non-finite terminal time must be refused");
+            assert!(
+                error.to_string().contains("must be finite"),
+                "unexpected error for {bad_now_ms}: {error}"
+            );
+
+            // The refusal leaves the driver usable: B is still in flight, so the
+            // pending session C has not been admitted against a poisoned deadline.
+            driver.on_complete(b0, 10.0).unwrap();
+            let at_10 = driver.pop_ready(10.0, usize::MAX);
+            assert_eq!(at_10.len(), 1, "only C is admittable at t=10");
+            assert_eq!(at_10[0].session_id, "c");
+        }
     }
 
     #[test]
