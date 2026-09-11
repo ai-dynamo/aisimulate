@@ -1075,14 +1075,14 @@ where
         })
     }
 
-    /// Toggle per-request record capture on the underlying collector. When
-    /// `true`, the final `ReplayReport` returned from `run()` will
-    /// have `per_request` populated. Default `false` (cheap).
     pub(crate) fn with_sla_thresholds(mut self, sla: crate::replay::SlaThresholds) -> Self {
         self.collector.set_sla_thresholds(sla);
         self
     }
 
+    /// Toggle per-request record capture on the underlying collector. When
+    /// `true`, the final `ReplayReport` returned from `run()` will
+    /// have `per_request` populated. Default `false` (cheap).
     pub(crate) fn with_per_request_records(mut self, capture: bool) -> Self {
         self.collector.set_capture_per_request(capture);
         self

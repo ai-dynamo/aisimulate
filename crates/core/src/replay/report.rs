@@ -897,23 +897,25 @@ impl TraceCollector {
         input: usize,
         output: usize,
     ) -> anyhow::Result<()> {
-        self.retire_completed()
-            .map_err(|error| anyhow::anyhow!("resource_limited: report storage: {error:#}"))?;
+        self.retire_completed().map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?;
         if self.batch_reporting
             && self.bounded_summary.is_none()
             && self.requests.len() >= bounded::MAX_RETAINED_REQUESTS
         {
-            anyhow::bail!(
-                "resource_limited: detailed replay reporting exceeds the 100000 retained-request limit; use summary output or a smaller explicit workload"
-            );
+            return Err(crate::replay::ReplayError::ResourceLimited(
+                "detailed replay reporting exceeds the 100000 retained-request limit; use summary output or a smaller explicit workload".into()
+            ).into());
         }
         self.on_arrival(uuid, at_ms, input, output);
         Ok(())
     }
 
     pub(crate) fn prepare_batch_report(&mut self) -> anyhow::Result<()> {
-        self.retire_completed()
-            .map_err(|error| anyhow::anyhow!("resource_limited: report storage: {error:#}"))?;
+        self.retire_completed().map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?;
         let Some(mut summary) = self.bounded_summary.take() else {
             return Ok(());
         };
@@ -927,11 +929,9 @@ impl TraceCollector {
             summary.add(&stats, self.sla)?;
         }
         let base = std::mem::take(self).finish_at(Some(summary.duration_ms()));
-        self.prepared_report = Some(
-            summary
-                .finish(base)
-                .map_err(|error| anyhow::anyhow!("resource_limited: report storage: {error:#}"))?,
-        );
+        self.prepared_report = Some(summary.finish(base).map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?);
         Ok(())
     }
 
@@ -1947,7 +1947,10 @@ mod tests {
         let error = collector
             .try_on_arrival(Uuid::from_u128(999999), 0.0, 1, 1)
             .unwrap_err();
-        assert!(error.to_string().contains("resource_limited"));
+        assert!(matches!(
+            crate::replay::error::runtime_error(error),
+            crate::replay::ReplayError::ResourceLimited(_)
+        ));
         assert_eq!(collector.requests.len(), bounded::MAX_RETAINED_REQUESTS);
     }
 

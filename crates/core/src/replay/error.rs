@@ -25,6 +25,9 @@ pub enum ReplayError {
     #[error("replay reached quiescence with {unfinished_requests} unfinished request(s)")]
     Deadlock { unfinished_requests: usize },
 
+    #[error("resource_limited: {0}")]
+    ResourceLimited(String),
+
     #[error("replay invariant violated: {0}")]
     Invariant(String),
 }

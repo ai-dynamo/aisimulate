@@ -17,7 +17,7 @@ use crate::replay::{
     },
 };
 use anyhow::{Context, Result, anyhow, ensure};
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyMemoryError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
@@ -1114,18 +1114,31 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     serde_json::to_string(&output).context("serializing AISimulate replay output")
 }
 
+fn replay_python_error(error: anyhow::Error) -> PyErr {
+    if error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<crate::replay::ReplayError>(),
+            Some(crate::replay::ReplayError::ResourceLimited(_))
+        )
+    }) {
+        PyMemoryError::new_err(format!("{error:#}"))
+    } else {
+        PyRuntimeError::new_err(format!("{error:#}"))
+    }
+}
+
 /// Execute one canonical serialized ReplaySpec and return serialized report JSON.
 #[pyfunction]
 fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
     py.allow_threads(|| execute_json(payload, false))
-        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+        .map_err(replay_python_error)
 }
 
 /// Execute one fixed aggregated ReplaySpec and return report plus parity artifacts.
 #[pyfunction]
 fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<String> {
     py.allow_threads(|| execute_json(payload, true))
-        .map_err(|error| PyRuntimeError::new_err(format!("{error:#}")))
+        .map_err(replay_python_error)
 }
 
 /// AISimulate native runtime module.
