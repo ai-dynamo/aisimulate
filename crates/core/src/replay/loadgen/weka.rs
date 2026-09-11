@@ -18,6 +18,17 @@ use super::{
     AgenticMooncakeHeader, AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace,
 };
 
+/// Upper bound on a declared request length, in tokens.
+///
+/// `normalized_hashes` allocates and BLAKE3-hashes one entry per
+/// `input_length / block_size` block, and the output plan materializes one id
+/// per output token, so an unbounded declared length turns a single malformed
+/// row into an allocation abort or an import that never finishes: `"in":
+/// 10000000000000000` with a block size of 4 is 2.5e15 hashes. The ceiling sits
+/// three orders of magnitude above the largest production context window, so it
+/// cannot reject a real corpus.
+const MAX_DECLARED_REQUEST_TOKENS: usize = 10_000_000;
+
 const JOIN_EPSILON_SECONDS: f64 = 1e-6;
 const SEAM_MAX_GAP_SECONDS: f64 = 3600.0;
 const SEAM_MIN_OVERLAP_RATIO: f64 = 0.5;
@@ -1606,6 +1617,22 @@ fn validate_request(request: &WekaRequest, relative_path: &str) -> Result<()> {
     if request.input_length == 0 {
         bail!("Weka trace {} has a zero-length request", relative_path);
     }
+    if request.input_length > MAX_DECLARED_REQUEST_TOKENS {
+        bail!(
+            "Weka trace {} declares input_length {} above the {} token ceiling",
+            relative_path,
+            request.input_length,
+            MAX_DECLARED_REQUEST_TOKENS
+        );
+    }
+    if request.output_length > MAX_DECLARED_REQUEST_TOKENS {
+        bail!(
+            "Weka trace {} declares output_length {} above the {} token ceiling",
+            relative_path,
+            request.output_length,
+            MAX_DECLARED_REQUEST_TOKENS
+        );
+    }
     if request
         .api_time
         .is_some_and(|value| !value.is_finite() || value < 0.0)
@@ -2003,6 +2030,36 @@ mod tests {
             "hash_id_scope": "local",
             "requests": requests,
         })
+    }
+
+    /// `normalized_hashes` sizes a `Vec` and a BLAKE3 loop from `input_length`,
+    /// and the output plan materializes one id per output token, so an
+    /// unbounded declared length lets one malformed row abort or wedge the
+    /// import. Deliberately not mutation-tested by reverting the guard: without
+    /// it this input allocates ~20 PB and kills the test process, which is the
+    /// finding.
+    #[test]
+    fn an_absurd_declared_request_length_is_rejected_at_validation() {
+        for (field, value) in [("in", 10_000_000_000_000_000_u64), ("out", 1e16 as u64)] {
+            let directory = tempdir().unwrap();
+            let path = directory.path().join("trace.json");
+            let mut row = request(0.0, 8, 1, &[1, 2]);
+            row[field] = serde_json::json!(value);
+            write_trace(&path, serde_json::json!([row]));
+
+            let error = load_weka_agentic_rows(&path)
+                .expect_err("an absurd declared length must be refused");
+            assert!(
+                error.to_string().contains("token ceiling"),
+                "unexpected error for {field}: {error}"
+            );
+        }
+
+        // A realistic corpus is unaffected.
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(&path, serde_json::json!([request(0.0, 8, 1, &[1, 2])]));
+        load_weka_agentic_rows(&path).expect("an ordinary request must still load");
     }
 
     #[test]
