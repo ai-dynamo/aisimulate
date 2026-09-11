@@ -243,3 +243,26 @@ def test_older_runner_cannot_accept_pipeline_or_context():
 def test_conflicting_or_inactive_explicit_domains_are_rejected(overrides):
     with pytest.raises(ValueError, match="require|cannot be combined"):
         config(**overrides)
+
+
+@pytest.mark.parametrize("field", ["tp", "pp", "attention_dp", "moe_tp", "moe_ep", "cp", "replicas"])
+@pytest.mark.parametrize("value", [-1, 0, True, 1.5, "2"])
+@pytest.mark.parametrize("preset_form", ["legacy", "aggregated", "disaggregated", "custom"])
+def test_sdk_presets_reject_invalid_dimensions_before_enumeration(field, value, preset_form):
+    shape = {"tp": 1, field: value}
+    if preset_form == "legacy":
+        overrides = {"parallel_configs": [shape]}
+    elif preset_form == "aggregated":
+        overrides = {"parallel_configs_by_mode": {"agg": [shape]}}
+    elif preset_form == "disaggregated":
+        overrides = {
+            "deployment_mode": ["disagg"],
+            "parallel_configs_by_mode": {"disagg": [{"prefill": {"tp": 1}, "decode": shape}]},
+        }
+    else:
+        overrides = {
+            "deployment_mode": ["disagg"],
+            "parallel_custom_configs_by_mode": {"disagg": {"prefill": [shape]}},
+        }
+    with pytest.raises(ValueError, match=rf"parallel_configs\.{field} must be a positive integer"):
+        config(**overrides)
