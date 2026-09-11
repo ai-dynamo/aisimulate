@@ -40,7 +40,9 @@ remaining AIC workflow has a verified replacement in the `aisimulate` CLI.
 | `aiconfigurator cli generate` | Deployment artifacts for Dynamo, llm-d, or FPM targets | **Not supported** | Continue using `aiconfigurator cli generate`. The unified CLI emits prediction and recommendation artifacts, not deployment manifests. |
 | `aiconfigurator cli support` | AIC command-level aggregated/disaggregated coverage | **Not supported as an `aisimulate` command** | Continue using `aiconfigurator cli support` or the published AIC support matrix. Do not substitute FPE estimator coverage for CLI coverage. |
 
-## Known gaps in the unified path
+<a id="known-gaps-in-the-unified-path"></a>
+
+## Capability coverage and remaining gaps
 
 The following limits apply to `aisimulate predict`, `aisimulate recommend`, and the new
 `aisimulate.sweeper` API. The `aisimulate` distribution also contains the compatibility AIC
@@ -55,6 +57,7 @@ This does not imply event-level encoder simulation or deployment generation.
 |---|---|---|
 | Multimodal image inputs and EPD | **Analytical fixed-image support.** Unified `predict` and `recommend` accept `traffic.source.images` and `engine.workers.encoder` for E+agg/E+P+D, using fixed synthetic concurrency. Saved recommendation YAML preserves the encoder and can be reloaded by `predict`. No image traces, per-request EPD metrics, event-level encoder queueing, or deployment generation. | Use the [CLI examples and semantics](../sweeper/epd.md#unified-cli); retain AIC workflows when their additional semantics are needed. |
 | Attention/FFN disaggregation (AFD) | **Supported analytically for fixed-length synthetic traffic.** `engine.mode: afd` lowers concrete A/F topologies for `predict` and finite, memory-qualified topology domains for `recommend`; single-phase AFD can be paired with a regular P/D companion. | Use the AFD YAML below for analytical prediction or recommendation. Keep AIC for exact batch-level estimates and native deployment generation; AISimulate does not claim physical AFD serving execution. |
+| Explicit parallelism and worker domains | **Supported with capability limits.** Public prediction/recommendation expose TP, PP, attention DP, MoE TP/EP, CP, and per-role replicas. PP/CP are opt-in; CP>1 requires a supported SGLang model and agg/prefill role with TP=attention-DP=1. | Use the [parallelism migration cases](#migrate-parallelism-and-worker-count-domains). Keep actual batch/context operating-point and exhaustive-search semantics separate. |
 | Power and energy analysis | **Not AIC-equivalent.** Sweeper results can preserve optional runner-supplied power or energy metadata, but the unified engine path does not currently provide AIC's predicted `power_w`, coverage gate, or `--detail energy` report. | Continue using AIC estimate/reporting, and confirm that the selected model/system data has sufficient energy coverage. |
 | Static, per-operation, and source breakdowns | **Not supported.** Unified prediction simulates serving traffic; it does not expose AIC's `static`, `static_ctx`, or `static_gen` single-pass modes or `--detail` memory/time/source reports. | Continue using `aiconfigurator cli estimate`. |
 | Estimator and performance-data selection | **Not exposed by the unified CLI.** `engine.backend_version` is available, but database mode, forward model, transfer policy, custom system roots, and estimator tuning remain outside the public YAML. | Continue using AIC when those controls are required. |
@@ -68,7 +71,13 @@ This does not imply event-level encoder simulation or deployment generation.
 | `--model-path` / `--model` | `engine.model` | Same model identifier |
 | `--system` | `engine.hardware` for a concrete prediction; `optimization.hardware` when recommendation uses `engine.hardware: auto` | One concrete hardware type per recommendation |
 | `--backend` | `engine.backend` | One value or an explicit recommendation domain |
-| `--backend-version` | `engine.backend_version` | Optional concrete version; not a search domain |
+| `--tp-size` / role `*_tp_candidates` | `engine.workers.<role>.parallelism.tensor` | Integer for prediction; explicit choices or correlated presets for recommendation |
+| `--pp-size` / role `*_pp_candidates` | `engine.workers.<role>.parallelism.pipeline` | Opt in to PP>1; model and KV feasibility still apply |
+| AIC role `*_cp_candidates` / worker `cp_list` | `engine.workers.<role>.parallelism.context` | CP degree, not sequence length; supported SGLang agg/prefill only for CP>1 |
+| `--attention-dp-size` / role `*_dp_candidates` | `engine.workers.<role>.parallelism.attention_data` | Attention DP is distinct from independent worker replicas; backend/model restrictions apply |
+| `--moe-tp-size`, `--moe-ep-size` / role MoE candidate lists | `engine.workers.<role>.parallelism.moe_tensor`, `.moe_expert` | MoE models only; attention/MoE widths must agree |
+| Per-role worker counts | `engine.workers.<role>.parallelism.replicas` | Explicit counts/choices; not AIC's derived minimum-replica sizing result |
+| `--backend-version` | `engine.backend_version` | Optional concrete version or queryable slot alias; not a search domain |
 | `--total-gpus` on AIC `default` | `optimization.constraints.max_candidate_gpus` | Recommendation budget only; a prediction derives GPU use from concrete worker parallelism and replicas |
 | `--isl` | `traffic.source.input_tokens` | Synthetic request traffic |
 | `--osl` | `traffic.source.output_tokens` | Synthetic request traffic |
@@ -152,6 +161,195 @@ prediction, use the [EPD CLI examples](../sweeper/epd.md#unified-cli). These pat
 batch-level estimate, per-op detail, power report, or static estimation modes. AFD has a separate
 analytical deployment path described below; it is not an exact replacement for AIC's single-point
 AFD estimator output.
+
+## Migrate parallelism and worker-count domains
+
+Explicit TP, PP, attention DP, MoE TP/EP, CP, and replica counts are supported for
+aggregated and disaggregated prediction and recommendation. Prediction uses integer
+values. Recommendation accepts explicit choices or complete correlated presets.
+`preset: default` retains the existing menu, including PP=CP=1; opt into larger domains
+explicitly. The [Sweeper configuration reference](../sweeper/configuration.md#explicit-parallel-domains-and-preparation-limits)
+describes the capability filters and preparation limits. The examples explicitly select
+`backend_version: current` so prediction and recommendation use the same queryable
+performance-data slot.
+
+### PP: search equal-GPU layouts
+
+An AIC search using TP `[4, 8]`, PP `[1, 2]`, and eight GPUs per worker can compare
+TP8/PP1 with TP4/PP2. Save this public CLI configuration as `parallelism-pp.yaml`:
+
+<!-- parallel-migration-pp-start -->
+```yaml
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 8}
+  stop: {requests: 16}
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  backend: sglang
+  backend_version: current
+  context_length: 4096
+  workers:
+    aggregated:
+      parallelism:
+        preset:
+          - {replicas: 1, tensor: 8, pipeline: 1, context: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+          - {replicas: 1, tensor: 4, pipeline: 2, context: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+      scheduler: {max_batched_tokens: 4096, max_sequences: 8}
+optimization:
+  target: throughput_per_gpu
+  constraints: {max_candidate_gpus: 8}
+optimizer:
+  algorithm: random
+  max_trials: 4
+  parallelism: 1
+  seed: 12
+```
+<!-- parallel-migration-pp-end -->
+
+```bash
+aisimulate recommend --stack engine --config parallelism-pp.yaml --output-dir ./parallelism-pp
+```
+
+Both layouts use eight GPUs and remain distinct search candidates. These presets preserve
+correlated layouts; independent TP/PP choices would also admit other legal combinations
+within the GPU budget. Selected YAML files under `parallelism-pp/recommendations/` can
+be passed to `aisimulate predict`, preserving PP and CP. PP uses AIC's analytical timing
+model; it does not introduce a simulation of individual pipeline stages.
+
+### CP: predict a concrete layout or search explicit degrees
+
+CP is the `parallelism.context` field; it is distinct from `engine.context_length`, which
+limits sequence length. This concrete PP2/CP2 layout uses four GPUs. Save it as
+`parallelism-cp.yaml`:
+
+<!-- parallel-migration-cp-start -->
+```yaml
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 1}
+  stop: {requests: 4}
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  backend: sglang
+  backend_version: current
+  context_length: 4096
+  workers:
+    aggregated:
+      parallelism:
+        replicas: 1
+        tensor: 1
+        pipeline: 2
+        context: 2
+        attention_data: 1
+        moe_tensor: 1
+        moe_expert: 1
+      scheduler: {max_batched_tokens: 4096, max_sequences: 8}
+```
+<!-- parallel-migration-cp-end -->
+
+```bash
+aisimulate predict --stack engine --config parallelism-cp.yaml --output-dir ./parallelism-cp
+```
+
+To search CP degrees instead, start from `parallelism-pp.yaml` and replace the entire
+`engine.workers.aggregated.parallelism` mapping with:
+
+<!-- parallel-migration-cp-search-start -->
+```yaml
+preset: false
+replicas: 1
+tensor: 1
+pipeline: 1
+context: {choices: [1, 2, 4]}
+attention_data: 1
+moe_tensor: 1
+moe_expert: 1
+```
+<!-- parallel-migration-cp-search-end -->
+
+The requested CP choices survive default resolution and are checked against model,
+backend, GPU, and KV constraints. CP>1 currently requires SGLang, a model family with AIC
+CP support, TP=attention-DP=1, and an aggregated or prefill role. Decode-role CP>1, CP with
+an encoder/AFD, native host offload, or custom KV-transfer geometry is unsupported.
+CP reaches AIC timing, KV estimation, and GPU accounting. External runner adapters must
+also advertise PP/CP support; these examples use the built-in engine runner.
+
+### P/D: use independent shapes and worker counts
+
+To migrate separate AIC prefill/decode candidate lists, keep the traffic and optimizer
+from `parallelism-pp.yaml`, replace its `engine` section with the following, and set
+`optimization.constraints.max_candidate_gpus: 6`:
+
+<!-- parallel-migration-pd-start -->
+```yaml
+mode: disaggregated
+model: Qwen/Qwen3-32B
+hardware: h200_sxm
+backend: sglang
+backend_version: current
+context_length: 4096
+workers:
+  prefill:
+    parallelism:
+      preset: false
+      replicas: 1
+      tensor: 1
+      pipeline: 1
+      context: 2
+      attention_data: 1
+      moe_tensor: 1
+      moe_expert: 1
+    scheduler: {max_batched_tokens: 4096, max_sequences: 8}
+  decode:
+    parallelism:
+      preset: false
+      replicas: {choices: [1, 2]}
+      tensor: 2
+      pipeline: 1
+      context: 1
+      attention_data: 1
+      moe_tensor: 1
+      moe_expert: 1
+    scheduler: {max_batched_tokens: 4096, max_sequences: 8}
+```
+<!-- parallel-migration-pd-end -->
+
+This domain pairs one two-GPU CP prefill worker with one or two two-GPU TP decode
+workers: four or six GPUs total. The total budget includes every worker in both roles.
+The model, hardware, backend, and version remain shared across P/D.
+
+For a MoE model, use `attention_data`, `moe_tensor`, and `moe_expert` in the same role
+mappings. For example, an eight-GPU attention-TP/expert-EP layout is
+`tensor: 8, attention_data: 1, moe_tensor: 1, moe_expert: 8`; the attention-DP alternative
+is `tensor: 1, attention_data: 8, moe_tensor: 1, moe_expert: 8` (PP=CP=replicas=1).
+These require a compatible MoE model and backend; do not apply them to the dense Qwen3-32B
+examples above. MoE width must satisfy `tensor * attention_data * context = moe_tensor * moe_expert`;
+backend, model divisibility, and KV filters still apply.
+
+### SDK-only controls and remaining boundaries
+
+Under `SmartSearchConfig.search_space`, the Sweeper SDK accepts AIC-style role lists:
+`<role>_num_gpu_candidates`, `<role>_tp_candidates`, `<role>_pp_candidates`,
+`<role>_dp_candidates`, `<role>_moe_tp_candidates`, `<role>_moe_ep_candidates`, and
+`<role>_cp_candidates`, plus `<role>_num_workers_candidates`. Replace `<role>` with
+`agg`, `prefill`, or `decode`. The SDK also exposes
+`num_gpu_per_replica`, `max_gpu_per_replica`, `max_prefill_workers`, and `max_decode_workers`.
+The replica GPU controls constrain the whole candidate, including both P/D roles and all
+workers. Public CLI YAML uses explicit parallelism presets/choices and
+`optimization.constraints.max_candidate_gpus`; it does not accept those SDK field names.
+
+Preparation refuses oversized domains without returning a truncated pool. SDK
+`max_parallel_combinations` and `max_parallel_configs` configure those guards; the
+Sweeper result's `provenance.search_domain` records stage counts and pruning reasons.
+The existing Bayesian/random optimizer and trial budget still select which candidates
+are evaluated. Domain expansion does not promise exhaustive coverage or AIC-equivalent
+ranking. Scheduler capacities do not pin actual batch occupancy or context-token
+operating points; those AIC single-point and exhaustive-search semantics remain separate.
 
 ## Preserve request-rate traffic during a configuration search
 
@@ -378,6 +576,7 @@ above; continue using the compatibility command until the applicable replacement
 ## Related documentation
 
 - [AISimulate CLI schema and output contract](design.md)
+- [Explicit Sweeper parallel domains and preparation limits](../sweeper/configuration.md#explicit-parallel-domains-and-preparation-limits)
 - [AIConfigurator CLI and Python API](../../python/aisimulate/README.md)
 - [AISimulate repository history](../repository-history.md)
 - [AIC synchronization process](../aic-sync.md)
