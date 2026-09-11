@@ -375,6 +375,12 @@ class AFDSearchConfig:
                 AFDReasonCategory.INVALID_TOPOLOGY,
                 f"num_experts must be a non-negative integer, got {self.num_experts!r}",
             )
+        if not self.is_moe and self.num_experts:
+            raise AFDInfeasible(
+                AFDReasonCategory.EXPERT_DIVISIBILITY,
+                "dense AFD searches require num_experts=0",
+                provenance={"field": "num_experts", "value": self.num_experts},
+            )
         if self.min_gpu_budget is not None:
             _positive_int("min_gpu_budget", self.min_gpu_budget)
             if self.min_gpu_budget > self.total_gpus:
@@ -438,6 +444,12 @@ class AFDSearchConfig:
                     "values": list(self.f_moe_ep_size_candidates),
                 },
             )
+        if not self.is_moe and any(value != 1 for value in self.f_moe_ep_size_candidates):
+            raise AFDInfeasible(
+                AFDReasonCategory.EXPERT_DIVISIBILITY,
+                "dense AFD searches require f_moe_ep_size_candidates to be empty or (1,)",
+                provenance={"field": "f_moe_ep_size_candidates", "value": self.f_moe_ep_size_candidates},
+            )
         if len(set(pipelines)) != len(pipelines):
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
@@ -451,6 +463,15 @@ class AFDSearchConfig:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
                 "pinned_topologies must contain only AFDTopology objects",
+            )
+        if len(set(self.pinned_topologies)) != len(self.pinned_topologies):
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "pinned_topologies must not contain duplicates",
+                provenance={
+                    "field": "pinned_topologies",
+                    "values": [topology.provenance() for topology in self.pinned_topologies],
+                },
             )
         object.__setattr__(self, "phase", phase)
         object.__setattr__(self, "pipeline_model_candidates", pipelines)
@@ -497,7 +518,6 @@ def _resolve_ep_candidates(config: AFDSearchConfig, *, n_f_nodes: int) -> tuple[
 
 def _validate_pinned(config: AFDSearchConfig) -> tuple[AFDTopology, ...]:
     candidates: list[AFDTopology] = []
-    seen: set[AFDTopology] = set()
     for topology in config.pinned_topologies:
         if topology.gpus_per_node != config.gpus_per_node:
             raise AFDInfeasible(
@@ -548,9 +568,6 @@ def _validate_pinned(config: AFDSearchConfig) -> tuple[AFDTopology, ...]:
                 f"[{config.min_gpu_budget or 1}, {config.total_gpus}]",
                 provenance=topology.provenance(),
             )
-        if topology in seen:
-            continue
-        seen.add(topology)
         candidates.append(topology)
     return tuple(candidates)
 
@@ -583,7 +600,7 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
             },
         )
 
-    total_nodes = config.total_gpus // config.gpus_per_node
+    total_nodes, remainder_gpus = divmod(config.total_gpus, config.gpus_per_node)
     if total_nodes < 2:
         raise AFDInfeasible(
             AFDReasonCategory.GPU_BUDGET,
@@ -683,6 +700,13 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
             "source": _LEGACY_SOURCE,
             "domain": "searched",
             "complete": True,
+            "gpu_budget": {
+                "granularity": "node",
+                "total_gpus": config.total_gpus,
+                "gpus_per_node": config.gpus_per_node,
+                "usable_gpus": total_nodes * config.gpus_per_node,
+                "remainder_gpus": remainder_gpus,
+            },
             "candidate_order": [
                 "n_a_nodes",
                 "n_f_nodes",
