@@ -3,6 +3,8 @@
 
 """End-to-end analytical runner tests for AFD deployments."""
 
+from dataclasses import replace
+
 import pytest
 
 from aisimulate.runner import (
@@ -138,7 +140,28 @@ def test_pure_both_phase_afd_runs_without_native_aggregate_fallback():
     assert "afd_report" in report.metadata
 
 
-def test_afd_plus_pd_overlaps_separate_phase_pools_and_uses_companion_contract():
+@pytest.mark.parametrize(
+    ("concurrency", "request_count", "expected_arrivals"),
+    [(1, 3, [0, 9, 18]), (2, 4, [0, 0, 9, 9]), (5, 1, [0])],
+)
+def test_closed_loop_replacements_arrive_when_requests_complete(concurrency, request_count, expected_arrivals):
+    spec = _spec(_topology())
+    spec.workload.update(
+        source_type="synthetic", load_type="concurrency", concurrency=concurrency, request_count=request_count
+    )
+    spec = replace(spec, concurrency=concurrency)
+
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(spec, output_requirements=ReplayOutputRequirements(capture_per_request=True))
+    )
+
+    assert [request["arrival_time_ms"] for request in report.metadata["per_request"]] == expected_arrivals
+    assert report.metrics["mean_ttft_ms"] == pytest.approx(3.0)
+
+
+def test_afd_plus_pd_respects_global_concurrency_and_uses_companion_contract():
     calls = []
 
     class CompanionModel:
@@ -160,11 +183,132 @@ def test_afd_plus_pd_overlaps_separate_phase_pools_and_uses_companion_contract()
     )
 
     assert len(calls) == 1
-    assert report.metrics["duration_ms"] == pytest.approx(11.0)
+    # Two requests fill the concurrency limit until both phases finish at 7 ms.
+    assert report.metrics["duration_ms"] == pytest.approx(14.0)
     assert report.metrics["mean_tpot_ms"] == pytest.approx(2.0)
     assert report.metrics["num_total_gpus"] == 10.0
     assert report.metadata["afd_replay"]["batches"] == 2
     assert report.metadata["afd_replay"]["companion"]["provider"] == "test-companion"
+
+
+@pytest.mark.parametrize(
+    ("phase", "companion_role", "expected_arrivals", "expected_duration"),
+    [
+        ("prefill", "decode", [0, 0, 0, 7, 7, 11, 15], 23),
+        ("decode", "prefill", [0, 0, 0, 8, 8, 14, 20], 32),
+    ],
+)
+def test_closed_loop_admission_handles_partial_batches_across_both_pools(
+    phase, companion_role, expected_arrivals, expected_duration
+):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    spec.workload.update(concurrency=3, request_count=7)
+    spec = replace(spec, concurrency=3)
+
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(spec, output_requirements=ReplayOutputRequirements(capture_per_request=True))
+    )
+
+    records = report.metadata["per_request"]
+    assert [record["arrival_time_ms"] for record in records] == expected_arrivals
+    assert report.metrics["duration_ms"] == pytest.approx(expected_duration)
+    assert report.metadata["afd_replay"]["batches"] == 5
+    for record in records:
+        now = record["arrival_time_ms"]
+        in_flight = sum(
+            other["arrival_time_ms"] <= now < other["arrival_time_ms"] + other["e2e_latency_ms"] for other in records
+        )
+        assert in_flight <= 3
+
+
+@pytest.mark.parametrize(
+    ("phase", "companion_role", "expected_duration"), [("prefill", "decode", 11), ("decode", "prefill", 14)]
+)
+def test_open_loop_bursts_preserve_independent_pool_overlap(phase, companion_role, expected_duration):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    spec.workload.pop("concurrency")
+    spec.workload.update(arrival_interval_ms=0.0, request_count=4)
+    spec = replace(spec, concurrency=None)
+
+    report = EngineReplayRunnerFactory().create(0).run(spec)
+
+    assert report.metrics["duration_ms"] == pytest.approx(expected_duration)
+
+
+@pytest.mark.parametrize(
+    ("phase", "companion_role", "expected_tpots", "itl_sla", "expected_duration"),
+    [("prefill", "decode", [10, 18.5, 18.5, 27], 11, 63), ("decode", "prefill", [3, 5, 5, 7], 4, 20)],
+)
+def test_open_loop_tpot_and_sla_include_decode_queueing(
+    phase, companion_role, expected_tpots, itl_sla, expected_duration
+):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    spec.workload.pop("concurrency")
+    spec.workload.update(arrival_interval_ms=0.01, request_count=4)
+    spec = replace(spec, concurrency=None)
+    if companion_role == "decode":
+        spec.backend_deployment.decode_engine_args["timing_model"]["decode_ms"] = 10.0
+    spec.goal["sla"] = {"itl_ms": itl_sla}
+
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(spec, output_requirements=ReplayOutputRequirements(capture_per_request=True))
+    )
+
+    assert [record["tpot_ms"] for record in report.metadata["per_request"]] == pytest.approx(expected_tpots)
+    assert report.metrics["mean_tpot_ms"] == pytest.approx(sum(expected_tpots) / 4)
+    assert report.metrics["goodput_completed_requests"] == 1.0
+    assert report.metrics["goodput_output_throughput_tok_s"] == pytest.approx(3_000.0 / expected_duration)
+
+
+@pytest.mark.parametrize(
+    ("phase", "companion_role", "expected_duration", "expected_first_ttft", "expected_first_tpot"),
+    [("prefill", "decode", 10_011, 3, 5_000.5), ("decode", "prefill", 10_016, 10_002, 3)],
+)
+def test_companion_startup_seconds_delay_the_configured_phase(
+    phase, companion_role, expected_duration, expected_first_ttft, expected_first_tpot
+):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args["startup_time"] = 10.0
+
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(spec, output_requirements=ReplayOutputRequirements(capture_per_request=True))
+    )
+
+    assert report.metrics["duration_ms"] == pytest.approx(expected_duration)
+    assert report.metadata["per_request"][0]["ttft_ms"] == pytest.approx(expected_first_ttft)
+    assert report.metadata["per_request"][0]["tpot_ms"] == pytest.approx(expected_first_tpot)
+
+
+@pytest.mark.parametrize(
+    ("phase", "companion_role", "expected_duration"),
+    [("both", None, 6), ("prefill", "decode", 6), ("decode", "prefill", 10_004)],
+)
+def test_single_output_token_completes_at_prefill_without_decode(phase, companion_role, expected_duration):
+    spec = _spec(_topology(phase=phase, combined_with_pd=companion_role is not None), companion_role=companion_role)
+    spec.workload["osl"] = 1
+    spec.goal["sla"] = {"itl_ms": 0.1}
+    if companion_role is not None:
+        getattr(spec.backend_deployment, f"{companion_role}_engine_args")["startup_time"] = 10.0
+
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(spec, output_requirements=ReplayOutputRequirements(capture_per_request=True))
+    )
+
+    assert report.metrics["duration_ms"] == pytest.approx(expected_duration)
+    assert report.metrics["num_tpot_samples"] == 0
+    assert report.metrics["goodput_completed_requests"] == 4
+    for record in report.metadata["per_request"]:
+        assert record["e2e_latency_ms"] == record["ttft_ms"]
+        assert record["tpot_ms"] == 0.0
 
 
 def test_default_companion_model_consumes_fixed_timing_without_aic_lookup():
@@ -196,11 +340,11 @@ def test_pure_single_phase_afd_does_not_claim_end_to_end_replay():
 
 def test_afd_runner_applies_sla_to_goodput():
     spec = _spec(_topology())
-    spec.goal["sla"] = {"ttft_ms": 4.0}
+    spec.goal["sla"] = {"ttft_ms": 2.0}
 
     report = EngineReplayRunnerFactory().create(0).run(spec)
 
-    assert report.metrics["goodput_output_throughput_tok_s"] < report.metrics["output_throughput_tok_s"]
+    assert report.metrics["goodput_output_throughput_tok_s"] == 0.0
 
 
 def test_afd_runner_rejects_conflicting_gpu_accounting():
