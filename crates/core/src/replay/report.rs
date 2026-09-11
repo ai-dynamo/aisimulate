@@ -304,8 +304,12 @@ impl Serialize for ReplayReport {
         serialize_distribution(&mut map, "ttft", &self.latency.ttft)?;
         serialize_distribution(&mut map, "ttst", &self.latency.ttst)?;
         serialize_distribution(&mut map, "tpot", &self.latency.tpot)?;
+        // `max_itl_ms` is already emitted by serialize_distribution above
+        // (the max_{prefix}_ms convention): `TraceInterTokenLatencyStats::max_ms`
+        // is constructed as a copy of `distribution.max_ms` (see
+        // ReplayReport's builder), so an explicit second entry here would be
+        // a duplicate JSON key, not an independent value.
         serialize_distribution(&mut map, "itl", &self.latency.itl.distribution)?;
-        map.serialize_entry("max_itl_ms", &self.latency.itl.max_ms)?;
         if let Some(trajectories) = &self.trajectories {
             map.serialize_entry("total_trajectories", &trajectories.total)?;
             map.serialize_entry("completed_trajectories", &trajectories.completed)?;
@@ -1512,6 +1516,21 @@ impl TraceCollector {
         let num_tpot_samples = tpots.len();
         let num_e2e_latency_samples = e2e_latencies.len();
         let duration_s = (duration_ms / 1000.0).max(1e-9);
+        // A near-zero duration must not inflate `count / duration_s` into an
+        // astronomical rate: at the 1e-9s floor above, one request reads back
+        // as ~1e9 req/s, a number that looks like a plausible (if huge)
+        // measurement rather than the "no meaningful duration observed" it
+        // actually is. Report 0 instead of dividing whenever the duration
+        // itself was non-positive. `duration_s`'s multiplicative uses
+        // (worker-seconds) are unaffected by this -- a tiny duration_s
+        // already yields a near-zero product there, not an inflated one.
+        let rate = |count: f64| {
+            if duration_ms > 0.0 {
+                count / duration_s
+            } else {
+                0.0
+            }
+        };
         // Provisioned worker-seconds: static count × duration for an externally
         // clocked runtime, else the runtime-integrated accumulator.
         let (prefill_worker_seconds, decode_worker_seconds) = match static_worker_count {
@@ -1529,8 +1548,8 @@ impl TraceCollector {
         // Goodput only when an SLA was supplied; otherwise it is undefined.
         let goodput = sla.is_set().then(|| TraceGoodputStats {
             completed_requests: goodput_requests,
-            request_throughput_rps: goodput_requests as f64 / duration_s,
-            output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
+            request_throughput_rps: rate(goodput_requests as f64),
+            output_throughput_tok_s: rate(goodput_output_tokens as f64),
         });
         ReplayReport {
             request_counts: TraceRequestCounts {
@@ -1542,11 +1561,10 @@ impl TraceCollector {
             throughput: TraceThroughputStats {
                 duration_ms,
                 wall_time_ms: 0.0,
-                request_throughput_rps: completed_requests as f64 / duration_s,
-                input_throughput_tok_s: total_input_tokens as f64 / duration_s,
-                output_throughput_tok_s: total_output_tokens as f64 / duration_s,
-                total_throughput_tok_s: (total_input_tokens + total_output_tokens) as f64
-                    / duration_s,
+                request_throughput_rps: rate(completed_requests as f64),
+                input_throughput_tok_s: rate(total_input_tokens as f64),
+                output_throughput_tok_s: rate(total_output_tokens as f64),
+                total_throughput_tok_s: rate((total_input_tokens + total_output_tokens) as f64),
                 prefill_worker_seconds,
                 decode_worker_seconds,
                 prefill_gpus_per_worker,
