@@ -1,0 +1,68 @@
+{
+  "off": {
+    "SLURM_JOB_ID": "4244685",
+    "SLURM_JOB_GPUS": "1,5,6,7",
+    "SLURM_JOB_NODELIST": "umbriel-b200-048",
+    "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+    "SLURM_CPUS_PER_TASK": "112",
+    "gpus": [
+      {
+        "index": 0,
+        "name": "NVIDIA B200",
+        "uuid": "8fc7a7b6-bcef-c33d-4892-d0fede2d5f0f",
+        "bytes": 191490555904
+      },
+      {
+        "index": 1,
+        "name": "NVIDIA B200",
+        "uuid": "73ea9b4f-1089-1e83-fbe5-1e20e9021147",
+        "bytes": 191490555904
+      },
+      {
+        "index": 2,
+        "name": "NVIDIA B200",
+        "uuid": "12f455bd-4fb9-9ac5-d065-962815ef9675",
+        "bytes": 191490555904
+      },
+      {
+        "index": 3,
+        "name": "NVIDIA B200",
+        "uuid": "d34404df-593a-d600-db7e-7b4b3bbeec38",
+        "bytes": 191490555904
+      }
+    ]
+  },
+  "on": {
+    "SLURM_JOB_ID": "4245705",
+    "SLURM_JOB_GPUS": "4,5,6,7",
+    "SLURM_JOB_NODELIST": "umbriel-b200-048",
+    "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+    "SLURM_CPUS_PER_TASK": "112",
+    "gpus": [
+      {
+        "index": 0,
+        "name": "NVIDIA B200",
+        "uuid": "d878248b-2c48-d6bc-373f-f4fa503999bf",
+        "bytes": 191490555904
+      },
+      {
+        "index": 1,
+        "name": "NVIDIA B200",
+        "uuid": "73ea9b4f-1089-1e83-fbe5-1e20e9021147",
+        "bytes": 191490555904
+      },
+      {
+        "index": 2,
+        "name": "NVIDIA B200",
+        "uuid": "12f455bd-4fb9-9ac5-d065-962815ef9675",
+        "bytes": 191490555904
+      },
+      {
+        "index": 3,
+        "name": "NVIDIA B200",
+        "uuid": "d34404df-593a-d600-db7e-7b4b3bbeec38",
+        "bytes": 191490555904
+      }
+    ]
+  }
+}

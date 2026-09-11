@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # MiniMax-M3 / AgentX 439922 — B200 vLLM reproduction and results
 
-Native vLLM FPM-off/on comparison on the same four allocated B200 GPUs, with **G2 disabled in both cases**. The image updates [FPM PR #52061](https://github.com/vllm-project/vllm/pull/52061) to `b3563fc65ae0f5359802593d78e7ea097e1fed31`, preserving the previous Dynamo nightly's vLLM/CUDA binaries and isolated AIPerf installation. It does not use Dynamo's `InstrumentedScheduler`.
+Completed native vLLM FPM-off/on measurements on **4×B200, TP4, c15, G2 disabled**, using separate allocations on the same node. Off/on exports are valid and FPM collection is audited; all allocations have been released. The image includes [FPM PR #52061](https://github.com/vllm-project/vllm/pull/52061) at `b3563fc65ae0f5359802593d78e7ea097e1fed31`, preserving the previous Dynamo nightly's vLLM/CUDA binaries and isolated AIPerf installation. It does not use Dynamo's `InstrumentedScheduler`.
+
+Observed on/off deltas: total throughput **+0.51%**, output throughput **+0.72%**, ITL p50 **+0.27%**, TTFT p50 **+3.30%**. The different allocation/GPU sets mean this is **not a strict paired overhead measurement**. See the [full comparison](#sa-versus-our-fpm-off-and-fpm-on-performance) and [315,117-record FPM capture](#fpm-collection-and-download).
 
 ## Configuration
 
@@ -79,7 +81,7 @@ The raw FPM-updated image hit a first-request FA4/CuTe ABI error with the GQA dr
 
 The off baseline from job `4244685` completed 3600 measured seconds: 2,491 successful requests, one client `Broken pipe` error, zero output-length mismatches/cancellations, and `submission_valid=true`. Its wrapper nevertheless exited `FAILED 1:0` because an additional zero-error assertion ran after the valid export. The assertion has been removed: the harness now follows AIPerf's validity result and preserves every reported error in `client-validation.json`, without changing the client or retry policy.
 
-To avoid repeating a valid hour, supplementary **on-only job `4245705`** runs the same configuration on `umbriel-b200-048`. These are **separate allocations and different GPU UUID sets**, not a strict same-allocation pair; fresh compilation caches and changes in co-tenant activity also limit attribution of small differences to FPM. The on job's `baseline-link.json` preserves this boundary and the original baseline error/status. Its performance/FPM results are pending.
+To avoid repeating a valid hour, supplementary **on-only job `4245705`** ran the same configuration on `umbriel-b200-048` and completed `0:0` in `01:14:00`. These are **separate allocations and different GPU UUID sets**, not a strict same-allocation pair; fresh compilation caches and changes in co-tenant activity also limit attribution of small differences to FPM. [baseline-link.json](job-4245705-baseline-link.json) preserves this boundary and the original baseline error/status. See the [off protocol](job-4244685-protocol.json), [on protocol](job-4245705-protocol.json), and [final campaign state](job-4245705-campaign-result.json).
 
 The recovery invocation is:
 
@@ -98,13 +100,76 @@ uv run --no-project analyze.py /path/to/job-4245705 \\
 
 [monitor.sh](monitor.sh) is a read-only workstation monitor that queries exact-job `sacct` state (including when `squeue` is empty), prints final campaign/capture evidence, and stops at a supplied UTC deadline. Log scans alone must not be treated as proof that a job is still running.
 
-Preparation validation:
+### SA versus our FPM-off and FPM-on performance
+
+The reference metrics are preserved in [reference-point.json](reference-point.json). Our final measured exports and validation details are in [job-4245705-comparison.json](job-4245705-comparison.json). Changes are `100 * (new / baseline - 1)` from unrounded values. Total throughput uses AIPerf's effective total throughput, including logical input tokens satisfied by prefix reuse; it is not newly computed prefill throughput.
+
+| Metric | SA 439922 | Ours FPM off | Ours FPM on | Off vs SA | On vs off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Total throughput, tokens/s | 87,451.69 | 88,318.63 | 88,767.04 | +0.99% | +0.51% |
+| Total throughput, tokens/s/GPU | 21,862.92 | 22,079.66 | 22,191.76 | +0.99% | +0.51% |
+| Output throughput, tokens/s | 666.972 | 674.388 | 679.261 | +1.11% | +0.72% |
+| Output throughput, tokens/s/GPU | 166.743 | 168.597 | 169.815 | +1.11% | +0.72% |
+| TTFT mean, s | 0.737 | 0.787 | 0.603 | +6.67% | -23.35% |
+| TTFT p50, s | 0.468 | 0.402 | 0.416 | -13.96% | +3.30% |
+| TTFT p90, s | 1.029 | 1.005 | 0.986 | -2.27% | -1.96% |
+| TTFT p95, s | 1.619 | 1.559 | 1.480 | -3.74% | -5.04% |
+| ITL mean, ms | 4.830 | 4.198 | 4.256 | -13.09% | +1.39% |
+| ITL p50, ms | 4.200 | 3.980 | 3.991 | -5.23% | +0.27% |
+| ITL p90, ms | 5.960 | 5.583 | 5.711 | -6.32% | +2.30% |
+| ITL p95, ms | 6.940 | 6.342 | 6.416 | -8.62% | +1.17% |
+| Request latency mean, s | 5.183 | 4.888 | 4.673 | -5.69% | -4.39% |
+| Request latency p50, s | 2.150 | 2.017 | 2.048 | -6.18% | +1.51% |
+| Request latency p90, s | 12.375 | 11.282 | 11.376 | -8.84% | +0.83% |
+| Request latency p95, s | 20.414 | 19.429 | 18.845 | -4.82% | -3.01% |
+| Successful measured requests | 2,467 | 2,491 | 2,498 | +0.97% | +0.28% |
+| Mean input tokens/request | 127,283.80 | 127,720.26 | 128,006.90 | +0.34% | +0.22% |
+| Mean output tokens/request | 978.22 | 982.75 | 987.08 | +0.46% | +0.44% |
+| Request-activity duration including drain, s | 3,618.254 | 3,610.310 | 3,607.445 | -0.22% | -0.08% |
+| Profiling request errors | 1 | 1 | 1 | — | — |
+| Profiling cancellations | 0 | 0 | 0 | — | — |
+| Output-length mismatches | Not reported in API row | 0 | 0 | — | — |
+| Submission valid | Not reported in API row | true | true | — | — |
+
+The reference error/cancellation counts come from its [client log](https://inferencex.semianalysis.com/api/v1/server-log?id=439922&file=results%2Fbenchmark.log), not an assumed zero. Off profiling began `2026-09-11 19:16:36.903213 UTC`; on began `2026-09-11 20:39:25.307076 UTC`. Both sent load for 3600 seconds with a 30-second drain. TTFT coverage was 99.9576%/99.9806%, and ITL coverage was 100%/100%; `was_cancelled=false` in both exports.
+
+Both profiling errors are `ClientOSError(32, Broken pipe)` at the same source trace/turn (`117ebe75819d050f308a0a81647893abd02d`, turn 43, outer index 64). The exact cause of the connection closure was not established. No client retry or connection setting was changed between cases. Raw error identities are preserved in the comparison JSON. Off warmup has 166 valid requests; on warmup has 165 valid requests plus one `InvalidInferenceResultError` for a response without actual content. The on warmup runner printed zero errors before record validation; the validated export/raw JSONL, not that progress line, supplies the retained error count.
+
+Observed on/off differences are total throughput +0.51%, output throughput +0.72%, ITL p50 +0.27%, and TTFT p50 +3.30%. The mean TTFT improvement (−23.35%) coexists with a higher median: off/on maxima are 61.793/10.394 seconds, so the means reflect different tails. **These are observational differences across separate allocations, not isolated FPM overhead or evidence that FPM speeds up serving.** The GPU sets were `1,5,6,7` and `4,5,6,7`; see [allocation-comparison.json](allocation-comparison.json). Both used the same node/configuration/image, but co-tenant activity, CPU placement and fresh compilation caches remain confounders.
+
+### FPM collection and download
+
+| Record class | Count | Iteration time p50, ms | Iteration time p90, ms |
+| --- | ---: | ---: | ---: |
+| Prefill only | 595 | 321.431 | 501.544 |
+| Decode only | 311,464 | 8.978 | 11.346 |
+| Mixed prefill/decode | 2,624 | 144.242 | 321.165 |
+| No scheduled requests | 434 | 0 | 0 |
+| Total | 315,117 | — | — |
+
+The complete capture includes smoke, warmup, profiling, drain and idle heartbeats. There are 314,683 active records, all from DP rank 0, which represents the TP4 engine's output worker rather than four independent GPU traces. The independent local audit verified finite/nonnegative metrics, positive active timings and decode KV sums, zero published-counter gaps/resets and zero invalid records. The recorder rejected zero messages. No FPM pool-exhaustion/queue-drop warning was found; best-effort publication still does not prove every engine iteration was captured before sequence assignment.
+
+Raw FPM is **180,923,000 bytes**, SHA256 `18d3fcf012b51aae745296853d0aebee99288b9bc6244828407c462b76401a19`. The verified gzip copy is **10,618,357 bytes**, SHA256 `8639ecb2b8761fcd8a53383062b3a2f121c4f809b15a12fabd841d4301869ef1`.
+
+Shared artifacts remain in `/home/scratch.hongkuanz_gpu/agentx-minimax-m3-results/job-4244685/` and `job-4245705/`. The SSH workstation has both cases under `/home/hongkuanz/Experiments/minimax-m3-439922-vllm-20260911/`, including raw FPM, client exports/JSONL, time-slice JSON and logs. Large server-metric JSON and redundant time-slice CSV remain on scratch rather than being copied locally.
+
+From your local computer, substitute your workstation SSH alias:
+
+```bash
+scp <workstation-ssh-alias>:/home/hongkuanz/Experiments/minimax-m3-439922-vllm-20260911/job-4245705/on/fpm.jsonl.gz .
+gzip -dk fpm.jsonl.gz
+sha256sum fpm.jsonl
+```
+
+### Preparation validation
 
 - Build job `4244288`: 22 focused FPM/shared-memory tests passed in the matching image, including nonblocking tail collection, new-request arrival, ordered RPC responses, SD corrections and prefill variance.
 - Native off/on CLI preflight passed with no G2 or weight CPU offload.
 - A real B200 `torch.Event` timing smoke passed; it is not a model/performance result.
 - Final layout-image build `4244616`: 27 tests passed, including the above FPM/RPC regressions and real FA4 descale equivalence; allocation completed `0:0`.
 - The changed-file source/response-order review found no new compatibility issue. No additional inference CUDA synchronization was introduced by this port.
+
+Revision boundary checked after completion: the PR had advanced to `7e5257ef64514c4bdd953515a1aadb00dbcc998a`, which changes only the standalone subscriber and its tests. The serving FPM code is identical to the measured `b3563fc`; this image's example subscriber remains at `b3563fc`, and the buffered disk recorder used here is separate from that display-only update. The image and measured revision are not relabeled as the later head.
 
 One ordered pair measures an observed difference, not universal or statistically proven zero overhead. Report request errors, drain cancellations, metric-duration coverage and publisher/capture limitations alongside performance; do not conflate `was_cancelled=false` with zero cancelled requests.
 

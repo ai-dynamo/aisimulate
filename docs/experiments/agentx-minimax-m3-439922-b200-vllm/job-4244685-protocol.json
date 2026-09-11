@@ -1,0 +1,33 @@
+{
+  "reference": 439922,
+  "model": "nvidia/MiniMax-M3-NVFP4",
+  "target_revision": "901464083161bf8612a29ff7ad29914cd4ab4a85",
+  "draft_revision": "96692486b5fd38ebf8fd2a5f6bb53427d30819a8",
+  "gpus": 4,
+  "tp": 4,
+  "dp": 1,
+  "expert_parallel_enabled": false,
+  "pp": 1,
+  "concurrency": 15,
+  "g2": false,
+  "cpu_offload_gb": 0,
+  "kv_connector": null,
+  "duration_seconds": 3600,
+  "spec_method": "eagle3",
+  "speculative_tokens": 3,
+  "synthetic_acceptance": 2.78,
+  "stream_interval": 20,
+  "frontend": "native Python",
+  "scheduler": "native vLLM",
+  "model_runner": "V1",
+  "fpm_revision": "b3563fc65ae0f5359802593d78e7ea097e1fed31",
+  "vllm_base": "2cf0a6915ce544dc493a0990f2ea38d81601128a",
+  "fpm_publishers": 1,
+  "api_port": 24685,
+  "fpm_port": 14685,
+  "cases": [
+    "off",
+    "on"
+  ],
+  "isolation": "Four Slurm-assigned GPUs; not an exclusive whole-node allocation"
+}

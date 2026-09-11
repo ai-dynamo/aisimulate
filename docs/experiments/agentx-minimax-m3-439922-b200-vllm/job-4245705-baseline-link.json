@@ -1,0 +1,22 @@
+{
+  "job_id": "4244685",
+  "node": "umbriel-b200-048",
+  "same_gpu_uuids": false,
+  "separate_allocation": true,
+  "baseline_submission_valid": true,
+  "baseline_errors": [
+    {
+      "error_details": {
+        "type": "ClientOSError",
+        "message": "ClientOSError(32, 'Broken pipe')",
+        "cause": "BrokenPipeError(32, 'Broken pipe')",
+        "cause_chain": [
+          "ClientOSError",
+          "BrokenPipeError"
+        ]
+      },
+      "count": 1
+    }
+  ],
+  "baseline_slurm_note": "Original off run failed a post-export zero-error assertion; measured export remains valid."
+}

@@ -1,0 +1,579 @@
+{
+  "reference": {
+    "id": "439922",
+    "hardware": "b200",
+    "framework": "vllm",
+    "model": "minimaxm3",
+    "precision": "fp4",
+    "spec_method": "mtp",
+    "disagg": false,
+    "is_multinode": false,
+    "prefill_tp": 4,
+    "prefill_ep": 1,
+    "prefill_dp_attention": false,
+    "prefill_num_workers": 0,
+    "decode_tp": 4,
+    "decode_ep": 1,
+    "decode_dp_attention": false,
+    "decode_num_workers": 0,
+    "num_prefill_gpu": 4,
+    "num_decode_gpu": 4,
+    "benchmark_type": "agentic_traces",
+    "offload_mode": "off",
+    "isl": null,
+    "osl": null,
+    "conc": 15,
+    "image": "vllm/vllm-openai:nightly-ac7509e2b1db40fec2f03dde1ed4e9dfdc2338c9",
+    "recipe_fingerprint": null,
+    "metrics": {
+      "pp": 1,
+      "p75_itl": 0.00498,
+      "p75_qps": 1,
+      "p90_itl": 0.00596,
+      "p90_qps": 2,
+      "p95_itl": 0.00694,
+      "p95_qps": 2,
+      "std_itl": 0.01035,
+      "std_qps": 0.90352,
+      "dcp_size": 1,
+      "mean_itl": 0.00483,
+      "mean_qps": 0.68178,
+      "p75_e2el": 4.6645,
+      "p75_tpot": 0.00498,
+      "p75_ttft": 0.66723,
+      "p90_e2el": 12.37537,
+      "p90_tpot": 0.00596,
+      "p90_ttft": 1.02876,
+      "p95_e2el": 20.41374,
+      "p95_tpot": 0.00694,
+      "p95_ttft": 1.61937,
+      "pcp_size": 1,
+      "std_e2el": 9.63024,
+      "std_tpot": 0.01035,
+      "std_ttft": 2.28863,
+      "mean_e2el": 5.18341,
+      "mean_tpot": 0.00483,
+      "mean_ttft": 0.73737,
+      "median_itl": 0.0042,
+      "median_qps": 0,
+      "p75_intvty": 200.80321285140562,
+      "p90_intvty": 167.78523489932886,
+      "p95_intvty": 144.0922190201729,
+      "std_intvty": 561.41012,
+      "mean_intvty": 207.0393374741201,
+      "median_e2el": 2.15019,
+      "median_tpot": 0.00419,
+      "median_ttft": 0.46773,
+      "offload_mode": "off",
+      "tput_per_gpu": 21862.92317,
+      "kv_offloading": "none",
+      "median_intvty": 238.0952380952381,
+      "input_tput_tps": 86784.72117,
+      "total_tput_tps": 87451.69267,
+      "output_tput_tps": 666.9715,
+      "duration_seconds": 3618.25354,
+      "p75_input_tokens": 161369.5,
+      "p90_input_tokens": 253975.6,
+      "p95_input_tokens": 325711,
+      "std_input_tokens": 100244.32078,
+      "mean_input_tokens": 127283.79611,
+      "input_tput_per_gpu": 21696.18029,
+      "median_input_tokens": 98563,
+      "output_tput_per_gpu": 166.74288,
+      "total_prompt_tokens": 345922194,
+      "kv_cache_pool_tokens": 4301568,
+      "allocated_cpu_dram_gb": 0,
+      "p75_full_response_itl": 0.00498,
+      "p90_full_response_itl": 0.00596,
+      "p95_full_response_itl": 0.00694,
+      "std_full_response_itl": 0.01035,
+      "gpu_kv_cache_usage_pct": 0.48076,
+      "mean_full_response_itl": 0.00483,
+      "total_generation_tokens": 2413438,
+      "median_full_response_itl": 0.0042,
+      "p75_full_response_intvty": 200.71356,
+      "p75_output_tokens_actual": 887,
+      "p90_full_response_intvty": 167.87954,
+      "p90_output_tokens_actual": 2472.2,
+      "p95_full_response_intvty": 144.0854,
+      "p95_output_tokens_actual": 4331.7,
+      "std_full_response_intvty": 561.41012,
+      "std_output_tokens_actual": 1984.36879,
+      "total_requests_completed": 2467,
+      "mean_full_response_intvty": 207.18561,
+      "mean_output_tokens_actual": 978.22132,
+      "server_cpu_cache_hit_rate": 0,
+      "server_gpu_cache_hit_rate": 0.9376748049496535,
+      "p75_output_tokens_expected": 2156.75,
+      "p90_output_tokens_expected": 4261,
+      "p95_output_tokens_expected": 5542,
+      "std_output_tokens_expected": 2511.20905,
+      "theoretical_cache_hit_rate": 0.97064,
+      "mean_output_tokens_expected": 1655.69473,
+      "median_full_response_intvty": 238.37571,
+      "median_output_tokens_actual": 340,
+      "median_output_tokens_expected": 741,
+      "server_external_cache_hit_rate": 0
+    },
+    "workers": null,
+    "date": "2026-08-16",
+    "workflow_run_id": "2317",
+    "run_started_at": "2026-08-16 11:25:39+00",
+    "run_url": "https://github.com/SemiAnalysisAI/InferenceX/actions/runs/31833401868/attempts/1",
+    "curve_date": "2026-08-16",
+    "curve_workflow_run_id": "2317",
+    "curve_run_started_at": "2026-08-16 11:25:39+00"
+  },
+  "cases": {
+    "off": {
+      "metrics": {
+        "total_tput_tps": 88318.63055147952,
+        "output_tput_tps": 674.388019456649,
+        "total_requests_completed": 2491.0,
+        "mean_input_tokens": 127720.25692492975,
+        "mean_output_tokens_actual": 982.7494981934966,
+        "duration_seconds": 3610.3098670080003,
+        "tput_per_gpu": 22079.65763786988,
+        "output_tput_per_gpu": 168.59700486416224,
+        "p99_ttft": 5.778632848799981,
+        "max_ttft": 61.793080958,
+        "mean_ttft": 0.7865799750124448,
+        "median_ttft": 0.402445369,
+        "p90_ttft": 1.005451151,
+        "p95_ttft": 1.558877699,
+        "mean_itl": 0.004197516515555489,
+        "median_itl": 0.003980329501367671,
+        "p90_itl": 0.005583096336017266,
+        "p95_itl": 0.0063417078682844776,
+        "mean_e2el": 4.8882242591421114,
+        "median_e2el": 2.017278899,
+        "p90_e2el": 11.28194005,
+        "p95_e2el": 19.428827095
+      },
+      "submission_valid": true,
+      "was_cancelled": false,
+      "error_summary": [
+        {
+          "error_details": {
+            "type": "ClientOSError",
+            "message": "ClientOSError(32, 'Broken pipe')",
+            "cause": "BrokenPipeError(32, 'Broken pipe')",
+            "cause_chain": [
+              "ClientOSError",
+              "BrokenPipeError"
+            ]
+          },
+          "count": 1
+        }
+      ],
+      "osl_mismatch_count": 0.0,
+      "profiling_cancelled_requests": 0,
+      "warmup_requests": 166.0,
+      "warmup_errors": null,
+      "raw_error_records": [
+        {
+          "phase": "profiling",
+          "error": {
+            "type": "ClientOSError",
+            "message": "ClientOSError(32, 'Broken pipe')",
+            "cause": "BrokenPipeError(32, 'Broken pipe')",
+            "cause_chain": [
+              "ClientOSError",
+              "BrokenPipeError"
+            ]
+          },
+          "source_trace_id": "117ebe75819d050f308a0a81647893abd02d",
+          "turn_index": 43,
+          "source_outer_idx": 64
+        }
+      ],
+      "metric_duration_coverage": [
+        {
+          "phase_name": "profiling",
+          "expected_duration_seconds": 3600.0,
+          "required_ratio": 0.95,
+          "ttft_ratio": 0.9995756683377778,
+          "inter_token_latency_ratio": 1.0
+        }
+      ],
+      "start": "2026-09-11T19:16:36.903213",
+      "end": "2026-09-11T20:17:06.903938",
+      "cli": "aiperf profile --scenario 'inferencex-agentx-mvp' --url 'http://localhost:24685' --endpoint '/v1/chat/completions' --endpoint-type 'chat' --streaming --model 'nvidia/MiniMax-M3-NVFP4' --tokenizer '/scratch/models/hub/models--nvidia--MiniMax-M3-NVFP4/snapshots/901464083161bf8612a29ff7ad29914cd4ab4a85' --tokenizer-trust-remote-code --public-dataset 'semianalysis_cc_traces_weka_062126' --num-dataset-entries 393 --concurrency 15 --benchmark-duration 3600 --stats-interval 30 --random-seed 42 --failed-request-threshold 0.1 --trajectory-start-min-ratio 0.25 --trajectory-start-max-ratio 0.75 --warmup-requests-per-lane 10 --warmup-grace-period 1800 --trace-idle-gap-cap-seconds 300 --system-idle-gap-cap-seconds 10 --cache-bust 'first_turn_prefix' --extra-inputs 'ignore_eos:true' --use-server-token-count --no-gpu-telemetry --slice-duration 1 --artifact-dir '/scratch/agentx-minimax-m3-results/job-4244685/off/aiperf'"
+    },
+    "on": {
+      "metrics": {
+        "total_tput_tps": 88767.03507841937,
+        "output_tput_tps": 679.2606103296564,
+        "total_requests_completed": 2498.0,
+        "mean_input_tokens": 128006.90432345877,
+        "mean_output_tokens_actual": 987.0764611689351,
+        "duration_seconds": 3607.4451537920004,
+        "tput_per_gpu": 22191.758769604843,
+        "output_tput_per_gpu": 169.8151525824141,
+        "p99_ttft": 3.9925540279400744,
+        "max_ttft": 10.39357216,
+        "mean_ttft": 0.602947514407526,
+        "median_ttft": 0.4157437175,
+        "p90_ttft": 0.9857483642000001,
+        "p95_ttft": 1.480323420950001,
+        "mean_itl": 0.004256041171611223,
+        "median_itl": 0.003990880629310345,
+        "p90_itl": 0.005711381524719011,
+        "p95_itl": 0.006415938625029237,
+        "mean_e2el": 4.673428846231385,
+        "median_e2el": 2.0476608895,
+        "p90_e2el": 11.375648605300002,
+        "p95_e2el": 18.84464436025
+      },
+      "submission_valid": true,
+      "was_cancelled": false,
+      "error_summary": [
+        {
+          "error_details": {
+            "type": "ClientOSError",
+            "message": "ClientOSError(32, 'Broken pipe')",
+            "cause": "BrokenPipeError(32, 'Broken pipe')",
+            "cause_chain": [
+              "ClientOSError",
+              "BrokenPipeError"
+            ]
+          },
+          "count": 1
+        }
+      ],
+      "osl_mismatch_count": 0.0,
+      "profiling_cancelled_requests": 0,
+      "warmup_requests": 165.0,
+      "warmup_errors": 1.0,
+      "raw_error_records": [
+        {
+          "phase": "warmup",
+          "error": {
+            "type": "InvalidInferenceResultError",
+            "message": "InvalidInferenceResultError('Invalid inference result: No responses with actual content were received from the server (only usage/metadata, null/empty data, or [DONE] markers)')",
+            "cause_chain": [
+              "InvalidInferenceResultError"
+            ]
+          },
+          "source_trace_id": "069d7bf5f1efb4e76e3c84510367e6af78a5",
+          "turn_index": 213,
+          "source_outer_idx": 221
+        },
+        {
+          "phase": "profiling",
+          "error": {
+            "type": "ClientOSError",
+            "message": "ClientOSError(32, 'Broken pipe')",
+            "cause": "BrokenPipeError(32, 'Broken pipe')",
+            "cause_chain": [
+              "ClientOSError",
+              "BrokenPipeError"
+            ]
+          },
+          "source_trace_id": "117ebe75819d050f308a0a81647893abd02d",
+          "turn_index": 43,
+          "source_outer_idx": 64
+        }
+      ],
+      "metric_duration_coverage": [
+        {
+          "phase_name": "profiling",
+          "expected_duration_seconds": 3600.0,
+          "required_ratio": 0.95,
+          "ttft_ratio": 0.9998062067911111,
+          "inter_token_latency_ratio": 1.0
+        }
+      ],
+      "start": "2026-09-11T20:39:25.307076",
+      "end": "2026-09-11T21:39:55.308525",
+      "cli": "aiperf profile --scenario 'inferencex-agentx-mvp' --url 'http://localhost:25705' --endpoint '/v1/chat/completions' --endpoint-type 'chat' --streaming --model 'nvidia/MiniMax-M3-NVFP4' --tokenizer '/scratch/models/hub/models--nvidia--MiniMax-M3-NVFP4/snapshots/901464083161bf8612a29ff7ad29914cd4ab4a85' --tokenizer-trust-remote-code --public-dataset 'semianalysis_cc_traces_weka_062126' --num-dataset-entries 393 --concurrency 15 --benchmark-duration 3600 --stats-interval 30 --random-seed 42 --failed-request-threshold 0.1 --trajectory-start-min-ratio 0.25 --trajectory-start-max-ratio 0.75 --warmup-requests-per-lane 10 --warmup-grace-period 1800 --trace-idle-gap-cap-seconds 300 --system-idle-gap-cap-seconds 10 --cache-bust 'first_turn_prefix' --extra-inputs 'ignore_eos:true' --use-server-token-count --no-gpu-telemetry --slice-duration 1 --artifact-dir '/scratch/agentx-minimax-m3-results/job-4245705/on/aiperf'"
+    }
+  },
+  "comparison": [
+    {
+      "metric": "total_tput_tps",
+      "reference": 87451.69267,
+      "off": 88318.63055147952,
+      "on": 88767.03507841937,
+      "off_vs_reference_pct": 0.9913334493717896,
+      "on_vs_off_pct": 0.5077122733220918
+    },
+    {
+      "metric": "output_tput_tps",
+      "reference": 666.9715,
+      "off": 674.388019456649,
+      "on": 679.2606103296564,
+      "off_vs_reference_pct": 1.111969470456975,
+      "on_vs_off_pct": 0.7225203788366885
+    },
+    {
+      "metric": "total_requests_completed",
+      "reference": 2467,
+      "off": 2491.0,
+      "on": 2498.0,
+      "off_vs_reference_pct": 0.9728415079043318,
+      "on_vs_off_pct": 0.2810116419108777
+    },
+    {
+      "metric": "mean_input_tokens",
+      "reference": 127283.79611,
+      "off": 127720.25692492975,
+      "on": 128006.90432345877,
+      "off_vs_reference_pct": 0.34290367530567245,
+      "on_vs_off_pct": 0.22443377850194235
+    },
+    {
+      "metric": "mean_output_tokens_actual",
+      "reference": 978.22132,
+      "off": 982.7494981934966,
+      "on": 987.0764611689351,
+      "off_vs_reference_pct": 0.46289915185007136,
+      "on_vs_off_pct": 0.4402915476825253
+    },
+    {
+      "metric": "duration_seconds",
+      "reference": 3618.25354,
+      "off": 3610.3098670080003,
+      "on": 3607.4451537920004,
+      "off_vs_reference_pct": -0.21954439909149803,
+      "on_vs_off_pct": -0.07934812582649498
+    },
+    {
+      "metric": "tput_per_gpu",
+      "reference": 21862.92317,
+      "off": 22079.65763786988,
+      "on": 22191.758769604843,
+      "off_vs_reference_pct": 0.9913334378235605,
+      "on_vs_off_pct": 0.5077122733220918
+    },
+    {
+      "metric": "output_tput_per_gpu",
+      "reference": 166.74288,
+      "off": 168.59700486416224,
+      "on": 169.8151525824141,
+      "off_vs_reference_pct": 1.1119664384843464,
+      "on_vs_off_pct": 0.7225203788366885
+    },
+    {
+      "metric": "p99_ttft",
+      "reference": null,
+      "off": 5.778632848799981,
+      "on": 3.9925540279400744,
+      "off_vs_reference_pct": null,
+      "on_vs_off_pct": -30.908328450574817
+    },
+    {
+      "metric": "max_ttft",
+      "reference": null,
+      "off": 61.793080958,
+      "on": 10.39357216,
+      "off_vs_reference_pct": null,
+      "on_vs_off_pct": -83.18003893176262
+    },
+    {
+      "metric": "mean_ttft",
+      "reference": 0.73737,
+      "off": 0.7865799750124448,
+      "on": 0.602947514407526,
+      "off_vs_reference_pct": 6.673715368464239,
+      "on_vs_off_pct": -23.34568212240764
+    },
+    {
+      "metric": "median_ttft",
+      "reference": 0.46773,
+      "off": 0.402445369,
+      "on": 0.4157437175,
+      "off_vs_reference_pct": -13.95776003249738,
+      "on_vs_off_pct": 3.3043860171739325
+    },
+    {
+      "metric": "p90_ttft",
+      "reference": 1.02876,
+      "off": 1.005451151,
+      "on": 0.9857483642000001,
+      "off_vs_reference_pct": -2.2657227147245163,
+      "on_vs_off_pct": -1.9595966229094097
+    },
+    {
+      "metric": "p95_ttft",
+      "reference": 1.61937,
+      "off": 1.558877699,
+      "on": 1.480323420950001,
+      "off_vs_reference_pct": -3.735545366407922,
+      "on_vs_off_pct": -5.039155932527006
+    },
+    {
+      "metric": "mean_itl",
+      "reference": 0.00483,
+      "off": 0.004197516515555489,
+      "on": 0.004256041171611223,
+      "off_vs_reference_pct": -13.094896158271451,
+      "on_vs_off_pct": 1.3942686309594832
+    },
+    {
+      "metric": "median_itl",
+      "reference": 0.0042,
+      "off": 0.003980329501367671,
+      "on": 0.003990880629310345,
+      "off_vs_reference_pct": -5.230249967436407,
+      "on_vs_off_pct": 0.2650817712214204
+    },
+    {
+      "metric": "p90_itl",
+      "reference": 0.00596,
+      "off": 0.005583096336017266,
+      "on": 0.005711381524719011,
+      "off_vs_reference_pct": -6.323886979576077,
+      "on_vs_off_pct": 2.297742703706551
+    },
+    {
+      "metric": "p95_itl",
+      "reference": 0.00694,
+      "off": 0.0063417078682844776,
+      "on": 0.006415938625029237,
+      "off_vs_reference_pct": -8.620924088119919,
+      "on_vs_off_pct": 1.170516811661959
+    },
+    {
+      "metric": "mean_e2el",
+      "reference": 5.18341,
+      "off": 4.8882242591421114,
+      "on": 4.673428846231385,
+      "off_vs_reference_pct": -5.694817520857676,
+      "on_vs_off_pct": -4.39413990692038
+    },
+    {
+      "metric": "median_e2el",
+      "reference": 2.15019,
+      "off": 2.017278899,
+      "on": 2.0476608895,
+      "off_vs_reference_pct": -6.181365414219209,
+      "on_vs_off_pct": 1.5060877558904062
+    },
+    {
+      "metric": "p90_e2el",
+      "reference": 12.37537,
+      "off": 11.28194005,
+      "on": 11.375648605300002,
+      "off_vs_reference_pct": -8.835533402233642,
+      "on_vs_off_pct": 0.8306067474627588
+    },
+    {
+      "metric": "p95_e2el",
+      "reference": 20.41374,
+      "off": 19.428827095,
+      "on": 18.84464436025,
+      "off_vs_reference_pct": -4.824754821997345,
+      "on_vs_off_pct": -3.006783332280194
+    }
+  ],
+  "fpm": {
+    "records": 315117,
+    "counts": {
+      "no_requests": 434,
+      "prefill_only": 595,
+      "decode_only": 311464,
+      "mixed": 2624
+    },
+    "per_rank": {
+      "0": {
+        "no_requests": 434,
+        "prefill_only": 595,
+        "decode_only": 311464,
+        "mixed": 2624
+      }
+    },
+    "active_ranks": [
+      0
+    ],
+    "counter_gaps": 0,
+    "counter_resets": 0,
+    "invalid_records": 0,
+    "bytes": 180923000,
+    "sha256": "18d3fcf012b51aae745296853d0aebee99288b9bc6244828407c462b76401a19",
+    "first_received_ns": 1789158828255645402,
+    "last_received_ns": 1789162820772381087,
+    "timing": {
+      "no_requests": {
+        "mean_ms": 0.0,
+        "min_ms": 0.0,
+        "p50_ms": 0.0,
+        "p90_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0,
+        "sum_rank_seconds": 0.0
+      },
+      "prefill_only": {
+        "mean_ms": 326.35429112410344,
+        "min_ms": 36.512542724609375,
+        "p50_ms": 321.4308166503906,
+        "p90_ms": 501.54388427734375,
+        "p95_ms": 571.3542297363281,
+        "p99_ms": 667.8507641601558,
+        "max_ms": 4980.597656250001,
+        "sum_rank_seconds": 194.18080321884156
+      },
+      "decode_only": {
+        "mean_ms": 9.12083397104399,
+        "min_ms": 6.791679859161377,
+        "p50_ms": 8.977855682373047,
+        "p90_ms": 11.346464157104494,
+        "p95_ms": 11.90137104988098,
+        "p99_ms": 13.33303105354309,
+        "max_ms": 865.2816162109375,
+        "sum_rank_seconds": 2840.811431957245
+      },
+      "mixed": {
+        "mean_ms": 175.96888426018924,
+        "min_ms": 27.099807739257816,
+        "p50_ms": 144.24208068847656,
+        "p90_ms": 321.1651824951172,
+        "p95_ms": 350.11878204345703,
+        "p99_ms": 425.18722473144527,
+        "max_ms": 568.85302734375,
+        "sum_rank_seconds": 461.7423522987366
+      }
+    },
+    "valid": true,
+    "scope": "Entire capture including smoke, warmup, profiling, drain and idle; one record per DP rank, not deduplicated global iterations."
+  },
+  "campaign": {
+    "status": "complete",
+    "completed_at_ns": 1789162824218306241
+  },
+  "pairing": {
+    "separate_allocations": true,
+    "off_root": "/home/hongkuanz/Experiments/minimax-m3-439922-vllm-20260911/job-4244685",
+    "on_root": "/home/hongkuanz/Experiments/minimax-m3-439922-vllm-20260911/job-4245705",
+    "off_campaign": {
+      "status": "failed",
+      "error": "[{'error_details': {'type': 'ClientOSError', 'message': \"ClientOSError(32, 'Broken pipe')\", 'cause': \"BrokenPipeError(32, 'Broken pipe')\", 'cause_chain': ['ClientOSError', 'BrokenPipeError']}, 'count': 1}]",
+      "at_ns": 1789157850536772130
+    },
+    "baseline_link": {
+      "job_id": "4244685",
+      "node": "umbriel-b200-048",
+      "same_gpu_uuids": false,
+      "separate_allocation": true,
+      "baseline_submission_valid": true,
+      "baseline_errors": [
+        {
+          "error_details": {
+            "type": "ClientOSError",
+            "message": "ClientOSError(32, 'Broken pipe')",
+            "cause": "BrokenPipeError(32, 'Broken pipe')",
+            "cause_chain": [
+              "ClientOSError",
+              "BrokenPipeError"
+            ]
+          },
+          "count": 1
+        }
+      ],
+      "baseline_slurm_note": "Original off run failed a post-export zero-error assertion; measured export remains valid."
+    }
+  },
+  "analyzed_at": "2026-09-11T21:49:57.589231+00:00",
+  "caveat": "One off/on comparison; G2 disabled, fresh engines/KV and warmup per case. Inspect pairing for separate allocations/GPU UUID differences; non-exclusive host and newer runtime confound small differences. FPM timing is recorded-stream elapsed time, not summed kernel-busy time or client TTFT/ITL."
+}

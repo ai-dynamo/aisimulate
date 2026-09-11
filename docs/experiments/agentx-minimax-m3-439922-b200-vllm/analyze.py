@@ -99,18 +99,33 @@ def summarize(root):
     }
     metrics['tput_per_gpu']=metrics['total_tput_tps']/4
     metrics['output_tput_per_gpu']=metrics['output_tput_tps']/4
+    metrics['p99_ttft']=val('time_to_first_token','p99','ms')/1000
+    metrics['max_ttft']=val('time_to_first_token','max','ms')/1000
     for name,key in [('ttft','time_to_first_token'),('itl','inter_token_latency'),('e2el','request_latency')]:
         for label,stat in [('mean','avg'),('median','p50'),('p90','p90'),('p95','p95')]:
             metrics[f'{label}_{name}']=val(key,stat,'ms')/1000
     log=(root/'client.log').read_text() if (root/'client.log').exists() else ''
     cancelled=re.findall(r'PhaseRecordsStats\(phase=CreditPhase.PROFILING[^\n]*?final_requests_cancelled=(\d+)',log)
     warmup=p.get('warmup_metrics',{})
+    records=root/'aiperf/profile_export.jsonl'
+    error_records=None
+    if records.exists():
+        error_records=[]
+        with records.open() as stream:
+            for line in stream:
+                record=json.loads(line)
+                if record.get('error'):
+                    meta=record['metadata']
+                    error_records.append(dict(phase=meta.get('benchmark_phase'),
+                        error=record['error'], source_trace_id=meta.get('source_trace_id'),
+                        turn_index=meta.get('turn_index'), source_outer_idx=meta.get('source_outer_idx')))
     return dict(metrics=metrics,submission_valid=p['metadata']['submission_valid'],
                 was_cancelled=p['was_cancelled'],error_summary=p['error_summary'],
                 osl_mismatch_count=val('osl_mismatch_count'),
                 profiling_cancelled_requests=int(cancelled[-1]) if cancelled else None,
                 warmup_requests=warmup.get('request_count',{}).get('avg'),
                 warmup_errors=warmup.get('error_request_count',{}).get('avg'),
+                raw_error_records=error_records,
                 metric_duration_coverage=p['metadata']['metric_duration_coverage'],
                 start=p['start_time'],end=p['end_time'],cli=p['run_info']['cli_command'])
 
