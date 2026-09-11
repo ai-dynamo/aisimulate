@@ -73,6 +73,15 @@ from .result import (
 )
 
 _LAZY_EXPORTS = {
+    "AFD_SCHEMA_VERSION": (".afd_parallel", "AFD_SCHEMA_VERSION"),
+    "AFDEnumeration": (".afd_parallel", "AFDEnumeration"),
+    "AFDInfeasible": (".afd_parallel", "AFDInfeasible"),
+    "AFDPhase": (".afd_parallel", "AFDPhase"),
+    "AFDPipelineModel": (".afd_parallel", "AFDPipelineModel"),
+    "AFDReasonCategory": (".afd_parallel", "AFDReasonCategory"),
+    "AFDSearchConfig": (".afd_parallel", "AFDSearchConfig"),
+    "AFDTopology": (".afd_parallel", "AFDTopology"),
+    "enumerate_afd_topologies": (".afd_parallel", "enumerate_afd_topologies"),
     "build_backend_deployment": (".deploy", "build_backend_deployment"),
     "NoPerfDatabase": (".kv_estimate", "NoPerfDatabase"),
     "estimate_kv_tokens": (".kv_estimate", "estimate_kv_tokens"),
@@ -117,11 +126,19 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "AFD_SCHEMA_VERSION",
     "API_VERSION",
     "REPLAY_SPEC_API_VERSION",
     "RESULT_SCHEMA_VERSION",
     "SEARCH_SPACE_FRAGMENT_API_VERSION",
     "SWEEP_CONFIG_PROVIDER_ENTRY_POINT_GROUP",
+    "AFDEnumeration",
+    "AFDInfeasible",
+    "AFDPhase",
+    "AFDPipelineModel",
+    "AFDReasonCategory",
+    "AFDSearchConfig",
+    "AFDTopology",
     "AdapterReplaySpec",
     "AdapterSearchConfig",
     "AdapterSearchPlan",
@@ -178,6 +195,7 @@ __all__ = [
     "analyze_candidates",
     "build_backend_deployment",
     "canonical_json",
+    "enumerate_afd_topologies",
     "enumerate_branches",
     "enumerate_disagg_configs",
     "enumerate_parallel_configs",

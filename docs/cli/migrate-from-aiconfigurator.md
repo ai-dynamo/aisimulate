@@ -271,6 +271,82 @@ For text-only replay, `e2e_ms` participates in request-level goodput, and `stric
 mean E2E latency. This path does not expose a separate aggregate-only E2E constraint that is excluded
 from request-level goodput. [Analytical EPD](../sweeper/epd.md) uses aggregate-mean SLA bounds only and does not report per-request goodput.
 
+## Planned AFD translation
+
+Attention-FFN Disaggregation (AFD) is migrating in layers. The
+[AFD topology contract](../sweeper/afd-topology.md) defines complete A/F topology enumeration,
+validation, and A/F GPU accounting. Later work will add performance measurement, staged evaluation,
+the public recommendation schema, generic search, and an AFD-capable runner.
+
+> [!IMPORTANT]
+> The AISimulate configuration below is a **contract preview**, not a runnable command in this PR.
+> Continue using the compatibility `aiconfigurator` command for AFD until the public schema,
+> lowering, and runner support land.
+
+Legacy AFD command:
+
+```bash
+aiconfigurator cli default \
+  --model-path Qwen/Qwen3-32B \
+  --system h200_sxm \
+  --backend trtllm \
+  --serving-mode afd \
+  --total-gpus 32 \
+  --isl 1024 \
+  --osl 128 \
+  --ttft 800 \
+  --tpot 30 \
+  --strict-sla
+```
+
+The intended AISimulate recommendation contract is:
+
+<!-- afd-migration-contract-start -->
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: constant_rate
+    requests_per_second: 4
+  stop:
+    requests_per_load_unit: 10
+
+engine:
+  mode: afd
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  backend: trtllm
+  afd:
+    phase: decode
+    combined_with_pd: true
+
+evaluation:
+  sla:
+    ttft_ms: 800
+    itl_ms: 30
+
+optimization:
+  target: throughput_per_gpu
+  strict_sla: true
+  constraints:
+    max_candidate_gpus: 32
+```
+<!-- afd-migration-contract-end -->
+
+This preserves the legacy command's default of decode-side AFD combined with a static prefill
+companion. The GPU constraint will cover the A pool, F pool, and companion together once the
+remaining evaluation and runner layers land. The target invocation will be:
+
+```bash
+aisimulate recommend --config recommendation.yaml
+```
+
+This migration target covers analytical recommendation. It does not imply native request-level
+AFD Replay/Mocker execution or deployment-artifact generation.
+
 ## Workflows that must remain on AIC
 
 Continue using the compatibility command for:
