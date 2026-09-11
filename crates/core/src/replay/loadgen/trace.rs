@@ -993,7 +993,31 @@ impl Trace {
             return Ok(self);
         };
 
-        let ratio = duration_ms as f64 / (max_ready_ms - min_start_ms).max(1.0);
+        // `.max(1.0)` on the denominator used to stand in for a divide-by-zero
+        // guard, but it is a floor, not a special case: a source span of 0.4ms
+        // divided by 1.0 rescaled the trace to 0.4 * duration_ms instead of
+        // duration_ms, violating this function's entire contract by 2.5x with
+        // no error. Every span below 1ms was mis-scaled in proportion.
+        //
+        // It also swallowed NaN, because `f64::max` returns the other operand
+        // when one is NaN -- so an `inf - inf` span (reachable from
+        // `speed_up_timing`, which accepts any finite positive ratio including
+        // denormals that overflow timestamps to +inf) silently became a
+        // divisor of 1.0.
+        //
+        // Handle the degenerate span explicitly, exactly as the sibling
+        // `rescale_session_start_span` already does, and refuse a non-finite
+        // one.
+        let source_span_ms = max_ready_ms - min_start_ms;
+        ensure!(
+            source_span_ms.is_finite(),
+            "trace ready span is not finite ({min_start_ms}ms to {max_ready_ms}ms)"
+        );
+        let ratio = if source_span_ms == 0.0 {
+            0.0
+        } else {
+            duration_ms as f64 / source_span_ms
+        };
         for session in &mut self.sessions {
             if let Some(start_ms) = session.first_arrival_timestamp_ms.as_mut() {
                 *start_ms = (*start_ms - min_start_ms) * ratio;

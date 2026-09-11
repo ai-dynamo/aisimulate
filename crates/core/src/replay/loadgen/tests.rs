@@ -1046,6 +1046,53 @@ fn test_rescale_ready_span_scales_session_starts_and_inter_turn_delays() {
     assert_eq!(trace.sessions[0].turns[1].delay_after_previous_ms, 100.0);
 }
 
+/// A sub-millisecond source span must still rescale to the requested duration.
+///
+/// The divide-by-zero guard was a floor on the denominator
+/// (`(max - min).max(1.0)`), not a special case, so a 0.4ms span divided by 1.0
+/// and the trace was rescaled to 0.4 * duration_ms instead of duration_ms --
+/// the function's entire contract violated by 2.5x, silently, for every span
+/// under 1ms.
+#[test]
+fn test_rescale_ready_span_honors_a_sub_millisecond_source_span() {
+    let session = |session_id: &str, start_ms: f64, hash_id: u32| SessionTrace {
+        session_id: session_id.to_string(),
+        first_arrival_timestamp_ms: Some(start_ms),
+        turns: vec![TurnTrace {
+            input_length: 4,
+            max_output_tokens: 1,
+            hash_ids: vec![hash_id],
+            delay_after_previous_ms: 0.0,
+            ..Default::default()
+        }],
+    };
+
+    let trace = Trace {
+        block_size: 4,
+        sessions: vec![session("a", 0.0, 1), session("b", 0.4, 2)],
+    }
+    .rescale_ready_span(100)
+    .unwrap();
+
+    assert_eq!(trace.sessions[0].first_arrival_timestamp_ms, Some(0.0));
+    assert_eq!(
+        trace.sessions[1].first_arrival_timestamp_ms,
+        Some(100.0),
+        "the rescaled span must be the requested duration, not 0.4 of it"
+    );
+
+    // A genuinely zero span still collapses rather than dividing by zero,
+    // matching the sibling rescale_session_start_span.
+    let collapsed = Trace {
+        block_size: 4,
+        sessions: vec![session("a", 5.0, 1), session("b", 5.0, 2)],
+    }
+    .rescale_ready_span(100)
+    .unwrap();
+    assert_eq!(collapsed.sessions[0].first_arrival_timestamp_ms, Some(0.0));
+    assert_eq!(collapsed.sessions[1].first_arrival_timestamp_ms, Some(0.0));
+}
+
 #[test]
 fn test_driver_requires_completion_before_follow_up_turn() {
     let trace = Trace {
