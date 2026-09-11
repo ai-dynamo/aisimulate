@@ -7,8 +7,8 @@ import copy
 import hashlib
 import importlib.util
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import pytest
 from jsonschema import Draft202012Validator
