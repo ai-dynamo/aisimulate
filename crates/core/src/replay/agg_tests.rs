@@ -9,6 +9,7 @@ use crate::replay::components::NoReplayMetadata;
 use crate::replay::core::NoEngineEvents;
 use crate::replay::core::round_robin::AggregatedRoundRobinPlacement;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
+use crate::replay::scaling::ReplayScalingDecision;
 use crate::replay::{
     ReplayArtifactKvEventVisibility, ReplaySpec, ReplayTelemetryObserver, ReplayTelemetrySnapshot,
     Replayer, WorkerStage, run_engine_replay,
@@ -37,6 +38,13 @@ fn request(uuid: u128, arrival_ms: f64) -> DirectRequest {
 }
 
 fn runtime(pending: VecDeque<DirectRequest>) -> RoundRobinAggRuntime {
+    runtime_with_startup_time(pending, None)
+}
+
+fn runtime_with_startup_time(
+    pending: VecDeque<DirectRequest>,
+    startup_time_ms: Option<f64>,
+) -> RoundRobinAggRuntime {
     let config = ReplayEngineConfig {
         rank: EngineConfig {
             timing_model: TimingModelConfig::Fixed {
@@ -54,7 +62,7 @@ fn runtime(pending: VecDeque<DirectRequest>) -> RoundRobinAggRuntime {
         role_factory,
         AdmissionQueue::new_requests(pending, ReplayMode::Trace),
         1,
-        None,
+        startup_time_ms,
         |dp_size, topology| Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)),
     )
     .unwrap()
@@ -740,4 +748,38 @@ fn agg_settled_steps_resume_without_changing_the_result() {
         serde_json::to_value(continuous.finish()).unwrap(),
         serde_json::to_value(resumed.finish()).unwrap()
     );
+}
+
+#[test]
+fn agg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
+    struct ScaleAtZero;
+
+    impl ReplayScalingPolicy for ScaleAtZero {
+        fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+            Ok(0.0)
+        }
+
+        fn on_tick(
+            &mut self,
+            snapshot: ReplayScalingSnapshot,
+        ) -> anyhow::Result<ReplayScalingDecision> {
+            assert_eq!(snapshot.now_ms, 0.0);
+            Ok(ReplayScalingDecision {
+                target_decode: Some(2),
+                ..Default::default()
+            })
+        }
+    }
+
+    let mut stepped = runtime_with_startup_time(VecDeque::from([request(1, 0.0)]), Some(0.0))
+        .with_scaling_policy(Box::new(ScaleAtZero));
+
+    assert_eq!(
+        stepped.step().unwrap(),
+        ReplayStepOutcome::Settled { now_ms: 0.0 }
+    );
+    assert_eq!(stepped.engine.active_group_ids(), vec![0, 1]);
+    assert!(stepped.engine.starting_group_ids().is_empty());
+    assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
+    assert!(stepped.next_timestamps().1.unwrap() > 0.0);
 }

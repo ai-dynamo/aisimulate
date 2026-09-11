@@ -1304,6 +1304,16 @@ where
         self.drain_current_timestamp()?;
         self.seed_first_telemetry_tick()?;
         self.seed_first_scaling_tick()?;
+        // Keep the baseline before the first scaling decision, but settle any
+        // tick seeded at this instant before exposing a settled step boundary.
+        if !self.is_done()
+            && self
+                .events
+                .peek()
+                .is_some_and(|event| event.at_ms <= self.now_ms)
+        {
+            self.drain_current_timestamp()?;
+        }
         self.drive_started = true;
         Ok(true)
     }

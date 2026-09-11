@@ -46,6 +46,7 @@ impl ReplayScalingPolicy for CaptureOncePolicy {
 }
 
 struct CaptureAndScaleOncePolicy {
+    at_ms: f64,
     captured: Rc<RefCell<Option<ReplayScalingSnapshot>>>,
 }
 
@@ -187,7 +188,7 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
 
 impl ReplayScalingPolicy for CaptureAndScaleOncePolicy {
     fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
-        Ok(0.1)
+        Ok(self.at_ms)
     }
 
     fn on_tick(
@@ -444,6 +445,42 @@ fn request(
     }
 }
 
+#[test]
+fn simultaneous_handoffs_follow_arrival_order_across_replays() {
+    let request_ids = [3, 1, 2].map(Uuid::from_u128);
+    let run = || {
+        let mut flow = DisaggFlowState::new(HandoffOrder::SourceFirst, 0.0, false);
+        let mut collector = TraceCollector::default();
+        let handoffs = request_ids.map(|uuid| {
+            flow.on_external_arrival(
+                ReplayRequestPayload::materialized(request(uuid.as_u128(), 64, 1, 0.0)),
+                0.0,
+                None,
+                None,
+                &mut collector,
+            )
+            .unwrap();
+            flow.state(uuid).unwrap().handoff_id
+        });
+
+        // Completion callback order and request UUID order must not change
+        // which request reaches decode first when transfers complete together.
+        let mut events: BinaryHeap<SimulationEvent<()>> = BinaryHeap::new();
+        let mut next_event_seq = 0;
+        for handoff_id in handoffs.into_iter().rev() {
+            push_transfer_complete(&mut events, &mut next_event_seq, 10.0, handoff_id);
+        }
+        let mut released = Vec::new();
+        while let Some(handoff_id) = pop_ready_transfer_complete(&mut events, 10.0) {
+            released.push(flow.uuid_for_handoff(handoff_id).unwrap());
+        }
+        assert_eq!(released, request_ids);
+        handoffs
+    };
+
+    assert_eq!(run(), run());
+}
+
 fn agentic_row(
     request_id: &str,
     play_id: &str,
@@ -592,6 +629,56 @@ fn disagg_settled_steps_resume_without_changing_the_result() {
         serde_json::to_value(continuous.finish()).unwrap(),
         serde_json::to_value(resumed.finish()).unwrap()
     );
+}
+
+#[test]
+fn disagg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
+    let mut config = disagg_config().runtime_config(false).unwrap();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    config.prefill_startup_time_ms = Some(0.0);
+    config.decode_startup_time_ms = Some(0.0);
+    let captured = Rc::new(RefCell::new(None));
+    let telemetry_samples = Arc::new(Mutex::new(Vec::new()));
+    let mut stepped = RoundRobinDisaggRuntime::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                PoolRoundRobinPlacement::new(prefill_topology),
+                PoolRoundRobinPlacement::new(decode_topology),
+            ))
+        },
+    )
+    .unwrap()
+    .with_telemetry_observer(
+        1.0,
+        Box::new(CaptureTelemetryObserver {
+            samples: Arc::clone(&telemetry_samples),
+        }),
+    )
+    .with_scaling_policy(Box::new(CaptureAndScaleOncePolicy {
+        at_ms: 0.0,
+        captured: Rc::clone(&captured),
+    }));
+
+    assert_eq!(
+        stepped.step().unwrap(),
+        ReplayStepOutcome::Settled { now_ms: 0.0 }
+    );
+    assert_eq!(captured.borrow().as_ref().unwrap().now_ms, 0.0);
+    assert_eq!(stepped.prefill_engine.active_group_ids(), vec![0, 1]);
+    assert_eq!(stepped.decode_engine.active_group_ids(), vec![0, 1]);
+    assert!(stepped.prefill_engine.starting_group_ids().is_empty());
+    assert!(stepped.decode_engine.starting_group_ids().is_empty());
+    assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
+    assert!(stepped.next_timestamps().1.unwrap() > 0.0);
+    let samples = telemetry_samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    assert_eq!(samples[0].active_prefill_ids, vec![0]);
+    assert_eq!(samples[0].active_decode_ids, vec![0]);
 }
 
 fn run_concurrency_collect(
@@ -762,6 +849,7 @@ fn telemetry_samples_router_queues_before_a_coincident_scale_up() {
         crate::replay::normalize_trace_requests(vec![request(9_303, 64, 1, 0.0)], 1.0).unwrap();
     let captured = Rc::new(RefCell::new(None));
     let policy = CaptureAndScaleOncePolicy {
+        at_ms: 0.1,
         captured: Rc::clone(&captured),
     };
     let telemetry_samples = Arc::new(Mutex::new(Vec::new()));
