@@ -1105,7 +1105,39 @@ impl WorkloadDriver {
                     );
                 }
             }
-            Ok(None) => {}
+            Ok(None) => {
+                // `Ok(None)` is not only the benign "on_complete already ran"
+                // case. It is also the window between the two halves of an
+                // agentic node's termination: `on_causal_terminal` already
+                // consumed the `in_flight` entry (so `resolve_turn` finds
+                // nothing) and recorded the node in `agentic_settling` for a
+                // later `on_quiescent` that this failure path will never
+                // receive -- the request task it is recovering from is gone.
+                //
+                // Leaving the entry behind pins `agentic_settling` non-empty,
+                // and `is_drained` requires it empty, so the run wedges
+                // forever with no error: the same deadlock the `Ok(Some(..))`
+                // arm above was fixed for, reached through the other half of
+                // the split. Settling here (rather than just dropping the map
+                // entry) is what actually decrements the play's
+                // `emitted_in_flight` and releases its lane.
+                if let Some(node_index) = self.agentic_settling.remove(&request_uuid)
+                    && let SchedulingPolicy::Agentic(state) = &mut self.policy
+                    && let Err(error) = state.on_node_quiescent(
+                        &mut self.sessions,
+                        &mut self.ready_sessions,
+                        node_index,
+                        now_ms,
+                    )
+                {
+                    tracing::error!(
+                        %request_uuid,
+                        error = %error,
+                        "release_cap_slot: failed to settle an agentic node cancelled \
+                         between its causal terminal and its quiescence"
+                    );
+                }
+            }
             Err(error) => {
                 tracing::error!(
                     %request_uuid,
@@ -2566,6 +2598,56 @@ mod tests {
 
         driver.release_cap_slot(second[0].request_uuid, 20.0);
         assert!(driver.is_drained());
+    }
+
+    /// The other half of the same split: a request cancelled *between*
+    /// `on_causal_terminal` and `on_quiescent`.
+    ///
+    /// `on_causal_terminal` has already consumed the `in_flight` entry and
+    /// parked the node in `agentic_settling`, so `resolve_turn` returns
+    /// `Ok(None)` and `release_cap_slot` used to do nothing at all. The
+    /// `agentic_settling` entry then survived forever, `is_drained` requires
+    /// it empty, and the run wedged with no error -- the same deadlock the
+    /// `Ok(Some(..))` arm was fixed for, reached through the other half.
+    #[test]
+    fn release_cap_slot_settles_an_agentic_node_cancelled_after_its_causal_terminal() {
+        let trace = agentic_trace(vec![
+            agentic_node("a", "play-a", 0.0, Vec::new()),
+            agentic_node("b", "play-b", 0.0, Vec::new()),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+
+        let first = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].authored_request_id.as_deref(), Some("a"));
+
+        // First half runs; the task is then lost before `on_quiescent`.
+        driver
+            .on_causal_terminal(first[0].request_uuid, 10.0, ReplayTerminalStatus::Completed)
+            .unwrap();
+        driver.release_cap_slot(first[0].request_uuid, 10.0);
+
+        let second = driver.pop_ready(10.0, usize::MAX);
+        assert_eq!(
+            second.len(),
+            1,
+            "the lane must be released even though the cancel landed after the \
+             causal terminal"
+        );
+        assert_eq!(second[0].authored_request_id.as_deref(), Some("b"));
+
+        driver
+            .on_causal_terminal(
+                second[0].request_uuid,
+                20.0,
+                ReplayTerminalStatus::Completed,
+            )
+            .unwrap();
+        driver.release_cap_slot(second[0].request_uuid, 20.0);
+        assert!(
+            driver.is_drained(),
+            "a leaked agentic_settling entry keeps is_drained false forever"
+        );
     }
 
     #[test]
