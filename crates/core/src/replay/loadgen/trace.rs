@@ -186,11 +186,24 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
 }
 
 pub(super) fn assign_dependency_component_play_ids(rows: &mut [AgenticMooncakeRow], prefix: &str) {
+    /// Iterative full path compression: the same root and the same resulting
+    /// `parent` links as the recursive form, but the stack depth no longer
+    /// tracks the union-find tree height. The merge below is
+    /// `parent[left] = right` with no union by rank or size, and the rows come
+    /// straight from an external trace file, so the tree shape is producer-
+    /// controlled rather than bounded by anything this module guarantees.
     fn find(parent: &mut [usize], value: usize) -> usize {
-        if parent[value] != value {
-            parent[value] = find(parent, parent[value]);
+        let mut root = value;
+        while parent[root] != root {
+            root = parent[root];
         }
-        parent[value]
+        let mut current = value;
+        while parent[current] != root {
+            let next = parent[current];
+            parent[current] = root;
+            current = next;
+        }
+        root
     }
 
     let by_id = rows
