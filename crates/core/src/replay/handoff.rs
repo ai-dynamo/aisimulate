@@ -300,6 +300,27 @@ impl HandoffCoordinatorCore {
     pub fn on_fact(&mut self, fact: HandoffFact) -> Result<Vec<IssuedHandoffAction>> {
         self.validate_handoff(fact.handoff_id())?;
         if self.mode != CoordinatorMode::Active {
+            // A cancel can legitimately arrive *after* the handoff already
+            // succeeded: ownership then rests solely with the decode
+            // destination, which is still generating tokens. Reopen cleanup
+            // for exactly that case. `advance_cleanup` then issues
+            // `CancelDestination` alone -- a successful handoff already set
+            // `source.cleanup_done` when `ReleaseSource` applied, so the
+            // source guard suppresses a redundant `CancelSource`.
+            //
+            // Without this, a decode-phase cancel was silently inert: the
+            // runtime recorded a Canceled terminal while the decode worker
+            // kept the request in its running batch to natural completion,
+            // holding its KV and in-flight slot for the whole decode.
+            if matches!(fact, HandoffFact::Canceled { .. })
+                && self.mode == CoordinatorMode::Complete
+                && self.completion == Some(HandoffCompletion::Success)
+            {
+                // Not `begin_cleanup`: that method treats `Complete` as
+                // terminal and returns no actions.
+                self.mode = CoordinatorMode::CleaningUp;
+                return self.advance_cleanup();
+            }
             return Ok(Vec::new());
         }
         match fact {

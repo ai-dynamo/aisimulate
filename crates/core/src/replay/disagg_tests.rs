@@ -2490,3 +2490,71 @@ fn applying_a_deferred_cancel_holds_the_instant_before_the_freed_pool_drives() {
         "the queued request must make progress once the caller steps again"
     );
 }
+
+/// Cancelling a request that is already decoding must actually stop the decode.
+///
+/// Once the handoff succeeds, the coordinator is `Complete` -- `ReleaseSource`
+/// applies before the destination generates its first token. A `Canceled` fact
+/// arriving then used to be swallowed by `on_fact`'s non-`Active` early return,
+/// so `cancel_dynamic` recorded a Canceled terminal, reported it to the caller,
+/// and left the decode worker generating the request to natural completion:
+/// the whole decode phase was uncancellable, silently.
+#[test]
+fn cancel_during_decode_retires_the_request_instead_of_letting_it_finish() {
+    let mut runtime = steppable_runtime(&busy_worker_config());
+    let uuid = runtime.submit_dynamic(request(1, 8_000, 512, 0.0)).unwrap();
+    for _ in 0..200 {
+        if runtime.flow.requests.get(&uuid).map(|state| state.phase)
+            == Some(DisaggPhase::RunningDecode)
+        {
+            break;
+        }
+        runtime.step_dynamic_until(f64::INFINITY).unwrap();
+    }
+    let decode_start_ms = runtime.now_ms();
+    assert_eq!(
+        runtime.flow.requests.get(&uuid).map(|state| state.phase),
+        Some(DisaggPhase::RunningDecode),
+        "the request must reach decode for this to exercise the post-handoff cancel"
+    );
+    assert!(
+        runtime
+            .flow
+            .requests
+            .get(&uuid)
+            .is_some_and(|state| state.coordinator.is_complete()),
+        "the handoff coordinator is already Complete once decode runs; that is \
+         exactly the state the cancel has to punch through"
+    );
+
+    assert_eq!(
+        runtime.cancel_dynamic(uuid).unwrap(),
+        Some(ReplayTerminalStatus::Canceled)
+    );
+    assert!(
+        !runtime.flow.action_queues.is_empty(),
+        "the cancel must queue decode-side cleanup rather than report success \
+         while queueing nothing"
+    );
+
+    // 512 output tokens on this fixture take well over a second of simulated
+    // decode; retiring promptly is the whole point of the cancel.
+    for _ in 0..40 {
+        if runtime.cluster_in_flight() == 0 {
+            break;
+        }
+        runtime.step_dynamic_until(f64::INFINITY).unwrap();
+    }
+    assert_eq!(
+        runtime.flow.requests.get(&uuid).map(|state| state.phase),
+        Some(DisaggPhase::Done)
+    );
+    assert_eq!(runtime.cluster_in_flight(), 0);
+    assert!(runtime.decode_engine.is_drained());
+    assert!(
+        runtime.now_ms() < decode_start_ms + 200.0,
+        "the cancel must cut the decode short, not let it run to completion \
+         (retired at {}ms, decode began at {decode_start_ms}ms)",
+        runtime.now_ms()
+    );
+}
