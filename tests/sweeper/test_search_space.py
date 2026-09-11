@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import aisimulate.sweeper as sweeper_api
+import aisimulate.sweeper.search_space as search_space_module
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.kv_estimate import NoPerfDatabase, resolve_backend_version
@@ -293,6 +294,30 @@ def test_heterogeneous_disagg_enumerates_each_role_on_its_effective_hardware(mon
     expected = DisaggParallelConfig(prefill=_AGG_CFG, decode=_DP8_CFG)
     assert branch.parallel_configs == (expected,)
     assert branch.supported_backends[expected] == frozenset({"trtllm"})
+
+
+def test_heterogeneous_disagg_requires_one_common_implicit_backend_version(monkeypatch):
+    def role_version(hardware, backend):
+        del backend
+        return {"h200_sxm": "prefill-version", "gb200": "decode-version"}[hardware]
+
+    monkeypatch.setattr("aisimulate.sweeper.search_space.resolve_backend_version", role_version)
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        lambda *args, **kwargs: pytest.fail("shape lookup must wait for a common backend version"),
+    )
+    config = _config(
+        deployment_mode=["disagg"],
+        hardware_sku="gb200",
+        prefill_hardware_sku="h200_sxm",
+    )
+
+    with pytest.raises(NoPerfDatabase, match="requires one common backend_version"):
+        search_space_module._heterogeneous_disagg_configs(
+            config.search_space,
+            backend="trtllm",
+            max_seq_len=None,
+        )
 
 
 @pytest.mark.filterwarnings("error")
