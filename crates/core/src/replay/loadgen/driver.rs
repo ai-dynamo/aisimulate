@@ -209,6 +209,17 @@ fn checked_ready_at_ms(what: &str, value: f64) -> Result<f64> {
     Ok(value)
 }
 
+/// Companion to [`checked_ready_at_ms`] for values that are *durations* rather
+/// than absolute times. A negative duration is finite, so the ready-time guard
+/// admits it, and `resolve_turn` then computes `now_ms + delay < now_ms` -- the
+/// next turn's arrival precedes its own predecessor's terminal.
+fn checked_delay_ms(what: &str, value: f64) -> Result<f64> {
+    if !value.is_finite() || value < 0.0 {
+        bail!("{what} must be finite and non-negative, got {value}");
+    }
+    Ok(value)
+}
+
 impl PartialEq for ReadySession {
     fn eq(&self, other: &Self) -> bool {
         self.ready_at_ms.to_bits() == other.ready_at_ms.to_bits()
@@ -946,6 +957,27 @@ impl WorkloadDriver {
                                 turn.synthesize_tokens(trace_block_size)?,
                             ),
                         };
+                        // `Trace::validate` rejects both of the shapes checked here,
+                        // but `new_trace`/`new_trace_accumulating_deltas`/
+                        // `new_concurrency`/`new_concurrency_accumulating_deltas`
+                        // skip it, so these are the last gate for those callers.
+                        // Placed after the `PromptTokens::deferred(..)?` above so
+                        // the deferred-prompt path still surfaces its own error
+                        // first.
+                        //
+                        // `DirectRequest::effective_max_output_tokens` prefers an
+                        // authored plan's length over `max_output_tokens`, so a
+                        // mismatched plan silently rewrites the simulated output
+                        // length and the reported OSL with no diagnostic.
+                        if let Some(authored) = turn.output_token_ids.as_ref()
+                            && authored.len() != turn.max_output_tokens
+                        {
+                            bail!(
+                                "max_output_tokens {} does not match output_token_ids length {}",
+                                turn.max_output_tokens,
+                                authored.len()
+                            );
+                        }
                         let output_token_ids = Some(planned_output_token_ids(
                             turn.output_token_ids,
                             turn.max_output_tokens,
@@ -958,7 +990,7 @@ impl WorkloadDriver {
                             replay_key: turn.replay_key,
                             max_output_tokens: turn.max_output_tokens,
                             output_token_ids,
-                            delay_after_previous_ms: checked_ready_at_ms(
+                            delay_after_previous_ms: checked_delay_ms(
                                 "turn delay_after_previous_ms",
                                 turn.delay_after_previous_ms,
                             )?,
@@ -1943,6 +1975,28 @@ mod tests {
 
         assert!(
             error.to_string().contains("must be finite"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// `new_trace` deliberately skips `Trace::validate`, so the per-turn lowering
+    /// is the last gate for these two shapes. A negative delay is finite, so the
+    /// ready-time guard admitted it and the next turn's arrival preceded its own
+    /// predecessor's terminal; a mismatched plan silently rewrites the simulated
+    /// output length, because `effective_max_output_tokens` prefers the plan.
+    #[test]
+    fn unvalidated_constructors_still_reject_a_negative_delay_and_a_mismatched_plan() {
+        let mut trace = two_session_trace();
+        trace.sessions[0].turns[1].delay_after_previous_ms = -5.0;
+        let error = WorkloadDriver::new_trace(trace, 1).unwrap_err().to_string();
+        assert!(error.contains("non-negative"), "unexpected error: {error}");
+
+        let mut trace = two_session_trace();
+        trace.sessions[0].turns[0].max_output_tokens = 8;
+        trace.sessions[0].turns[0].output_token_ids = Some(vec![1, 2, 3]);
+        let error = WorkloadDriver::new_trace(trace, 1).unwrap_err().to_string();
+        assert!(
+            error.contains("output_token_ids length"),
             "unexpected error: {error}"
         );
     }
