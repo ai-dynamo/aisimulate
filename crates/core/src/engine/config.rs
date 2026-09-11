@@ -966,11 +966,11 @@ mod tests {
     #[test]
     fn sglang_supports_prefix_caching_and_token_id_controls() {
         for (enable_prefix_caching, emit_kv_token_ids) in
-            [(false, false), (false, true), (true, true)]
+            [(false, false), (false, true), (true, false), (true, true)]
         {
             let config = EngineConfig {
                 enable_prefix_caching,
-                emit_kv_events: emit_kv_token_ids,
+                emit_kv_events: true,
                 emit_kv_token_ids,
                 ..EngineConfig::for_backend(Backend::Sglang)
             };
