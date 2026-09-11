@@ -227,6 +227,10 @@ fn validate_per_request_finite(record: &PerRequestRecord) -> Result<()> {
     let path = format!("/per_request/{}", record.uuid);
     for (field, value) in [
         ("arrival_time_ms", Some(record.arrival_time_ms)),
+        // Serialized without `skip_serializing_if`, so a non-finite value
+        // reaches the canonical JSON line as `null` instead of a number --
+        // the same class of hole the `/summary/trajectories` gate closed.
+        ("dispatched_at_ms", record.dispatched_at_ms),
         ("first_admit_ms", record.first_admit_ms),
         ("terminal_time_ms", Some(record.terminal_time_ms)),
         ("first_token_ms", record.first_token_ms),
@@ -424,5 +428,29 @@ mod tests {
             error.to_string().contains("/summary/trajectories/e2e"),
             "{error}"
         );
+    }
+
+    /// `dispatched_at_ms` serializes without `skip_serializing_if`, so a
+    /// non-finite value becomes a JSON `null` in a record advertised as
+    /// byte-stable. It was the one `PerRequestRecord` timestamp missing from
+    /// the finite gate.
+    #[test]
+    fn canonical_record_rejects_non_finite_dispatched_at_ms() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let uuid = uuid::Uuid::from_u128(1);
+        collector.on_arrival(uuid, 0.0, 4, 1);
+        collector.on_terminal(
+            uuid,
+            10.0,
+            crate::replay::report::ReplayTerminalStatus::Completed,
+        );
+        let mut report = collector.finish();
+        report.per_request[0].dispatched_at_ms = Some(f64::NAN);
+        let coverage =
+            CanonicalReplayCoverage::from_report(&report, ReplayCaptureOptions::default());
+        let error =
+            CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).unwrap_err();
+        assert!(error.to_string().contains("dispatched_at_ms"), "{error}");
     }
 }
