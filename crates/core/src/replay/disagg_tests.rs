@@ -2343,3 +2343,150 @@ fn test_concurrency_workload_holds_session_slot_depth_first() {
         vec![64, 192, 128]
     );
 }
+
+fn steppable_runtime(config: &TestDisaggConfig) -> RoundRobinDisaggRuntime {
+    let runtime_config = config.runtime_config(false).unwrap();
+    RoundRobinDisaggRuntime::new_composed(
+        &runtime_config,
+        AdmissionQueue::new_requests(
+            VecDeque::new(),
+            ReplayMode::Concurrency {
+                max_in_flight: usize::MAX,
+            },
+        ),
+        false,
+        |_, prefill, _, decode| {
+            Ok((
+                PoolRoundRobinPlacement::new(prefill),
+                PoolRoundRobinPlacement::new(decode),
+            ))
+        },
+    )
+    .unwrap()
+    .into_steppable()
+}
+/// One prefill worker, one decode worker, and passes slow enough (no speedup)
+/// that a step deadline can land inside a running pass.
+fn busy_worker_config() -> TestDisaggConfig {
+    TestDisaggConfig {
+        prefill_args: staged_args(WorkerType::Prefill, 1.0),
+        decode_args: staged_args(WorkerType::Decode, 1.0),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
+        num_prefill_workers: 1,
+        num_decode_workers: 1,
+    }
+}
+
+fn deferred_prefill_actions(runtime: &RoundRobinDisaggRuntime, worker_idx: usize) -> usize {
+    runtime
+        .flow
+        .action_queues
+        .deferred_prefill
+        .get(&worker_idx)
+        .map_or(0, VecDeque::len)
+}
+
+/// `execute_action`'s `CancelSource` arm must park the cleanup command when the
+/// prefill worker is mid-pass instead of issuing it into a busy engine.
+///
+/// Reaching the guard needs a step deadline *inside* the pass: stepping to the
+/// next event always lands on the pass completion, which clears `pending_pass`
+/// before the caller regains control. `step_dynamic_until(0.0)` starts the pass
+/// without advancing time, so the cancel arrives while the worker still holds
+/// it.
+#[test]
+fn cancel_defers_source_cleanup_while_the_prefill_worker_holds_a_pass() {
+    let mut runtime = steppable_runtime(&busy_worker_config());
+    let uuid = runtime.submit_dynamic(request(1, 8_000, 64, 0.0)).unwrap();
+
+    // Commits the prefill pass at t=0 without advancing to its completion.
+    assert_eq!(runtime.step_dynamic_until(0.0).unwrap(), 0.0);
+    assert!(
+        runtime.prefill_engine.worker_is_busy(0).unwrap(),
+        "the prefill worker must hold a pass for the cancel guard to apply"
+    );
+
+    assert_eq!(
+        runtime.cancel_dynamic(uuid).unwrap(),
+        Some(ReplayTerminalStatus::Canceled)
+    );
+    assert_eq!(
+        deferred_prefill_actions(&runtime, 0),
+        1,
+        "CancelSource must be deferred onto the busy prefill worker"
+    );
+    assert_eq!(
+        runtime.flow.requests.get(&uuid).map(|state| state.phase),
+        Some(DisaggPhase::RunningPrefill),
+        "the deferred cancel must not have retired the request yet"
+    );
+    assert_eq!(runtime.cluster_in_flight(), 1);
+
+    // The pass completes, wakes the deferred action, and the cancel applies.
+    runtime.step_dynamic_until(f64::INFINITY).unwrap();
+    assert_eq!(deferred_prefill_actions(&runtime, 0), 0);
+    assert_eq!(
+        runtime.flow.requests.get(&uuid).map(|state| state.phase),
+        Some(DisaggPhase::Done)
+    );
+    assert_eq!(runtime.cluster_in_flight(), 0);
+}
+
+/// Applying a deferred cancel retires a request from inside
+/// `drain_current_timestamp`'s `drive_pending_actions`, where
+/// `evaluate_completions_and_maybe_defer`'s in-flight-delta check cannot see
+/// it: the worker completion that woke the action freed no slot by itself.
+/// Only the `step_freed_slot` rung after `drive_pending_actions` holds the
+/// instant, so the freed prefill worker must not already be committed to the
+/// next request's pass when the step returns.
+#[test]
+fn applying_a_deferred_cancel_holds_the_instant_before_the_freed_pool_drives() {
+    let mut runtime = steppable_runtime(&busy_worker_config());
+    let canceled = runtime.submit_dynamic(request(1, 8_000, 64, 0.0)).unwrap();
+    runtime.step_dynamic_until(0.0).unwrap();
+    assert!(runtime.prefill_engine.worker_is_busy(0).unwrap());
+
+    // Submitted after the first pass is committed, so it queues behind it
+    // rather than batching into it.
+    let queued = runtime.submit_dynamic(request(2, 4_000, 64, 0.0)).unwrap();
+    runtime.step_dynamic_until(0.0).unwrap();
+
+    assert_eq!(
+        runtime.cancel_dynamic(canceled).unwrap(),
+        Some(ReplayTerminalStatus::Canceled)
+    );
+    assert_eq!(deferred_prefill_actions(&runtime, 0), 1);
+
+    // Advances to the pass completion, wakes the deferred cancel, and applies
+    // it inside the drain.
+    runtime.step_dynamic_until(f64::INFINITY).unwrap();
+    assert_eq!(
+        runtime
+            .flow
+            .requests
+            .get(&canceled)
+            .map(|state| state.phase),
+        Some(DisaggPhase::Done)
+    );
+    assert!(
+        !runtime.prefill_engine.worker_is_busy(0).unwrap(),
+        "the drain must return before committing the freed prefill worker to \
+         the queued request's pass"
+    );
+    assert!(
+        !runtime.is_workload_done(),
+        "the held instant must leave the commit half armed"
+    );
+
+    // The caller's next step is the one that commits the queued request.
+    runtime.step_dynamic_until(f64::INFINITY).unwrap();
+    assert!(runtime.now_ms() > 164.0);
+    assert!(
+        matches!(
+            runtime.flow.requests.get(&queued).map(|state| state.phase),
+            Some(DisaggPhase::RunningDecode | DisaggPhase::Done)
+        ),
+        "the queued request must make progress once the caller steps again"
+    );
+}

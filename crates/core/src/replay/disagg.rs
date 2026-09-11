@@ -2607,6 +2607,39 @@ where
             }
             changed |= self.release_ready_arrivals()?;
             changed |= self.drive_pending_actions()?;
+            // The one rung in this ladder a caller can reach, and the reason
+            // the ladder is not redundant with
+            // `evaluate_completions_and_maybe_defer`'s in-flight-delta check.
+            //
+            // The two freed-slot detectors key on different things and do
+            // diverge. `evaluate_completions_and_maybe_defer` compares
+            // `cluster_in_flight()` across `drain_completions()` alone, so it
+            // only ever sees a slot freed by a *worker completion*.
+            // `step_freed_slot` is set at `finish_logical_request`, which
+            // `drive_pending_actions` also reaches, through `execute_action`
+            // -> `HandoffAction::Complete` -> `complete_handoff`'s `Canceled`
+            // arm. A cancel deferred behind a busy worker (the
+            // `worker_is_busy` guards in `execute_action`) is woken by that
+            // worker's completion and applied *here*, inside the drain, at an
+            // instant where `drain_completions` saw no in-flight decrease at
+            // all: the request was still in flight when the completion
+            // settled, and retires only once the woken `CancelSource` runs.
+            // An inline prefill rejection during routing arrives here the
+            // same way. Returning is what keeps the freed prefill pool from
+            // being committed to the next request's pass at the same instant,
+            // which is the delta-cycle contract `step_dynamic_until`
+            // documents.
+            //
+            // Covered by
+            // `applying_a_deferred_cancel_holds_the_instant_before_the_freed_pool_drives`.
+            // The other four rungs are defense in depth for decrement paths
+            // this file does not have today: 1 and 2 need a completion or
+            // transfer to retire a request on the `drive_pending` entry path
+            // (which skips `evaluate_completions_and_maybe_defer`), and 4 and
+            // 5 need `drive_prefill_workers`/`drive_decode_workers` to retire
+            // one from inside a pass start. None is exercised, and disabling
+            // this rung alone is absorbed by rung 4 rather than by a stall --
+            // so they are kept rather than pruned.
             if self.defer_drive && self.step_freed_slot {
                 self.drive_pending = true;
                 return Ok(());
