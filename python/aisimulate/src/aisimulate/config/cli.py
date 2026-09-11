@@ -42,6 +42,11 @@ class CorePredictionConfig(StrictModel):
             and self.engine.mode != "aggregated"
         ):
             raise ValueError(f"{source.format} requires aggregated engine mode")
+        if self.engine.placement.policy == "session_affinity" and isinstance(source, SyntheticSource):
+            raise ValueError(
+                "engine.placement.policy=session_affinity requires a session-bearing source "
+                "(synthetic-session or trace)"
+            )
         return self
 
     @classmethod

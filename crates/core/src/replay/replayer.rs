@@ -225,9 +225,33 @@ pub enum ReplayRuntimeInput {
     Workload(WorkloadDriver),
 }
 
-/// Built-in engine-only composition: Round-robin placement and fixed capacity.
+/// Built-in engine-only composition: round-robin placement and fixed capacity.
+///
+/// With `session_affinity`, a session's first turn is still placed by round
+/// robin and later turns with the same `session_id` reuse that scheduler while
+/// its worker stays in the pool (`adapters.placement.provider:
+/// session_affinity`).
 #[derive(Debug, Default, Clone, Copy)]
-pub struct RoundRobinComposition;
+pub struct RoundRobinComposition {
+    pub session_affinity: bool,
+}
+
+impl RoundRobinComposition {
+    /// Select the placement mode from `spec.adapters.placement.provider`.
+    pub fn from_spec(spec: &ReplaySpec) -> Self {
+        Self {
+            session_affinity: spec.adapters.placement.provider == "session_affinity",
+        }
+    }
+
+    fn provider(self) -> &'static str {
+        if self.session_affinity {
+            "session_affinity"
+        } else {
+            "round_robin"
+        }
+    }
+}
 
 impl ReplayComposition for RoundRobinComposition {
     type Metadata = NoReplayMetadata;
@@ -236,9 +260,10 @@ impl ReplayComposition for RoundRobinComposition {
     type DisaggregatedPlacement = PoolRoundRobinPlacement<()>;
 
     fn validate_spec(&self, spec: &ReplaySpec) -> ReplayResult<()> {
-        if spec.adapters.placement.provider != "round_robin" {
+        if spec.adapters.placement.provider != self.provider() {
             return Err(ReplayError::InvalidSpec(format!(
-                "engine composition requires round_robin placement, got {:?}",
+                "engine composition requires {} placement, got {:?}",
+                self.provider(),
                 spec.adapters.placement.provider
             )));
         }
@@ -256,7 +281,8 @@ impl ReplayComposition for RoundRobinComposition {
         dp_size: u32,
         topology: Vec<WorkerTopology>,
     ) -> AnyResult<Self::AggregatedPlacement> {
-        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology))
+        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)
+            .with_session_affinity(self.session_affinity))
     }
 
     fn create_disaggregated_placements(
@@ -267,8 +293,10 @@ impl ReplayComposition for RoundRobinComposition {
         decode_topology: Vec<WorkerTopology>,
     ) -> AnyResult<(Self::DisaggregatedPlacement, Self::DisaggregatedPlacement)> {
         Ok((
-            PoolRoundRobinPlacement::new(prefill_topology),
-            PoolRoundRobinPlacement::new(decode_topology),
+            PoolRoundRobinPlacement::new(prefill_topology)
+                .with_session_affinity(self.session_affinity),
+            PoolRoundRobinPlacement::new(decode_topology)
+                .with_session_affinity(self.session_affinity),
         ))
     }
 }
@@ -286,7 +314,8 @@ pub struct Replayer<C = RoundRobinComposition> {
 
 impl Replayer<RoundRobinComposition> {
     pub fn new(spec: ReplaySpec, factory: ReplayEngineFactory) -> ReplayResult<Self> {
-        Self::with_composition(spec, factory, RoundRobinComposition)
+        let composition = RoundRobinComposition::from_spec(&spec);
+        Self::with_composition(spec, factory, composition)
     }
 
     /// Run a fixed, aggregated single-worker replay and retain detailed
@@ -805,7 +834,8 @@ mod generated_replay_tests {
     use crate::engine::{Backend, EngineConfig, TimingModelConfig};
     use crate::replay::loadgen::GeneratedRequests;
     use crate::replay::{
-        CanonicalReplayCoverage, CanonicalReplayRecord, ReplayRoleConfig, WorkerPoolSpec,
+        CanonicalReplayCoverage, CanonicalReplayRecord, ProviderSpec, ReplayRequest,
+        ReplayRoleConfig, WorkerPoolSpec,
     };
     use std::sync::{
         Arc,
@@ -883,6 +913,62 @@ mod generated_replay_tests {
         .unwrap()
         .into_json_line()
         .unwrap()
+    }
+
+    /// Per-session worker ids, in turn order, for two interleaved sessions
+    /// replayed open-loop on two aggregated workers.
+    fn session_workers(placement: ProviderSpec) -> Vec<Vec<usize>> {
+        let mut replay_spec = spec(Backend::Vllm, false, 1, true);
+        replay_spec.max_in_flight = None;
+        replay_spec.adapters.placement = placement;
+        replay_spec.requests = ["a", "a", "b", "b", "a", "b"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, session)| ReplayRequest {
+                id: format!("{session}-{index}"),
+                arrival_time_ms: index as f64,
+                input_tokens: 8,
+                input_token_ids: None,
+                output_tokens: 1,
+                output_token_ids: None,
+                dp_rank: None,
+                prefill_dp_rank: None,
+                session_id: Some(session.into()),
+                turn_index: None,
+                metadata: serde_json::Value::Null,
+            })
+            .collect();
+        let report = Replayer::new(replay_spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        ["a", "b"]
+            .into_iter()
+            .map(|session| {
+                let mut turns: Vec<_> = report
+                    .per_request
+                    .iter()
+                    .filter(|record| record.session_id.as_deref() == Some(session))
+                    .collect();
+                turns.sort_by(|left, right| left.arrival_time_ms.total_cmp(&right.arrival_time_ms));
+                turns
+                    .into_iter()
+                    .map(|record| record.routing_history[0].logical_worker_id.unwrap())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn session_affinity_provider_keeps_each_session_on_one_worker() {
+        assert_eq!(
+            session_workers(ProviderSpec::round_robin()),
+            vec![vec![0, 1, 0], vec![0, 1, 1]]
+        );
+        assert_eq!(
+            session_workers(ProviderSpec::session_affinity()),
+            vec![vec![0, 0, 0], vec![1, 1, 1]]
+        );
     }
 
     #[test]

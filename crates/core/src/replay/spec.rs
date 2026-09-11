@@ -283,6 +283,13 @@ impl ProviderSpec {
         }
     }
 
+    pub fn session_affinity() -> Self {
+        Self {
+            provider: "session_affinity".to_string(),
+            config: Value::Null,
+        }
+    }
+
     pub fn no_scaling() -> Self {
         Self {
             provider: "none".to_string(),

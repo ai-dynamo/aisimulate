@@ -88,6 +88,7 @@ def _deployment(engine: EnginePredictionConfig) -> BackendDeploymentSpec:
         "deployment_mode": mode,
         "backend": engine.backend,
         "backend_version": engine.backend_version or "",
+        "placement_policy": engine.placement.policy,
     }
     if mode == "agg":
         assert engine.workers.aggregated is not None

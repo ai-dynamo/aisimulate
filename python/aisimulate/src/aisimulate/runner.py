@@ -899,7 +899,7 @@ def _materialize_engine_execution_spec(
         "engine": engine,
         "adapters": {
             "placement": {
-                "provider": "round_robin",
+                "provider": deployment.placement_policy,
                 "config": None,
             },
             "scaling": {

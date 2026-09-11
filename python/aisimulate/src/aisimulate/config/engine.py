@@ -132,6 +132,12 @@ class WorkersPredictionConfig(StrictModel):
         return self
 
 
+class PlacementPredictionConfig(StrictModel):
+    """Engine-stack request placement across replicas; the Dynamo Router is configured under `router`."""
+
+    policy: Literal["round_robin", "session_affinity"] = "round_robin"
+
+
 class KvTransferConfig(StrictModel):
     bytes_per_token: KvBytesPerToken = "auto"
     bandwidth_gb_per_second: PositiveFloat | None = None
@@ -147,6 +153,7 @@ class EnginePredictionConfig(StrictModel):
     context_length: PositiveInt | Literal["max"] = "max"
     workers: WorkersPredictionConfig
     kv_transfer: KvTransferConfig | None = None
+    placement: PlacementPredictionConfig = Field(default_factory=PlacementPredictionConfig)
 
     @field_validator("model", "hardware")
     @classmethod

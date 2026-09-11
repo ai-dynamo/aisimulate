@@ -13,6 +13,48 @@ use super::{
     RequestIdentity, WorkerTopology,
 };
 
+/// Session-to-scheduler pins used when session affinity is enabled. The first
+/// turn of a session is placed by round robin; later turns reuse that
+/// scheduler (hence the same worker and attention-DP rank) while it is still
+/// in the active pool. A pin whose scheduler left the pool is ignored and
+/// overwritten by the next round-robin decision. An authored attention-DP
+/// preference does not override an existing pin.
+#[derive(Debug, Default)]
+struct SessionPins(FxHashMap<String, usize>);
+
+impl SessionPins {
+    fn pinned(
+        &self,
+        session_id: Option<&str>,
+        workers: &BTreeMap<usize, Vec<usize>>,
+    ) -> Option<usize> {
+        let scheduler_id = *self.0.get(session_id?)?;
+        workers
+            .values()
+            .any(|scheduler_ids| scheduler_ids.contains(&scheduler_id))
+            .then_some(scheduler_id)
+    }
+
+    fn pin(&mut self, session_id: Option<String>, scheduler_id: usize) {
+        if let Some(session_id) = session_id {
+            self.0.insert(session_id, scheduler_id);
+        }
+    }
+}
+
+fn immediate(request_id: Uuid, scheduler_id: usize) -> PlacementEffects {
+    PlacementEffects {
+        decision: PlacementDecision::Immediate(Placement {
+            request_id,
+            scheduler_id,
+            reported_overlap_tokens: 0,
+            cache_sample: None,
+            placement_replica_id: None,
+        }),
+        released: Vec::new(),
+    }
+}
+
 #[derive(Debug)]
 pub struct AggregatedRoundRobin {
     next_worker: usize,
@@ -24,6 +66,7 @@ pub struct AggregatedRoundRobin {
 pub struct AggregatedRoundRobinPlacement<Events: EngineEventBatch> {
     counter: AggregatedRoundRobin,
     workers: BTreeMap<usize, Vec<usize>>,
+    pins: Option<SessionPins>,
     events: PhantomData<Events>,
 }
 
@@ -39,8 +82,15 @@ impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
                 .into_iter()
                 .map(|worker| (worker.worker_id, worker.scheduler_ids))
                 .collect(),
+            pins: None,
             events: PhantomData,
         }
+    }
+
+    /// Pin later turns of a session to the scheduler chosen for its first turn.
+    pub fn with_session_affinity(mut self, enabled: bool) -> Self {
+        self.pins = enabled.then(SessionPins::default);
+        self
     }
 }
 
@@ -57,12 +107,17 @@ where
         &mut self,
         request: &Request,
         _metadata: Self::Metadata,
-        _session_id: Option<String>,
+        session_id: Option<String>,
         _now_ms: f64,
     ) -> Result<PlacementEffects> {
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
+        if let Some(pins) = &self.pins
+            && let Some(scheduler_id) = pins.pinned(session_id.as_deref(), &self.workers)
+        {
+            return Ok(immediate(request_id, scheduler_id));
+        }
         let scheduler_id = self.counter.next(
             self.workers.keys().copied(),
             request.preferred_dp_rank(),
@@ -73,16 +128,10 @@ where
                     .copied()
             },
         )?;
-        Ok(PlacementEffects {
-            decision: PlacementDecision::Immediate(Placement {
-                request_id,
-                scheduler_id,
-                reported_overlap_tokens: 0,
-                cache_sample: None,
-                placement_replica_id: None,
-            }),
-            released: Vec::new(),
-        })
+        if let Some(pins) = &mut self.pins {
+            pins.pin(session_id, scheduler_id);
+        }
+        Ok(immediate(request_id, scheduler_id))
     }
 
     #[inline]
@@ -136,6 +185,7 @@ where
 pub struct PoolRoundRobinPlacement<Events: EngineEventBatch> {
     next: usize,
     workers: BTreeMap<usize, Vec<usize>>,
+    pins: Option<SessionPins>,
     events: PhantomData<Events>,
 }
 
@@ -147,8 +197,15 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
                 .into_iter()
                 .map(|worker| (worker.worker_id, worker.scheduler_ids))
                 .collect(),
+            pins: None,
             events: PhantomData,
         }
+    }
+
+    /// Pin later turns of a session to the scheduler chosen for its first turn.
+    pub fn with_session_affinity(mut self, enabled: bool) -> Self {
+        self.pins = enabled.then(SessionPins::default);
+        self
     }
 
     #[cfg(test)]
@@ -171,12 +228,17 @@ where
         &mut self,
         request: &Request,
         _metadata: Self::Metadata,
-        _session_id: Option<String>,
+        session_id: Option<String>,
         _now_ms: f64,
     ) -> Result<PlacementEffects> {
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
+        if let Some(pins) = &self.pins
+            && let Some(scheduler_id) = pins.pinned(session_id.as_deref(), &self.workers)
+        {
+            return Ok(immediate(request_id, scheduler_id));
+        }
         let preferred_dp_rank = request.preferred_dp_rank().map(|rank| rank as usize);
         let active_count = match preferred_dp_rank {
             Some(rank) => self
@@ -209,16 +271,10 @@ where
         }
         .expect("active round-robin pool must contain a scheduler");
         self.next = index + 1;
-        Ok(PlacementEffects {
-            decision: PlacementDecision::Immediate(Placement {
-                request_id,
-                scheduler_id,
-                reported_overlap_tokens: 0,
-                cache_sample: None,
-                placement_replica_id: None,
-            }),
-            released: Vec::new(),
-        })
+        if let Some(pins) = &mut self.pins {
+            pins.pin(session_id, scheduler_id);
+        }
+        Ok(immediate(request_id, scheduler_id))
     }
 
     fn observe(&mut self, _observation: Events, _now_ms: f64) -> Result<Vec<Placement>> {
@@ -351,11 +407,19 @@ mod tests {
         policy: &mut impl PlacementPolicy<TestRequest, Metadata = ()>,
         ordinal: u128,
     ) -> usize {
+        place_session(policy, ordinal, None)
+    }
+
+    fn place_session(
+        policy: &mut impl PlacementPolicy<TestRequest, Metadata = ()>,
+        ordinal: u128,
+        session_id: Option<&str>,
+    ) -> usize {
         let effects = PlacementPolicy::<TestRequest>::place(
             policy,
             &TestRequest(Uuid::from_u128(ordinal)),
             (),
-            None,
+            session_id.map(str::to_owned),
             0.0,
         )
         .unwrap();
@@ -363,6 +427,62 @@ mod tests {
             panic!("round-robin placement must be immediate");
         };
         placement.scheduler_id
+    }
+
+    fn pool_worker(worker_id: usize) -> WorkerTopology {
+        WorkerTopology {
+            worker_id,
+            scheduler_ids: vec![10 + worker_id],
+        }
+    }
+
+    #[test]
+    fn pool_session_affinity_pins_turns_and_falls_back_when_the_worker_leaves() {
+        let mut policy = PoolRoundRobinPlacement::<()>::new((0..3).map(pool_worker).collect())
+            .with_session_affinity(true);
+
+        assert_eq!(place_session(&mut policy, 1, Some("a")), 10);
+        assert_eq!(place_session(&mut policy, 2, Some("b")), 11);
+        // A pinned turn neither moves nor advances the round-robin cursor.
+        assert_eq!(place_session(&mut policy, 3, Some("a")), 10);
+        assert_eq!(place_session(&mut policy, 4, None), 12);
+        assert_eq!(place_session(&mut policy, 5, Some("b")), 11);
+
+        PlacementPolicy::<TestRequest>::worker_draining(&mut policy, pool_worker(1), 0.0).unwrap();
+        // The pinned worker left the pool: round robin re-places and re-pins.
+        assert_eq!(place_session(&mut policy, 6, Some("b")), 12);
+        assert_eq!(place_session(&mut policy, 7, Some("b")), 12);
+        PlacementPolicy::<TestRequest>::worker_ready(&mut policy, pool_worker(1), 0.0).unwrap();
+        assert_eq!(place_session(&mut policy, 8, Some("b")), 12);
+    }
+
+    #[test]
+    fn aggregated_session_affinity_keeps_worker_and_rank() {
+        let worker = |worker_id| WorkerTopology {
+            worker_id,
+            scheduler_ids: vec![worker_id * 10, worker_id * 10 + 1],
+        };
+        let mut policy = AggregatedRoundRobinPlacement::<()>::new(2, vec![worker(1), worker(2)])
+            .with_session_affinity(true);
+
+        assert_eq!(place_session(&mut policy, 1, Some("a")), 10);
+        assert_eq!(place_session(&mut policy, 2, Some("b")), 20);
+        assert_eq!(place_session(&mut policy, 3, Some("a")), 10);
+        // Unpinned traffic continues the worker and per-worker rank rotation.
+        assert_eq!(place_session(&mut policy, 4, None), 11);
+        assert_eq!(place_session(&mut policy, 5, Some("b")), 20);
+
+        PlacementPolicy::<TestRequest>::worker_removed(&mut policy, worker(2), 0.0).unwrap();
+        assert_eq!(place_session(&mut policy, 6, Some("b")), 10);
+        assert_eq!(place_session(&mut policy, 7, Some("b")), 10);
+    }
+
+    #[test]
+    fn session_ids_are_ignored_without_session_affinity() {
+        let mut policy = PoolRoundRobinPlacement::<()>::new((0..2).map(pool_worker).collect());
+
+        assert_eq!(place_session(&mut policy, 1, Some("a")), 10);
+        assert_eq!(place_session(&mut policy, 2, Some("a")), 11);
     }
 
     #[test]

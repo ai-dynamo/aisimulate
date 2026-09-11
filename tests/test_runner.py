@@ -5,6 +5,7 @@
 
 import json
 import pickle
+from dataclasses import replace
 
 import pytest
 
@@ -297,6 +298,16 @@ def test_runner_lowers_canonical_spec_and_returns_replay_report():
     assert execution["record_per_request"] is False
     assert isinstance(runtime.execution_spec_json, str)
     assert report.metadata == {}
+
+
+def test_runner_lowers_placement_policy_into_execution_adapters():
+    runtime = RecordingRuntime()
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=1)
+    deployment = replace(_spec().backend_deployment, placement_policy="session_affinity")
+
+    runner.run(_spec(deployment=deployment))
+
+    assert runtime.execution_spec["adapters"]["placement"] == {"provider": "session_affinity", "config": None}
 
 
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])

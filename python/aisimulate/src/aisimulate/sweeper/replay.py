@@ -95,6 +95,8 @@ class BackendDeploymentSpec:
     num_decode_workers: int = 0
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
     encoder: EncoderPoolSpec | None = None
+    # Engine-stack placement across replicas: "round_robin" or "session_affinity".
+    placement_policy: str = "round_robin"
 
 
 @dataclass(frozen=True)

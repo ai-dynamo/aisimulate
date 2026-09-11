@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.common import split_config_sections
 from aisimulate.config.engine import (
@@ -708,6 +709,28 @@ def test_weka_requires_aggregated_engine() -> None:
                 },
             }
         )
+
+
+def test_engine_placement_policy_defaults_and_lowers_to_deployment() -> None:
+    default = CorePredictionConfig.model_validate({"engine": {**_engine(), "context_length": 2048}})
+    assert default.engine.placement.policy == "round_robin"
+    assert prediction_to_replay_spec(default).backend_deployment.placement_policy == "round_robin"
+
+    sticky = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {"type": "trace", "paths": ["sessions.jsonl"], "format": "mooncake"},
+                "load": {"type": "trace_timestamps"},
+            },
+            "engine": {**_engine(), "context_length": 2048, "placement": {"policy": "session_affinity"}},
+        }
+    )
+    assert prediction_to_replay_spec(sticky).backend_deployment.placement_policy == "session_affinity"
+
+    with pytest.raises(ValidationError, match="round_robin"):
+        CorePredictionConfig.model_validate({"engine": {**_engine(), "placement": {"policy": "kv_router"}}})
+    with pytest.raises(ValidationError, match="session-bearing source"):
+        CorePredictionConfig.model_validate({"engine": {**_engine(), "placement": {"policy": "session_affinity"}}})
 
 
 def test_finite_rate_and_timeout_contract() -> None:

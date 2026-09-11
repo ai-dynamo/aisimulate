@@ -38,6 +38,7 @@ _EXPECTED_PREDICT_CASES = (
     "10-trace-dynamo-standard-disagg.yaml",
     "11-trace-weka-agentic-lane.yaml",
     "12-trace-weka-jsonl-agentic-lane.yaml",
+    "13-trace-mooncake-delta-session-affinity.yaml",
 )
 _EXPECTED_RECOMMEND_CASES = (
     "01-default-preset-throughput.yaml",

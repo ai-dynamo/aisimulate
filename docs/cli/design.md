@@ -485,6 +485,11 @@ agentic traces it scales root-node timestamps and the combined dependency delay 
 `speedup` is deliberately rejected with `load.type: concurrency`: concurrency replaces authored
 first-arrival pacing, and inter-turn or dependency delays remain unscaled.
 
+With more than one replica, `engine.placement.policy: session_affinity` keeps every turn of a
+Mooncake, Weka, or `synthetic-session` session on the worker that served its first turn, so
+multi-turn traffic reuses its prefix cache without the Dynamo KV router (see
+[Engine Fields](#engine-fields)).
+
 ### Trace Format Compatibility
 
 | Format | JSONL Unit | Allowed Load | `speedup` | `max_virtual_time_seconds` | Other Version 1 Constraints |
@@ -600,6 +605,8 @@ engine:
   backend: vllm
   backend_version: null
   context_length: max
+  placement:
+    policy: round_robin
   workers:
     aggregated:
       parallelism:
@@ -639,6 +646,7 @@ engine:
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
+| `engine.placement.policy` | `round_robin` | `x` | `-` | `predict` only, engine stack; the Dynamo Router is configured under `router`. `round_robin` or `session_affinity`. `session_affinity` places a session's first turn by round robin and keeps later turns with the same `session_id` on that worker and attention-DP rank while it stays in the pool, falling back to round robin otherwise. Requests without a session stay round robin; rejected with the `synthetic` source, which has no sessions. |
 | `engine.workers` | Required | `x` | `-` | Aggregated role or prefill plus decode roles; optional analytical `encoder` pool. |
 | `engine.workers.encoder.tensor`, `.replicas`, `.batch_size` | `1` | Scalar or finite `choices` | `encoder` | Positive; batch size at most 8. Not a language-worker parallelism preset. |
 | `engine.workers.encoder.hardware`, `.backend_version` | Inherit/resolve | `x` | `-` | Encoder hardware and performance data; backend follows language backend. Saved prediction YAML pins resolved values. |
