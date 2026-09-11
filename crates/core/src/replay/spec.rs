@@ -16,6 +16,7 @@ pub const CURRENT_REPLAY_SPEC_VERSION: u32 = 1;
 /// Provider descriptors are data only. A runner resolves them to concrete
 /// placement/scaling implementations before constructing [`crate::replay::Replayer`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplaySpec {
     #[serde(default = "default_spec_version")]
     pub version: u32,
@@ -103,7 +104,7 @@ fn is_true(value: &bool) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReplayTopology {
     Aggregated {
         workers: WorkerPoolSpec,
@@ -145,6 +146,7 @@ impl ReplayTopology {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerPoolSpec {
     pub initial_workers: usize,
     #[serde(default)]
@@ -172,6 +174,7 @@ impl WorkerPoolSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplayRequest {
     pub id: String,
     pub arrival_time_ms: f64,
@@ -378,6 +381,7 @@ pub struct ReplayRoutingMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplayAdapters {
     #[serde(default = "ProviderSpec::round_robin")]
     pub placement: ProviderSpec,
@@ -395,6 +399,7 @@ impl Default for ReplayAdapters {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderSpec {
     pub provider: String,
     #[serde(default)]
@@ -633,5 +638,36 @@ mod direct_request_conversion_tests {
         let converted = ReplayRequest::try_from((0, request)).unwrap();
         assert_eq!(converted.input_tokens, 2);
         assert_eq!(converted.input_token_ids, None);
+    }
+}
+
+#[cfg(test)]
+mod unknown_field_tests {
+    use super::ReplaySpec;
+
+    fn spec_json(extra: &str) -> String {
+        format!(
+            r#"{{"topology":{{"kind":"aggregated","workers":{{"initial_workers":1}}}},
+                "requests":[],{extra}}}"#
+        )
+    }
+
+    /// `ReplaySpec` is deserialized straight from a caller-supplied JSON payload
+    /// (`python.rs`'s `execute_json`), and nearly every field defaults. Without
+    /// unknown-field rejection a misspelled key is dropped and the run silently
+    /// uses the default: `max_inflight` leaves the concurrency cap off, and a
+    /// typo'd `input_token_ids` swaps authored prompt content for synthetics,
+    /// changing all KV and prefix behaviour.
+    #[test]
+    fn a_misspelled_spec_key_is_rejected_rather_than_defaulted() {
+        serde_json::from_str::<ReplaySpec>(&spec_json(r#""max_in_flight":4"#))
+            .expect("the correctly spelled key must still parse");
+
+        let error = serde_json::from_str::<ReplaySpec>(&spec_json(r#""max_inflight":4"#))
+            .expect_err("a misspelled key must not be silently dropped");
+        assert!(
+            error.to_string().contains("max_inflight"),
+            "error should name the offending key: {error}"
+        );
     }
 }
