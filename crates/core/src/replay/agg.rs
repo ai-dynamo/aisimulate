@@ -64,6 +64,12 @@ where
     PlacementPolicyImpl: PlacementPolicy<ReplayRequestPayload, Metadata = Metadata, Observation = Observation::Batch>,
 {
     now_ms: f64,
+    /// High-water mark for worker-seconds integration in `advance_now_ms`,
+    /// tracked separately from `now_ms`. `now_ms` legitimately steps
+    /// backward (`step_dynamic_until` draining an earlier still-pending
+    /// internal deadline before catching back up to a caller's later poke),
+    /// but re-crossing an interval already integrated must not re-add it.
+    worker_seconds_high_water_ms: f64,
     dp_size: u32,
     next_event_seq: u64,
     next_scaling_tick_ordinal: u64,
@@ -145,6 +151,7 @@ where
 
         Ok(Self {
             now_ms: REPLAY_EPOCH_MS,
+            worker_seconds_high_water_ms: REPLAY_EPOCH_MS,
             dp_size,
             next_event_seq: 0,
             next_scaling_tick_ordinal: 0,
@@ -1127,7 +1134,12 @@ where
             "the replay clock target must be finite: {} -> {new_now_ms}",
             self.now_ms
         );
-        let dt_ms = (new_now_ms - self.now_ms).max(0.0);
+        // Integrate against the high-water mark, not `self.now_ms` directly:
+        // `self.now_ms` can step backward (see above), and re-crossing an
+        // interval already integrated on an earlier forward step must not
+        // add its worker-seconds a second time.
+        let dt_ms = (new_now_ms - self.worker_seconds_high_water_ms).max(0.0);
+        self.worker_seconds_high_water_ms = self.worker_seconds_high_water_ms.max(new_now_ms);
         if dt_ms > 0.0 {
             let decode_worker_seconds = self.engine.worker_count() as f64 * dt_ms / 1000.0;
             self.collector
