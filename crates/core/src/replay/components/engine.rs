@@ -848,7 +848,7 @@ where
                         {
                             let in_flight = worker.total_in_flight();
                             bail!(
-                                "offline replay detected an effect-free zero-duration pass with {in_flight} in-flight requests remaining"
+                                "offline replay detected an effect-free zero-duration pass with {in_flight} in-flight requests remaining after {MAX_CONSECUTIVE_SAME_TIMESTAMP_RETRIES} consecutive same-timestamp retries"
                             );
                         }
                         continue;
@@ -862,7 +862,7 @@ where
                         // final deadlock decision.
                         if self.stage == SimulationWorkerStage::Aggregated && in_flight > 0 {
                             bail!(
-                                "offline replay detected an effect-free zero-duration pass with {in_flight} in-flight requests remaining"
+                                "offline replay detected an effect-free zero-duration pass with {in_flight} in-flight requests remaining on an aggregated worker with same-timestamp retries already exhausted"
                             );
                         }
                     }
