@@ -288,18 +288,30 @@ where
 
     /// Materialize policy-released admissions into concrete worker dispatches.
     fn dispatch_placements(&mut self, placements: Vec<Placement>) -> anyhow::Result<()> {
-        for placement in placements {
+        // Resolve every placement's rank identity before committing anything.
+        // `record_placement` folds the placement into offered-traffic totals and
+        // the KV hit-rate sample, and `on_route_released` emits a routing record,
+        // so resolving inline meant an unknown scheduler in the middle of a batch
+        // left the earlier placements already counted as routed while their
+        // requests stayed queued -- the same class of half-applied accounting an
+        // earlier round hoisted a `bail!` for in `assign_request`.
+        let identities = placements
+            .iter()
+            .map(|placement| {
+                self.engine
+                    .rank_identity(placement.scheduler_id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "offline replay placement references unknown scheduler {}",
+                            placement.scheduler_id
+                        )
+                    })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        for (placement, (logical_worker_id, dp_rank)) in placements.into_iter().zip(identities) {
             self.record_placement(placement);
             let uuid = placement.request_id;
-            let (logical_worker_id, dp_rank) = self
-                .engine
-                .rank_identity(placement.scheduler_id)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "offline replay placement references unknown scheduler {}",
-                        placement.scheduler_id
-                    )
-                })?;
             self.collector.on_route_released(
                 uuid,
                 ReplayRequestPool::Agg,
