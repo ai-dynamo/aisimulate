@@ -1053,7 +1053,35 @@ impl WorkloadDriver {
         // failure/panic-recovery path), so surface it via tracing instead
         // of silently dropping it.
         match self.resolve_turn(request_uuid, now_ms, TurnOutcome::Cancelled) {
-            Ok(Some(resolution)) => self.apply_resolution(resolution, now_ms),
+            Ok(Some(resolution)) => {
+                let node_index = resolution.session_index;
+                self.apply_resolution(resolution, now_ms);
+                // An agentic node terminates in two halves: the causal
+                // terminal (`apply_resolution` -> `on_node_terminal`) and the
+                // settlement (`on_node_quiescent`) that decrements the play's
+                // `emitted_in_flight`. `on_terminal` gets the second half from
+                // a later `on_quiescent`; this failure path never receives one,
+                // because the request task it is recovering from is already
+                // gone. Without it `emitted_in_flight` never returns to zero,
+                // so the play never releases its lane, the lane's remaining
+                // plays are never activated, their sessions keep an unconsumed
+                // turn, and `is_drained` stays false forever -- exactly the
+                // wedge this function's doc comment claims to prevent.
+                if let SchedulingPolicy::Agentic(state) = &mut self.policy
+                    && let Err(error) = state.on_node_quiescent(
+                        &mut self.sessions,
+                        &mut self.ready_sessions,
+                        node_index,
+                        now_ms,
+                    )
+                {
+                    tracing::error!(
+                        %request_uuid,
+                        error = %error,
+                        "release_cap_slot: failed to settle a cancelled agentic node"
+                    );
+                }
+            }
             Ok(None) => {}
             Err(error) => {
                 tracing::error!(
@@ -2458,6 +2486,33 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].authored_request_id.as_deref(), Some("b"));
         assert_eq!(second[0].dispatched_at_ms, 20.0);
+    }
+
+    /// `release_cap_slot` is the failure path for a request task that died
+    /// before `on_complete`. In agentic mode it used to run only the causal
+    /// half of the node lifecycle, leaving the play's `emitted_in_flight`
+    /// permanently non-zero: the lane was never released, the next play never
+    /// activated, and `is_drained` never became true.
+    #[test]
+    fn release_cap_slot_settles_an_agentic_node_and_frees_its_lane() {
+        let trace = agentic_trace(vec![
+            agentic_node("a", "play-a", 0.0, Vec::new()),
+            agentic_node("b", "play-b", 0.0, Vec::new()),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 1).unwrap();
+
+        let first = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].authored_request_id.as_deref(), Some("a"));
+
+        driver.release_cap_slot(first[0].request_uuid, 10.0);
+
+        let second = driver.pop_ready(10.0, usize::MAX);
+        assert_eq!(second.len(), 1, "lane was not released by release_cap_slot");
+        assert_eq!(second[0].authored_request_id.as_deref(), Some("b"));
+
+        driver.release_cap_slot(second[0].request_uuid, 20.0);
+        assert!(driver.is_drained());
     }
 
     #[test]
