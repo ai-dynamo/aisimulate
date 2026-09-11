@@ -91,6 +91,10 @@ arrays. Evidence should be public-safe and reproducible. Internal workflow IDs,
 raw silicon measurements, and mutable branch names are not sufficient release
 anchors.
 
+The release-ready validator hashes repository-relative artifacts from the
+repository root and downloads HTTPS artifacts before accepting their digest.
+Missing content, non-HTTPS redirects, and SHA-256 mismatches fail closed.
+
 At closeout, set the top-level `candidate_revision` to the one integrated commit
 that every release-blocking gate tested. Every passing evidence record must use
 that same commit, and the release command must receive it independently through

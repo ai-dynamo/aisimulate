@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 
@@ -16,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "validate_power_qualification.py"
 LEDGER = ROOT / "docs" / "power" / "qualification-matrix.json"
 SCHEMA = ROOT / "docs" / "power" / "qualification-matrix.schema.json"
+TEST_ARTIFACT_REF = "docs/power/evidence/power-data-invariants-bb31ab4.json"
+TEST_ARTIFACT = ROOT / TEST_ARTIFACT_REF
 SPEC = importlib.util.spec_from_file_location("validate_power_qualification", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 QUALIFICATION = importlib.util.module_from_spec(SPEC)
@@ -31,10 +34,11 @@ def _gate(document: dict, gate_id: str) -> dict:
 
 
 def _passing_evidence(revision: str, suffix: str) -> dict:
+    del suffix
     return {
         "result": "pass",
-        "artifact": f"https://example.invalid/{suffix}.json",
-        "sha256": "1" * 64,
+        "artifact": TEST_ARTIFACT_REF,
+        "sha256": hashlib.sha256(TEST_ARTIFACT.read_bytes()).hexdigest(),
         "source_revision": revision,
         "recorded_at": "2026-09-08T12:00:00Z",
     }
@@ -80,8 +84,8 @@ def test_checked_in_power_qualification_ledger_is_structurally_valid() -> None:
 def test_power_data_invariant_evidence_is_complete_and_machine_readable() -> None:
     document = _document()
     evidence = _gate(document, "power-data-invariants")["execution"]["evidence"][0]
-    text = (ROOT / evidence["artifact"]).read_text(encoding="utf-8")
-    result = json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0])
+    with (ROOT / evidence["artifact"]).open(encoding="utf-8") as artifact_file:
+        result = json.load(artifact_file)
 
     assert result["files_scanned"] == len(result["files"]) == 3
     assert result["rows_scanned"] == sum(file_result["rows_scanned"] for file_result in result["files"])
@@ -171,6 +175,73 @@ def test_release_check_accepts_one_fully_qualified_candidate_revision() -> None:
         require_release_ready=True,
         expected_revision=revision,
     )
+
+
+def test_release_check_hashes_https_artifacts(monkeypatch: pytest.MonkeyPatch) -> None:
+    revision = "a" * 40
+    document = _qualified_document(revision)
+    content = b'{"result":"pass"}'
+    artifact_url = "https://artifacts.example/power-matrix.json"
+    evidence = _gate(document, "modeled-power-matrix")["execution"]["evidence"][0]
+    evidence["artifact"] = artifact_url
+    evidence["sha256"] = hashlib.sha256(content).hexdigest()
+    requests: list[tuple[str, int]] = []
+
+    class FakeHttpsResponse:
+        def __init__(self) -> None:
+            self.stream = io.BytesIO(content)
+
+        def __enter__(self) -> FakeHttpsResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return artifact_url
+
+        def read(self, size: int) -> bytes:
+            return self.stream.read(size)
+
+    def fake_urlopen(url: str, *, timeout: int) -> FakeHttpsResponse:
+        requests.append((url, timeout))
+        return FakeHttpsResponse()
+
+    monkeypatch.setattr(QUALIFICATION, "urlopen", fake_urlopen)
+
+    QUALIFICATION.validate_document(
+        document,
+        require_release_ready=True,
+        expected_revision=revision,
+    )
+
+    assert requests == [(artifact_url, 30)]
+
+
+@pytest.mark.parametrize(
+    ("artifact", "digest", "message"),
+    [
+        (TEST_ARTIFACT_REF, "0" * 64, "SHA-256 mismatch"),
+        ("docs/power/evidence/missing.json", "0" * 64, "artifact is unavailable"),
+    ],
+)
+def test_release_check_rejects_unverifiable_artifacts(
+    artifact: str,
+    digest: str,
+    message: str,
+) -> None:
+    revision = "a" * 40
+    document = _qualified_document(revision)
+    evidence = _gate(document, "modeled-power-matrix")["execution"]["evidence"][0]
+    evidence["artifact"] = artifact
+    evidence["sha256"] = digest
+
+    with pytest.raises(QUALIFICATION.QualificationError, match=message):
+        QUALIFICATION.validate_document(
+            document,
+            require_release_ready=True,
+            expected_revision=revision,
+        )
 
 
 def test_cli_release_gate_fails_closed_and_checks_expected_revision(
@@ -302,6 +373,46 @@ def test_loader_rejects_non_json_constants(tmp_path: Path) -> None:
 
     with pytest.raises(QUALIFICATION.QualificationError, match="non-JSON constant"):
         QUALIFICATION.load_and_validate(ledger)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_additional_gate_thresholds_reject_nonfinite_numbers(value: float) -> None:
+    document = _document()
+    extra_gate = copy.deepcopy(document["gates"][0])
+    extra_gate["id"] = "optional-extra-gate"
+    extra_gate["release_blocking"] = False
+    extra_gate["assertions"][0]["thresholds"] = {"optional_limit": value}
+    extra_gate["execution"]["status"] = "pending"
+    extra_gate["execution"]["evidence"] = []
+    document["gates"].append(extra_gate)
+
+    with pytest.raises(QUALIFICATION.QualificationError, match="non-finite"):
+        QUALIFICATION.validate_document(document)
+
+
+@pytest.mark.parametrize("gate_id", ["afd-power-integration", "application-wheel"])
+def test_malformed_execution_accumulates_validation_errors(gate_id: str) -> None:
+    document = _document()
+    _gate(document, gate_id)["execution"] = []
+
+    with pytest.raises(QUALIFICATION.QualificationError, match="execution must be an object"):
+        QUALIFICATION.validate_document(
+            document,
+            require_release_ready=True,
+            expected_revision="a" * 40,
+        )
+
+
+def test_malformed_accuracy_policy_accumulates_validation_errors() -> None:
+    document = _document()
+    document["policy"]["silicon_accuracy"] = []
+
+    with pytest.raises(QUALIFICATION.QualificationError, match="silicon_accuracy must be an object"):
+        QUALIFICATION.validate_document(
+            document,
+            require_release_ready=True,
+            expected_revision="a" * 40,
+        )
 
 
 def test_planned_command_cannot_be_presented_as_passing() -> None:

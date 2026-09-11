@@ -13,12 +13,16 @@ evidence and requires an approved silicon-accuracy threshold.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LEDGER = ROOT / "docs" / "power" / "qualification-matrix.json"
@@ -51,6 +55,8 @@ EXPECTATIONS = {
     "data_invariants",
 }
 STATUSES = {"pending", "blocked", "passed", "failed"}
+ARTIFACT_READ_CHUNK_BYTES = 1024 * 1024
+ARTIFACT_FETCH_TIMEOUT_SECONDS = 30
 
 
 class QualificationError(ValueError):
@@ -70,6 +76,36 @@ def _expect_keys(value: Any, required: set[str], context: str, errors: list[str]
     _expect(not missing, f"{context} is missing {sorted(missing)}", errors)
     unexpected = value.keys() - required
     _expect(not unexpected, f"{context} has unexpected keys {sorted(unexpected)}", errors)
+
+
+def _contains_nonfinite_number(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_contains_nonfinite_number(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_nonfinite_number(item) for item in value)
+    return False
+
+
+def _artifact_sha256(artifact: str) -> str:
+    digest = hashlib.sha256()
+    if artifact.startswith("https://"):
+        with urlopen(artifact, timeout=ARTIFACT_FETCH_TIMEOUT_SECONDS) as response:
+            final_url = response.geturl()
+            if not final_url.startswith("https://"):
+                raise ValueError(f"artifact redirected to a non-HTTPS URL: {final_url}")
+            while chunk := response.read(ARTIFACT_READ_CHUNK_BYTES):
+                digest.update(chunk)
+    else:
+        root = ROOT.resolve()
+        artifact_path = (root / artifact).resolve()
+        if not artifact_path.is_relative_to(root):
+            raise ValueError("repository-relative artifact resolves outside the repository")
+        with artifact_path.open("rb") as artifact_file:
+            while chunk := artifact_file.read(ARTIFACT_READ_CHUNK_BYTES):
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _validate_matrix(matrix: Any, context: str, errors: list[str]) -> None:
@@ -150,9 +186,22 @@ def _validate_assertion(assertion: Any, matrix: dict[str, list[str]], context: s
         f"{context}.thresholds must be an object",
         errors,
     )
+    thresholds = assertion.get("thresholds")
+    if isinstance(thresholds, dict):
+        _expect(
+            not _contains_nonfinite_number(thresholds),
+            f"{context}.thresholds must not contain non-finite numbers",
+            errors,
+        )
 
 
-def _validate_evidence(evidence: Any, context: str, errors: list[str]) -> None:
+def _validate_evidence(
+    evidence: Any,
+    context: str,
+    errors: list[str],
+    *,
+    verify_artifact: bool,
+) -> None:
     _expect_keys(
         evidence,
         {"result", "artifact", "sha256", "source_revision", "recorded_at"},
@@ -172,19 +221,35 @@ def _validate_evidence(evidence: Any, context: str, errors: list[str]) -> None:
         f"{context}.artifact must be non-empty",
         errors,
     )
+    artifact_is_valid = False
     if isinstance(artifact, str) and artifact:
         path_parts = Path(artifact).parts
+        artifact_is_valid = artifact.startswith("https://") or (
+            "://" not in artifact and not Path(artifact).is_absolute() and ".." not in path_parts
+        )
         _expect(
-            artifact.startswith("https://")
-            or ("://" not in artifact and not Path(artifact).is_absolute() and ".." not in path_parts),
+            artifact_is_valid,
             f"{context}.artifact must be HTTPS or a repository-relative path",
             errors,
         )
+    expected_digest = evidence.get("sha256")
+    digest_is_valid = isinstance(expected_digest, str) and bool(DIGEST_RE.fullmatch(expected_digest))
     _expect(
-        isinstance(evidence.get("sha256"), str) and bool(DIGEST_RE.fullmatch(evidence["sha256"])),
+        digest_is_valid,
         f"{context}.sha256 must be 64 lowercase hex",
         errors,
     )
+    if verify_artifact and artifact_is_valid and digest_is_valid:
+        try:
+            actual_digest = _artifact_sha256(artifact)
+        except (OSError, URLError, ValueError) as error:
+            errors.append(f"{context}.artifact is unavailable: {error}")
+        else:
+            _expect(
+                actual_digest == expected_digest,
+                f"{context}.artifact SHA-256 mismatch: expected {expected_digest}, got {actual_digest}",
+                errors,
+            )
     _expect(
         isinstance(evidence.get("source_revision"), str) and bool(SHA_RE.fullmatch(evidence["source_revision"])),
         f"{context}.source_revision must be a 40-character commit SHA",
@@ -202,7 +267,13 @@ def _validate_evidence(evidence: Any, context: str, errors: list[str]) -> None:
     )
 
 
-def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
+def _validate_gate(
+    gate: Any,
+    index: int,
+    errors: list[str],
+    *,
+    verify_artifacts: bool,
+) -> None:
     context = f"gates[{index}]"
     _expect_keys(
         gate,
@@ -324,7 +395,12 @@ def _validate_gate(gate: Any, index: int, errors: list[str]) -> None:
     )
     if isinstance(evidence, list):
         for evidence_index, item in enumerate(evidence):
-            _validate_evidence(item, f"{context}.execution.evidence[{evidence_index}]", errors)
+            _validate_evidence(
+                item,
+                f"{context}.execution.evidence[{evidence_index}]",
+                errors,
+                verify_artifact=verify_artifacts,
+            )
         if status in {"passed", "failed"}:
             _expect(bool(evidence), f"{context} cannot be {status} without evidence", errors)
         if status == "passed":
@@ -622,8 +698,9 @@ def _validate_required_coverage(document: dict[str, Any], errors: list[str]) -> 
             ],
             errors=errors,
         )
+        execution = gate.get("execution")
         _expect(
-            gate.get("execution", {}).get("status") == "blocked",
+            isinstance(execution, dict) and execution.get("status") == "blocked",
             f"{integration} must remain blocked until its integration exists",
             errors,
         )
@@ -754,8 +831,14 @@ def validate_document(
     gates = document.get("gates")
     _expect(isinstance(gates, list) and gates, "gates must be a non-empty array", errors)
     if isinstance(gates, list):
+        verify_artifacts = require_release_ready or document.get("release_state") == "qualified"
         for index, gate in enumerate(gates):
-            _validate_gate(gate, index, errors)
+            _validate_gate(
+                gate,
+                index,
+                errors,
+                verify_artifacts=verify_artifacts,
+            )
         ids = [gate.get("id") for gate in gates if isinstance(gate, dict)]
         if all(isinstance(gate_id, str) for gate_id in ids):
             _expect(len(ids) == len(set(ids)), "gate ids must be unique", errors)
@@ -779,33 +862,37 @@ def validate_document(
                 errors,
             )
         if isinstance(policy, dict):
-            accuracy_policy = policy.get("silicon_accuracy", {})
+            accuracy_policy = policy.get("silicon_accuracy")
+            if not isinstance(accuracy_policy, dict):
+                accuracy_policy = {}
             _expect(
                 accuracy_policy.get("threshold_status") == "approved",
                 "silicon accuracy threshold is not approved",
                 errors,
             )
         if isinstance(gates, list):
-            unfinished = [
-                gate.get("id")
-                for gate in gates
-                if isinstance(gate, dict)
-                and gate.get("release_blocking")
-                and gate.get("execution", {}).get("status") != "passed"
-            ]
+            unfinished = []
+            for gate in gates:
+                if not isinstance(gate, dict) or not gate.get("release_blocking"):
+                    continue
+                execution = gate.get("execution")
+                if not isinstance(execution, dict) or execution.get("status") != "passed":
+                    unfinished.append(gate.get("id"))
             _expect(
                 not unfinished,
                 f"release-blocking gates are not passed: {unfinished}",
                 errors,
             )
             for gate in gates:
+                execution = gate.get("execution") if isinstance(gate, dict) else None
                 if (
                     not isinstance(gate, dict)
                     or not gate.get("release_blocking")
-                    or gate.get("execution", {}).get("status") != "passed"
+                    or not isinstance(execution, dict)
+                    or execution.get("status") != "passed"
                 ):
                     continue
-                evidence = gate.get("execution", {}).get("evidence", [])
+                evidence = execution.get("evidence", [])
                 mismatched = [
                     item.get("source_revision")
                     for item in evidence

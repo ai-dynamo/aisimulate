@@ -308,7 +308,7 @@ aiconfigurator cli default \
   --strict-sla
 ```
 
-The AISimulate recommendation contract is:
+Save the AISimulate recommendation contract below as `recommendation.yaml`:
 
 <!-- afd-migration-contract-start -->
 ```yaml
