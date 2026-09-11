@@ -215,6 +215,7 @@ def _exercise_fpe_matrix() -> None:
         result = subprocess.run(
             [
                 sys.executable,
+                "-I",
                 str(generator),
                 "--system",
                 "b200_sxm",
