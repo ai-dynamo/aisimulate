@@ -286,7 +286,15 @@ impl HandoffCoordinatorCore {
     }
 
     pub fn start(&mut self) -> Result<Vec<IssuedHandoffAction>> {
-        if self.actions.started {
+        // `started` alone is not sufficient. A terminal fact arriving before
+        // `start()` runs `begin_cleanup` -> `advance_cleanup`, which sees neither
+        // `submit_issued` nor `reserve_issued` and completes immediately, leaving
+        // `mode == Complete` with `started == false`. Starting from there issues a
+        // SubmitPrefill that every subsequent `on_fact` and `on_action_outcome`
+        // then swallows through their `Complete` guards, so the prefill is never
+        // released, cancelled, or completed and holds its in-flight slot and KV
+        // blocks for the rest of the run.
+        if self.actions.started || self.mode != CoordinatorMode::Active {
             return Ok(Vec::new());
         }
         self.actions.started = true;
@@ -626,6 +634,28 @@ mod tests {
     use super::*;
     use crate::engine::TransferTimingMode;
     use uuid::Uuid;
+
+    /// A terminal fact before `start()` completes cleanup immediately (nothing
+    /// has been issued to clean up), leaving `mode == Complete` with
+    /// `started == false`. `start()` guarded only on `started`, so it then issued
+    /// a SubmitPrefill that every later `on_fact`/`on_action_outcome` swallows
+    /// through their `Complete` guards -- the prefill is never released or
+    /// cancelled and holds its slot and KV blocks for the rest of the run.
+    #[test]
+    fn starting_an_already_terminal_coordinator_issues_nothing() {
+        let handoff_id = HandoffId::new(Uuid::from_u128(7));
+        let mut coordinator =
+            HandoffCoordinatorCore::new_with_fallback(handoff_id, HandoffOrder::SourceFirst, 1.0);
+
+        coordinator
+            .on_fact(HandoffFact::Canceled { handoff_id })
+            .expect("a terminal fact before start must be accepted");
+
+        assert!(
+            coordinator.start().unwrap().is_empty(),
+            "a completed coordinator must not issue a prefill it can never retire"
+        );
+    }
 
     fn start_transfer_delay(timing: HandoffTransferTiming, fallback_ms: f64) -> f64 {
         let handoff_id = HandoffId::new(Uuid::from_u128(1));
