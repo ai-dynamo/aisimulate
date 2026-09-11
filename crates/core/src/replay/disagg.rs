@@ -1802,7 +1802,23 @@ where
                 self.notify_causal_terminal(uuid)?;
                 self.cancel_prefill_route(uuid)?;
                 self.cancel_decode_route(uuid)?;
-                self.finish_logical_request(uuid, true)?;
+                // Decode terminal finalizes a request while its handoff stays
+                // retained for cleanup, so a cancellation can complete a handoff
+                // whose request is already finalized. Retire it the way the
+                // success arm does rather than finalizing it a second time,
+                // which `prepare_logical_finish` rejects.
+                let (counted_in_flight, phase) = {
+                    let state = self.state(uuid)?;
+                    (state.counted_in_flight, state.phase)
+                };
+                if counted_in_flight {
+                    self.finish_logical_request(uuid, true)?;
+                } else if phase != DisaggPhase::Done {
+                    self.flow.action_queues.remove(uuid);
+                    if self.flow.retire_completed_request(uuid)? {
+                        self.notify_quiescent(uuid)?;
+                    }
+                }
             }
             None => bail!("handoff completed without a terminal coordinator outcome"),
         }

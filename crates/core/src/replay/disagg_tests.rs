@@ -1052,6 +1052,66 @@ fn decode_terminal_retains_handoff_until_deferred_cleanup_drains() {
     }
 }
 
+/// `decode_terminal_retains_handoff_until_deferred_cleanup_drains` documents the
+/// window where a request is already logically finished while its handoff is
+/// still retained pending cleanup. A cancellation landing in that window drives
+/// the coordinator to a `Canceled` completion, and completing the handoff must
+/// not finalize the request a second time -- that aborts the whole replay run.
+///
+/// The window is entered here with the same `finish_logical_request` call
+/// `process_decode_signal` makes at decode terminal, which deliberately leaves
+/// the handoff's queued actions alive.
+#[test]
+fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
+    let config = disagg_config_with_handoff_delay();
+    let uuid = Uuid::from_u128(1);
+    let input_tokens = config.prefill_args.block_size * 2;
+    let mut runtime = DisaggRuntime::from_requests(
+        &config,
+        None,
+        None,
+        VecDeque::from([request(1, input_tokens, 2, 0.0)]),
+        ReplayMode::Trace,
+    )
+    .unwrap();
+
+    runtime.drain_current_timestamp().unwrap();
+    for _ in 0..16 {
+        if runtime.state(uuid).unwrap().phase == DisaggPhase::TransferPending {
+            break;
+        }
+        let next = runtime.next_timestamp().unwrap();
+        runtime.advance_now_ms(next);
+        runtime.drain_current_timestamp().unwrap();
+    }
+    assert_eq!(
+        runtime.state(uuid).unwrap().phase,
+        DisaggPhase::TransferPending
+    );
+
+    runtime.finish_logical_request(uuid, false).unwrap();
+    assert!(!runtime.state(uuid).unwrap().counted_in_flight);
+    assert!(!runtime.state(uuid).unwrap().coordinator.is_complete());
+
+    let handoff_id = runtime.state(uuid).unwrap().handoff_id;
+    runtime
+        .apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })
+        .unwrap();
+    while !runtime.is_done() {
+        let Some(next) = runtime.next_timestamp() else {
+            break;
+        };
+        runtime.advance_now_ms(next);
+        runtime.drain_current_timestamp().unwrap();
+    }
+
+    assert_eq!(
+        runtime.state(uuid).unwrap().coordinator.completion(),
+        Some(HandoffCompletion::Canceled)
+    );
+    assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+}
+
 #[rstest::rstest]
 #[case(EngineType::Vllm)]
 #[case(EngineType::Sglang)]
