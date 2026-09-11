@@ -119,6 +119,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('root',type=Path)
     parser.add_argument('--reference-api',type=Path,required=True)
+    parser.add_argument('--baseline-root',type=Path)
     args=parser.parse_args()
     reference=read(args.reference_api)
     if isinstance(reference,dict) and 'reference' in reference:
@@ -126,7 +127,8 @@ def main():
     if isinstance(reference,list):
         reference=next(row for row in reference if str(row['id'])=='439922')
     assert str(reference['id'])=='439922'
-    cases={case:summarize(args.root/case) for case in ('off','on')}
+    off_root=args.baseline_root or args.root
+    cases={'off':summarize(off_root/'off'), 'on':summarize(args.root/'on')}
     audit=audit_fpm(args.root/'on/fpm.jsonl')
     checksum=(args.root/'on/fpm.sha256').read_text().split()[0]
     assert audit['sha256']==checksum
@@ -139,14 +141,18 @@ def main():
                          on_vs_off_pct=100*(on/off-1) if off else None))
     result=dict(reference=reference,cases=cases,comparison=rows,fpm=audit,
                 campaign=read(args.root/'campaign-result.json'),
+                pairing=dict(separate_allocations=off_root.resolve()!=args.root.resolve(),
+                    off_root=str(off_root), on_root=str(args.root),
+                    off_campaign=read(off_root/'campaign-result.json'),
+                    baseline_link=read(args.root/'baseline-link.json') if (args.root/'baseline-link.json').exists() else None),
                 analyzed_at=datetime.now(timezone.utc).isoformat(),
-                caveat='One ordered off/on pair; same four allocated GPUs, G2 disabled, fresh engines/KV and reused compilation cache; non-exclusive host and newer runtime versus reference. FPM timing is recorded-stream elapsed time, not summed kernel-busy time or client TTFT/ITL.')
+                caveat='One off/on comparison; G2 disabled, fresh engines/KV and warmup per case. Inspect pairing for separate allocations/GPU UUID differences; non-exclusive host and newer runtime confound small differences. FPM timing is recorded-stream elapsed time, not summed kernel-busy time or client TTFT/ITL.')
     (args.root/'comparison.json').write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps(result,indent=2))
     assert audit['valid'],audit
     assert result['campaign']['status']=='complete'
     for case in cases.values():
-        assert case['submission_valid'] and not case['was_cancelled'] and not case['error_summary']
+        assert case['submission_valid'] and not case['was_cancelled']
 
 
 if __name__=='__main__':

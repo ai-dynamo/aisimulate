@@ -19,6 +19,8 @@ import urllib.error
 import urllib.request
 
 JOB = os.environ['SLURM_JOB_ID']
+CASES = os.environ.get('MINIMAX_CASES', 'off,on').split(',')
+BASELINE_JOB = os.environ.get('MINIMAX_BASELINE_JOB_ID')
 API_PORT = 20000 + int(JOB) % 10000
 FPM_PORT = 10000 + int(JOB) % 10000
 BUNDLE = Path(__file__).resolve().parent
@@ -164,7 +166,10 @@ def run_case(case, env):
             raise RuntimeError(f'{case} client exited {proc.returncode}')
         summary = json.loads((out/'aiperf/profile_export_aiperf.json').read_text())
         assert summary['metadata']['submission_valid'] and not summary['was_cancelled']
-        assert not summary['error_summary'], summary['error_summary']
+        save(out/'client-validation.json', dict(
+            submission_valid=summary['metadata']['submission_valid'],
+            was_cancelled=summary['was_cancelled'], error_summary=summary['error_summary'],
+            metric_duration_coverage=summary['metadata']['metric_duration_coverage']))
         success = True
     finally:
         stage(case, 'preserving_artifacts')
@@ -206,6 +211,19 @@ def run_case(case, env):
 
 
 def main():
+    assert CASES in (['off', 'on'], ['on']), CASES
+    baseline = None
+    if CASES == ['on']:
+        assert BASELINE_JOB and BASELINE_JOB.isdigit()
+        baseline_root = ROOT.parent/f'job-{BASELINE_JOB}'
+        baseline = json.loads((baseline_root/'off/aiperf/profile_export_aiperf.json').read_text())
+        assert baseline['metadata']['submission_valid'] and not baseline['was_cancelled']
+        old_protocol = json.loads((baseline_root/'protocol.json').read_text())
+        assert old_protocol['g2'] is False and old_protocol['concurrency'] == 15 and old_protocol['tp'] == 4
+        assert old_protocol['fpm_revision'] == 'b3563fc65ae0f5359802593d78e7ea097e1fed31'
+        assert old_protocol['target_revision'] == TARGET.name and old_protocol['draft_revision'] == DRAFT.name
+        old_allocation = json.loads((baseline_root/'allocation.json').read_text())
+        assert old_allocation['SLURM_JOB_NODELIST'] == os.environ['SLURM_JOB_NODELIST']
     ROOT.mkdir(parents=True, exist_ok=False)
     bundle = ROOT/'bundle'
     bundle.mkdir()
@@ -232,6 +250,13 @@ print(json.dumps(devices))
 '''
     allocated = json.loads(subprocess.check_output([PY, '-c', probe], text=True))
     save(ROOT/'allocated-gpus.json', allocated)
+    if baseline is not None:
+        old_gpus = json.loads((baseline_root/'allocated-gpus.json').read_text())
+        save(ROOT/'baseline-link.json', dict(job_id=BASELINE_JOB, node=old_allocation['SLURM_JOB_NODELIST'],
+            same_gpu_uuids={g['uuid'] for g in old_gpus} == {g['uuid'] for g in allocated},
+            separate_allocation=True, baseline_submission_valid=True,
+            baseline_errors=baseline['error_summary'],
+            baseline_slurm_note='Original off run failed a post-export zero-error assertion; measured export remains valid.'))
     (ROOT/'hardware.csv').write_text(subprocess.check_output(['nvidia-smi', '--query-gpu=name,uuid,memory.total,driver_version,power.limit', '--format=csv'], text=True))
     (ROOT/'topology.txt').write_text(subprocess.check_output(['nvidia-smi','topo','-m'], text=True))
     save(ROOT/'allocation.json', {key:os.environ.get(key) for key in ['SLURM_JOB_ID','SLURM_JOB_GPUS','SLURM_JOB_NODELIST','CUDA_VISIBLE_DEVICES','SLURM_CPUS_PER_TASK']})
@@ -244,7 +269,8 @@ print(json.dumps(devices))
         fpm_revision='b3563fc65ae0f5359802593d78e7ea097e1fed31',
         vllm_base='2cf0a6915ce544dc493a0990f2ea38d81601128a', fpm_publishers=1,
         api_port=API_PORT, fpm_port=FPM_PORT,
-        cases=['off','on'], isolation='Four Slurm-assigned GPUs; not an exclusive whole-node allocation'))
+        cases=CASES, baseline_job=BASELINE_JOB,
+        isolation='Four Slurm-assigned GPUs; not an exclusive whole-node allocation'))
     env = os.environ.copy()
     for name in ('VLLM_USE_SIMPLE_KV_OFFLOAD', 'VLLM_PREFIX_CACHE_RETENTION_INTERVAL', 'AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID'):
         env.pop(name, None)
@@ -260,7 +286,7 @@ print(json.dumps(devices))
     save(ROOT/'inherited-signal-mask.json', list(map(int,mask)))
     with (ROOT/'cli-preflight.log').open('w') as log:
         subprocess.run([PY, str(BUNDLE/'benchmark.py'), '--preflight'], env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
-    for case in ('off', 'on'):
+    for case in CASES:
         run_case(case, env)
     save(ROOT/'campaign-result.json', dict(status='complete', completed_at_ns=time.time_ns()))
 

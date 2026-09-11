@@ -77,7 +77,26 @@ The raw FPM-updated image hit a first-request FA4/CuTe ABI error with the GQA dr
 
 ## Results and validation
 
-Formal job `4244685` was submitted September 11, 2026 with the validated final image. Full off/on performance is pending; no formal throughput/latency comparison is claimed yet. Check its final Slurm state and `campaign-result.json`, not this submission statement, for completion.
+The off baseline from job `4244685` completed 3600 measured seconds: 2,491 successful requests, one client `Broken pipe` error, zero output-length mismatches/cancellations, and `submission_valid=true`. Its wrapper nevertheless exited `FAILED 1:0` because an additional zero-error assertion ran after the valid export. The assertion has been removed: the harness now follows AIPerf's validity result and preserves every reported error in `client-validation.json`, without changing the client or retry policy.
+
+To avoid repeating a valid hour, supplementary **on-only job `4245705`** runs the same configuration on `umbriel-b200-048`. These are **separate allocations and different GPU UUID sets**, not a strict same-allocation pair; fresh compilation caches and changes in co-tenant activity also limit attribution of small differences to FPM. The on job's `baseline-link.json` preserves this boundary and the original baseline error/status. Its performance/FPM results are pending.
+
+The recovery invocation is:
+
+```bash
+sbatch --nodelist=umbriel-b200-048 \\
+  --export=ALL,MINIMAX_CASES=on,MINIMAX_BASELINE_JOB_ID=4244685 \\
+  /home/scratch.hongkuanz_gpu/minimax-m3-439922-vllm-20260911/submit-benchmark.sh
+```
+
+For a new controlled pair, leave `MINIMAX_CASES` unset to run both cases in one allocation. To analyze the preserved split runs:
+
+```bash
+uv run --no-project analyze.py /path/to/job-4245705 \\
+  --baseline-root /path/to/job-4244685 --reference-api reference-point.json
+```
+
+[monitor.sh](monitor.sh) is a read-only workstation monitor that queries exact-job `sacct` state (including when `squeue` is empty), prints final campaign/capture evidence, and stops at a supplied UTC deadline. Log scans alone must not be treated as proof that a job is still running.
 
 Preparation validation:
 
