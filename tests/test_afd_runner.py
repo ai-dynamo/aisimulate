@@ -11,6 +11,7 @@ from aisimulate.runner import (
     AFDCompanionTiming,
     AICAFDCompanionPerformanceModel,
     EngineReplayRunnerFactory,
+    InvalidRunnerError,
 )
 from aisimulate.sweeper import (
     AFDTopology,
@@ -373,4 +374,15 @@ def test_afd_runner_fails_closed_for_unimplemented_simulation_deadline():
     spec.workload["max_sim_time_ms"] = 10.0
 
     with pytest.raises(ValueError, match="max_sim_time_ms"):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
+@pytest.mark.parametrize("combined_with_pd", [False, True])
+def test_afd_runner_rejects_images_before_analytical_dispatch(combined_with_pd):
+    spec = _spec(
+        _topology(phase="decode" if combined_with_pd else "both", combined_with_pd=combined_with_pd),
+        companion_role="prefill" if combined_with_pd else None,
+    )
+    spec = replace(spec, workload={**spec.workload, "images": {"height": 448, "width": 448, "count": 1}})
+    with pytest.raises(InvalidRunnerError, match="image workloads require an encoder pool"):
         EngineReplayRunnerFactory().create(0).run(spec)

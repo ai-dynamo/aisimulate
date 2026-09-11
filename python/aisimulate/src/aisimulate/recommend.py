@@ -40,6 +40,8 @@ def run_recommendation(
 
     from .sweeper.search import Sweeper
 
+    if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
+        raise ValueError("analytical EPD requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
@@ -136,6 +138,17 @@ def recommendation_to_sweeper(
             afd_phase=afd.get("phase") if isinstance(afd, dict) else None,
         )
     )
+    if engine.get("workers", {}).get("encoder") is not None:
+        encoder = workers["encoder"]
+        search_space["encoder"] = {
+            "hardware_sku": encoder.get("hardware"),
+            "backend_version": encoder.get("backend_version"),
+            "tp": _choices(encoder["tensor"], default=[1]),
+            "workers": _choices(encoder["replicas"], default=[1]),
+            "batch_size": _choices(encoder["batch_size"], default=[1]),
+            "latency_correction": encoder["latency_correction"],
+            "rate_degradation": encoder["rate_degradation"],
+        }
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
         search_space["kv_transfer_bytes_per_token"] = transfer.get("bytes_per_token")
@@ -569,6 +582,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
         return result
     if source_type == "synthetic":
         result.update(isl=source.get("input_tokens", 1024), osl=source.get("output_tokens", 128))
+        if source.get("images") is not None:
+            result["images"] = deepcopy(source["images"])
         count = stop.get("requests") if isinstance(stop, dict) else None
         ratio = stop.get("requests_per_load_unit") if isinstance(stop, dict) else None
     elif source_type == "synthetic-session":
@@ -691,6 +706,10 @@ def _candidate_prediction(
         "workers": {},
     }
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
+    if deployment.encoder is not None:
+        from .config.epd import encoder_prediction_fields
+
+        engine["workers"]["encoder"] = encoder_prediction_fields(deployment.encoder)
     if deployment.deployment_mode in {"afd", "afd+pd"}:
         raw_afd = sample.get("afd")
         if not isinstance(raw_afd, dict):

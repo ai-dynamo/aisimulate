@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
-from .replay import BackendDeploymentSpec
+from .replay import BackendDeploymentSpec, EncoderPoolSpec
 
 
 def _role_prefix(role: str) -> str:
@@ -143,9 +143,16 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
     return payload
 
 
-def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) -> BackendDeploymentSpec:
+def build_backend_deployment(
+    sample: dict[str, Any],
+    *,
+    backend_version: str,
+    encoder: EncoderPoolSpec | None = None,
+) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
     mode = sample["deployment_mode"]
+    if encoder is not None and mode not in {"agg", "disagg"}:
+        raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
     if mode in {"afd", "afd+pd"}:
         parallel_config = {
             "afd": sample["afd"],
@@ -192,6 +199,7 @@ def build_backend_deployment(sample: dict[str, Any], *, backend_version: str) ->
         )
 
     common = {
+        "encoder": encoder,
         "deployment_mode": mode,
         "backend": sample["backend"],
         "backend_version": backend_version,
