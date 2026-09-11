@@ -99,9 +99,52 @@ impl ReplayEngineConfig {
         if value.is_null() {
             return Ok(Self::default());
         }
-        serde_json::from_value(value.clone()).map_err(|error| {
+        let parsed: Self = serde_json::from_value(value.clone()).map_err(|error| {
             ReplayError::InvalidSpec(format!("invalid native engine descriptor: {error}"))
-        })
+        })?;
+        parsed.reject_ambiguous_role_topology(value)?;
+        Ok(parsed)
+    }
+
+    /// Refuse a role block that inherits topology by omission.
+    ///
+    /// `role()` falls back to the top-level values only when the whole
+    /// `prefill`/`decode` block is absent. When the block is *present but
+    /// partial*, `ReplayRoleConfig`'s own per-field defaults apply instead, so
+    /// `{"dp_size": 8, "prefill": {"rank": {..}}}` silently runs prefill at
+    /// `dp_size: 1` -- an 8x capacity difference with no warning, which
+    /// `validate_request_dp_ranks` then range-checks against the wrong value and
+    /// so confirms rather than catches.
+    ///
+    /// Which way to resolve that (inherit, or default) is a config-semantics
+    /// decision, and either choice silently changes an existing run's numbers.
+    /// Refusing the ambiguous authoring instead cannot: it only rejects the
+    /// configurations that are already behaving unpredictably, and it is a no-op
+    /// whenever the inherited and defaulted values agree.
+    fn reject_ambiguous_role_topology(&self, value: &Value) -> ReplayResult<()> {
+        let default_role = ReplayRoleConfig::default();
+        for role_name in ["prefill", "decode"] {
+            let Some(role) = value.get(role_name).and_then(Value::as_object) else {
+                continue;
+            };
+            for (field, inherited, defaulted) in [
+                ("dp_size", self.dp_size, default_role.dp_size),
+                (
+                    "tensor_parallel_size",
+                    self.tensor_parallel_size,
+                    default_role.tensor_parallel_size,
+                ),
+            ] {
+                if !role.contains_key(field) && inherited != defaulted {
+                    return Err(ReplayError::InvalidSpec(format!(
+                        "engine descriptor sets {field} {inherited} but its {role_name} block omits \
+                         {field}, which would silently run {role_name} at {defaulted}; author \
+                         {role_name}.{field} explicitly"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn role(&self, stage: WorkerStage) -> ReplayRoleConfig {
@@ -404,4 +447,45 @@ pub fn run_engine_handoff_conformance(
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
     ReplayError::Engine(error.to_string())
+}
+
+#[cfg(test)]
+mod engine_config_tests {
+    use super::*;
+
+    /// `role()` inherits the top-level topology only when the whole role block is
+    /// absent; a present-but-partial block silently fell back to `dp_size: 1`.
+    #[test]
+    fn a_partial_role_block_cannot_silently_default_the_topology() {
+        let error = ReplayEngineConfig::parse(&serde_json::json!({
+            "dp_size": 8,
+            "prefill": {"rank": {}},
+            "decode": {"dp_size": 8, "rank": {}}
+        }))
+        .expect_err("an omitted prefill dp_size against a non-default top level is ambiguous")
+        .to_string();
+        assert!(
+            error.contains("prefill") && error.contains("dp_size"),
+            "the error must name the role and field, got: {error}"
+        );
+
+        // Authoring it explicitly resolves the ambiguity, in either direction.
+        for authored in [1, 8] {
+            ReplayEngineConfig::parse(&serde_json::json!({
+                "dp_size": 8,
+                "prefill": {"dp_size": authored, "rank": {}},
+                "decode": {"dp_size": 8, "rank": {}}
+            }))
+            .unwrap_or_else(|error| panic!("explicit dp_size {authored} must parse: {error}"));
+        }
+
+        // Nothing changes when the inherited and defaulted values agree, which is
+        // every configuration leaving the top-level topology at its default.
+        let config = ReplayEngineConfig::parse(&serde_json::json!({
+            "prefill": {"rank": {"num_gpu_blocks": 17}},
+            "decode": {"rank": {}}
+        }))
+        .expect("an unambiguous partial block must stay accepted");
+        assert_eq!(config.role(WorkerStage::Prefill).dp_size, 1);
+    }
 }
