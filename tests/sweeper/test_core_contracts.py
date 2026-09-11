@@ -59,13 +59,7 @@ def _planner_hook(*, version: int = 1):
 
 def _replay_spec(*, hook: RuntimeHookSpec | None = None):
     adapter = (
-        {}
-        if hook is None
-        else {
-            "dynamo.planner": AdapterReplaySpec(
-                config={"enabled": True}, runtime_hooks=(hook,)
-            )
-        }
+        {} if hook is None else {"dynamo.planner": AdapterReplaySpec(config={"enabled": True}, runtime_hooks=(hook,))}
     )
     return ReplaySpec(
         backend_deployment=_deployment(),
@@ -241,9 +235,7 @@ def test_runner_capabilities_reject_spec_version_backend_and_hook():
     with pytest.raises(ValueError, match="runner version 1"):
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION + 1)
 
-    wrong_backend = ReplaySpec(
-        backend_deployment=_deployment(backend="sglang"), workload={}, goal={}
-    )
+    wrong_backend = ReplaySpec(backend_deployment=_deployment(backend="sglang"), workload={}, goal={})
     with pytest.raises(ValueError, match="sglang.*agg"):
         capabilities.require_compatible(wrong_backend)
 
