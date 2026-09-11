@@ -15,10 +15,10 @@ to `python/aisimulate/` in the repository source tree.
 
 ## Dynamo Kubernetes experiment manifest
 
-Repository-root `docs/experiments/agentx-glm-5.2-440082-gb200-hicache/deploy.yaml` and its generated
-variants `docs/experiments/agentx-glm-5.2-440082-gb200-hicache/formal-deploy.yaml`,
-`docs/experiments/agentx-glm-5.2-440082-gb200-hicache/stage1-deploy.yaml`, and
-`docs/experiments/agentx-glm-5.2-440082-gb200-hicache/stage2-deploy.yaml` are adapted and
+Repository-root `docs/experiments/agentx-glm-5.2-440082-gb200-sglang-hicache/deploy.yaml` and its generated
+variants `docs/experiments/agentx-glm-5.2-440082-gb200-sglang-hicache/formal-deploy.yaml`,
+`docs/experiments/agentx-glm-5.2-440082-gb200-sglang-hicache/stage1-deploy.yaml`, and
+`docs/experiments/agentx-glm-5.2-440082-gb200-sglang-hicache/stage2-deploy.yaml` are adapted and
 modified from the Dynamo GLM-5.2 SGLang disaggregated recipe at commit
 `f7612301f01bc3ef557cc8f38687d559b0d54b39`, original path
 `recipes/glm-5.2/sglang/disagg-b200-agentic/deploy.yaml`.
@@ -35,9 +35,9 @@ image/checkpoint, read-only shared storage and AgentX reference cache settings.
 
 ## InferenceX DSv4 experiment configuration
 
-`docs/experiments/agentx-deepseek-v4-pro-440845-b300-slurm/campaign.py` and
+`docs/experiments/agentx-deepseek-v4-pro-440845-b300-sglang-slurm/campaign.py` and
 `docs/experiments/sglang-fpm-fixed-8k1k/campaign.py`, and
-`docs/experiments/agentx-deepseek-v4-pro-440845-b300-slurm/rerun-2026-09-10/campaign.py` contain
+`docs/experiments/agentx-deepseek-v4-pro-440845-b300-sglang-slurm/rerun-2026-09-10/campaign.py` contain
 locally authored orchestration with serving and replay configuration adapted from
 SemiAnalysisAI/InferenceX contributors, commit
 `fb85931b1edec09f9498509835a8c814bebe3c65`:

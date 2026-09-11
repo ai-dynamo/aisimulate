@@ -9,7 +9,7 @@ Status: job `4225429` completed successfully on `umb-b300-dp-142`. All 18
 measured cells and three FPM captures validated; the allocation is released. This follow-up measures FPM-off/on differences across low, mid and high
 request concurrency on one eight-GPU B300 node, using DeepSeek-V4-Pro.
 
-The previous [AgentX DSv4 comparison](../agentx-deepseek-v4-pro-440845-b300-slurm/README.md)
+The previous [AgentX DSv4 comparison](../agentx-deepseek-v4-pro-440845-b300-sglang-slurm/README.md)
 observed a small throughput change from one ordered pair. This experiment adds
 fixed token lengths, zero prompt reuse and repeated pairs to assess variance.
 
@@ -147,7 +147,7 @@ scratch result root above.
 Per user direction, a short AgentX off/on rerun has now completed to investigate
 long prefill, uncached-token counts and prefix reuse. It used another B300 NVL8
 node after the original node became occupied.
-See [the AgentX rerun](../agentx-deepseek-v4-pro-440845-b300-slurm/rerun-2026-09-10/README.md).
+See [the AgentX rerun](../agentx-deepseek-v4-pro-440845-b300-sglang-slurm/rerun-2026-09-10/README.md).
 
 The three FPM-on captures contain 532946 records in total (292086226 raw bytes),
 all with complete 8-rank coverage, zero invalid records, zero observed counter gaps
