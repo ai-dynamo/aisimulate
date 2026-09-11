@@ -1121,3 +1121,22 @@ def test_runner_rejects_unknown_forward_model(value):
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
             _spec(deployment=deployment)
         )
+
+
+def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    class HostResourceError(RuntimeError):
+        pass
+
+    resources = ModuleType("aisimulate.resources")
+    resources.ResourceLimitError = HostResourceError
+    monkeypatch.setitem(sys.modules, "aisimulate.resources", resources)
+
+    class LimitedRuntime:
+        def run_replay_json(self, payload):
+            raise MemoryError("report storage limit")
+
+    with pytest.raises(HostResourceError, match="report storage limit"):
+        EngineReplayRunnerFactory(runtime=LimitedRuntime()).create(0).run(_spec())

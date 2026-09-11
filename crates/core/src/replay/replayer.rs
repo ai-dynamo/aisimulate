@@ -31,7 +31,7 @@ use crate::replay::scaling::ReplayScalingPolicy;
 use crate::replay::telemetry::{ReplayTelemetryObserver, ReplayTelemetrySnapshot};
 use crate::replay::{
     ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayRequest,
-    ReplayResult, ReplaySpec, ReplayTopology, SlaThresholds, WorkerStage,
+    ReplayResult, ReplaySpec, ReplayTopology, WorkerStage,
 };
 
 /// Runtime composition supplied by the built-in engine stack or a Dynamo
@@ -427,6 +427,7 @@ impl<C: ReplayComposition> Replayer<C> {
                 )
                 .map_err(runtime_error)?
                 .with_capture_options(self.capture)
+                .with_sla_thresholds(self.spec.sla)
                 .with_per_request_records(
                     self.spec.record_per_request || self.capture.effective_per_request(),
                 )
@@ -501,6 +502,7 @@ impl<C: ReplayComposition> Replayer<C> {
                 )
                 .map_err(runtime_error)?
                 .with_capture_options(self.capture)
+                .with_sla_thresholds(self.spec.sla)
                 .with_per_request_records(
                     self.spec.record_per_request || self.capture.effective_per_request(),
                 )
@@ -518,7 +520,8 @@ impl<C: ReplayComposition> Replayer<C> {
             }
         };
 
-        Ok(finish_report(collector, self.spec.sla)
+        Ok(collector
+            .finish()
             .with_wall_time_ms(wall_start.elapsed().as_secs_f64() * 1_000.0))
     }
 }
@@ -680,11 +683,6 @@ fn apply_runtime_determinism(input: &mut ReplayRuntimeInput, determinism: Replay
     }
 }
 
-fn finish_report(mut collector: crate::replay::TraceCollector, sla: SlaThresholds) -> ReplayReport {
-    collector.set_sla_thresholds(sla);
-    collector.finish()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,6 +801,7 @@ mod tests {
 mod generated_replay_tests {
     use super::*;
     use crate::engine::{Backend, EngineConfig, TimingModelConfig};
+    use crate::replay::SlaThresholds;
     use crate::replay::loadgen::GeneratedRequests;
     use crate::replay::{
         CanonicalReplayCoverage, CanonicalReplayRecord, ReplayRoleConfig, WorkerPoolSpec,
@@ -923,6 +922,53 @@ mod generated_replay_tests {
                             );
                         }
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_summary_matches_detailed_output_and_sla() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            for disagg in [false, true] {
+                for cutoff in [None, Some(0.0), Some(8.0)] {
+                    let mut spec = spec(backend, disagg, 4, true);
+                    spec.max_sim_time_ms = cutoff;
+                    spec.sla = SlaThresholds {
+                        ttft_ms: Some(3.0),
+                        ..Default::default()
+                    };
+                    let mut reports = Vec::new();
+                    for detailed in [false, true] {
+                        spec.record_per_request = detailed;
+                        let report = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+                            .unwrap()
+                            .with_runtime_input(ReplayRuntimeInput::GeneratedRequests(
+                                GeneratedRequests::new(41, |index| Ok(request(index))),
+                            ))
+                            .run()
+                            .unwrap()
+                            .with_wall_time_ms(0.0);
+                        reports.push(serde_json::to_value(report).unwrap());
+                    }
+                    // Exact counts, goodput, rates, quantiles, and worker seconds.
+                    // Mean/std accumulation order may differ at floating-point roundoff.
+                    fn compare(a: &serde_json::Value, b: &serde_json::Value) {
+                        if let (Some(a), Some(b)) = (a.as_f64(), b.as_f64()) {
+                            assert!(
+                                (a - b).abs() <= 1e-10 * a.abs().max(b.abs()).max(1.0),
+                                "{a} != {b}"
+                            );
+                        } else if let (Some(a), Some(b)) = (a.as_object(), b.as_object()) {
+                            assert_eq!(a.len(), b.len());
+                            for (key, value) in a {
+                                compare(value, &b[key]);
+                            }
+                        } else {
+                            assert_eq!(a, b);
+                        }
+                    }
+                    compare(&reports[0], &reports[1]);
                 }
             }
         }
