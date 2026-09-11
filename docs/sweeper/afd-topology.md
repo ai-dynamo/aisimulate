@@ -71,6 +71,22 @@ domain = enumerate_afd_topologies(
 )
 ```
 
+## Performance Measurements
+
+`AICAFDPerformanceModel` uses AIC's public estimate API to supply full-precision, non-negative
+per-layer A-pool, F-pool, A-to-F transfer, and F-to-A transfer times. The measurement request pins
+the model, hardware, backend version, topology, and workload lengths. Transfer inputs are
+uncalibrated so the staged engine can apply `comm_overhead_factor` exactly once.
+
+The resulting `ReplaySpec` records the measurement API version, units, source, workload point, and
+backend version. Missing phases, duplicate phases, unsupported estimates, and OOM results fail
+closed during candidate materialization.
+
+This measurement layer requires a synthetic workload with concrete positive `isl` and `osl`.
+A trace-only AFD sweep is rejected because one fixed A/F layer measurement cannot represent
+requests with differing sequence lengths. Trace-aware measurement belongs with a later replay
+lifecycle.
+
 ## Generic Sweeper Domain
 
 The internal `SmartSearchConfig` schema accepts `deployment_mode: [afd]` for a pure A/F pool and
@@ -86,7 +102,8 @@ the opposite phase. Pure AFD has no ordinary engine argument payload. AFD+P/D ma
 arguments only for its companion phase.
 
 KV-relative traffic load is intentionally rejected for AFD in this layer because the A/F pools do
-not yet expose scheduler-visible KV capacity. Use a trace, request rate, or absolute concurrency.
+not yet expose scheduler-visible KV capacity. Use a synthetic request rate or absolute concurrency
+with concrete `isl` and `osl`.
 See [Sweeper Configuration](configuration.md#attention-ffn-disaggregation) for an internal example.
 
 ## Infeasibility and Provenance
