@@ -220,6 +220,24 @@ impl ReplayRequest {
                 input_token_ids.len()
             )));
         }
+        // `output_tokens` is documented as the authored maximum, but
+        // `DirectRequest::effective_max_output_tokens` returns the plan's
+        // length verbatim whenever a plan is present, so a plan longer than
+        // that maximum silently generates past the authored ceiling --
+        // `output_tokens: 5` with a 100-entry plan emits 100 tokens. Reject
+        // the contradiction here, the way the input-token check above rejects
+        // a mismatched prompt plan. A plan shorter than the maximum is legal
+        // and unaffected.
+        if let Some(output_token_ids) = &self.output_token_ids
+            && output_token_ids.len() > self.output_tokens
+        {
+            return Err(ReplayError::InvalidSpec(format!(
+                "request {:?} declares at most {} output tokens but plans {} token IDs",
+                self.id,
+                self.output_tokens,
+                output_token_ids.len()
+            )));
+        }
         self.routing_metadata()?;
         Ok(())
     }
@@ -484,6 +502,32 @@ mod direct_request_conversion_tests {
             ..Default::default()
         };
         assert_eq!(ReplayRequest::try_from((3, index)).unwrap().id, "3");
+    }
+
+    /// `output_tokens` is the authored maximum, but
+    /// `effective_max_output_tokens` returns the plan length verbatim, so a
+    /// plan longer than the maximum generates past the authored ceiling. A
+    /// plan at or under the maximum stays valid.
+    #[test]
+    fn validate_rejects_an_output_token_plan_longer_than_the_authored_maximum() {
+        let request = |max_output_tokens, plan: Vec<u32>| {
+            ReplayRequest::try_from((
+                0,
+                DirectRequest {
+                    max_output_tokens,
+                    output_token_ids: Some(plan),
+                    arrival_timestamp_ms: Some(0.0),
+                    ..Default::default()
+                },
+            ))
+        };
+
+        let error = request(2, vec![1, 2, 3, 4]).unwrap_err();
+        assert!(error.to_string().contains("plans 4 token IDs"), "{error}");
+
+        // A plan at or under the authored maximum stays valid.
+        request(4, vec![1, 2, 3, 4]).unwrap().validate().unwrap();
+        request(4, vec![1, 2]).unwrap().validate().unwrap();
     }
 
     #[test]
