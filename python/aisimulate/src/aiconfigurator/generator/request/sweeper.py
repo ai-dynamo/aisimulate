@@ -64,6 +64,16 @@ def _required_text(config: Mapping[str, Any], key: str) -> str:
     return value.strip()
 
 
+def _role_hardware_sku(config: Mapping[str, Any], role: str, *, fallback: str) -> str:
+    key = f"{role}_hardware_sku"
+    value = config.get(key)
+    if value is None:
+        return fallback
+    if not isinstance(value, str) or not value.strip():
+        raise SweeperCandidateError(f"candidate.config.{key} must be nonempty when provided")
+    return value.strip()
+
+
 def _positive_int(value: Any, *, path: str) -> int:
     if isinstance(value, bool):
         raise SweeperCandidateError(f"{path} must be a positive integer")
@@ -277,6 +287,16 @@ def from_sweeper_candidate(
     backend = _required_text(config, "backend")
     backend_version = _required_text(config, "backend_version")
     hardware_sku = _required_text(config, "hardware_sku")
+
+    if mode == "disagg":
+        role_hardware = {
+            role: _role_hardware_sku(config, role, fallback=hardware_sku) for role in ("prefill", "decode")
+        }
+        if len(set(role_hardware.values())) != 1:
+            raise SweeperCandidateError(
+                "heterogeneous P/D deployment artifact generation is unsupported because the generator "
+                f"has one global hardware profile; got {role_hardware}"
+            )
 
     active_roles = ("agg",) if mode == "agg" else ("prefill", "decode")
     roles: dict[str, RoleSizing] = {}
