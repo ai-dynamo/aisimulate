@@ -134,6 +134,127 @@ impl PlacementPolicy<ReplayRequestPayload> for MismatchedPlacement {
     }
 }
 
+/// Holds every request in its pending queue and records which cancellation
+/// callback the runtime delivers.
+#[derive(Default)]
+struct QueueingPlacement {
+    pending: Vec<Uuid>,
+    cancel_pending_calls: usize,
+    request_terminal_calls: usize,
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for QueueingPlacement {
+    type Metadata = NoReplayMetadata;
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        _metadata: Self::Metadata,
+        _session_id: Option<String>,
+        _now_ms: f64,
+    ) -> anyhow::Result<crate::replay::PlacementEffects> {
+        let request_id = request
+            .metadata()
+            .uuid
+            .ok_or_else(|| anyhow::anyhow!("queueing placement requires a request UUID"))?;
+        self.pending.push(request_id);
+        Ok(crate::replay::PlacementEffects {
+            decision: PlacementDecision::Queued,
+            released: Vec::new(),
+        })
+    }
+
+    fn observe(&mut self, _: (), _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+        self.cancel_pending_calls += 1;
+        let Some(index) = self.pending.iter().position(|id| *id == request_id) else {
+            return false;
+        };
+        self.pending.remove(index);
+        true
+    }
+
+    fn request_terminal(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        self.request_terminal_calls += 1;
+        Ok(Vec::new())
+    }
+
+    fn prefill_completed(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn topology_settled(&mut self, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Cancelling a router-queued request must deliver `cancel_pending` alone.
+///
+/// A queued request was never released to a worker, so there is no placement to
+/// retire. Aggregated cancel used to call `cancel_pending` and then
+/// `request_terminal` unconditionally, which tells a load-tracking policy to
+/// free a slot it never took. The disaggregated runtime already treats the two
+/// callbacks as alternatives; the in-repo round-robin policies no-op both,
+/// which is why only a recording policy exposes this.
+#[test]
+fn canceling_a_router_queued_request_does_not_also_deliver_request_terminal() {
+    let role_factory = ReplayEngineFactory::new()
+        .role_factory(
+            &ReplayEngineConfig::default(),
+            WorkerStage::Aggregated,
+            false,
+        )
+        .unwrap();
+    let mut runtime =
+        AggRuntimeImpl::<QueueingPlacement, NoEngineEvents, NoReplayMetadata>::new_composed(
+            role_factory,
+            AdmissionQueue::new_requests(VecDeque::new(), ReplayMode::Trace),
+            1,
+            None,
+            |_, _| Ok(QueueingPlacement::default()),
+        )
+        .unwrap()
+        .into_steppable();
+
+    let uuid = runtime.submit_dynamic(request(1, 0.0)).unwrap();
+    assert_eq!(
+        runtime.placement.pending_count(),
+        1,
+        "the request must be parked in the router queue"
+    );
+
+    assert_eq!(
+        runtime.cancel_dynamic(uuid).unwrap(),
+        Some(ReplayTerminalStatus::Canceled)
+    );
+    assert_eq!(runtime.placement.cancel_pending_calls, 1);
+    assert_eq!(
+        runtime.placement.request_terminal_calls, 0,
+        "a request the policy never released must not receive a placement terminal"
+    );
+    assert_eq!(runtime.placement.pending_count(), 0);
+}
+
 #[test]
 fn mismatched_placement_does_not_retain_arrival_or_offered_traffic() {
     let role_factory = ReplayEngineFactory::new()

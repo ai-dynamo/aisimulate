@@ -1706,11 +1706,24 @@ where
             return Ok(None);
         };
 
-        match phase {
+        // `cancel_pending` and `request_terminal` are alternatives, not a
+        // sequence: a request still queued at the router was never released to
+        // a worker, so the policy has no placement to retire. The
+        // disaggregated runtime encodes this explicitly
+        // (`cancel_prefill_route`/`cancel_decode_route`); aggregated cancel
+        // used to call `cancel_pending` and then `request_terminal`
+        // unconditionally, delivering a terminal for a request the policy
+        // believes it never routed. The in-repo round-robin policies make both
+        // calls no-ops, which is why no test caught it -- but a policy that
+        // keeps per-worker load or active-block accounting keyed on released
+        // requests (the real Dynamo KV router arrives here as a boxed
+        // `PlacementPolicy`) sees a free for a slot it never took.
+        let was_pending_at_router = match phase {
             super::state::AggRequestPhase::QueuedAtRouter => {
                 if !self.placement.cancel_pending(uuid) {
                     bail!("offline replay queued request {uuid} was absent from its router");
                 }
+                true
             }
             super::state::AggRequestPhase::Running => {
                 let scheduler_id = scheduler_id.ok_or_else(|| {
@@ -1733,8 +1746,9 @@ where
                     effects.engine_events,
                     KvIngestBoundary::SchedulerCommand,
                 )?;
+                false
             }
-        }
+        };
 
         self.collector
             .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
@@ -1748,7 +1762,11 @@ where
             ReplayTerminalStatus::Canceled,
         )?;
         self.progress.inc_completed();
-        let placements = self.placement.request_terminal(uuid, self.now_ms)?;
+        let placements = if was_pending_at_router {
+            Vec::new()
+        } else {
+            self.placement.request_terminal(uuid, self.now_ms)?
+        };
         self.dispatch_placements(placements)?;
         if self.cluster_in_flight() == 0
             && CoreAdmissionSource::is_drained(&self.admission)
