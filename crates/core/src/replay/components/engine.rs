@@ -141,6 +141,15 @@ where
     Observation: ReplayEngineObservation,
 {
     stage: SimulationWorkerStage,
+    // Stored but never read anywhere in this crate (round-12 Low): disagg.rs
+    // passes Hidden for the prefill engine and Visible for decode, agg.rs
+    // passes Visible unconditionally, but nothing in EngineComponent branches
+    // on this field, so that distinction is currently a no-op. Left wired
+    // through rather than deleted -- removing it would touch 8 call sites
+    // across agg.rs/disagg.rs/tests for a value callers clearly intend to be
+    // load-bearing, and neither this session nor the review that found it
+    // could establish whether the missing consumer is a genuine gap or a
+    // deliberately deferred feature.
     _pass_mode: EnginePassMode,
     workers: Vec<Option<LogicalWorker>>,
     scheduler_owners: Vec<Option<SchedulerOwner>>,
