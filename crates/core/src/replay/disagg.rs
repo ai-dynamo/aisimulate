@@ -1674,6 +1674,15 @@ where
                     Command::ActivateDestination { handoff_id },
                     self.now_ms,
                 )?;
+                // Returning without applying `effects.engine_events` discards
+                // nothing. `ActivateDestination` has exactly one non-`Applied`
+                // path in each scheduler -- the `destination_holds.remove`
+                // miss in `sglang::core` and `vllm::core` -- and both return
+                // `SchedulerCommandEffects::new(Noop)`, whose `kv_events`,
+                // `lifecycle_events`, and `retired_requests` are all empty.
+                // `engine_events` is derived from `kv_events`, so it is empty
+                // too. Unlike the `Applied` path below, there is no observation
+                // to forward to the decode router or the KV-ingest evidence.
                 if effects.result != CommandResult::Applied {
                     self.acknowledge_action(
                         uuid,
