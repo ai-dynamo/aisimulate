@@ -829,6 +829,47 @@ fn test_synthetic_prefix_groups_share_prefixes_within_group() {
     assert_eq!(suffixes.len(), trace.sessions.len());
 }
 
+/// `shared_prefix_ratio` and `num_prefix_groups` are authored independently and
+/// default independently, so asking for shared prefixes while leaving the group
+/// count at zero is an easy mistake. It used to be an invisible one: the
+/// prefix-block loop pushed nothing, the backfill gave every block a unique
+/// hash, and the run silently measured a 0%-shared workload.
+#[test]
+fn test_synthetic_shared_prefix_ratio_without_groups_is_rejected() {
+    let spec = |num_prefix_groups| SyntheticTraceSpec {
+        block_size: 4,
+        num_sessions: 2,
+        turns_per_session: 1,
+        input_tokens: LengthSpec {
+            mean: 16,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: 2,
+            stddev: 0.0,
+        },
+        shared_prefix_ratio: 0.5,
+        num_prefix_groups,
+        first_turn_arrivals: ArrivalSpec::Burst,
+        inter_turn_delays: DelaySpec::None,
+        seed: 42,
+        arrival_seed: 42,
+    };
+
+    let error = Trace::synthetic(spec(0)).unwrap_err().to_string();
+    assert!(
+        error.contains("num_prefix_groups"),
+        "the error must name the missing knob, got: {error}"
+    );
+
+    // A zero ratio genuinely does not need groups, and must stay accepted.
+    Trace::synthetic(SyntheticTraceSpec {
+        shared_prefix_ratio: 0.0,
+        ..spec(0)
+    })
+    .unwrap();
+}
+
 #[test]
 fn test_synthetic_arrival_mode_changes_timestamps_only() {
     let build = |first_turn_arrivals, arrival_seed| {

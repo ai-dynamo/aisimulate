@@ -800,6 +800,21 @@ impl Trace {
                 spec.shared_prefix_ratio
             );
         }
+        // The two prefix knobs are only meaningful together. With no group to
+        // draw from, `group_id` below stays `None`, the prefix-block loop
+        // pushes nothing, and the backfill gives every block a fresh unique
+        // hash -- a 0%-shared workload silently standing in for the authored
+        // ratio. Callers set these independently (`shared_prefix_ratio` and
+        // `num_prefix_groups` have separate defaults at the Python boundary),
+        // so omitting one is an easy and otherwise invisible mistake.
+        if spec.shared_prefix_ratio > 0.0 && spec.num_prefix_groups == 0 {
+            bail!(
+                "shared_prefix_ratio {} requires num_prefix_groups > 0; with no \
+                 prefix groups every block would get a unique hash and the \
+                 trace would share no prefix at all",
+                spec.shared_prefix_ratio
+            );
+        }
 
         let mut rng = StdRng::seed_from_u64(spec.seed);
         let mut sessions = Vec::with_capacity(spec.num_sessions);
