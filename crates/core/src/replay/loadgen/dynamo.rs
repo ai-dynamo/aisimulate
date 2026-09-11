@@ -252,7 +252,18 @@ fn request_times(event_time_unix_ms: u64, request: &RequestMetrics) -> Result<(i
                 value.is_finite() && value >= 0.0,
                 "request duration must be finite and nonnegative"
             );
-            Ok(value.round() as u64)
+            // Bound before the cast. `as u64` saturates silently, so a
+            // `total_time_ms` of 1e30 became u64::MAX, then pinned end_ms at
+            // i64::MAX through saturating_add/saturating_i64 -- an absurd
+            // timeline accepted as if it were measured, rather than a parse
+            // error. Timestamps are i64 milliseconds downstream, so that is
+            // the representable range.
+            let rounded = value.round();
+            ensure!(
+                rounded <= i64::MAX as f64,
+                "request duration {value}ms exceeds the representable range"
+            );
+            Ok(rounded as u64)
         })
         .transpose()?;
     let end_ms = match (request.request_received_ms, total_ms) {
@@ -262,6 +273,20 @@ fn request_times(event_time_unix_ms: u64, request: &RequestMetrics) -> Result<(i
     let start_ms = request
         .request_received_ms
         .unwrap_or_else(|| event_time_unix_ms.saturating_sub(total_ms.unwrap_or(0)));
+    // `tool_entry` has always rejected an inverted interval; requests never
+    // did. A `request_end` carrying `request_received_ms` but no
+    // `total_time_ms`, whose `event_time_unix_ms` precedes it (clock skew, or
+    // a producer that backfilled request_received_ms), yielded end_ms <
+    // start_ms. That inverted interval then feeds causal-graph inference in
+    // `lower_agentic`, whose implicit parent-join search selects the earliest
+    // parent whose start_ms >= the last child's end_ms -- so an artificially
+    // low end_ms picks a parent that actually began before the child
+    // finished, inventing a causal edge. The `.max(0)` on the resulting delta
+    // then hides the negative entirely.
+    ensure!(
+        end_ms >= start_ms,
+        "request end time {end_ms} precedes start time {start_ms}"
+    );
     Ok((saturating_i64(start_ms), saturating_i64(end_ms)))
 }
 
@@ -770,6 +795,46 @@ mod tests {
         assert_eq!(trace.sessions.len(), 2);
         assert_eq!(trace.sessions[0].first_arrival_timestamp_ms, Some(0.0));
         assert_eq!(trace.sessions[1].first_arrival_timestamp_ms, Some(20.0));
+    }
+
+    /// `tool_entry` has always rejected an inverted interval; `request_times`
+    /// did not. A `request_end` with `request_received_ms` but no
+    /// `total_time_ms`, whose `event_time_unix_ms` precedes it, produced
+    /// `end_ms < start_ms`, which then corrupts the implicit parent-join
+    /// search in `lower_agentic` while `.max(0)` hides the negative delta.
+    #[test]
+    fn rejects_a_request_whose_end_precedes_its_start() {
+        let mut row = request("a", 1_000, None);
+        row["event_time_unix_ms"] = json!(900);
+        row["request"]["total_time_ms"] = serde_json::Value::Null;
+        let file = trace_file(&[row]);
+
+        let error =
+            DynamoRequestTrace::from_request_trace_files(&[file.path().to_path_buf()], Some(4))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            error.contains("precedes start time"),
+            "expected a loud rejection, got: {error}"
+        );
+    }
+
+    /// `as u64` saturates silently, so an absurd duration became u64::MAX and
+    /// pinned the timeline at i64::MAX instead of failing to parse.
+    #[test]
+    fn rejects_a_request_duration_outside_the_representable_range() {
+        let mut row = request("a", 100, None);
+        row["request"]["total_time_ms"] = json!(1e30);
+        let file = trace_file(&[row]);
+
+        let error =
+            DynamoRequestTrace::from_request_trace_files(&[file.path().to_path_buf()], Some(4))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            error.contains("representable range"),
+            "expected a loud rejection, got: {error}"
+        );
     }
 
     #[test]
