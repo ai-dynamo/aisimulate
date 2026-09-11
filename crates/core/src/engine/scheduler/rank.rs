@@ -183,7 +183,10 @@ impl RankEngine for SchedulerRank {
         } else {
             false
         };
-        if suppressed_pending_output && let Some((request_id, _)) = pending_suppression {
+        if suppressed_pending_output
+            && let Some((request_id, _)) = pending_suppression
+            && !effects.retired_requests.contains(&request_id)
+        {
             // A final output can be suppressed after the native scheduler has
             // already retired its request. Replay still owns its accounting
             // until the pass completion is observed, so publish the same
@@ -965,6 +968,7 @@ mod tests {
 
         assert_eq!(effects.result, CommandResult::Applied);
         assert!(effects.suppressed_pending_output);
+        assert_eq!(effects.retired_requests, vec![request_id]);
         assert!(pending.effects.outputs.is_empty());
     }
 
@@ -1015,6 +1019,7 @@ mod tests {
 
         assert_eq!(effects.result, CommandResult::Noop);
         assert!(effects.suppressed_pending_output);
+        assert_eq!(effects.retired_requests, vec![request_id]);
         assert!(pending.effects.outputs.is_empty());
     }
 

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+mod bounded;
+
 use ddsketchy::DDSketch;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
@@ -746,6 +748,10 @@ impl SlaThresholds {
 #[derive(Debug, Default)]
 pub struct TraceCollector {
     requests: FxHashMap<Uuid, TraceRequestStats>,
+    batch_reporting: bool,
+    bounded_summary: Option<bounded::BoundedSummary>,
+    completed_to_retire: Vec<Uuid>,
+    prepared_report: Option<ReplayReport>,
     /// Simulated timestamp at which this reporting epoch began. Request
     /// timestamps remain absolute; aggregate rates use elapsed epoch time.
     report_start_ms: f64,
@@ -864,6 +870,71 @@ impl TraceRequestStats {
 }
 
 impl TraceCollector {
+    /// Batch runs may retire terminal state after runtime completion callbacks.
+    /// Steppable SDK runtimes retain their existing request-query semantics.
+    pub(crate) fn begin_batch_reporting(&mut self) {
+        self.batch_reporting = true;
+        if !self.capture_per_request && !self.defer_token_timeline_finalization {
+            self.bounded_summary = Some(bounded::BoundedSummary::default());
+        }
+    }
+
+    fn retire_completed(&mut self) -> anyhow::Result<()> {
+        if let Some(summary) = &mut self.bounded_summary {
+            for uuid in self.completed_to_retire.drain(..) {
+                if let Some(stats) = self.requests.remove(&uuid) {
+                    summary.add(&stats, self.sla)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn try_on_arrival(
+        &mut self,
+        uuid: Uuid,
+        at_ms: f64,
+        input: usize,
+        output: usize,
+    ) -> anyhow::Result<()> {
+        self.retire_completed()
+            .map_err(|error| anyhow::anyhow!("resource_limited: report storage: {error:#}"))?;
+        if self.batch_reporting
+            && self.bounded_summary.is_none()
+            && self.requests.len() >= bounded::MAX_RETAINED_REQUESTS
+        {
+            anyhow::bail!(
+                "resource_limited: detailed replay reporting exceeds the 100000 retained-request limit; use summary output or a smaller explicit workload"
+            );
+        }
+        self.on_arrival(uuid, at_ms, input, output);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_batch_report(&mut self) -> anyhow::Result<()> {
+        self.retire_completed()
+            .map_err(|error| anyhow::anyhow!("resource_limited: report storage: {error:#}"))?;
+        let Some(mut summary) = self.bounded_summary.take() else {
+            return Ok(());
+        };
+        for (_, mut stats) in self.requests.drain() {
+            stats.finalize_token_timeline(
+                stats.terminal_status == Some(ReplayTerminalStatus::Completed)
+                    && stats.first_admit_ms.is_some(),
+                &mut self.itl_distribution,
+                &mut self.output_token_throughput_per_user,
+            );
+            summary.add(&stats, self.sla)?;
+        }
+        let base = std::mem::take(self).finish_at(Some(summary.duration_ms()));
+        self.prepared_report = Some(
+            summary
+                .finish(base)
+                .map_err(|error| anyhow::anyhow!("resource_limited: report storage: {error:#}"))?,
+        );
+        Ok(())
+    }
+
     pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
         self.requests.contains_key(&uuid)
     }
@@ -1299,6 +1370,8 @@ impl TraceCollector {
             itl_distribution,
             output_token_throughput_per_user,
             defer_token_timeline_finalization,
+            bounded_summary,
+            completed_to_retire,
             ..
         } = self;
         if let Some(stats) = requests.get_mut(&uuid)
@@ -1306,6 +1379,9 @@ impl TraceCollector {
         {
             stats.terminal_time_ms = Some(terminal_time_ms);
             stats.terminal_status = Some(status);
+            if bounded_summary.is_some() {
+                completed_to_retire.push(uuid);
+            }
             if !*defer_token_timeline_finalization {
                 stats.finalize_token_timeline(
                     status == ReplayTerminalStatus::Completed && stats.first_admit_ms.is_some(),
@@ -1378,6 +1454,9 @@ impl TraceCollector {
     }
 
     fn finish_at(mut self, report_end_ms: Option<f64>) -> ReplayReport {
+        if let Some(report) = self.prepared_report.take() {
+            return report;
+        }
         let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {
             let left = self
@@ -1828,6 +1907,48 @@ mod tests {
             p99_ms: sorted[percentile_rank(sorted.len(), 99.0)],
             std_ms: std_dev(values),
         }
+    }
+
+    #[test]
+    fn batch_summary_retires_completed_records_and_preserves_report() {
+        let mut baseline = TraceCollector::default();
+        let mut bounded = TraceCollector::default();
+        bounded.begin_batch_reporting();
+        for index in 1..=20_000 {
+            for collector in [&mut baseline, &mut bounded] {
+                let uuid = Uuid::from_u128(index);
+                collector.try_on_arrival(uuid, index as f64, 16, 3).unwrap();
+                collector.on_admit(uuid, index as f64 + 1.0, 0);
+                for offset in [10.0, 20.0, 30.0] {
+                    collector.on_token(uuid, index as f64 + offset);
+                }
+                collector.on_terminal(uuid, index as f64 + 30.0, ReplayTerminalStatus::Completed);
+            }
+            assert!(bounded.requests.len() <= 1);
+        }
+        bounded.prepare_batch_report().unwrap();
+        assert!(bounded.requests.is_empty());
+        assert_eq!(
+            serde_json::to_value(baseline.finish()).unwrap(),
+            serde_json::to_value(bounded.finish()).unwrap()
+        );
+    }
+
+    #[test]
+    fn detailed_batch_reporting_refuses_an_oversized_list() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        collector.begin_batch_reporting();
+        for index in 0..bounded::MAX_RETAINED_REQUESTS {
+            collector
+                .try_on_arrival(Uuid::from_u128(index as u128), 0.0, 1, 1)
+                .unwrap();
+        }
+        let error = collector
+            .try_on_arrival(Uuid::from_u128(999999), 0.0, 1, 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("resource_limited"));
+        assert_eq!(collector.requests.len(), bounded::MAX_RETAINED_REQUESTS);
     }
 
     #[test]

@@ -561,6 +561,7 @@ fn run_trace_collect(
     let pending = crate::replay::normalize_trace_requests(requests, arrival_speedup_ratio).unwrap();
     DisaggRuntime::from_requests(config, router_config, None, pending, ReplayMode::Trace)
         .unwrap()
+        .with_per_request_records(true)
         .run()
         .unwrap()
 }
@@ -579,6 +580,7 @@ fn run_concurrency_collect(
         ReplayMode::Concurrency { max_in_flight },
     )
     .unwrap()
+    .with_per_request_records(true)
     .run()
     .unwrap()
 }
@@ -593,6 +595,7 @@ fn run_trace_workload_collect(
         .unwrap();
     DisaggRuntime::new_workload(config, router_config, None, driver, ReplayMode::Trace)
         .unwrap()
+        .with_per_request_records(true)
         .run()
         .unwrap()
 }
@@ -614,6 +617,7 @@ fn run_concurrency_workload_collect(
         ReplayMode::Concurrency { max_in_flight },
     )
     .unwrap()
+    .with_per_request_records(true)
     .run()
     .unwrap()
 }
@@ -1869,7 +1873,11 @@ fn test_cancellation_during_transfer_ignores_retired_completion_event() {
                 runtime.advance_now_ms(next);
                 runtime.drain_current_timestamp().unwrap();
             }
-            assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+            assert_eq!(
+                runtime.stats.request_snapshots[&uuid].phase,
+                DisaggPhase::Done
+            );
+            assert!(!runtime.flow.requests.contains_key(&uuid));
             assert_eq!(runtime.total_prefill_count(), 0);
             assert_eq!(runtime.total_decode_count(), 0);
             assert!(
@@ -2065,10 +2073,14 @@ fn canceling_worker_waiting_compact_prefill_drops_deferred_prompt() {
         .unwrap();
     runtime.drain_current_timestamp().unwrap();
 
-    assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+    assert_eq!(
+        runtime.stats.request_snapshots[&uuid].phase,
+        DisaggPhase::Done
+    );
+    assert!(!runtime.flow.requests.contains_key(&uuid));
     assert!(
-        runtime.state(uuid).unwrap().materialized_tokens().is_err(),
-        "cancellation should release the deferred request payload"
+        !runtime.flow.requests.contains_key(&uuid),
+        "cancellation should release the entire request state"
     );
 }
 

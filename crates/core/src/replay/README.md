@@ -325,3 +325,30 @@ The easiest way to think about offline replay is:
 4. Record the same request lifecycle timings into `TraceCollector`.
 
 That keeps the harness fast, reproducible, and close to the real scheduler behavior without needing to boot a live runtime.
+
+## Batch report memory
+
+Offline aggregated and disaggregated batch replay discard terminal collector
+records after completion callbacks. Disaggregated handoff state is removed only
+once both pipelines and the coordinator are quiescent. Active request state and
+token timelines still scale with the configured concurrency and output length.
+
+Summary latency distributions retain at most 4096 in-memory samples each, then
+spill exact values to anonymous temporary files. Quantiles use the same rounded
+rank as detailed reports; eight sequential radix-selection passes require fixed
+memory. Counts and quantiles remain exact. Floating-point mean and standard
+deviation accumulation can differ at roundoff because completion order replaces
+request-ID order. Existing ITL and per-user throughput sketches retain their
+existing 0.1% relative quantile error; this change introduces no new sketch.
+
+The four exact sample files together have a 1 GiB limit. Filesystem errors and
+that limit stop the replay with a `resource_limited` error, without returning a
+partial report. Temporary files close on success, failure, or process exit.
+Detailed batch output retains its existing list API and refuses request 100001
+before adding its report record. Select summary output or explicitly reduce the
+workload when that limit is reached. These are reporting limits, not a total host
+memory guarantee: engine state, input traces, trajectory metadata, and other
+capture options must also fit the execution budget.
+
+Steppable SDK engines preserve completed-request queries until their reporting
+epoch is drained; this batch optimization does not change that API contract.

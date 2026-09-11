@@ -164,6 +164,11 @@ where
         })
     }
 
+    pub(crate) fn with_sla_thresholds(mut self, sla: crate::replay::SlaThresholds) -> Self {
+        self.collector.set_sla_thresholds(sla);
+        self
+    }
+
     /// Toggle per-request record capture on the underlying collector. When
     /// `true`, the final `ReplayReport` returned from `run()` will
     /// have `per_request` populated. Default `false` (cheap).
@@ -336,7 +341,7 @@ where
             );
         }
         self.collector
-            .on_arrival(uuid, arrival_time_ms, input_length, output_length);
+            .try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
         if let Some(context) = request.metadata().replay_context.as_ref() {
             self.collector.on_request_context(uuid, context);
         }
@@ -1295,6 +1300,7 @@ where
     /// timestamp would exceed that cap; in-flight requests at that point are
     /// reported as incomplete.
     pub(crate) fn run(mut self) -> anyhow::Result<(TraceCollector, AggRuntimeStats)> {
+        self.collector.begin_batch_reporting();
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -1350,6 +1356,7 @@ where
             self.collector.set_agentic_graph(identity);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
+        self.collector.prepare_batch_report()?;
         Ok((self.collector, self.stats))
     }
 }
