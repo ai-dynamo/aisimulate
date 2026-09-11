@@ -132,7 +132,7 @@ class _BranchSearchState:
 def _branch_sampler_seed(seed: int, deployment_mode: str) -> int:
     """Derive a stable seed from branch identity, independent of active-branch order."""
 
-    offsets = {"agg": 0, "disagg": 1}
+    offsets = {"agg": 0, "disagg": 1, "afd": 2, "afd+pd": 3}
     try:
         return seed + offsets[deployment_mode]
     except KeyError as exc:  # SearchSpace validation currently makes this unreachable.

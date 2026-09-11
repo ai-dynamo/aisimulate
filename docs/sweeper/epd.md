@@ -111,3 +111,5 @@ Prediction-config callbacks must preserve the resolved encoder identity, fixed
 image/text workload and GPU topology or the candidate is rejected. Deployment
 generation still rejects EPD candidates rather than dropping the encoder pool.
 The compatibility `aiconfigurator` CLI remains available for AIC EPD workflows.
+
+AFD and analytical EPD cannot be combined. EPD requires an `agg` or `disagg` language deployment; searches and direct replay specifications reject AFD combinations before evaluation.

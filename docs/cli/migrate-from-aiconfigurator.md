@@ -271,17 +271,18 @@ For text-only replay, `e2e_ms` participates in request-level goodput, and `stric
 mean E2E latency. This path does not expose a separate aggregate-only E2E constraint that is excluded
 from request-level goodput. [Analytical EPD](../sweeper/epd.md) uses aggregate-mean SLA bounds only and does not report per-request goodput.
 
-## Planned AFD translation
+## Layered AFD translation
 
 Attention-FFN Disaggregation (AFD) is migrating in layers. The
 [AFD topology contract](../sweeper/afd-topology.md) defines complete A/F topology enumeration,
-validation, and A/F GPU accounting. Later work will add performance measurement, staged evaluation,
-the public recommendation schema, generic search, and an AFD-capable runner.
+validation, and A/F GPU accounting. The generic Sweeper now accepts internal `afd` and `afd+pd`
+branches. Later work will add performance measurement, staged evaluation, the public recommendation
+schema, and an AFD-capable runner.
 
 > [!IMPORTANT]
 > The AISimulate configuration below is a **contract preview**, not a runnable command in this PR.
-> Continue using the compatibility `aiconfigurator` command for AFD until the public schema,
-> lowering, and runner support land.
+> Continue using the compatibility `aiconfigurator` command for AFD until public lowering and
+> runner support land.
 
 Legacy AFD command:
 
@@ -337,8 +338,9 @@ optimization:
 <!-- afd-migration-contract-end -->
 
 This preserves the legacy command's default of decode-side AFD combined with a static prefill
-companion. The GPU constraint will cover the A pool, F pool, and companion together once the
-remaining evaluation and runner layers land. The target invocation will be:
+companion. Internally this maps to the Sweeper's `afd+pd` branch. The search contract accounts for
+the A pool, F pool, and companion together; performance evaluation and rate matching land later.
+The target invocation will be:
 
 ```bash
 aisimulate recommend --config recommendation.yaml

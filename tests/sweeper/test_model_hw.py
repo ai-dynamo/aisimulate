@@ -52,6 +52,7 @@ def test_aic_core_system_spec_contract(monkeypatch):
         lambda model: {
             "architecture": "Qwen3ForCausalLM",
             "context": 40960,
+            "n_routed_experts": 64,
         },
     )
     monkeypatch.setattr(mh_mod, "check_is_moe", lambda model_config: False)
@@ -74,6 +75,7 @@ def test_aic_core_system_spec_contract(monkeypatch):
     assert mh.vram_per_gpu == 80
     assert mh.gpus_per_node == 8
     assert mh.weight_bytes == 123
+    assert mh.num_experts == 64
 
 
 def test_role_runtime_preserves_legacy_three_tuple_contract(monkeypatch):

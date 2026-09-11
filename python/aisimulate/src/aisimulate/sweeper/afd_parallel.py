@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from types import MappingProxyType
 from typing import Any
+
+from .parallel_enum import ReplicaParallelConfig
 
 AFD_SCHEMA_VERSION = 1
 _LEGACY_SOURCE = "aiconfigurator.sdk.task_v2.build_afd_parallel_lists"
@@ -275,6 +277,51 @@ class AFDTopology:
                 "attention_gpus": self.attention_gpus,
                 "ffn_gpus": self.ffn_gpus,
                 "afd_total_gpus": self.total_gpus,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class AFDParallelConfig:
+    """One Sweeper candidate for pure AFD or AFD plus a P/D companion."""
+
+    topology: AFDTopology
+    companion: ReplicaParallelConfig | None = None
+
+    def __post_init__(self) -> None:
+        if self.topology.combined_with_pd != (self.companion is not None):
+            expected = "an opposite-phase P/D companion" if self.topology.combined_with_pd else "no companion"
+            raise AFDInfeasible(
+                AFDReasonCategory.INCOMPATIBLE_PHASE,
+                f"topology combined_with_pd={self.topology.combined_with_pd} requires {expected}",
+                provenance=self.topology.provenance(),
+            )
+
+    @property
+    def companion_role(self) -> str | None:
+        if self.companion is None:
+            return None
+        return "decode" if self.topology.phase is AFDPhase.PREFILL else "prefill"
+
+    @property
+    def total_gpus(self) -> int:
+        companion_gpus = self.companion.total_gpus if self.companion is not None else 0
+        return self.topology.total_gpus + companion_gpus
+
+    def provenance(self) -> dict[str, Any]:
+        companion_gpus = self.companion.total_gpus if self.companion is not None else 0
+        return {
+            "schema_version": AFD_SCHEMA_VERSION,
+            "source": _LEGACY_SOURCE,
+            "mode": self.topology.adapter_topology,
+            "topology": self.topology.provenance(),
+            "companion_role": self.companion_role,
+            "companion": asdict(self.companion) if self.companion is not None else None,
+            "gpu_accounting": {
+                "attention_gpus": self.topology.attention_gpus,
+                "ffn_gpus": self.topology.ffn_gpus,
+                "companion_gpus": companion_gpus,
+                "total_gpus": self.total_gpus,
             },
         }
 
@@ -677,6 +724,7 @@ __all__ = [
     "AFD_SCHEMA_VERSION",
     "AFDEnumeration",
     "AFDInfeasible",
+    "AFDParallelConfig",
     "AFDPhase",
     "AFDPipelineModel",
     "AFDReasonCategory",

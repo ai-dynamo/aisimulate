@@ -6,9 +6,9 @@ subtitle: Attention-FFN parallel shapes and complete enumeration
 ---
 
 > [!WARNING]
-> **Experimental.** The AFD parallel contract is available as a Sweeper-core Python API. The generic search
-> domain does not yet place AFD topologies in a `SmartSearchConfig` study. That wiring
-> depends on the shared execution-dimension work tracked by AIC-1773.
+> **Experimental.** `SmartSearchConfig` can place AFD topologies in a generic Sweeper study, but
+> performance measurement, staged evaluation, the public recommendation schema, production runner,
+> and deployment artifacts do not yet support AFD.
 
 Attention-FFN Disaggregation (AFD) places attention operations on an A-worker pool and FFN/MoE
 operations on an F-worker pool. `aisimulate.sweeper.afd_parallel` provides the backend-neutral
@@ -70,6 +70,24 @@ domain = enumerate_afd_topologies(
     )
 )
 ```
+
+## Generic Sweeper Domain
+
+The internal `SmartSearchConfig` schema accepts `deployment_mode: [afd]` for a pure A/F pool and
+`deployment_mode: [afd+pd]` for a single-phase A/F pool plus an opposite-phase P/D companion. Both
+use one finite `parallel_config_choice` dimension in the standard sampler. AFD+P/D constructs the
+complete legal topology-by-companion product within `gpu_budget`; `afd_max_candidates` rejects an
+oversized product instead of silently truncating it.
+
+Use `afd_pinned_topologies` to provide concrete A/F shapes, or provide an explicit,
+memory-qualified `afd_batch_size_candidates` list with the other `afd_*_candidates` fields to
+generate the domain. `afd_companion_parallel_configs` can pin the ordinary parallel shapes used by
+the opposite phase. Pure AFD has no ordinary engine argument payload. AFD+P/D materializes engine
+arguments only for its companion phase.
+
+KV-relative traffic load is intentionally rejected for AFD in this layer because the A/F pools do
+not yet expose scheduler-visible KV capacity. Use a trace, request rate, or absolute concurrency.
+See [Sweeper Configuration](configuration.md#attention-ffn-disaggregation) for an internal example.
 
 ## Infeasibility and Provenance
 

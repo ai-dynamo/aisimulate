@@ -450,7 +450,7 @@ class Workload(BaseModel):
 # candidate generator can reuse it. Pinned scalars and the generated
 # ``parallel_configs`` are intentionally not choice-constrained.
 SEARCH_CHOICES: dict[str, tuple] = {
-    "deployment_mode": ("disagg", "agg"),
+    "deployment_mode": ("disagg", "agg", "afd", "afd+pd"),
     "backend": ("vllm", "sglang", "trtllm"),
 }
 
@@ -488,6 +488,21 @@ class SearchSpace(BaseModel):
     startup_time: float | None = None
     aic_nextn: int | None = None  # speculative-decode (MTP) depth, 1..5
     encoder: EncoderSearch | None = None
+
+    # Attention--FFN disaggregation. The A/F topology is a finite, complete
+    # domain; ``afd+pd`` pairs each topology with one opposite-phase companion.
+    afd_pinned_topologies: list[dict[str, Any]] = Field(default_factory=list)
+    afd_companion_parallel_configs: list[dict[str, Any]] = Field(default_factory=list)
+    afd_tp_a_candidates: list[int] | None = None
+    afd_batch_size_candidates: list[int] | None = None
+    afd_f_moe_ep_size_candidates: list[int | str] | None = None
+    afd_microbatch_candidates: list[int] = Field(default_factory=lambda: [2, 3, 4])
+    afd_pipeline_model_candidates: list[str] = Field(default_factory=lambda: ["optimistic", "conservative"])
+    afd_phase: str = "decode"
+    afd_comm_overhead_factor: float = Field(default=1.0, gt=0)
+    afd_boundary_on_attn: bool = True
+    afd_max_af_ratio: float = Field(default=4.0, gt=0)
+    afd_max_candidates: int = Field(default=10_000, ge=1)
 
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
@@ -565,6 +580,85 @@ class SearchSpace(BaseModel):
             value = getattr(self, field_name)
             if value not in FORWARD_MODEL_CHOICES:
                 raise ValueError(f"{field_name} has invalid choice {value!r}; allowed: {list(FORWARD_MODEL_CHOICES)}")
+        return self
+
+    @field_validator(
+        "afd_tp_a_candidates",
+        "afd_batch_size_candidates",
+        "afd_microbatch_candidates",
+        mode="before",
+    )
+    @classmethod
+    def _validate_afd_positive_candidates(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not isinstance(value, list) or not value:
+            raise ValueError("AFD candidate lists must be nonempty lists")
+        if any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in value):
+            raise ValueError(f"AFD candidate lists need positive integers, got {value!r}")
+        if len(set(value)) != len(value):
+            raise ValueError("AFD candidate lists must not contain duplicates")
+        return value
+
+    @field_validator("afd_f_moe_ep_size_candidates", mode="before")
+    @classmethod
+    def _validate_afd_ep_candidates(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not isinstance(value, list) or not value:
+            raise ValueError("afd_f_moe_ep_size_candidates must be a nonempty list")
+        allowed_symbols = {"n_f_nodes", "ffn_tp", "tp_f"}
+        invalid = [
+            item
+            for item in value
+            if not (
+                (isinstance(item, int) and not isinstance(item, bool) and item > 0)
+                or (isinstance(item, str) and item in allowed_symbols)
+            )
+        ]
+        if invalid:
+            raise ValueError(
+                "afd_f_moe_ep_size_candidates accepts positive integers, "
+                f"'n_f_nodes', 'ffn_tp', or 'tp_f'; got {invalid!r}"
+            )
+        if len({(type(item).__name__, item) for item in value}) != len(value):
+            raise ValueError("afd_f_moe_ep_size_candidates must not contain duplicates")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_afd_contract(self) -> SearchSpace:
+        afd_modes = [mode for mode in dict.fromkeys(self.deployment_mode) if mode in {"afd", "afd+pd"}]
+        if self.afd_phase not in {"prefill", "decode", "both"}:
+            raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
+        if any(value not in {"optimistic", "conservative", "serial"} for value in self.afd_pipeline_model_candidates):
+            raise ValueError("afd_pipeline_model_candidates accepts optimistic, conservative, or serial")
+        if len(set(self.afd_pipeline_model_candidates)) != len(self.afd_pipeline_model_candidates):
+            raise ValueError("afd_pipeline_model_candidates must not contain duplicates")
+        if "afd+pd" in afd_modes and self.afd_phase == "both":
+            raise ValueError("deployment_mode='afd+pd' requires afd_phase prefill or decode")
+        if afd_modes and not self.afd_pinned_topologies and self.afd_batch_size_candidates is None:
+            raise ValueError(
+                "searched AFD requires explicit, memory-qualified afd_batch_size_candidates; "
+                "legacy topology-specific batch derivation must not become an implicit fixed batch"
+            )
+        if self.afd_pinned_topologies:
+            if len(afd_modes) != 1:
+                raise ValueError("afd_pinned_topologies requires exactly one AFD deployment_mode")
+            required = {"n_a_nodes", "n_f_nodes", "tp_a", "a_batch_size"}
+            for index, topology in enumerate(self.afd_pinned_topologies):
+                if not isinstance(topology, dict):
+                    raise ValueError(f"afd_pinned_topologies[{index}] must be a mapping")
+                missing = sorted(required - topology.keys())
+                if missing:
+                    raise ValueError(f"afd_pinned_topologies[{index}] is missing {missing}")
+        if self.afd_companion_parallel_configs and "afd+pd" not in afd_modes:
+            raise ValueError("afd_companion_parallel_configs requires deployment_mode='afd+pd'")
+        for index, companion in enumerate(self.afd_companion_parallel_configs):
+            if not isinstance(companion, dict) or "tp" not in companion:
+                raise ValueError(f"afd_companion_parallel_configs[{index}] must be a flat shape with tp")
+            replicas = companion.get("replicas", 1)
+            if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
+                raise ValueError(f"afd_companion_parallel_configs[{index}].replicas must be positive")
         return self
 
     @model_validator(mode="after")
@@ -771,6 +865,8 @@ class SmartSearchConfig(BaseModel):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
         if encoder is None:
             return self
+        if any(mode not in {"agg", "disagg"} for mode in self.search_space.deployment_mode):
+            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if self.adapters:
             raise ValueError("analytical EPD does not support adapters")
         if self.search_space.min_gpu_budget is not None:
