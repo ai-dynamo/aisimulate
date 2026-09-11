@@ -1,0 +1,127 @@
+{
+  "calibration_consumer_check_is_accuracy_validation": false,
+  "consumer_self_query_mape_percent": 0.0,
+  "consumer_self_query_wape_percent": 0.0,
+  "coverage_complete": false,
+  "dataset_role": "calibration_only",
+  "geometry_admission_sha256": "8aa1dad6af4efbb9f2b4cf0bef29e893fc77ef19fd15f86c3fe4054b5d09a947",
+  "metadata_sha256": "7e26ecf010a1517190d25919f0119fcde9d6bcb85bb115783b972eaad41fedd7",
+  "missing": [
+    {
+      "attempt_count": 10,
+      "point_id": "4d8e7b7ce9a731199422a3617fe5bf11215a7913f7e40d189768f230d3182b05",
+      "reason": "no_geometry_qualified_attempt"
+    }
+  ],
+  "native_benchmarkpoint_artifact": false,
+  "native_exact_queries": 124,
+  "native_sha256": "264948687a4e6f285a55e64a908fa546928118994b60a4bdf6b981c00805c45a",
+  "opposite_decoder_profile_rejected": true,
+  "planned_geometries": 125,
+  "precision_qualification": {
+    "actual_server_flags": {
+      "dtype": "auto",
+      "enable_quant_communications": false,
+      "enable_w4a4_mxfp4_megamoe": false,
+      "flashinfer_mxfp4_moe_precision": "default",
+      "kv_cache_dtype": "auto",
+      "modelopt_quant": null,
+      "moe_runner_backend": "flashinfer_mxfp4",
+      "quantization": null,
+      "quantization_param_path": null,
+      "quantize_and_serve": false,
+      "rl_quant_profile": null
+    },
+    "kv_fmha_label_scope": "SDK fp8 selector coordinates; not a claim that all physical KV is FP8; the pinned V4.1 checkpoint has mixed main-KV/index storage",
+    "moe_precision": "checkpoint MXFP4 weights; default TRTLLM MXFP8 activations",
+    "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm"
+  },
+  "predictor_commit": "831836ff544405ea430ce15ca993a8006a547df6",
+  "publication_source_sha256": "1cd7416a130662e5583864078ee891b182df0d747893f92511f0a040f862a335",
+  "published_geometries": 124,
+  "qualified_inputs_sha256": "e4dca78a3a4dc506152cbc35720ab79ce36f0609a558df622cb63582cf9e96e7",
+  "runtime_qualification": {
+    "bundle_manifest_sha256": "79b0ce56a9f6a841a38aa394a2947e818014695f191c00b597349224f779dd88",
+    "contract_sha256": "ace321259ec24ade10d0224f507bdb84bf27aa89e8648d24efdf75f0a061253d",
+    "control_qualification": {
+      "control_sha256": "6fdf56879d5aaa4f256045b2cfc5cd84d1c9a86d1d3e197f4030e7d2a1aa83f8",
+      "excluded_requested": [
+        {
+          "available_tokens": 4096,
+          "reason": "declared runtime physical KV capacity",
+          "requested": {
+            "batch_size": 2,
+            "phase": "decode",
+            "total_kv_read_tokens": 4096
+          },
+          "required_page_rounded_tokens": 4608
+        }
+      ],
+      "final_native_prefix_gate_sha256": "294138bbbe93266c0f771b0c036a4eaa3d85fc713df836a02fef9d0ec0d22b0d",
+      "fixed_attempts": 10,
+      "native_prefix_gate_sha256": "27c9a622049260b711542b05fb92387d13530037cc003711d2952e9fc6cc9a1b",
+      "resource_forecast_sha256": "2f60d0e453f153c3a246097f970d24e17b03f151cacf14605b242f5d34da89d4",
+      "serving_geometries": 125,
+      "stored_native_prefix_gate_sha256": "27c9a622049260b711542b05fb92387d13530037cc003711d2952e9fc6cc9a1b"
+    },
+    "execution_sha256": "e739840ac2097177d0e929a2d535007d692c5c655b73485c78eff1e481da03c6",
+    "expected_dp_ranks": [
+      0
+    ],
+    "harness_sha256": {
+      "calibration_client.py": "58e237edb0a046ab4cb9620aeb29159d1730607d8bbc175cd902b312d2a570c5",
+      "calibration_controller.py": "a4e61725de44c1d117a5acceb10080cd7a75d043c214a583a610c060b0d215fa",
+      "calibration_plan.py": "d4c5adb6ef701d38fa29dc3fe6328383c109bef29a97c3eed8d3adc199eaba7b",
+      "continuation.py": "ccabcffffa66fc92a0ad6a20799bb8633de8056ba1be15cc1dc75167aa6a9a9f",
+      "continuation_client.py": "0ef2c7c829b7fd0137d2741c4cf6065f5170467c2be3c731e27bd413babdcd4e",
+      "idle_snapshot.py": "a1f3c80fe16230597f175393c9c7ff4e07799fb3b96bac77341191e28c00f134",
+      "journal_audit.py": "50b4a09729463b933a22f871534d41c95bcc4176619d2d691acff47c169ab2cd",
+      "launch_gb300.py": "6dbe4ecdf4548711f56c1cb315d872b864f0a20ef0bbd1749a680f5da22c963a",
+      "launch_study.py": "5a6acf298a66856d3142ae26040d84bb704f35ba330bf93ef49553d556e2583b",
+      "live_canary.py": "5ca1db6ff8af70cf9fbbf571257ba3d98dd30bd62e6dc0f478c4368bc0981782",
+      "observer_bootstrap/sitecustomize.py": "eb55be7e5b74c5045433e68935c63c347562b5ab25668f68f0bc54fa0df53370",
+      "pilot_client.py": "9358e1ebccfee7e58932342e18a5f9c996c84f4a0691d47f50e3a2c890b212f4",
+      "prepare.py": "52eca41540d362514fc5fba4a25e0c5f8b1e73395e120e8bfa7840337195a023",
+      "probe_journal_cost.py": "6a352dfb0f828f23d23460fccb02de0d664a407ba0fd3f465575d3b11dcd054f",
+      "probe_native_publisher.py": "6257497c3222a54c6664f6c515a5f9e7543e20934412f84b18e2fc230826cf0c",
+      "publisher_observer.py": "eaa3afcae9dc0d8c5163d7fda3ad9423f68eb896ad77286855f2093aeddb24a7",
+      "request_audit.py": "d233d11d1cdf8499ba5223fd9e7d58a1204d8c851bdb9d58b5bd6cc459505d5a",
+      "request_observer.py": "925efe0b62414ffe1609eaed9e30b64d55c0a02676a9ca970c06f50b0a66b93a",
+      "statistics/analyze_e2e.py": "edcce1b053846cbf0b7cba14e78815d781eaffe47c961ac4ef2a2316b0afe2d7",
+      "stream_client.py": "dd11d52d49937cd9d3f938e4c426a925f946834637d7dbd60b323f06af7b5d8e",
+      "study_controller.py": "2696be77c3a31890c973adbb90f8664623300e5adb02912e536ee758204eec51",
+      "test_calibration_control.py": "ece79ccf18fb5b128e26ee8d6c38d277971b50fa8852c1e2133c3d6d143ae877",
+      "test_continuation.py": "1accdc302bc8215e1b521998e483da6171df628c748a7f07620bc1e50704e763",
+      "test_dispatch_audit.py": "526682f43062de3bef3d3c3a5cc814b71d51f0b78b9bb27d70fade96daf4568f",
+      "test_journal.py": "be430a01cb387986a21a29dafa08e858d244b3278c2cb24e2b9a05d404e24669",
+      "test_request_audit.py": "053fbef9de31b88fb7d881ce45c63673fe4ea683ea33f03f438298d573356804",
+      "test_study_controller.py": "3b81e1062af436156b12f62f2a3228592a2813d381ee3991033d4fe77b41a874",
+      "test_supplemental.py": "fadb76a27d8316aff6c1993cad8ca5a7f175afb7b616ce43141fc5ba1560e5c8",
+      "test_verification.py": "7ea3ce94c6323930b601ef799f50e23600939b891b4d9b7b8c3bd398734720f1",
+      "trace_audit.py": "f2adcb340f03e117d7c2c699cbb6f37eacc4a53fefdf7ed0d0ef6641fdd1cc25"
+    },
+    "native_source_sha256": {
+      "python/sglang/srt/managers/scheduler.py": "1feae754c18ae54a344c86f9d159305dd27d28732d60a00f0642565b9c64b818",
+      "python/sglang/srt/managers/scheduler_components/metrics_reporter.py": "784ceb1332e61efab05a98c5550ec010e9177c5b05d64ddd590f67abe7a469c7",
+      "python/sglang/srt/observability/forward_pass_metrics.py": "197783e4f501a3651a0bfe376eda29f35cd4a7bf18b6e7b9eebf094ff285f5da",
+      "python/sglang/srt/utils/device_timer.py": "d268ba15b46f7fde8861c7ade43b556916fed2eae0e6f10ee356a570951345ee",
+      "request_handler": "42d32a259d730b83c14f8114af270321d59b87ccb7f4539b1f432d5f46f2d926"
+    },
+    "qualified": true,
+    "qualifier_source_sha256": "43bb7afb9f0b23738be4457024efee380963cc9922a0a4530f90209b03eda2d3",
+    "run_id": "09fbed97-9979-4133-887a-72b251e77bb0",
+    "runtime_evidence_sha256": {
+      "checkpoint": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+      "execution": "e739840ac2097177d0e929a2d535007d692c5c655b73485c78eff1e481da03c6",
+      "original_audit": "acee2bdf1e37a137c021322807e2a884e15ff4c393f594fc34fe57cc79c1e500",
+      "runtime_fpm_manifest": "f1fe2eda5ccd7f17694864e011077e7295436219086a5e969e1109638291487f",
+      "scheduler_receipt": "e33b6551ed7dba595d0e3a2f84a24b969394d3292d6bf39931528c6ddcef25c9",
+      "worker_config": "24d463bc8e371a302f0d4870bba1b52a72f01f09e4d9da47157c59cf0c7061d7"
+    },
+    "schema": "dsv41.serving.fpm.runtime-qualification.v1",
+    "timing_scope": "native_sglang_device_timer_tp0_dp0"
+  },
+  "schema": "dsv41.serving.fpm.publication.v1",
+  "table_sha256": "468d8911b938235fde963ff8565945b738c47f9de8f98e03f5077974a1bf1df9",
+  "valid": true
+}

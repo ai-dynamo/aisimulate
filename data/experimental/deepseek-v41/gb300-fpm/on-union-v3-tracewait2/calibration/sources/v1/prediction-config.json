@@ -1,0 +1,19 @@
+{
+  "attention_dp_size": 1,
+  "backend": "sglang",
+  "backend_version": "0.0.0.dev0",
+  "database_mode": "SILICON",
+  "decoder_replay": true,
+  "enable_shared_layer": false,
+  "forward_model": "fpm",
+  "fpm_fmha_dtype": "fp8",
+  "model_name": "deepseek-ai/DeepSeek-V4.1-Flash",
+  "moe_ep_size": 1,
+  "moe_tp_size": 4,
+  "pp_size": 1,
+  "schema_version": 1,
+  "strict_provenance": true,
+  "system_name": "gb300",
+  "systems_path": "data/experimental/deepseek-v41/gb300-fpm/on-union-v3-tracewait2/calibration/sources/v1/systems",
+  "tp_size": 4
+}

@@ -1,0 +1,93 @@
+{
+  "aic_revision": "40c9541bb0bb593f403345efde01eafba436543c",
+  "backend": "sglang",
+  "backend_version": "0.0.0.dev0",
+  "collector_attempt_ids": [
+    "228c8221-1052-4b60-b215-c3cf5268467a",
+    "9c439f2a-db7c-4a3f-a94b-47a657a5aa0b"
+  ],
+  "component_sources": [
+    {
+      "coverage_complete": false,
+      "geometry_admission_sha256": "64e68d7b7084de1dbf8d83b58c04987baf725dc278ae4cf61d75e0b784d43a9f",
+      "input_inventory_typed_sha256": "c7b28e44dfc0a472f1edcf09d80547cde28fb6d64df80aff33116287c70853d3",
+      "metadata_sha256": "f19b5da55c00b951bc9995584b5cdb9921968e9c766ca731712181f121403dd2",
+      "missing": [
+        {
+          "attempt_count": 10,
+          "point_id": "4d8e7b7ce9a731199422a3617fe5bf11215a7913f7e40d189768f230d3182b05",
+          "reason": "no_geometry_qualified_attempt"
+        }
+      ],
+      "observed_noncompute_identity": {
+        "disaggregation_bootstrap_port": 50741,
+        "dump_config_to": "/campaign/verification/runs/228c8221-1052-4b60-b215-c3cf5268467a/worker-config.json",
+        "namespace": "v41verify228c82211052"
+      },
+      "planned_geometries": 125,
+      "profile": "off",
+      "publication_receipt_sha256": "927754322a35b5d78b1b1f19837e9c8dc444188ab1c4dc60b125eb7cdcb838c2",
+      "publication_source_sha256": "1cd7416a130662e5583864078ee891b182df0d747893f92511f0a040f862a335",
+      "published_geometries": 124,
+      "qualified_inputs_sha256": "8c5fc7f295752b2556ae3d6beac2542170bd5e91d0149eabd300f5b808479e2b",
+      "rows_typed_sha256": "ae92446f84d9a2e5d16695fa8518be5723f9529595da35a8a1f666488f9e728b",
+      "run_id": "228c8221-1052-4b60-b215-c3cf5268467a",
+      "table_sha256": "70f62dfd0f620cd233c9637712cb614a3fbab8d4fa3a544ebdb8b4b3c56b586b",
+      "version": "v1"
+    },
+    {
+      "coverage_complete": false,
+      "geometry_admission_sha256": "bb0e009bd6e2459d28491688484e9c480b2a3a5e8f862aa5ba6ddb79fc1f8423",
+      "input_inventory_typed_sha256": "33b04923d3f343040376e044a35cb3a5959ff4c41575e5deb565d3bb37a2b207",
+      "metadata_sha256": "c105ac53efed81af44ee5e6bc225f0f1aeaeae18a016887d094200f55f0d76b7",
+      "missing": [
+        {
+          "attempt_count": 10,
+          "point_id": "89e66bcad71f6325c999077301361bd8986a086b79279d9ef61df859d7be35f7",
+          "reason": "no_geometry_qualified_attempt"
+        }
+      ],
+      "observed_noncompute_identity": {
+        "disaggregation_bootstrap_port": 59091,
+        "dump_config_to": "/campaign/verification/runs/9c439f2a-db7c-4a3f-a94b-47a657a5aa0b/worker-config.json",
+        "namespace": "v41verify9c439f2adb7c"
+      },
+      "planned_geometries": 19,
+      "profile": "off",
+      "publication_receipt_sha256": "c05a2c4871a4f1c17db69241bf1d3982d398a34056b2ed38cc181fcebdc84ac0",
+      "publication_source_sha256": "e24f48dc9ccf0cc64437c60129362007e6d7574684db7d9ebc99c397c9e2cb0f",
+      "published_geometries": 18,
+      "qualified_inputs_sha256": "23f77e43fd48e5fe028a16c3bba18aabb50b3031eaefa5bc0c1e46ed6915cdef",
+      "rows_typed_sha256": "971361fd6e3da785901d842cef532dd1421a734f6e9db2189525093b83b92254",
+      "run_id": "9c439f2a-db7c-4a3f-a94b-47a657a5aa0b",
+      "table_sha256": "e313079b4c5d03fc0081e27a46984673b85389a02ad0bd1b780c218bf30f2213",
+      "version": "v3_tracewait2"
+    }
+  ],
+  "coordinate_system": "iteration_totals_balanced_v1",
+  "measurement_policy": "dynamo_native_single_sample_v1",
+  "measurement_repeats": 1,
+  "model_paths": [
+    "deepseek-ai/DeepSeek-V4.1-Flash"
+  ],
+  "parquet_sha256": "1ba1736776ee06679d63a4d888d6548ee94892e45277e1443fcbc308078aa65a",
+  "publication_policy": "reviewed_disjoint_source_union_v1",
+  "row_count": 142,
+  "runtime_grid_digests": [
+    "81c8d7ab66ce32fd5a26e0b433650d2a69b754030f3285078f080ae74f80da8d",
+    "8d27e6b33c356e0d341143d1d668f36e8e0ffc76d6357d95e28b33bfd4785232"
+  ],
+  "runtime_run_ids": [
+    "228c8221-1052-4b60-b215-c3cf5268467a",
+    "9c439f2a-db7c-4a3f-a94b-47a657a5aa0b"
+  ],
+  "schema_name": "aic_fpm_forward_perf",
+  "schema_version": 7,
+  "source_plan_sha256": [
+    "35188f4bad93ba8b9ace23c23af1dfcd959d6587a59220d4214b4a007d4dc51b",
+    "cb95a12f4ae6df52d5e87bacc62041e6a1ec7bf2453bc11bd61f105fb663819f"
+  ],
+  "system": "gb300",
+  "union_source_manifest_sha256": "fcf8e1ce094737e9d0fc36d5a90c260d00bfa99fb4bddcc0cdb61dd830f6ff6f",
+  "warmup_repeats": 0
+}

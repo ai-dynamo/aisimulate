@@ -1,0 +1,93 @@
+{
+  "aic_revision": "40c9541bb0bb593f403345efde01eafba436543c",
+  "backend": "sglang",
+  "backend_version": "0.0.0.dev0",
+  "collector_attempt_ids": [
+    "09fbed97-9979-4133-887a-72b251e77bb0",
+    "3db34f09-a8f4-4a4d-94ad-d8c97f33ac03"
+  ],
+  "component_sources": [
+    {
+      "coverage_complete": false,
+      "geometry_admission_sha256": "8aa1dad6af4efbb9f2b4cf0bef29e893fc77ef19fd15f86c3fe4054b5d09a947",
+      "input_inventory_typed_sha256": "b35e7eb756c88f7d6872ab569ed9229e1e88a31fb21e3be4bfa48dc9a60b4dbd",
+      "metadata_sha256": "7e26ecf010a1517190d25919f0119fcde9d6bcb85bb115783b972eaad41fedd7",
+      "missing": [
+        {
+          "attempt_count": 10,
+          "point_id": "4d8e7b7ce9a731199422a3617fe5bf11215a7913f7e40d189768f230d3182b05",
+          "reason": "no_geometry_qualified_attempt"
+        }
+      ],
+      "observed_noncompute_identity": {
+        "disaggregation_bootstrap_port": 52439,
+        "dump_config_to": "/campaign/verification/runs/09fbed97-9979-4133-887a-72b251e77bb0/worker-config.json",
+        "namespace": "v41verify09fbed979979"
+      },
+      "planned_geometries": 125,
+      "profile": "on",
+      "publication_receipt_sha256": "95af5329053dcaaee27a869d357bec9a6c2c3ab06f2fe4a63573df6478fd6314",
+      "publication_source_sha256": "1cd7416a130662e5583864078ee891b182df0d747893f92511f0a040f862a335",
+      "published_geometries": 124,
+      "qualified_inputs_sha256": "e4dca78a3a4dc506152cbc35720ab79ce36f0609a558df622cb63582cf9e96e7",
+      "rows_typed_sha256": "91ec7cbf9b2819cfa5e366c5387c4358ab82c68e367ec577dd1b2df9923f736b",
+      "run_id": "09fbed97-9979-4133-887a-72b251e77bb0",
+      "table_sha256": "468d8911b938235fde963ff8565945b738c47f9de8f98e03f5077974a1bf1df9",
+      "version": "v1"
+    },
+    {
+      "coverage_complete": false,
+      "geometry_admission_sha256": "80faa3222c607f563759ac63687d9b423dee74f91bd56606b1b5963b666e6e9e",
+      "input_inventory_typed_sha256": "18a13b58e9ead656793dc90e046c5e3d4d511b616da498c902181dcfe26ad1ad",
+      "metadata_sha256": "35cbec1ee7c0cba27235eb13556c55a875ec7062b66ff3f1ab9dc740edc2cd3a",
+      "missing": [
+        {
+          "attempt_count": 10,
+          "point_id": "811ba5ff192e0c0d9b8299b6f7ebbf97f7aa0a24063c9328e462efa0fef98113",
+          "reason": "no_geometry_qualified_attempt"
+        }
+      ],
+      "observed_noncompute_identity": {
+        "disaggregation_bootstrap_port": 54343,
+        "dump_config_to": "/campaign/verification/runs/3db34f09-a8f4-4a4d-94ad-d8c97f33ac03/worker-config.json",
+        "namespace": "v41verify3db34f09a8f4"
+      },
+      "planned_geometries": 19,
+      "profile": "on",
+      "publication_receipt_sha256": "3a6b7abbd3f27067b043af68f3d23937082ad95037b134bee78e0875bb2c07a5",
+      "publication_source_sha256": "e24f48dc9ccf0cc64437c60129362007e6d7574684db7d9ebc99c397c9e2cb0f",
+      "published_geometries": 18,
+      "qualified_inputs_sha256": "4a2fce28fca407bd61afc0afb44b10c0c2c6ce0c3cb849c170c8ecf241c4e656",
+      "rows_typed_sha256": "313b5fee97aefcbdfa7a44120c87454fa8360d789500953a399273c63d101c7f",
+      "run_id": "3db34f09-a8f4-4a4d-94ad-d8c97f33ac03",
+      "table_sha256": "9eb3693501f0b43f7b682706601b1b15682fa91ce8926175cd0d9a77736b0e07",
+      "version": "v3_tracewait2"
+    }
+  ],
+  "coordinate_system": "iteration_totals_balanced_v1",
+  "measurement_policy": "dynamo_native_single_sample_v1",
+  "measurement_repeats": 1,
+  "model_paths": [
+    "deepseek-ai/DeepSeek-V4.1-Flash"
+  ],
+  "parquet_sha256": "0da08ce08b15c91f9f4bb27d61a7a648d1b0042256b3afdfd8963350600f643a",
+  "publication_policy": "reviewed_disjoint_source_union_v1",
+  "row_count": 142,
+  "runtime_grid_digests": [
+    "81c8d7ab66ce32fd5a26e0b433650d2a69b754030f3285078f080ae74f80da8d",
+    "8d27e6b33c356e0d341143d1d668f36e8e0ffc76d6357d95e28b33bfd4785232"
+  ],
+  "runtime_run_ids": [
+    "09fbed97-9979-4133-887a-72b251e77bb0",
+    "3db34f09-a8f4-4a4d-94ad-d8c97f33ac03"
+  ],
+  "schema_name": "aic_fpm_forward_perf",
+  "schema_version": 7,
+  "source_plan_sha256": [
+    "3b25e81e96dc84bdd24dfeb7b3200b266cc350ddd0e6d42f9e058d508bbb3f6e",
+    "7d263fae3652a851045c02acb707587ce892ba0ddfbf5d66525cac3df473ed97"
+  ],
+  "system": "gb300",
+  "union_source_manifest_sha256": "785433e2218f86005b375723300188536f754b56e588dbe8fc38604d872869c7",
+  "warmup_repeats": 0
+}

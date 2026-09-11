@@ -1,0 +1,29 @@
+{
+  "aic_revision": "be0c44dfd1e319139d16659f2d96bf9a88337c53",
+  "backend": "sglang",
+  "backend_version": "0.0.0.dev0",
+  "collector_attempt_ids": [
+    "228c8221-1052-4b60-b215-c3cf5268467a"
+  ],
+  "coordinate_system": "iteration_totals_balanced_v1",
+  "measurement_policy": "dynamo_native_single_sample_v1",
+  "measurement_repeats": 1,
+  "model_paths": [
+    "deepseek-ai/DeepSeek-V4.1-Flash"
+  ],
+  "parquet_sha256": "70f62dfd0f620cd233c9637712cb614a3fbab8d4fa3a544ebdb8b4b3c56b586b",
+  "row_count": 124,
+  "runtime_grid_digests": [
+    "81c8d7ab66ce32fd5a26e0b433650d2a69b754030f3285078f080ae74f80da8d"
+  ],
+  "runtime_run_ids": [
+    "228c8221-1052-4b60-b215-c3cf5268467a"
+  ],
+  "schema_name": "aic_fpm_forward_perf",
+  "schema_version": 7,
+  "source_plan_sha256": [
+    "cb95a12f4ae6df52d5e87bacc62041e6a1ec7bf2453bc11bd61f105fb663819f"
+  ],
+  "system": "gb300",
+  "warmup_repeats": 0
+}
