@@ -31,10 +31,15 @@ and shared global KV remain unchanged. A three-token extend after a long cached
 prefix still has three late-layer query tokens. The bounded late-layer SWA
 window starts at that extend tail. Decode always traverses all layers.
 
-The native mixed path scopes requests before combining their non-attention work
-with decode tokens. Telemetry with nonzero prefill variance cannot recover
-individual tail lengths and is rejected for bounded replay. Replay never
-removes resident weights or changes the cache-capacity inventory.
+The native mixed path scopes explicitly grouped requests before combining their
+non-attention work with decode tokens. For bounded replay, the op-level FPM v1
+consumer accepts fresh prefill work only when it describes one prefill request. Its
+variance field measures full prompt lengths; equal prompts can have different
+cached prefixes or completed chunks, so zero variance cannot establish identical
+extend tails. Multiple-prefill aggregates are therefore rejected, including
+balanced batches and small total token counts. Explicit static/mixed geometry,
+single-prefill telemetry, decode-only work, and Decoder OFF retain their existing
+paths. Replay never removes resident weights or changes cache-capacity inventory.
 
 ## Operators and memory
 

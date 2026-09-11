@@ -1781,19 +1781,25 @@ impl Engine {
 
         if self.has_dsv41_stages() {
             if has_prefill
-                && sched.var_prefill_length > 0.0
+                && sched.num_prefill_requests > 1
                 && self.context_ops.iter().any(|op| {
                     matches!(op,
                     Op::Dsv41Stage(stage) if stage.decoder_replay && stage.bounded)
                 })
             {
                 return Err(AicError::InvalidForwardPassMetrics(
-                    "V4.1 Decoder replay requires per-request extend lengths; heterogeneous FPM v1 aggregates cannot identify the tails".into(),
+                    "V4.1 Decoder replay requires per-request extend lengths; FPM v1 aggregates with multiple prefill requests cannot identify the tails, even when prompt-length variance is zero".into(),
                 ));
             }
+            // FPM v1 variance measures complete prompt lengths, not this
+            // iteration's extends. Equal prompts can have different cached
+            // prefixes or completed chunks, so even zero variance cannot prove
+            // homogeneous tails. Bounded replay only accepts one prefill here;
+            // explicitly grouped static/mixed workloads keep their own paths.
             // Retain every scheduled token in balanced aggregate telemetry;
             // integer averages alone discard the remainder. FPM v1 does not
-            // carry individual extend lengths, so unbalanced replay is rejected.
+            // carry individual extend lengths; this approximation is only used
+            // for multiple prefills when decoder replay does not bound them.
             let mut prefills = Vec::new();
             if has_prefill {
                 let n = sched.num_prefill_requests;
@@ -2375,16 +2381,82 @@ mod tests {
     }
 
     #[test]
-    fn dsv41_replay_rejects_ambiguous_heterogeneous_telemetry() {
+    fn dsv41_replay_rejects_equal_prompt_heterogeneous_extends() {
+        // The scheduler observes identical 1024-token prompts, but different
+        // cached prefixes leave extends of 1 and 1023 tokens. Prompt variance
+        // is zero although the real bounded tails total 129, not 2 * 128.
+        let requests = [(1024, 1023, 1), (1024, 1, 1023)];
+        assert!(
+            requests
+                .iter()
+                .all(|&(prompt, prefix, query)| { prompt == 1024 && prefix + query == prompt })
+        );
+        let engine = dsv41_probe_engine(true);
+        let mut metrics = ForwardPassMetrics::default();
+        metrics.scheduled_requests.num_prefill_requests = requests.len() as u32;
+        metrics.scheduled_requests.sum_prefill_tokens = requests.iter().map(|r| r.2).sum();
+        metrics.scheduled_requests.sum_prefill_kv_tokens = requests.iter().map(|r| r.1).sum();
+        // Matches build_fpm_snapshot: variance is over prompt, not query.
+        metrics.scheduled_requests.var_prefill_length = 0.0;
+        let error = engine.forward_pass_time_ms(&[metrics]).unwrap_err();
+        assert!(matches!(error, AicError::InvalidForwardPassMetrics(_)));
+        assert!(error.to_string().contains("multiple prefill requests"));
+    }
+
+    #[test]
+    fn dsv41_replay_rejects_multiple_prefills_without_geometry() {
         let engine = dsv41_probe_engine(true);
         let mut metrics = ForwardPassMetrics::default();
         metrics.scheduled_requests.num_prefill_requests = 2;
-        metrics.scheduled_requests.sum_prefill_tokens = 256;
-        metrics.scheduled_requests.var_prefill_length = 64.0;
-        assert!(matches!(
-            engine.forward_pass_time_ms(&[metrics]),
-            Err(AicError::InvalidForwardPassMetrics(_))
-        ));
+        for tokens in [1, 2, 127, 128, 129, 256, 1024] {
+            for variance in [0.0, 64.0] {
+                metrics.scheduled_requests.sum_prefill_tokens = tokens;
+                metrics.scheduled_requests.var_prefill_length = variance;
+                for decode_batch in [0, 3] {
+                    metrics.scheduled_requests.num_decode_requests = decode_batch;
+                    metrics.scheduled_requests.sum_decode_kv_tokens = decode_batch * 512;
+                    assert!(matches!(
+                        engine.forward_pass_time_ms(std::slice::from_ref(&metrics)),
+                        Err(AicError::InvalidForwardPassMetrics(_))
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dsv41_replay_telemetry_keeps_single_prefill_and_decode_boundaries() {
+        let engine = dsv41_probe_engine(true);
+        let unit = dsv41_probe_token_ms(&engine);
+        let mut metrics = ForwardPassMetrics::default();
+        for query in [0, 1, 127, 128, 129, 1024] {
+            for prefix in [0, 1024] {
+                metrics.scheduled_requests.num_prefill_requests = 1;
+                metrics.scheduled_requests.sum_prefill_tokens = query;
+                metrics.scheduled_requests.sum_prefill_kv_tokens = prefix;
+                for decode_batch in [0, 3] {
+                    metrics.scheduled_requests.num_decode_requests = decode_batch;
+                    metrics.scheduled_requests.sum_decode_kv_tokens = decode_batch * 512;
+                    let result = engine
+                        .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                        .unwrap();
+                    let expected = 2 * (query + query.min(128) + 2 * decode_batch);
+                    assert!((result / unit - f64::from(expected)).abs() < 1e-9);
+                }
+            }
+        }
+        // Cached-prefill metadata alone is not fresh prefill work. Keep the
+        // decode-only path (and an otherwise empty iteration) available.
+        metrics.scheduled_requests.num_prefill_requests = 2;
+        metrics.scheduled_requests.sum_prefill_tokens = 0;
+        for decode_batch in [0, 3] {
+            metrics.scheduled_requests.num_decode_requests = decode_batch;
+            metrics.scheduled_requests.sum_decode_kv_tokens = decode_batch * 512;
+            let result = engine
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap();
+            assert!((result / unit - f64::from(4 * decode_batch)).abs() < 1e-9);
+        }
     }
 
     #[test]
