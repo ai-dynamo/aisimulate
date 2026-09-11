@@ -515,6 +515,13 @@ impl SteppableDisagg {
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(prefill_workers > 0, "num_prefill_workers must be positive");
         anyhow::ensure!(decode_workers > 0, "num_decode_workers must be positive");
+        // `false`, not `O::capture_engine_kv_events(..)` the way `with_placement`
+        // computes it on the aggregated side: this constructor has no
+        // observation-flavor type parameter to read one from. `SteppableDisagg`
+        // only ever builds `PoolRoundRobinPlacement`, with no injection entry
+        // point analogous to `SteppableAgg::with_placement` yet, so there is no
+        // caller today who could ask for KV events here. If disagg gains its
+        // own `with_placement`, generalize this the same way that one did.
         let config = OfflineDisaggReplayConfig {
             prefill_factory: factory.role_factory(&engine, WorkerStage::Prefill, false)?,
             decode_factory: factory.role_factory(&engine, WorkerStage::Decode, false)?,

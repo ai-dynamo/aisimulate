@@ -1713,6 +1713,13 @@ where
                     self.acknowledge_action(uuid, issued, HandoffActionOutcome::Noop)?;
                     return Ok(ActionExecution::Applied);
                 };
+                if self.prefill_engine.worker_is_busy(worker_idx)? {
+                    return Ok(ActionExecution::Deferred {
+                        action: issued,
+                        stage: SimulationWorkerStage::Prefill,
+                        worker_idx,
+                    });
+                }
                 let effects = self.prefill_engine.apply_command(
                     worker_idx,
                     Command::CancelSource { handoff_id },
@@ -1732,6 +1739,13 @@ where
                     self.acknowledge_action(uuid, issued, HandoffActionOutcome::Noop)?;
                     return Ok(ActionExecution::Applied);
                 };
+                if self.decode_engine.worker_is_busy(worker_idx)? {
+                    return Ok(ActionExecution::Deferred {
+                        action: issued,
+                        stage: SimulationWorkerStage::Decode,
+                        worker_idx,
+                    });
+                }
                 let effects = self.decode_engine.apply_command(
                     worker_idx,
                     Command::CancelDestination { handoff_id },
@@ -2536,6 +2550,15 @@ where
         }
         loop {
             let mut changed = self.prune_stale_transfer_events();
+            // Brings disagg to parity with `AggRuntimeImpl::drain_current_timestamp`
+            // (`agg.rs`), which has settled internal engine work on every drain
+            // iteration since before this replay engine existed. Disagg never
+            // called `process_internal_work` at all -- a pre-existing asymmetry
+            // between the two runtimes, not new behavior invented here. A no-op
+            // scan when no worker has due internal work (the common case, no
+            // KV-offload configured); only a KV-offload-configured run observes
+            // a difference, and now observes offload ticks at the same drain
+            // granularity agg already did.
             changed |= self.settle_internal_work()?;
             changed |= self.apply_worker_completions()?;
             if self.defer_drive && self.step_freed_slot {
