@@ -40,6 +40,8 @@ def _topology_from_deployment(spec: ReplaySpec) -> tuple[AFDTopology, Mapping[st
     deployment = spec.backend_deployment
     if deployment.deployment_mode not in {"afd", "afd+pd"}:
         raise AFDQualificationError("AFD qualification artifacts require deployment_mode 'afd' or 'afd+pd'")
+    if deployment.encoder is not None or spec.workload.get("images") is not None:
+        raise AFDQualificationError("AFD qualification does not support analytical EPD encoder pools or images")
     if spec.api_version != REPLAY_SPEC_API_VERSION:
         raise AFDQualificationError(f"ReplaySpec API version {spec.api_version!r} is not supported")
     if not deployment.backend or not deployment.backend_version:

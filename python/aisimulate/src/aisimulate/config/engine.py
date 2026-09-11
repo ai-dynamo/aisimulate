@@ -140,7 +140,20 @@ class WorkerPredictionConfig(StrictModel):
     startup_seconds: float = Field(default=0.0, ge=0.0)
 
 
+class EncoderPredictionConfig(StrictModel):
+    """Dedicated analytical encoder pool, not an event-level language worker."""
+
+    hardware: str | None = Field(default=None, min_length=1)
+    backend_version: str | None = Field(default=None, min_length=1)
+    tensor: PositiveInt = 1
+    replicas: PositiveInt = 1
+    batch_size: Annotated[int, Field(strict=True, gt=0, le=8)] = 1
+    latency_correction: PositiveFloat = 1.0
+    rate_degradation: Fraction = 0.9
+
+
 class WorkersPredictionConfig(StrictModel):
+    encoder: EncoderPredictionConfig | None = None
     aggregated: WorkerPredictionConfig | None = None
     prefill: WorkerPredictionConfig | None = None
     decode: WorkerPredictionConfig | None = None
@@ -315,7 +328,22 @@ class WorkerRecommendationConfig(StrictModel):
     startup_seconds: float = Field(default=0.0, ge=0.0)
 
 
+class EncoderRecommendationConfig(StrictModel):
+    """Finite encoder domains; scalar values pin a single choice."""
+
+    hardware: str | None = Field(default=None, min_length=1)
+    backend_version: str | None = Field(default=None, min_length=1)
+    tensor: PositiveInt | Choices[PositiveInt] = 1
+    replicas: PositiveInt | Choices[PositiveInt] = 1
+    batch_size: (
+        Annotated[int, Field(strict=True, gt=0, le=8)] | Choices[Annotated[int, Field(strict=True, gt=0, le=8)]]
+    ) = 1
+    latency_correction: PositiveFloat = 1.0
+    rate_degradation: Fraction = 0.9
+
+
 class WorkersRecommendationConfig(StrictModel):
+    encoder: EncoderRecommendationConfig | None = None
     aggregated: WorkerRecommendationConfig | None = None
     prefill: WorkerRecommendationConfig | None = None
     decode: WorkerRecommendationConfig | None = None
@@ -375,6 +403,8 @@ def _configured_worker_roles(workers) -> set[str]:
 
 
 def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
+    if engine.workers.encoder is not None:
+        raise ValueError("AFD does not support analytical EPD encoder pools")
     afd = engine.afd
     if afd is None:
         raise ValueError("engine.mode='afd' requires engine.afd")
@@ -395,6 +425,8 @@ def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
 
 
 def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
+    if engine.workers.encoder is not None:
+        raise ValueError("AFD does not support analytical EPD encoder pools")
     afd = engine.afd
     if afd is None:
         raise ValueError("engine.mode='afd' requires engine.afd")

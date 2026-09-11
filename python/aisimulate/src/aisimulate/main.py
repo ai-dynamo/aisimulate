@@ -155,6 +155,9 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    epd = config.engine.workers.encoder is not None
+    if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
+        raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     adapter_specs = _compile_prediction_adapters(
         adapter_raw,
@@ -175,7 +178,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             report = runner.run(
                 spec,
                 output_requirements=ReplayOutputRequirements(
-                    include_raw_report=True,
+                    include_raw_report=not epd,
                     capture_per_request=args.capture_per_request,
                 ),
             )
@@ -188,6 +191,11 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     native = report.metadata.get("native_report")
     if not isinstance(native, dict):
         native = {"summary": dict(report.metrics)}
+    if epd:
+        native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
+        # JSON stdout, like prediction.json, must identify the approximation.
+        native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
+        native["summary"]["total_gpus"] = report.metadata["total_gpus"]
     summary = native.get("summary", native)
     if not isinstance(summary, dict):
         raise RuntimeError("prediction report summary must be a JSON mapping")
