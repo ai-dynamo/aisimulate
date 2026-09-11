@@ -1067,6 +1067,21 @@ impl WorkloadDriver {
     /// deadlocking: `pop_ready` skips sessions with `in_flight.is_some()`, so a
     /// leaked session would leave `is_drained` stuck at `false` forever.
     pub fn release_cap_slot(&mut self, request_uuid: Uuid, now_ms: f64) {
+        // This is a public entry point for an external driver, so `now_ms` is
+        // caller-supplied and unvalidated -- the same trust boundary
+        // `on_causal_terminal` guards. A non-finite value reaches the ready heap
+        // through `resolve_turn` -> `apply_resolution` -> `activate_pending`, and
+        // `pop_ready_compact` cannot re-identify a NaN entry, so it silently drops
+        // the heap entry while the session still has a pending turn: `is_drained`
+        // never becomes true.
+        if let Err(error) = checked_ready_at_ms("cap release time", now_ms) {
+            tracing::error!(
+                %request_uuid,
+                error = %error,
+                "release_cap_slot ignored a non-finite time"
+            );
+            return;
+        }
         // `resolve_turn` returns `Ok(None)` for the expected benign case
         // (this doc's own "no-op if on_complete already ran"), but it can
         // also return `Err` for a genuine internal invariant violation
@@ -1157,6 +1172,15 @@ impl WorkloadDriver {
 
     #[doc(hidden)]
     pub fn pop_ready_compact(&mut self, now_ms: f64, limit: usize) -> Vec<CompactReadyTurn> {
+        // Caller-supplied time at a public boundary. The readiness gate below is
+        // `ready_at_ms > now_ms`, and every comparison against NaN is false, so a
+        // NaN would dispatch every queued session regardless of its scheduled
+        // arrival -- a silent parity break, not a crash -- and would then stamp
+        // itself into `dispatched_at_ms` and `root_dispatch_ms`.
+        if let Err(error) = checked_ready_at_ms("dispatch time", now_ms) {
+            tracing::error!(error = %error, "pop_ready_compact ignored a non-finite time");
+            return Vec::new();
+        }
         let effective_limit = self.policy.dispatch_limit(limit, self.in_flight.len());
         if effective_limit == 0 {
             return Vec::new();
@@ -2128,6 +2152,47 @@ mod tests {
             assert_eq!(at_10.len(), 1, "only C is admittable at t=10");
             assert_eq!(at_10[0].session_id, "c");
         }
+    }
+
+    /// `release_cap_slot` is the failure-path sibling of `on_causal_terminal` and
+    /// the one public entry point that skipped its finiteness guard. A NaN reaches
+    /// the ready heap via `activate_pending`, and `pop_ready_compact` cannot
+    /// re-identify a NaN entry, so the session is dropped while still pending.
+    #[test]
+    fn release_cap_slot_ignores_a_non_finite_time_instead_of_wedging_the_heap() {
+        for bad_now_ms in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut driver = WorkloadDriver::new_concurrency(three_session_trace(), 1, 2).unwrap();
+            let first = driver.pop_ready(0.0, usize::MAX);
+            let b0 = first
+                .iter()
+                .find(|r| r.session_id == "b")
+                .unwrap()
+                .request_uuid;
+
+            driver.release_cap_slot(b0, bad_now_ms);
+
+            // The poisoned release was ignored, so B is still in flight and the
+            // driver still drains normally on a well-formed release.
+            driver.release_cap_slot(b0, 10.0);
+            let at_10 = driver.pop_ready(10.0, usize::MAX);
+            assert_eq!(at_10.len(), 1, "only C is admittable at t=10 ({bad_now_ms})");
+            assert_eq!(at_10[0].session_id, "c");
+        }
+    }
+
+    /// A NaN `now_ms` makes the `ready_at_ms > now_ms` readiness gate false for
+    /// every queued session, dispatching the whole schedule at once -- a silent
+    /// parity break rather than a crash.
+    #[test]
+    fn pop_ready_ignores_a_non_finite_time_instead_of_bypassing_the_readiness_gate() {
+        let mut driver = WorkloadDriver::new_concurrency(three_session_trace(), 1, 2).unwrap();
+        assert!(
+            driver.pop_ready(f64::NAN, usize::MAX).is_empty(),
+            "a NaN dispatch time must admit nothing"
+        );
+        // The schedule is intact: the ordinary dispatch still admits A and B only.
+        let first = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(first.len(), 2, "cap = 2 admits exactly A and B at t=0");
     }
 
     #[test]
