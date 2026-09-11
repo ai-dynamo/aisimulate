@@ -49,12 +49,8 @@ _EXPECTED_RECOMMEND_CASES = (
     "06-override-parallel-mappings-agg-disagg.yaml",
     "07-afd-plus-pd.yaml",
 )
-_PREDICT_CASES = tuple(
-    sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glob("*.yaml"))
-)
-_RECOMMEND_CASES = tuple(
-    sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml"))
-)
+_PREDICT_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glob("*.yaml")))
+_RECOMMEND_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml")))
 
 
 def _run_cli(*args: str, timeout: float = 120.0, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -134,9 +130,7 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("config_path", _RECOMMEND_CASES, ids=lambda path: path.stem)
-def test_engine_recommend_cli_cases_round_trip(
-    config_path: Path, tmp_path: Path
-) -> None:
+def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path) -> None:
     output = tmp_path / config_path.stem
     result = _run_cli(
         "recommend",
@@ -154,9 +148,7 @@ def test_engine_recommend_cli_cases_round_trip(
     recommendation_paths = sorted((output / "recommendations").glob("*.yaml"))
     assert rows
     assert len(recommendation_paths) == len(rows)
-    assert len({path.read_bytes() for path in recommendation_paths}) == len(
-        recommendation_paths
-    )
+    assert len({path.read_bytes() for path in recommendation_paths}) == len(recommendation_paths)
 
     generated_modes = set()
     for index, recommendation_path in enumerate(recommendation_paths):
