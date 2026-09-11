@@ -14,6 +14,7 @@ import pytest
 from scripts.check_prediction_numerics import check_results, validate_cases
 
 ROOT = Path(__file__).resolve().parents[1]
+BASELINE_SHA = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())["baseline_source_sha"]
 
 
 @pytest.fixture
@@ -50,7 +51,53 @@ def test_missing_duplicate_and_skipped_sentinels_fail(case):
 def test_invalid_tolerances_or_query_rejected(case, field, value):
     case[field] = value
     with pytest.raises(ValueError):
-        validate_cases({"schema_version": 1, "cases": [case]})
+        validate_cases({"schema_version": 1, "baseline_source_sha": BASELINE_SHA, "cases": [case]})
+
+
+@pytest.mark.parametrize("baseline", [None, "", "main", "a" * 39, "z" * 40, "0" * 40])
+def test_invalid_or_unresolved_baseline_commit_fails(case, baseline):
+    with pytest.raises(ValueError, match="baseline_source_sha"):
+        validate_cases({"schema_version": 1, "baseline_source_sha": baseline, "cases": [case]})
+
+
+def test_valid_baseline_commit_is_accepted(case):
+    assert validate_cases({"schema_version": 1, "baseline_source_sha": BASELINE_SHA, "cases": [case]}) == [case]
+
+
+@pytest.mark.parametrize("base", ["", "runner:latest", "runner:2.0", "runner@sha256:abc", "runner@sha256:" + "x" * 64])
+def test_image_builder_rejects_unpinned_base_before_docker(tmp_path, base):
+    result, log = _build_image(tmp_path, base)
+    assert result.returncode == 2
+    assert log == ""
+
+
+def test_image_builder_preserves_digest_and_builds_both_architectures(tmp_path):
+    base = "registry.example:5000/runner@sha256:" + "a" * 64
+    result, log = _build_image(tmp_path, base)
+    assert result.returncode == 0, result.stderr
+    assert f"BASE_IMAGE={base}" in log.splitlines()
+    assert "linux/amd64,linux/arm64" in log.splitlines()
+
+
+def _build_image(tmp_path, base):
+    binary = tmp_path / "docker"
+    log = tmp_path / "docker-calls"
+    binary.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$AUDIT_DOCKER_LOG"\n')
+    binary.chmod(0o755)
+    result = subprocess.run(
+        ["/bin/bash", str(ROOT / "scripts/build_ci_image.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "AISIM_BASE_IMAGE_BY_DIGEST": base,
+            "AISIM_BUILD_IMAGE_TAG": "registry.example/aisim-test:ci",
+            "AUDIT_DOCKER_LOG": str(log),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result, log.read_text() if log.exists() else ""
 
 
 def test_manifest_retains_dense_moe_prefill_and_decode():
