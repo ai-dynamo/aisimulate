@@ -274,6 +274,7 @@ impl DisaggActionQueues {
 struct DisaggFlowState {
     requests: HashMap<Uuid, DisaggRequestState>,
     requests_by_handoff: HashMap<HandoffId, Uuid>,
+    next_handoff_ordinal: u128,
     handoff_order: HandoffOrder,
     handoff_latency_ms: f64,
     action_queues: DisaggActionQueues,
@@ -302,6 +303,7 @@ impl DisaggFlowState {
         Self {
             requests: HashMap::new(),
             requests_by_handoff: HashMap::new(),
+            next_handoff_ordinal: 1,
             handoff_order,
             handoff_latency_ms,
             action_queues: DisaggActionQueues::default(),
@@ -630,7 +632,14 @@ impl DisaggFlowState {
         if self.requests.contains_key(&uuid) {
             bail!("offline disagg replay request {uuid} is already active");
         }
-        let handoff_id = HandoffId::new(Uuid::new_v4());
+        // Handoff identities are replay-local. Allocate in arrival order so
+        // simultaneous transfers have stable priority even with random request
+        // UUIDs, and never reuse an identity while stale events may remain.
+        let handoff_id = HandoffId::new(Uuid::from_u128(self.next_handoff_ordinal));
+        self.next_handoff_ordinal = self
+            .next_handoff_ordinal
+            .checked_add(1)
+            .context("offline disagg replay handoff ordinal overflow")?;
         let mut state = DisaggRequestState::new(
             request,
             arrival_time_ms,
@@ -3227,6 +3236,16 @@ where
         self.drain_current_timestamp()?;
         self.seed_first_telemetry_tick()?;
         self.seed_first_scaling_tick()?;
+        // Keep the baseline before the first scaling decision, but settle any
+        // tick seeded at this instant before exposing a settled step boundary.
+        if !self.is_done()
+            && self
+                .events
+                .peek()
+                .is_some_and(|event| event.at_ms <= self.now_ms)
+        {
+            self.drain_current_timestamp()?;
+        }
         self.drive_started = true;
         Ok(true)
     }
