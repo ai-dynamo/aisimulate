@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use uuid::Uuid;
 
 use super::ReplayMode;
@@ -145,13 +145,26 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => {
                 let mut ready = Vec::new();
                 loop {
-                    let arrival_ms = pending
-                        .front()
-                        .and_then(|request| request.arrival_timestamp_ms)
-                        .filter(|arrival_ms| *arrival_ms <= now_ms);
-                    let Some(arrival_time_ms) = arrival_ms else {
+                    let Some(front) = pending.front() else {
                         break;
                     };
+                    // A missing arrival_timestamp_ms is malformed trace data,
+                    // not "not ready yet" -- both filter's None and a
+                    // legitimate future timestamp end up as no-match here,
+                    // and treating the two identically means a queue with a
+                    // timestamp-less request at its front never makes
+                    // progress again: this loop and next_ready_time_ms both
+                    // report nothing to wait for, so nothing ever re-checks
+                    // it. Fail closed instead of wedging the whole queue.
+                    let Some(arrival_time_ms) = front.arrival_timestamp_ms else {
+                        bail!(
+                            "offline trace replay request {:?} is missing arrival_timestamp_ms",
+                            front.uuid
+                        );
+                    };
+                    if arrival_time_ms > now_ms {
+                        break;
+                    }
                     let request = pending
                         .pop_front()
                         .expect("front request must exist when arrival is ready");
@@ -379,5 +392,33 @@ impl<Metadata: ReplayAdmissionMetadata> CoreAdmissionSource for AdmissionQueue<M
 
     fn total_requests(&self) -> usize {
         AdmissionQueue::total_requests(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A request without an arrival timestamp at the front of a Trace queue
+    /// must fail the drain outright, not silently wedge it: filtering it out
+    /// as "not ready yet" (the pre-fix shape) reports nothing to admit and
+    /// nothing to wait for, so nothing ever re-checks it and every request
+    /// behind it in the queue is dropped for the rest of the run.
+    #[test]
+    fn drain_fails_closed_on_a_front_request_missing_its_arrival_timestamp() {
+        let malformed = DirectRequest {
+            arrival_timestamp_ms: None,
+            ..Default::default()
+        };
+        let mut queue = AdmissionQueue::<NoReplayMetadata>::new_requests(
+            VecDeque::from([malformed]),
+            ReplayMode::Trace,
+        );
+
+        let error = match queue.drain_ready_compact(0.0, 0, false) {
+            Ok(_) => panic!("a missing arrival_timestamp_ms must fail closed, not silently wedge"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("arrival_timestamp_ms"), "{error}");
     }
 }
