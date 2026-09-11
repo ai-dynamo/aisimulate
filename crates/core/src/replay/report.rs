@@ -746,6 +746,9 @@ impl SlaThresholds {
 #[derive(Debug, Default)]
 pub struct TraceCollector {
     requests: FxHashMap<Uuid, TraceRequestStats>,
+    /// Simulated timestamp at which this reporting epoch began. Request
+    /// timestamps remain absolute; aggregate rates use elapsed epoch time.
+    report_start_ms: f64,
     /// Global per-token distributions are folded in as requests terminate, so
     /// completed requests no longer retain one timestamp per emitted token.
     itl_distribution: StreamingDistribution,
@@ -861,6 +864,10 @@ impl TraceRequestStats {
 }
 
 impl TraceCollector {
+    pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
+        self.requests.contains_key(&uuid)
+    }
+
     /// Defer token-timeline folding until the entire replay has ended.
     pub fn set_defer_token_timeline_finalization(&mut self, value: bool) {
         self.defer_token_timeline_finalization = value;
@@ -1339,7 +1346,38 @@ impl TraceCollector {
             .map(TraceRequestStats::actual_output_length)
     }
 
-    pub fn finish(mut self) -> ReplayReport {
+    /// First scheduler admission `(at_ms, reused_input_tokens)` for `uuid`.
+    pub(crate) fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> {
+        let stats = self.requests.get(&uuid)?;
+        Some((
+            stats.first_admit_ms?,
+            stats.first_admission_reused_input_tokens,
+        ))
+    }
+
+    /// Drain measurements while retaining the configuration that applies to
+    /// each reporting epoch of a reusable runtime. The absolute report boundary
+    /// includes idle time in this epoch and starts the next one.
+    pub(crate) fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
+        debug_assert!(report_end_ms.is_finite() && report_end_ms >= self.report_start_ms);
+        let next = Self {
+            report_start_ms: report_end_ms,
+            defer_token_timeline_finalization: self.defer_token_timeline_finalization,
+            capture_per_request: self.capture_per_request,
+            sla: self.sla,
+            static_worker_count: self.static_worker_count,
+            prefill_gpus_per_worker: self.prefill_gpus_per_worker,
+            decode_gpus_per_worker: self.decode_gpus_per_worker,
+            ..Default::default()
+        };
+        std::mem::replace(self, next).finish_at(Some(report_end_ms))
+    }
+
+    pub fn finish(self) -> ReplayReport {
+        self.finish_at(None)
+    }
+
+    fn finish_at(mut self, report_end_ms: Option<f64>) -> ReplayReport {
         let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
         request_order.sort_unstable_by(|left_uuid, right_uuid| {
             let left = self
@@ -1380,6 +1418,7 @@ impl TraceCollector {
             Vec::new()
         };
         let sla = self.sla;
+        let report_start_ms = self.report_start_ms;
         let static_worker_count = self.static_worker_count;
         let accumulated_prefill_worker_seconds = self.prefill_worker_seconds;
         let accumulated_decode_worker_seconds = self.decode_worker_seconds;
@@ -1405,7 +1444,9 @@ impl TraceCollector {
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
-        let mut duration_ms = 0.0_f64;
+        let mut duration_ms = report_end_ms
+            .map(|end_ms| (end_ms - report_start_ms).max(0.0))
+            .unwrap_or(0.0);
         let mut total_input_tokens = 0usize;
         let mut total_output_tokens = 0usize;
         let mut completed_requests = 0usize;
@@ -1435,7 +1476,7 @@ impl TraceCollector {
             total_output_tokens += output_length;
             total_reused_tokens += stats.reused_input_tokens;
             total_first_admission_reused_tokens += stats.first_admission_reused_input_tokens;
-            duration_ms = duration_ms.max(terminal_time_ms);
+            duration_ms = duration_ms.max((terminal_time_ms - report_start_ms).max(0.0));
 
             let (Some(first_token_ms), Some(last_token_ms)) =
                 (stats.first_token_ms(), stats.last_token_ms())

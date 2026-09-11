@@ -42,6 +42,7 @@ areas:
   - label: replay
     github_team: "@ai-dynamo/aisimulate-replay-codeowners"
     path_globs:
+      - crates/core/examples/
       - crates/core/src/replay/
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
@@ -74,6 +75,7 @@ areas:
       - pytest.ini
       - scripts/
       - tests/test_aic_sync.py
+      - tests/test_ci_workflow_contracts.py
       - tests/test_pages_site.py
       - tests/test_e2e_accuracy_overview.py
       - tests/test_source_compliance.py
@@ -101,6 +103,8 @@ shared:
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_aic_sync.py
     owners: [infra, maintainers]
+  - glob: tests/test_ci_workflow_contracts.py
+    owners: [infra, maintainers]
   - glob: tests/test_pages_site.py
     owners: [infra, maintainers]
   - glob: tests/test_e2e_accuracy_overview.py
@@ -122,6 +126,8 @@ shared:
   - glob: tests/sweeper/
     owners: [sweeper, maintainers]
   - glob: crates/core/src/replay/
+    owners: [replay, maintainers]
+  - glob: crates/core/examples/
     owners: [replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/replay/
     owners: [replay, maintainers]

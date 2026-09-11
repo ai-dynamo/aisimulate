@@ -37,6 +37,8 @@ _EXPECTED_PREDICT_CASES = (
     "09-trace-dynamo-agentic.yaml",
     "10-trace-dynamo-standard-disagg.yaml",
     "11-synthetic-afd.yaml",
+    "11-trace-weka-agentic-lane.yaml",
+    "12-trace-weka-jsonl-agentic-lane.yaml",
 )
 _EXPECTED_RECOMMEND_CASES = (
     "01-default-preset-throughput.yaml",
@@ -109,6 +111,10 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
     saved_summary = report.get("summary", report)
     assert summary["completed_requests"] > 0
     assert saved_summary["completed_requests"] == summary["completed_requests"]
+    if "-trace-weka-" in config_path.name:
+        assert "heuristically resolved one nested timestamp basis" in result.stderr
+        assert "complete Weka corpus" in result.stderr
+        assert "requested='auto', resolved='absolute'" in result.stderr
 
 
 @pytest.mark.parametrize("config_path", _RECOMMEND_CASES, ids=lambda path: path.stem)

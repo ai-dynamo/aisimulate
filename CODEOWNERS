@@ -55,6 +55,7 @@
 /tests/e2e/                                          @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_afd_*.py                                 @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_runner.py                                @ai-dynamo/aisimulate-replay-codeowners
+/crates/core/examples/                               @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_traffic.py                               @ai-dynamo/aisimulate-replay-codeowners
 /crates/core/src/replay/                             @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_cli_config.py                            @ai-dynamo/aisimulate-replay-codeowners
@@ -81,6 +82,7 @@
 /tests/test_aic_sync.py                              @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_pages_site.py                            @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_source_compliance.py                     @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_ci_workflow_contracts.py                 @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_overview.py                 @ai-dynamo/aisimulate-infra-codeowners
 
 # === Path overrides: a subsystem nested inside another area's tree.
@@ -119,6 +121,7 @@
 /tests/test_runner.py                                @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/README.md                               @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/deny.toml                               @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/crates/core/examples/                               @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_traffic.py                               @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/Cargo.toml                              @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/perfmodel/                              @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -150,6 +153,7 @@
 /python/aisimulate/.coderabbit.yaml                  @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/eslint.config.js                  @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/parity_tests/perfmodel/                 @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_ci_workflow_contracts.py                 @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_e2e_accuracy_overview.py                 @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/codeowners/               @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_unified_traffic_runtime.py               @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain

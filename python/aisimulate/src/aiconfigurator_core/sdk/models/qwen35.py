@@ -13,6 +13,7 @@ from aiconfigurator_core.sdk.models.helpers import (
     quant_exclude_patterns,
 )
 from aiconfigurator_core.sdk.models.vit_ops import build_encoder_ops
+from aiconfigurator_core.sdk.utils import _get_language_quantization_config
 
 _MAMBA_SSM_DTYPE_BYTES = {"float32": 4, "bfloat16": 2, "float16": 2}
 
@@ -47,7 +48,7 @@ def _qwen35_mixed_precision_gemm_modes(
         quantization = hf_quant.get("quantization")
         if isinstance(quantization, dict):
             layer_maps.append(quantization.get("quantized_layers"))
-    quantization = raw_config.get("quantization_config")
+    quantization = _get_language_quantization_config(raw_config)
     if isinstance(quantization, dict):
         layer_maps.append(quantization.get("quantized_layers"))
 
