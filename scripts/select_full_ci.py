@@ -34,11 +34,12 @@ PYTHON_PACKAGE_COMPONENTS = {
     "release_artifact_contract",
 }
 # Rust is the implementation behind the Python package and prediction engine,
-# so Rust changes exercise every compiled and consumer boundary except the
-# collector-data validator. Cargo policy is added separately for manifest and
+# so Rust changes exercise every compiled and consumer boundary, including the
+# collector validator's maturin install. Cargo policy is added separately for manifest and
 # dependency changes.
 RUST_COMPONENTS = {
     "platform_wheels",
+    "collector_data",
     "prediction_regression",
     "rust",
     "rust_feature_modes",

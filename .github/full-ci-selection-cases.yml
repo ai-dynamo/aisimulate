@@ -7,7 +7,7 @@ provenance:
     Expected path-to-component mappings derived from the files installed,
     executed, or compared by the Full CI jobs in .github/workflows/ci.yml.
   conservative_rules:
-    - Rust changes include compiled Python, prediction, parity, and release consumers.
+    - Rust changes include compiled Python, collector installation, prediction, parity, and release consumers.
     - Collector and performance-data changes include their prediction and parity consumers.
     - Unknown, dependency, test-configuration, and CI-contract changes run every component.
 
@@ -57,6 +57,7 @@ cases:
     run_all: false
     selected:
       - platform_wheels
+      - collector_data
       - prediction_regression
       - rust
       - rust_feature_modes
@@ -72,6 +73,7 @@ cases:
     run_all: false
     selected:
       - platform_wheels
+      - collector_data
       - prediction_regression
       - cargo_deny
       - rust
@@ -108,6 +110,7 @@ cases:
     run_all: false
     selected:
       - platform_wheels
+      - collector_data
       - prediction_regression
       - rust
       - rust_feature_modes

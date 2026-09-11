@@ -810,7 +810,7 @@ def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
     rust_plan = select_components(["crates/core/src/replay/event.rs"])
     assert rust_plan["components"]["rust"] is True
     assert rust_plan["components"]["prediction_regression"] is True
-    assert rust_plan["components"]["collector_data"] is False
+    assert rust_plan["components"]["collector_data"] is True
     assert rust_plan["components"]["cargo_deny"] is False
 
     data_plan = select_components(["python/aisimulate/src/aiconfigurator_core/systems/data/b200/op.parquet"])
