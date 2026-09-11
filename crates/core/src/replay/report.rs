@@ -1759,8 +1759,17 @@ fn build_distribution_stats(mut values: Vec<f64>) -> TraceDistributionStats {
         .max_by(|left, right| left.total_cmp(right))
         .expect("non-empty values must have a maximum");
 
+    // Both order-dependent sums are taken before any percentile runs.
+    // `percentile_in_place` permutes `values` through `select_nth_unstable_by`,
+    // and floating-point addition is not associative, so summing afterwards
+    // makes `std_ms` a function of the standard library's pivot choice rather
+    // than of the sample -- not stable across toolchain upgrades, and not
+    // equal to a reference implementation summing in insertion order.
+    let mean_ms = mean(&values);
+    let std_ms = std_dev(&values);
+
     TraceDistributionStats {
-        mean_ms: mean(&values),
+        mean_ms,
         min_ms,
         max_ms,
         median_ms: percentile_in_place(&mut values, 50.0),
@@ -1768,7 +1777,7 @@ fn build_distribution_stats(mut values: Vec<f64>) -> TraceDistributionStats {
         p90_ms: percentile_in_place(&mut values, 90.0),
         p95_ms: percentile_in_place(&mut values, 95.0),
         p99_ms: percentile_in_place(&mut values, 99.0),
-        std_ms: std_dev(&values),
+        std_ms,
     }
 }
 
@@ -1909,6 +1918,30 @@ mod tests {
         ] {
             assert_eq!(value, 0.0);
         }
+    }
+
+    /// `std_ms` must be summed over the sample in insertion order, not over
+    /// whatever permutation `select_nth_unstable_by` happens to leave behind.
+    /// This input is chosen so the two orders disagree in the last bits: one
+    /// large value absorbs the small ones differently depending on where it
+    /// lands, so reading `std_ms` after the percentile calls would make it a
+    /// function of the standard library's pivot choice.
+    #[test]
+    fn distribution_std_is_independent_of_percentile_permutation() {
+        let values = vec![1e8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 7.0, 1e-3];
+        let mut permuted = values.clone();
+        for percentile in [50.0, 75.0, 90.0, 95.0, 99.0] {
+            percentile_in_place(&mut permuted, percentile);
+        }
+        assert_ne!(
+            std_dev(&values).to_bits(),
+            std_dev(&permuted).to_bits(),
+            "input no longer distinguishes the two summation orders"
+        );
+        assert_eq!(
+            build_distribution_stats(values.clone()).std_ms.to_bits(),
+            std_dev(&values).to_bits()
+        );
     }
 
     #[test]
