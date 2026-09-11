@@ -139,3 +139,9 @@ the eight-shard concurrency limit and runner queues can make the total wait
 longer than that per-shard limit. A successful wheel build alone does not make
 the nightly available. No release-latency percentile is promised until complete
 runs have been measured with this gate enabled.
+
+The final platform-wheel check invokes the package verifier with
+`--exercise-engine --exercise-fpe` on each runner. The FPE flag requires the
+repository generator and Git checkout; its subprocess runs from an unrelated
+temporary directory against the installed wheel. The reduced Docker build
+context runs the package/runtime verifier without the repository-only FPE flag.

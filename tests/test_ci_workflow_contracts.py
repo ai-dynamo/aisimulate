@@ -46,6 +46,15 @@ def _run_resolve_step(script: str, event_name: str, old_ref: str, tmp_path: Path
     return dict(line.split("=", 1) for line in output_path.read_text().splitlines())
 
 
+def test_platform_wheels_require_the_installed_fpe_exercise() -> None:
+    action = yaml.safe_load((ACTION_ROOT / "build-platform-wheel" / "action.yml").read_text())
+    verification = next(
+        step for step in action["runs"]["steps"] if step.get("name") == "Verify installed unified wheel"
+    )
+    assert "if" not in verification
+    assert "--exercise-engine --exercise-fpe" in verification["run"]
+
+
 def test_restored_workflows_are_active_at_repository_root() -> None:
     expected = {
         "collector-check.yml",
