@@ -11,6 +11,10 @@ subtitle: Core fields and optional adapter-owned search spaces
 `SmartSearchConfig.search_space` contains backend and deployment fields. Optional feature-specific
 search spaces are mappings under `SmartSearchConfig.adapters`.
 
+For fixed-image E+agg/E+P+D search, see [Analytical EPD search](epd.md).
+The SDK uses `search_space.encoder` with `workload.images`; it reuses AIC's
+encoder model and does not expose per-request EPD replay or deployment outputs.
+
 ## Top-Level Shape
 
 ```yaml
@@ -69,6 +73,51 @@ configuration for each candidate.
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
 or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pins a searched field.
+
+## Attention-FFN Disaggregation
+
+AFD is supported by public `aisimulate predict` and `aisimulate recommend` with the built-in
+analytical engine runner. See the [AFD Topology Contract](afd-topology.md) for public configuration
+and replay limits. The internal `SmartSearchConfig` schema uses topology `afd` or `afd+pd`;
+an injected runner must explicitly advertise the selected backend with the chosen topology.
+
+This pinned pure-AFD example creates a finite standard Sweeper branch:
+
+```yaml
+search_space:
+  deployment_mode: [afd]
+  backend: [trtllm]
+  model_name: Qwen/Qwen3-32B
+  hardware_sku: h200_sxm
+  gpu_budget: 32
+  afd_phase: both
+  afd_pinned_topologies:
+    - n_a_nodes: 2
+      n_f_nodes: 2
+      tp_a: 4
+      a_batch_size: 64
+      f_moe_ep_size: 1
+      num_microbatches: 3
+      pipeline_model: optimistic
+
+workload:
+  isl: 1024
+  osl: 128
+  concurrency: 64
+  num_request_ratio: 10
+```
+
+Use `deployment_mode: [afd+pd]` with `afd_phase: prefill` or `decode` to search a companion for the
+opposite phase. The companion uses that phase's ordinary `max_num_batched_tokens`, `max_num_seqs`,
+block-size, and memory fields. Optional `afd_companion_parallel_configs` pins its parallel shapes.
+Searched (non-pinned) AFD requires an explicit `afd_batch_size_candidates` list. The finite domain
+also supports `afd_tp_a_candidates`, `afd_f_moe_ep_size_candidates`,
+`afd_microbatch_candidates`, `afd_pipeline_model_candidates`, and `afd_max_candidates`.
+
+AFD rejects `kv_load_ratio` until the execution layer exposes scheduler-visible KV capacity. The
+current performance-model adapter also requires concrete positive `isl` and `osl`, so use a
+synthetic request rate or absolute concurrency rather than a trace-only workload. The complete
+topology and capability contract is documented in [AFD Topology Contract](afd-topology.md).
 
 ## Pinned Parallel Configurations
 

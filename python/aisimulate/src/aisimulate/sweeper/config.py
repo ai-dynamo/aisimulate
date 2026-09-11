@@ -22,7 +22,7 @@ from __future__ import annotations
 import math
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -152,6 +152,42 @@ class OptimizationGoal(BaseModel):
         return self
 
 
+class ImageWorkload(BaseModel):
+    """One fixed image profile shared by every request (AIC encoder semantics)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    height: int = Field(strict=True, gt=0)
+    width: int = Field(strict=True, gt=0)
+    count: int = Field(default=1, strict=True, gt=0)
+
+
+class EncoderSearch(BaseModel):
+    """Dedicated encoder pool; its backend follows the language backend."""
+
+    model_config = ConfigDict(extra="forbid")
+    hardware_sku: str | None = Field(default=None, min_length=1)
+    backend_version: str | None = Field(default=None, min_length=1)
+    tp: list[int] = [1, 2, 4, 8]
+    batch_size: list[int] = [1, 2, 4, 8]
+    workers: list[int] = [1, 2, 4, 8]
+    latency_correction: float = Field(default=1.0, strict=True, gt=0, allow_inf_nan=False)
+    rate_degradation: float = Field(default=0.9, strict=True, gt=0, le=1, allow_inf_nan=False)
+
+    @field_validator("tp", "batch_size", "workers", mode="before")
+    @classmethod
+    def _positive_choices(cls, value):
+        if not isinstance(value, list) or not value or any(type(v) is not int or v <= 0 for v in value):
+            raise ValueError("encoder choices must be nonempty lists of positive integers")
+        return list(dict.fromkeys(value))
+
+    @field_validator("batch_size")
+    @classmethod
+    def _batch_limit(cls, value):
+        if max(value) > 8:
+            raise ValueError("encoder batch_size must be <= 8, matching AIC EPD")
+        return value
+
+
 class Workload(BaseModel):
     """Traffic every candidate is evaluated against (KV load may be searched for Pareto).
 
@@ -185,6 +221,7 @@ class Workload(BaseModel):
     # synthetic workload (used when trace_path is unset): exactly one of
     # request_rate (open-loop QPS), concurrency (fixed closed-loop in-flight cap), or
     # kv_load_ratio (candidate-relative closed-loop load).
+    images: ImageWorkload | None = None
     isl: int | None = None
     osl: int | None = None
     concurrency: int | None = None
@@ -213,12 +250,40 @@ class Workload(BaseModel):
     trace_paths: list[str] | None = None
     trace_block_size: int | None = None
     trace_format: str = "mooncake"  # replay-ready trace schema
+    weka_nested_timestamp_basis: Literal["auto", "absolute", "relative"] | None = None
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
+    agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
     # *synthetic* closed-loop workload use ``concurrency`` or ``kv_load_ratio`` instead.
     replay_concurrency: int | None = None
     max_sim_time_ms: float | None = None
+
+    def require_fixed_epd(self) -> None:
+        """Validate the analytical approximation at both search and replay boundaries."""
+        if self.images is None or self.isl is None or self.osl is None or self.isl <= 0 or self.osl <= 0:
+            raise ValueError("EPD requires positive text lengths and an image profile")
+        if type(self.concurrency) is not int or self.concurrency <= 0:
+            raise ValueError("analytical EPD requires fixed positive concurrency")
+        if (
+            self.trace_path is not None
+            or self.trace_paths is not None
+            or self.source_type not in (None, "synthetic")
+            or (self.source_type is None) != (self.load_type is None)
+            or self.kv_load_ratio is not None
+            or self.load_search_field is not None
+            or self.load_choices is not None
+            or self.load_range is not None
+            or self.random_range_ratio != 1.0
+            or self.turns_per_session != 1
+            or self.shared_prefix_ratio != 0.0
+            or self.num_prefix_groups != 0
+            or self.inter_turn_delay_ms != 0.0
+            or self.max_sim_time_ms is not None
+            or self.load_type not in (None, "concurrency")
+            or self.replay_concurrency is not None
+        ):
+            raise ValueError("analytical EPD requires fixed synthetic traffic without traces, sessions or load search")
 
     @field_validator("random_range_ratio", mode="before")
     @classmethod
@@ -290,6 +355,23 @@ class Workload(BaseModel):
 
     @model_validator(mode="after")
     def _validate_workload(self) -> Workload:
+        if self.weka_nested_timestamp_basis is not None and (
+            self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
+        ):
+            raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
+        if self.agentic_lanes is not None:
+            if (
+                self.trace_path is None
+                or self.source_type != "trace"
+                or self.trace_format not in {"weka", "agentic_mooncake", "dynamo"}
+            ):
+                raise ValueError("agentic_lanes requires weka, agentic_mooncake, or agentic Dynamo trace input")
+            if (
+                self.load_type != "trace_timestamps"
+                or self.replay_concurrency is not None
+                or self.load_search_field == "replay_concurrency"
+            ):
+                raise ValueError("agentic_lanes requires trace_timestamps load without replay_concurrency")
         synthetic_only = (
             "isl",
             "osl",
@@ -368,7 +450,7 @@ class Workload(BaseModel):
 # candidate generator can reuse it. Pinned scalars and the generated
 # ``parallel_configs`` are intentionally not choice-constrained.
 SEARCH_CHOICES: dict[str, tuple] = {
-    "deployment_mode": ("disagg", "agg"),
+    "deployment_mode": ("disagg", "agg", "afd", "afd+pd"),
     "backend": ("vllm", "sglang", "trtllm"),
 }
 
@@ -405,6 +487,22 @@ class SearchSpace(BaseModel):
     context_length: int | None = None
     startup_time: float | None = None
     aic_nextn: int | None = None  # speculative-decode (MTP) depth, 1..5
+    encoder: EncoderSearch | None = None
+
+    # Attention--FFN disaggregation. The A/F topology is a finite, complete
+    # domain; ``afd+pd`` pairs each topology with one opposite-phase companion.
+    afd_pinned_topologies: list[dict[str, Any]] = Field(default_factory=list)
+    afd_companion_parallel_configs: list[dict[str, Any]] = Field(default_factory=list)
+    afd_tp_a_candidates: list[int] | None = None
+    afd_batch_size_candidates: list[int] | None = None
+    afd_f_moe_ep_size_candidates: list[int | str] | None = None
+    afd_microbatch_candidates: list[int] = Field(default_factory=lambda: [2, 3, 4])
+    afd_pipeline_model_candidates: list[str] = Field(default_factory=lambda: ["optimistic", "conservative"])
+    afd_phase: str = "decode"
+    afd_comm_overhead_factor: float = Field(default=1.0, gt=0)
+    afd_boundary_on_attn: bool = True
+    afd_max_af_ratio: float = Field(default=4.0, gt=0)
+    afd_max_candidates: int = Field(default=10_000, ge=1)
 
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
@@ -482,6 +580,85 @@ class SearchSpace(BaseModel):
             value = getattr(self, field_name)
             if value not in FORWARD_MODEL_CHOICES:
                 raise ValueError(f"{field_name} has invalid choice {value!r}; allowed: {list(FORWARD_MODEL_CHOICES)}")
+        return self
+
+    @field_validator(
+        "afd_tp_a_candidates",
+        "afd_batch_size_candidates",
+        "afd_microbatch_candidates",
+        mode="before",
+    )
+    @classmethod
+    def _validate_afd_positive_candidates(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not isinstance(value, list) or not value:
+            raise ValueError("AFD candidate lists must be nonempty lists")
+        if any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in value):
+            raise ValueError(f"AFD candidate lists need positive integers, got {value!r}")
+        if len(set(value)) != len(value):
+            raise ValueError("AFD candidate lists must not contain duplicates")
+        return value
+
+    @field_validator("afd_f_moe_ep_size_candidates", mode="before")
+    @classmethod
+    def _validate_afd_ep_candidates(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not isinstance(value, list) or not value:
+            raise ValueError("afd_f_moe_ep_size_candidates must be a nonempty list")
+        allowed_symbols = {"n_f_nodes", "ffn_tp", "tp_f"}
+        invalid = [
+            item
+            for item in value
+            if not (
+                (isinstance(item, int) and not isinstance(item, bool) and item > 0)
+                or (isinstance(item, str) and item in allowed_symbols)
+            )
+        ]
+        if invalid:
+            raise ValueError(
+                "afd_f_moe_ep_size_candidates accepts positive integers, "
+                f"'n_f_nodes', 'ffn_tp', or 'tp_f'; got {invalid!r}"
+            )
+        if len({(type(item).__name__, item) for item in value}) != len(value):
+            raise ValueError("afd_f_moe_ep_size_candidates must not contain duplicates")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_afd_contract(self) -> SearchSpace:
+        afd_modes = [mode for mode in dict.fromkeys(self.deployment_mode) if mode in {"afd", "afd+pd"}]
+        if self.afd_phase not in {"prefill", "decode", "both"}:
+            raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
+        if any(value not in {"optimistic", "conservative", "serial"} for value in self.afd_pipeline_model_candidates):
+            raise ValueError("afd_pipeline_model_candidates accepts optimistic, conservative, or serial")
+        if len(set(self.afd_pipeline_model_candidates)) != len(self.afd_pipeline_model_candidates):
+            raise ValueError("afd_pipeline_model_candidates must not contain duplicates")
+        if "afd+pd" in afd_modes and self.afd_phase == "both":
+            raise ValueError("deployment_mode='afd+pd' requires afd_phase prefill or decode")
+        if afd_modes and not self.afd_pinned_topologies and self.afd_batch_size_candidates is None:
+            raise ValueError(
+                "searched AFD requires explicit, memory-qualified afd_batch_size_candidates; "
+                "legacy topology-specific batch derivation must not become an implicit fixed batch"
+            )
+        if self.afd_pinned_topologies:
+            if len(afd_modes) != 1:
+                raise ValueError("afd_pinned_topologies requires exactly one AFD deployment_mode")
+            required = {"n_a_nodes", "n_f_nodes", "tp_a", "a_batch_size"}
+            for index, topology in enumerate(self.afd_pinned_topologies):
+                if not isinstance(topology, dict):
+                    raise ValueError(f"afd_pinned_topologies[{index}] must be a mapping")
+                missing = sorted(required - topology.keys())
+                if missing:
+                    raise ValueError(f"afd_pinned_topologies[{index}] is missing {missing}")
+        if self.afd_companion_parallel_configs and "afd+pd" not in afd_modes:
+            raise ValueError("afd_companion_parallel_configs requires deployment_mode='afd+pd'")
+        for index, companion in enumerate(self.afd_companion_parallel_configs):
+            if not isinstance(companion, dict) or "tp" not in companion:
+                raise ValueError(f"afd_companion_parallel_configs[{index}] must be a flat shape with tp")
+            replicas = companion.get("replicas", 1)
+            if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
+                raise ValueError(f"afd_companion_parallel_configs[{index}].replicas must be positive")
         return self
 
     @model_validator(mode="after")
@@ -680,6 +857,36 @@ class SmartSearchConfig(BaseModel):
     workload: Workload
     goal: OptimizationGoal = Field(default_factory=OptimizationGoal)
     sweep: SweepConfig = Field(default_factory=SweepConfig)
+
+    @model_validator(mode="after")
+    def _validate_epd(self) -> SmartSearchConfig:
+        encoder, workload = self.search_space.encoder, self.workload
+        if (encoder is None) != (workload.images is None):
+            raise ValueError("EPD requires both search_space.encoder and workload.images")
+        if encoder is None:
+            return self
+        if any(mode not in {"agg", "disagg"} for mode in self.search_space.deployment_mode):
+            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
+        if self.adapters:
+            raise ValueError("analytical EPD does not support adapters")
+        if self.search_space.min_gpu_budget is not None:
+            raise ValueError("EPD currently supports gpu_budget only, not min_gpu_budget")
+        if encoder.backend_version is not None and len(set(self.search_space.backend)) != 1:
+            raise ValueError("encoder.backend_version requires a single backend")
+        targets = self.goal.resolved_pareto_objectives if self.goal.is_pareto else [self.goal.target]
+        if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.strict_sla):
+            raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
+        workload.require_fixed_epd()
+        for role in ("agg", "prefill", "decode"):
+            if getattr(self.search_space, f"{role}_forward_model") != "op_level":
+                raise ValueError("EPD requires op_level forward models")
+            if getattr(self.search_space, f"{role}_timing_model") is not None:
+                raise ValueError("EPD does not support custom language timing")
+            if getattr(self.search_space, f"{role}_startup_time") not in (None, 0.0):
+                raise ValueError("analytical EPD requires static worker pools")
+        if self.search_space.startup_time not in (None, 0.0):
+            raise ValueError("analytical EPD requires static worker pools")
+        return self
 
     @model_validator(mode="before")
     @classmethod

@@ -15,7 +15,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: fast-ci-${{ github.event.pull_request.number || github.ref }}
+  # Replace stale PR validation while preserving every lifecycle/manual run.
+  group: >-
+    fast-ci-${{ (github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')))
+      && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -67,6 +71,12 @@ jobs:
             echo "::error::Generated CODEOWNERS artifacts are out of date."
             exit 1
           fi
+      - name: Check active workflow contracts
+        run: |
+          python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py -q \
+            -p no:cacheprovider \
+            --override-ini="addopts=" \
+            --override-ini="filterwarnings="
 
   python-static:
     name: Python Static Checks
@@ -97,9 +107,22 @@ jobs:
           --config python/aisimulate/pyproject.toml
           python/aisimulate/src/aisimulate
           python/aisimulate/tests/e2e/cli/test_cli_experiments.py
+          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
+          tests
+      - name: Ruff format
+        run: >-
+          ruff format --check
+          --config python/aisimulate/pyproject.toml
+          python/aisimulate/src/aisimulate
+          python/aisimulate/tests/e2e/cli/test_cli_experiments.py
+          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
           tests
       - name: Compile Python sources
-        run: python -m compileall -q python/aisimulate/src tests
+        run: >-
+          python -m compileall -q
+          python/aisimulate/src
+          python/aisimulate/tests/e2e/cli/test_cli_recommend.py
+          tests
       - name: Check changed-line whitespace
         shell: bash
         run: |
