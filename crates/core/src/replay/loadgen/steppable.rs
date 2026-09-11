@@ -118,6 +118,11 @@ pub trait SteppableReplay {
     /// Advance the simulated clock to `now_ms`, used when the caller skips an
     /// idle gap with no engine work. Monotonic: a time at or before the current
     /// one is a no-op.
+    ///
+    /// A non-finite `now_ms` is a caller bug, not a no-op. It cannot be
+    /// reported through this signature, so implementations log it and leave the
+    /// clock untouched; the sibling [`Self::step_until`] rejects the same value
+    /// with an error.
     fn advance_now_ms(&mut self, now_ms: f64);
 
     /// Admit `request` at the current simulated time. The returned id
@@ -341,7 +346,21 @@ where
     }
 
     fn advance_now_ms(&mut self, now_ms: f64) {
-        if now_ms.is_finite() && now_ms > self.runtime.now_ms() {
+        if !now_ms.is_finite() {
+            // Not the sanctioned monotonic no-op: the contract admits a time
+            // at or before the current one, which NaN and +-inf are not.
+            // Folding them into the same silent no-op freezes the simulated
+            // clock and yields a wrong report duration with no signal, while
+            // `step_until` bails loudly on the very same value. This signature
+            // has no error to return, so surface it the way `release_cap_slot`
+            // does.
+            tracing::error!(
+                now_ms,
+                "steppable replay ignored a non-finite clock advance"
+            );
+            return;
+        }
+        if now_ms > self.runtime.now_ms() {
             self.runtime.advance_now_ms(now_ms);
         }
     }
@@ -553,7 +572,21 @@ impl SteppableReplay for SteppableDisagg {
         self.runtime.now_ms()
     }
     fn advance_now_ms(&mut self, now_ms: f64) {
-        if now_ms.is_finite() && now_ms > self.runtime.now_ms() {
+        if !now_ms.is_finite() {
+            // Not the sanctioned monotonic no-op: the contract admits a time
+            // at or before the current one, which NaN and +-inf are not.
+            // Folding them into the same silent no-op freezes the simulated
+            // clock and yields a wrong report duration with no signal, while
+            // `step_until` bails loudly on the very same value. This signature
+            // has no error to return, so surface it the way `release_cap_slot`
+            // does.
+            tracing::error!(
+                now_ms,
+                "steppable replay ignored a non-finite clock advance"
+            );
+            return;
+        }
+        if now_ms > self.runtime.now_ms() {
             self.runtime.advance_now_ms(now_ms);
         }
     }
@@ -1051,8 +1084,19 @@ mod tests {
             1,
         )
         .unwrap();
-        engine.advance_now_ms(f64::INFINITY);
-        assert_eq!(engine.now_ms(), 0.0);
+        // NaN is the one that used to be indistinguishable from the sanctioned
+        // monotonic no-op: `now_ms.is_finite() && now_ms > self.now_ms()` is
+        // false for NaN for both reasons at once. It is still ignored -- that
+        // is this test's authored contract -- but it is now logged rather than
+        // silently folded into "the caller asked to go backwards".
+        for now_ms in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            engine.advance_now_ms(now_ms);
+            assert_eq!(engine.now_ms(), 0.0, "clock moved on {now_ms}");
+        }
+
+        // The finite path still advances.
+        engine.advance_now_ms(5.0);
+        assert_eq!(engine.now_ms(), 5.0);
     }
 
     #[test]
