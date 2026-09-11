@@ -57,7 +57,7 @@ This does not imply event-level encoder simulation or deployment generation.
 |---|---|---|
 | Multimodal image inputs and EPD | **Analytical fixed-image support.** Unified `predict` and `recommend` accept `traffic.source.images` and `engine.workers.encoder` for E+agg/E+P+D, using fixed synthetic concurrency. Saved recommendation YAML preserves the encoder and can be reloaded by `predict`. No image traces, per-request EPD metrics, event-level encoder queueing, or deployment generation. | Use the [CLI examples and semantics](../sweeper/epd.md#unified-cli); retain AIC workflows when their additional semantics are needed. |
 | Attention/FFN disaggregation (AFD) | **Supported analytically for fixed-length synthetic traffic.** `engine.mode: afd` lowers concrete A/F topologies for `predict` and finite, memory-qualified topology domains for `recommend`; single-phase AFD can be paired with a regular P/D companion. | Use the AFD YAML below for analytical prediction or recommendation. Keep AIC for exact batch-level estimates and native deployment generation; AISimulate does not claim physical AFD serving execution. |
-| Explicit parallelism and worker domains | **Supported with capability limits.** Public prediction/recommendation expose TP, PP, attention DP, MoE TP/EP, CP, and per-role replicas. PP/CP are opt-in; CP>1 requires a supported SGLang model and agg/prefill role with TP=attention-DP=1. | Use the [parallelism migration cases](#migrate-parallelism-and-worker-count-domains). Keep actual batch/context operating-point and exhaustive-search semantics separate. |
+| Explicit parallelism and worker domains | **Available with qualification limits.** Public prediction/recommendation expose TP, PP, attention DP, MoE TP/EP, CP, and per-role replicas. Explicit PP/CP reach analytical timing and resource accounting; backend replay latency/throughput parity is not established. CP>1 is restricted to SGLang models with AIC CP modeling and agg/prefill roles with TP=attention-DP=1. | Use the [parallelism migration cases](#migrate-parallelism-and-worker-count-domains) to exercise the API. PP/CP rankings and SLA predictions require qualification before migration decisions. |
 | Power and energy analysis | **Not AIC-equivalent.** Sweeper results can preserve optional runner-supplied power or energy metadata, but the unified engine path does not currently provide AIC's predicted `power_w`, coverage gate, or `--detail energy` report. | Continue using AIC estimate/reporting, and confirm that the selected model/system data has sufficient energy coverage. |
 | Static, per-operation, and source breakdowns | **Not supported.** Unified prediction simulates serving traffic; it does not expose AIC's `static`, `static_ctx`, or `static_gen` single-pass modes or `--detail` memory/time/source reports. | Continue using `aiconfigurator cli estimate`. |
 | Estimator and performance-data selection | **Not exposed by the unified CLI.** `engine.backend_version` is available, but database mode, forward model, transfer policy, custom system roots, and estimator tuning remain outside the public YAML. | Continue using AIC when those controls are required. |
@@ -164,7 +164,7 @@ AFD estimator output.
 
 ## Migrate parallelism and worker-count domains
 
-Explicit TP, PP, attention DP, MoE TP/EP, CP, and replica counts are supported for
+Explicit TP, PP, attention DP, MoE TP/EP, CP, and replica counts are exposed for
 aggregated and disaggregated prediction and recommendation. Prediction uses integer
 values. Recommendation accepts explicit choices or complete correlated presets.
 `preset: default` retains the existing menu, including PP=CP=1; opt into larger domains
@@ -172,6 +172,12 @@ explicitly. The [Sweeper configuration reference](../sweeper/configuration.md#ex
 describes the capability filters and preparation limits. The examples explicitly select
 `backend_version: current` so prediction and recommendation use the same queryable
 performance-data slot.
+
+The PP/CP examples below exercise analytical timing, KV capacity, and GPU accounting.
+They are not backend latency/throughput parity evidence. In particular, replay does not
+schedule individual pipeline stages or microbatches, so pipeline overlap and bubbles under
+dynamic traffic are not qualified. Do not use these PP/CP results as qualified SLA or
+deployment-sizing guidance until that validation is complete.
 
 ### PP: search equal-GPU layouts
 
