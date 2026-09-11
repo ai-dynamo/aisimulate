@@ -865,6 +865,8 @@ class SmartSearchConfig(BaseModel):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
         if encoder is None:
             return self
+        if any(mode not in {"agg", "disagg"} for mode in self.search_space.deployment_mode):
+            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if self.adapters:
             raise ValueError("analytical EPD does not support adapters")
         if self.search_space.min_gpu_budget is not None:

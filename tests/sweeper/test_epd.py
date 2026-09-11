@@ -654,3 +654,39 @@ def test_native_epd_search_smoke(mode, total_gpus):
     assert candidate.metrics["output_throughput_tok_s"] > 0
     assert candidate.provenance.runner_metadata["metric_semantics"] == "analytical_epd_overlay"
     assert candidate.config["encoder"]["image_count"] == 1
+
+
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_epd_rejects_afd_search_before_materialization(mode):
+    payload = _config().model_dump(mode="json")
+    payload["search_space"].update(
+        deployment_mode=[mode],
+        afd_batch_size_candidates=[16],
+    )
+    with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
+        SmartSearchConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_epd_rejects_afd_direct_deployment_and_replay(mode):
+    from aisimulate.sweeper.deploy import build_backend_deployment
+
+    encoder = _encoder()
+    with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
+        build_backend_deployment({"deployment_mode": mode}, backend_version="test", encoder=encoder)
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode=mode,
+            backend="sglang",
+            backend_version="test",
+            encoder=encoder,
+        ),
+        workload=_config().workload.model_dump(mode="json"),
+        goal={},
+    )
+    capabilities = RunnerCapabilities(
+        supported_backend_topologies=(("*", "*"),),
+        supports_analytical_epd=True,
+    )
+    with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
+        capabilities.require_compatible(spec)

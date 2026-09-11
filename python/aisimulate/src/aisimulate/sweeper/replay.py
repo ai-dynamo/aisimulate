@@ -228,6 +228,8 @@ class RunnerCapabilities:
         if not self.supports_execution_mode(spec.execution_mode):
             raise ValueError(f"runner does not support execution mode {spec.execution_mode!r}")
         deployment = spec.backend_deployment
+        if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
+            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None and not self.supports_analytical_epd:
             raise ValueError("runner does not support analytical EPD")
         if not self.supports_backend_topology(deployment.backend, deployment.deployment_mode):
