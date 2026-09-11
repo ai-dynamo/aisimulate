@@ -144,7 +144,11 @@
       "required": ["result", "artifact", "sha256", "source_revision", "recorded_at"],
       "properties": {
         "result": {"enum": ["pass", "fail"]},
-        "artifact": {"type": "string", "minLength": 1},
+        "artifact": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*://)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "recorded_at": {"type": "string", "format": "date-time"}

@@ -21,8 +21,6 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
-from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LEDGER = ROOT / "docs" / "power" / "qualification-matrix.json"
@@ -56,7 +54,24 @@ EXPECTATIONS = {
 }
 STATUSES = {"pending", "blocked", "passed", "failed"}
 ARTIFACT_READ_CHUNK_BYTES = 1024 * 1024
-ARTIFACT_FETCH_TIMEOUT_SECONDS = 30
+ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
+EVIDENCE_REPORT_SCHEMA_VERSION = "1.0"
+
+UNIT_REQUIREMENTS = {
+    "modeled_power": {"power_w": "W", "power_coverage": "ratio"},
+    "unavailable_power": {"power_coverage": "ratio"},
+    "operation_energy_evidence": {
+        "latency_ms": "ms",
+        "energy_w_ms": "W*ms",
+        "covered_latency_ms": "ms",
+    },
+    "aic_parity": {"power_w": "W", "relative_error": "ratio"},
+    "silicon_accuracy": {"power_w": "W", "power_w_mape_pct": "percent"},
+    "runner_output": {"power_w": "W", "power_coverage": "ratio"},
+    "packaged_output": {"power_w": "W", "power_coverage": "ratio"},
+    "integration_available": {"power_w": "W", "power_coverage": "ratio"},
+    "data_invariants": {"power": "W", "power_limit": "W"},
+}
 
 
 class QualificationError(ValueError):
@@ -68,14 +83,18 @@ def _expect(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
-def _expect_keys(value: Any, required: set[str], context: str, errors: list[str]) -> None:
+def _expect_keys(
+    value: Any, required: set[str], context: str, errors: list[str]
+) -> None:
     _expect(isinstance(value, dict), f"{context} must be an object", errors)
     if not isinstance(value, dict):
         return
     missing = required - value.keys()
     _expect(not missing, f"{context} is missing {sorted(missing)}", errors)
     unexpected = value.keys() - required
-    _expect(not unexpected, f"{context} has unexpected keys {sorted(unexpected)}", errors)
+    _expect(
+        not unexpected, f"{context} has unexpected keys {sorted(unexpected)}", errors
+    )
 
 
 def _contains_nonfinite_number(value: Any) -> bool:
@@ -88,24 +107,380 @@ def _contains_nonfinite_number(value: Any) -> bool:
     return False
 
 
-def _artifact_sha256(artifact: str) -> str:
-    digest = hashlib.sha256()
-    if artifact.startswith("https://"):
-        with urlopen(artifact, timeout=ARTIFACT_FETCH_TIMEOUT_SECONDS) as response:
-            final_url = response.geturl()
-            if not final_url.startswith("https://"):
-                raise ValueError(f"artifact redirected to a non-HTTPS URL: {final_url}")
-            while chunk := response.read(ARTIFACT_READ_CHUNK_BYTES):
-                digest.update(chunk)
-    else:
-        root = ROOT.resolve()
-        artifact_path = (root / artifact).resolve()
-        if not artifact_path.is_relative_to(root):
-            raise ValueError("repository-relative artifact resolves outside the repository")
-        with artifact_path.open("rb") as artifact_file:
-            while chunk := artifact_file.read(ARTIFACT_READ_CHUNK_BYTES):
-                digest.update(chunk)
-    return digest.hexdigest()
+def _read_artifact(artifact: str) -> bytes:
+    root = ROOT.resolve()
+    artifact_path = (root / artifact).resolve()
+    if not artifact_path.is_relative_to(root):
+        raise ValueError("repository-relative artifact resolves outside the repository")
+    if artifact_path.stat().st_size > ARTIFACT_MAX_BYTES:
+        raise ValueError(f"artifact exceeds the {ARTIFACT_MAX_BYTES}-byte limit")
+
+    content = bytearray()
+    with artifact_path.open("rb") as artifact_file:
+        while chunk := artifact_file.read(ARTIFACT_READ_CHUNK_BYTES):
+            content.extend(chunk)
+            if len(content) > ARTIFACT_MAX_BYTES:
+                raise ValueError(
+                    f"artifact exceeds the {ARTIFACT_MAX_BYTES}-byte limit"
+                )
+    return bytes(content)
+
+
+def _expected_units(gate: dict[str, Any]) -> dict[str, str]:
+    expectations = {
+        assertion.get("expectation")
+        for assertion in gate.get("assertions", [])
+        if isinstance(assertion, dict)
+    }
+    units: dict[str, str] = {}
+    for expectation in expectations:
+        units.update(UNIT_REQUIREMENTS.get(str(expectation), {}))
+    return units
+
+
+def _validate_data_invariant_details(
+    details: Any, context: str, errors: list[str]
+) -> None:
+    required = {
+        "discovery_root",
+        "total_discovered_parquet_count",
+        "files_scanned",
+        "files_without_power_columns",
+        "skipped_file_anomalies",
+        "rows_scanned",
+        "checks",
+        "files",
+    }
+    _expect_keys(details, required, context, errors)
+    if not isinstance(details, dict):
+        return
+
+    files = details.get("files")
+    files_scanned = details.get("files_scanned")
+    without_power = details.get("files_without_power_columns")
+    total_discovered = details.get("total_discovered_parquet_count")
+    rows_scanned = details.get("rows_scanned")
+    anomalies = details.get("skipped_file_anomalies")
+    _expect(
+        isinstance(details.get("discovery_root"), str)
+        and bool(details["discovery_root"].strip()),
+        f"{context}.discovery_root must be non-empty",
+        errors,
+    )
+    _expect(
+        isinstance(files, list) and bool(files),
+        f"{context}.files must be non-empty",
+        errors,
+    )
+    _expect(
+        isinstance(files_scanned, int) and not isinstance(files_scanned, bool),
+        f"{context}.files_scanned must be an integer",
+        errors,
+    )
+    _expect(
+        isinstance(without_power, int)
+        and not isinstance(without_power, bool)
+        and without_power >= 0,
+        f"{context}.files_without_power_columns must be a non-negative integer",
+        errors,
+    )
+    _expect(
+        isinstance(total_discovered, int)
+        and not isinstance(total_discovered, bool)
+        and total_discovered > 0,
+        f"{context}.total_discovered_parquet_count must be a positive integer",
+        errors,
+    )
+    _expect(
+        isinstance(rows_scanned, int)
+        and not isinstance(rows_scanned, bool)
+        and rows_scanned >= 0,
+        f"{context}.rows_scanned must be a non-negative integer",
+        errors,
+    )
+    if isinstance(files, list) and isinstance(files_scanned, int):
+        _expect(
+            files_scanned == len(files),
+            f"{context}.files_scanned does not match files",
+            errors,
+        )
+    if (
+        isinstance(total_discovered, int)
+        and isinstance(files_scanned, int)
+        and isinstance(without_power, int)
+    ):
+        _expect(
+            total_discovered == files_scanned + without_power,
+            f"{context}.discovery counts do not reconcile",
+            errors,
+        )
+    _expect(
+        anomalies == [],
+        f"{context}.skipped_file_anomalies must be empty for passing evidence",
+        errors,
+    )
+
+    checks = details.get("checks")
+    _expect(isinstance(checks, dict), f"{context}.checks must be an object", errors)
+    if isinstance(checks, dict):
+        finite = checks.get("finite_nonnegative_values")
+        paired = checks.get("power_and_limit_columns_paired")
+        _expect(
+            isinstance(finite, dict) and finite.get("result") == "pass",
+            f"{context}.finite check failed",
+            errors,
+        )
+        _expect(
+            isinstance(paired, dict)
+            and paired.get("result") == "pass"
+            and paired.get("files_missing_pair") == [],
+            f"{context}.column pairing check failed",
+            errors,
+        )
+        if isinstance(finite, dict):
+            for column, invalid_count in (
+                ("power", "negative_count"),
+                ("power_limit", "non_positive_count"),
+            ):
+                summary = finite.get(column)
+                _expect(
+                    isinstance(summary, dict),
+                    f"{context}.{column} summary must be an object",
+                    errors,
+                )
+                if isinstance(summary, dict):
+                    _expect(
+                        summary.get("unit") == "W",
+                        f"{context}.{column}.unit must be W",
+                        errors,
+                    )
+                    for count_name in (
+                        "nan_count",
+                        "positive_infinity_count",
+                        "negative_infinity_count",
+                        invalid_count,
+                    ):
+                        _expect(
+                            summary.get(count_name) == 0,
+                            f"{context}.{column}.{count_name} must be zero",
+                            errors,
+                        )
+
+    if isinstance(files, list):
+        calculated_rows = 0
+        paths: list[str] = []
+        for index, file_result in enumerate(files):
+            file_context = f"{context}.files[{index}]"
+            _expect(
+                isinstance(file_result, dict),
+                f"{file_context} must be an object",
+                errors,
+            )
+            if not isinstance(file_result, dict):
+                continue
+            rows = file_result.get("rows_scanned")
+            _expect(
+                isinstance(rows, int) and not isinstance(rows, bool) and rows >= 0,
+                f"{file_context}.rows_scanned is invalid",
+                errors,
+            )
+            if isinstance(rows, int) and not isinstance(rows, bool):
+                calculated_rows += rows
+            path = file_result.get("path")
+            _expect(
+                isinstance(path, str) and bool(path.strip()),
+                f"{file_context}.path must be non-empty",
+                errors,
+            )
+            if isinstance(path, str):
+                paths.append(path)
+            key_columns = file_result.get("key_columns")
+            _expect(
+                isinstance(key_columns, list)
+                and bool(key_columns)
+                and all(isinstance(column, str) and column for column in key_columns),
+                f"{file_context}.key_columns must be non-empty strings",
+                errors,
+            )
+            _expect(
+                file_result.get("power_columns_present") == ["power", "power_limit"],
+                f"{file_context} lacks paired power columns",
+                errors,
+            )
+            _expect(
+                file_result.get("pairing_result") == "pass",
+                f"{file_context}.pairing_result must pass",
+                errors,
+            )
+            for column, invalid_count in (
+                ("power", "negative_count"),
+                ("power_limit", "non_positive_count"),
+            ):
+                summary = file_result.get(column)
+                _expect(
+                    isinstance(summary, dict),
+                    f"{file_context}.{column} must be an object",
+                    errors,
+                )
+                if isinstance(summary, dict):
+                    _expect(
+                        summary.get("unit") == "W",
+                        f"{file_context}.{column}.unit must be W",
+                        errors,
+                    )
+                    for count_name in (
+                        "nan_count",
+                        "positive_infinity_count",
+                        "negative_infinity_count",
+                        invalid_count,
+                    ):
+                        _expect(
+                            summary.get(count_name) == 0,
+                            f"{file_context}.{column}.{count_name} must be zero",
+                            errors,
+                        )
+        if isinstance(rows_scanned, int):
+            _expect(
+                rows_scanned == calculated_rows,
+                f"{context}.rows_scanned does not reconcile",
+                errors,
+            )
+        _expect(
+            len(paths) == len(set(paths)),
+            f"{context}.files contains duplicate paths",
+            errors,
+        )
+
+
+def _validate_evidence_report(
+    content: bytes,
+    evidence: dict[str, Any],
+    gate: dict[str, Any],
+    context: str,
+    errors: list[str],
+) -> None:
+    try:
+        report = json.loads(
+            content.decode("utf-8"), parse_constant=_reject_json_constant
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, QualificationError) as error:
+        errors.append(f"{context}.artifact is not a valid evidence report: {error}")
+        return
+
+    _expect_keys(
+        report,
+        {
+            "schema_version",
+            "gate_id",
+            "source_revision",
+            "matrix",
+            "assertion_results",
+            "units",
+            "anomalies",
+            "details",
+        },
+        f"{context}.artifact",
+        errors,
+    )
+    if not isinstance(report, dict):
+        return
+    _expect(
+        report.get("schema_version") == EVIDENCE_REPORT_SCHEMA_VERSION,
+        f"{context}.artifact.schema_version must be {EVIDENCE_REPORT_SCHEMA_VERSION}",
+        errors,
+    )
+    _expect(
+        report.get("gate_id") == gate.get("id"),
+        f"{context}.artifact gate_id does not match its gate",
+        errors,
+    )
+    _expect(
+        report.get("source_revision") == evidence.get("source_revision"),
+        f"{context}.artifact source_revision does not match its evidence record",
+        errors,
+    )
+    _expect(
+        report.get("matrix") == gate.get("matrix"),
+        f"{context}.artifact matrix does not match its gate",
+        errors,
+    )
+
+    assertion_results = report.get("assertion_results")
+    expected_assertions = gate.get("assertions", [])
+    _expect(
+        isinstance(assertion_results, list)
+        and len(assertion_results) == len(expected_assertions),
+        f"{context}.artifact assertion_results do not cover every gate assertion",
+        errors,
+    )
+    if isinstance(assertion_results, list) and isinstance(expected_assertions, list):
+        for index, expected in enumerate(expected_assertions):
+            if index >= len(assertion_results):
+                break
+            result = assertion_results[index]
+            result_context = f"{context}.artifact.assertion_results[{index}]"
+            _expect_keys(
+                result,
+                {"when", "expectation", "thresholds", "result"},
+                result_context,
+                errors,
+            )
+            if not isinstance(result, dict) or not isinstance(expected, dict):
+                continue
+            for key in ("when", "expectation", "thresholds"):
+                _expect(
+                    result.get(key) == expected.get(key),
+                    f"{result_context}.{key} does not match its gate",
+                    errors,
+                )
+            _expect(
+                result.get("result") in {"pass", "fail"},
+                f"{result_context}.result is invalid",
+                errors,
+            )
+        result_values = [
+            item.get("result") for item in assertion_results if isinstance(item, dict)
+        ]
+        if evidence.get("result") == "pass":
+            _expect(
+                len(result_values) == len(expected_assertions)
+                and all(result == "pass" for result in result_values),
+                f"{context}.artifact does not pass every gate assertion",
+                errors,
+            )
+        elif evidence.get("result") == "fail":
+            _expect(
+                "fail" in result_values,
+                f"{context}.artifact has no failing assertion",
+                errors,
+            )
+
+    _expect(
+        report.get("units") == _expected_units(gate),
+        f"{context}.artifact units do not match its gate",
+        errors,
+    )
+    anomalies = report.get("anomalies")
+    _expect(
+        isinstance(anomalies, list),
+        f"{context}.artifact.anomalies must be an array",
+        errors,
+    )
+    if evidence.get("result") == "pass":
+        _expect(
+            anomalies == [],
+            f"{context}.artifact has anomalies despite a passing result",
+            errors,
+        )
+    _expect(
+        isinstance(report.get("details"), dict) and bool(report["details"]),
+        f"{context}.artifact.details must be a non-empty object",
+        errors,
+    )
+    if gate.get("id") == "power-data-invariants":
+        _validate_data_invariant_details(
+            report.get("details"), f"{context}.artifact.details", errors
+        )
 
 
 def _validate_matrix(matrix: Any, context: str, errors: list[str]) -> None:
@@ -146,7 +521,9 @@ def _validate_matrix(matrix: Any, context: str, errors: list[str]) -> None:
         )
 
 
-def _validate_assertion(assertion: Any, matrix: dict[str, list[str]], context: str, errors: list[str]) -> None:
+def _validate_assertion(
+    assertion: Any, matrix: dict[str, list[str]], context: str, errors: list[str]
+) -> None:
     _expect_keys(assertion, {"when", "expectation", "thresholds"}, context, errors)
     if not isinstance(assertion, dict):
         return
@@ -170,7 +547,11 @@ def _validate_assertion(assertion: Any, matrix: dict[str, list[str]], context: s
                     f"{context}.when.{dimension} must contain strings",
                     errors,
                 )
-            if dimension in matrix and isinstance(selected, list) and all(isinstance(item, str) for item in selected):
+            if (
+                dimension in matrix
+                and isinstance(selected, list)
+                and all(isinstance(item, str) for item in selected)
+            ):
                 _expect(
                     set(selected) <= set(matrix[dimension]),
                     f"{context}.when.{dimension} is outside the gate matrix",
@@ -197,6 +578,7 @@ def _validate_assertion(assertion: Any, matrix: dict[str, list[str]], context: s
 
 def _validate_evidence(
     evidence: Any,
+    gate: dict[str, Any],
     context: str,
     errors: list[str],
     *,
@@ -224,16 +606,20 @@ def _validate_evidence(
     artifact_is_valid = False
     if isinstance(artifact, str) and artifact:
         path_parts = Path(artifact).parts
-        artifact_is_valid = artifact.startswith("https://") or (
-            "://" not in artifact and not Path(artifact).is_absolute() and ".." not in path_parts
+        artifact_is_valid = (
+            "://" not in artifact
+            and not Path(artifact).is_absolute()
+            and ".." not in path_parts
         )
         _expect(
             artifact_is_valid,
-            f"{context}.artifact must be HTTPS or a repository-relative path",
+            f"{context}.artifact must be a repository-relative path",
             errors,
         )
     expected_digest = evidence.get("sha256")
-    digest_is_valid = isinstance(expected_digest, str) and bool(DIGEST_RE.fullmatch(expected_digest))
+    digest_is_valid = isinstance(expected_digest, str) and bool(
+        DIGEST_RE.fullmatch(expected_digest)
+    )
     _expect(
         digest_is_valid,
         f"{context}.sha256 must be 64 lowercase hex",
@@ -241,8 +627,9 @@ def _validate_evidence(
     )
     if verify_artifact and artifact_is_valid and digest_is_valid:
         try:
-            actual_digest = _artifact_sha256(artifact)
-        except (OSError, URLError, ValueError) as error:
+            content = _read_artifact(artifact)
+            actual_digest = hashlib.sha256(content).hexdigest()
+        except (OSError, ValueError) as error:
             errors.append(f"{context}.artifact is unavailable: {error}")
         else:
             _expect(
@@ -250,8 +637,11 @@ def _validate_evidence(
                 f"{context}.artifact SHA-256 mismatch: expected {expected_digest}, got {actual_digest}",
                 errors,
             )
+            if actual_digest == expected_digest:
+                _validate_evidence_report(content, evidence, gate, context, errors)
     _expect(
-        isinstance(evidence.get("source_revision"), str) and bool(SHA_RE.fullmatch(evidence["source_revision"])),
+        isinstance(evidence.get("source_revision"), str)
+        and bool(SHA_RE.fullmatch(evidence["source_revision"])),
         f"{context}.source_revision must be a 40-character commit SHA",
         errors,
     )
@@ -261,7 +651,9 @@ def _validate_evidence(
     except ValueError:
         parsed_time = None
     _expect(
-        recorded_at.endswith("Z") and parsed_time is not None and parsed_time.utcoffset() == UTC.utcoffset(parsed_time),
+        recorded_at.endswith("Z")
+        and parsed_time is not None
+        and parsed_time.utcoffset() == UTC.utcoffset(parsed_time),
         f"{context}.recorded_at must be UTC ISO-8601",
         errors,
     )
@@ -294,7 +686,8 @@ def _validate_gate(
     if not isinstance(gate, dict):
         return
     _expect(
-        isinstance(gate.get("id"), str) and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", gate["id"])),
+        isinstance(gate.get("id"), str)
+        and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", gate["id"])),
         f"{context}.id is invalid",
         errors,
     )
@@ -325,7 +718,9 @@ def _validate_gate(
         errors,
     )
     depends_on = gate.get("depends_on")
-    _expect(isinstance(depends_on, list), f"{context}.depends_on must be an array", errors)
+    _expect(
+        isinstance(depends_on, list), f"{context}.depends_on must be an array", errors
+    )
     if isinstance(depends_on, list):
         _expect(
             all(ISSUE_RE.fullmatch(str(item)) for item in depends_on),
@@ -343,7 +738,9 @@ def _validate_gate(
     )
     if isinstance(matrix, dict) and isinstance(assertions, list):
         for assertion_index, assertion in enumerate(assertions):
-            _validate_assertion(assertion, matrix, f"{context}.assertions[{assertion_index}]", errors)
+            _validate_assertion(
+                assertion, matrix, f"{context}.assertions[{assertion_index}]", errors
+            )
 
     execution = gate.get("execution")
     _expect_keys(
@@ -397,12 +794,15 @@ def _validate_gate(
         for evidence_index, item in enumerate(evidence):
             _validate_evidence(
                 item,
+                gate,
                 f"{context}.execution.evidence[{evidence_index}]",
                 errors,
-                verify_artifact=verify_artifacts,
+                verify_artifact=verify_artifacts or status in {"passed", "failed"},
             )
         if status in {"passed", "failed"}:
-            _expect(bool(evidence), f"{context} cannot be {status} without evidence", errors)
+            _expect(
+                bool(evidence), f"{context} cannot be {status} without evidence", errors
+            )
         if status == "passed":
             _expect(
                 command_status != "planned",
@@ -410,16 +810,26 @@ def _validate_gate(
                 errors,
             )
         if status in {"pending", "blocked"}:
-            _expect(not evidence, f"{context} cannot retain evidence while {status}", errors)
+            _expect(
+                not evidence, f"{context} cannot retain evidence while {status}", errors
+            )
         if status == "passed":
             _expect(
-                all(item.get("result") == "pass" for item in evidence if isinstance(item, dict)),
+                all(
+                    item.get("result") == "pass"
+                    for item in evidence
+                    if isinstance(item, dict)
+                ),
                 f"{context} passed with non-passing evidence",
                 errors,
             )
         if status == "failed":
             _expect(
-                any(item.get("result") == "fail" for item in evidence if isinstance(item, dict)),
+                any(
+                    item.get("result") == "fail"
+                    for item in evidence
+                    if isinstance(item, dict)
+                ),
                 f"{context} failed without failing evidence",
                 errors,
             )
@@ -429,7 +839,9 @@ def _validate_gate(
         errors,
     )
     if status == "blocked":
-        _expect(bool(blocked_by), f"{context} is blocked without naming a blocker", errors)
+        _expect(
+            bool(blocked_by), f"{context} is blocked without naming a blocker", errors
+        )
     elif isinstance(blocked_by, list):
         _expect(not blocked_by, f"{context} names blockers but is not blocked", errors)
     _expect(
@@ -439,19 +851,31 @@ def _validate_gate(
     )
 
 
-def _gate_by_id(document: dict[str, Any], gate_id: str, errors: list[str]) -> dict[str, Any]:
+def _gate_by_id(
+    document: dict[str, Any], gate_id: str, errors: list[str]
+) -> dict[str, Any]:
     gate = next(
-        (item for item in document.get("gates", []) if isinstance(item, dict) and item.get("id") == gate_id),
+        (
+            item
+            for item in document.get("gates", [])
+            if isinstance(item, dict) and item.get("id") == gate_id
+        ),
         None,
     )
     _expect(gate is not None, f"required gate {gate_id!r} is missing", errors)
     return gate or {}
 
 
-def _expect_dimension(gate: dict[str, Any], name: str, values: set[str], errors: list[str]) -> None:
+def _expect_dimension(
+    gate: dict[str, Any], name: str, values: set[str], errors: list[str]
+) -> None:
     matrix = gate.get("matrix")
     raw = matrix.get(name, []) if isinstance(matrix, dict) else []
-    actual = set(raw) if isinstance(raw, list) and all(isinstance(item, str) for item in raw) else set()
+    actual = (
+        set(raw)
+        if isinstance(raw, list) and all(isinstance(item, str) for item in raw)
+        else set()
+    )
     _expect(
         actual == values,
         f"gate {gate.get('id')!r} must cover {name}={sorted(values)}, got {sorted(actual)}",
@@ -628,7 +1052,9 @@ def _validate_required_coverage(document: dict[str, Any], errors: list[str]) -> 
 
     accuracy = _gate_by_id(document, "silicon-power-accuracy", errors)
     policy = document.get("policy")
-    accuracy_policy = policy.get("silicon_accuracy", {}) if isinstance(policy, dict) else {}
+    accuracy_policy = (
+        policy.get("silicon_accuracy", {}) if isinstance(policy, dict) else {}
+    )
     _expect_gate_contract(
         accuracy,
         release_blocking=True,
@@ -734,7 +1160,9 @@ def validate_document(
         "$schema must be './qualification-matrix.schema.json'",
         errors,
     )
-    _expect(document.get("schema_version") == "1.0", "schema_version must be '1.0'", errors)
+    _expect(
+        document.get("schema_version") == "1.0", "schema_version must be '1.0'", errors
+    )
     _expect(
         document.get("release_target") == "0.13.0",
         "release_target must be '0.13.0'",
@@ -748,12 +1176,19 @@ def validate_document(
     candidate_revision = document.get("candidate_revision")
     _expect(
         candidate_revision is None
-        or (isinstance(candidate_revision, str) and bool(SHA_RE.fullmatch(candidate_revision))),
+        or (
+            isinstance(candidate_revision, str)
+            and bool(SHA_RE.fullmatch(candidate_revision))
+        ),
         "candidate_revision must be null or a 40-character commit SHA",
         errors,
     )
     _expect(
-        expected_revision is None or (isinstance(expected_revision, str) and bool(SHA_RE.fullmatch(expected_revision))),
+        expected_revision is None
+        or (
+            isinstance(expected_revision, str)
+            and bool(SHA_RE.fullmatch(expected_revision))
+        ),
         "expected_revision must be a 40-character commit SHA",
         errors,
     )
@@ -799,7 +1234,8 @@ def validate_document(
                 errors,
             )
             _expect(
-                accuracy_policy.get("threshold_status") in {"pending_approval", "approved"},
+                accuracy_policy.get("threshold_status")
+                in {"pending_approval", "approved"},
                 "silicon threshold status is unsupported",
                 errors,
             )
@@ -818,20 +1254,28 @@ def validate_document(
                 maximum = accuracy_policy.get("maximum_error_pct")
                 minimum = accuracy_policy.get("minimum_points_per_case")
                 _expect(
-                    isinstance(maximum, (int, float)) and not isinstance(maximum, bool) and 0 < maximum < 100,
+                    isinstance(maximum, (int, float))
+                    and not isinstance(maximum, bool)
+                    and 0 < maximum < 100,
                     "approved silicon maximum error must be between 0 and 100",
                     errors,
                 )
                 _expect(
-                    isinstance(minimum, int) and not isinstance(minimum, bool) and minimum > 0,
+                    isinstance(minimum, int)
+                    and not isinstance(minimum, bool)
+                    and minimum > 0,
                     "approved silicon minimum points must be positive",
                     errors,
                 )
 
     gates = document.get("gates")
-    _expect(isinstance(gates, list) and gates, "gates must be a non-empty array", errors)
+    _expect(
+        isinstance(gates, list) and gates, "gates must be a non-empty array", errors
+    )
     if isinstance(gates, list):
-        verify_artifacts = require_release_ready or document.get("release_state") == "qualified"
+        verify_artifacts = (
+            require_release_ready or document.get("release_state") == "qualified"
+        )
         for index, gate in enumerate(gates):
             _validate_gate(
                 gate,
@@ -876,7 +1320,10 @@ def validate_document(
                 if not isinstance(gate, dict) or not gate.get("release_blocking"):
                     continue
                 execution = gate.get("execution")
-                if not isinstance(execution, dict) or execution.get("status") != "passed":
+                if (
+                    not isinstance(execution, dict)
+                    or execution.get("status") != "passed"
+                ):
                     unfinished.append(gate.get("id"))
             _expect(
                 not unfinished,
@@ -896,7 +1343,8 @@ def validate_document(
                 mismatched = [
                     item.get("source_revision")
                     for item in evidence
-                    if isinstance(item, dict) and item.get("source_revision") != candidate_revision
+                    if isinstance(item, dict)
+                    and item.get("source_revision") != candidate_revision
                 ]
                 _expect(
                     not mismatched,

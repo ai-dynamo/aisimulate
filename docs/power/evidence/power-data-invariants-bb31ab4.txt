@@ -5,15 +5,18 @@ AISimulate modeled-power qualification evidence
 Gate: power-data-invariants
 Result: PASS
 Source revision: bb31ab48cbe1e519683ce27bf7bc82f0e090ed67
-Recorded at: 2026-09-08T23:25:00Z
+Recorded at: 2026-09-11T17:25:37Z
 Command: uv run --project python/aisimulate --extra dev python -m pytest -q python/aisimulate/tests/unit/sdk/database/test_power_data_invariants.py
 Exit code: 0
 
-The repository-bound scan covered 3 power-carrying parquet files and 122362
-rows. Every file contained both `power` and `power_limit`, so the column-pairing
-check passed. The value check also passed: no file contained NaN or negative
-`power`, and no file contained NaN or non-positive `power_limit`. Both columns
-use watts, as documented in `python/aisimulate/collector/README.md`.
+The repository-bound scan discovered 762 parquet files, inspected the 3 files
+that carry power columns (122362 rows), and accounted for the remaining 759 as
+files without power columns. No discovered file was skipped because of a read
+or schema error. Every inspected file contained both `power` and `power_limit`,
+so the column-pairing check passed. The value check also passed: neither column
+contained NaN, positive infinity, or negative infinity; `power` had no negative
+values and `power_limit` had no non-positive values. Both columns use watts, as
+documented in `python/aisimulate/collector/README.md`.
 
 Key columns below are each parquet schema minus the measurement columns defined
 by `MEASUREMENT_COLUMNS` in

@@ -47,17 +47,25 @@ def test_power_columns_satisfy_energy_model_input_contract():
         present = [column for column in _POWER_COLUMNS if column in schema.names]
         missing = [column for column in _POWER_COLUMNS if column not in schema.names]
         if missing:
-            problems.append(
-                f"{rel}: power columns must be paired; present={present}, missing={missing}"
-            )
+            problems.append(f"{rel}: power columns must be paired; present={present}, missing={missing}")
         table = pq.read_table(path, columns=present)
         frame = table.to_pandas()
         if "power" in frame:
-            bad = frame["power"].isna() | (frame["power"] < 0)
+            bad = (
+                frame["power"].isna()
+                | (frame["power"] == float("inf"))
+                | (frame["power"] == float("-inf"))
+                | (frame["power"] < 0)
+            )
             if bad.any():
-                problems.append(f"{rel}: {int(bad.sum())} rows with NaN/negative power")
+                problems.append(f"{rel}: {int(bad.sum())} rows with non-finite/negative power")
         if "power_limit" in frame:
-            bad = frame["power_limit"].isna() | (frame["power_limit"] <= 0)
+            bad = (
+                frame["power_limit"].isna()
+                | (frame["power_limit"] == float("inf"))
+                | (frame["power_limit"] == float("-inf"))
+                | (frame["power_limit"] <= 0)
+            )
             if bad.any():
-                problems.append(f"{rel}: {int(bad.sum())} rows with NaN/non-positive power_limit")
+                problems.append(f"{rel}: {int(bad.sum())} rows with non-finite/non-positive power_limit")
     assert not problems, "power data violates the energy-model input contract:\n" + "\n".join(problems)

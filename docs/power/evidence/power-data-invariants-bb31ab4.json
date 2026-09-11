@@ -1,15 +1,52 @@
 {
-  "checks": {
+  "schema_version": "1.0",
+  "gate_id": "power-data-invariants",
+  "source_revision": "bb31ab48cbe1e519683ce27bf7bc82f0e090ed67",
+  "matrix": {
+    "model_families": ["dense", "moe"],
+    "deployments": ["any"],
+    "runners": ["any"],
+    "timing_backends": ["default_op_level"],
+    "coverage_states": ["covered", "undercovered"]
+  },
+  "assertion_results": [
+    {
+      "when": {},
+      "expectation": "data_invariants",
+      "thresholds": {
+        "finite_nonnegative_values": true,
+        "power_and_limit_columns_paired": true
+      },
+      "result": "pass"
+    }
+  ],
+  "units": {
+    "power": "W",
+    "power_limit": "W"
+  },
+  "anomalies": [],
+  "details": {
+    "discovery_root": "python/aisimulate/src/aiconfigurator_core/systems/data",
+    "total_discovered_parquet_count": 762,
+    "files_scanned": 3,
+    "files_without_power_columns": 759,
+    "skipped_file_anomalies": [],
+    "rows_scanned": 122362,
+    "checks": {
     "finite_nonnegative_values": {
       "result": "pass",
       "power": {
         "unit": "W",
         "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
         "negative_count": 0
       },
       "power_limit": {
         "unit": "W",
         "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
         "non_positive_count": 0
       }
     },
@@ -18,9 +55,7 @@
       "files_missing_pair": []
     }
   },
-  "files_scanned": 3,
-  "rows_scanned": 122362,
-  "files": [
+    "files": [
     {
       "path": "b200_sxm/attention/vllm/0.22.0/context_attention_perf.parquet",
       "rows_scanned": 36992,
@@ -49,11 +84,15 @@
       "power": {
         "unit": "W",
         "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
         "negative_count": 0
       },
       "power_limit": {
         "unit": "W",
         "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
         "non_positive_count": 0
       }
     },
@@ -85,11 +124,15 @@
       "power": {
         "unit": "W",
         "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
         "negative_count": 0
       },
       "power_limit": {
         "unit": "W",
         "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
         "non_positive_count": 0
       }
     },
@@ -120,13 +163,18 @@
       "power": {
         "unit": "W",
         "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
         "negative_count": 0
       },
       "power_limit": {
         "unit": "W",
         "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
         "non_positive_count": 0
       }
     }
-  ]
+    ]
+  }
 }

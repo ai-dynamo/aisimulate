@@ -80,7 +80,7 @@ For an automated or manual gate to move to `passed`, add at least one evidence
 record containing:
 
 1. a result of `pass`;
-2. an artifact path or HTTPS URL;
+2. a repository-relative JSON evidence-report path;
 3. the artifact's SHA-256 digest;
 4. the exact 40-character candidate source commit; and
 5. a UTC ISO-8601 recording time.
@@ -91,9 +91,16 @@ arrays. Evidence should be public-safe and reproducible. Internal workflow IDs,
 raw silicon measurements, and mutable branch names are not sufficient release
 anchors.
 
-The release-ready validator hashes repository-relative artifacts from the
-repository root and downloads HTTPS artifacts before accepting their digest.
-Missing content, non-HTTPS redirects, and SHA-256 mismatches fail closed.
+The release-ready validator reads repository-relative artifacts from the
+repository root, enforces a 16 MiB size limit, and checks their SHA-256 digest.
+Remote URLs are intentionally rejected so a caller-supplied ledger cannot turn
+release validation into an outbound network request. Missing, oversized, or
+digest-mismatched content fails closed.
+
+Each artifact is a versioned, gate-specific JSON report. Its gate ID, source
+revision, matrix, assertion results, units, and anomaly list must agree with the
+owning ledger gate. A passing report must cover every assertion and contain no
+anomalies, so evidence from one gate cannot be reused to qualify another gate.
 
 At closeout, set the top-level `candidate_revision` to the one integrated commit
 that every release-blocking gate tested. Every passing evidence record must use

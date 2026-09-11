@@ -147,9 +147,9 @@
           {
             "result": "pass",
             "artifact": "docs/power/evidence/power-data-invariants-bb31ab4.json",
-            "sha256": "5e93ac7c61774abda2ade85ce1ebcdccd98a2303ce97f08f83de1529f70a82fd",
+            "sha256": "df358a397474eea06b8768055710e8cc54e4ae0e98433f4fcdd0d7a3ccf2212f",
             "source_revision": "bb31ab48cbe1e519683ce27bf7bc82f0e090ed67",
-            "recorded_at": "2026-09-08T23:25:00Z"
+            "recorded_at": "2026-09-11T17:25:37Z"
           }
         ],
         "blocked_by": []
