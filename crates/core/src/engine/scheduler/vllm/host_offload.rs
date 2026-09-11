@@ -530,17 +530,26 @@ impl VllmHostOffloadAdapter {
         dependencies: &[SourceReuseDependency],
         kv_manager: &mut G1Manager,
     ) {
-        if dependencies.is_empty() {
+        let Some(deadline) = self.dependency_deadline_ms(dependencies) else {
             return;
-        }
-        for dependency in dependencies {
-            let deadline = self
-                .tier
-                .transfer_deadline(transfer_id(*dependency))
-                .expect("pending dependency must retain a submitted D2H");
-            self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
-        }
+        };
+        self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
         kv_manager.authorize_native_compute_after_dependencies(uuid, lease, dependencies);
+    }
+
+    /// Latest D2H deadline among pending source-reuse dependencies.
+    pub(super) fn dependency_deadline_ms(
+        &self,
+        dependencies: &[SourceReuseDependency],
+    ) -> Option<f64> {
+        dependencies
+            .iter()
+            .map(|dependency| {
+                self.tier
+                    .transfer_deadline(transfer_id(*dependency))
+                    .expect("pending dependency must retain a submitted D2H")
+            })
+            .reduce(f64::max)
     }
 
     /// vLLM flushes this request's prepared stores before releasing its G1 capacity.

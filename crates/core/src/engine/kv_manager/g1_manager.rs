@@ -271,6 +271,14 @@ impl G1Manager {
         )
     }
 
+    pub(crate) fn native_decode_reservation_pending_dependencies(
+        &self,
+        reservation: &DecodeBlockReservation,
+    ) -> Vec<SourceReuseDependency> {
+        self.inner
+            .decode_reservation_pending_dependencies(&reservation.inner)
+    }
+
     pub(crate) fn release_decode_reservation(&mut self, reservation: DecodeBlockReservation) {
         self.inner.release_decode_reservation(reservation.inner);
     }

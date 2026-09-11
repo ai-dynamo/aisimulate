@@ -2675,6 +2675,20 @@ impl VllmCore {
             }
         };
 
+        // Fresh decode blocks may still be pending D2H sources. The burst
+        // overwrites them during this decode, so the decode waits for the D2H
+        // instead of fencing the next pass like the allocation path does.
+        let host_stall_ms = self
+            .native_host_offload
+            .as_ref()
+            .and_then(|adapter| {
+                let dependencies = self
+                    .kv_manager
+                    .native_decode_reservation_pending_dependencies(&reservation);
+                adapter.dependency_deadline_ms(&dependencies)
+            })
+            .map_or(0.0, |deadline| (deadline - decode_start_ms).max(0.0));
+
         let total_length = ready
             .iter()
             .filter_map(|uuid| self.state.requests.get(uuid))
@@ -2692,7 +2706,8 @@ impl VllmCore {
                 context_length,
                 total_kv_tokens,
             )?;
-            let duration = scale_decode_time(decode_ms, &self.args)?;
+            let duration = scale_decode_time(decode_ms, &self.args)?
+                + Duration::from_secs_f64(host_stall_ms / 1000.0);
             (duration, decode_start_ms + duration.as_secs_f64() * 1000.0)
         };
 
@@ -2757,10 +2772,17 @@ impl VllmCore {
                         request.sequence.sequence.len(),
                         &mut reservation,
                     );
-                    assert!(matches!(
-                        allocation,
-                        NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
-                    ));
+                    let NativeAllocation::Ready { dependencies, .. } = allocation else {
+                        panic!("decode reservation must cover the sampled burst")
+                    };
+                    if !dependencies.is_empty() {
+                        // The decode already stalled past these D2H deadlines.
+                        self.kv_manager.authorize_native_compute_after_dependencies(
+                            uuid,
+                            &mut request.sequence.lease,
+                            &dependencies,
+                        );
+                    }
                 }
 
                 let (prompt_tokens, cached_tokens) = {

@@ -633,6 +633,14 @@ impl VllmKvManager {
             .reservation_pending_dependencies(&reservation.pool)
     }
 
+    pub(crate) fn decode_reservation_pending_dependencies(
+        &self,
+        reservation: &DecodeBlockReservation,
+    ) -> Vec<SourceReuseDependency> {
+        self.pool
+            .reservation_pending_dependencies(&reservation.pool)
+    }
+
     /// Capture a pure, unpinned view of completed request-owned source blocks.
     ///
     /// The returned snapshot also proves that dependency attachment is valid

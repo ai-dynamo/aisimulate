@@ -757,8 +757,9 @@ differ from each worker role's physical `kv_cache.bytes_per_token`.
 ### Native vLLM host-offload prediction
 
 The initial public host-offload surface is deliberately fail-closed: it supports one aggregated
-vLLM worker role with prefix caching enabled, attention DP equal to one, and no native speculative
-decoding. The descriptor is fixed in both `predict` and `recommend`; host capacity and bandwidths
+vLLM worker role with prefix caching enabled and attention DP equal to one. Native MTP speculative
+decoding (`aic_nextn`) composes with it: a speculative burst that reuses device blocks still pending
+D2H stalls that decode until the store completes. The descriptor is fixed in both `predict` and `recommend`; host capacity and bandwidths
 are not search dimensions. `bytes_per_token` belongs to `kv_cache`, not `host_offload`, and is
 resolved for the worker role before lowering to the native rank.
 
