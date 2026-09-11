@@ -15,8 +15,9 @@ from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.epd import encoder_prediction_fields, validate_epd_prediction_mapping
 from aisimulate.main import main
-from aisimulate.recommend import recommendation_to_sweeper
-from aisimulate.sweeper import SweepResult
+from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.sweeper import SmartSearchConfig, Sweeper, SweepResult
 
 
 def _prediction(mode="aggregated"):
@@ -255,6 +256,148 @@ def test_prediction_callback_cannot_drop_or_change_epd(change):
         raw["engine"]["workers"]["aggregated"]["parallelism"]["replicas"] = 2
     with pytest.raises(ValueError, match="prediction-ready"):
         validate_epd_prediction_mapping(raw, spec)
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "hardware",
+        "backend_version",
+        "missing_version",
+        "scheduler",
+        "prefill_interval",
+        "cache",
+        "prefix",
+        "context",
+        "sla",
+    ],
+)
+def test_epd_sweeper_rejects_changed_language_prediction(mode, change):
+    raw = _recommendation(mode)
+    raw["engine"]["workers"]["encoder"]["replicas"] = 1
+    raw["optimizer"]["max_trials"] = 1
+    raw["evaluation"] = {"sla": {"ttft_ms": 1000.0}}
+    raw["optimization"]["strict_sla"] = True
+    source = CoreRecommendationConfig.model_validate(raw)
+    config = recommendation_to_sweeper(source)
+    config.sweep.max_eval_seconds = None
+
+    def callback(sample, spec):
+        value = _candidate_prediction(source, sample, spec, adapter_sections={})
+        worker = value["engine"]["workers"]["aggregated" if mode == "aggregated" else "decode"]
+        if change == "hardware":
+            value["engine"]["hardware"] = "h100_sxm"
+        elif change == "backend_version":
+            value["engine"]["backend_version"] = "changed-version"
+        elif change == "missing_version":
+            del value["engine"]["backend_version"]
+        elif change == "scheduler":
+            worker["scheduler"]["max_sequences"] = 1
+        elif change == "prefill_interval":
+            worker["scheduler"]["prefill_schedule_interval"] = 2
+        elif change == "cache":
+            worker["kv_cache"]["capacity"]["blocks"] = 8192
+        elif change == "prefix":
+            worker["kv_cache"]["prefix_caching"] = False
+        elif change == "context":
+            value["engine"]["context_length"] = 140
+        else:
+            value["evaluation"]["sla"]["ttft_ms"] = 0.1
+        return value
+
+    result = Sweeper(
+        runner_factory=EngineReplayRunnerFactory(), show_progress=False, prediction_config_factory=callback
+    ).run(config)
+    assert not result.selected_candidates
+    assert result.candidates
+    assert all("prediction-ready" in candidate.reason for candidate in result.candidates)
+
+
+@pytest.mark.parametrize("change", ["bytes_per_token", "bandwidth_gb_per_second", "timing_mode"])
+def test_epd_callback_rejects_changed_transfer(change):
+    raw = _prediction("disaggregated")
+    raw["engine"]["kv_transfer"] = {
+        "bytes_per_token": 1024,
+        "bandwidth_gb_per_second": 25.0,
+        "timing_mode": "destination_missing",
+    }
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    raw["engine"]["workers"]["encoder"] = encoder_prediction_fields(spec.backend_deployment.encoder)
+    raw["engine"]["kv_transfer"][change] = {
+        "bytes_per_token": 2048,
+        "bandwidth_gb_per_second": 50.0,
+        "timing_mode": "full_prompt",
+    }[change]
+    with pytest.raises(ValueError, match="prediction-ready"):
+        validate_epd_prediction_mapping(raw, spec)
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("inferred_capacity", [False, True])
+def test_epd_callback_preserves_equivalent_defaults_and_stops(mode, inferred_capacity):
+    raw = _recommendation(mode)
+    raw["engine"]["workers"]["encoder"]["replicas"] = 1
+    raw["optimizer"]["max_trials"] = 1
+    if inferred_capacity:
+        for role, worker in raw["engine"]["workers"].items():
+            if role != "encoder":
+                worker["kv_cache"]["capacity"] = {"type": "default"}
+    source = CoreRecommendationConfig.model_validate(raw)
+    config = recommendation_to_sweeper(source)
+    config.sweep.max_eval_seconds = None
+
+    def callback(sample, spec):
+        value = _candidate_prediction(source, sample, spec, adapter_sections={})
+        value["traffic"]["stop"] = {"requests_per_load_unit": 2.0}
+        value["engine"]["backend_version"] = "current"
+        for role, worker in value["engine"]["workers"].items():
+            if role == "encoder":
+                continue
+            worker["scheduler"].pop("prefill_schedule_interval", None)
+            worker["kv_cache"].pop("block_size", None)
+            worker.pop("startup_seconds", None)
+        return value
+
+    result = Sweeper(
+        runner_factory=EngineReplayRunnerFactory(), show_progress=False, prediction_config_factory=callback
+    ).run(config)
+    assert len(result.selected_candidates) == 1, result.to_json()
+    candidate = result.selected_candidates[0]
+    replay = prediction_to_replay_spec(CorePredictionConfig.model_validate(candidate.prediction_config))
+    report = EngineReplayRunnerFactory().create(0).run(replay)
+    assert report.metrics == pytest.approx(candidate.metrics)
+
+
+@pytest.mark.parametrize("backends", [["sglang", "vllm"], ["vllm", "sglang"], ["vllm"]])
+def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, backends):
+    from aiconfigurator_core.sdk import perf_database
+
+    original = perf_database.get_database_view
+
+    def database(system, backend, version, **kwargs):
+        return None if backend == "vllm" else original(system, backend, version, **kwargs)
+
+    raw = _recommendation()
+    raw["engine"]["workers"]["encoder"]["replicas"] = 1
+    raw["engine"]["backend_version"] = None
+    raw["optimizer"]["max_trials"] = 2
+    config = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw))
+    payload = config.model_dump()
+    payload["search_space"]["backend"] = backends
+    config = SmartSearchConfig.model_validate(payload)
+    config.sweep.max_eval_seconds = None
+    monkeypatch.setattr(perf_database, "get_database_view", database)
+    sweeper = Sweeper(runner_factory=EngineReplayRunnerFactory(), show_progress=False)
+    if backends == ["vllm"]:
+        with pytest.raises(ValueError, match="no feasible encoder pool"):
+            sweeper.run(config)
+    else:
+        result = sweeper.run(config)
+        assert result.selected_candidates, result.to_json()
+        assert all(candidate.config["backend"] == "sglang" for candidate in result.selected_candidates)
+        assert result.selected_candidates[0].metrics["output_throughput_tok_s"] > 0
+    assert "no encoder database for h200_sxm/vllm/" in caplog.text
 
 
 def test_cli_examples_parse():

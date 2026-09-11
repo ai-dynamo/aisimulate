@@ -10,12 +10,15 @@ This analytical overlay is not an event-level encoder queue simulation.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import asdict, replace
 
 from .config import EncoderSearch, SmartSearchConfig, Workload
 from .kv_estimate import resolve_backend_version
 from .replay import EncoderPoolSpec, ReplayReport, ReplaySpec
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_encoder_catalog(config: SmartSearchConfig) -> dict[str, EncoderPoolSpec]:
@@ -75,7 +78,8 @@ def resolve_encoder_pools(
         )
         database = get_database_view(system, backend, version, database_mode="SILICON")
         if database is None:
-            raise ValueError(f"no encoder database for {system}/{backend}/{version}")
+            logger.warning("Skipping encoder backend: no encoder database for %s/%s/%s", system, backend, version)
+            continue
         version = database.version
         rows = _get_encoder_worker_candidates(
             model_path=model_name,
@@ -126,8 +130,21 @@ def add_encoder_choices(branches, catalog):
         backends = branch.knob_choices["backend"]
         choices = {key: value for key, value in catalog.items() if value.backend in backends}
         if not choices:
-            raise ValueError(f"no encoder candidates for {branch.deployment_mode}")
-        result.append(replace(branch, knob_choices={**branch.knob_choices, "encoder_candidate": list(choices)}))
+            logger.warning("Skipping deployment mode: no encoder candidates for %s", branch.deployment_mode)
+            continue
+        available_backends = {point.backend for point in choices.values()}
+        result.append(
+            replace(
+                branch,
+                knob_choices={
+                    **branch.knob_choices,
+                    "backend": [backend for backend in backends if backend in available_backends],
+                    "encoder_candidate": list(choices),
+                },
+            )
+        )
+    if not result:
+        raise ValueError("no feasible encoder pool for the supported deployment modes")
     return result
 
 

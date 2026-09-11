@@ -25,8 +25,9 @@ def encoder_prediction_fields(encoder: EncoderPoolSpec) -> dict:
 
 
 def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
-    """A callback must retain the resolved EPD identity, traffic and GPU topology."""
-    from ..compiler import _parallel_mapping
+    """A callback must preserve the scored encoder, workload and language replay."""
+    from ..compiler import _parallel_mapping, prediction_to_replay_spec
+    from ..runner import _materialize_sla
     from .cli import CorePredictionConfig
     from .traffic import SyntheticSource
 
@@ -67,5 +68,50 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
             parallel = _parallel_mapping(getattr(engine.workers, role), prefix=prefix)
             if any(deployment.parallel_config.get(key) != val for key, val in parallel.items()):
                 raise ValueError("language GPU topology changed")
+        # Compile through the public reload path, including visual-context admission.
+        # Compare the same engine descriptors the runner executes, not a second list
+        # of scheduler/cache/timing fields that can drift from the actual consumer.
+        compiled = prediction_to_replay_spec(prediction)
+        if _language_execution(compiled) != _language_execution(spec):
+            raise ValueError("language replay settings changed")
+        if _materialize_sla(compiled) != _materialize_sla(spec):
+            raise ValueError("evaluation SLA changed")
     except (ValueError, TypeError, KeyError, AssertionError) as exc:
         raise ValueError(f"EPD prediction-ready output must preserve the encoder and workload: {exc}") from exc
+
+
+def _language_execution(spec: ReplaySpec) -> dict:
+    """Normalize compiler/Sweeper spellings at the existing execution boundary."""
+    from aiconfigurator_core.sdk.perf_database import resolve_query_version
+
+    from ..aic import DEFAULT_BACKEND_VERSIONS
+    from ..runner import _materialize_engine_role
+    from .engine import SchedulerPredictionConfig
+
+    deployment = spec.backend_deployment
+    roles = (
+        (("aggregated", deployment.agg_engine_args),)
+        if deployment.deployment_mode == "agg"
+        else (("prefill", deployment.prefill_engine_args), ("decode", deployment.decode_engine_args))
+    )
+    result = {}
+    for role, args in roles:
+        assert args is not None
+        engine = _materialize_engine_role(
+            deployment.backend, deployment.backend_version, deployment.parallel_config, args, role
+        )
+        rank = engine["rank"]
+        rank.setdefault("prefill_schedule_interval", SchedulerPredictionConfig().prefill_schedule_interval)
+        timing = rank["timing_model"]["config"]
+        timing["backend_version"] = resolve_query_version(
+            timing["system"],
+            timing["backend"],
+            timing.get("backend_version") or DEFAULT_BACKEND_VERSIONS[deployment.backend],
+        )
+        timing.setdefault("cuda_graph_reserved_bytes", 0)
+        # HandoffTransferTiming::delay_ms uses the same fallback for either mode
+        # when a complete byte-count/bandwidth transfer model is unavailable.
+        if rank.get("kv_transfer_bytes_per_token") is None or rank.get("kv_transfer_bandwidth") is None:
+            rank.pop("kv_transfer_timing_mode", None)
+        result[role] = engine
+    return result

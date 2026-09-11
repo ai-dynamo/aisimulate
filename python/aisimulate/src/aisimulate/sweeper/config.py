@@ -263,6 +263,8 @@ class Workload(BaseModel):
         """Validate the analytical approximation at both search and replay boundaries."""
         if self.images is None or self.isl is None or self.osl is None or self.isl <= 0 or self.osl <= 0:
             raise ValueError("EPD requires positive text lengths and an image profile")
+        if type(self.concurrency) is not int or self.concurrency <= 0:
+            raise ValueError("analytical EPD requires fixed positive concurrency")
         if (
             self.trace_path is not None
             or self.trace_paths is not None

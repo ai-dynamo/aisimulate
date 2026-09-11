@@ -216,6 +216,27 @@ def test_unsupported_workloads_fail_closed(updates):
         _config(workload=workload)
 
 
+def test_epd_search_rejects_legacy_request_rate():
+    workload = _config().workload.model_dump() | {"concurrency": None, "request_rate": 1.0}
+    with pytest.raises(ValueError, match="fixed.*concurrency"):
+        _config(workload=workload)
+    # The shared workload schema still supports text-only request-rate search.
+    search_space = _config().search_space.model_dump() | {"encoder": None}
+    _config(search_space=search_space, workload=workload | {"images": None})
+
+
+def test_epd_runner_rejects_legacy_request_rate_before_execution(monkeypatch):
+    def unexpected_execution(*args, **kwargs):
+        pytest.fail("unsupported EPD traffic reached the language engine")
+
+    monkeypatch.setattr("aisimulate.runner._materialize_engine_execution_spec", unexpected_execution)
+    spec = _spec()
+    with pytest.raises(ValueError, match="fixed.*concurrency"):
+        EngineReplayRunnerFactory().create(0).run(
+            replace(spec, workload=spec.workload | {"concurrency": None, "request_rate": 1.0})
+        )
+
+
 def test_goodput_and_implicit_sla_are_not_claimed():
     for goal in (
         {"target": "goodput", "sla": {"ttft_ms": 500.0}},
@@ -396,6 +417,75 @@ def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
         (point.image_height, point.image_width, point.image_count) == (448, 448, 1) for point in catalog.values()
     )
     assert all(point.power_w is None for point in catalog.values())
+
+
+@pytest.mark.parametrize("stage", ["database", "estimator"])
+@pytest.mark.parametrize("error_type", [ValueError, RuntimeError])
+def test_encoder_catalog_does_not_hide_failures(monkeypatch, stage, error_type):
+    import aiconfigurator.sdk.sweep as aic_sweep
+    from aiconfigurator_core.sdk import perf_database
+
+    error = error_type("corrupt database" if stage == "database" else "unexpected estimator failure")
+
+    def fail(*args, **kwargs):
+        raise error
+
+    if stage == "database":
+        monkeypatch.setattr(perf_database, "get_database_view", fail)
+    else:
+        monkeypatch.setattr(aic_sweep, "_get_encoder_worker_candidates", fail)
+    with pytest.raises(error_type) as caught:
+        resolve_encoder_catalog(_config())
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("modes", [["agg", "disagg"], ["disagg", "agg"], ["agg"]])
+def test_epd_native_search_preserves_available_modes(monkeypatch, caplog, modes):
+    from aiconfigurator_core.sdk import perf_database
+
+    class LimitedFactory:
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(("vllm", "agg"), ("sglang", "disagg")),
+                supports_analytical_epd=True,
+            )
+
+        def create(self, worker_id):
+            return EngineReplayRunnerFactory().create(worker_id)
+
+    original = perf_database.get_database_view
+
+    def database(system, backend, version, **kwargs):
+        return None if backend == "vllm" else original(system, backend, version, **kwargs)
+
+    payload = _config().model_dump()
+    parallel = {"tp": 1, "replicas": 1}
+    layouts = {"agg": parallel, "disagg": {"prefill": parallel, "decode": parallel}}
+    payload["search_space"].update(
+        backend=["vllm", "sglang"],
+        deployment_mode=modes,
+        gpu_budget=4,
+        encoder={"tp": [1], "batch_size": [1], "workers": [1]},
+        context_length=4096,
+        parallel_configs_by_mode={mode: [layouts[mode]] for mode in modes},
+    )
+    payload["sweep"].update(algorithm="random", max_trials=2, max_eval_seconds=None)
+    monkeypatch.setattr(perf_database, "get_database_view", database)
+    sweeper = Sweeper(runner_factory=LimitedFactory(), show_progress=False)
+    if modes == ["agg"]:
+        with pytest.raises(ValueError, match="no feasible encoder pool for the supported deployment modes"):
+            sweeper.run(SmartSearchConfig.model_validate(payload))
+    else:
+        result = sweeper.run(SmartSearchConfig.model_validate(payload))
+        payload["search_space"].update(
+            deployment_mode=["disagg"], parallel_configs_by_mode={"disagg": [layouts["disagg"]]}
+        )
+        control = sweeper.run(SmartSearchConfig.model_validate(payload))
+        assert len(result.selected_candidates) == len(control.selected_candidates) == 2
+        assert all(candidate.config["deployment_mode"] == "disagg" for candidate in result.selected_candidates)
+        for candidate, expected in zip(result.selected_candidates, control.selected_candidates, strict=True):
+            assert candidate.metrics == pytest.approx(expected.metrics, rel=1e-12, abs=1e-12)
+    assert "no encoder candidates for agg" in caplog.text
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])

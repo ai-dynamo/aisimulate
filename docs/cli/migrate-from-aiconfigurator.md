@@ -33,7 +33,7 @@ remaining AIC workflow has a verified replacement in the `aisimulate` CLI.
 
 | AIC workflow | What AIC provides | Unified CLI status | What to do |
 |---|---|---|---|
-| `aiconfigurator cli estimate` | One FPM point for an explicit batch, parallel configuration, and estimation mode | **Supported for deployment-level prediction, not behaviorally equivalent** | Use `aisimulate predict` when the goal is to predict one concrete serving deployment. Keep AIC for exact batch-level FPM, multimodal/EPD, static, AFD, detail, per-op, or power semantics. |
+| `aiconfigurator cli estimate` | One FPM point for an explicit batch, parallel configuration, and estimation mode | **Supported for deployment-level prediction, not behaviorally equivalent** | Use `aisimulate predict` when the goal is to predict one concrete serving deployment. Keep AIC for exact batch-level FPM, multimodal/EPD outside the [analytical EPD scope](../sweeper/epd.md), static, AFD, detail, per-op, or power semantics. |
 | `aiconfigurator cli default` | Capacity-oriented aggregated/disaggregated search and selection | **Partially supported** | Use `aisimulate recommend` after choosing explicit traffic, topology domains, GPU bounds, and an objective. Keep AIC when its capacity-sweep and ranking semantics are required. |
 | `aiconfigurator cli recommend` | Minimum-GPU procurement sizing for a load target and SLA | **Partially supported** | Use `aisimulate recommend` to search explicit candidates under a chosen traffic shape, SLA, GPU budget, and objective. The unified CLI does not reproduce AIC's minimum-GPU sizing from either a target request rate or target concurrency; keep using the compatibility CLI when that sizing result is required. |
 | `aiconfigurator cli exp` | AIC experiment YAML, including heterogeneous experiments | **Manual migration only** | Use `predict` for each concrete deployment or `recommend` for a search domain. AISimulate does not consume AIC experiment YAML directly. |
@@ -253,7 +253,7 @@ only; they do not preserve that capacity-sizing behavior.
 
 ## SLA translation details
 
-Without `optimization.strict_sla`, a configured SLA classifies individual requests for goodput; a
+For text-only replay, without `optimization.strict_sla`, a configured SLA classifies individual requests for goodput; a
 slow request contributes no tokens to goodput but does not reject the whole candidate. With
 `strict_sla: true`, AISimulate also compares every configured bound with aggregate mean metrics and
 removes a violation before scalar ranking or Pareto analysis. Missing or non-finite aggregate metrics
@@ -266,9 +266,9 @@ For a fixed-output-length synthetic workload, `--request-latency` maps numerical
 mean_e2e_latency_ms = mean_ttft_ms + mean_tpot_ms * (output_tokens - 1)
 ```
 
-`e2e_ms` participates in request-level goodput, and `strict_sla: true` additionally filters aggregate
-mean E2E latency. AISimulate does not expose a separate aggregate-only E2E constraint that is excluded
-from request-level goodput.
+For text-only replay, `e2e_ms` participates in request-level goodput, and `strict_sla: true` additionally filters aggregate
+mean E2E latency. This path does not expose a separate aggregate-only E2E constraint that is excluded
+from request-level goodput. [Analytical EPD](../sweeper/epd.md) uses aggregate-mean SLA bounds only and does not report per-request goodput.
 
 ## Workflows that must remain on AIC
 
@@ -278,7 +278,7 @@ Continue using the compatibility command for:
 - deployment manifest generation and `--deployment-target` outputs;
 - exact AIC support-matrix checks;
 - AIC experiment YAML that has not been manually translated;
-- multimodal image-input and EPD modeling;
+- multimodal image-input and EPD workloads outside the documented [fixed synthetic-image analytical EPD scope](../sweeper/epd.md);
 - exact single-point FPM, static, AFD, per-op, detail, or power estimation;
 - heterogeneous P/D systems, backends, or versions;
 - AIC-specific database modes and expert estimator flags.
