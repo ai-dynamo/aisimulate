@@ -71,3 +71,102 @@ fn telemetry_only_timestamps_do_not_enter_the_agg_semantic_drain() {
         "telemetry-only heartbeats must not wake aggregate semantic replay work"
     );
 }
+
+struct MismatchedPlacement;
+
+impl PlacementPolicy<ReplayRequestPayload> for MismatchedPlacement {
+    type Metadata = NoReplayMetadata;
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        _request: &ReplayRequestPayload,
+        _metadata: Self::Metadata,
+        _session_id: Option<String>,
+        _now_ms: f64,
+    ) -> anyhow::Result<crate::replay::PlacementEffects> {
+        Ok(crate::replay::PlacementEffects {
+            decision: PlacementDecision::Immediate(Placement {
+                request_id: Uuid::from_u128(999),
+                scheduler_id: 0,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+                placement_replica_id: None,
+            }),
+            released: Vec::new(),
+        })
+    }
+
+    fn observe(&mut self, _: (), _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn cancel_pending(&mut self, _: Uuid) -> bool {
+        false
+    }
+
+    fn request_terminal(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn prefill_completed(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn pending_count(&self) -> usize {
+        0
+    }
+
+    fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+
+    fn topology_settled(&mut self, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn mismatched_placement_does_not_retain_arrival_or_offered_traffic() {
+    let role_factory = ReplayEngineFactory::new()
+        .role_factory(
+            &ReplayEngineConfig::default(),
+            WorkerStage::Aggregated,
+            false,
+        )
+        .unwrap();
+    let mut runtime =
+        AggRuntimeImpl::<MismatchedPlacement, NoEngineEvents, NoReplayMetadata>::new_composed(
+            role_factory,
+            AdmissionQueue::new_requests(VecDeque::new(), ReplayMode::Trace),
+            1,
+            None,
+            |_, _| Ok(MismatchedPlacement),
+        )
+        .unwrap()
+        .into_steppable();
+    let uuid = Uuid::from_u128(1);
+    let error = runtime.submit_dynamic(request(1, 0.0)).unwrap_err();
+    assert!(error.to_string().contains("while placing"), "{error}");
+    assert!(!runtime.collector.contains_request(uuid));
+    assert_eq!(runtime.traffic.drain_planner(1_000.0).num_req, 0);
+    assert!(runtime.requests.is_empty());
+    assert_eq!(runtime.cluster_in_flight(), 0);
+    assert!(runtime.cancel_dynamic(uuid).unwrap().is_none());
+    assert_eq!(
+        runtime
+            .take_report_dynamic(0.0)
+            .unwrap()
+            .request_counts
+            .num_requests,
+        0
+    );
+}

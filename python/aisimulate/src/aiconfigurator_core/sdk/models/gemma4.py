@@ -6,6 +6,7 @@ from __future__ import annotations
 import aiconfigurator_core.sdk.operations as ops
 from aiconfigurator_core.sdk import common
 from aiconfigurator_core.sdk.models.base import BaseModel, register_model
+from aiconfigurator_core.sdk.models.blocks.vit import build_gemma4_vision_encoder_ops
 from aiconfigurator_core.sdk.models.helpers import mtp_scale_factor, quant_exclude_patterns
 
 
@@ -116,10 +117,13 @@ class Gemma4MixModel(BaseModel):
         self._moe_inter_size = moe_inter_size
         self._mtp_scale_factor = mtp_scale_factor(self._nextn, self._num_layers)
         self._gemma4_config: common.Gemma4MixConfig | None = None
+        # These run during LM prefill but use one independent vision-token
+        # block per image, rather than the full text+vision sequence shape.
+        self.visual_context_ops: list = []
         self._power_law_alpha = 1.01
 
     def set_gemma4_config(self, cfg: common.Gemma4MixConfig) -> None:
-        """Apply Gemma4MixConfig and rebuild context/generation ops.
+        """Apply Gemma4MixConfig and rebuild text plus optional vision ops.
 
         Validates that ``layer_types`` length matches ``num_layers`` and contains only
         recognized values before accepting the config.
@@ -137,6 +141,45 @@ class Gemma4MixModel(BaseModel):
         self._gemma4_config = cfg
         self._build_context_ops()
         self._build_generation_ops()
+        self.visual_context_ops = []
+        self.encoder_ops = []
+        self.encoder_config = cfg.vision_config
+        if cfg.vision_config is not None:
+            # A language-only worker still attends to visual embeddings, but
+            # the vision tower itself is hosted on the encoder worker.
+            if not self.config.language_only:
+                self.encoder_ops.extend(
+                    build_gemma4_vision_encoder_ops(
+                        cfg.vision_config,
+                        self.config.tp_size,
+                        self.config.enable_encoder_dp,
+                    )
+                )
+            if cfg.use_bidirectional_vision_attention:
+                # The ordinary SWA ContextAttention already accounts for the
+                # causal half of each visual block. Gemma's blockwise overlay
+                # additionally unmasks the upper triangle for every SWA layer.
+                # BaseBackend supplies the per-image pooled length; the op
+                # scales Gemma's collected causal curve to the added pairs.
+                # Independent image blocks use an average layer split under CP;
+                # unlike the language path they do not use zigzag representative-rank sizing.
+                # The compiled kernel-only evaluator omits fused RoPE and KV
+                # writes already charged by the ordinary language graph.
+                # Mask source: Transformers commit
+                # cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55.
+                d = self._resolve_dims(self.config.tp_size)
+                self.visual_context_ops.append(
+                    ops.ContextAttention(
+                        "context_swa_visual_block_attention",
+                        self._count_layer_types()["swa"] / self.config.cp_size,
+                        self._num_heads // self.config.tp_size,
+                        d["swa_n_kv_per_gpu"],
+                        self.config.kvcache_quant_mode,
+                        self.config.fmha_quant_mode,
+                        window_size=cfg.sliding_window_size,
+                        head_size=cfg.swa_head_dim,
+                    )
+                )
         if self.config.cp_size > 1:
             # decode never runs CP. Route the generation MoEDispatch ops to their
             # decode-CP comm path (pre=0 / post=all_reduce) rather than prefill's

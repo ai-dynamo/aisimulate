@@ -738,6 +738,9 @@ impl WorkloadDriver {
                 node.max_output_tokens,
                 &mut output_rng,
             ));
+            // WorkloadDriver is deliberately model-neutral. Callers must define
+            // and report how source-model provenance is projected onto the
+            // configured execution timing model before handing the graph here.
             let deterministic_request_id = Uuid::from_u128(
                 u128::try_from(node_index)
                     .expect("usize always fits in u128")
@@ -1485,6 +1488,7 @@ mod tests {
                     .filter(|node_index| nodes[*node_index].dependencies.is_empty())
                     .collect(),
                 play_id,
+                source_play_ordinal: None,
                 nodes: node_indices,
             })
             .collect::<Vec<_>>();

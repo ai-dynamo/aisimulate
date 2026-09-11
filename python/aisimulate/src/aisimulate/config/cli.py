@@ -36,7 +36,7 @@ class CorePredictionConfig(StrictModel):
         source = self.traffic.source
         if (
             isinstance(source, TraceSource)
-            and source.format in {"mooncake-delta", "agentic_mooncake"}
+            and source.format in {"mooncake-delta", "agentic_mooncake", "weka"}
             and self.engine.mode != "aggregated"
         ):
             raise ValueError(f"{source.format} requires aggregated engine mode")
@@ -62,7 +62,7 @@ class CoreRecommendationConfig(StrictModel):
         modes = set(self.engine.mode.choices) if hasattr(self.engine.mode, "choices") else {self.engine.mode}
         if (
             isinstance(source, TraceSource)
-            and source.format in {"mooncake-delta", "agentic_mooncake"}
+            and source.format in {"mooncake-delta", "agentic_mooncake", "weka"}
             and "disaggregated" in modes
         ):
             raise ValueError(f"{source.format} requires aggregated engine mode")
