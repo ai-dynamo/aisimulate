@@ -3040,6 +3040,11 @@ where
     /// `worker_count()` counts active + starting-up + draining workers, so this
     /// captures the startup ramp and the scale-down drain tail.
     pub(crate) fn advance_now_ms(&mut self, new_now_ms: f64) {
+        debug_assert!(
+            new_now_ms.is_finite() && new_now_ms >= self.now_ms,
+            "the replay clock must not go backward or non-finite: {} -> {new_now_ms}",
+            self.now_ms
+        );
         let dt_ms = (new_now_ms - self.now_ms).max(0.0);
         if dt_ms > 0.0 {
             let prefill_worker_seconds = self.prefill_engine.worker_count() as f64 * dt_ms / 1000.0;
@@ -3047,7 +3052,10 @@ where
             self.collector
                 .add_worker_seconds(prefill_worker_seconds, decode_worker_seconds);
         }
-        self.now_ms = new_now_ms;
+        // The worker-seconds integral above only ever moves forward (guarded
+        // by the debug_assert), but clamp the clock itself too so a release
+        // build that hits a rewind stays flat instead of silently rewinding.
+        self.now_ms = self.now_ms.max(new_now_ms);
     }
 
     /// Advance to an observational heartbeat without waking semantic replay
