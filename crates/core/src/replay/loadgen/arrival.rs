@@ -227,13 +227,13 @@ mod tests {
             "a denormal smoothness must be refused, got: {error}"
         );
 
-        for timestamp in ArrivalSpec::GammaQps {
+        let ordinary = ArrivalSpec::GammaQps {
             qps: 10.0,
             smoothness: 0.5,
         }
         .timestamps(64, 42)
-        .expect("ordinary gamma parameters must remain accepted")
-        {
+        .expect("ordinary gamma parameters must remain accepted");
+        for timestamp in ordinary {
             assert!(timestamp.is_finite(), "emitted {timestamp}");
         }
     }
