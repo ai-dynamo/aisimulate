@@ -327,6 +327,44 @@ fn compatible_agentic_loader_preserves_legacy_rows_and_independent_plays() {
     assert_eq!(trace.nodes()[1].dependencies()[0].delay_ms, 16.0);
 }
 
+/// A negative authored `delay` must be rejected on its own, not netted out
+/// against `tool_wait_ms`.
+///
+/// Only the sum was validated, so `delay: -5.0` with `tool_wait_ms: 10.0` was
+/// accepted as 5.0 and every dependency edge from that row carried a delay the
+/// trace never authored. A larger negative did fail, but blamed the summed
+/// "dependency delay" rather than the field that was wrong.
+#[test]
+fn compatible_agentic_loader_rejects_a_negative_authored_delay() {
+    let row = |delay: f64| {
+        write_trace(&[
+            serde_json::json!({
+                "request_id": "r1", "timestamp": 0.0,
+                "input_length": 4, "output_length": 1, "hash_ids": [1]
+            }),
+            serde_json::json!({
+                "request_id": "r2", "wait_for": ["r1"],
+                "delay": delay, "tool_wait_ms": 10.0,
+                "input_length": 4, "output_length": 1, "hash_ids": [1]
+            }),
+        ])
+    };
+
+    // Previously absorbed into a 5.0 edge.
+    let file = row(-5.0);
+    let error = load_agentic_mooncake(file.path(), 4)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("delay must be finite and nonnegative"),
+        "the error must name the authored field, got: {error}"
+    );
+
+    let file = row(2.0);
+    let trace = load_agentic_mooncake(file.path(), 4).unwrap();
+    assert_eq!(trace.nodes()[1].dependencies()[0].delay_ms, 12.0);
+}
+
 #[test]
 fn compatible_agentic_loader_lowers_multi_root_join_to_one_typed_play() {
     let file = write_trace(&[

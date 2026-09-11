@@ -125,7 +125,19 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             if raw.delay.is_some() && raw.delay_ms.is_some() {
                 bail!("delay and delay_ms cannot both be set");
             }
-            let delay = raw.delay.or(raw.delay_ms).unwrap_or(0.0) + raw.tool_wait_ms;
+            // Validate the authored field in isolation, exactly as
+            // `tool_wait_ms` above is. Checking only the sum let a corrupt
+            // negative `delay` be netted out against an unrelated
+            // `tool_wait_ms`: `{"delay": -5.0, "tool_wait_ms": 10.0}` was
+            // silently accepted as 5.0, and every dependency edge built from
+            // the row carried a delay the trace never authored. A larger
+            // negative did fail, but blamed "dependency delay" -- the summed
+            // quantity -- rather than the field that was actually wrong.
+            let authored_delay = raw.delay.or(raw.delay_ms).unwrap_or(0.0);
+            if !authored_delay.is_finite() || authored_delay < 0.0 {
+                bail!("delay must be finite and nonnegative, got {authored_delay}");
+            }
+            let delay = authored_delay + raw.tool_wait_ms;
             if !delay.is_finite() || delay < 0.0 {
                 bail!("dependency delay must be finite and nonnegative");
             }
