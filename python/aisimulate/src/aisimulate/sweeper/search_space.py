@@ -30,7 +30,13 @@ from .afd_parallel import (
 from .config import SmartSearchConfig
 from .kv_estimate import NoPerfDatabase
 from .model_hw import ModelHardware, NoViableParallelConfig, parallel_configs_for, resolve_model_hardware
-from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+from .parallel_enum import (
+    DisaggParallelConfig,
+    ParallelShape,
+    PreparationBudget,
+    ReplicaParallelConfig,
+    RoleParallelCandidates,
+)
 from .replay import RunnerCapabilities
 
 
@@ -100,6 +106,7 @@ def _parallel_leaf_values(config: _ParallelConfig) -> dict[str, int]:
             f"{prefix}replicas": role.replicas,
             f"{prefix}tp": role.shape.tp,
             f"{prefix}pp": role.shape.pp,
+            f"{prefix}cp": role.shape.cp,
             f"{prefix}attention_dp": role.shape.dp,
             f"{prefix}moe_tp": role.shape.moe_tp,
             f"{prefix}moe_ep": role.shape.moe_ep,
@@ -146,6 +153,7 @@ def _shape_from_dict(d: dict[str, Any]) -> ParallelShape:
         moe_tp=int(d.get("moe_tp", 1)),
         moe_ep=int(d.get("moe_ep", 1)),
         pp=int(d.get("pp", 1)),
+        cp=int(d.get("cp", 1)),
     )
 
 
@@ -198,6 +206,11 @@ def _runner_supports_parallel_config(
         return True
     if isinstance(config, AFDParallelConfig):
         return config.companion is None or capabilities.supports_attention_dp("disagg", config.companion.shape.dp)
+    roles = (config,) if isinstance(config, ReplicaParallelConfig) else (config.prefill, config.decode)
+    if any(role.shape.pp > 1 for role in roles) and not capabilities.supports_pipeline_parallelism:
+        return False
+    if any(role.shape.cp > 1 for role in roles) and not capabilities.supports_context_parallelism:
+        return False
     if deployment_mode != "disagg":
         return True
     if not isinstance(config, DisaggParallelConfig):
@@ -430,11 +443,77 @@ def _afd_branch(
     )
 
 
+def _role_domain(ss, mode: str, role: str, preparation: PreparationBudget) -> RoleParallelCandidates | None:
+    """Resolve explicit SDK/public leaves without intersecting the default menu."""
+    from dataclasses import asdict
+    from itertools import product
+    from math import prod
+
+    defaults = RoleParallelCandidates()
+    mapping = {
+        "tp": "tp",
+        "pp": "pp",
+        "attention_dp": "dp",
+        "moe_tp": "moe_tp",
+        "moe_ep": "moe_ep",
+        "cp": "cp",
+        "workers": "num_workers",
+        "gpus_per_worker": "num_gpu",
+    }
+    values = asdict(defaults)
+    explicit = False
+    explicit_shape = False
+    for target, suffix in mapping.items():
+        choices = getattr(ss, f"{role}_{suffix}_candidates")
+        if choices is not None:
+            values[target] = tuple(choices)
+            explicit = True
+            explicit_shape |= target not in {"workers", "gpus_per_worker"}
+    prefix = "" if mode == "agg" else role + "_"
+    independent = ss.parallel_independent_by_mode.get(mode, {})
+    bounds = ss.parallel_independent_log_ranges_by_mode.get(mode, {})
+    for target in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "cp", "workers"):
+        key = prefix + ("replicas" if target == "workers" else target)
+        if key in bounds:
+            low, high = bounds[key]
+            preparation.reserve(high - low + 1, f"{mode}.{role}.integer_domain")
+            values[target] = range(low, high + 1)
+            explicit = True
+            explicit_shape |= target != "workers"
+        elif independent.get(key) is not None:
+            values[target] = tuple(independent[key])
+            explicit = True
+            explicit_shape |= target != "workers"
+    raw_pinned = ss.parallel_configs_by_mode.get(mode, ss.parallel_configs)
+    entries = (
+        [entry if mode == "agg" else entry[role] for entry in raw_pinned]
+        if raw_pinned
+        else ss.parallel_custom_configs_by_mode.get(mode, {}).get(role, [])
+    )
+    if entries:
+        explicit = True
+        for target in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "cp", "workers"):
+            key = "replicas" if target == "workers" else target
+            values[target] = tuple(dict.fromkeys(int(entry.get(key, 1)) for entry in entries))
+        values["gpus_per_worker"] = tuple(
+            dict.fromkeys(
+                int(e["tp"]) * int(e.get("pp", 1)) * int(e.get("attention_dp", 1)) * int(e.get("cp", 1))
+                for e in entries
+            )
+        )
+    elif explicit_shape and getattr(ss, f"{role}_num_gpu_candidates") is None:
+        dims = [values[key] for key in ("tp", "pp", "attention_dp", "cp")]
+        preparation.reserve(prod(map(len, dims)), f"{mode}.{role}.gpu_products")
+        values["gpus_per_worker"] = tuple(sorted({prod(v) for v in product(*dims) if prod(v) <= ss.gpu_budget}))
+    return RoleParallelCandidates(**values) if explicit else None
+
+
 def enumerate_branches(
     config: SmartSearchConfig,
     *,
     max_seq_len: int | None = None,
     runner_capabilities: RunnerCapabilities | None = None,
+    preparation: PreparationBudget | None = None,
 ) -> list[BranchSpace]:
     """One :class:`BranchSpace` per ``deployment_mode``. Within each, ``backend`` is a
     searched knob: the parallel-config domain is the **union** of every configured
@@ -448,6 +527,7 @@ def enumerate_branches(
     model's max context length).
     """
     ss = config.search_space
+    preparation = preparation or ss.new_preparation_budget()
     branches: list[BranchSpace] = []
     skipped: list[str] = []  # modes dropped because no backend was viable
     skip_warnings: list[str] = []
@@ -513,12 +593,36 @@ def enumerate_branches(
         def matches_custom(config: _ParallelConfig) -> bool:
             return all(_parallel_role(config, role) in choices for role, choices in custom_by_role.items())
 
+        domains = {
+            role: _role_domain(ss, deployment_mode, role, preparation)
+            for role in (("agg",) if deployment_mode == "agg" else ("prefill", "decode"))
+        }
+        expanded = any(domain is not None for domain in domains.values())
+        for role, domain in domains.items():
+            if (
+                domain is not None
+                and any(cp > 1 for cp in domain.cp)
+                and (
+                    ss.encoder is not None
+                    or getattr(ss, f"{role}_native_host_offload") is not None
+                    or ss.kv_transfer_bytes_per_token is not None
+                )
+            ):
+                raise ValueError(
+                    "context parallelism with encoder, host offload or KV transfer geometry is not supported"
+                )
+        domain_kwargs = {f"{role}_candidates": domain for role, domain in domains.items() if domain is not None}
+        for name in ("num_gpu_per_replica", "max_gpu_per_replica", "max_prefill_workers", "max_decode_workers"):
+            if getattr(ss, name) is not None:
+                domain_kwargs[name] = getattr(ss, name)
+        domain_kwargs["preparation"] = preparation
         support: dict[_ParallelConfig, set[str]] = {}
         runner_incompatible = list(runner_incompatibilities[deployment_mode])
         for backend in unique_backends:
             if runner_capabilities is not None and not runner_capabilities.supports_backend_topology(
                 backend, deployment_mode
             ):
+                preparation.record(f"{deployment_mode}.{backend}.runner", "backend_incompatible")
                 continue
             try:
                 legal = parallel_configs_for(
@@ -531,17 +635,26 @@ def enumerate_branches(
                     min_gpu_budget=ss.min_gpu_budget,
                     max_seq_len=max_seq_len,
                     role_runtime=_runtime_by_role(ss, backend, deployment_mode),
+                    **domain_kwargs,
                 )
-            except (NoPerfDatabase, NoViableParallelConfig):
+            except (NoPerfDatabase, NoViableParallelConfig) as exc:
+                preparation.record(f"{deployment_mode}.{backend}.availability", type(exc).__name__)
                 continue  # backend unusable for this mode -> drop it from the search
+            before_runner = len(legal)
             legal = [
                 cfg for cfg in legal if _runner_supports_parallel_config(runner_capabilities, deployment_mode, cfg)
             ]
+            preparation.record(
+                f"{deployment_mode}.{backend}.runner", "topology_incompatible", before_runner - len(legal)
+            )
             if custom_by_role:
+                before_custom = len(legal)
                 legal = [cfg for cfg in legal if matches_custom(cfg)]
+                preparation.record(f"{deployment_mode}.{backend}.custom", "rejected", before_custom - len(legal))
             legal_set = set(legal)
             for cfg in pinned if pinned is not None else legal:
                 if cfg in legal_set:
+                    preparation.check_size(len(support) + (cfg not in support), deployment_mode + ".union")
                     support.setdefault(cfg, set()).add(backend)
 
         if not support:
@@ -577,6 +690,7 @@ def enumerate_branches(
                     )
                 )
 
+        preparation.record(deployment_mode + ".union", "accepted", len(support))
         knob_choices = branch_knob_choices(ss, deployment_mode)
         viable_backends = set().union(*support.values())
         knob_choices["backend"] = [backend for backend in dict.fromkeys(ss.backend) if backend in viable_backends]
@@ -630,7 +744,10 @@ def enumerate_branches(
                 log_float_ranges=frozenset(log_float_ranges),
                 log_integer_ranges=frozenset(log_integer_ranges),
                 log_discrete_choices=frozenset(log_discrete_choices),
-                flat_parallel_choices=deployment_mode in ss.flat_parallel_modes,
+                flat_parallel_choices=(
+                    deployment_mode in ss.flat_parallel_modes
+                    or (expanded and not ss.parallel_independent_by_mode.get(deployment_mode) and not custom_by_role)
+                ),
                 parallel_independent_choices={
                     name: tuple(
                         sorted(

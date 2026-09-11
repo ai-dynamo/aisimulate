@@ -207,10 +207,12 @@ class SweepRunProvenance(BaseModel):
     created_at: datetime
     input_fingerprint: str
     config: dict[str, JsonValue]
+    search_domain: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _require_json_config(self) -> SweepRunProvenance:
         validate_json_value(self.config, path="result provenance config")
+        validate_json_value(self.search_domain, path="result search domain")
         return self
 
 

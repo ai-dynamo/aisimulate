@@ -37,11 +37,13 @@ def build_model_config(
     forward_model: str | None = None,
     enable_encoder_dp: bool = True,
     attention_backend: str | None = None,
+    cp_size: int = 1,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
     return ModelConfig(
         tp_size=tp_size,
         pp_size=pp_size,
+        cp_size=cp_size,
         attention_dp_size=attention_dp_size,
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,

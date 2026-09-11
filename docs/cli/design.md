@@ -180,36 +180,46 @@ parallelism:
 ```
 
 The built-in default follows the existing Sweeper projection algorithm below. It does not expose the
-six YAML leaves as six independent optimizer parameters.
+seven YAML leaves as seven independent optimizer parameters.
 
 First, the Sweeper builds the legal configuration pool for each deployment-mode branch. It enumerates
-worker sizes from the current `1, 2, 4, 8, 16` GPU ladder, with pipeline parallelism fixed at `1`, then
-enumerates legal tensor, attention-data, MoE-tensor, and MoE-expert shapes. It applies model-width,
+worker sizes from the current `1, 2, 4, 8, 16` GPU ladder, with pipeline and context parallelism
+defaulting to `1`, then enumerates legal tensor, attention-data, MoE-tensor, and MoE-expert shapes. It applies model-width,
 backend, real-silicon, KV-capacity, GPU-budget, and runner-capability filters. For every surviving
 worker shape, it enumerates positive replica counts that fit the budget. A disaggregated pool contains
 prefill/decode pairs whose combined GPU count fits the same budget. Aggregated and disaggregated modes
 use separate optimizer studies; backend remains a categorical parameter within each study.
+
+Explicit domains or complete mappings can request PP/CP values above one. These values reach AIC
+analytical timing, KV estimation, and GPU accounting; backend qualification of replay latency and
+throughput remains outstanding. Replay does not schedule individual pipeline stages or microbatches.
+CP above one is restricted to SGLang model families with AIC CP modeling, aggregated or prefill roles,
+and `tensor = attention_data = 1`. CP with a decode role, encoder, AFD, host offload, or custom
+KV-transfer geometry is rejected. See the [migration cases](migrate-from-aiconfigurator.md#migrate-parallelism-and-worker-count-domains)
+for explicit domains and these qualification limits.
 
 Second, each complete mapping is encoded into a smaller latent search space:
 
 | Deployment | Latent Parameter | Optimizer Type | Encoding |
 |---|---|---|---|
 | Both | `used_gpu_ratio` | Continuous float | Total GPUs divided by the branch GPU budget; range is the minimum and maximum ratio in the legal pool, default clamped from `1.0`. |
-| Aggregated | `agg_num_gpus_per_engine_target` | Log-scale discrete | GPUs per worker, `tensor * pipeline * attention_data`; feasible values come from the legal pool and the default is the pool value nearest its geometric midpoint. |
-| Aggregated | `agg_attention_mode` | Categorical | `tp` when attention data parallelism is `1`, otherwise `dp`. |
+| Aggregated | `agg_num_gpus_per_engine_target` | Log-scale discrete | GPUs per worker, `tensor * pipeline * attention_data * context`; feasible values come from the legal pool and the default is the pool value nearest its geometric midpoint. |
+| Aggregated | `agg_pipeline_stages` | Log-scale discrete | Pipeline degree when the pool contains PP above one; distinguishes equal-GPU layouts with different PP. |
+| Aggregated | `agg_attention_mode` | Categorical | `cp` when context parallelism exceeds `1`, otherwise `dp` when attention data parallelism exceeds `1`, otherwise `tp`. |
 | Aggregated MoE | `agg_ffn_mode` | Categorical | `ep` when MoE expert parallelism is greater than `1`, otherwise `tp`. |
 | Disaggregated | `prefill_gpu_share` | Continuous float | Prefill-pool GPUs divided by total candidate GPUs; range comes from the legal pool, default clamped from `0.5`. |
 | Disaggregated | `prefill_num_gpus_per_engine_target` | Log-scale discrete | Prefill GPUs per worker. |
 | Disaggregated | `decode_num_gpus_per_engine_target` | Log-scale discrete | Decode GPUs per worker. |
-| Disaggregated | `prefill_attention_mode`, `decode_attention_mode` | Categorical | Per-role `tp` or `dp`. |
+| Disaggregated | `prefill_pipeline_stages`, `decode_pipeline_stages` | Log-scale discrete | Per-role pipeline degree when the pool contains PP above one. |
+| Disaggregated | `prefill_attention_mode`, `decode_attention_mode` | Categorical | Per-role `tp`, `dp`, or `cp`, subject to role capabilities. |
 | Disaggregated MoE | `prefill_ffn_mode`, `decode_ffn_mode` | Categorical | Per-role `ep` or `tp`. |
 
 The latent parameter names retain the existing Sweeper's `engine` wording; in this public schema,
 `num_gpus_per_engine_target` means GPUs per worker.
 
 Only `used_gpu_ratio` and, for disaggregated mode, `prefill_gpu_share` are continuous parallelism
-parameters. GPUs per worker are discrete values sampled on a log scale; attention and FFN modes are
-categorical. Replica count is not sampled directly: together, total GPU ratio and GPUs-per-worker
+parameters. GPUs per worker and pipeline degrees are discrete values sampled on a log scale;
+attention and FFN modes are categorical. Replica count is not sampled directly: together, total GPU ratio and GPUs-per-worker
 targets express the desired replica footprint. Constant latent parameters are omitted from the study
 and injected at their defaults.
 
@@ -219,18 +229,18 @@ Third, every optimizer suggestion is snapped back to one complete mapping from t
 2. Count categorical mismatches for attention and FFN modes, and retain only mappings with the minimum
    mismatch count. An exact mode match wins whenever one exists.
 3. Compute normalized squared distance over the numeric latent parameters. Ratios use linear values;
-   each GPUs-per-worker target uses `log2`. Each dimension is normalized by its backend-compatible
-   minimum-to-maximum span, and a constant dimension contributes zero:
+   each GPUs-per-worker target and pipeline degree uses `log2`. Each dimension is normalized by its
+   backend-compatible minimum-to-maximum span, and a constant dimension contributes zero:
 
    ```text
    distance = sum(((transform(actual) - transform(requested)) / span) ^ 2)
    ```
 
 4. Select the mapping with minimum distance. Ties are deterministic: compare
-   `(tensor, pipeline, attention_data, moe_tensor, moe_expert, replicas)` for aggregated mode, or the
-   concatenated prefill tuple followed by the decode tuple for disaggregated mode.
+   `(tensor, pipeline, attention_data, moe_tensor, moe_expert, context, replicas)` for aggregated mode,
+   or the concatenated prefill tuple followed by the decode tuple for disaggregated mode.
 
-The selected mapping supplies the concrete six YAML fields. Trial metadata records requested latent
+The selected mapping supplies the concrete seven YAML fields. Trial metadata records requested latent
 features, actual snapped features, projection distance, whether a categorical mode was projected, and
 the final complete parallel configuration.
 
@@ -239,8 +249,8 @@ A user-provided preset is a list of complete parallelism mappings:
 ```yaml
 parallelism:
   preset:
-    - {replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
-    - {replicas: 2, tensor: 2, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+    - {replicas: 1, tensor: 1, pipeline: 1, context: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+    - {replicas: 2, tensor: 2, pipeline: 1, context: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
 ```
 
 Unlike the built-in default preset, this list is kept flat: each complete mapping is one categorical
@@ -254,8 +264,10 @@ parallelism:
   tensor: {choices: [1, 2, 4, 8]}
 ```
 
-Omitted parallelism knobs then use their table-defined default ranges, and the Sweeper evaluates the
-Cartesian product before feasibility filtering.
+Omitted parallelism knobs then use their table-defined default ranges, with PP=CP=1 unless supplied.
+The Sweeper bounds preparation work before expanding and filtering the Cartesian product; oversized
+domains fail rather than being silently truncated. Existing optimizer selection and trial limits still
+determine which legal configurations are evaluated.
 
 ### Override Semantics
 
@@ -606,6 +618,7 @@ engine:
         replicas: 2
         tensor: 1
         pipeline: 1
+        context: 1
         attention_data: 1
         moe_tensor: 1
         moe_expert: 1
@@ -647,7 +660,8 @@ engine:
 | `engine.workers.<role>.parallelism.preset` | `default` in `recommend` | `auto` | `-` | Generated default space, complete mapping list, `false`, or `{}`. |
 | `engine.workers.<role>.parallelism.replicas` | `1` | Feasible positive values within GPU budget | `parallelism` | Positive. |
 | `engine.workers.<role>.parallelism.tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
-| `engine.workers.<role>.parallelism.pipeline` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
+| `engine.workers.<role>.parallelism.pipeline` | `1` | `[1]` | `parallelism` | Positive; larger explicit values require model/backend/runner compatibility. Analytical timing only; replay qualification remains outstanding. |
+| `engine.workers.<role>.parallelism.context` | `1` | `[1]` | `parallelism` | Positive; larger explicit values require the CP restrictions above. Omitted values, including in legacy complete mappings, default to `1`. |
 | `engine.workers.<role>.parallelism.attention_data` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.parallelism.moe_tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.parallelism.moe_expert` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
@@ -701,7 +715,7 @@ engine:
     timing_mode: destination_missing
   workers:
     prefill:
-      parallelism: {replicas: 2, tensor: 2, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+      parallelism: {replicas: 2, tensor: 2, pipeline: 1, context: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
       scheduler: {max_batched_tokens: 8192, max_sequences: 64}
       kv_cache:
         block_size: 64
@@ -711,7 +725,7 @@ engine:
       timing: {type: default}
       startup_seconds: 0
     decode:
-      parallelism: {replicas: 4, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+      parallelism: {replicas: 4, tensor: 1, pipeline: 1, context: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
       scheduler: {max_batched_tokens: 8192, max_sequences: 256}
       kv_cache:
         block_size: 64
@@ -760,7 +774,7 @@ the caller-provided CUDA graph reservation.
 The physical GPU count of a worker role is:
 
 ```text
-parallelism.replicas * parallelism.tensor * parallelism.pipeline * parallelism.attention_data
+parallelism.replicas * parallelism.tensor * parallelism.pipeline * parallelism.attention_data * parallelism.context
 ```
 
 `moe_tensor` and `moe_expert` describe partitioning within that physical shape and do not multiply
@@ -791,7 +805,7 @@ engine:
   context_length: 4096
   workers:
     aggregated:
-      parallelism: {replicas: 1, tensor: 1, pipeline: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
+      parallelism: {replicas: 1, tensor: 1, pipeline: 1, context: 1, attention_data: 1, moe_tensor: 1, moe_expert: 1}
       scheduler: {max_batched_tokens: 8192, max_sequences: 16}
       kv_cache:
         block_size: 16
@@ -1057,6 +1071,7 @@ engine:
         replicas: 2
         tensor: 1
         pipeline: 1
+        context: 1
         attention_data: 1
         moe_tensor: 1
         moe_expert: 1

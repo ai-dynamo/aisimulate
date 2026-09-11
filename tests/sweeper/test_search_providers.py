@@ -240,7 +240,7 @@ def _stub_branch(monkeypatch) -> None:
     monkeypatch.setattr(
         search_module,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, preparation=None: [branch],
     )
     monkeypatch.setattr(
         search_module,

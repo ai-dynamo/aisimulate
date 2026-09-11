@@ -382,6 +382,7 @@ def compile_engine(
     *,
     tp_size: int = 1,
     pp_size: int = 1,
+    cp_size: int = 1,
     attention_dp_size: int = 1,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
@@ -415,6 +416,7 @@ def compile_engine(
     model_config = build_model_config(
         tp_size=tp_size,
         pp_size=pp_size,
+        cp_size=cp_size,
         attention_dp_size=attention_dp_size,
         moe_tp_size=resolved_moe_tp,
         moe_ep_size=resolved_moe_ep,

@@ -74,7 +74,7 @@ def test_native_and_ergonomic_fpm_classes_are_deliberately_distinct() -> None:
 def test_stable_function_signatures() -> None:
     assert str(inspect.signature(compile_engine)) == (
         "(model_path: 'str', system: 'str', backend: 'str', backend_version: 'str | None' = None, *, "
-        "tp_size: 'int' = 1, pp_size: 'int' = 1, attention_dp_size: 'int' = 1, "
+        "tp_size: 'int' = 1, pp_size: 'int' = 1, cp_size: 'int' = 1, attention_dp_size: 'int' = 1, "
         "moe_tp_size: 'int | None' = None, moe_ep_size: 'int | None' = None, "
         "gemm_quant_mode: 'str | None' = None, moe_quant_mode: 'str | None' = None, "
         "kvcache_quant_mode: 'str | None' = None, fmha_quant_mode: 'str | None' = None, "
@@ -87,6 +87,10 @@ def test_stable_function_signatures() -> None:
         "transfer_policy: 'str | list[str] | None' = None, "
         "strict_provenance: 'bool | None' = None) -> 'bytes'"
     )
+    for function in (compile_engine, estimate_kv_cache, estimate_num_gpu_blocks):
+        cp = inspect.signature(function).parameters["cp_size"]
+        assert cp.kind is inspect.Parameter.KEYWORD_ONLY
+        assert cp.default == 1
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters
     assert str(inspect.signature(RustForwardPassPerfModel.from_regression)) == (

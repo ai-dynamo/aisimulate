@@ -1071,10 +1071,12 @@ class Sweeper:
 
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
+        preparation = config.search_space.new_preparation_budget()
         branches = enumerate_branches(
             config,
             max_seq_len=config.search_space.context_length,
             runner_capabilities=capabilities,
+            preparation=preparation,
         )
         if encoder_catalog is not None:
             branches = add_encoder_choices(branches, encoder_catalog)
@@ -1651,5 +1653,5 @@ class Sweeper:
                 config,
                 search_strategy=SearchStrategy.OPTIMIZER_GUIDED,
                 run_id=run_id,
-            ),
+            ).model_copy(update={"search_domain": preparation.as_dict()}),
         )

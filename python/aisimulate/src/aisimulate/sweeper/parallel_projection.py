@@ -38,7 +38,7 @@ PREFILL_FFN_MODE = "prefill_ffn_mode"
 DECODE_FFN_MODE = "decode_ffn_mode"
 PARALLEL_CONFIG_CHOICE = "parallel_config_choice"
 
-_ATTENTION_MODE_ORDER = ("tp", "dp")
+_ATTENTION_MODE_ORDER = ("tp", "dp", "cp")
 _FFN_MODE_ORDER = ("ep", "tp")
 
 
@@ -102,8 +102,8 @@ def _parallel_role(config: ParallelConfig, role: str) -> ReplicaParallelConfig:
 
 
 def _attention_mode(shape: ParallelShape) -> str:
-    # The enumerator emits pure attention TP or DP.  G=1 is canonicalized as TP.
-    return "dp" if shape.dp > 1 else "tp"
+    # The enumerator emits pure attention TP, DP or CP. G=1 is canonicalized as TP.
+    return "cp" if shape.cp > 1 else "dp" if shape.dp > 1 else "tp"
 
 
 def _ffn_mode(shape: ParallelShape) -> str:
@@ -114,7 +114,7 @@ def _ffn_mode(shape: ParallelShape) -> str:
 def _config_key(config: ParallelConfig) -> tuple[int, ...]:
     def role_key(role: ReplicaParallelConfig) -> tuple[int, ...]:
         shape = role.shape
-        return (shape.tp, shape.pp, shape.dp, shape.moe_tp, shape.moe_ep, role.replicas)
+        return (shape.tp, shape.pp, shape.dp, shape.moe_tp, shape.moe_ep, shape.cp, role.replicas)
 
     if isinstance(config, ReplicaParallelConfig):
         return role_key(config)
@@ -156,6 +156,7 @@ class ParallelConfigProjector:
         self.is_moe = any(
             shape.moe_tp > 1 or shape.moe_ep > 1 for config in branch.parallel_configs for shape in _all_shapes(config)
         )
+        self.has_pipeline = any(shape.pp > 1 for config in branch.parallel_configs for shape in _all_shapes(config))
         self._features = {config: self._encode(config) for config in branch.parallel_configs}
         self.parameters = self._build_parameters()
         self.constants = {parameter.name: parameter.default for parameter in self.parameters if parameter.is_constant}
@@ -165,6 +166,8 @@ class ParallelConfigProjector:
             f"{prefix}_num_gpus_per_engine_target": float(role.shape.gpus_per_worker),
             f"{prefix}_attention_mode": _attention_mode(role.shape),
         }
+        if self.has_pipeline:
+            features[f"{prefix}_pipeline_stages"] = float(role.shape.pp)
         if self.is_moe:
             features[f"{prefix}_ffn_mode"] = _ffn_mode(role.shape)
         return features
@@ -288,6 +291,8 @@ class ParallelConfigProjector:
                     ),
                 ]
             )
+            if self.has_pipeline:
+                parameters.append(self._discrete_parameter(f"{role}_pipeline_stages"))
             if self.is_moe:
                 parameters.append(
                     self._categorical_parameter(
@@ -320,6 +325,8 @@ class ParallelConfigProjector:
                     self._categorical_parameter(AGG_ATTENTION_MODE, _ATTENTION_MODE_ORDER),
                 ]
             )
+            if self.has_pipeline:
+                parameters.append(self._discrete_parameter("agg_pipeline_stages"))
             if self.is_moe:
                 parameters.append(self._categorical_parameter(AGG_FFN_MODE, _FFN_MODE_ORDER))
             return tuple(parameters)
@@ -333,6 +340,8 @@ class ParallelConfigProjector:
                 self._categorical_parameter(DECODE_ATTENTION_MODE, _ATTENTION_MODE_ORDER),
             ]
         )
+        if self.has_pipeline:
+            parameters.extend(self._discrete_parameter(f"{role}_pipeline_stages") for role in ("prefill", "decode"))
         if self.is_moe:
             parameters.extend(
                 [
@@ -374,6 +383,7 @@ class ParallelConfigProjector:
                         pp=round(float(requested[f"{prefix}pp"])),
                         dp=round(float(requested[f"{prefix}attention_dp"])),
                         moe_tp=round(float(requested[f"{prefix}moe_tp"])),
+                        cp=round(float(requested.get(f"{prefix}cp", 1))),
                         moe_ep=round(float(requested[f"{prefix}moe_ep"])),
                     ),
                     replicas=round(float(requested[f"{prefix}replicas"])),
@@ -420,6 +430,7 @@ class ParallelConfigProjector:
                         pp=round(float(requested[f"{prefix}pp"])),
                         dp=round(float(requested[f"{prefix}attention_dp"])),
                         moe_tp=round(float(requested[f"{prefix}moe_tp"])),
+                        cp=round(float(requested.get(f"{prefix}cp", 1))),
                         moe_ep=round(float(requested[f"{prefix}moe_ep"])),
                     ),
                     replicas=round(float(requested[f"{prefix}replicas"])),

@@ -127,6 +127,8 @@ struct AicTimingConfig {
     #[serde(default = "one")]
     pp: u32,
     #[serde(default = "one")]
+    cp_size: u32,
+    #[serde(default = "one")]
     attention_dp: u32,
     #[serde(default)]
     moe_tp_size: Option<u32>,
@@ -204,10 +206,11 @@ impl AicTimingConfig {
         ensure!(
             self.tp > 0
                 && self.pp > 0
+                && self.cp_size > 0
                 && self.attention_dp > 0
                 && self.moe_tp_size != Some(0)
                 && self.moe_ep_size != Some(0),
-            "AIC timing parallel sizes tp, pp, attention_dp, moe_tp_size, and \
+            "AIC timing parallel sizes tp, pp, cp_size, attention_dp, moe_tp_size, and \
              moe_ep_size must be positive"
         );
         ensure!(self.nextn <= 5, "AIC nextn must be in 0..=5");
@@ -217,9 +220,9 @@ impl AicTimingConfig {
         );
         if let (Some(moe_tp), Some(moe_ep)) = (self.moe_tp_size, self.moe_ep_size) {
             ensure!(
-                u64::from(self.tp) * u64::from(self.attention_dp)
-                    == u64::from(moe_tp) * u64::from(moe_ep),
-                "AIC topology requires tp * attention_dp == moe_tp_size * moe_ep_size"
+                u128::from(self.tp) * u128::from(self.attention_dp) * u128::from(self.cp_size)
+                    == u128::from(moe_tp) * u128::from(moe_ep),
+                "AIC topology requires tp * attention_dp * cp_size == moe_tp_size * moe_ep_size"
             );
         }
         Ok(())
@@ -261,6 +264,7 @@ impl AicTimingModel {
             kwargs.set_item("backend_version", config.resolved_backend_version())?;
             kwargs.set_item("tp_size", config.tp)?;
             kwargs.set_item("pp_size", config.pp)?;
+            kwargs.set_item("cp_size", config.cp_size)?;
             kwargs.set_item("attention_dp_size", config.attention_dp)?;
             kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
             kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
@@ -383,6 +387,7 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("memory_fraction_value", memory_fraction_value)?;
         kwargs.set_item("tp_size", config.tp)?;
         kwargs.set_item("pp_size", config.pp)?;
+        kwargs.set_item("cp_size", config.cp_size)?;
         kwargs.set_item("attention_dp_size", config.attention_dp)?;
         kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
         kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
@@ -420,6 +425,10 @@ fn materialize_aic_capacity(
     estimate: impl FnOnce(&AicTimingConfig, &ReplayRoleConfig) -> Result<usize>,
 ) -> Result<()> {
     config.validate_parallel_shape()?;
+    ensure!(
+        config.pp == role.pipeline_parallel_size && config.cp_size == role.context_parallel_size,
+        "AIC PP/CP does not match replay topology"
+    );
     let engine_backend = match role.rank.backend {
         Backend::Vllm => "vllm",
         Backend::Sglang => "sglang",
@@ -489,6 +498,8 @@ fn aggregated_role(engine: &ReplayEngineConfig) -> ReplayRoleConfig {
     ReplayRoleConfig {
         dp_size: engine.dp_size,
         tensor_parallel_size: engine.tensor_parallel_size,
+        pipeline_parallel_size: engine.pipeline_parallel_size,
+        context_parallel_size: engine.context_parallel_size,
         num_gpu_blocks_is_explicit: engine.num_gpu_blocks_is_explicit,
         rank: engine.rank.clone(),
     }
@@ -948,6 +959,8 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             let timing = resolve_role_timing(&mut role, capacity_is_explicit)?;
             engine_config.dp_size = role.dp_size;
             engine_config.tensor_parallel_size = role.tensor_parallel_size;
+            engine_config.pipeline_parallel_size = role.pipeline_parallel_size;
+            engine_config.context_parallel_size = role.context_parallel_size;
             engine_config.num_gpu_blocks_is_explicit = role.num_gpu_blocks_is_explicit;
             engine_config.rank = role.rank;
             if let Some(traffic) = traffic.as_mut()
@@ -957,6 +970,8 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                     &ReplayRoleConfig {
                         dp_size: engine_config.dp_size,
                         tensor_parallel_size: engine_config.tensor_parallel_size,
+                        pipeline_parallel_size: engine_config.pipeline_parallel_size,
+                        context_parallel_size: engine_config.context_parallel_size,
                         num_gpu_blocks_is_explicit: engine_config.num_gpu_blocks_is_explicit,
                         rank: engine_config.rank.clone(),
                     },
@@ -1174,6 +1189,7 @@ mod tests {
             tp: 1,
             backend_version: None,
             pp: 1,
+            cp_size: 1,
             attention_dp: 1,
             moe_tp_size: None,
             moe_ep_size: None,

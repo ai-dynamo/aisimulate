@@ -79,6 +79,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
 _AIC_TIMING_FIELD_ALIASES = {
     "backend_version": ("backend_version", "aic_backend_version"),
     "pp": ("aic_pp_size",),
+    "cp_size": ("aic_cp_size",),
     "moe_tp_size": ("moe_tp_size", "aic_moe_tp_size"),
     "moe_ep_size": ("moe_ep_size", "aic_moe_ep_size"),
     "gemm_dtype": ("gemm_dtype", "aic_gemm_dtype"),
@@ -268,6 +269,8 @@ class EngineReplayRunnerFactory:
             replay_spec_api_version=1,
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
+            supports_pipeline_parallelism=True,
+            supports_context_parallelism=True,
             supports_analytical_epd=True,
             supported_trace_formats=(
                 "mooncake",
@@ -1208,7 +1211,7 @@ def _materialize_engine_role(
         if not configured:
             continue
         value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
+        if target in {"pp", "cp_size", "moe_tp_size", "moe_ep_size"}:
             value = _positive_int(value, f"engine provider {role} {target}")
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")
@@ -1219,6 +1222,20 @@ def _materialize_engine_role(
         aic_timing_overrides[target] = value
 
     timing_model = rank.get("timing_model")
+    existing_timing = timing_model.get("config", {}) if isinstance(timing_model, dict) else {}
+    if not isinstance(existing_timing, dict):
+        raise ValueError("timing_model.config must be a mapping")
+    pp_size = _positive_int(aic_timing_overrides.get("pp", existing_timing.get("pp", 1)), "pipeline parallel")
+    cp_size = _positive_int(aic_timing_overrides.get("cp_size", existing_timing.get("cp_size", 1)), "context parallel")
+    _require_parallel_match(parallel_config, f"{parallel_prefix}pp", pp_size, f"{role} pipeline parallel")
+    _require_parallel_match(parallel_config, f"{parallel_prefix}cp", cp_size, f"{role} context parallel")
+    if cp_size > 1 and (backend != "sglang" or role == "decode" or tensor_parallel_size > 1 or dp_size > 1):
+        raise ValueError("context parallelism requires SGLang prefill/aggregated with TP=DP=1")
+    if cp_size > 1 and any(
+        rank.get(name) is not None
+        for name in ("native_host_offload", "kv_cache_bytes_per_token", "kv_transfer_bytes_per_token")
+    ):
+        raise ValueError("context parallelism with host offload or custom KV geometry is not supported")
     uses_aic_timing = timing_model is None or (
         isinstance(timing_model, dict)
         and timing_model.get("type") == "external"
@@ -1356,6 +1373,8 @@ def _materialize_engine_role(
     return {
         "dp_size": dp_size,
         "tensor_parallel_size": tensor_parallel_size,
+        **({"pipeline_parallel_size": pp_size} if pp_size != 1 else {}),
+        **({"context_parallel_size": cp_size} if cp_size != 1 else {}),
         "num_gpu_blocks_is_explicit": num_gpu_blocks_is_explicit,
         "rank": rank,
     }

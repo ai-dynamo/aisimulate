@@ -27,6 +27,8 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
         "system": sample["hardware_sku"],
         "model_path": sample["model_name"],
         "tp_size": int(sample[f"{prefix}tp"]),
+        **({"pp_size": int(sample[f"{prefix}pp"])} if sample[f"{prefix}pp"] != 1 else {}),
+        **({"cp_size": int(sample[f"{prefix}cp"])} if sample.get(f"{prefix}cp", 1) != 1 else {}),
         "attention_dp_size": int(sample[f"{prefix}attention_dp"]),
         "moe_tp_size": moe_tp if moe_tp * moe_ep > 1 else None,
         "moe_ep_size": moe_ep if moe_tp * moe_ep > 1 else None,
@@ -67,6 +69,8 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         "aic_system": sample["hardware_sku"],
         "aic_model_path": sample["model_name"],
         "aic_tp_size": tp,
+        **({"aic_pp_size": int(sample[f"{prefix}pp"])} if sample[f"{prefix}pp"] != 1 else {}),
+        **({"aic_cp_size": int(sample[f"{prefix}cp"])} if sample.get(f"{prefix}cp", 1) != 1 else {}),
         "aic_attention_dp_size": attention_dp,
         "max_num_batched_tokens": int(sample[f"{role}_max_num_batched_tokens"]),
         "max_num_seqs": int(sample[f"{role}_max_num_seqs"]),
@@ -107,6 +111,10 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         ):
             payload.pop(name, None)
     host_offload = sample.get(f"{role}_native_host_offload")
+    if int(sample.get(f"{prefix}cp", 1)) > 1 and (
+        host_offload is not None or sample.get("kv_transfer_bytes_per_token") is not None
+    ):
+        raise ValueError("context parallelism with host offload or KV transfer geometry is not supported")
     if host_offload is not None:
         configured_bytes = sample[f"{role}_kv_bytes_per_token"]
         payload["kv_cache_bytes_per_token"] = (
@@ -180,8 +188,9 @@ def build_backend_deployment(
         if companion_role not in {"prefill", "decode"}:
             raise ValueError("afd+pd requires one prefill or decode companion")
         prefix = f"{companion_role}_"
-        for suffix in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "strategy", "replicas"):
-            parallel_config[f"{prefix}{suffix}"] = sample[f"{prefix}{suffix}"]
+        for suffix in ("tp", "pp", "cp", "attention_dp", "moe_tp", "moe_ep", "strategy", "replicas"):
+            if f"{prefix}{suffix}" in sample:
+                parallel_config[f"{prefix}{suffix}"] = sample[f"{prefix}{suffix}"]
         performance_model_metadata[companion_role] = _performance_model_metadata(
             sample, companion_role, backend_version=backend_version
         )
@@ -210,6 +219,7 @@ def build_backend_deployment(
             in {
                 "tp",
                 "pp",
+                "cp",
                 "attention_dp",
                 "moe_tp",
                 "moe_ep",
@@ -217,6 +227,7 @@ def build_backend_deployment(
                 "replicas",
                 "prefill_tp",
                 "prefill_pp",
+                "prefill_cp",
                 "prefill_attention_dp",
                 "prefill_moe_tp",
                 "prefill_moe_ep",
@@ -224,6 +235,7 @@ def build_backend_deployment(
                 "prefill_replicas",
                 "decode_tp",
                 "decode_pp",
+                "decode_cp",
                 "decode_attention_dp",
                 "decode_moe_tp",
                 "decode_moe_ep",

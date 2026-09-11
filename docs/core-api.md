@@ -80,6 +80,23 @@ unavailable. An empty operation list returns an empty list. Both
 method; `EngineHandle` provides an annotated SDK wrapper with the same query
 options.
 
+## Parallelism parameters
+
+`compile_engine`, `EngineHandle.compile`, `estimate_kv_cache`, and
+`estimate_num_gpu_blocks` accept keyword-only `cp_size=1` alongside `tp_size`,
+`pp_size`, and `attention_dp_size`. The CP value reaches model construction and
+native KV estimation; omitting it preserves CP=1 behavior. A failed native
+estimate with CP above one raises even when `allow_naive_fallback=True`, because
+the naive estimator does not model CP geometry.
+
+Replay descriptors carry `pipeline_parallel_size` and `context_parallel_size`,
+both defaulting to one. Their AIC timing configuration carries matching `pp`
+and `cp_size` values. Replay validates agreement and includes both dimensions in
+GPU counts. These interfaces expose analytical model behavior; they do not
+establish backend-qualified PP/CP replay latency or throughput. The supported
+input combinations and current qualification limits are described in the
+[parallelism migration cases](cli/migrate-from-aiconfigurator.md#migrate-parallelism-and-worker-count-domains).
+
 ## KV-cache capacity reservation
 
 `estimate_kv_cache` and `estimate_num_gpu_blocks` accept

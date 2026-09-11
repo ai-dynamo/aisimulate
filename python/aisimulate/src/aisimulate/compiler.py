@@ -261,6 +261,7 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}replicas": parallel.replicas,
         f"{prefix}tp": parallel.tensor,
         f"{prefix}pp": parallel.pipeline,
+        **({f"{prefix}cp": parallel.context} if parallel.context != 1 else {}),
         f"{prefix}attention_dp": parallel.attention_data,
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
@@ -298,6 +299,13 @@ def _worker_engine_args(
 ) -> dict[str, JSONValue]:
     backend = engine.backend
     parallel = worker.parallelism
+    if parallel.context > 1 and (
+        worker.kv_cache.host_offload is not None
+        or engine.kv_transfer is not None
+        or engine.afd is not None
+        or engine.workers.encoder is not None
+    ):
+        raise ValueError("context parallelism with host offload, KV transfer, AFD or encoder is not supported")
     cache = worker.kv_cache
     capacity = cache.capacity
     memory_fraction = capacity.memory_fraction
@@ -323,6 +331,8 @@ def _worker_engine_args(
     }
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
+    if parallel.context != 1:
+        payload["aic_cp_size"] = parallel.context
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
     if parallel.moe_tensor * parallel.moe_expert > 1:

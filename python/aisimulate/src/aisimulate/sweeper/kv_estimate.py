@@ -86,6 +86,7 @@ def estimate_kv_tokens(
             memory_fraction_value=memory_fraction,
             tp_size=shape.tp,
             pp_size=shape.pp,
+            cp_size=shape.cp,
             attention_dp_size=shape.dp,
             moe_tp_size=shape.moe_tp,
             moe_ep_size=shape.moe_ep,

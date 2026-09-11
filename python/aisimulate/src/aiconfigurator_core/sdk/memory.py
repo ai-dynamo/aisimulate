@@ -269,6 +269,7 @@ class KVCacheEstimator:
         max_batch_size: int,
         tp_size: int = 1,
         pp_size: int = 1,
+        cp_size: int = 1,
         attention_dp_size: int = 1,
         moe_tp_size: int | None = None,
         moe_ep_size: int | None = None,
@@ -304,6 +305,7 @@ class KVCacheEstimator:
         model_config = build_model_config(
             tp_size=tp_size,
             pp_size=pp_size,
+            cp_size=cp_size,
             attention_dp_size=attention_dp_size,
             moe_tp_size=resolved_moe_tp,
             moe_ep_size=resolved_moe_ep,
@@ -970,6 +972,7 @@ def estimate_kv_cache(
     memory_fraction_value: float,
     tp_size: int = 1,
     pp_size: int = 1,
+    cp_size: int = 1,
     attention_dp_size: int = 1,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
@@ -1057,6 +1060,7 @@ def estimate_kv_cache(
             max_batch_size=int(max_batch_size),
             tp_size=int(tp_size),
             pp_size=int(pp_size),
+            cp_size=int(cp_size),
             attention_dp_size=int(attention_dp_size),
             moe_tp_size=moe_tp_size,
             moe_ep_size=moe_ep_size,
@@ -1069,7 +1073,7 @@ def estimate_kv_cache(
             systems_path=systems_path,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
-        if not allow_naive_fallback:
+        if not allow_naive_fallback or cp_size != 1:
             raise ValueError(
                 f"unsupported model/backend/GPU for KV-cache estimation: "
                 f"model={model_path}, backend={backend}, gpu_sku={system}: {exc}"
@@ -1118,6 +1122,7 @@ def estimate_num_gpu_blocks(
     memory_fraction_value: float,
     tp_size: int = 1,
     pp_size: int = 1,
+    cp_size: int = 1,
     attention_dp_size: int = 1,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
@@ -1173,6 +1178,7 @@ def estimate_num_gpu_blocks(
         memory_fraction_value=float(memory_fraction_value),
         tp_size=int(tp_size),
         pp_size=int(pp_size),
+        cp_size=int(cp_size),
         attention_dp_size=int(attention_dp_size),
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,

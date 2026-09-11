@@ -1055,3 +1055,71 @@ def test_runner_rejects_unknown_forward_model(value):
 
     with pytest.raises(ValueError, match="forward_model"):
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
+@pytest.mark.parametrize("pp,cp,workers", [(2, 1, 2), (1, 4, 1), (2, 4, 2)])
+def test_native_replay_accounts_for_pipeline_and_context_gpus(pp, cp, workers):
+    args = _engine_args(backend="sglang")
+    args.update(aic_tp_size=1, aic_pp_size=pp, aic_cp_size=cp)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="sglang",
+        backend_version="test",
+        agg_engine_args=args,
+        num_workers=workers,
+        parallel_config={"tp": 1, "pp": pp, "cp": cp, "replicas": workers},
+    )
+    report = EngineReplayRunnerFactory().create(0).run(_spec(deployment=deployment))
+    assert report.metrics["gpu_hours"] * 3_600_000 / report.metrics["duration_ms"] == pytest.approx(pp * cp * workers)
+
+
+@pytest.mark.parametrize("field,value", [("pp", 2), ("cp", 2)])
+def test_runner_rejects_pipeline_context_mismatch_before_native_execution(field, value):
+    runtime = RecordingRuntime()
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="sglang",
+        backend_version="test",
+        agg_engine_args=_engine_args(backend="sglang"),
+        num_workers=1,
+        parallel_config={"tp": 2, field: value, "replicas": 1},
+    )
+    with pytest.raises(ValueError, match=f"parallel_config.{field}={value} conflicts"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("mode,prefix", [("agg", ""), ("disagg", "prefill_"), ("disagg", "decode_")])
+@pytest.mark.parametrize("dimension", ["pp", "cp"])
+def test_direct_replay_requires_advertised_parallel_capabilities(mode, prefix, dimension):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.replay import RunnerCapabilities
+
+    capabilities = RunnerCapabilities(supported_backend_topologies=(("*", "*"),))
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode=mode,
+            backend="sglang",
+            backend_version="test",
+            parallel_config={prefix + dimension: 2},
+        )
+    )
+    with pytest.raises(ValueError, match=f"runner does not support parallel_config.{prefix}{dimension}"):
+        capabilities.require_compatible(spec)
+    flag = "supports_pipeline_parallelism" if dimension == "pp" else "supports_context_parallelism"
+    replace(capabilities, **{flag: True}).require_compatible(spec)
+
+
+@pytest.mark.parametrize("prefix", ["prefill_", "decode_"])
+def test_direct_afd_replay_rejects_companion_cp(prefix):
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="afd+pd",
+            backend="sglang",
+            backend_version="test",
+            parallel_config={prefix + "cp": 2},
+        )
+    )
+    with pytest.raises(ValueError, match="AFD companion context parallelism must be 1"):
+        EngineReplayRunnerFactory().capabilities().require_compatible(spec)

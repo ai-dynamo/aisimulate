@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from aiconfigurator.generator.naive import _estimate_model_weight_bytes
 from aiconfigurator_core.sdk import perf_database
-from aiconfigurator_core.sdk.models import check_is_moe
+from aiconfigurator_core.sdk.models import check_is_moe, supports_context_parallelism
 from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
 
 from .kv_estimate import (
@@ -34,7 +34,9 @@ from .kv_estimate import (
 )
 from .parallel_enum import (
     DisaggParallelConfig,
+    PreparationBudget,
     ReplicaParallelConfig,
+    RoleParallelCandidates,
     enumerate_disagg_configs,
     enumerate_parallel_configs,
 )
@@ -63,6 +65,8 @@ class ModelHardware:
     gpus_per_node: int
     max_context: int | None  # model's max context length (the default max_seq_len)
     num_experts: int = 0
+    num_heads: int = 0
+    num_layers: int = 0
 
 
 def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) -> ModelHardware:
@@ -100,6 +104,8 @@ def resolve_model_hardware(model_name: str, hardware_sku: str, *, backend: str) 
         gpus_per_node=gpus_per_node,
         max_context=int(max_context) if max_context else None,
         num_experts=num_experts,
+        num_heads=int(model_config.get("n") or 0),
+        num_layers=int(model_config.get("layers") or 0),
     )
 
 
@@ -116,6 +122,14 @@ def parallel_configs_for(
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
+    agg_candidates: RoleParallelCandidates | None = None,
+    prefill_candidates: RoleParallelCandidates | None = None,
+    decode_candidates: RoleParallelCandidates | None = None,
+    num_gpu_per_replica: tuple[int, ...] | None = None,
+    max_gpu_per_replica: int | None = None,
+    max_prefill_workers: int | None = None,
+    max_decode_workers: int | None = None,
+    preparation: PreparationBudget | None = None,
     role_runtime: dict[str, tuple[int, int, float] | tuple[int, int, float, int | None]] | None = None,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
@@ -136,6 +150,7 @@ def parallel_configs_for(
     :class:`NoViableParallelConfig` when no shape can hold the sequence within the
     budget.
     """
+    preparation = preparation or PreparationBudget()
     mh = resolve_model_hardware(model_name, hardware_sku, backend=backend)
     seq_len = max_seq_len if max_seq_len is not None else mh.max_context
     if seq_len is None:
@@ -152,13 +167,66 @@ def parallel_configs_for(
         min_gpu_budget=min_gpu_budget,
         enable_wideep=mh.enable_wideep,
         allow_moe_pure_tp=True,
+        preparation=preparation,
+        stage=f"{deployment_mode}.{backend}",
     )
     if deployment_mode == "disagg":
-        configs = enumerate_disagg_configs(**common)
+        configs = enumerate_disagg_configs(
+            **common,
+            prefill_candidates=prefill_candidates,
+            decode_candidates=decode_candidates,
+            num_gpu_per_replica=num_gpu_per_replica,
+            max_gpu_per_replica=max_gpu_per_replica,
+            max_prefill_workers=max_prefill_workers,
+            max_decode_workers=max_decode_workers,
+        )
     elif deployment_mode == "agg":
-        configs = enumerate_parallel_configs(**common)
+        role = agg_candidates or RoleParallelCandidates()
+        configs = enumerate_parallel_configs(
+            **common,
+            gpus_per_worker_candidates=role.gpus_per_worker,
+            tp_candidates=role.tp,
+            pp_candidates=role.pp,
+            attention_dp_candidates=role.attention_dp,
+            moe_tp_candidates=role.moe_tp,
+            moe_ep_candidates=role.moe_ep,
+            cp_candidates=role.cp,
+            worker_candidates=role.workers,
+        )
+        filtered = [
+            c
+            for c in configs
+            if (max_gpu_per_replica is None or c.total_gpus <= max_gpu_per_replica)
+            and (num_gpu_per_replica is None or c.total_gpus in num_gpu_per_replica)
+        ]
+        preparation.record(f"{deployment_mode}.{backend}.replica", "considered", len(configs))
+        preparation.record(f"{deployment_mode}.{backend}.replica", "accepted", len(filtered))
+        preparation.record(f"{deployment_mode}.{backend}.replica", "rejected", len(configs) - len(filtered))
+        configs = filtered
     else:
         raise ValueError(f"deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}")
+
+    cp_supported: bool | None = None
+
+    def supported(config):
+        nonlocal cp_supported
+        roles = (
+            (("agg", config),) if deployment_mode == "agg" else (("prefill", config.prefill), ("decode", config.decode))
+        )
+        for role_name, role_config in roles:
+            shape = role_config.shape
+            if (mh.num_heads and mh.num_heads % shape.tp) or (mh.num_layers and mh.num_layers % shape.pp):
+                preparation.record(f"{deployment_mode}.{backend}.capability", "model_divisibility")
+                return False
+            if role_config.shape.cp > 1:
+                if cp_supported is None:
+                    cp_supported = supports_context_parallelism(model_name, backend)
+                if role_name == "decode" or not cp_supported:
+                    preparation.record(f"{deployment_mode}.{backend}.capability", "context_parallelism")
+                    return False
+        return True
+
+    configs = [c for c in configs if supported(c)]
 
     # KV-cache validity: keep configs whose every role-shape holds a max_seq_len sequence.
     def feasible_for(role: str, shapes):
@@ -193,6 +261,9 @@ def parallel_configs_for(
         prefill_feasible = feasible_for("prefill", [c.prefill.shape for c in configs])
         decode_feasible = feasible_for("decode", [c.decode.shape for c in configs])
         kept = [c for c in configs if c.prefill.shape in prefill_feasible and c.decode.shape in decode_feasible]
+    preparation.record(f"{deployment_mode}.{backend}.kv", "considered", len(configs))
+    preparation.record(f"{deployment_mode}.{backend}.kv", "accepted", len(kept))
+    preparation.record(f"{deployment_mode}.{backend}.kv", "kv_infeasible", len(configs) - len(kept))
     if not kept:
         raise NoViableParallelConfig(
             f"{model_name} on {hardware_sku}: no parallel config holds a {seq_len}-token "

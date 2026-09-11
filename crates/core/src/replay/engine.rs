@@ -44,6 +44,8 @@ pub struct ReplayEngineConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    pub pipeline_parallel_size: u32,
+    pub context_parallel_size: u32,
     /// Whether `rank.num_gpu_blocks` came from the user rather than an
     /// upstream capacity estimator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +62,8 @@ impl Default for ReplayEngineConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            pipeline_parallel_size: 1,
+            context_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
             prefill: None,
@@ -76,6 +80,8 @@ pub struct ReplayRoleConfig {
     pub dp_size: u32,
     #[serde(default = "default_tensor_parallel_size")]
     pub tensor_parallel_size: u32,
+    pub pipeline_parallel_size: u32,
+    pub context_parallel_size: u32,
     /// Whether `rank.num_gpu_blocks` came from the user rather than an
     /// upstream capacity estimator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -88,6 +94,8 @@ impl Default for ReplayRoleConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            pipeline_parallel_size: 1,
+            context_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
         }
@@ -109,18 +117,24 @@ impl ReplayEngineConfig {
             WorkerStage::Aggregated => ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                pipeline_parallel_size: self.pipeline_parallel_size,
+                context_parallel_size: self.context_parallel_size,
                 num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             },
             WorkerStage::Prefill => self.prefill.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                pipeline_parallel_size: self.pipeline_parallel_size,
+                context_parallel_size: self.context_parallel_size,
                 num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
             WorkerStage::Decode => self.decode.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                pipeline_parallel_size: self.pipeline_parallel_size,
+                context_parallel_size: self.context_parallel_size,
                 num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
@@ -166,6 +180,8 @@ pub struct ReplayRoleFactory {
     factory: EngineFactory,
     dp_size: NonZeroU32,
     tensor_parallel_size: u32,
+    pipeline_parallel_size: u32,
+    context_parallel_size: u32,
     backend: Backend,
     total_blocks: u64,
 }
@@ -196,6 +212,8 @@ impl ReplayRoleFactory {
                 usize::try_from(self.tensor_parallel_size)
                     .ok()
                     .and_then(|tp| dp.checked_mul(tp))
+                    .and_then(|n| n.checked_mul(self.pipeline_parallel_size as usize))
+                    .and_then(|n| n.checked_mul(self.context_parallel_size as usize))
             })
             .ok_or_else(|| ReplayError::InvalidSpec("engine GPU count overflows usize".into()))
     }
@@ -259,10 +277,33 @@ impl ReplayEngineFactory {
         let dp_size = NonZeroU32::new(role.dp_size).ok_or_else(|| {
             ReplayError::InvalidSpec("native engine dp_size must be positive".into())
         })?;
-        if role.tensor_parallel_size == 0 {
+        if role.tensor_parallel_size == 0
+            || role.pipeline_parallel_size == 0
+            || role.context_parallel_size == 0
+        {
             return Err(ReplayError::InvalidSpec(
-                "native tensor_parallel_size must be positive".into(),
+                "native tensor_parallel_size must be positive; pipeline_parallel_size and context_parallel_size must be positive".into(),
             ));
+        }
+        if role.context_parallel_size > 1 {
+            if role.rank.backend != Backend::Sglang
+                || stage == WorkerStage::Decode
+                || role.tensor_parallel_size != 1
+                || role.dp_size != 1
+            {
+                return Err(ReplayError::InvalidSpec(
+                    "context parallelism requires SGLang prefill/aggregated with TP=DP=1".into(),
+                ));
+            }
+            if role.rank.native_host_offload.is_some()
+                || role.rank.kv_cache_bytes_per_token.is_some()
+                || role.rank.kv_transfer_bytes_per_token.is_some()
+            {
+                return Err(ReplayError::InvalidSpec(
+                    "context parallelism with host offload or custom KV geometry is not supported"
+                        .into(),
+                ));
+            }
         }
         let timing = match stage {
             WorkerStage::Aggregated => self.timing.as_ref(),
@@ -282,6 +323,8 @@ impl ReplayEngineFactory {
             factory,
             dp_size,
             tensor_parallel_size: role.tensor_parallel_size,
+            pipeline_parallel_size: role.pipeline_parallel_size,
+            context_parallel_size: role.context_parallel_size,
             backend,
             total_blocks,
         })
@@ -404,4 +447,67 @@ pub fn run_engine_handoff_conformance(
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
     ReplayError::Engine(error.to_string())
+}
+
+#[cfg(test)]
+mod parallel_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn native_cp_requires_supported_backend_role_and_attention_shape() {
+        for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+            for stage in [
+                WorkerStage::Aggregated,
+                WorkerStage::Prefill,
+                WorkerStage::Decode,
+            ] {
+                for (tp, dp) in [(1, 1), (2, 1), (1, 2)] {
+                    let config = ReplayEngineConfig {
+                        context_parallel_size: 2,
+                        tensor_parallel_size: tp,
+                        dp_size: dp,
+                        rank: EngineConfig {
+                            backend,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let result = ReplayEngineFactory::new().role_factory(&config, stage, false);
+                    let supported = backend == Backend::Sglang
+                        && stage != WorkerStage::Decode
+                        && tp == 1
+                        && dp == 1;
+                    if supported {
+                        assert_eq!(result.unwrap().gpus_per_worker().unwrap(), 2);
+                    } else {
+                        assert!(matches!(result, Err(ReplayError::InvalidSpec(message))
+                            if message.contains("context parallelism requires SGLang")));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_cp_rejects_custom_kv_geometry() {
+        for cache_geometry in [false, true] {
+            let mut config = ReplayEngineConfig {
+                context_parallel_size: 2,
+                rank: EngineConfig {
+                    backend: Backend::Sglang,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            if cache_geometry {
+                config.rank.kv_cache_bytes_per_token = Some(1024);
+            } else {
+                config.rank.kv_transfer_bytes_per_token = Some(1024);
+            }
+            let result =
+                ReplayEngineFactory::new().role_factory(&config, WorkerStage::Aggregated, false);
+            assert!(matches!(result, Err(ReplayError::InvalidSpec(message))
+                if message.contains("custom KV geometry")));
+        }
+    }
 }

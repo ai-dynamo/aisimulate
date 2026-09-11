@@ -69,6 +69,7 @@ class ParallelismPredictionConfig(StrictModel):
     attention_data: PositiveInt = 1
     moe_tensor: PositiveInt = 1
     moe_expert: PositiveInt = 1
+    context: PositiveInt = 1
 
 
 class SchedulerPredictionConfig(StrictModel):
@@ -232,6 +233,7 @@ class ParallelismRecommendationConfig(StrictModel):
     attention_data: ParallelDomain | None = None
     moe_tensor: ParallelDomain | None = None
     moe_expert: ParallelDomain | None = None
+    context: ParallelDomain | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -255,7 +257,7 @@ class ParallelismRecommendationConfig(StrictModel):
             if not isinstance(entry, dict):
                 raise ValueError(f"parallelism preset entry {index} must be a mapping")
             missing = required - set(entry)
-            unknown = set(entry) - required
+            unknown = set(entry) - required - {"context"}
             if missing or unknown:
                 raise ValueError(
                     "parallelism preset entries must cover exactly all knobs; "
@@ -278,6 +280,7 @@ class ParallelismRecommendationConfig(StrictModel):
                 "attention_data",
                 "moe_tensor",
                 "moe_expert",
+                "context",
             )
             if getattr(self, name) is not None
         ]

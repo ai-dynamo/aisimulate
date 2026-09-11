@@ -199,6 +199,9 @@ class RunnerCapabilities:
     def supports_hook(self, hook: RuntimeHookSpec) -> bool:
         return any(capability.supports(hook) for capability in self.supported_hooks)
 
+    supports_pipeline_parallelism: bool = False
+    supports_context_parallelism: bool = False
+
     def supports_trace_format(self, trace_format: str) -> bool:
         return "*" in self.supported_trace_formats or trace_format in self.supported_trace_formats
 
@@ -236,6 +239,18 @@ class RunnerCapabilities:
             raise ValueError(
                 f"runner does not support backend/topology {deployment.backend!r}/{deployment.deployment_mode!r}"
             )
+        for prefix in ("", "prefill_", "decode_"):
+            for dimension, enabled in (
+                ("pp", self.supports_pipeline_parallelism),
+                ("cp", self.supports_context_parallelism),
+            ):
+                value = deployment.parallel_config.get(prefix + dimension, 1)
+                if type(value) is not int or value <= 0:
+                    raise ValueError(f"parallel_config.{prefix}{dimension} must be a positive integer")
+                if value > 1 and dimension == "cp" and deployment.deployment_mode in {"afd", "afd+pd"}:
+                    raise ValueError("AFD companion context parallelism must be 1")
+                if value > 1 and not enabled:
+                    raise ValueError(f"runner does not support parallel_config.{prefix}{dimension}={value}")
         trace_format = spec.workload.get("trace_format")
         if isinstance(trace_format, str) and not self.supports_trace_format(trace_format):
             raise ValueError(f"runner does not support trace format {trace_format!r}")

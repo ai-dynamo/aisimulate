@@ -94,6 +94,15 @@ Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `bac
 
 ## Provenance
 
+`provenance.search_domain` records deterministic agg/disagg preparation limits and
+per-stage counts: shape legality, worker/GPU limits, pairing, model/CP capability,
+KV feasibility, runner compatibility, and the final unique backend union. `considered`
+at the top level counts reserved preparation work units, including intermediate products;
+it is not the number of replay trials. Stage counts refer to that stage's input and can
+include the same topology in different backends or intermediate products. Replay attempt
+counts remain in `counts`. AFD retains its existing domain provenance. Preparation failures
+raise before a `SweepResult` exists and identify the refusing stage in the error.
+
 Run provenance stores the complete validated `SmartSearchConfig` and a SHA-256 fingerprint of its
 canonical JSON. It also distinguishes `optimizer_guided` from `exhaustive` execution.
 

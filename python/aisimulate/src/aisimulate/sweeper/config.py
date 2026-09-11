@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 
 class OptimizationTarget(str, Enum):
@@ -469,6 +469,89 @@ class SearchSpace(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Explicit domains expand the default topology pool without changing selection policy.
+    max_parallel_combinations: int = Field(default=1_000_000, strict=True, ge=1)
+    max_parallel_configs: int = Field(default=100_000, strict=True, ge=1)
+    # Work already performed while lowering public YAML in this request. It is
+    # telemetry, not an input knob; copy it into each run's fresh budget.
+    _input_preparation: dict[str, dict[str, int]] = PrivateAttr(default_factory=dict)
+
+    def new_preparation_budget(self):
+        from .parallel_enum import PreparationBudget
+
+        budget = PreparationBudget(self.max_parallel_combinations, self.max_parallel_configs)
+        for stage, counts in self._input_preparation.items():
+            budget.reserve(counts.get("considered", 0), stage)
+            for reason, count in counts.items():
+                if reason != "considered":
+                    budget.record(stage, reason, count)
+        return budget
+
+    num_gpu_per_replica: list[int] | None = None
+    max_gpu_per_replica: int | None = Field(default=None, strict=True, ge=1)
+    max_prefill_workers: int | None = Field(default=None, strict=True, ge=1)
+    max_decode_workers: int | None = Field(default=None, strict=True, ge=1)
+    agg_num_gpu_candidates: list[int] | None = None
+    agg_tp_candidates: list[int] | None = None
+    agg_pp_candidates: list[int] | None = None
+    agg_dp_candidates: list[int] | None = None
+    agg_moe_tp_candidates: list[int] | None = None
+    agg_moe_ep_candidates: list[int] | None = None
+    agg_cp_candidates: list[int] | None = None
+    agg_num_workers_candidates: list[int] | None = None
+    prefill_num_gpu_candidates: list[int] | None = None
+    prefill_tp_candidates: list[int] | None = None
+    prefill_pp_candidates: list[int] | None = None
+    prefill_dp_candidates: list[int] | None = None
+    prefill_moe_tp_candidates: list[int] | None = None
+    prefill_moe_ep_candidates: list[int] | None = None
+    prefill_cp_candidates: list[int] | None = None
+    prefill_num_workers_candidates: list[int] | None = None
+    decode_num_gpu_candidates: list[int] | None = None
+    decode_tp_candidates: list[int] | None = None
+    decode_pp_candidates: list[int] | None = None
+    decode_dp_candidates: list[int] | None = None
+    decode_moe_tp_candidates: list[int] | None = None
+    decode_moe_ep_candidates: list[int] | None = None
+    decode_cp_candidates: list[int] | None = None
+    decode_num_workers_candidates: list[int] | None = None
+
+    @field_validator(
+        "agg_num_gpu_candidates",
+        "agg_tp_candidates",
+        "agg_pp_candidates",
+        "agg_dp_candidates",
+        "agg_moe_tp_candidates",
+        "agg_moe_ep_candidates",
+        "agg_cp_candidates",
+        "agg_num_workers_candidates",
+        "prefill_num_gpu_candidates",
+        "prefill_tp_candidates",
+        "prefill_pp_candidates",
+        "prefill_dp_candidates",
+        "prefill_moe_tp_candidates",
+        "prefill_moe_ep_candidates",
+        "prefill_cp_candidates",
+        "prefill_num_workers_candidates",
+        "decode_num_gpu_candidates",
+        "decode_tp_candidates",
+        "decode_pp_candidates",
+        "decode_dp_candidates",
+        "decode_moe_tp_candidates",
+        "decode_moe_ep_candidates",
+        "decode_cp_candidates",
+        "decode_num_workers_candidates",
+        "num_gpu_per_replica",
+        mode="before",
+    )
+    @classmethod
+    def _validate_topology_domain(cls, value):
+        if value is None:
+            return value
+        if not isinstance(value, (list, tuple)) or not value or any(type(v) is not int or v <= 0 for v in value):
+            raise ValueError("topology candidate lists must contain positive integers")
+        return list(dict.fromkeys(value))
+
     # deployment: branch + backend + legal parallel shapes
     deployment_mode: list[str] = ["disagg", "agg"]  # branches to explore; pin with one
     backend: list[str] = ["vllm"]  # vllm | sglang | trtllm
@@ -659,6 +742,8 @@ class SearchSpace(BaseModel):
             replicas = companion.get("replicas", 1)
             if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
                 raise ValueError(f"afd_companion_parallel_configs[{index}].replicas must be positive")
+            if type(companion.get("cp", 1)) is not int or companion.get("cp", 1) != 1:
+                raise ValueError("AFD companion context parallelism must be 1")
         return self
 
     @model_validator(mode="after")
@@ -684,6 +769,9 @@ class SearchSpace(BaseModel):
                 raise ValueError(f"{label} parallel_configs shape must be a dict")
             if "tp" not in value:
                 raise ValueError(f"{label} parallel_configs shape needs a 'tp' field")
+            for name in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "cp", "replicas"):
+                if name in value and (type(value[name]) is not int or value[name] <= 0):
+                    raise ValueError(f"{label} parallel_configs.{name} must be a positive integer")
 
         if self.parallel_configs and len(self.deployment_mode) != 1:
             raise ValueError(
@@ -724,6 +812,7 @@ class SearchSpace(BaseModel):
                 "attention_dp",
                 "moe_tp",
                 "moe_ep",
+                "cp",
             }
             allowed_names = (
                 base_names
@@ -768,6 +857,34 @@ class SearchSpace(BaseModel):
                     raise ValueError(f"parallel_custom_configs_by_mode.{mode}.{role} must be nonempty")
                 for entry in entries:
                     validate_shape_dict(entry, f"a {mode} {role}")
+        for role in ("agg", "prefill", "decode"):
+            sdk_names = [
+                f"{role}_{suffix}_candidates"
+                for suffix in ("num_gpu", "tp", "pp", "dp", "moe_tp", "moe_ep", "cp", "num_workers")
+                if getattr(self, f"{role}_{suffix}_candidates") is not None
+            ]
+            if not sdk_names:
+                continue
+            mode = "agg" if role == "agg" else "disagg"
+            if mode not in self.deployment_mode:
+                raise ValueError(f"{sdk_names} require deployment_mode={mode!r}; AFD uses its own domain")
+            independent = self.parallel_independent_by_mode.get(mode, {})
+            role_independent = (
+                independent
+                if role == "agg"
+                else {name: values for name, values in independent.items() if name.startswith(role + "_")}
+            )
+            if configured.get(mode) or role in self.parallel_custom_configs_by_mode.get(mode, {}) or role_independent:
+                raise ValueError(f"{sdk_names} cannot be combined with pinned/custom/independent controls for {role}")
+        if "disagg" not in self.deployment_mode and any(
+            getattr(self, name) is not None for name in ("max_prefill_workers", "max_decode_workers")
+        ):
+            raise ValueError("prefill/decode worker limits require deployment_mode='disagg'")
+        if set(self.deployment_mode) <= {"afd", "afd+pd"} and any(
+            getattr(self, name) is not None
+            for name in ("num_gpu_per_replica", "max_gpu_per_replica", "max_prefill_workers", "max_decode_workers")
+        ):
+            raise ValueError("replica GPU/worker limits apply to agg/disagg; AFD uses its own domain")
         for mode, entries in configured.items():
             if not entries:
                 raise ValueError(f"parallel_configs_by_mode.{mode} must be nonempty")

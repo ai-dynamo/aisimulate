@@ -458,11 +458,20 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module,
-        "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
-    )
+
+    def prepared_branches(config, *, max_seq_len=None, runner_capabilities=None, preparation=None):
+        from aisimulate.sweeper.parallel_enum import enumerate_parallel_configs
+
+        enumerate_parallel_configs(
+            is_moe=False,
+            backend="trtllm",
+            gpu_budget=1,
+            gpus_per_worker_candidates=(1,),
+            preparation=preparation,
+        )
+        return [branch]
+
+    monkeypatch.setattr(search_module, "enumerate_branches", prepared_branches)
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
@@ -475,6 +484,8 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
         show_progress=False,
     ).run(_config(), top_n=1)
 
+    assert result.provenance.search_domain["stages"]["topology.workers"]["accepted"] == 1
+    assert SweepResult.from_json(result.to_json()).provenance.search_domain == result.provenance.search_domain
     assert isinstance(result, SweepResult)
     assert not hasattr(Sweeper, "run_result")
     assert result.provenance.search_strategy is SearchStrategy.OPTIMIZER_GUIDED
@@ -520,7 +531,7 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
     monkeypatch.setattr(
         search_module,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, preparation=None: [branch],
     )
     monkeypatch.setattr(
         search_module,
@@ -635,7 +646,7 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
     monkeypatch.setattr(
         search_module,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, preparation=None: [branch],
     )
     monkeypatch.setattr(
         search_module,

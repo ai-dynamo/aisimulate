@@ -94,6 +94,20 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
     return model
 
 
+def _registered_model_class(model_family: str) -> type[BaseModel]:
+    cls = _MODEL_REGISTRY.get(model_family)
+    if cls is None:
+        raise ValueError(
+            f"Unknown model family: {model_family}. Registered families: {', '.join(sorted(_MODEL_REGISTRY.keys()))}"
+        )
+    return cls
+
+
+def supports_context_parallelism(model_path: str, backend_name: str) -> bool:
+    """Query CP support using the same family resolution as model construction."""
+    return _registered_model_class(get_model_family(model_path)).supports_cp(backend_name)
+
+
 def get_model(
     model_path: str,
     model_config: config.ModelConfig,
@@ -139,11 +153,7 @@ def get_model(
     model_info["model_path"] = model_path
     model_info["model_family"] = model_family
 
-    cls = _MODEL_REGISTRY.get(model_family)
-    if cls is None:
-        raise ValueError(
-            f"Unknown model family: {model_family}. Registered families: {', '.join(sorted(_MODEL_REGISTRY.keys()))}"
-        )
+    cls = _registered_model_class(model_family)
 
     # Gate context parallelism BEFORE construction. ``supports_cp`` defaults to
     # False; each CP-capable model class overrides it to declare which backends
@@ -220,4 +230,5 @@ __all__ = [
     "resolve_kimi_k3_moe_arch_mode",
     "resolve_nvfp4_for_system",
     "resolve_vllm_moe_execution_mode",
+    "supports_context_parallelism",
 ]

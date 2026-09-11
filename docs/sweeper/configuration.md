@@ -74,6 +74,67 @@ Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`,
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
 or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pins a searched field.
 
+## Explicit Parallel Domains and Preparation Limits
+
+For `agg` and `disagg`, each role (`agg`, `prefill`, `decode`) accepts positive-integer
+lists named `<role>_<dimension>_candidates`. Dimensions are `num_gpu` (GPUs per worker),
+`tp`, `pp`, `dp` (attention DP), `moe_tp`, `moe_ep`, `cp`, and `num_workers`.
+Omitted lists retain the existing menu: PP=CP=1 and GPUs per worker in `[1, 2, 4, 8, 16]`.
+An explicit shape domain derives its GPU sizes from the configured dimensions unless
+`num_gpu` is supplied; values are then checked against capabilities and the GPU budget.
+A worker-count-only override preserves the existing GPU menu. SDK candidate lists cannot
+be combined with pinned, custom, or independent controls for the same role.
+
+```yaml
+search_space:
+  model_name: meta-llama/Llama-3.1-8B-Instruct
+  hardware_sku: h200_sxm
+  deployment_mode: [agg]
+  backend: [sglang]
+  gpu_budget: 8
+  context_length: 4096
+  agg_num_gpu_candidates: [8]
+  agg_tp_candidates: [4, 8]
+  agg_pp_candidates: [1, 2]
+  agg_dp_candidates: [1]
+  agg_num_workers_candidates: [1]
+  max_parallel_combinations: 1000000
+  max_parallel_configs: 100000
+```
+
+The example admits TP8/PP1 and TP4/PP2 when both pass model and KV checks. Public
+`aisimulate recommend` exposes these axes through worker `parallelism.pipeline` and
+`parallelism.context`, alongside the existing parallelism fields. Explicit values are
+not intersected with the default menu. PP/CP are opt-in. CP currently requires an AIC model
+family that supports CP on SGLang, TP=DP=1, and an aggregated or prefill role. CP with an
+encoder, native host offload, or custom KV-transfer geometry is rejected. External runners
+must advertise PP/CP support. Native replay carries PP/CP into AIC timing, KV estimation,
+and GPU accounting; it retains AIC's analytical pipeline timing model.
+
+`num_gpu_per_replica` restricts total candidate GPU sizes and `max_gpu_per_replica`
+sets their ceiling. For disaggregation that total includes both roles and all workers;
+`max_prefill_workers` and `max_decode_workers` independently bound their worker counts.
+These role-specific worker limits require a `disagg` search. A shared low-level GPU
+domain cannot be combined with explicit per-role GPU domains.
+AFD retains its separate topology controls and limits.
+
+Preparation shares a work budget across configured agg/disagg modes and backends.
+`max_parallel_combinations` bounds integer-domain expansion, shape products, worker
+products, and prefill/decode pairing **before** their loops or allocations.
+`max_parallel_configs` bounds each retained topology pool and the backend union.
+Public recommendation lowering shares one budget across its range expansions and
+P/D preset products. Those preparation counts seed the subsequent topology budget
+and remain available in the result diagnostics; repeated runs start from a fresh copy.
+Exceeding either raises `SearchSpaceLimitError` with the stage and a request to narrow
+the domain; no partial domain is returned. These are deterministic preparation guards,
+not a process-memory limit or a timeout for model loading and simulation.
+
+The existing Bayesian/random optimizer and `sweep.max_trials` still govern evaluation;
+an expanded domain does not imply exhaustive evaluation. Scheduler fields such as
+`max_num_seqs` and `max_num_batched_tokens` are capacity limits. They do not pin actual
+batch occupancy or context tokens. Actual operating-point parity and broader automatic
+PP/CP defaults require separate qualification and resource controls.
+
 ## Attention-FFN Disaggregation
 
 AFD is supported by public `aisimulate predict` and `aisimulate recommend` with the built-in

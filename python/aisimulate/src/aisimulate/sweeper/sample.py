@@ -65,6 +65,7 @@ def _shape_fields(shape: ParallelShape) -> dict[str, Any]:
     return {
         "tp": shape.tp,
         "pp": shape.pp,
+        **({"cp": shape.cp} if shape.cp != 1 else {}),
         "attention_dp": shape.dp,
         "moe_tp": shape.moe_tp,
         "moe_ep": shape.moe_ep,

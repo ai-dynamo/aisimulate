@@ -149,7 +149,7 @@ def _stub(monkeypatch, branch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, preparation=None: [branch],
     )
     monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
 
@@ -184,7 +184,7 @@ def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, preparation=None: [branch],
     )
     monkeypatch.setattr(
         search_mod,
@@ -789,7 +789,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "enumerate_branches",
-        lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
+        lambda config, *, max_seq_len=None, runner_capabilities=None, preparation=None: [agg, disagg],
     )
     monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
     seen = []
