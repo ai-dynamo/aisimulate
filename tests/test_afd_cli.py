@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -15,7 +16,7 @@ import aisimulate.main as cli
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.recommend import run_recommendation
-from aisimulate.runner import AFDCompanionTiming, EngineReplayRunnerFactory
+from aisimulate.runner import AFDCompanionTiming, AICAFDCompanionPerformanceModel, EngineReplayRunnerFactory
 from aisimulate.sweeper import AFDLayerTimes
 
 
@@ -25,11 +26,7 @@ class _AFDPerformanceModel:
 
     def measure(self, request):
         self.requests.append(request)
-        phases = (
-            ("prefill", "decode")
-            if request.topology.phase.value == "both"
-            else (request.topology.phase.value,)
-        )
+        phases = ("prefill", "decode") if request.topology.phase.value == "both" else (request.topology.phase.value,)
         return tuple(
             AFDLayerTimes(
                 phase=phase,
@@ -97,15 +94,9 @@ def test_afd_prediction_lowers_to_measured_replay_contract() -> None:
     assert deployment.deployment_mode == "afd"
     assert deployment.backend_version
     assert deployment.parallel_config["afd"]["gpus_per_node"] == 8
-    assert (
-        deployment.parallel_config["afd_provenance"]["gpu_accounting"]["total_gpus"]
-        == 16
-    )
+    assert deployment.parallel_config["afd_provenance"]["gpu_accounting"]["total_gpus"] == 16
     assert deployment.performance_model_metadata["afd"]["measurement_required"] is False
-    assert {
-        item["phase"]
-        for item in deployment.performance_model_metadata["afd"]["measurements"]
-    } == {
+    assert {item["phase"] for item in deployment.performance_model_metadata["afd"]["measurements"]} == {
         "prefill",
         "decode",
     }
@@ -139,6 +130,41 @@ def test_afd_plus_pd_prediction_requires_and_materializes_opposite_worker() -> N
     }
 
 
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("forward_model", ["fpm", "op_level", None])
+def test_public_afd_companion_forward_model_reaches_estimator(phase, companion_role, forward_model) -> None:
+    raw = _pure_prediction()
+    raw["engine"]["afd"].update(phase=phase, combined_with_pd=True)
+    timing = {"type": "default"}
+    if forward_model is not None:
+        timing["forward_model"] = forward_model
+    raw["engine"]["workers"] = {
+        companion_role: {"parallelism": {"tensor": 2}, "timing": timing},
+    }
+    spec = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(raw),
+        afd_performance_model=_AFDPerformanceModel(),
+    )
+    calls = []
+
+    def estimator(model, hardware, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(raw={"ttft": 2.0, "tpot": 2.0})
+
+    report = (
+        EngineReplayRunnerFactory(afd_companion_model=AICAFDCompanionPerformanceModel(estimator)).create(0).run(spec)
+    )
+
+    expected_model = "op_level" if forward_model is None else forward_model
+    assert report.metrics["completed_requests"] == 4
+    assert (
+        spec.backend_deployment.performance_model_metadata[companion_role]["config"]["forward_model"] == expected_model
+    )
+    assert len(calls) == 1
+    assert calls[0].get("forward_model") == expected_model
+    assert report.metadata["afd_replay"]["companion"]["forward_model"] == expected_model
+
+
 @pytest.mark.parametrize(
     ("afd", "match"),
     [
@@ -149,9 +175,7 @@ def test_afd_plus_pd_prediction_requires_and_materializes_opposite_worker() -> N
         ),
     ],
 )
-def test_afd_recommendation_rejects_ambiguous_or_incomplete_contract(
-    afd, match
-) -> None:
+def test_afd_recommendation_rejects_ambiguous_or_incomplete_contract(afd, match) -> None:
     with pytest.raises(ValidationError, match=match):
         CoreRecommendationConfig.model_validate(
             {
@@ -177,18 +201,14 @@ def test_afd_rejects_trace_traffic_at_public_boundary() -> None:
         CorePredictionConfig.model_validate(raw)
 
 
-def test_public_afd_predict_cli_writes_summary_and_per_request(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_public_afd_predict_cli_writes_summary_and_per_request(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "afd-prediction.yaml"
     config_path.write_text(yaml.safe_dump(_pure_prediction()))
     output = tmp_path / "out"
     performance_model = _AFDPerformanceModel()
     compile_prediction = prediction_to_replay_spec
 
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: EngineReplayRunnerFactory()
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: EngineReplayRunnerFactory())
     monkeypatch.setattr(
         cli,
         "prediction_to_replay_spec",
@@ -251,9 +271,7 @@ def test_afd_recommendation_emits_prediction_ready_candidate() -> None:
     result = run_recommendation(
         config,
         stack="engine",
-        runner_factory=EngineReplayRunnerFactory(
-            afd_companion_model=_CompanionPerformanceModel()
-        ),
+        runner_factory=EngineReplayRunnerFactory(afd_companion_model=_CompanionPerformanceModel()),
         afd_performance_model=_AFDPerformanceModel(),
         show_progress=False,
     )

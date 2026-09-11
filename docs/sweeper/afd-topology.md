@@ -131,9 +131,10 @@ contract. Pure `afd` replay requires `phase: both`; a single AFD phase must use 
 opposite phase is present. The latter measures a regular companion through AIC static estimation
 or an explicit fixed timing model, then schedules the two independent pools as a two-stage flow.
 
-This preserves arrival and queueing delay in TTFT and end-to-end latency while keeping decode step
-latency separate as TPOT. Reports include throughput, goodput, GPU-hours, per-request latency on
-request, batch/pass counts, and exact A/F plus companion GPU accounting.
+This preserves arrival and queueing delay in TTFT and end-to-end latency. TPOT is the interval
+from the first output token to completion, including decode queueing, divided by `OSL - 1`;
+it is zero for a single output token. Reports include throughput, goodput, GPU-hours, per-request
+latency on request, batch/pass counts, and exact A/F plus companion GPU accounting.
 
 Replay currently requires fixed synthetic `isl` and `osl`, `random_range_ratio: 1.0`, and no
 trace. Those restrictions keep each request aligned with the performance-model point instead of
