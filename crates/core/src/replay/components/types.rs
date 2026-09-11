@@ -324,7 +324,13 @@ impl TrafficAccumulator {
         self.total_osl += output_tokens;
         self.shape_count += 1;
         if let Some((ttft_ms, mean_itl_ms)) = latencies {
-            if ttft_ms > 0.0 {
+            // `request_latencies` returns `None` when no first token was
+            // recorded, so `Some(0.0)` is a real sample -- a first token that
+            // arrived in the same simulated instant as the request -- not a
+            // "missing" sentinel. Admit it on the same terms the ITL branch
+            // below admits a zero gap, and reject non-finite values the way
+            // that branch does rather than folding them into the sum.
+            if ttft_ms.is_finite() && ttft_ms >= 0.0 {
                 self.total_ttft_ms += ttft_ms;
                 self.ttft_count += 1;
             }
@@ -635,6 +641,27 @@ mod tests {
         acc.on_completion(10, 3, Some((1.0, 10.0)));
         let stats = acc.drain(1_000.0);
         assert_eq!(stats.avg_itl_ms, 5.0);
+    }
+
+    /// A zero TTFT means the first token landed in the arrival instant --
+    /// the routine configuration under a fixed timing model with
+    /// `prefill_ms: 0.0`. Dropping it reported "no TTFT data" to the planner
+    /// for a window that measured plenty. A non-finite TTFT must still be
+    /// rejected rather than poisoning the mean.
+    #[test]
+    fn traffic_accumulator_retains_zero_millisecond_ttft_samples() {
+        let mut acc = TrafficAccumulator::new();
+        acc.on_arrival();
+        acc.on_arrival();
+        acc.on_completion(10, 3, Some((0.0, 5.0)));
+        acc.on_completion(10, 3, Some((10.0, 5.0)));
+        let stats = acc.drain(1_000.0);
+        assert_eq!(stats.avg_ttft_ms, 5.0);
+
+        let mut poisoned = TrafficAccumulator::new();
+        poisoned.on_arrival();
+        poisoned.on_completion(10, 3, Some((f64::NAN, 5.0)));
+        assert_eq!(poisoned.drain(1_000.0).avg_ttft_ms, 0.0);
     }
 
     #[test]
