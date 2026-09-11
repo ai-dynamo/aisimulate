@@ -37,9 +37,7 @@ def _passing_evidence(revision: str, artifact: str = TEST_ARTIFACT_REF) -> dict:
     return {
         "result": "pass",
         "artifact": artifact,
-        "sha256": hashlib.sha256(
-            (QUALIFICATION.ROOT / artifact).read_bytes()
-        ).hexdigest(),
+        "sha256": hashlib.sha256((QUALIFICATION.ROOT / artifact).read_bytes()).hexdigest(),
         "source_revision": revision,
         "recorded_at": "2026-09-08T12:00:00Z",
     }
@@ -57,9 +55,7 @@ def _qualified_document(revision: str, artifact_root: Path) -> dict:
             "threshold_status": "approved",
         }
     )
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
-        copy.deepcopy(policy)
-    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
     for gate in document["gates"]:
         if not gate["release_blocking"]:
             continue
@@ -76,8 +72,7 @@ def _qualified_document(revision: str, artifact_root: Path) -> dict:
                 "source_revision": revision,
                 "matrix": copy.deepcopy(gate["matrix"]),
                 "assertion_results": [
-                    {**copy.deepcopy(assertion), "result": "pass"}
-                    for assertion in gate["assertions"]
+                    {**copy.deepcopy(assertion), "result": "pass"} for assertion in gate["assertions"]
                 ],
                 "units": QUALIFICATION._expected_units(gate),
                 "anomalies": [],
@@ -91,9 +86,7 @@ def _qualified_document(revision: str, artifact_root: Path) -> dict:
     return document
 
 
-def _rewrite_evidence_report(
-    document: dict, gate_id: str, update: Callable[[dict], None]
-) -> None:
+def _rewrite_evidence_report(document: dict, gate_id: str, update: Callable[[dict], None]) -> None:
     evidence = _gate(document, gate_id)["execution"]["evidence"][0]
     artifact = QUALIFICATION.ROOT / evidence["artifact"]
     report = json.loads(artifact.read_text(encoding="utf-8"))
@@ -138,17 +131,12 @@ def test_power_data_invariant_evidence_is_complete_and_machine_readable() -> Non
     assert result["source_revision"] == evidence["source_revision"]
     assert result["anomalies"] == []
     details = result["details"]
-    assert (
-        details["discovery_root"]
-        == "python/aisimulate/src/aiconfigurator_core/systems/data"
-    )
+    assert details["discovery_root"] == "python/aisimulate/src/aiconfigurator_core/systems/data"
     assert details["total_discovered_parquet_count"] == 762
     assert details["skipped_file_anomalies"] == []
     assert details["files_scanned"] == len(details["files"]) == 3
     assert details["files_without_power_columns"] == 759
-    assert details["rows_scanned"] == sum(
-        file_result["rows_scanned"] for file_result in details["files"]
-    )
+    assert details["rows_scanned"] == sum(file_result["rows_scanned"] for file_result in details["files"])
     assert details["rows_scanned"] == 122362
     assert details["checks"]["power_and_limit_columns_paired"] == {
         "result": "pass",
@@ -191,9 +179,7 @@ def test_schema_is_versioned_and_machine_readable() -> None:
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["properties"]["schema_version"]["const"] == "1.0"
     assert schema["properties"]["release_target"]["const"] == "0.13.0"
-    assert {"gate", "matrix", "assertion", "execution", "evidence"} <= set(
-        schema["$defs"]
-    )
+    assert {"gate", "matrix", "assertion", "execution", "evidence"} <= set(schema["$defs"])
 
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(_document())
@@ -206,10 +192,7 @@ def test_schema_rejects_unsupported_dimensions() -> None:
 
     errors = list(Draft202012Validator(schema).iter_errors(document))
 
-    assert any(
-        error.validator == "enum" and "bogus-runner" in error.message
-        for error in errors
-    )
+    assert any(error.validator == "enum" and "bogus-runner" in error.message for error in errors)
 
 
 def test_schema_rejects_passing_planned_or_evidence_free_gates() -> None:
@@ -277,9 +260,7 @@ def test_release_check_rejects_remote_artifacts_without_network_access(
 
     monkeypatch.setattr("socket.create_connection", unexpected_network_call)
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="repository-relative path"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="repository-relative path"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
@@ -324,9 +305,9 @@ def test_release_check_binds_evidence_to_owning_gate(
     ("update", "message"),
     [
         (
-            lambda report: report["details"]["checks"]["finite_nonnegative_values"][
-                "power"
-            ].update(positive_infinity_count=1),
+            lambda report: report["details"]["checks"]["finite_nonnegative_values"]["power"].update(
+                positive_infinity_count=1
+            ),
             "positive_infinity_count",
         ),
         (
@@ -334,9 +315,7 @@ def test_release_check_binds_evidence_to_owning_gate(
             "discovery counts",
         ),
         (
-            lambda report: report["details"]["skipped_file_anomalies"].append(
-                "unreadable.parquet"
-            ),
+            lambda report: report["details"]["skipped_file_anomalies"].append("unreadable.parquet"),
             "skipped_file_anomalies",
         ),
     ],
@@ -366,9 +345,7 @@ def test_release_check_bounds_local_artifact_size(
     document = qualified_document(revision)
     monkeypatch.setattr(QUALIFICATION, "ARTIFACT_MAX_BYTES", 1)
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="exceeds the 1-byte limit"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="exceeds the 1-byte limit"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
@@ -415,12 +392,7 @@ def test_cli_release_gate_fails_closed_and_checks_expected_revision(
     ledger = tmp_path / "qualification-matrix.json"
     ledger.write_text(json.dumps(qualified_document(revision)), encoding="utf-8")
 
-    assert (
-        QUALIFICATION.main(
-            [str(ledger), "--require-release-ready", "--expected-revision", revision]
-        )
-        == 0
-    )
+    assert QUALIFICATION.main([str(ledger), "--require-release-ready", "--expected-revision", revision]) == 0
     assert "state=qualified" in capsys.readouterr().out
 
     assert (
@@ -443,18 +415,14 @@ def test_release_check_rejects_stale_or_mixed_candidate_evidence(
     revision = "a" * 40
     document = qualified_document(revision)
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="does not match expected_revision"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="does not match expected_revision"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
             expected_revision="b" * 40,
         )
 
-    _gate(document, "application-wheel")["execution"]["evidence"][0][
-        "source_revision"
-    ] = "c" * 40
+    _gate(document, "application-wheel")["execution"]["evidence"][0]["source_revision"] = "c" * 40
     with pytest.raises(
         QUALIFICATION.QualificationError,
         match="evidence does not match candidate_revision",
@@ -481,9 +449,7 @@ def test_qualified_state_cannot_bypass_release_check() -> None:
     document = _document()
     document["release_state"] = "qualified"
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="release-blocking gates"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="release-blocking gates"):
         QUALIFICATION.validate_document(document)
 
 
@@ -500,9 +466,7 @@ def test_unsupported_timing_backends_must_remain_unavailable() -> None:
     assertion = _gate(document, "unsupported-timing-no-fabrication")["assertions"][0]
     assertion["expectation"] = "modeled_power"
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="qualification contract"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="qualification contract"):
         QUALIFICATION.validate_document(document)
 
 
@@ -513,9 +477,7 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
     gate["execution"]["status"] = "passed"
     gate["execution"]["evidence"] = []
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="cannot be passed without evidence"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="cannot be passed without evidence"):
         QUALIFICATION.validate_document(document)
 
     gate["execution"]["evidence"] = passing_evidence
@@ -526,9 +488,7 @@ def test_passed_gate_requires_immutable_passing_evidence() -> None:
         QUALIFICATION.validate_document(document)
 
     gate["execution"]["evidence"][0]["sha256"] = "1" * 64
-    gate["execution"]["evidence"][0]["artifact"] = (
-        "http://example.invalid/power-data-invariants.json"
-    )
+    gate["execution"]["evidence"][0]["artifact"] = "http://example.invalid/power-data-invariants.json"
     with pytest.raises(QUALIFICATION.QualificationError, match="repository-relative"):
         QUALIFICATION.validate_document(document)
 
@@ -568,9 +528,7 @@ def test_malformed_execution_accumulates_validation_errors(gate_id: str) -> None
     document = _document()
     _gate(document, gate_id)["execution"] = []
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="execution must be an object"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="execution must be an object"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
@@ -582,9 +540,7 @@ def test_malformed_accuracy_policy_accumulates_validation_errors() -> None:
     document = _document()
     document["policy"]["silicon_accuracy"] = []
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="silicon_accuracy must be an object"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="silicon_accuracy must be an object"):
         QUALIFICATION.validate_document(
             document,
             require_release_ready=True,
@@ -606,9 +562,7 @@ def test_planned_command_cannot_be_presented_as_passing() -> None:
         }
     ]
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="command is only planned"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="command is only planned"):
         QUALIFICATION.validate_document(document)
 
 
@@ -623,14 +577,10 @@ def test_silicon_gate_and_policy_thresholds_cannot_drift() -> None:
         }
     )
 
-    with pytest.raises(
-        QUALIFICATION.QualificationError, match="qualification contract"
-    ):
+    with pytest.raises(QUALIFICATION.QualificationError, match="qualification contract"):
         QUALIFICATION.validate_document(document)
 
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
-        copy.deepcopy(policy)
-    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
     QUALIFICATION.validate_document(document)
 
 
@@ -644,9 +594,7 @@ def test_silicon_approval_rejects_boolean_thresholds() -> None:
             "threshold_status": "approved",
         }
     )
-    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = (
-        copy.deepcopy(policy)
-    )
+    _gate(document, "silicon-power-accuracy")["assertions"][0]["thresholds"] = copy.deepcopy(policy)
 
     with pytest.raises(QUALIFICATION.QualificationError, match="silicon"):
         QUALIFICATION.validate_document(document)
