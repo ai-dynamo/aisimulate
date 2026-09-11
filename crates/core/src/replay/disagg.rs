@@ -1730,6 +1730,7 @@ where
                     return Ok(ActionExecution::Applied);
                 };
                 if self.prefill_engine.worker_is_busy(worker_idx)? {
+                    eprintln!("PROBE-CANCELSRC-deferred");
                     return Ok(ActionExecution::Deferred {
                         action: issued,
                         stage: SimulationWorkerStage::Prefill,
@@ -1756,6 +1757,7 @@ where
                     return Ok(ActionExecution::Applied);
                 };
                 if self.decode_engine.worker_is_busy(worker_idx)? {
+                    eprintln!("PROBE-CANCELDEST-deferred");
                     return Ok(ActionExecution::Deferred {
                         action: issued,
                         stage: SimulationWorkerStage::Decode,
@@ -3671,8 +3673,16 @@ where
         // token -- the realistic form of the bug this guards against -- is
         // still caught. Checked only inside `step_tokens.is_empty() &&
         // !step_freed_slot` would miss exactly that case.
+        //
+        // `self.step_freed_slot ||` disjunct: hoisting this above the `if`
+        // surfaced a real case where in-flight legitimately drops with
+        // `step_freed_slot` already set (a cancellation applied earlier in
+        // this same call, ahead of this check) -- confirmed by instrumenting
+        // the one failure this produced, which fired with `freed_slot=true`.
+        // The invariant this assert actually protects is "a decrement without
+        // `step_freed_slot` set is a bug", not "no decrement at all".
         debug_assert!(
-            self.cluster_in_flight() >= entry_in_flight,
+            self.step_freed_slot || self.cluster_in_flight() >= entry_in_flight,
             "in-flight fell from {entry_in_flight} to {} without setting \
              step_freed_slot; a step that frees a slot must hold its instant",
             self.cluster_in_flight()
