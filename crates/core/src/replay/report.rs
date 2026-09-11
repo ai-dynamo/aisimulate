@@ -1043,14 +1043,19 @@ impl TraceCollector {
         play_id: String,
         dispatched_at_ms: f64,
     ) {
+        let Some(stats) = self.requests.get_mut(&uuid) else {
+            return;
+        };
+        // `authored_id` is recorded even when per-request capture is off: it is
+        // the primary key `finish_at` folds the token timelines by, and that fold
+        // is Welford. Gating it would make the summary's mean/std depend on a
+        // diagnostic flag.
+        stats.authored_id = Some(request_id);
         if !self.capture_per_request {
             return;
         }
-        if let Some(stats) = self.requests.get_mut(&uuid) {
-            stats.authored_id = Some(request_id);
-            stats.play_id = Some(play_id);
-            stats.dispatched_at_ms = Some(dispatched_at_ms);
-        }
+        stats.play_id = Some(play_id);
+        stats.dispatched_at_ms = Some(dispatched_at_ms);
     }
 
     pub fn set_agentic_trajectory(&mut self, snapshot: AgenticTrajectorySnapshot) {
@@ -1068,15 +1073,17 @@ impl TraceCollector {
         uuid: Uuid,
         context: &crate::replay::ReplayRequestContext,
     ) {
+        let Some(stats) = self.requests.get_mut(&uuid) else {
+            return;
+        };
+        // See `on_agentic_metadata`: the fold key is not a diagnostic.
+        stats.authored_id = Some(context.authored_id.clone());
         if !self.capture_per_request {
             return;
         }
-        if let Some(stats) = self.requests.get_mut(&uuid) {
-            stats.authored_id = Some(context.authored_id.clone());
-            stats.session_id = context.session_id.clone().or(stats.session_id.take());
-            stats.turn_index = context.turn_index.or(stats.turn_index);
-            stats.metadata = context.metadata.clone();
-        }
+        stats.session_id = context.session_id.clone().or(stats.session_id.take());
+        stats.turn_index = context.turn_index.or(stats.turn_index);
+        stats.metadata = context.metadata.clone();
     }
 
     /// Record that `uuid` was dispatched to `worker_idx` on the prefill pool
@@ -2558,6 +2565,62 @@ mod tests {
                 vec!["request-a", "request-b", "request-c"]
             );
         }
+    }
+
+    /// `capture_per_request` is documented as diagnostic-only ("the summary
+    /// report is unaffected either way"). It selects whether `authored_id` is
+    /// recorded, and `finish_at` folds the ITL timeline in `authored_id` order,
+    /// so with the flag off the fold degrades to runtime-UUID order. The fold
+    /// feeds `StreamingDistribution::add`, which is Welford and order-dependent
+    /// in floating point.
+    #[test]
+    fn summary_itl_stats_do_not_depend_on_capture_per_request() {
+        fn report(is_capturing: bool) -> ReplayReport {
+            let mut collector = TraceCollector::default();
+            collector.set_capture_per_request(is_capturing);
+            collector.set_defer_token_timeline_finalization(true);
+            // Authored order (a, b, c) is the reverse of UUID order, so the fold
+            // sees gaps [0.1, 7.0, 1e16, 1e15] with capture on and
+            // [1e15, 1e16, 0.1, 7.0] with it off -- a spread wide enough that
+            // Welford's running mean and variance differ in both results.
+            for (request_id, uuid, token_times) in [
+                ("request-a", 300u128, vec![0.0, 0.1, 7.1]),
+                ("request-b", 200, vec![0.0, 1.0e16]),
+                ("request-c", 100, vec![0.0, 1.0e15]),
+            ] {
+                let uuid = Uuid::from_u128(uuid);
+                collector.on_arrival(uuid, 0.0, 100, token_times.len());
+                collector.on_agentic_metadata(
+                    uuid,
+                    request_id.to_string(),
+                    "play".to_string(),
+                    0.0,
+                );
+                collector.on_admit(uuid, 0.0, 0);
+                collector.on_decode_assigned(uuid, 0);
+                let mut last_ms = 0.0;
+                for token_ms in token_times {
+                    collector.on_token(uuid, token_ms);
+                    last_ms = token_ms;
+                }
+                collector.on_terminal(uuid, last_ms, ReplayTerminalStatus::Completed);
+            }
+            collector.finish()
+        }
+
+        let captured = report(true);
+        let uncaptured = report(false);
+        assert_eq!(
+            captured.latency.itl.distribution.mean_ms.to_bits(),
+            uncaptured.latency.itl.distribution.mean_ms.to_bits(),
+            "mean itl moved with a diagnostic-only flag"
+        );
+        // The summary Serialize impl skips `per_request`, so this pins every
+        // other summary field against the same regression.
+        assert_eq!(
+            serde_json::to_value(&captured).unwrap(),
+            serde_json::to_value(&uncaptured).unwrap()
+        );
     }
 
     /// Each record must round-trip cleanly to JSON. Guards against accidental
