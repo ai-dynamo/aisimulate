@@ -47,18 +47,17 @@ pub(crate) struct OfflineDisaggReplayConfig {
 }
 
 impl OfflineDisaggReplayConfig {
-    pub(crate) fn prefill_factory(
-        &self,
-        _emit_kv_events: bool,
-    ) -> anyhow::Result<crate::replay::ReplayRoleFactory> {
-        Ok(self.prefill_factory.clone())
+    /// The `prefill_factory`/`decode_factory` fields are already built with
+    /// `role_factory(..., Observation::capture_engine_kv_events(stage))` by
+    /// the caller (see `replayer.rs`'s `Disaggregated` arm) before this
+    /// config is constructed -- there is no second KV-event flag to apply
+    /// here, just the already-configured factory.
+    pub(crate) fn prefill_factory(&self) -> crate::replay::ReplayRoleFactory {
+        self.prefill_factory.clone()
     }
 
-    pub(crate) fn decode_factory(
-        &self,
-        _emit_kv_events: bool,
-    ) -> anyhow::Result<crate::replay::ReplayRoleFactory> {
-        Ok(self.decode_factory.clone())
+    pub(crate) fn decode_factory(&self) -> crate::replay::ReplayRoleFactory {
+        self.decode_factory.clone()
     }
 
     pub(crate) fn prefill_startup_time_ms(&self) -> Option<f64> {

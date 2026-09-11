@@ -1014,12 +1014,8 @@ where
             Vec<WorkerTopology>,
         ) -> Result<(PlacementPolicyImpl, PlacementPolicyImpl)>,
     ) -> Result<Self> {
-        let prefill_factory = config.prefill_factory(Observation::capture_engine_kv_events(
-            crate::replay::WorkerStage::Prefill,
-        ))?;
-        let decode_factory = config.decode_factory(Observation::capture_engine_kv_events(
-            crate::replay::WorkerStage::Decode,
-        ))?;
+        let prefill_factory = config.prefill_factory();
+        let decode_factory = config.decode_factory();
         let handoff_order = match (prefill_factory.backend(), decode_factory.backend()) {
             (Backend::Vllm, Backend::Vllm) => HandoffOrder::SourceFirst,
             (Backend::Sglang, Backend::Sglang) => HandoffOrder::DestinationFirst,
@@ -2559,7 +2555,7 @@ where
                     }
                 }
                 SimulationWorkerStage::Aggregated => {
-                    unreachable!("disagg replay should not receive aggregated worker ready events")
+                    bail!("disaggregated replay received an aggregated worker ready event")
                 }
             }
         }
