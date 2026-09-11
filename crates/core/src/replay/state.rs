@@ -20,6 +20,7 @@ pub(crate) enum AggRequestPhase {
 pub(crate) struct AggRequestState {
     request: Option<ReplayRequestPayload>,
     pub(crate) phase: AggRequestPhase,
+    scheduler_id: Option<usize>,
     pub(crate) prefill_completed: bool,
     pub(crate) input_tokens: usize,
     pub(crate) output_tokens: usize,
@@ -32,23 +33,33 @@ impl AggRequestState {
         Self {
             request: Some(request),
             phase: AggRequestPhase::QueuedAtRouter,
+            scheduler_id: None,
             prefill_completed: false,
             input_tokens,
             output_tokens,
         }
     }
 
-    pub(crate) fn new_running(input_tokens: usize, output_tokens: usize) -> Self {
+    pub(crate) fn new_running(
+        input_tokens: usize,
+        output_tokens: usize,
+        scheduler_id: usize,
+    ) -> Self {
         Self {
             request: None,
             phase: AggRequestPhase::Running,
+            scheduler_id: Some(scheduler_id),
             prefill_completed: false,
             input_tokens,
             output_tokens,
         }
     }
 
-    pub(crate) fn take_queued_request(&mut self, uuid: Uuid) -> Result<DirectRequest> {
+    pub(crate) fn take_queued_request(
+        &mut self,
+        uuid: Uuid,
+        scheduler_id: usize,
+    ) -> Result<DirectRequest> {
         if self.phase != AggRequestPhase::QueuedAtRouter {
             bail!("offline replay expected queued request state for {uuid}");
         }
@@ -57,7 +68,12 @@ impl AggRequestState {
             .take()
             .ok_or_else(|| anyhow!("offline replay missing queued request payload for {uuid}"))?;
         self.phase = AggRequestPhase::Running;
+        self.scheduler_id = Some(scheduler_id);
         Ok(request.into_direct_request())
+    }
+
+    pub(crate) fn scheduler_id(&self) -> Option<usize> {
+        self.scheduler_id
     }
 }
 

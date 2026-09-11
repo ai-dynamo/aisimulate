@@ -841,6 +841,29 @@ def evaluate_ops_json_with_rust(
     return result
 
 
+def evaluate_context_attention_kernels_with_rust(
+    model: Any,
+    database: Any,
+    *,
+    ops_json: str,
+    batch_size: int,
+    s: int,
+    imbalance_correction_scale: float = 1.0,
+    visual_block_upper_triangle: bool = False,
+) -> list[PerOpValue]:
+    """Evaluate visual-mask attention kernels with the model's compiled database policy."""
+    handle = _cached_engine_handle(model, database)
+    result = handle.evaluate_context_attention_kernels_json(
+        ops_json,
+        batch_size=int(batch_size),
+        s=int(s),
+        imbalance_correction_scale=_scale_or_one(imbalance_correction_scale),
+        visual_block_upper_triangle=visual_block_upper_triangle,
+    )
+    _note_rust_provenance(handle)
+    return result
+
+
 # LRU memo of compiled ``EngineHandle`` objects, keyed by the engine identity
 # (model_path + system + backend + version + parallelism + quant + nextn +
 # kv_block_size). ``compile_engine`` rebuilds the model and loads the perf DB,

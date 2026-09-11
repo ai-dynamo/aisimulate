@@ -350,15 +350,18 @@ jobs:
 
   # Refresh strict-native op-level FPE coverage at the exact nightly source
   # SHA. This remains outside pull-request CI because a complete refresh uses
-  # 28 CPU shards and is expected to take roughly an hour. A failed refresh
+  # multiple CPU shards and remains expensive. A failed refresh
   # prevents the nightly artifacts from advancing to Artifactory.
   fpe-support-matrix:
     name: Refresh FPE support matrix
-    needs: changes-guard
+    needs: [changes-guard, build-artifacts]
     if: needs.changes-guard.outputs.should-build == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/fpe-support-matrix.yml
+    with:
+      expected_sha: ${{ github.sha }}
+      wheel_artifact: nightly-dist-amd64
 
   # Installing the wheel pulls its unpinned PyPI dependency tree — untrusted
   # code that must not share a job with artifact production, so this runs

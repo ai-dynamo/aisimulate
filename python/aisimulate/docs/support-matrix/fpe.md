@@ -14,7 +14,8 @@ own evidence.
 Each row records the model and architecture, system, backend and version,
 the `op_level` forward model, resolved quantization, parallel topology,
 role, probe phase, provenance, exact package version and source SHA, and a
-machine-readable SDK reproducer.
+machine-readable SDK reproducer. Attention-backend overrides remain part of
+the engine identity and are passed through the supported public builder.
 
 An identical engine used by multiple roles is compiled once. The row records
 all applicable roles:
@@ -49,7 +50,9 @@ failures. Error text is diagnostic evidence, not a stable API.
 
 ## Run it
 
-Install the repository package, then generate one op-level FPE shard per system:
+Install a built repository wheel, then generate one op-level FPE shard per
+system. The command imports that installed native runtime; it must not prepend
+the source-only application package to Python's import path:
 
 ```bash
 python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
@@ -96,11 +99,27 @@ but Python-backed model compilation and database memory still limit scaling.
 Increase `--max-workers` only with measured memory headroom.
 
 Nightly CI calls the reusable FPE workflow after confirming that `main` has
-changed. The workflow creates one shard per system/backend pair and runs at
+changed and building its release artifacts. All FPE shards install the exact
+amd64 nightly wheel, verified against the artifact checksums, source commit,
+and one recorded wheel hash. A manual run requires the full `expected_sha` and
+builds one shared wheel. Neither path rebuilds the native runtime in every
+shard.
+
+The workflow discovers one shard per curated system/backend pair and runs at
 most eight shards concurrently on the repository-specific CPU runner set. Each
 shard runs only `forward_model=op_level` with an eight-thread local pool. A
-final job combines the raw shards into the split web CSV artifact, and nightly
-release artifacts do not advance to Artifactory if the refresh fails. The FPE
+final job validates reports before combining them into the split web CSV
+artifact. Qualification requires every discovered shard, exact source and wheel
+identity, consistent package version and workload, complete role-appropriate
+phases, and no unexpected build or query failure. The small required-probe
+manifest additionally requires all four phases of at least one native topology
+for each known-good model/system/backend identity. An empty or entirely
+unsupported report cannot satisfy that requirement. Classified exploratory
+coverage gaps remain visible; they do not certify support.
+
+`fpe-qualification.json` records the accepted source, wheel digest, shard count,
+and status counts. Nightly release artifacts do not advance to Artifactory if
+qualification fails. The FPE
 workflow remains manually dispatchable for an out-of-band refresh. This avoids
 leaving runners idle when a small system finishes before the largest systems.
 Full runs also suppress repeated SDK warnings at the console while preserving

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Optional
 
 from aiconfigurator_core.sdk import common, config
 from aiconfigurator_core.sdk.utils import (
+    _get_language_quantization_config,
     get_model_config_from_model_path,
     parse_compressed_tensors_quant,
 )
@@ -47,11 +48,11 @@ def quant_exclude_patterns(raw_config: dict) -> list:
 
     Reads both declaration formats kept on ``raw_config`` by
     ``get_model_config_from_model_path``: the checkpoint's own
-    ``quantization_config`` (compressed-tensors ``ignore`` /
+    root or text-only ``quantization_config`` (compressed-tensors ``ignore`` /
     ``modules_to_not_convert`` / ``exclude_modules``) and the retained
     ``hf_quant_config`` (ModelOpt ``exclude_modules`` / ``ignore``).
     """
-    quant_config = raw_config.get("quantization_config")
+    quant_config = _get_language_quantization_config(raw_config)
     quant_config = quant_config if isinstance(quant_config, dict) else {}
 
     hf_quant_config = raw_config.get("hf_quant_config")
@@ -507,7 +508,7 @@ def _collect_mixed_precision_layer_algos(raw_config: dict) -> tuple[set[str], se
         if isinstance(hf_quant_section, dict):
             add_quantized_layers(hf_quant_section.get("quantized_layers"))
 
-    quant_cfg = raw_config.get("quantization_config")
+    quant_cfg = _get_language_quantization_config(raw_config)
     if isinstance(quant_cfg, dict):
         add_quantized_layers(quant_cfg.get("quantized_layers"))
         config_groups = quant_cfg.get("config_groups")
@@ -533,7 +534,7 @@ def _infer_mixed_precision_quant_modes(raw_config: dict, quant_dynamic: bool | N
     # in the mixed-precision header. Prefer that explicit base description to
     # broad config-group targets such as ``Linear``: the latter are filtered
     # by ``ignore`` at runtime and must not reclassify attention/shared GEMMs.
-    quant_cfg = raw_config.get("quantization_config")
+    quant_cfg = _get_language_quantization_config(raw_config)
     base_quant_method = str(quant_cfg.get("quant_method", "")).lower() if isinstance(quant_cfg, dict) else ""
     weight_block_size = quant_cfg.get("weight_block_size") if isinstance(quant_cfg, dict) else None
     if base_quant_method == "fp8" and weight_block_size:
@@ -622,7 +623,7 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
         # Parse the quantization_config to find which layer categories are quantized.
         # Only set overrides for quantized categories; unset modes fall through to the
         # global bfloat16 default in _apply_model_quant_defaults.
-        quant_cfg = raw_config.get("quantization_config") or {}
+        quant_cfg = _get_language_quantization_config(raw_config) or {}
         base_algo, ignored = parse_compressed_tensors_quant(quant_cfg)
         if base_algo:
             if "attention" not in ignored:
@@ -942,6 +943,8 @@ def resolve_context_fmha_by_data(
     in ``task_v2.Task._resolve_quant_modes``, driven by the perf DB's
     fmha-keyed context table instead of a hand-written architecture list:
 
+    * Whole-model FPM: preserve explicit FMHA or promote checkpoint inference;
+      its complete cell identity owns validation.
     * Generation-only roles: no-op (no generation table keys on fmha).
     * fp8 slice present, or no DB information for the op: no-op.
     * fmha explicitly set to fp8 with no fp8 slice: raise a concise
@@ -960,6 +963,16 @@ def resolve_context_fmha_by_data(
         is_context_role: True for context-attention roles (agg, prefill,
             static, static_ctx, AFD prefill); False for generation-only roles.
     """
+    if model_config.forward_model == "fpm":
+        if model_config.fmha_quant_mode is None:
+            info = _get_model_info(model_path)
+            inferred = _infer_quant_modes_from_raw_config(
+                info.get("raw_config", {}),
+                info.get("architecture"),
+            )
+            model_config.fmha_quant_mode = inferred.get("fmha_quant_mode")
+        return
+
     if not is_context_role:
         return
 

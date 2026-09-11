@@ -215,6 +215,7 @@ Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/core-api.md)
+- [FPM collection-to-prediction workflow](python/aisimulate/docs/fpm/end-to-end-workflow.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
 - [Sweeper SDK](docs/sweeper/overview.md)
 - [AIConfigurator compatibility Python API](python/aisimulate/README.md#python-api)
@@ -298,6 +299,16 @@ Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
 The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
 consume AISimulate through optional adapters.
+
+### Packaged legal-file copies
+
+The root [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+are the canonical repository legal files. Because the Python wheel build is
+rooted at `python/aisimulate/`, byte-identical copies are retained there so the
+wheel can declare and distribute them. These copies do not create a separate
+licensing boundary, and CI fails if either copy differs from its root original.
+See the [artifact contract](docs/artifact-contract.md#packaged-license-files) for
+the complete packaging contract.
 
 ## Develop from source
 

@@ -52,6 +52,7 @@ def test_aic_core_system_spec_contract(monkeypatch):
         lambda model: {
             "architecture": "Qwen3ForCausalLM",
             "context": 40960,
+            "n_routed_experts": 64,
         },
     )
     monkeypatch.setattr(mh_mod, "check_is_moe", lambda model_config: False)
@@ -74,6 +75,7 @@ def test_aic_core_system_spec_contract(monkeypatch):
     assert mh.vram_per_gpu == 80
     assert mh.gpus_per_node == 8
     assert mh.weight_bytes == 123
+    assert mh.num_experts == 64
 
 
 def test_role_runtime_preserves_legacy_three_tuple_contract(monkeypatch):
@@ -159,9 +161,7 @@ def test_max_seq_len_defaults_to_model_context(monkeypatch):
         return dict.fromkeys(shapes, 10_000_000)
 
     monkeypatch.setattr(mh_mod, "feasible_shape_tokens", fake_feasible)
-    parallel_configs_for(
-        DEEPSEEK, "gb200", gpu_budget=16, deployment_mode="agg", backend="trtllm"
-    )
+    parallel_configs_for(DEEPSEEK, "gb200", gpu_budget=16, deployment_mode="agg", backend="trtllm")
     assert seen["max_seq_len"] == 163840  # DeepSeek-V3 max context
 
 
@@ -184,9 +184,7 @@ def test_kv_filter_keeps_only_feasible_shapes(monkeypatch):
         max_seq_len=8192,
     )
     assert cfgs
-    assert all(
-        c.shape.gpus_per_worker >= 4 for c in cfgs
-    )  # KV decides; no weight floor
+    assert all(c.shape.gpus_per_worker >= 4 for c in cfgs)  # KV decides; no weight floor
     assert all(c.total_gpus <= 16 for c in cfgs)
 
 
