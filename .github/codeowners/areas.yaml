@@ -149,6 +149,10 @@ shared:
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_host_resources.py
     owners: [replay, sweeper, maintainers]
+  - glob: tests/test_reported_resource_regression.py
+    owners: [replay, sweeper, maintainers]
+  - glob: scripts/verify_reported_resource_safety.py
+    owners: [replay, sweeper, maintainers]
   - glob: docs/local-resources.md
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_unified_cli.py

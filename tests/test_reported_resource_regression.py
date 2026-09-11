@@ -3,9 +3,9 @@
 
 """Deterministic preflight regression; native CLI evidence has a separate runner."""
 
-from copy import deepcopy
 import hashlib
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
