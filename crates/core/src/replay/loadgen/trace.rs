@@ -828,6 +828,9 @@ impl Trace {
             );
         }
 
+        validate_length_spec("input_tokens", &spec.input_tokens)?;
+        validate_length_spec("output_tokens", &spec.output_tokens)?;
+
         let mut rng = StdRng::seed_from_u64(spec.seed);
         let mut sessions = Vec::with_capacity(spec.num_sessions);
         let first_arrivals = spec
@@ -844,8 +847,8 @@ impl Trace {
             };
             let mut turns = Vec::with_capacity(spec.turns_per_session);
             for turn_idx in 0..spec.turns_per_session {
-                let input_length = sample_length(&spec.input_tokens, 1, &mut rng);
-                let max_output_tokens = sample_length(&spec.output_tokens, 1, &mut rng);
+                let input_length = sample_length(&spec.input_tokens, 1, &mut rng)?;
+                let max_output_tokens = sample_length(&spec.output_tokens, 1, &mut rng)?;
                 let num_blocks = input_length.div_ceil(spec.block_size);
                 let prefix_blocks =
                     ((num_blocks as f64) * spec.shared_prefix_ratio).round() as usize;
@@ -1900,9 +1903,44 @@ fn sample_delay_ms(spec: &DelaySpec, rng: &mut StdRng) -> Result<f64> {
     }
 }
 
-fn sample_length(spec: &LengthSpec, min_value: usize, rng: &mut StdRng) -> usize {
+/// Upper bound on a synthesized sequence length, matching the Weka importer's
+/// ceiling on a declared request length. A length reaches `Vec::with_capacity`
+/// as a block count, so an unbounded value is an allocation abort rather than
+/// an error.
+const MAX_SYNTHETIC_SEQUENCE_TOKENS: usize = 10_000_000;
+
+/// Reject a length distribution whose parameters cannot produce a usable draw.
+///
+/// Without this, `sample_length` has two silent failure modes: a NaN `stddev`
+/// makes every draw NaN, and `f64::max` returns the non-NaN operand, so the
+/// authored workload is replaced by one of length `min_value`; a non-finite or
+/// very large `stddev` overflows the `as usize` cast, which saturates rather
+/// than wrapping and turns into a `Vec::with_capacity(usize::MAX)` abort.
+fn validate_length_spec(field: &str, spec: &LengthSpec) -> Result<()> {
+    if !spec.stddev.is_finite() {
+        bail!(
+            "{field} stddev must be a finite number, got {}",
+            spec.stddev
+        );
+    }
+    if spec.mean > MAX_SYNTHETIC_SEQUENCE_TOKENS {
+        bail!(
+            "{field} mean {} exceeds the maximum synthesized sequence length {MAX_SYNTHETIC_SEQUENCE_TOKENS}",
+            spec.mean
+        );
+    }
+    if spec.stddev.abs() > MAX_SYNTHETIC_SEQUENCE_TOKENS as f64 {
+        bail!(
+            "{field} stddev {} exceeds the maximum synthesized sequence length {MAX_SYNTHETIC_SEQUENCE_TOKENS}",
+            spec.stddev
+        );
+    }
+    Ok(())
+}
+
+fn sample_length(spec: &LengthSpec, min_value: usize, rng: &mut StdRng) -> Result<usize> {
     if spec.stddev == 0.0 {
-        return spec.mean.max(min_value);
+        return Ok(spec.mean.max(min_value));
     }
 
     let stddev = spec.stddev.abs();
@@ -1910,7 +1948,16 @@ fn sample_length(spec: &LengthSpec, min_value: usize, rng: &mut StdRng) -> usize
     let u2 = rng.random::<f64>();
     let z0 = (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos();
     let sample = spec.mean as f64 + z0 * stddev;
-    sample.round().max(min_value as f64) as usize
+    let sample = sample.round().max(min_value as f64);
+    // `validate_length_spec` bounds both parameters, so only an extreme tail
+    // draw can land here -- loud is still better than a saturating cast.
+    if !(sample.is_finite() && sample <= MAX_SYNTHETIC_SEQUENCE_TOKENS as f64) {
+        bail!(
+            "synthesized length {sample} exceeds the maximum synthesized sequence \
+             length {MAX_SYNTHETIC_SEQUENCE_TOKENS}"
+        );
+    }
+    Ok(sample as usize)
 }
 
 fn sample_exponential_delay_ms(mean_ms: f64, rng: &mut StdRng) -> f64 {

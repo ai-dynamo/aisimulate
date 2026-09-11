@@ -872,6 +872,58 @@ fn test_synthetic_prefix_groups_share_prefixes_within_group() {
 /// count at zero is an easy mistake. It used to be an invisible one: the
 /// prefix-block loop pushed nothing, the backfill gave every block a unique
 /// hash, and the run silently measured a 0%-shared workload.
+/// A NaN stddev used to make every Box-Muller draw NaN, and `f64::max` returns
+/// the non-NaN operand -- so the authored workload was silently replaced by
+/// single-token turns. A huge stddev saturated the `as usize` cast instead of
+/// wrapping, turning into a `Vec::with_capacity` abort.
+#[test]
+fn test_synthetic_rejects_unusable_length_distributions() {
+    let spec = |input_tokens: LengthSpec| SyntheticTraceSpec {
+        block_size: 4,
+        num_sessions: 2,
+        turns_per_session: 1,
+        input_tokens,
+        output_tokens: LengthSpec {
+            mean: 2,
+            stddev: 0.0,
+        },
+        shared_prefix_ratio: 0.0,
+        num_prefix_groups: 0,
+        first_turn_arrivals: ArrivalSpec::Burst,
+        inter_turn_delays: DelaySpec::None,
+        seed: 42,
+        arrival_seed: 42,
+    };
+
+    for stddev in [f64::NAN, f64::INFINITY] {
+        let error = Trace::synthetic(spec(LengthSpec { mean: 16, stddev }))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("input_tokens"),
+            "the error must name the offending field, got: {error}"
+        );
+    }
+
+    let error = Trace::synthetic(spec(LengthSpec {
+        mean: usize::MAX,
+        stddev: 0.0,
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("input_tokens mean"),
+        "an unbounded mean must be refused, got: {error}"
+    );
+
+    // A finite, ordinary distribution must stay accepted.
+    Trace::synthetic(spec(LengthSpec {
+        mean: 16,
+        stddev: 4.0,
+    }))
+    .expect("a finite length distribution must remain accepted");
+}
+
 #[test]
 fn test_synthetic_shared_prefix_ratio_without_groups_is_rejected() {
     let spec = |num_prefix_groups| SyntheticTraceSpec {
