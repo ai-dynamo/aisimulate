@@ -213,7 +213,7 @@ _EAGLE_PREFILL_CASE = dict(
     model_path="moonshotai/Kimi-K2.5",
     system="gb200",
     backend="trtllm",
-    backend_version="1.3.0rc10",
+    backend_version="current",
     # A realistic long-context prefill chunk (the reporter's agentic workload runs up
     # to ~200k ISL); the over-count scales with the chunk, so it surfaces here at a
     # modest draft length rather than only at nextn>=4 with an 8k chunk.
