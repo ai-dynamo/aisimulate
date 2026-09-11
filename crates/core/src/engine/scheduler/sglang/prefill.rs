@@ -12,7 +12,12 @@ use crate::engine::kv_manager::SglangKvManager;
 pub(super) struct PrefillFpmItem {
     pub(super) prompt_len: usize,
     pub(super) tokens_computed: usize,
+    /// KV context already present when this chunk runs (cached prefix or the request's own
+    /// earlier chunks); drives the forward-pass model.
     pub(super) prefix_tokens: usize,
+    /// Radix-cache reuse credited to this pass: the admission match on a request's first chunk,
+    /// zero for continuations, which only extend their own tokens.
+    pub(super) cache_reused_tokens: usize,
 }
 
 #[derive(Default)]
@@ -21,11 +26,14 @@ pub(super) struct AdmitResult {
     pub(super) admissions: Vec<AdmissionEvent>,
     pub(super) total_isl: usize,
     pub(super) total_prefix: usize,
-    pub(super) oom: bool,
     /// Per-request prefill info for building FPM snapshots.
     pub(super) prefill_fpm: Vec<PrefillFpmItem>,
 }
 
+/// Behavioral model of SGLang's prefill admission (`Scheduler.get_new_batch_prefill`,
+/// `PrefillAdder.add_one_req` / `add_chunked_req`, `Req.init_next_round_input`) as of
+/// sgl-project/sglang v0.5.6.post2 (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`,
+/// `schedule_batch.py`, `schedule_policy.py`). Re-implemented; no SGLang source is copied.
 pub(super) fn get_new_batch_prefill(
     waiting: &mut VecDeque<SglangRequest>,
     kv_manager: &mut SglangKvManager,
@@ -55,7 +63,6 @@ pub(super) fn get_new_batch_prefill(
     let mut admissions = Vec::new();
     let mut prefill_fpm = Vec::new();
     let mut rejected = VecDeque::new();
-    let mut oom = false;
     let mut total_isl = 0usize;
     let mut total_prefix = 0usize;
 
@@ -63,8 +70,32 @@ pub(super) fn get_new_batch_prefill(
     while can_run.len() < available_running_slots
         && let Some(mut req) = waiting.pop_front()
     {
-        let extend_input = req.extend_input_len();
-        if extend_input == 0 {
+        // SGLang `Req.init_next_round_input(tree_cache)`: a waiting request matches its whole
+        // prompt against the radix tree once, capped at `input_len - 1` so a request that must
+        // produce a token always computes at least one. Chunked continuations are re-initialised
+        // without the tree cache and never re-match; the request simply continues from the tokens
+        // it already owns. Zero-output (prefix-only) replay requests keep the full match: they
+        // have no first token to sample, so a fully cached prompt is no forward-pass work.
+        let cached_prefix = if req.materialized_tokens == 0 && config.enable_prefix_caching {
+            req.kv_lease
+                .ensure_page_hashes(&req.sequence_tokens, config.block_size);
+            let match_len = if req.max_output_tokens == 0 {
+                req.current_sequence_len()
+            } else {
+                req.current_sequence_len().saturating_sub(1)
+            };
+            let page_hashes = req.kv_lease.page_hashes();
+            let pages = (match_len / config.block_size).min(page_hashes.len());
+            kv_manager
+                .cache()
+                .prefix_match_hashes_len(&page_hashes[..pages])
+        } else {
+            0
+        };
+        let start = req.materialized_tokens.max(cached_prefix);
+        // SGLang `extend_input_len`: tokens left to compute beyond the matched/owned prefix.
+        let extend_input = req.current_sequence_len().saturating_sub(start);
+        if extend_input == 0 && req.materialized_tokens > 0 {
             rejected.push_back(req);
             break;
         }
@@ -80,6 +111,8 @@ pub(super) fn get_new_batch_prefill(
             chunk.min(extend_input)
         };
 
+        // Budgets are charged for computed tokens only (`PrefillAdder._update_prefill_budget`),
+        // not for the cached prefix.
         let charged_input_tokens = ceil_to_block(chunk_tokens, config.block_size) as f64;
         let output_reserve = if chunk_tokens < extend_input {
             0
@@ -96,18 +129,10 @@ pub(super) fn get_new_batch_prefill(
             break;
         }
 
-        let chunk_end = req.materialized_tokens + chunk_tokens;
-        let old_allocated_tokens = req.allocated_tokens;
+        let chunk_end = start + chunk_tokens;
+        let first_admission = req.materialized_tokens == 0;
         let mut lease = std::mem::take(&mut req.kv_lease);
         let alloc_tokens = req.sequence_prefix(chunk_end);
-        if req.materialized_tokens > 0 {
-            let target_allocated_tokens = ceil_to_block(chunk_end, config.block_size);
-            let required_capacity = target_allocated_tokens.saturating_sub(old_allocated_tokens);
-            let available = kv_manager.cache().available_tokens();
-            if available < required_capacity {
-                kv_manager.evict(required_capacity - available);
-            }
-        }
 
         let prefix_len = if req.materialized_tokens > 0 {
             if !lease.is_active() {
@@ -116,40 +141,50 @@ pub(super) fn get_new_batch_prefill(
                     req.uuid, req.materialized_tokens
                 );
             }
-            kv_manager
-                .extend_allocation(alloc_tokens, &mut lease)
-                .then_some(req.materialized_tokens)
+            // Continuation: extend the request's own pages; no re-match.
+            kv_manager.extend_allocation(alloc_tokens, &mut lease)
         } else {
-            kv_manager.allocate_for_request_lease(alloc_tokens, &mut lease)
+            // Locks the path the read-only match above saw, matching no further than that cap so
+            // physical ownership and `cached_tokens` also stop at `input_len - 1`: the last token
+            // of a fully cached prompt is computed and gets its own KV slot.
+            kv_manager.allocate_for_request_lease_capped(alloc_tokens, &mut lease, start)
         };
 
         let Some(prefix_len) = prefix_len else {
             req.kv_lease = lease;
             rejected.push_back(req);
-            oom = true;
             break;
         };
         let tokens_computed = chunk_end.saturating_sub(prefix_len);
+        // Cache reuse is what the radix tree supplied at admission; a continuation's `prefix_len`
+        // is the request's own earlier chunks and must not be reported as a cache hit.
+        let admission_reused_tokens = lease.admission_reused_tokens();
+        let cache_reused_tokens = if first_admission { prefix_len } else { 0 };
 
         req.kv_lease = lease;
         req.materialized_tokens = chunk_end;
         req.allocated_tokens = ceil_to_block(chunk_end, config.block_size);
         req.debug_assert_invariants(config.block_size);
 
-        admissions.push(AdmissionEvent {
-            uuid: req.uuid,
-            reused_input_tokens: prefix_len,
-            cache_tier_attribution: None,
-        });
+        // One admission per request: a continuation chunk is the same admission still running,
+        // not a readmission.
+        if first_admission {
+            admissions.push(AdmissionEvent {
+                uuid: req.uuid,
+                reused_input_tokens: admission_reused_tokens,
+                cache_tier_attribution: None,
+            });
+        }
         prefill_fpm.push(PrefillFpmItem {
             prompt_len: req.prompt_len(),
             tokens_computed,
             prefix_tokens: prefix_len,
+            cache_reused_tokens,
         });
 
         total_isl += chunk_end;
         total_prefix += prefix_len;
-        rem_total_tokens -= (req.allocated_tokens - old_allocated_tokens + output_reserve) as f64;
+        rem_total_tokens -= charged_input_tokens + output_reserve as f64;
         rem_input_tokens -= charged_input_tokens;
         rem_chunk_tokens -= charged_input_tokens;
         can_run.push(req);
@@ -168,7 +203,6 @@ pub(super) fn get_new_batch_prefill(
         admissions,
         total_isl,
         total_prefix,
-        oom,
         prefill_fpm,
     }
 }

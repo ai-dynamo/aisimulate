@@ -14,7 +14,7 @@ from aiconfigurator_core.sdk.models.helpers import (
     mtp_scale_factor,
     power_law_distribution,
 )
-from aiconfigurator_core.sdk.utils import _load_model_config_from_model_path
+from aiconfigurator_core.sdk.utils import _get_language_quantization_config, _load_model_config_from_model_path
 
 logger = logging.getLogger(__name__)
 
@@ -364,7 +364,7 @@ class MOEModel(BaseModel):
 
         # Get weight_block_size from quantization_config (default to [128, 128])
         default_size = [128, 128]
-        weight_block_size = raw_config.get("quantization_config", {}).get("weight_block_size", default_size)[0]
+        weight_block_size = _get_language_quantization_config(raw_config).get("weight_block_size", default_size)[0]
 
         # Check alignment
         moe_size_per_gpu = self._moe_inter_size // self.config.moe_tp_size

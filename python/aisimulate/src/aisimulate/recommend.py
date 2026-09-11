@@ -482,6 +482,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             trace_format=source.get("format", "mooncake"),
             trace_block_size=source.get("block_size"),
         )
+        if source.get("nested_timestamp_basis") is not None:
+            result["weka_nested_timestamp_basis"] = source["nested_timestamp_basis"]
         if load_type == "concurrency":
             _configure_load_domain(
                 result,
@@ -496,6 +498,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 field="arrival_speedup_ratio",
                 integer=False,
             )
+            if load.get("agentic_lanes") is not None:
+                result["agentic_lanes"] = load["agentic_lanes"]
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
