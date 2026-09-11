@@ -11,6 +11,10 @@ subtitle: Core fields and optional adapter-owned search spaces
 `SmartSearchConfig.search_space` contains backend and deployment fields. Optional feature-specific
 search spaces are mappings under `SmartSearchConfig.adapters`.
 
+For fixed-image E+agg/E+P+D search, see [Analytical EPD search](epd.md).
+The SDK uses `search_space.encoder` with `workload.images`; it reuses AIC's
+encoder model and does not expose per-request EPD replay or deployment outputs.
+
 ## Top-Level Shape
 
 ```yaml
