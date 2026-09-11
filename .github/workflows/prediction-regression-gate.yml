@@ -30,10 +30,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Isolate manual runs, but replace stale automatic runs for the same trusted ref.
+  # Preserve lifecycle/manual runs; only replace stale trusted PR validation.
   group: >-
-    prediction-regression-${{ github.event_name == 'workflow_dispatch'
-      && github.run_id || github.ref }}
+    prediction-regression-${{ github.event_name == 'push'
+      && startsWith(github.ref, 'refs/heads/pull-request/') && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:

@@ -15,7 +15,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: fast-ci-${{ github.event.pull_request.number || github.ref }}
+  # Replace stale PR validation while preserving every lifecycle/manual run.
+  group: >-
+    fast-ci-${{ (github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')))
+      && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:

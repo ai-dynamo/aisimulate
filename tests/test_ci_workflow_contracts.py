@@ -10,6 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -204,15 +205,15 @@ def test_migrated_workflows_keep_reviewed_safety_fixes() -> None:
     report_commands = _run_commands(prediction["jobs"]["report"])
     assert "NO_HARNESS" in collect_commands
     assert "pyyaml==6.0.3" in report_commands
-    concurrency_group = prediction["concurrency"]["group"]
-    assert "github.event_name == 'workflow_dispatch'" in concurrency_group
-    assert "github.run_id" in concurrency_group
-    assert "github.ref" in concurrency_group
-
-    wheel_concurrency_group = platform_wheels["concurrency"]["group"]
-    assert "github.event_name == 'workflow_dispatch'" in wheel_concurrency_group
-    assert "github.run_id" in wheel_concurrency_group
-    assert "github.ref" in wheel_concurrency_group
+    for workflow in (prediction, platform_wheels):
+        concurrency_group = workflow["concurrency"]["group"]
+        assert "github.event_name == 'push'" in concurrency_group
+        assert "startsWith(github.ref, 'refs/heads/pull-request/')" in concurrency_group
+        assert "&& github.ref || github.run_id" in concurrency_group
+    fast_group = _workflow("fast-ci.yml")["concurrency"]["group"]
+    assert "github.event_name == 'pull_request'" in fast_group
+    assert "github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')" in fast_group
+    assert "&& github.ref || github.run_id" in fast_group
 
 
 def test_migrated_workflows_pin_actions_and_do_not_persist_checkout_credentials() -> None:
@@ -283,6 +284,70 @@ def test_prediction_gate_resolves_base_for_push_and_manual_callers(tmp_path: Pat
     assert _run_resolve_step(script, "push", "main", tmp_path) == {"old": "main"}
     assert _run_resolve_step(script, "push", "", tmp_path) == {"old": "main"}
     assert _run_resolve_step(script, "workflow_dispatch", "release/0.12", tmp_path) == {"old": "release/0.12"}
+
+
+@pytest.mark.parametrize(
+    ("event", "ref", "before", "uses_before"),
+    [
+        ("push", "refs/heads/main", "a" * 40, True),
+        ("push", "refs/heads/release/0.12.0", "b" * 40, True),
+        ("push", "refs/heads/pull-request/96", "a" * 40, False),
+        ("workflow_dispatch", "refs/heads/main", "a" * 40, False),
+        ("workflow_dispatch", "refs/heads/codex/restore-migrated-ci", "", False),
+        ("push", "refs/heads/release/0.12.0", "0" * 40, False),
+    ],
+)
+def test_full_ci_comparison_base_uses_previous_lifecycle_commit(
+    tmp_path: Path, event: str, ref: str, before: str, uses_before: bool
+) -> None:
+    result, output = _run_comparison_base(tmp_path, event, ref, before)
+    assert result.returncode == 0, result.stderr
+    assert output == {"sha": before if uses_before else "c" * 40}
+    assert (tmp_path / "gh-called").exists() is not uses_before
+
+
+@pytest.mark.parametrize(("before", "api_sha", "api_status"), [("bad", "c" * 40, 0), ("", "main", 0), ("", "", 1)])
+def test_full_ci_comparison_base_fails_closed(tmp_path: Path, before: str, api_sha: str, api_status: int) -> None:
+    result, output = _run_comparison_base(tmp_path, "push", "refs/heads/main", before, api_sha, api_status)
+    assert result.returncode != 0
+    assert output == {}
+
+
+def _run_comparison_base(
+    tmp_path: Path, event: str, ref: str, before: str, api_sha: str = "c" * 40, api_status: int = 0
+) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
+    jobs = _workflow("ci.yml")["jobs"]
+    assert jobs["verify-target"]["outputs"]["comparison-base"] == "${{ steps.comparison-base.outputs.sha }}"
+    for name, argument in (("collector-data", "base_sha"), ("prediction-regression", "old-ref")):
+        assert "verify-target" in jobs[name]["needs"]
+        assert jobs[name]["with"][argument] == "${{ needs.verify-target.outputs.comparison-base }}"
+    step = next(step for step in jobs["verify-target"]["steps"] if step.get("id") == "comparison-base")
+    gh = tmp_path / "gh"
+    gh.write_text(
+        '#!/bin/bash\n[[ "$*" == "api -X GET repos/ai-dynamo/aisimulate/commits/main --jq .sha" ]] || exit 9\n'
+        'touch "${GH_CALLED}"\nprintf "%s\\n" "${TEST_API_SHA}"\nexit "${TEST_API_STATUS}"\n'
+    )
+    gh.chmod(0o755)
+    output_path = tmp_path / "outputs"
+    result = subprocess.run(
+        ["bash", "-c", step["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_EVENT_NAME": event,
+            "GITHUB_REF": ref,
+            "BEFORE_SHA": before,
+            "REPOSITORY": "ai-dynamo/aisimulate",
+            "GITHUB_OUTPUT": str(output_path),
+            "GH_CALLED": str(tmp_path / "gh-called"),
+            "TEST_API_SHA": api_sha,
+            "TEST_API_STATUS": str(api_status),
+        },
+        capture_output=True,
+        text=True,
+    )
+    output = dict(line.split("=", 1) for line in output_path.read_text().splitlines()) if output_path.exists() else {}
+    return result, output
 
 
 def test_collector_comparison_fetch_preserves_full_history() -> None:
