@@ -180,11 +180,16 @@ pub trait SteppableReplay {
 
 /// A type-erased placement policy for the aggregated steppable runtime,
 /// parameterized on the observation and admission-metadata flavors.
-pub type DynPlacement<Observation, Metadata> = Box<
+///
+/// `ObservationFlavor` (an engine observation *flavor*, e.g. `NoEngineEvents`
+/// or `RouterEventObservation`) and the trait's own `Observation` associated
+/// type (that flavor's `::Batch`) are two different types one line apart;
+/// named distinctly here so the projection is not mistaken for an identity.
+pub type DynPlacement<ObservationFlavor, Metadata> = Box<
     dyn PlacementPolicy<
             ReplayRequestPayload,
             Metadata = Metadata,
-            Observation = <Observation as ReplayEngineObservation>::Batch,
+            Observation = <ObservationFlavor as ReplayEngineObservation>::Batch,
         >,
 >;
 type SteppableDisaggRuntime =
@@ -276,15 +281,7 @@ where
                 // forever. Scoped to this constructor because a policy whose
                 // `topology_settled` is a one-shot latch would otherwise have
                 // that transition consumed before its real first settle.
-                //
-                // 0.0 matches `AggRuntimeImpl`'s own `now_ms: 0.0` in
-                // `new_composed` -- that field is unconditionally 0.0
-                // regardless of the `startup_time_ms` argument (`None`
-                // above), not derived from it; `create_placement` (where
-                // this call happens) even runs before that field is
-                // assigned. The two 0.0 literals have to agree because
-                // nothing threads one from the other.
-                let released = placement.topology_settled(0.0)?;
+                let released = placement.topology_settled(crate::replay::agg::REPLAY_EPOCH_MS)?;
                 anyhow::ensure!(
                     released.is_empty(),
                     "placement released {} request(s) before any were submitted",

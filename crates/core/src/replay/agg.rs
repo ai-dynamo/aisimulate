@@ -43,6 +43,14 @@ use uuid::Uuid;
 
 const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
 
+/// The runtime's start instant, unconditional regardless of
+/// `startup_time_ms` (see [`AggRuntimeImpl::new_composed`]'s `now_ms` field).
+/// Shared with `loadgen::steppable`'s `with_placement`, whose initial
+/// `topology_settled` call must report the same instant this runtime
+/// actually starts at -- a single source of truth in place of two literals
+/// a comment used to assert had to agree.
+pub(crate) const REPLAY_EPOCH_MS: f64 = 0.0;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct AggRuntimeStats {
     #[cfg(test)]
@@ -136,7 +144,7 @@ where
         collector.set_gpus_per_worker(0, gpus_per_worker);
 
         Ok(Self {
-            now_ms: 0.0,
+            now_ms: REPLAY_EPOCH_MS,
             dp_size,
             next_event_seq: 0,
             next_scaling_tick_ordinal: 0,
