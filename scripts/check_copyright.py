@@ -28,7 +28,17 @@ SOURCE_SUFFIXES = {
     ".rule",
     ".sh",
 }
-LICENSE_MARKER = "SPDX-License-Identifier: Apache-2.0"
+APACHE_LICENSE_IDENTIFIER = r"SPDX-License-Identifier:\s*Apache-2\.0"
+LICENSE_MARKER = re.compile(
+    rf"^\s*(?:"
+    rf"(?:\#|//)\s*{APACHE_LICENSE_IDENTIFIER}"
+    rf"|/\*+\s*{APACHE_LICENSE_IDENTIFIER}\s*\*/"
+    rf"|<!--\s*{APACHE_LICENSE_IDENTIFIER}\s*-->"
+    rf"|\*\s*{APACHE_LICENSE_IDENTIFIER}(?:\s*\*/)?"
+    rf"|{APACHE_LICENSE_IDENTIFIER}"
+    rf")\s*$",
+    re.MULTILINE,
+)
 COPYRIGHT_MARKER = re.compile(
     r"SPDX-FileCopyrightText: (?:Modifications )?Copyright \(c\) "
     r"\d{4}(?:-\d{4})? NVIDIA CORPORATION & AFFILIATES\. All rights reserved\."
@@ -52,6 +62,12 @@ def is_source(path: Path) -> bool:
         return False
 
 
+def has_required_license_identifier(head: str) -> bool:
+    """Return whether the header contains one complete Apache-2.0 SPDX tag."""
+
+    return LICENSE_MARKER.search(head) is not None
+
+
 def main() -> int:
     tracked = (
         subprocess.run(
@@ -70,7 +86,7 @@ def main() -> int:
             continue
         with path.open(encoding="utf-8", errors="replace") as handle:
             head = "".join(handle.readline() for _ in range(HEADER_LINES))
-        if LICENSE_MARKER not in head or COPYRIGHT_MARKER.search(head) is None:
+        if not has_required_license_identifier(head) or COPYRIGHT_MARKER.search(head) is None:
             missing.append(str(path))
 
     if missing:
