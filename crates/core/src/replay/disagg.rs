@@ -1909,13 +1909,7 @@ where
     /// so they do not
     /// keep the run alive — otherwise a recurring tick would never let `run()` exit.
     fn is_done(&self) -> bool {
-        self.only_idle_events_remain()
-            && self.cluster_in_flight() == 0
-            && CoreAdmissionSource::is_drained(&self.admission)
-            && self.prefill_engine.is_drained()
-            && self.decode_engine.is_drained()
-            && self.flow.action_queues.is_empty()
-            && self.flow.requests_by_handoff.is_empty()
+        self.only_idle_events_remain() && self.is_request_work_drained()
     }
 
     /// Return true once the request workload is complete, even if `WorkerReady`
@@ -1936,6 +1930,14 @@ where
             && self.decode_engine.is_drained()
             && self.flow.action_queues.is_empty()
             && self.flow.requests_by_handoff.is_empty()
+    }
+
+    /// A step that freed a worker slot inside a deferred-drive pass must hold
+    /// its instant rather than let the freed slot immediately drive a new
+    /// pass, so the caller observes the completion before anything else
+    /// happens at this timestamp.
+    fn should_hold_instant(&self) -> bool {
+        self.defer_drive && self.step_freed_slot
     }
 
     /// True if the event heap is empty or contains only "idle" events that carry no
@@ -2289,7 +2291,7 @@ where
             }
             changed = true;
             self.handle_prefill_engine_effects(effects)?;
-            if self.defer_drive && self.step_freed_slot {
+            if self.should_hold_instant() {
                 return Ok(changed);
             }
         }
@@ -2311,7 +2313,7 @@ where
             }
             changed = true;
             self.handle_decode_engine_effects(effects)?;
-            if self.defer_drive && self.step_freed_slot {
+            if self.should_hold_instant() {
                 return Ok(changed);
             }
         }
@@ -2580,73 +2582,49 @@ where
         let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = self.prune_stale_transfer_events();
-            // Brings disagg to parity with `AggRuntimeImpl::drain_current_timestamp`
-            // (`agg.rs`), which has settled internal engine work on every drain
-            // iteration since before this replay engine existed. Disagg never
-            // called `process_internal_work` at all -- a pre-existing asymmetry
-            // between the two runtimes, not new behavior invented here. A no-op
-            // scan when no worker has due internal work (the common case, no
-            // KV-offload configured); only a KV-offload-configured run observes
-            // a difference, and now observes offload ticks at the same drain
-            // granularity agg already did.
+            // Parity with `AggRuntimeImpl::drain_current_timestamp` (agg.rs),
+            // which settles internal engine work on every drain iteration.
+            // A no-op scan unless a worker has due internal work (i.e. unless
+            // KV-offload is configured).
             changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
             changed |= self.apply_worker_completions()?;
-            if self.defer_drive && self.step_freed_slot {
+            if self.should_hold_instant() {
                 self.drive_pending = true;
                 return Ok(());
             }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
-            if self.defer_drive && self.step_freed_slot {
+            if self.should_hold_instant() {
                 self.drive_pending = true;
                 return Ok(());
             }
             changed |= self.release_ready_arrivals()?;
             changed |= self.drive_pending_actions()?;
-            // The one rung in this ladder a caller can reach, and the reason
-            // the ladder is not redundant with
-            // `evaluate_completions_and_maybe_defer`'s in-flight-delta check.
-            //
-            // The two freed-slot detectors key on different things and do
-            // diverge. `evaluate_completions_and_maybe_defer` compares
-            // `cluster_in_flight()` across `drain_completions()` alone, so it
-            // only ever sees a slot freed by a *worker completion*.
-            // `step_freed_slot` is set at `finish_logical_request`, which
-            // `drive_pending_actions` also reaches, through `execute_action`
-            // -> `HandoffAction::Complete` -> `complete_handoff`'s `Canceled`
-            // arm. A cancel deferred behind a busy worker (the
-            // `worker_is_busy` guards in `execute_action`) is woken by that
-            // worker's completion and applied *here*, inside the drain, at an
-            // instant where `drain_completions` saw no in-flight decrease at
-            // all: the request was still in flight when the completion
-            // settled, and retires only once the woken `CancelSource` runs.
-            // An inline prefill rejection during routing arrives here the
-            // same way. Returning is what keeps the freed prefill pool from
-            // being committed to the next request's pass at the same instant,
-            // which is the delta-cycle contract `step_dynamic_until`
-            // documents.
-            //
-            // Covered by
+            // The reachable rung: `evaluate_completions_and_maybe_defer` only
+            // sees a slot freed by a worker completion (it diffs
+            // cluster_in_flight() across drain_completions() alone).
+            // step_freed_slot is also set at finish_logical_request, which
+            // drive_pending_actions reaches via a deferred CancelSource woken
+            // by the same completion -- at an instant where drain_completions
+            // saw no in-flight decrease at all. Returning here keeps the
+            // freed prefill pool from being committed to the next request's
+            // pass at the same instant, the delta-cycle contract
+            // `step_dynamic_until` documents. Covered by
             // `applying_a_deferred_cancel_holds_the_instant_before_the_freed_pool_drives`.
-            // The other four rungs are defense in depth for decrement paths
-            // this file does not have today: 1 and 2 need a completion or
-            // transfer to retire a request on the `drive_pending` entry path
-            // (which skips `evaluate_completions_and_maybe_defer`), and 4 and
-            // 5 need `drive_prefill_workers`/`drive_decode_workers` to retire
-            // one from inside a pass start. None is exercised, and disabling
-            // this rung alone is absorbed by rung 4 rather than by a stall --
-            // so they are kept rather than pruned.
-            if self.defer_drive && self.step_freed_slot {
+            // The other four should_hold_instant rungs below are unexercised
+            // defense in depth for decrement paths this file doesn't have
+            // yet; kept rather than pruned.
+            if self.should_hold_instant() {
                 self.drive_pending = true;
                 return Ok(());
             }
             changed |= self.drive_prefill_workers()?;
-            if self.defer_drive && self.step_freed_slot {
+            if self.should_hold_instant() {
                 self.drive_pending = true;
                 return Ok(());
             }
             changed |= self.drive_decode_workers()?;
-            if self.defer_drive && self.step_freed_slot {
+            if self.should_hold_instant() {
                 self.drive_pending = true;
                 return Ok(());
             }
@@ -3635,12 +3613,10 @@ where
 
         self.apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })?;
         self.drive_pending_actions()?;
-        // No `self.step_freed_slot = true` here: the only readers are the
-        // `if self.defer_drive && self.step_freed_slot` guards inside
-        // `drain_current_timestamp`/`step_dynamic_until`, and
-        // `step_dynamic_until` unconditionally clears the flag at entry
-        // before anything set here could ever be observed. Setting it was a
-        // dead store that documented an intent the code doesn't implement.
+        // No `self.step_freed_slot = true` here: `should_hold_instant`'s only
+        // callers are inside `drain_current_timestamp`/`step_dynamic_until`,
+        // and `step_dynamic_until` unconditionally clears the flag at entry
+        // before anything set here could ever be observed.
         if self.is_request_work_drained() {
             self.drive_pending = false;
         }
