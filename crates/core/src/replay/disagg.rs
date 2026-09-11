@@ -1907,14 +1907,21 @@ where
     /// Return true once the request workload is complete, even if `WorkerReady`
     /// or control-tick (`ScalingTick`/`TelemetryTick`) events remain in the queue.
     pub(crate) fn is_workload_done(&self) -> bool {
-        !self.drive_pending
-            && self.cluster_in_flight() == 0
+        !self.drive_pending && self.is_request_work_drained() && self.only_idle_events_remain()
+    }
+
+    /// The request-lifecycle conjuncts shared by `is_workload_done` and
+    /// `cancel_dynamic`'s post-cancel `drive_pending` clear: nothing left in
+    /// flight, nothing left to admit, and every worker/action/handoff queue
+    /// is empty. Extracted so a future condition added to one call site
+    /// cannot silently drift out of sync with the other.
+    fn is_request_work_drained(&self) -> bool {
+        self.cluster_in_flight() == 0
             && CoreAdmissionSource::is_drained(&self.admission)
             && self.prefill_engine.is_drained()
             && self.decode_engine.is_drained()
             && self.flow.action_queues.is_empty()
             && self.flow.requests_by_handoff.is_empty()
-            && self.only_idle_events_remain()
     }
 
     /// True if the event heap is empty or contains only "idle" events that carry no
@@ -2296,9 +2303,8 @@ where
         }
     }
 
-    fn settle_internal_work(&mut self) -> Result<bool> {
+    fn settle_internal_work(&mut self, consecutive_internal_steps: &mut usize) -> Result<bool> {
         let mut changed = false;
-        let mut consecutive_internal_steps = 0usize;
         loop {
             let prefill_effects = self.prefill_engine.process_internal_work(self.now_ms)?;
             let decode_effects = self.decode_engine.process_internal_work(self.now_ms)?;
@@ -2319,10 +2325,10 @@ where
             if !made_progress {
                 return Ok(changed);
             }
-            consecutive_internal_steps = consecutive_internal_steps
+            *consecutive_internal_steps = consecutive_internal_steps
                 .checked_add(1)
                 .context("internal-work convergence counter overflow")?;
-            if consecutive_internal_steps >= MAX_CONSECUTIVE_INTERNAL_STEPS {
+            if *consecutive_internal_steps >= MAX_CONSECUTIVE_INTERNAL_STEPS {
                 bail!(
                     "offline replay detected non-converging engine internal work at {} ms",
                     self.now_ms
@@ -2548,6 +2554,16 @@ where
         {
             self.stats.semantic_drain_count += 1;
         }
+        // Declared once per `drain_current_timestamp` call, outside the loop
+        // below, and threaded by `&mut` into every `settle_internal_work`
+        // call this drain makes -- matching `AggRuntimeImpl`'s
+        // `drain_current_timestamp` (`agg.rs`) exactly. A counter reset
+        // inside `settle_internal_work` itself (the earlier shape) would
+        // reset on every call rather than accumulating across the whole
+        // drain, making the non-convergence guard strictly weaker than
+        // agg's: internal work that makes exactly one unit of progress per
+        // call would never trip it.
+        let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = self.prune_stale_transfer_events();
             // Brings disagg to parity with `AggRuntimeImpl::drain_current_timestamp`
@@ -2559,7 +2575,7 @@ where
             // KV-offload configured); only a KV-offload-configured run observes
             // a difference, and now observes offload ticks at the same drain
             // granularity agg already did.
-            changed |= self.settle_internal_work()?;
+            changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
             changed |= self.apply_worker_completions()?;
             if self.defer_drive && self.step_freed_slot {
                 self.drive_pending = true;
@@ -3563,14 +3579,13 @@ where
 
         self.apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })?;
         self.drive_pending_actions()?;
-        self.step_freed_slot = true;
-        if self.cluster_in_flight() == 0
-            && CoreAdmissionSource::is_drained(&self.admission)
-            && self.prefill_engine.is_drained()
-            && self.decode_engine.is_drained()
-            && self.flow.action_queues.is_empty()
-            && self.flow.requests_by_handoff.is_empty()
-        {
+        // No `self.step_freed_slot = true` here: the only readers are the
+        // `if self.defer_drive && self.step_freed_slot` guards inside
+        // `drain_current_timestamp`/`step_dynamic_until`, and
+        // `step_dynamic_until` unconditionally clears the flag at entry
+        // before anything set here could ever be observed. Setting it was a
+        // dead store that documented an intent the code doesn't implement.
+        if self.is_request_work_drained() {
             self.drive_pending = false;
         }
         Ok(Some(ReplayTerminalStatus::Canceled))
