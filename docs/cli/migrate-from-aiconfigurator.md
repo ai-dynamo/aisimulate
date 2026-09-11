@@ -247,6 +247,10 @@ candidate can still maintain 32 in-flight requests while completing them slowly,
 `traffic.load.concurrency` must not be interpreted as the number of concurrent users that a selected
 minimum-GPU fleet can serve.
 
+At fixed concurrency, `strict_sla` filters aggregate mean latency violations, while
+`goodput_per_gpu` favors throughput efficiency. The selected configuration may use more GPUs than
+the smallest SLA-compliant configuration.
+
 ## Keep minimum-GPU sizing on the compatibility CLI
 
 If the required result is AIC's estimate of the minimum GPUs or replicas needed for
