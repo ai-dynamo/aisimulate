@@ -258,22 +258,24 @@ def test_prediction_callback_cannot_drop_or_change_epd(change):
         validate_epd_prediction_mapping(raw, spec)
 
 
-@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 @pytest.mark.parametrize(
-    "change",
+    "mode,role,change",
     [
-        "hardware",
-        "backend_version",
-        "missing_version",
-        "scheduler",
-        "prefill_interval",
-        "cache",
-        "prefix",
-        "context",
-        "sla",
+        (mode, None, change)
+        for mode in ("aggregated", "disaggregated")
+        for change in ("hardware", "backend_version", "missing_version", "context", "sla")
+    ]
+    + [
+        (mode, role, change)
+        for mode, role in (
+            ("aggregated", "aggregated"),
+            ("disaggregated", "prefill"),
+            ("disaggregated", "decode"),
+        )
+        for change in ("scheduler", "prefill_interval", "cache", "prefix")
     ],
 )
-def test_epd_sweeper_rejects_changed_language_prediction(mode, change):
+def test_epd_sweeper_rejects_changed_language_prediction(mode, role, change):
     raw = _recommendation(mode)
     raw["engine"]["workers"]["encoder"]["replicas"] = 1
     raw["optimizer"]["max_trials"] = 1
@@ -285,7 +287,7 @@ def test_epd_sweeper_rejects_changed_language_prediction(mode, change):
 
     def callback(sample, spec):
         value = _candidate_prediction(source, sample, spec, adapter_sections={})
-        worker = value["engine"]["workers"]["aggregated" if mode == "aggregated" else "decode"]
+        worker = value["engine"]["workers"][role] if role else None
         if change == "hardware":
             value["engine"]["hardware"] = "h100_sxm"
         elif change == "backend_version":
@@ -370,13 +372,19 @@ def test_epd_callback_preserves_equivalent_defaults_and_stops(mode, inferred_cap
 
 
 @pytest.mark.parametrize("backends", [["sglang", "vllm"], ["vllm", "sglang"], ["vllm"]])
-def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, backends):
+@pytest.mark.parametrize("absence", ["database", "version"])
+def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, backends, absence):
     from aiconfigurator_core.sdk import perf_database
+    from aisimulate.sweeper import kv_estimate
 
-    original = perf_database.get_database_view
+    original_database = perf_database.get_database_view
+    original_version = kv_estimate.get_latest_database_version
 
     def database(system, backend, version, **kwargs):
-        return None if backend == "vllm" else original(system, backend, version, **kwargs)
+        return None if backend == "vllm" else original_database(system, backend, version, **kwargs)
+
+    def latest_version(system, backend):
+        return None if backend == "vllm" else original_version(system, backend)
 
     raw = _recommendation()
     raw["engine"]["workers"]["encoder"]["replicas"] = 1
@@ -387,17 +395,26 @@ def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, bac
     payload["search_space"]["backend"] = backends
     config = SmartSearchConfig.model_validate(payload)
     config.sweep.max_eval_seconds = None
-    monkeypatch.setattr(perf_database, "get_database_view", database)
+    if absence == "database":
+        monkeypatch.setattr(perf_database, "get_database_view", database)
+    else:
+        # Keep resolve_backend_version real: a missing version raises its
+        # documented NoPerfDatabase before get_database_view can return None.
+        monkeypatch.setattr(kv_estimate, "get_latest_database_version", latest_version)
     sweeper = Sweeper(runner_factory=EngineReplayRunnerFactory(), show_progress=False)
     if backends == ["vllm"]:
         with pytest.raises(ValueError, match="no feasible encoder pool"):
             sweeper.run(config)
     else:
         result = sweeper.run(config)
-        assert result.selected_candidates, result.to_json()
+        payload["search_space"]["backend"] = ["sglang"]
+        payload["sweep"]["max_eval_seconds"] = None
+        control = sweeper.run(SmartSearchConfig.model_validate(payload))
+        assert len(result.selected_candidates) == len(control.selected_candidates) == 1
         assert all(candidate.config["backend"] == "sglang" for candidate in result.selected_candidates)
-        assert result.selected_candidates[0].metrics["output_throughput_tok_s"] > 0
-    assert "no encoder database for h200_sxm/vllm/" in caplog.text
+        for candidate, expected in zip(result.selected_candidates, control.selected_candidates, strict=True):
+            assert candidate.metrics == pytest.approx(expected.metrics, rel=1e-12, abs=1e-12)
+    assert "no encoder database for h200_sxm/vllm" in caplog.text
 
 
 def test_cli_examples_parse():

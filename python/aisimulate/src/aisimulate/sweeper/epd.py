@@ -15,7 +15,7 @@ import math
 from dataclasses import asdict, replace
 
 from .config import EncoderSearch, SmartSearchConfig, Workload
-from .kv_estimate import resolve_backend_version
+from .kv_estimate import NoPerfDatabase, resolve_backend_version
 from .replay import EncoderPoolSpec, ReplayReport, ReplaySpec
 
 logger = logging.getLogger(__name__)
@@ -71,11 +71,13 @@ def resolve_encoder_pools(
     catalog = {}
     system = encoder.hardware_sku or hardware_sku
     for backend in dict.fromkeys(backends):
-        version = (
-            encoder.backend_version
-            or (backend_version if system == hardware_sku else None)
-            or resolve_backend_version(system, backend)
-        )
+        version = encoder.backend_version or (backend_version if system == hardware_sku else None)
+        if not version:
+            try:
+                version = resolve_backend_version(system, backend)
+            except NoPerfDatabase:
+                logger.warning("Skipping encoder backend: no encoder database for %s/%s", system, backend)
+                continue
         database = get_database_view(system, backend, version, database_mode="SILICON")
         if database is None:
             logger.warning("Skipping encoder backend: no encoder database for %s/%s/%s", system, backend, version)

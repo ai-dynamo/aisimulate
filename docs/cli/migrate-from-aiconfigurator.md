@@ -147,8 +147,9 @@ aisimulate predict \
   --output-dir ./aisimulate-prediction
 ```
 
-This predicts deployment-level serving behavior. It does not reproduce AIC's batch-level estimate,
-multimodal/EPD topology, per-op detail, power report, or static/AFD estimation modes.
+This text-only example predicts deployment-level serving behavior. For bounded analytical EPD
+prediction, use the [EPD CLI examples](../sweeper/epd.md#unified-cli). Neither path reproduces AIC's
+batch-level estimate, per-op detail, power report, or static/AFD estimation modes.
 
 ## Preserve request-rate traffic during a configuration search
 

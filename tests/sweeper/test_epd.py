@@ -26,6 +26,7 @@ from aisimulate.sweeper import (
     SweepResult,
 )
 from aisimulate.sweeper.epd import apply_encoder_overlay, resolve_encoder_catalog
+from aisimulate.sweeper.kv_estimate import NoPerfDatabase
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search_space import BranchSpace
@@ -419,18 +420,67 @@ def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
     assert all(point.power_w is None for point in catalog.values())
 
 
-@pytest.mark.parametrize("stage", ["database", "estimator"])
-@pytest.mark.parametrize("error_type", [ValueError, RuntimeError])
+@pytest.mark.parametrize(
+    "encoder_hardware,language_version,encoder_version,implicit",
+    [
+        (None, "0.5.14", None, False),
+        (None, "unused-language-version", "0.5.14", False),
+        ("h100_sxm", "unused-language-version", "0.5.14", False),
+        ("h100_sxm", "unused-language-version", None, True),
+    ],
+)
+def test_encoder_catalog_preserves_version_precedence(
+    monkeypatch, encoder_hardware, language_version, encoder_version, implicit
+):
+    from aiconfigurator_core.sdk import perf_database
+    from aisimulate.sweeper import kv_estimate
+
+    original_version = kv_estimate.get_latest_database_version
+    original_database = perf_database.get_database_view
+    version_calls = []
+    database_calls = []
+
+    def latest_version(system, backend):
+        assert implicit, "explicit encoder versions must not depend on latest-version availability"
+        version_calls.append((system, backend))
+        return original_version(system, backend)
+
+    def database(system, backend, version, **kwargs):
+        database_calls.append((system, backend, version))
+        return original_database(system, backend, version, **kwargs)
+
+    payload = _config().search_space.model_dump()
+    payload["backend_version"] = language_version
+    payload["encoder"].update(hardware_sku=encoder_hardware, backend_version=encoder_version)
+    monkeypatch.setattr(kv_estimate, "get_latest_database_version", latest_version)
+    monkeypatch.setattr(perf_database, "get_database_view", database)
+    catalog = resolve_encoder_catalog(_config(search_space=payload))
+    system = encoder_hardware or "h200_sxm"
+    expected_version = original_version(system, "sglang") if implicit else "0.5.14"
+    assert version_calls == ([(system, "sglang")] if implicit else [])
+    assert database_calls == [(system, "sglang", expected_version)]
+    assert catalog
+    assert all(point.system == system and point.backend_version == expected_version for point in catalog.values())
+
+
+@pytest.mark.parametrize(
+    "stage,error_type",
+    [(stage, error_type) for stage in ("version", "database", "estimator") for error_type in (ValueError, RuntimeError)]
+    + [(stage, NoPerfDatabase) for stage in ("database", "estimator")],
+)
 def test_encoder_catalog_does_not_hide_failures(monkeypatch, stage, error_type):
     import aiconfigurator.sdk.sweep as aic_sweep
     from aiconfigurator_core.sdk import perf_database
+    from aisimulate.sweeper import kv_estimate
 
-    error = error_type("corrupt database" if stage == "database" else "unexpected estimator failure")
+    error = error_type(f"unexpected {stage} failure")
 
     def fail(*args, **kwargs):
         raise error
 
-    if stage == "database":
+    if stage == "version":
+        monkeypatch.setattr(kv_estimate, "get_latest_database_version", fail)
+    elif stage == "database":
         monkeypatch.setattr(perf_database, "get_database_view", fail)
     else:
         monkeypatch.setattr(aic_sweep, "_get_encoder_worker_candidates", fail)
