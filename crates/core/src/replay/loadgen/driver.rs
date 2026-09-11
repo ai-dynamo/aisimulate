@@ -1323,6 +1323,31 @@ impl WorkloadDriver {
         )
     }
 
+    /// Resolve one in-flight turn, or report an internal invariant violation.
+    ///
+    /// Every `Err` arm here is all-or-nothing on purpose: it leaves the
+    /// `in_flight` entry, `session.in_flight`, and `next_turn_index` exactly as
+    /// they were, so a rejected resolution never half-applies. That is a
+    /// contract, not an oversight -- `unknown_completion_preserves_in_flight_state`
+    /// and `inconsistent_session_mapping_preserves_in_flight_entry` pin it.
+    ///
+    /// The retained entry is not a leak, because none of the `Err` arms is
+    /// reachable without driver state that is already corrupt. The session/uuid
+    /// and turn-index mismatches require `session.in_flight` and
+    /// `self.in_flight` to have diverged, but the two are only ever written
+    /// together (`pop_ready_compact` sets both and skips any session with
+    /// `in_flight.is_some()`; this function clears both). The
+    /// rejected-with-emitted-tokens arm requires an engine that streamed tokens
+    /// for a request it then reports as never admitted. Callers propagate the
+    /// error with `?`, which aborts the run.
+    ///
+    /// The single caller that recovers is `release_cap_slot`, reached from a
+    /// `Drop` guard that cannot propagate; it logs and continues. On that path
+    /// the retained entry keeps `is_drained` false, which is the intended
+    /// trade: a run whose bookkeeping is already inconsistent should stall
+    /// visibly rather than silently discard state and report plausible numbers.
+    /// `release_cap_slot` resolves with `Cancelled`, so it cannot reach the
+    /// rejected-with-emitted-tokens arm at all.
     fn resolve_turn(
         &mut self,
         request_uuid: Uuid,
