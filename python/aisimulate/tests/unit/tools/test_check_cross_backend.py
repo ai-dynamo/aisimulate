@@ -150,3 +150,70 @@ def test_systematic_offset_requires_near_constant_multiplier():
     uniform = [_pair_summary(s, r) for s, r in [("a", 1.4), ("b", 1.5), ("c", 1.6)]]
     offsets = detect_systematic_offsets(uniform, 1.15, 3, 2.0, [])
     assert len(offsets) == 1 and offsets[0]["slow_backend"] == "vllm"
+
+
+@pytest.fixture
+def parallel_audit_tree(tmp_path):
+    """Three systems and five ops exercise the global machine fingerprint."""
+    for system in range(3):
+        for backend in ("sglang", "vllm"):
+            directory = tmp_path / f"system{system}" / backend / "1.0"
+            directory.mkdir(parents=True)
+            for op in range(5):
+                scale = (system + 1) * (2 if backend == "vllm" else 1)
+                if system == 2 and op == 4:
+                    scale *= 10
+                rows = [f"{backend},1.0,k,{scale * (shape + 1)}, {shape}" for shape in range(64)]
+                (directory / f"op{op}_perf.txt").write_text(
+                    "framework,version,kernel_source,latency,m\n" + "\n".join(rows) + "\n"
+                )
+    # Keep corrupt and unsupported data visible in either execution mode.
+    directory = tmp_path / "system0" / "vllm" / "1.0"
+    (directory / "unreadable_perf.parquet").write_bytes(b"not parquet")
+    (directory / "unknown_perf.txt").write_text("m,unknown_cost\n1,2\n")
+    return tmp_path
+
+
+def _audit_options(data_root):
+    return dict(
+        data_root=data_root,
+        systems=None,
+        backends=None,
+        op_files=None,
+        anomaly_factor=3.0,
+        mono_tolerance=0.7,
+        spike_factor=3.0,
+        min_bucket_points=5,
+        noise_floor=0.03,
+    )
+
+
+def test_parallel_audit_preserves_global_comparisons_and_report_order(parallel_audit_tree):
+    from check_cross_backend import derive_views, run_checks
+
+    options = _audit_options(parallel_audit_tree)
+    serial = run_checks(**options, workers=1)
+    parallel = run_checks(**options, workers=2)
+    assert parallel == serial
+    anomalies, gaps = parallel
+    assert {"machine_op_deviation", "unreadable_table"}.issubset({item["kind"] for item in anomalies})
+    assert "unsupported_schema" in {item["kind"] for item in gaps}
+    offsets = detect_systematic_offsets(gaps, 1.15, 3, 2.0, {})
+    assert offsets and all(len(offset["systems"]) == 3 for offset in offsets)
+    assert derive_views(*parallel) == derive_views(*serial)
+
+
+def test_parallel_audit_propagates_worker_exceptions(parallel_audit_tree):
+    from check_cross_backend import run_checks
+
+    options = _audit_options(parallel_audit_tree)
+    options["mono_tolerance"] = None  # Force a computation failure inside a worker.
+    with pytest.raises(TypeError):
+        run_checks(**options, workers=2)
+
+
+def test_audit_rejects_nonpositive_workers(tmp_path):
+    from check_cross_backend import run_checks
+
+    with pytest.raises(ValueError, match="workers must be positive"):
+        run_checks(**_audit_options(tmp_path), workers=0)
