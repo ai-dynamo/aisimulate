@@ -5,10 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 
 # DeepSeek-V4.1 FPM collection
 
-The first target is the text backbone on one GB200 node, pure TP4, native
-checkpoint precision, GPU-resident Engram, and DSpark disabled. No measured
-V4.1 rows are included yet. Runtime qualification and the GPU campaign must
-complete before this document can claim measured support.
+Published experimental measurements cover the text backbone on one GB200 node
+with pure TP4, native checkpoint precision, GPU-resident Engram, eager execution,
+and DSpark disabled. The [GB200 calibration](../../../../data/experimental/deepseek-v41/gb200-fpm/calibration-v1/README.md)
+contains 126 points; [38 independent forward holdouts](../../../../data/experimental/deepseek-v41/gb200-fpm/holdout-sol-review-v2/README.md)
+provide descriptive accuracy evidence. GB200 ordinary HTTP serving verification
+remains in progress. Separate [GB300 SGLang OFF/ON packets](../../../../data/experimental/deepseek-v41/gb300-fpm/README.md)
+contain whole-forward calibration and serving comparisons, including their
+remaining coverage and precision limits. These data use explicit experimental
+systems overlays; the curated defaults are unchanged.
 
 ## Execution identity
 
