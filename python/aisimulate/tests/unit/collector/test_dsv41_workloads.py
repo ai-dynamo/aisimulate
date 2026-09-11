@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.sglang.dsv41_contract import build_manifest, operation_geometry
 from collector.sglang.dsv41_native_runner import run_workload
 from collector.sglang.dsv41_workloads import baseline_tokens, coordinates, coverage_report, freeze_workloads
@@ -176,7 +175,12 @@ def test_native_benchmark_wall_boundary_synchronizes_before_and_after(monkeypatc
     assert events == ["sync", "native-call", "sync"]
 
 
-def test_forward_only_cli_freezes_plan_and_excludes_component_scope(tmp_path, monkeypatch):
+@pytest.mark.parametrize("forward_only", [False, True])
+@pytest.mark.parametrize("profile", ["full", "decoder_bounded"])
+@pytest.mark.parametrize("native_bounded", [False, True])
+def test_native_cli_binds_decoder_profile_before_execution(
+    tmp_path, monkeypatch, forward_only, profile, native_bounded
+):
     import sys
 
     import collector.sglang.dsv41_native_runner as native
@@ -184,6 +188,8 @@ def test_forward_only_cli_freezes_plan_and_excludes_component_scope(tmp_path, mo
     plan = freeze_workloads(_payload())
     plan_path = tmp_path / "input-plan.json"
     plan_path.write_text(json.dumps(plan))
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(build_manifest(4, profile == "decoder_bounded")))
     output = tmp_path / "output"
     flags = [
         "--disable-custom-all-reduce",
@@ -196,6 +202,7 @@ def test_forward_only_cli_freezes_plan_and_excludes_component_scope(tmp_path, mo
         def add_cli_args(parser):
             for flag in flags:
                 parser.add_argument(flag, action="store_true")
+            parser.add_argument("--enable-decoder-swa-bounded-replay", action="store_true")
 
         @staticmethod
         def from_cli_args(args):
@@ -210,9 +217,14 @@ def test_forward_only_cli_freezes_plan_and_excludes_component_scope(tmp_path, mo
         def from_cli_args(args):
             return SimpleNamespace()
 
+    executed = []
+
     def execute(server_args, bench_args):
-        assert bench_args.dsv41_options.forward_only is True
+        executed.append(server_args)
+        assert bench_args.dsv41_options.forward_only is forward_only
         assert bench_args.dsv41_options.workload_plan == plan
+        assert server_args.enable_decoder_swa_bounded_replay is native_bounded
+        assert native_bounded == (profile == "decoder_bounded")
         (output / "COMPLETE").write_text("fixture completes transport only")
 
     bench = SimpleNamespace(ServerArgs=ServerArgs, BenchArgs=BenchArgs, main=execute)
@@ -224,7 +236,7 @@ def test_forward_only_cli_freezes_plan_and_excludes_component_scope(tmp_path, mo
         [
             "runner",
             "--manifest",
-            "unused.json",
+            str(manifest_path),
             "--runtime-digest",
             "sha256:" + "a" * 64,
             "--prompt-file",
@@ -233,15 +245,29 @@ def test_forward_only_cli_freezes_plan_and_excludes_component_scope(tmp_path, mo
             str(output),
             "--workload-plan",
             str(plan_path),
-            "--forward-only",
+            *(["--forward-only"] if forward_only else []),
+            *(["--enable-decoder-swa-bounded-replay"] if native_bounded else []),
             *flags,
         ],
     )
+    if native_bounded != (profile == "decoder_bounded"):
+        with pytest.raises(ValueError, match="manifest execution_profile=.*requires enable_decoder_swa_bounded_replay"):
+            native.main()
+        assert executed == []
+        assert not (output / "COMPLETE").exists()
+        assert not (output / "execution-contract.json").exists()
+        assert not list(output.glob("*.jsonl"))
+        return
     native.main()
+    assert len(executed) == 1
     assert json.loads((output / "workload-plan.json").read_text()) == plan
     receipt = json.loads((output / "execution-contract.json").read_text())
-    assert receipt["component_recorder"] is False
-    assert receipt["timing_boundary"] == "sglang_one_batch_synchronized_wall_including_prepare_forward_sample"
+    assert receipt["component_recorder"] is not forward_only
+    assert receipt["timing_boundary"] == (
+        "sglang_one_batch_synchronized_wall_including_prepare_forward_sample"
+        if forward_only
+        else "cuda_events_local_components"
+    )
     assert not list(output.glob("rank-*.jsonl"))
     with pytest.raises(RuntimeError, match="prior raw records"):
         native.main()

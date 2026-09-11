@@ -645,6 +645,18 @@ def main():
         )
     ):
         raise ValueError("forward-only requires unfused NCCL and sharded shared-expert execution flags")
+    server_args, bench_args = bench.ServerArgs.from_cli_args(args), bench.BenchArgs.from_cli_args(args)
+    manifest = json.loads(Path(options.manifest).read_text())
+    profile = manifest["execution_profile"]
+    expected_bounded = {"full": False, "decoder_bounded": True}[profile]
+    # The manifest labels every measured row; the native option controls the
+    # work actually executed. Reject mismatches before model loading or timing.
+    if server_args.enable_decoder_swa_bounded_replay is not expected_bounded:
+        raise ValueError(
+            f"manifest execution_profile={profile!r} requires "
+            f"enable_decoder_swa_bounded_replay={expected_bounded}, "
+            f"got {server_args.enable_decoder_swa_bounded_replay}"
+        )
     (output / "execution-contract.json").write_text(
         json.dumps(
             {
@@ -661,7 +673,6 @@ def main():
         )
         + "\n"
     )
-    server_args, bench_args = bench.ServerArgs.from_cli_args(args), bench.BenchArgs.from_cli_args(args)
     bench_args.dsv41_options = options
     bench.latency_test = run_worker
     bench.main(server_args, bench_args)
