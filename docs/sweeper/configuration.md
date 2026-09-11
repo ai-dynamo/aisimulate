@@ -21,6 +21,8 @@ encoder model and does not expose per-request EPD replay or deployment outputs.
 search_space:
   model_name: example/model
   hardware_sku: h200_sxm
+  prefill_hardware_sku: h200_sxm
+  decode_hardware_sku: gb200
   gpu_budget: 32
   deployment_mode: [disagg, agg]
   backend: [vllm, sglang]
@@ -61,6 +63,8 @@ configuration for each candidate.
 |---|---|---|
 | `model_name` | required | model identifier |
 | `hardware_sku` | required | AI Configurator system identifier |
+| `prefill_hardware_sku` | `None` | optional disaggregated-prefill system override; inherits `hardware_sku` |
+| `decode_hardware_sku` | `None` | optional disaggregated-decode system override; inherits `hardware_sku` |
 | `deployment_mode` | `[disagg, agg]` | deployment branches to search |
 | `backend` | `[vllm]` | engine backends to search |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
@@ -73,6 +77,12 @@ configuration for each candidate.
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
 or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pins a searched field.
+
+`prefill_hardware_sku` and `decode_hardware_sku` apply only to the ordinary `disagg` branch. Either
+override may be set independently: an omitted role inherits `hardware_sku`. Both roles still share
+the configured model, backend, backend version, and total `gpu_budget`. When `backend_version` is
+omitted, the latest performance-data version for both effective SKUs must match; otherwise pin one
+version supported by both systems.
 
 ## Attention-FFN Disaggregation
 
