@@ -21,8 +21,7 @@ from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 class _RecommendationResult:
     def __init__(self, selected_candidates, *, failed: int = 0) -> None:
         self._candidates = {
-            f"candidate-{index:06d}": candidate
-            for index, candidate in enumerate(selected_candidates, start=1)
+            f"candidate-{index:06d}": candidate for index, candidate in enumerate(selected_candidates, start=1)
         }
         self._selected_ids = list(self._candidates)
         self._failed = failed
@@ -68,9 +67,7 @@ class _RecommendationResult:
 
 
 class _Runner:
-    def __init__(
-        self, *, power_w: float | None = 487.5, power_coverage: float = 0.95
-    ) -> None:
+    def __init__(self, *, power_w: float | None = 487.5, power_coverage: float = 0.95) -> None:
         self.spec = None
         self.output_requirements = None
         self.closed = False
@@ -105,9 +102,7 @@ class _Runner:
             "power_w_unit": "W",
             "energy_unit": "W-ms",
             "latency_unit": "ms",
-            "publication_status": (
-                "available" if self.power_w is not None else "withheld"
-            ),
+            "publication_status": ("available" if self.power_w is not None else "withheld"),
             "coverage_gate": 0.9,
             "power_coverage": self.power_coverage,
             "energy_wms": 121.875,
@@ -120,9 +115,7 @@ class _Runner:
                     "latency_ms": 0.25,
                     "covered_latency_ms": 0.25 * self.power_coverage,
                     "power_coverage": self.power_coverage,
-                    "publication_status": (
-                        "available" if self.power_w is not None else "withheld"
-                    ),
+                    "publication_status": ("available" if self.power_w is not None else "withheld"),
                     "source": "silicon",
                     "source_kind": "measured",
                     "operations": [
@@ -135,9 +128,7 @@ class _Runner:
                             "energy_contribution": 1.0,
                             "source": "silicon",
                             "source_kind": "measured",
-                            "status": (
-                                "available" if self.power_coverage == 1.0 else "partial"
-                            ),
+                            "status": ("available" if self.power_coverage == 1.0 else "partial"),
                         }
                     ],
                 }
@@ -158,9 +149,7 @@ class _Runner:
                     "scope": "active_forward_pass_per_gpu",
                     "power_w_unit": "W",
                     "coverage_gate": 0.9,
-                    "publication_status": (
-                        "available" if self.power_w is not None else "withheld"
-                    ),
+                    "publication_status": ("available" if self.power_w is not None else "withheld"),
                 },
                 "native_report": {
                     "summary": summary,
@@ -179,9 +168,7 @@ class _Factory:
         self.runner = runner
 
     def capabilities(self):
-        return RunnerCapabilities(
-            supported_backend_topologies=(("vllm", "agg"), ("trtllm", "agg"))
-        )
+        return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"), ("trtllm", "agg")))
 
     def create(self, worker_id: int):
         del worker_id
@@ -249,22 +236,12 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
     assert runner.spec.workload["request_count"] == 100
     assert runner.spec.execution_mode == "offline"
     assert runner.closed is True
-    assert (
-        json.loads((output / "prediction.json").read_text())["summary"][
-            "completed_requests"
-        ]
-        == 1
-    )
-    assert (
-        json.loads((output / "requests.jsonl").read_text())["request_id"]
-        == "synthetic-0"
-    )
+    assert json.loads((output / "prediction.json").read_text())["summary"]["completed_requests"] == 1
+    assert json.loads((output / "requests.jsonl").read_text())["request_id"] == "synthetic-0"
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
-def test_predict_online_is_forwarded_through_replay_spec(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -288,9 +265,7 @@ def test_predict_online_is_forwarded_through_replay_spec(
                 supported_backend_topologies=(("vllm", "agg"),),
             )
 
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: OnlineFactory(runner)
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: OnlineFactory(runner))
 
     assert (
         cli.main(
@@ -312,9 +287,7 @@ def test_predict_online_is_forwarded_through_replay_spec(
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
-def test_predict_power_diagnostics_json_preserves_complete_export(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_predict_power_diagnostics_json_preserves_complete_export(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -329,9 +302,7 @@ def test_predict_power_diagnostics_json_preserves_complete_export(
         )
     )
     output = tmp_path / "out"
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
 
     assert (
         cli.main(
@@ -353,9 +324,7 @@ def test_predict_power_diagnostics_json_preserves_complete_export(
     stdout = json.loads(capsys.readouterr().out)
     assert stdout["summary"]["power_w"] == 487.5
     diagnostics = stdout["power_diagnostics"]
-    assert (
-        diagnostics["power_w"] == diagnostics["energy_wms"] / diagnostics["latency_ms"]
-    )
+    assert diagnostics["power_w"] == diagnostics["energy_wms"] / diagnostics["latency_ms"]
     phase = diagnostics["phases"][0]
     assert phase["power_w"] == phase["energy_wms"] / phase["latency_ms"]
     assert phase["operations"][0]["name"] == "gemm"
@@ -363,9 +332,7 @@ def test_predict_power_diagnostics_json_preserves_complete_export(
     assert saved["power_diagnostics"] == diagnostics
 
 
-def test_predict_power_diagnostics_table_applies_top_n(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_predict_power_diagnostics_table_applies_top_n(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -379,9 +346,7 @@ def test_predict_power_diagnostics_table_applies_top_n(
             }
         )
     )
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
 
     assert (
         cli.main(
@@ -405,9 +370,7 @@ def test_predict_power_diagnostics_table_applies_top_n(
     assert "gemm" in stdout
 
 
-def test_predict_online_rejects_runner_without_online_capability(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_predict_online_rejects_runner_without_online_capability(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -421,9 +384,7 @@ def test_predict_online_rejects_runner_without_online_capability(
             }
         )
     )
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
 
     with pytest.raises(SystemExit, match="2"):
         cli.main(["predict", "--online", "--config", str(config_path)])
@@ -446,9 +407,7 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
 
 
 @pytest.mark.filterwarnings("error")
-def test_recommend_runner_incompatibility_is_cli_config_error(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_recommend_runner_incompatibility_is_cli_config_error(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "recommendation.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -498,9 +457,7 @@ def test_recommend_runner_incompatibility_is_cli_config_error(
     assert not (tmp_path / "out").exists()
 
 
-def test_set_adapter_path_is_validated_and_materialized_by_adapter(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_set_adapter_path_is_validated_and_materialized_by_adapter(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -544,9 +501,7 @@ def test_set_adapter_path_is_validated_and_materialized_by_adapter(
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
-def test_engine_stack_rejects_explicit_unavailable_component(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_engine_stack_rejects_explicit_unavailable_component(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -569,9 +524,7 @@ def test_engine_stack_rejects_explicit_unavailable_component(
 
     def unavailable(names):
         assert list(names) == ["engine.router"]
-        raise cli.ConfigAdapterResolutionError(
-            "config adapter 'engine.router' is unavailable"
-        )
+        raise cli.ConfigAdapterResolutionError("config adapter 'engine.router' is unavailable")
 
     monkeypatch.setattr(cli, "resolve_config_adapters", unavailable)
 
@@ -725,9 +678,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert diagnostics["schema_version"] == "1.0"
     assert diagnostics["scope"] == "active_forward_pass_per_gpu"
     assert diagnostics["publication_status"] == "available"
-    assert (
-        diagnostics["power_w"] == diagnostics["energy_wms"] / diagnostics["latency_ms"]
-    )
+    assert diagnostics["power_w"] == diagnostics["energy_wms"] / diagnostics["latency_ms"]
     phase = diagnostics["phases"][0]
     assert phase["power_w"] == phase["energy_wms"] / phase["latency_ms"]
     assert phase["operations"][0]["name"] == "gemm"
@@ -736,9 +687,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
 
     withheld_output = tmp_path / "withheld-recommend-output"
     withheld_runner = _Runner(power_w=None, power_coverage=0.42)
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: _Factory(withheld_runner)
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(withheld_runner))
     assert (
         cli.main(
             [
@@ -788,9 +737,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     withheld_prediction_summary = withheld_prediction_stdout["summary"]
     assert "power_w" not in withheld_prediction_summary
     assert withheld_prediction_summary["power_coverage"] == 0.42
-    withheld_prediction_report = json.loads(
-        (withheld_prediction_output / "prediction.json").read_text()
-    )
+    withheld_prediction_report = json.loads((withheld_prediction_output / "prediction.json").read_text())
     assert "power_w" not in withheld_prediction_report["summary"]
     assert withheld_prediction_report["summary"]["power_coverage"] == 0.42
     withheld_diagnostics = withheld_prediction_report["power_diagnostics"]
@@ -803,9 +750,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert withheld_diagnostics["phases"][0]["operations"][0]["source"] == "silicon"
 
 
-def test_recommendation_outputs_each_concrete_prediction_once(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys) -> None:
     concrete = {
         "traffic": {
             "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
@@ -879,9 +824,7 @@ def test_recommendation_outputs_each_concrete_prediction_once(
         )
         for selection, score in (("first", 2.0), ("second", 1.0))
     ]
-    monkeypatch.setattr(
-        cli, "resolve_runner_factory", lambda stack: _Factory(_Runner())
-    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
     monkeypatch.setattr(
         "aisimulate.recommend.run_recommendation",
         lambda *args, **kwargs: _RecommendationResult(candidates),
@@ -906,9 +849,7 @@ def test_recommendation_outputs_each_concrete_prediction_once(
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) == 1
     assert rows[0]["score"] == 2.0
-    assert [path.name for path in (output / "recommendations").iterdir()] == [
-        "0001.yaml"
-    ]
+    assert [path.name for path in (output / "recommendations").iterdir()] == ["0001.yaml"]
     result = json.loads((output / "recommendation.json").read_text())
     assert result["counts"]["feasible"] == 2
     assert result["views"]["top_n"] == ["candidate-000001"]
@@ -946,9 +887,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert not (recommendations / "0001.yaml").exists()
 
 
-def test_recommendation_writes_an_empty_result_before_returning_failure(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path, monkeypatch, capsys) -> None:
     import aisimulate.recommend as recommendation_module
 
     monkeypatch.setattr(

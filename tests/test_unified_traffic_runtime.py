@@ -128,24 +128,18 @@ def test_aic_timing_power_publication_tracks_current_data_coverage() -> None:
         "prefill",
         "decode",
     ]
-    phase_energies = [
-        phase["energy_wms"] for phase in diagnostics["phases"] if "energy_wms" in phase
-    ]
+    phase_energies = [phase["energy_wms"] for phase in diagnostics["phases"] if "energy_wms" in phase]
     if phase_energies:
         assert diagnostics["energy_wms"] == pytest.approx(sum(phase_energies))
     else:
         assert "energy_wms" not in diagnostics
-    assert diagnostics["latency_ms"] == pytest.approx(
-        sum(phase["latency_ms"] for phase in diagnostics["phases"])
-    )
+    assert diagnostics["latency_ms"] == pytest.approx(sum(phase["latency_ms"] for phase in diagnostics["phases"]))
     assert diagnostics["covered_latency_ms"] == pytest.approx(
         sum(phase["covered_latency_ms"] for phase in diagnostics["phases"])
     )
     for phase in diagnostics["phases"]:
         operations = phase["operations"]
-        assert [operation["name"] for operation in operations] == sorted(
-            operation["name"] for operation in operations
-        )
+        assert [operation["name"] for operation in operations] == sorted(operation["name"] for operation in operations)
         for operation in operations:
             assert operation["source_kind"] in {
                 "measured",
@@ -171,9 +165,7 @@ def test_power_report_table_surfaces_available_power_and_coverage() -> None:
 
 def test_power_report_table_surfaces_withheld_power_as_unavailable() -> None:
     table = format_report_table({"power_coverage": 0.42})
-    active_power_row = next(
-        line for line in table.splitlines() if "Active Power per GPU (W)" in line
-    )
+    active_power_row = next(line for line in table.splitlines() if "Active Power per GPU (W)" in line)
 
     assert "Active Power per GPU (W)" in table
     assert "N/A" in active_power_row
@@ -345,10 +337,7 @@ def test_prediction_spec_lowers_fpm_forward_model_onto_the_rank() -> None:
 
     assert deployment.agg_engine_args["aic_forward_model"] == "fpm"
     assert "timing_model" not in deployment.agg_engine_args
-    assert (
-        deployment.performance_model_metadata["aggregated"]["config"]["forward_model"]
-        == "fpm"
-    )
+    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
 
 
 def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level() -> None:
@@ -358,10 +347,7 @@ def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level() -> No
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
     assert "aic_forward_model" not in deployment.agg_engine_args
-    assert (
-        deployment.performance_model_metadata["aggregated"]["config"]["forward_model"]
-        == "op_level"
-    )
+    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"
 
 
 def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -> None:
@@ -377,14 +363,8 @@ def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -
 
     assert "aic_forward_model" not in deployment.prefill_engine_args
     assert deployment.decode_engine_args["aic_forward_model"] == "fpm"
-    assert (
-        deployment.performance_model_metadata["prefill"]["config"]["forward_model"]
-        == "op_level"
-    )
-    assert (
-        deployment.performance_model_metadata["decode"]["config"]["forward_model"]
-        == "fpm"
-    )
+    assert deployment.performance_model_metadata["prefill"]["config"]["forward_model"] == "op_level"
+    assert deployment.performance_model_metadata["decode"]["config"]["forward_model"] == "fpm"
 
 
 _SMALL_TRAFFIC = {
@@ -421,12 +401,7 @@ def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(
         _run({"engine": engine, "traffic": _SMALL_TRAFFIC})
 
     engine["workers"]["aggregated"]["timing"] = {"type": "default"}
-    assert (
-        _run({"engine": engine, "traffic": _SMALL_TRAFFIC}).metrics[
-            "completed_requests"
-        ]
-        == 8
-    )
+    assert _run({"engine": engine, "traffic": _SMALL_TRAFFIC}).metrics["completed_requests"] == 8
 
 
 def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
@@ -458,9 +433,7 @@ def test_engine_stack_runs_weka_directory_with_one_agentic_lane() -> None:
         by_play.setdefault(record["play_id"], []).append(record)
     ordered = sorted(
         by_play,
-        key=lambda play_id: min(
-            record["dispatched_at_ms"] for record in by_play[play_id]
-        ),
+        key=lambda play_id: min(record["dispatched_at_ms"] for record in by_play[play_id]),
     )
     assert len(ordered) == 2
     assert [play_id.rsplit(":play:", 1)[1] for play_id in ordered] == [
