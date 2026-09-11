@@ -4,9 +4,11 @@
 """End-to-end analytical runner tests for AFD deployments."""
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
+from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
 from aisimulate.runner import (
     AFDCompanionTiming,
     AICAFDCompanionPerformanceModel,
@@ -324,6 +326,72 @@ def test_default_companion_model_consumes_fixed_timing_without_aic_lookup():
     assert timing.latency_ms == 2.0
     assert timing.total_batch_capacity == 2
     assert timing.provenance["provider"] == "fixed"
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("forward_model", ["fpm", "op_level", None])
+def test_aic_companion_preserves_requested_forward_model(phase, companion_role, forward_model):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system")
+    if forward_model is not None:
+        engine_args["aic_forward_model"] = forward_model
+    calls = []
+
+    def estimator(model, hardware, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(raw={"ttft": 2.0, "tpot": 2.0})
+
+    report = (
+        EngineReplayRunnerFactory(afd_companion_model=AICAFDCompanionPerformanceModel(estimator)).create(0).run(spec)
+    )
+
+    assert report.metrics["completed_requests"] == 4
+    assert len(calls) == 1
+    expected_model = "op_level" if forward_model is None else forward_model
+    assert calls[0].get("forward_model") == expected_model
+    assert report.metadata["afd_replay"]["companion"]["forward_model"] == expected_model
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("forward_model", ["unsupported", "", None, False, {}])
+def test_aic_companion_rejects_invalid_forward_model_before_estimation(phase, companion_role, forward_model):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system", aic_forward_model=forward_model)
+
+    def estimator(*args, **kwargs):
+        pytest.fail("an invalid forward model must not reach estimation")
+
+    with pytest.raises(ValueError, match=f"{companion_role}.*aic_forward_model.*fpm.*op_level"):
+        AICAFDCompanionPerformanceModel(estimator).measure(spec)
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+def test_aic_companion_propagates_missing_fpm_data_without_fallback(phase, companion_role):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system", aic_forward_model="fpm")
+    failure = PerfDataNotAvailableError("No fpm_forward data collected for this backend/version")
+    calls = []
+
+    def estimator(model, hardware, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("forward_model") == "fpm":
+            raise failure
+        return SimpleNamespace(raw={"ttft": 2.0, "tpot": 2.0})
+
+    with pytest.raises(
+        InvalidRunnerError, match=f"AFD {companion_role} companion.*PerfDataNotAvailableError.*fpm"
+    ) as exc:
+        EngineReplayRunnerFactory(afd_companion_model=AICAFDCompanionPerformanceModel(estimator)).create(0).run(spec)
+
+    assert exc.value.__cause__ is failure
+    assert len(calls) == 1
+    assert calls[0]["forward_model"] == "fpm"
 
 
 def test_afd_runner_rejects_unresolved_measurement_before_execution():

@@ -187,10 +187,17 @@ class AICAFDCompanionPerformanceModel:
             estimator = cli_estimate
         prefix = f"{role}_"
         parallel = deployment.parallel_config
+        forward_model = args.get("aic_forward_model", "op_level")
+        if not isinstance(forward_model, str) or forward_model not in _AIC_FORWARD_MODELS:
+            raise ValueError(
+                f"{role} AFD companion aic_forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, "
+                f"got {forward_model!r}"
+            )
         kwargs: dict[str, Any] = {
             "mode": "static_ctx" if role == "prefill" else "static_gen",
             "backend_name": deployment.backend,
             "backend_version": deployment.backend_version,
+            "forward_model": forward_model,
             "isl": isl,
             "osl": osl,
             "batch_size": batch_capacity,
@@ -233,6 +240,7 @@ class AICAFDCompanionPerformanceModel:
                 "provider": "aic",
                 "source": "aiconfigurator.cli.api.cli_estimate",
                 "backend_version": deployment.backend_version,
+                "forward_model": forward_model,
                 "metric": metric,
             },
         )
