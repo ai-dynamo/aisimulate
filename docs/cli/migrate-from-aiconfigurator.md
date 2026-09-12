@@ -107,6 +107,49 @@ and [measurement boundaries and reproduction](runtime-benchmark.md). More work i
 optimizer fitting/acquisition cost and process startup; choosing lighter optimizer budgets or a
 different algorithm requires separate search-quality validation.
 
+### Larger model, longer traffic, and more suggestions
+
+A September 12 follow-up uses Llama 3.1 **70B** on the same B200/vLLM 0.24.0 profile,
+**8,192 input / 512 output tokens**, concurrency **32**, **320 requests per candidate**,
+**32-GPU** AISimulate search bound, and **64 suggestions / 16 workers**. AIC receives
+TTFT 10,000 ms and TPOT 50 ms for its minimum-GPU sizing search; AISimulate retains the
+aggregated throughput-per-GPU objective without an SLA constraint. This changes multiple workload
+and search dimensions together; it is not an isolated model-size scaling experiment.
+
+| Command / search | Suggestions | Median of 3 processes | Observed range | Best AISimulate score (tok/s/GPU) |
+|---|---:|---:|---:|---:|
+| Standalone AIC `recommend` | AIC sizing search | 7.24 s | 7.18–8.08 s | Different objective |
+| AISimulate Bayesian, before padding | 64 | 148.32 s | 146.63–152.23 s | 301.72 |
+| AISimulate Bayesian, with padding | 64 | 145.89 s | 143.48–157.13 s | 301.72–302.73 |
+| AISimulate random, 16 workers | 64 | 7.74 s | 7.59–8.30 s | 251.46 |
+| AISimulate random, 16 workers | 320 | 9.48 s | 9.42–9.68 s | 251.46 |
+
+The nominal Bayesian reduction is **1.6%**, with a remaining **20.2×** workflow-cost gap versus
+AIC. The before/after distributions overlap; this case does not establish a dependable runtime
+improvement from padding. The large gap versus AIC remains. Some runs spend their suggestion budget
+on different numbers of unique candidates, so seed/budget equality does not imply identical search
+trajectories. An unrelated Rust build briefly overlapped the second round on this shared workstation;
+small timing differences should not be attributed entirely to the optimization.
+
+Unpadded Bayesian runs evaluate 23–32 unique configurations; padded runs evaluate 25–28. The other
+suggestions hit the existing candidate cache. Best scores change by 0–0.34% between paired runs.
+Random evaluates 52 unique configurations at 64 suggestions and 161 at 320 suggestions, but both
+budgets find the same best score, about **17% below** the best padded Bayesian score. All runs use
+seed 42; more random trials do not guarantee a better answer, and other seeds may differ.
+The default Bayesian budget of 320 suggestions was not measured.
+
+Both AISimulate variants use the same release native extension and source baseline including the
+integrated replay fixes. The control removes only the six-line trial-padding change; source and
+native hashes, full configuration, all timing samples, candidate counts, and scores are retained in
+[the larger-case evidence](benchmarks/recommend-runtime-70b-2026-09-12.json). This avoids mixing
+unrelated native changes into the before/after comparison. Predictions for common concrete
+configurations agree within the documented tolerance; candidate-set equality is not assumed.
+
+The result remains a comparison of different recommendation workflows. AIC analytically evaluates
+aggregated/disaggregated sizing configurations; AISimulate replays a fixed offered load and uses
+Bayesian or random suggestions within its candidate domain. Neither the 320-suggestion default
+nor all production workloads are qualified by these two bounded cases.
+
 ### Compatibility estimates and serving replay
 
 The same `aiconfigurator cli estimate` command in the two distributions has little measured runtime

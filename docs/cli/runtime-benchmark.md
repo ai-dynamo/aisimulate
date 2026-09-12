@@ -127,6 +127,56 @@ in the repeated CLI ratios. The padding prototype imports JAX earlier, so import
 allocation differs; `suggest` remains the useful dominant boundary. Fitting, acquisition optimization,
 and JAX compilation are combined in that boundary, not individually attributed.
 
+### Reproduce the 70B follow-up
+
+The larger case uses the parameterized controller with the flags below. `--max-candidate-gpus`
+limits only the AISimulate search; AIC's sizing command does not accept that search bound.
+`--ttft-ms` and `--tpot-ms` are AIC sizing SLAs, not additional AISimulate constraints. The harness
+now emits explicit synthetic traffic and completes ten times the specified concurrency per candidate.
+The default flags retain the earlier 8B/1024/128/concurrency10 workload.
+
+For a control sharing the updated native code, derive an unpadded checkout from the pinned
+application head. Only the sampler file differs from that application head:
+
+```bash
+git worktree add --detach "$AISIM_BENCHMARK_ROOT/complex-base" ac96675a6a3b4f9197c19070347c07a5a721cac5
+git -C "$AISIM_BENCHMARK_ROOT/complex-base" restore \
+  --source=46ca8915a3ba9b5b17c2c925644127a6ed9de869 \
+  -- python/aisimulate/src/aisimulate/sweeper/sampler.py
+git -C "$AISIM_BENCHMARK_ROOT/complex-base" add python/aisimulate/src/aisimulate/sweeper/sampler.py
+git -C "$AISIM_BENCHMARK_ROOT/complex-base" commit -s -m "benchmark: disable trial padding for controlled comparison"
+uv sync --project "$AISIM_BENCHMARK_ROOT/complex-base/python/aisimulate" --extra dev --python 3.12
+```
+
+Set the `base` entry in the variant JSON to this root/interpreter/source; retain the AIC and head
+entries from the earlier setup. Record the derived commit and sampler hash. The recorded control
+commit is locally derived; the restore operation above reproduces its source content. Then run:
+
+```bash
+python3 scripts/benchmark_recommend_runtime.py \
+  --variants "$AISIM_BENCHMARK_ROOT/complex-variants.json" \
+  --systems-path "$AISIM_SHARED_SYSTEMS" \
+  --output-dir "$AISIM_BENCHMARK_ROOT/complex-results" \
+  --rounds 3 --trials 64 --parallelism 16 \
+  --model meta-llama/Meta-Llama-3.1-70B \
+  --input-tokens 8192 --output-tokens 512 --concurrency 32 \
+  --max-candidate-gpus 32 --ttft-ms 10000 --tpot-ms 50
+```
+
+The dated follow-up pins controller/head `bb0590504a5bf2a10fd7b284b857adfbfce8ea0e` and control
+`8714079edd78f2cdd0fb087e5fff2f580b44659e`, with identical native binary hashes. No cache-purge or CPU-affinity claim is
+made. A successful eight-suggestion pilot warmed the filesystem; three full rounds were recorded.
+
+For the separate 320-suggestion random comparison, use the same flags with a head-only variant
+JSON, `--trials 320 --algorithms random`, and a new output directory. This changes the random
+budget explicitly; it does not benchmark the default Bayesian budget.
+
+An unrelated Rust build was observed during the second full round and had finished by the next
+host-load check. This was a shared workstation, not a continuously monitored dedicated host.
+The artifact records that caveat; the 1.6% median change must not be interpreted as a confirmed
+padding speedup for this case. The large AIC/Bayesian gap and the random-search quality difference
+remain directly visible in the individual samples.
+
 ## Compatibility estimate and replay boundaries
 
 The fixed case uses `meta-llama/Meta-Llama-3.1-8B`, B200, vLLM `0.24.0`, TP4/PP1/attention-DP1,
