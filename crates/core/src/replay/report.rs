@@ -152,14 +152,20 @@ impl ReplayReport {
     }
 
     pub fn processed_tokens_per_s(&self) -> f64 {
-        if self.throughput.wall_time_ms <= 0.0 {
+        // Explicit `is_finite` rather than a bare `<= 0.0`: `wall_time_ms`
+        // reaches here from the `pub` `with_wall_time_ms`, which validates
+        // nothing, and every comparison against NaN is false -- so `<= 0.0`
+        // would fall through and emit NaN. These two fields are the only
+        // summary floats that `validate_report_finite` does not cover, and
+        // outside canonical mode a NaN serializes as JSON `null`.
+        if !(self.throughput.wall_time_ms.is_finite() && self.throughput.wall_time_ms > 0.0) {
             return 0.0;
         }
         self.processed_tokens() as f64 / self.throughput.wall_time_ms * 1000.0
     }
 
     pub fn processed_output_tokens_per_s(&self) -> f64 {
-        if self.throughput.wall_time_ms <= 0.0 {
+        if !(self.throughput.wall_time_ms.is_finite() && self.throughput.wall_time_ms > 0.0) {
             return 0.0;
         }
         self.request_counts.total_output_tokens as f64 / self.throughput.wall_time_ms * 1000.0
@@ -224,7 +230,12 @@ impl Serialize for ReplayReport {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(70))?;
+        // `None`, not a hint: serde's contract is that the declared length is
+        // exact, and the entry count here is conditional (goodput adds 3,
+        // trajectories 13, agentic_graph 1). A length-prefixed format
+        // (MessagePack, CBOR, bincode) would write the declared header and
+        // then emit a different number of pairs, producing corrupt output.
+        let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("num_requests", &self.request_counts.num_requests)?;
         map.serialize_entry(
             "completed_requests",
@@ -1142,6 +1153,25 @@ impl TraceCollector {
                     detail.first_admission_cache_tier_attribution = attribution;
                 }
                 stats.first_admit_ms = Some(admit_time_ms);
+            } else if attribution.is_some()
+                && stats.first_admit_ms == Some(admit_time_ms)
+                && stats.first_admission_reused_input_tokens == reused_input_tokens
+            {
+                // Aggregated replay notifies the same admission twice: the
+                // engine emits a bare `on_admit` (attribution `None`) and the
+                // runtime then re-notifies with the real tier attribution. A
+                // strict first-wins gate would keep the unattributed `None`,
+                // and because both record fields are `skip_serializing_if =
+                // "Option::is_none"` the G1/host keys would silently vanish
+                // from every agg per-request record rather than erroring.
+                // Upgrade a stored `None` only when this call describes the
+                // *same* admission (identical time and reuse count), so a
+                // later readmission can never overwrite the first one.
+                if let Some(detail) = stats.detail.as_deref_mut()
+                    && detail.first_admission_cache_tier_attribution.is_none()
+                {
+                    detail.first_admission_cache_tier_attribution = attribution;
+                }
             }
             stats.reused_input_tokens = stats.reused_input_tokens.max(reused_input_tokens);
         }
@@ -1399,6 +1429,16 @@ impl TraceCollector {
 
     pub fn on_token(&mut self, uuid: Uuid, token_time_ms: f64) {
         if let Some(stats) = self.requests.get_mut(&uuid)
+            // A terminal request's timeline is closed regardless of whether it
+            // has been folded yet. `finalize_token_timeline` normally closes it
+            // inside `on_terminal`, but under
+            // `set_defer_token_timeline_finalization` the fold is postponed to
+            // `finish_at` and the timeline stays `Recording` -- without this
+            // check, post-terminal tokens would keep accumulating into a
+            // cancelled request's output_length/e2e and into the shared ITL
+            // distribution. The terminal status is the authority, not the
+            // timeline's variant.
+            && stats.terminal_status.is_none()
             && let TokenTimeline::Recording(times) = &mut stats.token_timeline
         {
             times.push(token_time_ms);
@@ -2283,6 +2323,90 @@ mod tests {
         assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.2);
     }
 
+    /// Aggregated replay notifies one admission twice -- the engine's bare
+    /// `on_admit` first, then the runtime's attributed call. The unattributed
+    /// notification must not win the first-admission race, or the G1/host
+    /// keys silently disappear from the record instead of erroring.
+    #[test]
+    fn a_later_attributed_notification_upgrades_the_bare_first_admission() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let uuid = Uuid::from_u128(1);
+        collector.on_arrival(uuid, 0.0, 100, 2);
+        // (1) engine-level bare notification: attribution None.
+        collector.on_admit(uuid, 5.0, 20);
+        // (2) runtime re-notifies the same admission with real attribution.
+        collector.on_admit_with_tier_attribution(
+            uuid,
+            5.0,
+            20,
+            Some(CacheTierAttribution {
+                g1_reused_input_tokens: 12,
+                host_reused_input_tokens: 8,
+            }),
+        );
+        collector.on_decode_assigned(uuid, 0);
+        collector.on_token(uuid, 50.0);
+        collector.on_token(uuid, 60.0);
+        collector.on_terminal(uuid, 60.0, ReplayTerminalStatus::Completed);
+
+        let report = collector.finish();
+        let rec = &report.per_request[0];
+        assert_eq!(rec.first_admission_g1_reused_input_tokens, Some(12));
+        assert_eq!(rec.first_admission_host_reused_input_tokens, Some(8));
+        assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.2);
+    }
+
+    /// The upgrade is keyed on the admission's own identity, so a later
+    /// *readmission* -- a different time and reuse count -- never rewrites
+    /// the first admission's attribution.
+    #[test]
+    fn a_readmission_never_overwrites_first_admission_attribution() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let uuid = Uuid::from_u128(1);
+        collector.on_arrival(uuid, 0.0, 100, 2);
+        collector.on_admit(uuid, 5.0, 20);
+        collector.on_admit_with_tier_attribution(
+            uuid,
+            90.0,
+            64,
+            Some(CacheTierAttribution {
+                g1_reused_input_tokens: 64,
+                host_reused_input_tokens: 0,
+            }),
+        );
+        collector.on_decode_assigned(uuid, 0);
+        collector.on_token(uuid, 100.0);
+        collector.on_terminal(uuid, 100.0, ReplayTerminalStatus::Completed);
+
+        let report = collector.finish();
+        let rec = &report.per_request[0];
+        assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.2);
+        assert_eq!(rec.first_admission_g1_reused_input_tokens, None);
+        assert_eq!(rec.first_admission_host_reused_input_tokens, None);
+    }
+
+    /// `with_wall_time_ms` is `pub` and validates nothing, and NaN makes every
+    /// ordering comparison false -- so a `<= 0.0` guard falls through and the
+    /// two derived rates serialize as JSON `null`.
+    #[test]
+    fn a_non_finite_wall_time_yields_zero_rates_rather_than_nan() {
+        let mut collector = TraceCollector::default();
+        add_completed(&mut collector, 1, 0.0, 2, &[10.0, 20.0]);
+        let report = collector.finish().with_wall_time_ms(f64::NAN);
+
+        assert_eq!(report.processed_tokens_per_s(), 0.0);
+        assert_eq!(report.processed_output_tokens_per_s(), 0.0);
+
+        let value = serde_json::to_value(&report).expect("report must serialize");
+        assert_eq!(value["processed_tokens_per_s"], serde_json::json!(0.0));
+        assert_eq!(
+            value["processed_output_tokens_per_s"],
+            serde_json::json!(0.0)
+        );
+    }
+
     /// Register a completed request: arrival, output length (osl), and the
     /// explicit per-output-token timestamps (first → ttft, last → e2e).
     fn add_completed(
@@ -2806,5 +2930,49 @@ mod tests {
             .expect("request must remain summarized");
         assert_eq!(after.output_length, 1);
         assert_eq!(after.first_token_ms, Some(10.0));
+    }
+
+    /// Same property under `set_defer_token_timeline_finalization(true)`. The
+    /// deferred fold leaves the timeline in `Recording` until `finish`, so the
+    /// drop can only come from the terminal status -- not from the timeline
+    /// already being `Finalized`.
+    #[test]
+    fn deferred_finalization_still_drops_tokens_arriving_after_a_terminal() {
+        let cancelled_before_first_token = Uuid::from_u128(9);
+        let cancelled_after_first_token = Uuid::from_u128(10);
+        let mut collector = TraceCollector::default();
+        collector.set_defer_token_timeline_finalization(true);
+        collector.set_capture_per_request(true);
+
+        for uuid in [cancelled_before_first_token, cancelled_after_first_token] {
+            collector.on_arrival(uuid, 0.0, 128, 3);
+            collector.on_admit(uuid, 1.0, 0);
+        }
+        collector.on_token(cancelled_after_first_token, 10.0);
+
+        for uuid in [cancelled_before_first_token, cancelled_after_first_token] {
+            collector.on_terminal(uuid, 11.0, ReplayTerminalStatus::Canceled);
+        }
+        for uuid in [cancelled_before_first_token, cancelled_after_first_token] {
+            collector.on_token(uuid, 12.0);
+            collector.on_token(uuid, 13.0);
+        }
+
+        let report = collector.finish();
+        let record = |uuid: Uuid| {
+            report
+                .per_request
+                .iter()
+                .find(|record| record.uuid == uuid.to_string())
+                .expect("request must be captured")
+        };
+        let before = record(cancelled_before_first_token);
+        assert_eq!(before.output_length, 0);
+        assert_eq!(before.first_token_ms, None);
+        assert_eq!(before.last_token_ms, None);
+        let after = record(cancelled_after_first_token);
+        assert_eq!(after.output_length, 1);
+        assert_eq!(after.first_token_ms, Some(10.0));
+        assert_eq!(after.last_token_ms, Some(10.0));
     }
 }
