@@ -102,15 +102,37 @@ impl DirectRequest {
             .map_or(self.max_output_tokens, Vec::len)
     }
 
+    /// Clone this request with its output token plan truncated to `limit`.
+    ///
+    /// Built field by field rather than `self.clone()` plus overwrite:
+    /// `build_prefill_request` calls this with `limit = 1` for every
+    /// disaggregated request, so cloning the full plan first copied an entire
+    /// authored `output_token_ids` Vec -- 2000 `u32`s for a 2000-token plan --
+    /// only to drop it on the next line and allocate the one-element
+    /// truncation. `tokens` is still cloned: the prefill request needs the
+    /// whole prompt.
     pub(crate) fn clone_with_output_limit(&self, limit: usize) -> Self {
         let max_output_tokens = self.effective_max_output_tokens().min(limit);
-        let mut request = self.clone();
-        request.max_output_tokens = max_output_tokens;
-        request.output_token_ids = self
-            .output_token_ids
-            .as_ref()
-            .map(|ids| ids[..max_output_tokens].to_vec());
-        request
+        Self {
+            tokens: self.tokens.clone(),
+            max_output_tokens,
+            // `to_vec()` on a slice allocates at exactly the truncated length;
+            // `prefill_truncates_the_output_plan_without_mutating_decode` in
+            // `disagg_tests` pins that exact-allocation property.
+            output_token_ids: self
+                .output_token_ids
+                .as_ref()
+                .map(|ids| ids[..max_output_tokens].to_vec()),
+            uuid: self.uuid,
+            dp_rank: self.dp_rank,
+            preferred_dp_rank: self.preferred_dp_rank,
+            preferred_prefill_dp_rank: self.preferred_prefill_dp_rank,
+            arrival_timestamp_ms: self.arrival_timestamp_ms,
+            priority: self.priority,
+            strict_priority: self.strict_priority,
+            policy_class: self.policy_class.clone(),
+            replay_context: self.replay_context.clone(),
+        }
     }
 
     pub fn arrival_time_ms(&self) -> Option<f64> {

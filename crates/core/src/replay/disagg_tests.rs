@@ -1022,6 +1022,11 @@ fn prefill_truncates_the_output_plan_without_mutating_decode() {
     assert_eq!(prefill.max_output_tokens, 1);
     assert_eq!(prefill.output_token_ids.as_deref(), Some(&[11][..]));
     let prefill_plan = prefill.output_token_ids.as_ref().unwrap();
+    // The prefill plan must be allocated at exactly the truncated length, not
+    // carried over from the authored plan's allocation. `build_prefill_request`
+    // runs with `limit = 1` for every disaggregated request, so an
+    // implementation that clones the full plan and then overwrites it copies
+    // the whole authored Vec per request to keep one element.
     assert_eq!(prefill_plan.capacity(), prefill_plan.len());
     assert_eq!(
         state
