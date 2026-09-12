@@ -28,8 +28,6 @@ pub(crate) trait StoreStats {
 pub(crate) struct BucketedSamples<T> {
     /// Ordered by bucket key so retained-sample order, retirement tie-breaks,
     /// and every derived aggregate are a pure function of the observations.
-    /// `HashMap` order varies per store instance and leaked into the
-    /// order-dependent Welford standardization in `fit_regression`.
     pub(crate) buckets: BTreeMap<Vec<usize>, Vec<(Vec<f64>, T)>>,
     pub(crate) total_observations: usize,
     axis_min: Vec<f64>,
@@ -188,6 +186,13 @@ impl<T: Clone> BucketedSamples<T> {
         changed
     }
 
+    /// Re-key every retained sample after a dynamic-bound expansion.
+    ///
+    /// Samples are re-inserted in bucket-key order, NOT in their original
+    /// insertion order, so after the first expansion `retire_from_fattest_bucket`
+    /// no longer necessarily evicts the oldest sample in the fattest bucket. The
+    /// retention policy is "bounded window, evict the head of the fattest
+    /// bucket", which is only equal to "oldest first" before the first rebuild.
     fn rebuild_buckets(&mut self) {
         let observations = self.observations();
         self.buckets.clear();
@@ -201,6 +206,10 @@ impl<T: Clone> BucketedSamples<T> {
         // Eviction removes samples only. Dynamic regression bounds remain
         // monotonic; fixed correction-grid workload ranges are configured at
         // model creation.
+        //
+        // `max_by_key` returns the LAST maximal element, so equally fat buckets
+        // break to the largest bucket key — deterministic under `BTreeMap`
+        // ordering, and the opposite of what "first wins" would suggest.
         let Some(key) = self
             .buckets
             .iter()

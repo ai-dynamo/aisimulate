@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Forward-pass-level performance model with optional online tuning (PR #1152).
+//! Forward-pass-level performance model with optional online tuning.
 //!
 //! Built on the compiled [`crate::perfmodel::engine::Engine`]: the `Native` variant holds
 //! an `Arc<Engine>` and the native estimate routes through

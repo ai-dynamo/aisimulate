@@ -241,7 +241,7 @@ impl ForwardPassPerfModel {
     /// Description: create a native model when possible, otherwise fall back to
     /// regression.
     ///
-    /// Fallback reason is preserved in `diagnostics().last_warning`. The
+    /// Fallback reason is preserved in `diagnostics().last_warning`.
     /// A successful native construction preserves native workload inference
     /// and ignores `worker_type` and regression-only weights. A fallback is
     /// bound to `worker_type` and validates those weights when it is created.
@@ -611,7 +611,7 @@ fn build_engine_via_python(
     crate::py::compile_engine_to_engine(config, systems_path_str)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WorkloadKind {
     Prefill,
     Decode,

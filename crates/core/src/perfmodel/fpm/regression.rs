@@ -333,6 +333,14 @@ fn solve_regularized_linear_system(mut lhs: Vec<Vec<f64>>, rhs: Vec<f64>) -> Opt
     solve_linear_system(lhs, rhs)
 }
 
+/// Gaussian elimination with partial pivoting. Returns `None` on a singular
+/// system.
+///
+/// The pivot search uses a NaN-tolerant comparator, which would make pivot
+/// selection position-dependent if a NaN ever reached it. That is
+/// defence-in-depth only: a NaN entry propagates into the solution, and
+/// `fit_linear_active_set` rejects any non-finite solution before it is used.
+/// The local `1e-12` test detects singularity, not NaN.
 fn solve_linear_system(mut lhs: Vec<Vec<f64>>, mut rhs: Vec<f64>) -> Option<Vec<f64>> {
     let dimension = rhs.len();
     for column in 0..dimension {
