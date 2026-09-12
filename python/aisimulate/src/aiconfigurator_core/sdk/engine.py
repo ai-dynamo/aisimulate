@@ -126,6 +126,7 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 #   `apply_rope`, allowing global NoPE layers to omit the fused RoPE cost.
 # - 18 (speculation migration): Generation attention gained verify_query_tokens
 #   and FPM forward gained verify_width, both positional bincode fields.
+#   TokenScale was appended to remap draft query widths before op lookup.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aiconfigurator_core.engine_spec_schema_version()
@@ -170,12 +171,26 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
 def _as_engine_op(op: Any) -> Operation:
     """Return the engine-backed form of ``op``.
 
-    Engine ops (Rust ``Operation`` subclasses, i.e. every family shell) pass
-    through; ``FPMForwardOp`` converts via its adapter dict +
+    Engine ops (Rust ``Operation`` subclasses) pass through, with a typed
+    query-width wrapper for materialized draft ops. ``FPMForwardOp`` converts via its adapter dict +
     ``op_from_spec_json``. Anything else — the AFD orchestration ops, ad-hoc
     stand-ins — raises ``OpConversionError``, the established contract for
     graphs the native engine cannot represent."""
     if isinstance(op, Operation):
+        width = getattr(op, "_draft_token_width", None)
+        if width is not None:
+            numerator, denominator = width
+            return aiconfigurator_core.op_from_spec_json(
+                json.dumps(
+                    {
+                        "TokenScale": {
+                            "op": json.loads(op._spec_json()),
+                            "numerator": numerator,
+                            "denominator": denominator,
+                        }
+                    }
+                )
+            )
         return op
     if isinstance(op, FPMForwardOp):
         return aiconfigurator_core.op_from_spec_json(json.dumps(_fpm_spec_dict(op)))

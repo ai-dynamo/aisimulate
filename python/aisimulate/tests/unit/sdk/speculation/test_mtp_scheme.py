@@ -36,7 +36,7 @@ class TestResolveSpeculation:
         spec = resolve_speculation(cfg)
         assert spec.kind == "mtp"
         assert spec.params["depth"] == 2
-        assert cfg.speculation is spec
+        assert cfg.speculation is None
 
     def test_nextn_zero_resolves_to_none(self):
         cfg = _model_config(nextn=0)
@@ -102,3 +102,29 @@ def test_explicit_mtp_depth_rejects_fractional_input(depth):
     cfg = _model_config(speculation=SpeculationConfig(kind="mtp", params={"depth": depth}))
     with pytest.raises(ValueError, match="integer draft length"):
         resolve_speculation(cfg)
+
+
+def test_reused_legacy_config_can_enable_change_and_disable_mtp():
+    from aiconfigurator_core.sdk.config_builders import apply_nextn
+    from aiconfigurator_core.sdk.models import get_model
+
+    cfg = _model_config(nextn=0)
+    for depth in (0, 3, 2, 0, 1):
+        apply_nextn(cfg, depth)
+        model = get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        assert model._nextn == depth
+        assert model.verify_width == depth + 1
+        assert cfg.speculation is None
+
+
+def test_reused_explicit_mtp_still_rejects_conflicting_legacy_depth():
+    from aiconfigurator_core.sdk.config_builders import apply_nextn
+    from aiconfigurator_core.sdk.models import get_model
+
+    cfg = _model_config(speculation=SpeculationConfig(kind="mtp", params={"depth": 3}))
+    assert get_model("Qwen/Qwen3-8B", cfg, "vllm")._nextn == 3
+    apply_nextn(cfg, 0)
+    assert get_model("Qwen/Qwen3-8B", cfg, "vllm")._nextn == 3
+    apply_nextn(cfg, 2)
+    with pytest.raises(ValueError, match="Conflicting speculative inputs"):
+        get_model("Qwen/Qwen3-8B", cfg, "vllm")

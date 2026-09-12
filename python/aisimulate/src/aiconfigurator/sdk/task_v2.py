@@ -568,7 +568,7 @@ class Task:
     nextn: int | str = 0
     nextn_accepted: float | None = None
     # Scheme configuration and measured acceptance; method="mtp" desugars to the legacy pair.
-    speculative: dict | None = None
+    speculative: dict | None = field(default=None, kw_only=True)
     moe_backend: common.MoEBackend | None = None
     # Applies to every graph with standard dense ContextAttention/GenerationAttention ops and to
     # supported DeepSeek MLA/WideEP paths. Named support is backend/table/version-specific and fails

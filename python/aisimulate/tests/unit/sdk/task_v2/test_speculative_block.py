@@ -158,3 +158,43 @@ def test_task_yaml_scheme_reaches_real_agg_consumer():
     accepted = run(1.8)
     assert 0 < accepted["tpot"] < zero["tpot"]
     assert accepted["tokens/s"] > zero["tokens/s"]
+
+
+def test_pre_speculation_positional_task_call_keeps_attention_backend():
+    # Literal call shape from the pre-migration Task signature through its
+    # thirtieth positional argument, attention_backend (baseline 7dbd110f).
+    task = Task(
+        "agg",
+        4000,
+        1000,
+        0,
+        0,
+        0,
+        1,
+        True,
+        1000.0,
+        50.0,
+        True,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "op_level",
+        "",
+        "",
+        "trtllm",
+        None,
+        False,
+        False,
+        False,
+        0,
+        None,
+        None,
+        "fa3",
+    )
+    assert task.attention_backend == "fa3"
+    assert task.moe_backend is None
+    assert task.speculative is None

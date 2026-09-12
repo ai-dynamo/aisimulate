@@ -104,6 +104,13 @@ pub(crate) fn op_sol_latency_ms(
 ) -> Result<f64, AicError> {
     let spec = &db.system_spec;
     match op {
+        Op::TokenScale(o) => {
+            // Reject malformed directly constructed Rust values as well as
+            // serialized input (which validates the widths on deserialize).
+            o.scale_tokens(0)?;
+            let ratio = f64::from(o.numerator) / f64::from(o.denominator);
+            op_sol_latency_ms(&o.op, db, x * ratio, batch * ratio, s, prefix)
+        }
         Op::Gemm(o) => Ok(gemm_sol(o, spec, x)),
         Op::Embedding(o) => Ok(embedding_sol(o, spec, x)),
         Op::Elementwise(o) => Ok(elementwise_sol(o, spec, x)),

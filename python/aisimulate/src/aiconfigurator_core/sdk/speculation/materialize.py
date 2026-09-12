@@ -10,7 +10,7 @@ executes"): per-op pricing happens in Rust from an ``EngineSpec`` built by
 walking the model's op lists once. A scheme therefore cannot inject draft
 ops at query time the way the retired Python step path allowed — instead,
 ``materialize_spec_scheme`` folds the scheme into the model right after
-``get_model`` attaches it, using two existing engine channels:
+``get_model`` attaches it, using two engine channels:
 
 * **verify width** rides the engine's ``nextn`` decode-batch multiplier:
   ``model._nextn = verify_width - 1`` is set POST-construction, so model
@@ -19,14 +19,10 @@ ops at query time the way the retired Python step path allowed — instead,
   ``(_nextn + 1)`` — exactly the verify forward width. The agg scheduler's
   ``decode_query_tokens`` and ``max_decode_progress`` read the same
   attribute and stay consistent for free.
-* **draft-op token widths** ride the per-op ``scale_num_tokens`` divisor:
-  a draft op drafting ``t`` tokens/request inside a ``verify_width``-wide
-  phase carries ``scale_num_tokens = verify_width // t`` when the ratio is
-  an integer (exact everywhere, including the small-m launch-floor region).
-  Non-integer ratios (e.g. DSpark's 7-token draft under an 8-token verify)
-  scale the RESULT by ``t / verify_width`` via ``scale_factor`` instead —
-  exact for token-linear ops in the linear region, slightly optimistic in
-  the small-m flat region.
+* **draft-op token widths** use a ``TokenScale`` engine wrapper. It maps
+  both query tokens and batch size by ``tokens_per_request / verify_width``
+  before dispatching to the original op. Every operation family retains its
+  own nonlinear table lookup, token divisors, and repetition count.
 
 **Dense decode attention** additionally carries the width channel end to
 end: ``GenerationAttention`` (Python and Rust) folds the engine's width
@@ -37,6 +33,8 @@ shared KV read, would dominate — physics puts the crossover far above
 practical widths, so the guard is a corner-case fence, not a calibration).
 Exact wide-query pricing still requires collected data with a query_len
 axis (delivery-package issue #7).
+
+Measurements below are historical upstream reports, not rerun for this migration.
 
 Transition-state limitations (tracked for follow-ups):
 
@@ -67,11 +65,13 @@ from __future__ import annotations
 import copy
 
 from aiconfigurator_core.sdk.operations.attention import GenerationAttention
-from aiconfigurator_core.sdk.speculation.base import NullScheme, SpecSchemeBase
+from aiconfigurator_core.sdk.speculation.base import NullScheme, SpecSchemeBase, positive_integer
 from aiconfigurator_core.sdk.speculation.mtp import MTPScheme
 
 
 def _fold_width(op, tokens_per_request: int, verify_width: int) -> None:
+    tokens_per_request = positive_integer(tokens_per_request, "tokens_per_request")
+    verify_width = positive_integer(verify_width, "verify_width")
     if isinstance(op, GenerationAttention):
         # Attention folds by the FULL width regardless of divisibility: a
         # block pass reads each request's KV once, so the correct price is
@@ -80,24 +80,10 @@ def _fold_width(op, tokens_per_request: int, verify_width: int) -> None:
         op._scale_num_tokens = (op._scale_num_tokens or 1) * verify_width
         op._verify_query_tokens = max(int(tokens_per_request), 1)
         return
-    if tokens_per_request <= 0:
-        return
-    if verify_width % tokens_per_request == 0:
-        # Integer ratio: divide the query token count back to the drafted
-        # width BEFORE the table lookup — exact everywhere, including the
-        # small-m launch-floor region where cost is not token-linear.
-        divisor = verify_width // tokens_per_request
-        if divisor > 1 and hasattr(op, "_scale_num_tokens"):
-            op._scale_num_tokens = (op._scale_num_tokens or 1) * divisor
-        return
-    # Non-integer ratio (e.g. DSpark's 7-token draft in an 8-wide phase):
-    # scale the RESULT by t/w instead. Token-linear ops (gemm/elementwise/
-    # moe) satisfy (t/w) * Cost(w*c) == Cost(t*c) in the linear region; in
-    # the small-m flat region this is slightly optimistic where the old
-    # full-width fallback was systematically conservative (~+2%/round on
-    # the DSpark ledger). Attention never reaches here (handled above).
-    if hasattr(op, "_scale_factor"):
-        op._scale_factor = (op._scale_factor or 1.0) * (tokens_per_request / verify_width)
+    # The engine adapter serializes this marker as a typed query wrapper;
+    # keeping the original Python op preserves its metadata and copy protocol.
+    # Unsupported native graphs still fail at the standard conversion gate.
+    op._draft_token_width = (tokens_per_request, verify_width)
 
 
 def materialize_spec_scheme(model) -> None:

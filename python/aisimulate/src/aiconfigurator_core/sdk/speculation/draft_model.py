@@ -122,6 +122,7 @@ class DraftModelScheme(SpecSchemeBase):
             speculation=None,
             nextn=0,
             forward_model="op_level",
+            overwrite_num_layers=0,
         )
         self._draft_model = get_model(self.draft_model_path, draft_config, backend)
         # Weights before K-scaling: get_weights folds the op count (layer

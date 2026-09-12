@@ -95,3 +95,25 @@ class TestDraftModelScheme:
         )
         with pytest.raises(ValueError, match="backends"):
             models.get_model("Qwen/Qwen3-8B", cfg, "trtllm")
+
+
+def test_target_layer_override_does_not_change_independent_draft():
+    baseline = _q8b(num_speculative_tokens=3)
+    import dataclasses
+
+    cfg = dataclasses.replace(baseline.config, overwrite_num_layers=2)
+    target = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+    independent = models.get_model(
+        "Qwen/Qwen3-0.6B",
+        dataclasses.replace(cfg, speculation=None, overwrite_num_layers=0),
+        "vllm",
+    )
+    scheme = target.spec_scheme
+    assert target._num_layers == 2
+    assert scheme._draft_model._num_layers == independent._num_layers == 28
+    assert scheme.draft_weights_bytes(target) == sum(op.get_weights() for op in independent.generation_ops)
+    assert scheme.draft_weights_bytes(target) == baseline.spec_scheme.draft_weights_bytes(baseline)
+    for seq_len in (1, 1000, 8192):
+        assert scheme.draft_kv_bytes_per_sequence(target, seq_len) == independent.get_kvcache_bytes_per_sequence(
+            seq_len
+        )

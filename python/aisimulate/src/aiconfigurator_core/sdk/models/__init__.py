@@ -26,6 +26,7 @@ Two mechanisms expose model classes:
 
 from __future__ import annotations
 
+import copy
 import importlib
 import pkgutil
 
@@ -195,6 +196,11 @@ def get_model(
     from aiconfigurator_core.sdk.speculation import build_spec_scheme
     from aiconfigurator_core.sdk.speculation.materialize import materialize_spec_scheme
 
+    # The materialized graph and its cache identity own the same snapshot.
+    # Callers may reuse and edit nested speculative inputs for another build.
+    if model_config.speculation is not None:
+        model_config = copy.copy(model_config)
+        model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)
     model = cls.create(model_info, model_config, backend_name)
     model.spec_scheme = build_spec_scheme(model_config, spec_config)

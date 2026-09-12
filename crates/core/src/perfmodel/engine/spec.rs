@@ -706,6 +706,11 @@ mod tests {
             OpSpec::FpmForward(fpm_forward()),
             OpSpec::MoeAllToAll(moe_all_to_all()),
             OpSpec::MoeExpertCompute(moe_expert_compute()),
+            OpSpec::TokenScale(crate::operators::op::TokenScaleOp {
+                op: Box::new(OpSpec::Gemm(gemm())),
+                numerator: 5,
+                denominator: 6,
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -746,7 +751,8 @@ mod tests {
                 | OpSpec::Dsv4MegaMoe(_)
                 | OpSpec::Kda(_)
                 | OpSpec::MoeAllToAll(_)
-                | OpSpec::MoeExpertCompute(_) => {}
+                | OpSpec::MoeExpertCompute(_)
+                | OpSpec::TokenScale(_) => {}
             }
         }
         ops
@@ -801,6 +807,7 @@ mod tests {
         // and after retiring the two mid-enum wideEP MoE variants.
         const MOE_ALL_TO_ALL_INDEX: u32 = 33;
         const MOE_EXPERT_COMPUTE_INDEX: u32 = 34;
+        const TOKEN_SCALE_INDEX: u32 = 35;
 
         let index_of = |op: &OpSpec| -> u32 {
             let bytes = bincode::serialize(op).expect("serialize op");
@@ -823,11 +830,20 @@ mod tests {
             "MoeExpertCompute index moved"
         );
 
-        // The two last variants must stay adjacent and terminal: appending is
-        // the only safe growth direction.
-        assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(
-            MOE_EXPERT_COMPUTE_INDEX as usize + 1,
+            index_of(&OpSpec::TokenScale(crate::operators::op::TokenScaleOp {
+                op: Box::new(OpSpec::Gemm(gemm())),
+                numerator: 5,
+                denominator: 6,
+            })),
+            TOKEN_SCALE_INDEX,
+            "TokenScale index moved"
+        );
+        // Appending is the only safe growth direction.
+        assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
+        assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
+        assert_eq!(
+            TOKEN_SCALE_INDEX as usize + 1,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );

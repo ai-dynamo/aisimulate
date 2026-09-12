@@ -352,6 +352,7 @@ impl Engine {
         fn contains_fpm(ops: &[Op]) -> bool {
             ops.iter().any(|op| match op {
                 Op::FpmForward(_) => true,
+                Op::TokenScale(o) => contains_fpm(std::slice::from_ref(&o.op)),
                 Op::Overlap(o) => contains_fpm(&o.group_a) || contains_fpm(&o.group_b),
                 Op::Fallback(o) => {
                     contains_fpm(std::slice::from_ref(&o.primary)) || contains_fpm(&o.fallback)
@@ -3082,6 +3083,20 @@ mod tests {
         let (mut spec, db) = fpm_hybrid_spec(tmp.path(), None, 1, vec![], vec![]);
         let dup = spec.generation_ops[0].clone();
         spec.generation_ops.push(dup);
+        let err = Engine::build(spec, Arc::new(db)).unwrap_err();
+        assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
+    }
+
+    #[test]
+    fn fpm_hybrid_rejects_fpm_hidden_in_draft_token_scale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut spec, db) = fpm_hybrid_spec(tmp.path(), None, 1, vec![], vec![]);
+        spec.generation_ops
+            .push(Op::TokenScale(crate::operators::op::TokenScaleOp {
+                op: Box::new(spec.generation_ops[0].clone()),
+                numerator: 1,
+                denominator: 4,
+            }));
         let err = Engine::build(spec, Arc::new(db)).unwrap_err();
         assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
     }

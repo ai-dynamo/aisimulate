@@ -10,8 +10,9 @@ Scheme modules register themselves via ``@register_spec_scheme("<kind>")``;
 (the model-registry idiom), so **adding a scheme file is enough** — no edits
 here.
 
-Known accuracy envelope (zero-calibration contract, measured on
-Qwen3-8B x H100 x vLLM against static-batch pure-decode rounds):
+Historical source-reported accuracy (not remeasured for this AISimulate
+migration): Qwen3-8B x H100 x vLLM static-batch pure-decode rounds, with
+the source's zero-calibration contract:
 
 - The sequence-basis width channel has no fitted constants; deep-concurrency
   pure-decode rounds under-predict by ~10-18% (the shared-KV floor misses

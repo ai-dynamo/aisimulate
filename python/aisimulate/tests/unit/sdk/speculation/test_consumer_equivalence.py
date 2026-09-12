@@ -106,7 +106,7 @@ def _database():
 
 class _FakeDraftScheme(NullScheme):
     """Verify width 6; one gen draft op at 5 tokens/request (non-divisible —
-    priced at full width) and one at 3 (divisible — folds x2); one context
+    mapped by 5/6) and one at 3 (divisible — maps by 1/2); one context
     draft op; nonzero weight/KV bytes."""
 
     kind = "fake_draft"
@@ -176,12 +176,10 @@ class TestMaterialization:
         assert ctx_names == ["context_attention", "draft_dspark_precompute"]
 
         by_name = {op._name: op for op in model.generation_ops}
-        # 6 % 5 != 0: result-scaled by 5/6 (token-linear identity), query
-        # stays at the full phase width.
-        assert by_name["draft_dspark_backbone"]._scale_num_tokens == 1
-        assert by_name["draft_dspark_backbone"]._scale_factor == pytest.approx(5 / 6)
-        # 6 // 3 == 2: the divisor folds the op back to its drafted token count.
-        assert by_name["draft_dspark_head"]._scale_num_tokens == 2
+        # Both ratios remap query dimensions in Rust, preserving nonlinear costs.
+        assert by_name["draft_dspark_backbone"]._draft_token_width == (5, 6)
+        assert by_name["draft_dspark_backbone"]._scale_factor == 1.0
+        assert by_name["draft_dspark_head"]._draft_token_width == (3, 6)
 
     def test_scheme_owned_ops_are_not_mutated(self):
         scheme = _FakeDraftScheme()
@@ -231,7 +229,7 @@ class TestAttentionWidthChannel:
 
             def build_draft_generation_ops(self, model):
                 # 5 drafted tokens per request inside a width-6 phase: gemms
-                # would refuse the non-integer fold, but attention folds by
+                # use the rational query fold, but attention folds by
                 # the FULL width (one KV read per request) and carries the
                 # real query width for the guard.
                 return [DraftOpSpec(op=self.attn_op, tokens_per_request=5)]
@@ -346,7 +344,7 @@ def test_materialize_draft_width_larger_than_verify_budget():
 
     model = _fake_model(spec_scheme=WideDraftScheme())
     materialize_spec_scheme(model)
-    assert model.generation_ops[-1]._scale_factor == pytest.approx(8 / 6)
+    assert model.generation_ops[-1]._draft_token_width == (8, 6)
 
 
 @pytest.mark.parametrize("round_trip", ["copy", "deepcopy", "pickle"])
@@ -381,3 +379,180 @@ def test_native_attention_preserves_positional_options_and_keyword_widths(round_
     assert wire["scale_num_tokens"] == 6
     assert wire["verify_query_tokens"] == 5
     assert duplicate is not op
+
+
+@pytest.fixture(scope="module")
+def real_database():
+    from aiconfigurator_core.sdk.perf_database import get_database_view
+
+    return get_database_view("h100_sxm", "vllm", "0.24.0")
+
+
+@pytest.mark.parametrize("draft_count", [1, 3, 7])
+@pytest.mark.parametrize("batch_size", [1, 512])
+def test_every_standalone_draft_op_matches_independent_decode(real_database, draft_count, batch_size):
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+
+    cfg = _model_config()
+    cfg.tp_size = 2  # Includes communication ops with nonlinear size costs.
+    independent = get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+    cfg = _model_config(
+        SpeculationConfig(
+            kind="draft_model", params={"num_speculative_tokens": draft_count}, draft_model_path="Qwen/Qwen3-0.6B"
+        )
+    )
+    cfg.tp_size = 2
+    target = get_model("Qwen/Qwen3-8B", cfg, "vllm")
+
+    def breakdown(model):
+        _, rows = _cached_engine_handle(model, real_database).run_static_per_op(
+            batch_size=batch_size, isl=64, osl=2, mode="static_gen", stride=1
+        )
+        return {row[0]: row[1] for row in rows}
+
+    expected, actual = breakdown(independent), breakdown(target)
+    draft_names = {name.removeprefix("draft_") for name in actual if name.startswith("draft_")}
+    assert draft_names == expected.keys()
+    for name, latency in expected.items():
+        assert actual[f"draft_{name}"] == pytest.approx(draft_count * latency, rel=1e-10), name
+
+
+@pytest.mark.parametrize("tree_shape", [[1, 1], [2, 3], [4, 8]])
+@pytest.mark.parametrize("batch_size", [1, 512])
+def test_every_tree_draft_op_queries_its_own_width(real_database, tree_shape, batch_size):
+    import copy
+
+    from aiconfigurator_core.sdk.engine import _evaluate_single_op
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.operations.attention import GenerationAttention
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
+
+    from .test_dense_draft_schemes import EAGLE3_CONFIG
+
+    cfg = _model_config(SpeculationConfig(kind="eagle3", params={"tree_shape": tree_shape}, draft_config=EAGLE3_CONFIG))
+    cfg.tp_size = 2
+    model = get_model("Qwen/Qwen3-8B", cfg, "vllm")
+    specs = model.spec_scheme.build_draft_generation_ops(model)
+    indices = [i for i, op in enumerate(model.generation_ops) if op._name.startswith("draft_")]
+    handle = _cached_engine_handle(model, real_database)
+    assert len(indices) == len(specs)
+    for spec, index in zip(specs, indices, strict=True):
+        # Repeated tree-level names are aggregated by the breakdown API;
+        # evaluate each compiled index to check every lookup independently.
+        [actual] = handle.evaluate_generation_ops(
+            [index], batch_size=batch_size * model.verify_width, s=65, x=batch_size * model.verify_width
+        )
+        op = copy.copy(spec.op)
+        if isinstance(op, GenerationAttention):
+            # Physical block attention: one KV request per batch member,
+            # with the block's actual query width in the roofline guard.
+            expected_batch = batch_size
+            op._verify_query_tokens = spec.tokens_per_request
+        else:
+            expected_batch = batch_size * spec.tokens_per_request
+        expected = _evaluate_single_op(
+            real_database,
+            op,
+            is_context=False,
+            batch_size=expected_batch,
+            s=65,
+            x=batch_size * spec.tokens_per_request,
+        )
+        assert actual[0] == f"draft_{spec.op._name}"
+        assert actual[1] == pytest.approx(float(expected), rel=1e-10), actual[0]
+        assert actual[2] == pytest.approx(expected.energy, rel=1e-10), actual[0]
+
+
+@pytest.mark.parametrize("mutation", ["params", "draft_config"])
+def test_materialized_config_snapshot_keeps_cache_and_graph_consistent(real_database, mutation):
+    import copy
+    import dataclasses
+
+    from aiconfigurator_core.sdk.models import get_model
+    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
+
+    from .test_dense_draft_schemes import EAGLE3_CONFIG
+
+    params = {"tree_shape": [1, 1]}
+    draft_config = copy.deepcopy(EAGLE3_CONFIG)
+    cfg = _model_config(SpeculationConfig(kind="eagle3", params=params, draft_config=draft_config))
+    first = get_model("Qwen/Qwen3-8B", cfg, "vllm")
+    identity = _engine_config_json(first, real_database)
+    graph = [op._spec_json() for op in first.generation_ops]
+    if mutation == "params":
+        params["tree_shape"][:] = [2]
+    else:
+        draft_config["num_hidden_layers"] = 2
+    second = get_model("Qwen/Qwen3-8B", dataclasses.replace(cfg), "vllm")
+    assert _engine_config_json(first, real_database) == identity
+    assert [op._spec_json() for op in first.generation_ops] == graph
+    assert _engine_config_json(second, real_database) != identity
+
+    def latency(model):
+        _, rows = _cached_engine_handle(model, real_database).run_static_per_op(
+            batch_size=8, isl=64, osl=32, mode="static_gen", stride=1
+        )
+        return sum(row[1] for row in rows)
+
+    _engine_handle_cache_clear()
+    try:
+        original = latency(first)
+        warm = latency(second)
+        assert _cached_engine_handle(first, real_database) is not _cached_engine_handle(second, real_database)
+        assert latency(first) == original
+        _engine_handle_cache_clear()
+        assert latency(second) == warm
+        assert latency(first) == original
+        assert original != warm  # The changed input actually changes a native prediction.
+    finally:
+        _engine_handle_cache_clear()
+
+
+@pytest.mark.parametrize("round_trip", ["copy", "deepcopy", "pickle"])
+def test_draft_query_width_survives_copy_and_standalone_consumer(real_database, round_trip):
+    import copy
+    import pickle
+
+    from aiconfigurator_core.sdk.engine import build_ops_json
+    from aiconfigurator_core.sdk.operations.gemm import GEMM
+    from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+
+    baseline = GEMM("draft_gemm", 1.0, 1024, 1024, common.GEMMQuantMode.bfloat16)
+    folded = copy.copy(baseline)
+    _fold_width(folded, 5, 6)
+    duplicate = pickle.loads(pickle.dumps(folded)) if round_trip == "pickle" else getattr(copy, round_trip)(folded)
+    assert duplicate is not folded
+    assert json.loads(build_ops_json([duplicate]))[0]["TokenScale"]["numerator"] == 5
+    assert duplicate._name == folded._name
+    assert duplicate.get_weights() == baseline.get_weights()
+    assert float(duplicate._engine_query(real_database, x=6)) == float(baseline._engine_query(real_database, x=5))
+
+
+@pytest.mark.parametrize("tokens,width", [(0, 6), (5, 0), (-1, 6), (5, 1.5), (True, 6)])
+def test_materialize_rejects_invalid_draft_width(tokens, width):
+    from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+
+    with pytest.raises(ValueError, match="positive integer"):
+        _fold_width(_RecordingOp("draft"), tokens, width)
+
+
+def test_draft_query_wrapper_does_not_hide_retired_native_ops():
+    from aiconfigurator_core.sdk.engine import OpConversionError, build_ops_json
+    from aiconfigurator_core.sdk.operations.moe import MoEDispatch
+    from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+
+    op = MoEDispatch("draft_retired", 1.0, 7168, 8, 256, 1, 16, 1, False, backend="sglang", moe_backend="deepep_moe")
+    _fold_width(op, 1, 4)
+    with pytest.raises(OpConversionError, match="no native variant"):
+        build_ops_json([op])
+
+
+def test_draft_width_does_not_silently_admit_unsupported_python_graphs():
+    from aiconfigurator_core.sdk.engine import OpConversionError, build_ops_json
+    from aiconfigurator_core.sdk.speculation.materialize import _fold_width
+
+    op = _RecordingOp("draft_unsupported")
+    _fold_width(op, 1, 4)
+    with pytest.raises(OpConversionError, match="no OpSpec conversion"):
+        build_ops_json([op])

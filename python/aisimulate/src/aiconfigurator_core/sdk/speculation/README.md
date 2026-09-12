@@ -55,7 +55,7 @@ result = cli_estimate(
 
 The same `speculative` mapping can be supplied to an aggregate `Task` or its experiment YAML. Non-MTP schemes are rejected for disaggregated, AFD, and EPD tasks. `accepted_tokens` must be finite and between zero and the configured draft count. Explicit MTP uses `params: {depth: N}` and is equivalent to `nextn=N` with the same acceptance assumption. Do not combine an active legacy MTP configuration with a speculative block.
 
-Core SDK callers configure `ModelConfig(speculation=SpeculationConfig(...))`. N-gram, EAGLE-3, and standalone-draft schemes use `num_speculative_tokens`; DFlash and DSpark use `num_draft_tokens`; MTP uses `depth`. The model exposes the resulting scheme and verification width. Core timing APIs return iteration cost; applying accepted-token progress is the upper layer's responsibility.
+Core SDK callers configure `ModelConfig(speculation=SpeculationConfig(...))`. N-gram, EAGLE-3, and standalone-draft schemes use `num_speculative_tokens`; DFlash and DSpark use `num_draft_tokens`; MTP uses `depth`. The model exposes the resulting scheme and verification width. Model construction snapshots the speculation inputs; changing the caller's configuration requires building a new model. Core timing APIs return iteration cost; applying accepted-token progress is the upper layer's responsibility.
 
 ## Whole-forward FPM
 

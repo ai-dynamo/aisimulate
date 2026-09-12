@@ -18,6 +18,8 @@ Usage and modeling limits are documented in the [speculation package](../python/
 - Map Rust and Python into the existing combined distribution. Keep one wheel and one crate, with identity-preserving compatibility imports.
 - Advance the current operation schema from 17 to 18 rather than copying the source's intermediate schema numbers. Retain current positional APIs, attention-lane selection, worker-role FPM lookup, per-curve baseline handling, and structured performance results.
 - Keep speculation configuration keyword-only on ModelConfig to preserve existing positional construction.
+- Keep the new Task field keyword-only as well. Materialized models snapshot speculation inputs so later caller mutation cannot reuse a cache entry for a different draft graph; resolving legacy MTP does not turn it into a persistent explicit scheme.
+- Map draft query tokens and batch size before operation lookup through the typed native TokenScale wrapper. This preserves nonlinear collective and compute costs for integer and fractional draft widths. Standalone drafts retain their checkpoint layer count independently of target-only layer overrides.
 - Validate malformed draft geometry, token counts, missing checkpoint declarations, and unsupported operation combinations before estimates can silently use a different shape.
 - Expose estimate flags only where the API consumes them; preserve legacy MTP equivalence and reject unconsumed scheme configurations in unsupported task modes.
 - Preserve existing engine goldens. Added synthetic verification cases and source-parity checks establish software behavior; no new GPU accuracy campaign is claimed, and the rejected fitted calibration is not introduced.

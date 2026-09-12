@@ -149,8 +149,8 @@ def resolve_speculation(model_config: ModelConfig):
     * a non-MTP scheme requires ``nextn == 0`` — mixing sources is an error,
       never a silent precedence.
 
-    The resolved config is written back to ``model_config.speculation`` and
-    returned. Idempotent. Must run BEFORE ``get_model`` constructs the model.
+    Return the resolved config without persisting synthesized legacy MTP.
+    Explicit MTP still updates ``nextn`` before model construction.
     """
     from aiconfigurator_core.sdk.speculation.base import SpeculationConfig
 
@@ -178,5 +178,4 @@ def resolve_speculation(model_config: ModelConfig):
                 f"speculation kind {spec.kind!r}. nextn is MTP-only sugar; set it to 0."
             )
 
-    model_config.speculation = spec
     return spec
