@@ -307,7 +307,13 @@ pub fn validate_trace_files(format: TraceFileFormat, paths: &[PathBuf]) -> Resul
     Ok(())
 }
 
-fn single_turn_request_uuid(_request_ordinal: usize) -> Uuid {
+/// Mint the request UUID for a single-turn lowering.
+///
+/// Deliberately takes no ordinal. It used to accept one and discard it, which
+/// read as a determinism hook that had been wired up -- but these UUIDs are
+/// random per call, and whether they should instead be derived from the
+/// request ordinal is an open product question, not an oversight here.
+fn single_turn_request_uuid() -> Uuid {
     Uuid::new_v4()
 }
 
@@ -551,15 +557,6 @@ impl MooncakeTraceBuilder {
                 "trace line {} has invalid delay {}",
                 line_idx + 1,
                 delay_after_previous_ms
-            );
-        }
-
-        if hash_ids.len() * self.trace_block_size < input_length {
-            bail!(
-                "trace line {} input_length {} exceeds synthesized capacity {}",
-                line_idx + 1,
-                input_length,
-                hash_ids.len() * self.trace_block_size
             );
         }
 
@@ -1216,7 +1213,7 @@ impl Trace {
     pub fn to_single_turn_requests(&self) -> Result<Vec<DirectRequest>> {
         let mut requests = Vec::with_capacity(self.sessions.len());
         let mut output_rng = StdRng::seed_from_u64(SYNTHETIC_OUTPUT_SEED);
-        for (request_ordinal, session) in self.sessions.iter().enumerate() {
+        for session in self.sessions.iter() {
             if session.turns.len() != 1 {
                 bail!(
                     "to_single_turn_requests requires exactly one turn per session, but session {} has {} turns",
@@ -1224,7 +1221,7 @@ impl Trace {
                     session.turns.len()
                 );
             }
-            let request_uuid = single_turn_request_uuid(request_ordinal);
+            let request_uuid = single_turn_request_uuid();
             let mut request = session.turns[0].to_direct_request(
                 self.block_size,
                 request_uuid,
@@ -1651,11 +1648,7 @@ impl AgenticTraceBuilder {
                 .filter(|node_index| self.nodes[*node_index].dependencies.is_empty())
                 .collect();
             if roots.is_empty() {
-                bail!(
-                    "play {} must have at least one root request, found {}",
-                    play_id,
-                    roots.len()
-                );
+                bail!("play {} must have at least one root request", play_id);
             }
             plays.push(AgenticPlay {
                 play_id,
