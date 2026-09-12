@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/tests/public-api/src/lib.rs
 
 //! Compile-time contract tests from an external crate's point of view.
 
@@ -119,7 +121,8 @@ mod tests {
         //     continuation) — a positional bincode op-layout change.
         // v17: ContextAttentionOp gained apply_rope (Muse Glimmer review
         //     follow-up) — a positional bincode op-layout change.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 17);
+        // v18: speculative attention width fields and FpmForward verify_width.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 18);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }

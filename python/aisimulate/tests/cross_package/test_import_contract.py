@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Includes changes adapted from:
+# https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/tests/cross_package/test_import_contract.py
 
 """Import compatibility contract between the AIC and AIC Core wheels."""
 
@@ -73,6 +75,15 @@ CORE_SDK_LEAF_MODULES = [
     # per-op interpolation lives in the compiled engine.
     "performance_result",
     "rust_engine_step",
+    "speculation.base",
+    "speculation.dense_draft",
+    "speculation.dflash",
+    "speculation.draft_model",
+    "speculation.dspark",
+    "speculation.eagle",
+    "speculation.materialize",
+    "speculation.mtp",
+    "speculation.ngram",
     "step_estimate",
     "system_spec",
     "utils",
@@ -115,7 +126,7 @@ def test_legacy_leaf_module_is_canonical_module(module_suffix: str) -> None:
     assert sys.modules[legacy_name] is sys.modules[canonical_name]
 
 
-@pytest.mark.parametrize("package_suffix", ["models", "operations"])
+@pytest.mark.parametrize("package_suffix", ["models", "operations", "speculation"])
 def test_legacy_package_reexports_canonical_public_surface(package_suffix: str) -> None:
     """Package facades preserve child wrappers and export canonical objects."""
     legacy_package = importlib.import_module(f"aiconfigurator.sdk.{package_suffix}")
@@ -219,3 +230,21 @@ def test_representative_from_imports_return_canonical_objects() -> None:
     assert LegacyModelConfig is ModelConfig
     assert LegacyGPTModel is GPTModel
     assert LEGACY_GEMM is GEMM
+
+
+@pytest.mark.parametrize("module_suffix", [name for name in CORE_SDK_LEAF_MODULES if name.startswith("speculation.")])
+def test_aisimulate_speculation_leaf_preserves_identity(module_suffix: str) -> None:
+    preferred = importlib.import_module(f"aisimulate_core.sdk.{module_suffix}")
+    canonical = importlib.import_module(f"aiconfigurator_core.sdk.{module_suffix}")
+    assert preferred is canonical
+
+
+def test_aisimulate_speculation_package_preserves_registry() -> None:
+    preferred = importlib.import_module("aisimulate_core.sdk.speculation")
+    canonical = importlib.import_module("aiconfigurator_core.sdk.speculation")
+    for name in canonical.__all__:
+        assert getattr(preferred, name) is getattr(canonical, name)
+    assert (
+        preferred.get_spec_scheme_cls("mtp")
+        is importlib.import_module("aiconfigurator_core.sdk.speculation.mtp").MTPScheme
+    )
