@@ -954,12 +954,27 @@ impl Trace {
             bail!("ratio must be a finite positive number, got {ratio}");
         }
 
+        // Validating the ratio is not enough: a finite denormal ratio divides
+        // a finite timestamp up to +inf. Every later stage then inherits a
+        // non-finite timeline -- `rescale_*_span` computes `inf - inf` = NaN,
+        // and the driver's own time gates are the only thing left. Refuse the
+        // overflow where it is produced.
         for session in &mut self.sessions {
             if let Some(timestamp_ms) = session.first_arrival_timestamp_ms.as_mut() {
                 *timestamp_ms /= ratio;
+                ensure!(
+                    timestamp_ms.is_finite(),
+                    "session {} first_arrival_timestamp_ms is not finite after speeding up by {ratio}",
+                    session.session_id
+                );
             }
             for turn in &mut session.turns {
                 turn.delay_after_previous_ms /= ratio;
+                ensure!(
+                    turn.delay_after_previous_ms.is_finite(),
+                    "session {} turn delay_after_previous_ms is not finite after speeding up by {ratio}",
+                    session.session_id
+                );
             }
         }
         Ok(self)
@@ -985,6 +1000,14 @@ impl Trace {
 
         let target_span_ms = duration_ms as f64;
         let source_span_ms = max_timestamp_ms - min_timestamp_ms;
+        // The `== 0.0` branch below is not a finiteness guard: with
+        // `min == max == +inf` the span is NaN, that test is false, and every
+        // rescaled timestamp silently becomes NaN. Refuse it, exactly as the
+        // sibling `rescale_ready_span` does.
+        ensure!(
+            source_span_ms.is_finite(),
+            "trace session start span is not finite ({min_timestamp_ms}ms to {max_timestamp_ms}ms)"
+        );
         for session in &mut self.sessions {
             if let Some(timestamp_ms) = session.first_arrival_timestamp_ms.as_mut() {
                 *timestamp_ms = if source_span_ms == 0.0 {
@@ -1779,10 +1802,23 @@ impl AgenticTrace {
             bail!("ratio must be a finite positive number, got {ratio}");
         }
 
+        // Refuse before recomputing the digest. `serde_json` serializes every
+        // non-finite float as `null`, so `+inf`, `-inf`, and `NaN` all hash
+        // identically -- a corrupted graph would take on the digest of every
+        // other equally corrupted graph.
         for node in &mut self.nodes {
             node.not_before_ms /= ratio;
+            ensure!(
+                node.not_before_ms.is_finite(),
+                "agentic node {} not_before_ms is not finite after speeding up by {ratio}",
+                node.request_id()
+            );
             for dependency in &mut node.dependencies {
                 dependency.delay_ms /= ratio;
+                ensure!(
+                    dependency.delay_ms.is_finite(),
+                    "agentic dependency delay_ms is not finite after speeding up by {ratio}"
+                );
             }
         }
         self.graph_digest = canonical_agentic_graph_digest(self.block_size, &mut self.nodes)?;

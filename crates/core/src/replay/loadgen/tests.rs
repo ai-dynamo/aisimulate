@@ -985,6 +985,53 @@ fn test_partition_by_session_round_robin_keeps_sessions_intact() {
     );
 }
 
+fn single_session_trace(first_arrival_timestamp_ms: Option<f64>) -> Trace {
+    Trace {
+        block_size: 1,
+        sessions: vec![SessionTrace {
+            session_id: "only".into(),
+            first_arrival_timestamp_ms,
+            turns: vec![TurnTrace {
+                input_length: 1,
+                max_output_tokens: 1,
+                hash_ids: vec![1],
+                ..Default::default()
+            }],
+        }],
+    }
+}
+
+#[test]
+fn speed_up_timing_refuses_a_ratio_that_overflows_a_timestamp() {
+    // The ratio is finite and positive, so the existing argument check admits
+    // it -- but a denormal divisor sends a finite timestamp to +inf.
+    let error = single_session_trace(Some(1.0e300))
+        .speed_up_timing(f64::MIN_POSITIVE)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("is not finite after speeding up"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rescale_session_start_span_refuses_a_non_finite_span() {
+    // `min == max == +inf` makes the span NaN, which is neither `== 0.0` nor a
+    // usable divisor: every rescaled timestamp silently became NaN.
+    let mut trace = single_session_trace(Some(f64::INFINITY));
+    trace.sessions.push(SessionTrace {
+        session_id: "second".into(),
+        first_arrival_timestamp_ms: Some(f64::INFINITY),
+        turns: trace.sessions[0].turns.clone(),
+    });
+
+    let error = trace.rescale_session_start_span(1_000).unwrap_err();
+    assert!(
+        error.to_string().contains("span is not finite"),
+        "unexpected error: {error}"
+    );
+}
+
 #[test]
 fn partition_by_session_refuses_a_zero_partition_count() {
     // `.max(1)` used to repair this silently, handing back one partition
