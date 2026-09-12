@@ -858,6 +858,8 @@ impl Engine {
                 isl.max(1),
                 osl.max(1),
                 prefix,
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
                 |_, _, _| {},
             )?;
             let prefill_ms = prefill_ms.latency_ms;
@@ -1053,6 +1055,8 @@ impl Engine {
         isl: u32,
         osl: u32,
         prefix: u32,
+        seq_imbalance_correction_scale: f64,
+        gen_seq_imbalance_correction_scale: f64,
         mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
     ) -> Result<(PerformanceResult, PerformanceResult), AicError> {
         let mut prefill_component = PerformanceResult::zero();
@@ -1080,7 +1084,7 @@ impl Engine {
                 batch,
                 tokens,
                 prefix,
-                1.0,
+                seq_imbalance_correction_scale,
                 ContextOpFilter::All,
                 |op, draft| {
                     on_op(MixedPass::SharedNonAttention, op, draft.clone());
@@ -1129,6 +1133,7 @@ impl Engine {
                 batch_size: gen_tokens,
                 isl: isl.saturating_add(osl / 2),
                 osl: 2,
+                gen_seq_imbalance_correction_scale,
                 ..Default::default()
             };
             let mut target = PerformanceResult::zero();
@@ -1307,6 +1312,8 @@ impl Engine {
                 isl.max(1),
                 osl.max(1),
                 prefix,
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
                 |pass, op, result| match pass {
                     MixedPass::SharedNonAttention => shared.add(op, result),
                     MixedPass::DecodeAttention => dec_attn.add(op, result),
@@ -3494,6 +3501,75 @@ mod tests {
         assert!((draft.1 - expected).abs() < 1e-12);
         assert_eq!(draft.3, "empirical");
         assert_eq!(target.1, 0.0);
+    }
+
+    #[test]
+    fn fpm_hybrid_draft_attention_retains_imbalance_scales() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx_draft = context_ops()
+            .into_iter()
+            .find(Op::is_context_attention)
+            .unwrap();
+        let gen_draft = generation_ops()
+            .into_iter()
+            .find(Op::is_generation_attention)
+            .unwrap();
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![gen_draft], vec![ctx_draft]);
+        let engine = Engine::build(spec, Arc::new(db)).unwrap();
+        let baseline = engine
+            .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
+            .unwrap();
+        for (context_scale, generation_scale) in [(1.5, 1.0), (1.0, 2.5), (1.5, 2.5)] {
+            let (prefill, _, decode) = engine
+                .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, context_scale, generation_scale)
+                .unwrap();
+            let expected_context = query_context_op(
+                &engine.context_ops[1],
+                &engine.db,
+                1,
+                2048,
+                0,
+                context_scale,
+                None,
+            )
+            .unwrap();
+            let expected_generation = query_generation_op(
+                &engine.generation_ops[1],
+                &engine.db,
+                8,
+                1,
+                2050,
+                generation_scale,
+                0,
+                None,
+            )
+            .unwrap();
+            for (rows, original, expected) in [
+                (&prefill, &baseline.0, expected_context),
+                (&decode, &baseline.2, expected_generation),
+            ] {
+                let target = rows
+                    .iter()
+                    .find(|row| row.0.starts_with("fpm_forward_"))
+                    .unwrap();
+                let original_target = original
+                    .iter()
+                    .find(|row| row.0.starts_with("fpm_forward_"))
+                    .unwrap();
+                assert_eq!(
+                    target, original_target,
+                    "measured target FPM stays unscaled"
+                );
+                let draft = rows.iter().find(|row| row.0.starts_with("draft_")).unwrap();
+                assert!((draft.1 - expected.latency_ms).abs() < 1e-12);
+                assert!((draft.2 - expected.energy_wms).abs() < 1e-12);
+            }
+            let scalar = engine
+                .mixed_step_latency(2048, 1, 2048, 2, 0, context_scale, generation_scale)
+                .unwrap();
+            let reported: f64 = prefill.iter().chain(&decode).map(|row| row.1).sum();
+            assert!((scalar - reported).abs() < 1e-12);
+        }
     }
 
     #[test]
