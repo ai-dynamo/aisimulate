@@ -10,6 +10,12 @@ use super::trace::{
     MAX_DECLARED_SEQUENCE_TOKENS, synthesize_trace_tokens, validate_synthesizable_prompt,
 };
 use super::*;
+use rand::SeedableRng;
+
+/// First eight synthetic output token IDs from a freshly seeded plan RNG.
+const GOLDEN_PLAN: [u32; 8] = [
+    952584220, 694593853, 2967053780, 2932165014, 2184908278, 3971079078, 3124715654, 3718916919,
+];
 
 fn write_trace(lines: &[serde_json::Value]) -> NamedTempFile {
     let mut file = NamedTempFile::new().unwrap();
@@ -46,9 +52,19 @@ fn trace_synthesis_rejects_capacity_overflow() {
 
 #[test]
 fn trace_file_cardinality_validation_is_format_neutral() {
-    let empty = validate_trace_files(TraceFileFormat::Mooncake, &[]).unwrap_err();
-    assert!(empty.to_string().contains("at least one trace file"));
+    // The *empty* rejection is format-neutral, so assert it on both a
+    // single-file format and the multi-file one.
+    for format in [TraceFileFormat::Mooncake, TraceFileFormat::Dynamo] {
+        let empty = validate_trace_files(format, &[]).unwrap_err();
+        assert!(
+            empty.to_string().contains("at least one trace file"),
+            "{format:?}: unexpected error: {empty}"
+        );
+    }
 
+    // The *cardinality* rejection is not: Dynamo loads multiple files by
+    // design (`from_request_trace_files` merges them), so asserting only the
+    // Mooncake arm left the `format != Dynamo` guard free to be deleted.
     let paths = vec!["first.jsonl".into(), "second.jsonl".into()];
     let multiple = validate_trace_files(TraceFileFormat::Mooncake, &paths).unwrap_err();
     assert!(
@@ -56,6 +72,8 @@ fn trace_file_cardinality_validation_is_format_neutral() {
             .to_string()
             .contains("requires exactly one trace file")
     );
+    validate_trace_files(TraceFileFormat::Dynamo, &paths)
+        .expect("Dynamo accepts multiple trace files");
 }
 
 #[test]
@@ -145,6 +163,34 @@ fn single_turn_requests_plan_missing_output_tokens_deterministically() {
     assert_eq!(first[0].output_token_ids, second[0].output_token_ids);
     assert_eq!(first[0].output_token_ids.as_ref().map(Vec::len), Some(3));
     assert_eq!(first[1].output_token_ids.as_deref(), Some(&[20, 21][..]));
+}
+
+#[test]
+fn planned_output_token_ids_matches_its_golden_vector() {
+    // The generated output-token plan is part of a byte-exact-parity product,
+    // so it needs a pinned vector rather than a self-consistency check. This
+    // catches a changed `SYNTHETIC_OUTPUT_SEED`, a swapped PRNG, and a
+    // degenerate generator (every ID zero) -- none of which a length-plus-
+    // determinism assertion can see.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(SYNTHETIC_OUTPUT_SEED);
+    let plan = planned_output_token_ids(None, 8, &mut rng);
+    assert_eq!(plan, GOLDEN_PLAN);
+
+    // The stream continues rather than restarting, so a second draw from the
+    // same RNG must not repeat the first.
+    let next = planned_output_token_ids(None, 8, &mut rng);
+    assert_ne!(next, GOLDEN_PLAN);
+
+    // An authored plan is passed through untouched and draws nothing.
+    let mut authored_rng = rand::rngs::StdRng::seed_from_u64(SYNTHETIC_OUTPUT_SEED);
+    assert_eq!(
+        planned_output_token_ids(Some(vec![1, 2, 3]), 8, &mut authored_rng),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        planned_output_token_ids(None, 8, &mut authored_rng),
+        GOLDEN_PLAN
+    );
 }
 
 #[test]
