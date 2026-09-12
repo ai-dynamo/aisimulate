@@ -12,7 +12,6 @@ use super::samples::{BucketedSamples, StoreStats};
 
 const FEATURE_DIMENSION: usize = 2;
 const INACTIVE_SCALE_RELATIVE_TOLERANCE: f64 = 1e-12;
-const MIN_POSITIVE_PREDICTION_MS: f64 = 1e-6;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RegressionObservation {
@@ -75,12 +74,20 @@ impl BucketedRegression {
         true
     }
 
+    /// Predict a forward-pass duration, or `None` when this fit cannot produce
+    /// a usable one for `raw_x`.
+    ///
+    /// A non-positive prediction is refused rather than floored. A strongly
+    /// negative value is proof that `raw_x` is outside the domain the retained
+    /// samples identify, not a rounding artifact; reporting it as a
+    /// near-instant forward pass would have a DES schedule the next event
+    /// immediately with no diagnostic while `diagnostics()` still said `Ready`.
     pub(crate) fn predict(&self, raw_x: &[f64; FEATURE_DIMENSION]) -> Option<f64> {
         if !valid_features(raw_x) {
             return None;
         }
         let prediction = self.fit.as_ref()?.predict(raw_x)?;
-        Some(prediction.max(MIN_POSITIVE_PREDICTION_MS))
+        (prediction > 0.0).then_some(prediction)
     }
 }
 
@@ -357,9 +364,8 @@ fn solve_linear_system(mut lhs: Vec<Vec<f64>>, mut rhs: Vec<f64>) -> Option<Vec<
 #[cfg(test)]
 mod tests {
     use super::{
-        BucketedRegression, INACTIVE_SCALE_RELATIVE_TOLERANCE, MIN_POSITIVE_PREDICTION_MS,
-        RegressionObservation, Standardization, StandardizedObservation, StoreStats,
-        fit_linear_active_set,
+        BucketedRegression, INACTIVE_SCALE_RELATIVE_TOLERANCE, RegressionObservation,
+        Standardization, StandardizedObservation, StoreStats, fit_linear_active_set,
     };
     use crate::fpm::options::ForwardPassPerfOptions;
 
@@ -591,8 +597,10 @@ mod tests {
         assert!(!regression.is_ready());
     }
 
+    /// A non-positive extrapolation is out-of-domain evidence, not a rounding
+    /// artifact: refuse it instead of reporting a near-instant forward pass.
     #[test]
-    fn positive_slope_extrapolation_is_clamped_to_prediction_floor() {
+    fn non_positive_extrapolation_is_refused_not_floored() {
         let mut regression = BucketedRegression::new(&regression_options());
         for attention in 6..=10 {
             let attention = attention as f64;
@@ -602,10 +610,10 @@ mod tests {
         let fit = regression.fit.as_ref().unwrap();
         assert!(fit.coefficients[0] > 0.0);
         assert!(fit.predict(&[1.0, 0.0]).unwrap() <= 0.0);
-        assert_eq!(
-            regression.predict(&[1.0, 0.0]),
-            Some(MIN_POSITIVE_PREDICTION_MS)
-        );
+        assert_eq!(regression.predict(&[1.0, 0.0]), None);
+
+        // In-domain predictions are untouched.
+        assert_close(regression.predict(&[8.0, 0.0]).unwrap(), 3.0, 1e-9);
     }
 
     #[test]
