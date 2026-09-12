@@ -138,9 +138,6 @@ pub struct TraceTrajectoryStats {
     pub total: usize,
     pub completed: usize,
     pub incomplete: usize,
-    /// Trajectory end-to-end latencies folded into `e2e`. Distinguishes a
-    /// measured zero from an empty distribution, which reports all-zeros.
-    pub num_e2e_samples: usize,
     pub e2e: TraceDistributionStats,
 }
 
@@ -335,7 +332,6 @@ impl Serialize for ReplayReport {
             map.serialize_entry("total_trajectories", &trajectories.total)?;
             map.serialize_entry("completed_trajectories", &trajectories.completed)?;
             map.serialize_entry("incomplete_trajectories", &trajectories.incomplete)?;
-            map.serialize_entry("num_trajectory_e2e_samples", &trajectories.num_e2e_samples)?;
             serialize_distribution(&mut map, "trajectory_e2e_latency", &trajectories.e2e)?;
             map.serialize_entry("p50_trajectory_e2e_latency_ms", &trajectories.e2e.median_ms)?;
         }
@@ -1610,7 +1606,6 @@ impl TraceCollector {
                 incomplete: snapshot
                     .total_trajectories
                     .saturating_sub(snapshot.completed_trajectories),
-                num_e2e_samples: snapshot.e2e_latencies_ms.len(),
                 e2e: build_distribution_stats(snapshot.e2e_latencies_ms),
             });
         let num_itl_samples = self.itl_distribution.sample_count();
