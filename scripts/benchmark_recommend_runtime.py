@@ -25,17 +25,29 @@ from pathlib import Path
 from benchmark_migration_runtime import BACKEND_VERSION, MODEL, SYSTEM, attest, digest
 
 
-def configuration(trials, parallelism, algorithm):
+def configuration(trials, parallelism, algorithm, case):
     return {
+        "traffic": {
+            "source": {
+                "type": "synthetic",
+                "input_tokens": case["input_tokens"],
+                "output_tokens": case["output_tokens"],
+            },
+            "load": {"type": "concurrency", "concurrency": case["concurrency"]},
+            "stop": {"requests": case["concurrency"] * 10},
+        },
         "engine": {
             "mode": "aggregated",
-            "model": MODEL,
+            "model": case["model"],
             "hardware": SYSTEM,
             "backend": "vllm",
             "backend_version": BACKEND_VERSION,
             "workers": {"aggregated": {"parallelism": {"preset": "default"}}},
         },
-        "optimization": {"target": "throughput_per_gpu", "constraints": {"max_candidate_gpus": 8}},
+        "optimization": {
+            "target": "throughput_per_gpu",
+            "constraints": {"max_candidate_gpus": case["max_candidate_gpus"]},
+        },
         "optimizer": {"algorithm": algorithm, "max_trials": trials, "parallelism": parallelism, "seed": 42},
     }
 
@@ -70,9 +82,32 @@ def main():
     parser.add_argument("--parallelism", type=int, default=16)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--algorithms", nargs="+", choices=["bayesian", "random"], default=["bayesian", "random"])
+    parser.add_argument("--model", default=MODEL)
+    parser.add_argument("--input-tokens", type=int, default=1024)
+    parser.add_argument("--output-tokens", type=int, default=128)
+    parser.add_argument("--concurrency", type=int, default=10)
+    parser.add_argument("--max-candidate-gpus", type=int, default=8)
+    parser.add_argument("--ttft-ms", type=float, default=2000)
+    parser.add_argument("--tpot-ms", type=float, default=30)
     args = parser.parse_args()
-    if os.name != "posix" or min(args.rounds, args.trials, args.parallelism, args.timeout) <= 0:
+    bounds = (
+        args.rounds,
+        args.trials,
+        args.parallelism,
+        args.timeout,
+        args.input_tokens,
+        args.output_tokens,
+        args.concurrency,
+        args.max_candidate_gpus,
+        args.ttft_ms,
+        args.tpot_ms,
+    )
+    if os.name != "posix" or not all(math.isfinite(v) and v > 0 for v in bounds):
         parser.error("requires a Unix host and positive bounds")
+    case = {
+        k: getattr(args, k)
+        for k in ("model", "input_tokens", "output_tokens", "concurrency", "max_candidate_gpus", "ttft_ms", "tpot_ms")
+    }
     variants = json.loads(Path(args.variants).read_text())
     if not variants or len({v["label"] for v in variants}) != len(variants):
         parser.error("variants must have distinct labels and cannot be empty")
@@ -92,6 +127,7 @@ def main():
         "rounds": args.rounds,
         "trials": args.trials,
         "parallelism": args.parallelism,
+        "case": case,
         "variants": variants,
         "samples": [],
         "scope": (
@@ -114,7 +150,7 @@ def main():
                 "cli",
                 "recommend",
                 "--model-path",
-                MODEL,
+                args.model,
                 "--system",
                 SYSTEM,
                 "--backend",
@@ -122,15 +158,15 @@ def main():
                 "--backend-version",
                 BACKEND_VERSION,
                 "--target-concurrency",
-                "10",
+                str(args.concurrency),
                 "--isl",
-                "1024",
+                str(args.input_tokens),
                 "--osl",
-                "128",
+                str(args.output_tokens),
                 "--ttft",
-                "2000",
+                str(args.ttft_ms),
                 "--tpot",
-                "30",
+                str(args.tpot_ms),
                 "--systems-paths",
                 str(systems),
             ]
@@ -151,12 +187,12 @@ def main():
             entrypoint = str(Path(variant["python"]).parent / "aisimulate")
             for algorithm in args.algorithms:
                 config = output / f"{variant['label']}-{algorithm}.json"
-                config.write_text(json.dumps(configuration(args.trials, args.parallelism, algorithm), indent=2))
+                config.write_text(json.dumps(configuration(args.trials, args.parallelism, algorithm, case), indent=2))
                 command = [variant["python"], entrypoint, "recommend", "--config", str(config), "--format", "json"]
                 cases.append((variant, algorithm, command, env))
         else:
             parser.error(f"unknown variant kind {variant['kind']!r}")
-    evidence["configurations"] = {a: configuration(args.trials, args.parallelism, a) for a in args.algorithms}
+    evidence["configurations"] = {a: configuration(args.trials, args.parallelism, a, case) for a in args.algorithms}
     for repeat in range(args.rounds):
         for variant, algorithm, base_command, env in cases if repeat % 2 == 0 else list(reversed(cases)):
             label = f"{variant['label']}-{algorithm}-{repeat}"
