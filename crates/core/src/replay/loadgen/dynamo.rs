@@ -247,32 +247,24 @@ fn load_entries(paths: &[PathBuf]) -> Result<LoadedEntries> {
 fn request_times(event_time_unix_ms: u64, request: &RequestMetrics) -> Result<(i64, i64)> {
     let total_ms = request
         .total_time_ms
-        .map(|value| {
-            ensure!(
-                value.is_finite() && value >= 0.0,
-                "request duration must be finite and nonnegative"
-            );
-            // Bound before the cast. `as u64` saturates silently, so a
-            // `total_time_ms` of 1e30 became u64::MAX, then pinned end_ms at
-            // i64::MAX through saturating_add/saturating_i64 -- an absurd
-            // timeline accepted as if it were measured, rather than a parse
-            // error. Timestamps are i64 milliseconds downstream, so that is
-            // the representable range.
-            let rounded = value.round();
-            ensure!(
-                rounded <= i64::MAX as f64,
-                "request duration {value}ms exceeds the representable range"
-            );
-            Ok(rounded as u64)
-        })
+        .map(|value| checked_duration_ms("request duration", value))
         .transpose()?;
-    let end_ms = match (request.request_received_ms, total_ms) {
-        (Some(start), Some(duration)) => start.saturating_add(duration),
-        _ => event_time_unix_ms,
-    };
-    let start_ms = request
+    let event_time_ms = checked_unix_ms("event_time_unix_ms", event_time_unix_ms)?;
+    let received_ms = request
         .request_received_ms
-        .unwrap_or_else(|| event_time_unix_ms.saturating_sub(total_ms.unwrap_or(0)));
+        .map(|value| checked_unix_ms("request_received_ms", value))
+        .transpose()?;
+    let end_ms = match (received_ms, total_ms) {
+        (Some(start), Some(duration)) => start
+            .checked_add(duration)
+            .context("request end time exceeds the representable range")?,
+        _ => event_time_ms,
+    };
+    // These times were u64 until here, so a start inferred by subtracting the
+    // duration from the event time floored at zero rather than going negative.
+    // Keep that floor now that the arithmetic is signed.
+    let start_ms =
+        received_ms.unwrap_or_else(|| event_time_ms.saturating_sub(total_ms.unwrap_or(0)).max(0));
     // `tool_entry` has always rejected an inverted interval; requests never
     // did. A `request_end` carrying `request_received_ms` but no
     // `total_time_ms`, whose `event_time_unix_ms` precedes it (clock skew, or
@@ -287,7 +279,7 @@ fn request_times(event_time_unix_ms: u64, request: &RequestMetrics) -> Result<(i
         end_ms >= start_ms,
         "request end time {end_ms} precedes start time {start_ms}"
     );
-    Ok((saturating_i64(start_ms), saturating_i64(end_ms)))
+    Ok((start_ms, end_ms))
 }
 
 fn tool_entry(record: Record) -> Result<Option<ToolEntry>> {
@@ -309,21 +301,18 @@ fn tool_entry(record: Record) -> Result<Option<ToolEntry>> {
         !tool.tool_class.trim().is_empty(),
         "tool_class must be nonempty"
     );
-    if let Some(duration) = tool.duration_ms {
-        ensure!(
-            duration.is_finite() && duration >= 0.0,
-            "tool duration must be finite and nonnegative"
-        );
-    }
-    let end_ms = saturating_i64(tool.ended_at_unix_ms.unwrap_or(record.event_time_unix_ms));
-    let start_ms = tool
-        .started_at_unix_ms
-        .map(saturating_i64)
-        .or_else(|| {
-            tool.duration_ms
-                .map(|duration| end_ms.saturating_sub(duration.round() as i64))
-        })
-        .unwrap_or(end_ms);
+    let duration_ms = tool
+        .duration_ms
+        .map(|value| checked_duration_ms("tool duration", value))
+        .transpose()?;
+    let end_ms = match tool.ended_at_unix_ms {
+        Some(value) => checked_unix_ms("tool ended_at_unix_ms", value)?,
+        None => checked_unix_ms("event_time_unix_ms", record.event_time_unix_ms)?,
+    };
+    let start_ms = match tool.started_at_unix_ms {
+        Some(value) => checked_unix_ms("tool started_at_unix_ms", value)?,
+        None => duration_ms.map_or(end_ms, |duration| end_ms.saturating_sub(duration)),
+    };
     ensure!(end_ms >= start_ms, "tool end time precedes start time");
     Ok(Some(ToolEntry {
         session_id: context.session_id,
@@ -333,8 +322,35 @@ fn tool_entry(record: Record) -> Result<Option<ToolEntry>> {
     }))
 }
 
-fn saturating_i64(value: u64) -> i64 {
-    value.min(i64::MAX as u64) as i64
+/// Refuse a wire timestamp that does not survive the move to the signed
+/// millisecond timeline every consumer of this module uses.
+///
+/// These fields arrive as `u64` and used to be clamped to `i64::MAX`. Clamping
+/// makes two absurd-but-distinct timelines -- say `2^63` and `2^64 - 1` --
+/// compare equal in the entry sort key, so their relative order is decided by
+/// `request_id` string comparison instead of by time, and `lower_standard` and
+/// `dependency_between` then emit a zero gap between them. An out-of-range
+/// timestamp is a corrupt trace, not a measurement; refuse it.
+fn checked_unix_ms(what: &str, value: u64) -> Result<i64> {
+    i64::try_from(value)
+        .with_context(|| format!("{what} {value}ms exceeds the representable range"))
+}
+
+/// Refuse a duration that does not survive rounding into signed milliseconds.
+///
+/// `as i64` saturates silently, so a `1e30` duration became `i64::MAX` and an
+/// absurd timeline was accepted as if it had been measured.
+fn checked_duration_ms(what: &str, value: f64) -> Result<i64> {
+    ensure!(
+        value.is_finite() && value >= 0.0,
+        "{what} must be finite and nonnegative"
+    );
+    let rounded = value.round();
+    ensure!(
+        rounded <= i64::MAX as f64,
+        "{what} {value}ms exceeds the representable range"
+    );
+    Ok(rounded as i64)
 }
 
 fn lower_standard(entries: Vec<RequestEntry>, block_size: usize) -> Result<Trace> {
@@ -778,6 +794,67 @@ mod tests {
             writeln!(file, "{}", serde_json::to_string(row).unwrap()).unwrap();
         }
         file
+    }
+
+    #[test]
+    fn rejects_request_received_ms_outside_the_signed_millisecond_timeline() {
+        // Clamping to i64::MAX made every out-of-range timestamp compare equal
+        // in the entry sort key, so ordering fell through to request_id string
+        // comparison and the lowered gap between them became zero.
+        let mut row = request("r1", 0, None);
+        row["request"]["request_received_ms"] = json!(u64::MAX);
+        let file = trace_file(&[row]);
+
+        let error =
+            DynamoRequestTrace::from_request_trace_files(&[file.path().to_path_buf()], None)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("request_received_ms") && message.contains("representable range"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn rejects_event_time_unix_ms_outside_the_signed_millisecond_timeline() {
+        let mut row = request("r1", 0, None);
+        row["event_time_unix_ms"] = json!(u64::MAX);
+        // Drop the fields that would otherwise supply the times directly, so
+        // event_time_unix_ms is the one that has to be representable.
+        row["request"]
+            .as_object_mut()
+            .expect("request is an object")
+            .remove("request_received_ms");
+        let file = trace_file(&[row]);
+
+        let error =
+            DynamoRequestTrace::from_request_trace_files(&[file.path().to_path_buf()], None)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("event_time_unix_ms") && message.contains("representable range"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn rejects_tool_started_at_unix_ms_outside_the_signed_millisecond_timeline() {
+        let mut tool = child_tool("r1", Some("r2"), "child", "sync");
+        tool["tool"]["started_at_unix_ms"] = json!(u64::MAX);
+        let file = trace_file(&[
+            request("r1", 100, Some("parent")),
+            child_request("r2", 120, "child", "parent"),
+            tool,
+        ]);
+
+        let error =
+            DynamoRequestTrace::from_request_trace_files(&[file.path().to_path_buf()], None)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("started_at_unix_ms") && message.contains("representable range"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]
