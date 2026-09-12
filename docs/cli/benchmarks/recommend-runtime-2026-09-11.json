@@ -3648,5 +3648,20 @@
     "baseline_bayesian_vs_aic": 5.85187209239151,
     "padded_bayesian_vs_aic": 5.151694993691564,
     "random_best_score_below_bayesian_percent": 34.682041626644676
+  },
+  "publication": {
+    "format": "compact-recommend-runtime-v1",
+    "controller_format": "protocol-1",
+    "raw_inputs_sha256": {
+      "final": "16816d68b84bcdba150c871e081475aa0298a75696c94d701994228e921bf9eb",
+      "fast-random": "0c73ec0ecc9c8e4f68d7b41036bb4633a49e75ea7b0a0858e98fffccded1873b"
+    },
+    "transformation": {
+      "samples": "All 15 standard and 3 four-worker samples retain original wall time, counts and best score. Commands, absolute paths and full reports are omitted.",
+      "candidate_catalog": "Union of concrete prediction_config values, keyed by SHA256 of JSON sorted keys with comma/colon separators. Each retains score and used_gpus. Per-sample maps retain all candidate scores.",
+      "comparisons": "Join full reports by canonical prediction_config; compare score/status/reason/GPU use/objectives and all non-host metrics with documented tolerance. Report common/unique counts separately.",
+      "summaries": "Median/min/max process_wall_s by series, variant and algorithm; best-score set for each group.",
+      "diagnostic": "Separate 64-suggestion instrumented prototype phase samples and common-configuration comparisons, excluded from CLI medians."
+    }
   }
 }

@@ -4,6 +4,17 @@ This benchmark measures host CPU execution time. It does not measure GPU inferen
 establish prediction accuracy on silicon. See [the migration guide](migrate-from-aiconfigurator.md)
 for the dated results and their interpretation.
 
+## Evidence formats
+
+The controllers write detailed local `protocol: 1` results, including full reports and machine paths.
+The dated JSON files linked from the guide are **compact publication bundles**, not verbatim
+controller output. Each `publication` field names its format, hashes the original input file(s),
+and describes the projection. Retained timing samples are unchanged. Replay publication groups
+variant metadata and omits full reports/stdout/paths; recommendation publication additionally keeps
+a union of concrete candidate configurations and per-sample score maps. Reproduction writes the
+full controller format, not this presentation schema. Original replay native hashes were captured
+after measurement; the recommendation run uses the newer before/after attestation checks.
+
 ## Recommend boundaries and reproduction
 
 `scripts/benchmark_recommend_runtime.py` launches the installed `aiconfigurator` and `aisimulate`

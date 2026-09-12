@@ -135,7 +135,7 @@ relative to the observed run ranges. The replay cache reduces native-loop time b
 and warm-runner time by **20% (1.24×)** in the 1,000-request case. There is **no demonstrated fresh
 `predict` CLI speedup from the replay cache**: imports, model/data loading, and provider construction dominate this small workload.
 The 100-request warm runner changes only from 30.18 ms to 29.86 ms. See the
-[raw timing evidence](benchmarks/migration-runtime-2026-09-11.json) and
+[recorded timing evidence](benchmarks/migration-runtime-2026-09-11.json) and
 [measurement boundaries and reproduction](runtime-benchmark.md).
 
 The optimization retains at most 1,024 successful latency results per native AIC timing provider.

@@ -81,12 +81,12 @@
       "predictions_match": true
     },
     {
-      "case": "CLI and warm replay combined",
+      "case": "replay",
       "requests": 100,
       "predictions_match": true
     },
     {
-      "case": "CLI and warm replay combined",
+      "case": "replay",
       "requests": 1000,
       "predictions_match": true
     }
@@ -4133,5 +4133,28 @@
         0.017262834
       ]
     }
-  ]
+  ],
+  "publication": {
+    "format": "compact-migration-runtime-v1",
+    "controller_format": "protocol-1",
+    "raw_input_sha256": "9939527b353920f5b8eb03d5a4c9706e56a62560e322e19896d702b5bef14234",
+    "transformation": {
+      "samples": "All 70 original samples, in original order, projected without changing retained values.",
+      "retained_sample_fields": [
+        "case",
+        "phases",
+        "process_cpu_s",
+        "process_wall_s",
+        "requests",
+        "result_sha256",
+        "round",
+        "variant",
+        "warm_native_replay_s",
+        "warm_replay_s"
+      ],
+      "metadata": "CPU, model-config hash and post-run native hashes added; revisions/dependency versions grouped by variant label; local paths and full reports/stdout omitted.",
+      "comparisons": "Recomputed over retained local full reports at documented tolerance; predict and replay checked separately.",
+      "native_hash_timing": "Hashes were captured after the original run, before the later preflight attestation feature; they are not retroactive preflight evidence."
+    }
+  }
 }
