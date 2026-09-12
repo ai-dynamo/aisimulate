@@ -2774,10 +2774,10 @@ mod tests {
 
     #[test]
     fn agentic_summary_is_independent_of_runtime_uuid_and_insertion_order() {
-        fn report(requests: [(&str, u128, f64); 3]) -> ReplayReport {
+        fn report(requests: [(&str, u128, f64); 3], is_deferred: bool) -> ReplayReport {
             let mut collector = TraceCollector::default();
             collector.set_capture_per_request(true);
-            collector.set_defer_token_timeline_finalization(true);
+            collector.set_defer_token_timeline_finalization(is_deferred);
             for (request_id, uuid, ttft_ms) in requests {
                 let uuid = Uuid::from_u128(uuid);
                 collector.on_arrival(uuid, 0.0, 100, 1);
@@ -2795,22 +2795,38 @@ mod tests {
             collector.finish()
         }
 
-        let left = report([
-            ("request-a", 3, 1.0e16),
-            ("request-b", 1, 1.0),
-            ("request-c", 2, 1.0),
-        ]);
-        let right = report([
-            ("request-c", 300, 1.0),
-            ("request-a", 100, 1.0e16),
-            ("request-b", 200, 1.0),
-        ]);
-
-        assert_eq!(
-            serde_json::to_value(&left).unwrap(),
-            serde_json::to_value(&right).unwrap()
-        );
-        for report in [&left, &right] {
+        // Both settings: under `defer` the property comes from `finish_at`'s
+        // `request_order` sort, and at the default setting from `on_terminal`
+        // folding in simulation-event order. Only the deferred arm used to be
+        // exercised, so a regression in that sort was invisible at the
+        // setting every production caller actually runs.
+        let mut reports = Vec::new();
+        for is_deferred in [false, true] {
+            let left = report(
+                [
+                    ("request-a", 3, 1.0e16),
+                    ("request-b", 1, 1.0),
+                    ("request-c", 2, 1.0),
+                ],
+                is_deferred,
+            );
+            let right = report(
+                [
+                    ("request-c", 300, 1.0),
+                    ("request-a", 100, 1.0e16),
+                    ("request-b", 200, 1.0),
+                ],
+                is_deferred,
+            );
+            assert_eq!(
+                serde_json::to_value(&left).unwrap(),
+                serde_json::to_value(&right).unwrap(),
+                "insertion order changed the summary at is_deferred = {is_deferred}"
+            );
+            reports.push(left);
+            reports.push(right);
+        }
+        for report in &reports {
             assert_eq!(
                 report
                     .per_request
@@ -2830,10 +2846,10 @@ mod tests {
     /// in floating point.
     #[test]
     fn summary_itl_stats_do_not_depend_on_capture_per_request() {
-        fn report(is_capturing: bool) -> ReplayReport {
+        fn report(is_capturing: bool, is_deferred: bool) -> ReplayReport {
             let mut collector = TraceCollector::default();
             collector.set_capture_per_request(is_capturing);
-            collector.set_defer_token_timeline_finalization(true);
+            collector.set_defer_token_timeline_finalization(is_deferred);
             // Authored order (a, b, c) is the reverse of UUID order, so the fold
             // sees gaps [0.1, 7.0, 1e16, 1e15] with capture on and
             // [1e15, 1e16, 0.1, 7.0] with it off -- a spread wide enough that
@@ -2863,19 +2879,26 @@ mod tests {
             collector.finish()
         }
 
-        let captured = report(true);
-        let uncaptured = report(false);
-        assert_eq!(
-            captured.latency.itl.distribution.mean_ms.to_bits(),
-            uncaptured.latency.itl.distribution.mean_ms.to_bits(),
-            "mean itl moved with a diagnostic-only flag"
-        );
-        // The summary Serialize impl skips `per_request`, so this pins every
-        // other summary field against the same regression.
-        assert_eq!(
-            serde_json::to_value(&captured).unwrap(),
-            serde_json::to_value(&uncaptured).unwrap()
-        );
+        // The doc above describes the deferred fold. At the default setting
+        // the fold happens in `on_terminal` in simulation-event order, so the
+        // property holds for a different reason -- and that is the setting
+        // every production caller runs, since
+        // `set_defer_token_timeline_finalization` has no production caller.
+        for is_deferred in [false, true] {
+            let captured = report(true, is_deferred);
+            let uncaptured = report(false, is_deferred);
+            assert_eq!(
+                captured.latency.itl.distribution.mean_ms.to_bits(),
+                uncaptured.latency.itl.distribution.mean_ms.to_bits(),
+                "mean itl moved with a diagnostic-only flag at is_deferred = {is_deferred}"
+            );
+            // The summary Serialize impl skips `per_request`, so this pins
+            // every other summary field against the same regression.
+            assert_eq!(
+                serde_json::to_value(&captured).unwrap(),
+                serde_json::to_value(&uncaptured).unwrap()
+            );
+        }
     }
 
     /// Each record must round-trip cleanly to JSON. Guards against accidental
