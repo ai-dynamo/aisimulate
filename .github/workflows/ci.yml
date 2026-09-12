@@ -412,21 +412,7 @@ jobs:
 
   stage-application-wheel:
     name: Stage Application Wheel (${{ matrix.arch }})
-    needs:
-      - fast-ci
-      - cargo-deny
-      - rust
-      - rust-feature-modes
-      - public-api-rust
-      - application-wheel
-      - application-tests
-      - python-compatibility
-      - engine-golden-regression
-      - release-artifact-contract
-      - select-full-ci
-      - platform-wheels
-      - collector-data
-      - prediction-regression
+    needs: [application-wheel, readiness]
     # Manual PR validation builds and verifies wheels without acquiring release
     # credentials. Only post-merge and release lifecycle pushes may stage them.
     if: >-
@@ -782,6 +768,15 @@ jobs:
           python -m pytest -q -rx -n 4
           -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+      - name: Check native prediction numerical sentinels
+        run: python scripts/check_prediction_numerics.py --output numerical-sentinels.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: native-prediction-numerics
+          path: numerical-sentinels.json
+          if-no-files-found: error
+
 
   release-artifact-contract:
     name: Release Artifact Contract (${{ matrix.arch }})
@@ -839,7 +834,6 @@ jobs:
       - rust-feature-modes
       - public-api-rust
       - application-wheel
-      - stage-application-wheel
       - application-test-wheel
       - application-tests
       - python-compatibility
@@ -852,10 +846,6 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
           PLAN_JSON: ${{ toJSON(needs.select-full-ci.outputs) }}
-          EXPECTED_STAGE_RESULT: >-
-            ${{ github.event_name == 'push' &&
-                (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) &&
-                'success' || 'skipped' }}
         run: |
           python - <<'PY'
           import json
@@ -890,7 +880,6 @@ jobs:
                   invalid_outputs.append(f"{output}={selected!r}")
                   continue
               expected[job] = "success" if selected == "true" else "skipped"
-          expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]
           failures = []
           summary = [
               f"### Full CI evidence for `{os.environ.get('GITHUB_SHA', 'local')}`",

@@ -211,13 +211,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     aggregate = jobs["readiness"]
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
 
-    required_before_wheel_staging = set(jobs["stage-application-wheel"]["needs"])
-    assert {
-        "rust-feature-modes",
-        "python-compatibility",
-        "engine-golden-regression",
-        "application-wheel",
-    }.issubset(required_before_wheel_staging)
+    assert set(jobs["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
     application_wheel_commands = _run_commands(jobs["application-wheel"])
     assert "maturin build" not in application_wheel_commands
     assert any(
@@ -230,16 +224,18 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
 
 
 def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
-    aggregate = _workflow("ci.yml")["jobs"]["readiness"]
+    jobs = _workflow("ci.yml")["jobs"]
+    aggregate = jobs["readiness"]
     commands = _run_commands(aggregate)
 
     assert "select-full-ci" in aggregate["needs"]
-    assert "stage-application-wheel" in aggregate["needs"]
+    assert "stage-application-wheel" not in aggregate["needs"]
+    assert set(jobs["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
+    assert set(aggregate["needs"]) == set(jobs) - {"readiness", "stage-application-wheel"}
     assert aggregate["steps"][0]["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
     assert aggregate["steps"][0]["env"]["PLAN_JSON"] == ("${{ toJSON(needs.select-full-ci.outputs) }}")
     assert 'selected not in {"true", "false"}' in commands
     assert '"success" if selected == "true" else "skipped"' in commands
-    assert 'expected["stage-application-wheel"] = os.environ["EXPECTED_STAGE_RESULT"]' in commands
     assert 'payload["result"]' in commands
     assert "Full CI did not pass" in commands
 
@@ -548,8 +544,6 @@ def test_active_workflows_do_not_call_nested_inert_github_assets() -> None:
 def _run_full_ci_aggregate(
     results: dict[str, str],
     plan: dict[str, str],
-    *,
-    expected_stage: str = "skipped",
 ) -> subprocess.CompletedProcess[str]:
     aggregate = _workflow("ci.yml")["jobs"]["readiness"]
     script = aggregate["steps"][0]["run"]
@@ -561,7 +555,6 @@ def _run_full_ci_aggregate(
             **os.environ,
             "NEEDS_JSON": json.dumps(needs),
             "PLAN_JSON": json.dumps(plan),
-            "EXPECTED_STAGE_RESULT": expected_stage,
         },
         capture_output=True,
         text=True,
@@ -726,7 +719,6 @@ def test_full_ci_aggregate_accepts_only_explicit_na_results() -> None:
         "verify-target": "success",
         "select-full-ci": "success",
         "fast-ci": "success",
-        "stage-application-wheel": "skipped",
         **{
             component.replace("_", "-"): ("success" if plan[component] == "true" else "skipped")
             for component in COMPONENTS
@@ -756,7 +748,6 @@ def test_full_ci_aggregate_rejects_missing_selection_output() -> None:
         "verify-target": "success",
         "select-full-ci": "success",
         "fast-ci": "success",
-        "stage-application-wheel": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
     }
@@ -772,7 +763,6 @@ def test_full_ci_aggregate_rejects_missing_dependency() -> None:
         "verify-target": "success",
         "select-full-ci": "success",
         "fast-ci": "success",
-        "stage-application-wheel": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
     }
@@ -928,7 +918,8 @@ def test_parallel_test_matrix_has_no_missing_or_duplicate_partitions():
         "platform-wheels",
         "collector-data",
         "prediction-regression",
-    }.issubset(jobs["stage-application-wheel"]["needs"])
+    }.issubset(jobs["readiness"]["needs"])
+    assert set(jobs["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
     for suite in ("unit", "cli-build"):
         steps = [
             step for step in jobs["application-tests"]["steps"] if step.get("if") == f"matrix.shard.suite == '{suite}'"
